@@ -55,12 +55,15 @@ from app.services import balance_at
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
-    settlement_columns,
     append_balance_assertion,
     default_settle_day,
+    last_covered_day,
     mark_purchase_settled,
+    settle_day_columns,
     settle_instant_on,
+    settlement_columns,
 )
+from app.models.amount_ownership import AmountOwnership
 
 _APR_FIRST = date(2026, 4, 1)
 _APR_LAST = date(2026, 4, 30)
@@ -78,19 +81,20 @@ def _add_txn(
     status_id = ref_cache.status_id(status)
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,
         name=name,
         transaction_type_id=type_id,
-        estimated_amount=Decimal(str(amount)),
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         **settlement_columns(
             default_settle_day(period, status_id), amount, settled_amount,
         ),
         due_date=due_date,
         # A settled row must carry the day its money moved; the rule for a
         # BARE-built fixture row is shared rather than restated (X-f1).
-        settled_on=default_settle_day(period, status_id),
+        **settle_day_columns(default_settle_day(period, status_id)),
     )
     db.session.add(txn)
     db.session.flush()
@@ -177,11 +181,11 @@ class TestDailySeriesRunningBalance:
                 seed_user["account"], bctx, _APR_FIRST, _APR_LAST,
             )
             for period in seed_periods:
-                if _APR_FIRST <= period.end_date <= _APR_LAST:
+                if _APR_FIRST <= last_covered_day(period) <= _APR_LAST:
                     scalar = balance_at.cash_balance_at(
-                        seed_user["account"], bctx, period.end_date,
+                        seed_user["account"], bctx, last_covered_day(period),
                     )
-                    assert series[period.end_date] == scalar
+                    assert series[last_covered_day(period)] == scalar
 
     def test_daily_step_equals_that_days_net(
         self, app, seed_user, seed_periods, db,
@@ -329,7 +333,7 @@ class TestDailySeriesEdges:
             # $1,000.00 -- no settled row has moved the account, so this
             # assertion books nothing.
             append_balance_assertion(
-                db.session, account, seed_periods[5], Decimal("1000.00"),
+                db.session, account, Decimal("1000.00"),
                 settle_instant_on(date(2026, 3, 19)),
             )
             mark_purchase_settled(db.session, account, entry)
@@ -339,7 +343,7 @@ class TestDailySeriesEdges:
             series = balance_at.cash_daily_balance_series(
                 seed_user["account"], bctx, _APR_FIRST, _APR_LAST,
             )
-            p6_end = seed_periods[6].end_date
+            p6_end = last_covered_day(seed_periods[6])
             # Entry-aware reservation ($200 held back), not the $500 estimate.
             assert series[date(2026, 4, 5)] == Decimal("800.00")
             assert series[p6_end] == Decimal("800.00")
@@ -369,7 +373,7 @@ class TestDailySeriesEdges:
                 seed_user["account"], bctx, _APR_FIRST, _APR_LAST,
             )
             # Period 6 end reflects the clamped -100 (1000 - 100 = 900).
-            p6_end = seed_periods[6].end_date
+            p6_end = last_covered_day(seed_periods[6])
             assert series[p6_end] == Decimal("900.00")
             # And it equals the seam scalar there (reconciliation holds).
             assert series[p6_end] == balance_at.cash_balance_at(

@@ -25,6 +25,11 @@ from app.routes._render_helpers import (
 )
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.services import entry_service
+from app.services.pay_calendar import FiledRow, calendar_for
+from app.services.settle_day import (
+    recorded_settle_day,
+    submitted_settle_day,
+)
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction
 from app.utils.dates import display_today
@@ -148,7 +153,50 @@ def _render_entry_list(
     # purchases as outstanding while the projection had released them.  A
     # caller that cannot name the keys cannot forget one.
     budgets = fragment_amounts(txn).budgets
-    view = entry_service.entry_list_view(txn, entries, budgets[txn.id])
+    # The paycheck this row is FILED in, DERIVED (pay-calendar plan step
+    # C4-a-3).  The producer read ``txn.pay_period`` for its span until then,
+    # which is the stored ``end_date`` plan step C4-c dropped.
+    #
+    # The calendar belongs to the row's OWNER, spelled ``txn.user_id`` rather
+    # than ``current_user.id``, because this fragment also serves the
+    # COMPANION -- ``get_entries_for_transaction`` above validated the caller
+    # against exactly that owner, so the two agree by construction and a
+    # companion is not handed their own (empty) schedule.  It was
+    # ``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``: the
+    # owner is a COLUMN on the row now, so asking the paycheck for it is a
+    # second walk to one value.
+    #
+    # ``require_period`` and not ``period_by_id``: the id comes off a stored
+    # row whose foreign key is NOT NULL and ``ON DELETE CASCADE``, so "this
+    # owner's calendar does not hold it" is not a state a purchase list may
+    # render past.
+    #
+    # **What that costs is balance finding N-358, and the honest statement
+    # names the door rather than arguing the state away.**  A first draft of
+    # this comment said the calendar is read AFTER the row so no concurrent
+    # write can remove the period it needs -- which argues only about
+    # APPENDS, and appends are not the reachable case (adversarial review,
+    # 2026-08-31).  A concurrent ``POST /pay-periods/{reset,regenerate,
+    # truncate}`` DELETES paydays, and under ``READ COMMITTED`` it can commit
+    # between the row read and the payday read: the identity-mapped
+    # ``txn.pay_period`` still answers while this calendar no longer holds
+    # the id, and ``require_period`` raises.  Four routes reach here and
+    # THREE of them render after committing their own write, which is
+    # N-358's own shape.
+    #
+    # It is documented rather than coped with, for the reason
+    # ``require_period``'s docstring gives: the three quieter answers each
+    # cope with an inconsistent picture instead of preventing one.  The
+    # remedy that PREVENTS it is `balance:X-i5`, which makes a request one
+    # snapshot until it declares a write; the remedy `C4-a-2` used -- scope
+    # the query by the calendar's own period ids -- is not available here,
+    # because the row arrives from ``get_accessible_transaction``, the
+    # canonical route-boundary door, and reordering that door is not this
+    # leaf's to do.
+    period = calendar_for(txn.user_id).require_period(
+        FiledRow.for_row(txn),
+    )
+    view = entry_service.entry_list_view(entries, budgets[txn.id], period)
     return render_template(
         "grid/_transaction_entries.html",
         txn=txn,
@@ -238,7 +286,7 @@ def _entry_mutation_response(txn: Transaction, host: str) -> ResponseReturnValue
         Flask response tuple ``(html, 200, headers)``.
     """
     response = _render_entry_list(txn, host=host)
-    is_owner = txn.pay_period.user_id == current_user.id
+    is_owner = txn.user_id == current_user.id
     if host == "" and is_owner:
         response += render_transaction_cell(txn, wrap_div=True, wrap_oob=True)
     return response, 200, {"HX-Trigger": "balanceChanged"}
@@ -405,6 +453,15 @@ def create_entry(txn_id):
         )
 
     data = _create_schema.load(request.form)
+    # **The sign is COMPOSED, never typed** (developer ruling
+    # **bank_import:R-IK**, 2026-09-01, plan
+    # step ``bank_import:X-gj-2b-3``).  The form posts a MAGNITUDE and a
+    # direction; ``purchase_amount`` is the one place the pair becomes a stored
+    # figure, so ``EntryDetails.amount`` stays the signed value the column
+    # holds and no caller of this value object had to change.
+    data["amount"] = entry_service.purchase_amount(
+        data["amount"], records_a_refund=data.pop("direction") == entry_service.REFUND,
+    )
     try:
         entry_service.create_entry(
             transaction_id=txn.id,
@@ -504,7 +561,116 @@ def update_entry(txn_id, entry_id):
         )
         return _stale_entry_response(txn, host)
 
+    refusal = _compose_the_amount(data)
+    if refusal is not None:
+        return _error_entry_response(txn, refusal, host, status=422)
+
+    _pair_the_posting_day(data, entry)
     return _execute_entry_update(entry_id, txn, data, host)
+
+
+def _compose_the_amount(data: dict[str, Any]) -> "str | None":
+    """Turn a submitted magnitude and direction into the stored figure.
+
+    :func:`_pair_the_posting_day`'s sibling, and it exists for the same reason:
+    the service takes ONE value where the form posts TWO controls, and the
+    route is where a submission becomes what the door accepts.
+
+    **The pair travels together -- both, or neither** (developer ruling
+    2026-09-01, plan step ``bank_import:X-gj-2b-3``).  The edit form renders
+    the amount box and the Charge/Refund control side by side and submits every
+    control it holds, so a browser sends both or (on a settled parent, where
+    neither is rendered) sends neither.  A submission carrying one without the
+    other is hand-made or stale, and it cannot be composed: an amount with no
+    direction has no sign, and guessing one either way writes money the owner
+    did not state.  It is REFUSED rather than defaulted, which is the same
+    choice ``_reject_incomplete_new_envelope`` makes about a new envelope
+    stated by halves.
+
+    ``direction`` is removed either way -- the service's ``_UPDATABLE_FIELDS``
+    names the columns an entry has, and direction is not one of them: it is
+    how a human says what the sign should be.
+
+    Args:
+        data: The loaded update payload, MUTATED in place.
+
+    Returns:
+        ``None`` when the payload is coherent, else the sentence to refuse it
+        with.
+    """
+    has_amount = "amount" in data
+    has_direction = "direction" in data
+    if has_amount != has_direction:
+        data.pop("direction", None)
+        return (
+            "An amount and whether it is a charge or a refund are one answer, "
+            "and this submission carried only one of them. Reopen the purchase "
+            "and save it again."
+        )
+    if has_amount:
+        data["amount"] = entry_service.purchase_amount(
+            data["amount"],
+            records_a_refund=data.pop("direction") == entry_service.REFUND,
+        )
+    return None
+
+
+def _pair_the_posting_day(
+    data: dict[str, Any], entry: TransactionEntry,
+) -> None:
+    """Replace a submitted ``settled_on`` with the PAIR the service takes.
+
+    Plan step **X-az**.  ``entry_service.update_entry`` writes the posting day
+    and the basis that says how that day is known as one
+    :class:`app.services.settle_day.SettleDay`, so a bare date is not something
+    it can accept: the two columns are welded by
+    ``ck_transaction_entries_settle_day_basis_pairing`` and there is one writer
+    for the pair.
+
+    **It is ECHO-AWARE, and that is not a nicety -- it is what stops this door
+    re-opening the defect the step closes.**  The purchase popover renders the
+    Posted date input on EVERY entry, prefilled with the stored day and OUTSIDE
+    the settled-parent guard (``_transaction_entries.html``), so on a closed
+    envelope it is the only editable control there is: an owner who opens the
+    row and saves re-submits the day it already carried.  Wrapping that
+    unconditionally as ``entered`` rewrote the reconcile panel's ``asserted``
+    upper BOUND as the owner's own typing -- with the day unchanged, so the
+    clearing link survived and nothing signalled it -- and
+    ``CandidateRow.expected_window`` then collapsed the purchase to a point at
+    the assertion day, out of reach of its own bank line.  Measured on
+    production 2026-08-22: **59 of 66 linked purchases, ``$4,173.07``**, one
+    innocuous save each.  The rule itself is
+    :func:`app.services.settle_day.submitted_settle_day`, shared with the two
+    status doors so all three read a re-submitted day the same way.
+
+    **A day that MOVED is ``entered``, and this is the only door that can say
+    so.**  It is the owner's own record -- no bank statement showed it and no
+    balance assertion bounds it.  The other two kinds are written elsewhere and
+    neither can reach this handler: the statement matcher passes ``observed``
+    through the same service door, and the reconcile panel's ``asserted`` days
+    go through its own bulk ``UPDATE``.
+
+    An explicit ``None`` is a real user act -- *"I ticked this as posted and the
+    statement does not actually show it"* -- and stays a ``None``, which clears
+    both columns.  **An EMPTY date input IS that ``None``**: the schema declares
+    ``settled_on`` ``allow_none``, and ``_normalize_empty_inputs`` maps ``""`` to
+    ``None`` for exactly such a field rather than dropping the key, which is what
+    ``EntryUpdateSchema``'s own comment says the flag is for.  It reaches here as
+    a present key carrying ``None``, and the echo rule is skipped for it because
+    an emptied box asserts a CHANGE rather than re-stating a day.
+
+    Args:
+        data: The schema-loaded PATCH payload, mutated in place.
+        entry: The purchase being PATCHed, for the pair it ALREADY records --
+            which is what the echo rule compares against.
+    """
+    if "settled_on" not in data:
+        return
+    submitted = data.pop("settled_on")
+    data["settle_day"] = (
+        None if submitted is None
+        else submitted_settle_day(submitted, recorded_settle_day(entry))
+    )
 
 
 @entries_bp.route(

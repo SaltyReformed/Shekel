@@ -14,14 +14,21 @@ there answers a read-only question about a definition already saved.
 
 The helpers:
 
-* :func:`build_recurrence_rule_for_create` -- the whole create-form
+* :func:`recurrence_spec_for_create` -- the whole create-form
   preamble both kinds run: lift the closing bound out of the payload, build
-  the context, build the rule.  Hoisted at plan step R7b-4, which is when it
+  the context, read the spec.  Hoisted at plan step R7b-4, which is when it
   became hoistable;
-* :func:`build_recurrence_rule_from_form` -- consumes a Marshmallow-
-  validated payload, pops the recurrence-related keys, and returns a
-  fresh :class:`RecurrenceRule` (added to the session and flushed) or
-  ``None`` when no cadence was selected.  [F-24]
+* :func:`author_recurrence_for_create` -- its WRITE half, which plan step
+  R-F6 separated from it: the rule is authored onto the definition, so it
+  cannot be written until the definition exists and the two halves run either
+  side of the caller's model constructor;
+* :func:`recurrence_spec_from_form` -- consumes a Marshmallow-
+  validated payload, pops the recurrence-related keys, and returns the
+  :class:`~app.services.recurrence.RecurrenceSpec` it states or ``None`` when
+  no cadence was selected.  It WROTE the rule until plan step R-F6, which
+  moved the owning FK onto ``budget.recurrence_rules`` -- so a rule cannot be
+  written before the definition that owns it exists, and reading the
+  submission is now a separate step from writing it.  [F-24]
 * :func:`update_recurrence_rule_from_form` -- sibling of the builder
   for the cadence-changed-on-an-existing-rule branch: re-points the
   template's current :class:`RecurrenceRule` in place (preserving its
@@ -65,7 +72,6 @@ Flask ``flash`` / ``redirect`` / ``url_for`` (the last two via
 ``CLAUDE.md::Architecture`` keeps services isolated from Flask globals.
 The leading underscore marks the module as route-internal.
 """
-import logging
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -73,8 +79,6 @@ from flask import Response, flash
 
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.transaction_template import TransactionTemplate
-from app.models.transfer_template import TransferTemplate
 from app.routes._redirect_target import RedirectTarget
 from app.routes._recurrence_form_refusals import refuse_recurrence_update
 from app.schemas.validation import (
@@ -87,19 +91,12 @@ from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     NEVER_ENDS,
     EndBound,
+    RecurrenceOwner,
     RecurrenceSpec,
     author_rule,
     reauthor_rule,
     recurrence_spec_with_cadence,
 )
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_RECURRENCE_RULE_NOT_EXCLUSIVE,
-    log_event,
-)
-
-logger = logging.getLogger(__name__)
-
 
 # Keys the recurrence-rule helper pops from the validated form payload
 # regardless of whether a pattern was selected.  Listed here as
@@ -153,7 +150,7 @@ class RecurrenceFormContext:
     signature tail collapses to one argument (and ``resolve`` forwards it
     unchanged).
 
-    Bundles the three inputs that :func:`build_recurrence_rule_from_form`,
+    Bundles the three inputs that :func:`recurrence_spec_from_form`,
     :func:`update_recurrence_rule_from_form`, and
     :func:`resolve_recurrence_rule_for_update` share verbatim and that
     ``resolve`` forwards unchanged: the form's closing bound, the
@@ -193,20 +190,29 @@ class RecurrenceFormContext:
     include_due_day_of_month: bool = False
 
 
-def build_recurrence_rule_for_create(
+def recurrence_spec_for_create(
     data: dict[str, Any],
     *,
     user_id: int,
     redirect: RedirectTarget,
     include_due_day_of_month: bool,
-) -> RecurrenceRule | None:
+) -> RecurrenceSpec | None:
     """Run the whole create-form recurrence preamble, for either kind.
 
     The one call ``templates.create_template`` and
     ``transfers.create_transfer_template`` each make.  It reads the closing
     bound out of the payload -- the schema's ``@post_load`` composed it into
     ONE value under the mode key, and the route has to lift it before the
-    builder pops the rest -- assembles the context, and builds the rule.
+    builder pops the rest -- assembles the context, and reads the spec.
+
+    **It returns what the form AUTHORS rather than a written row, since plan
+    step R-F6**, and the split is what lets the definition come first.  A rule
+    is owned by its definition now (``budget.recurrence_rules`` carries the
+    FK), so it cannot be written before there is a definition to own it -- and
+    the recurrence keys still have to leave ``data`` before the caller's model
+    constructor sees them.  Reading the submission and writing the row were one
+    step; they are two, in that order, with the definition created between
+    them.  The route no longer links anything: :func:`author_rule` does.
 
     **It exists because plan step R7b-4 made hoisting possible, and the
     ``duplicate-code`` gate is what said so.**  The two routes ran a
@@ -225,17 +231,17 @@ def build_recurrence_rule_for_create(
         user_id: Owner of the resulting :class:`RecurrenceRule` row.
         redirect: Where a recoverable failure would send the user.  Carried
             into the context rather than read: neither this function nor
-            :func:`build_recurrence_rule_from_form` has a failure left, and
+            :func:`recurrence_spec_from_form` has a failure left, and
             the field is on the context because
             :func:`resolve_recurrence_rule_for_update` does.
         include_due_day_of_month: ``True`` for transaction templates, ``False``
             for transfer templates.
 
     Returns:
-        The flushed :class:`RecurrenceRule`, or ``None`` when the form said
-        "Does not repeat".
+        The :class:`~app.services.recurrence.RecurrenceSpec` the form states,
+        or ``None`` when the form said "Does not repeat".
     """
-    return build_recurrence_rule_from_form(
+    return recurrence_spec_from_form(
         data,
         user_id=user_id,
         ctx=RecurrenceFormContext(
@@ -250,19 +256,60 @@ def build_recurrence_rule_for_create(
     )
 
 
-def build_recurrence_rule_from_form(
+def author_recurrence_for_create(
+    spec: RecurrenceSpec | None, template: RecurrenceOwner,
+) -> RecurrenceRule | None:
+    """Write the create form's cadence onto the definition it belongs to.
+
+    The WRITE half of :func:`recurrence_spec_for_create`, and the pair is what
+    the create routes run in place of the one call they made before plan step
+    R-F6.  A rule carries its owner's FK now, so it cannot be written until the
+    definition exists -- reading the submission has to happen before the model
+    constructor (the recurrence keys must leave the payload) and writing it has
+    to happen after.  Both create routes therefore make the same two calls with
+    the same rows created between them, and this is the second.
+
+    Called AFTER the caller's flush, which matters on the transfer side:
+    :func:`app.services.recurrence.author_rule` flushes, and a flush ahead of
+    ``flush_template_or_namedup_redirect`` would surface a duplicate template
+    name as an unhandled ``IntegrityError`` rather than that helper's redirect.
+
+    Args:
+        spec: What the form authored, or ``None`` when it said "Does not
+            repeat".
+        template: The just-created definition that owns the cadence -- the
+            :data:`~app.services.recurrence.RecurrenceOwner` union the write
+            door takes, stated rather than ``Any`` so the two agree on what may
+            own a rule.  Mutated: its ``recurrence_rule`` is set.  Its
+            ``user_id`` is what the owner's pay calendar is loaded for, so the
+            rule and the schedule it resolves against cannot name different
+            owners.
+
+    Returns:
+        The flushed :class:`RecurrenceRule`, or ``None`` when *spec* is
+        ``None`` -- which the callers read as "this definition does not
+        repeat" and use to skip generation.
+    """
+    if spec is None:
+        return None
+    return author_rule(spec, calendar_for(template.user_id), template)
+
+
+def recurrence_spec_from_form(
     data: dict[str, Any],
     *,
     user_id: int,
     ctx: RecurrenceFormContext,
-) -> RecurrenceRule | None:
-    """Build a :class:`RecurrenceRule` from a validated form payload.
+) -> RecurrenceSpec | None:
+    """Read a :class:`RecurrenceSpec` out of a validated form payload.
 
     Pops every recurrence-related key from ``data`` so the caller's
     downstream ``TransactionTemplate`` / ``TransferTemplate``
-    constructor does not receive stray kwargs, then authors the rule
-    through :func:`app.services.recurrence.author_rule` -- the one door
-    that resolves both of the table's cadence vocabularies together.
+    constructor does not receive stray kwargs, and states what the
+    submission authors.  Writing it is
+    :func:`app.services.recurrence.author_rule`'s -- the one door that
+    resolves both of the table's cadence vocabularies together -- which the
+    caller reaches once the owning definition exists (plan step R-F6).
 
     **It cannot fail on user input, since plan step R7b-4**, and the
     signature says so: it used to owner-check a submitted
@@ -307,9 +354,11 @@ def build_recurrence_rule_from_form(
             helpers share one context object.
 
     Returns:
-        * :class:`RecurrenceRule` -- newly added, flushed, ready to
-          link.  The caller is responsible for setting any owning-row
-          FK (e.g. ``template.recurrence_rule_id = rule.id``).
+        * :class:`~app.services.recurrence.RecurrenceSpec` -- what the
+          submission authors, ready to write onto a definition.  Nothing is
+          added to the session here and no owning FK is left for the caller to
+          set: the rule's owner is an argument to
+          :func:`~app.services.recurrence.author_rule`.
         * ``None`` -- no recurrence pattern was selected, so the template does
           not repeat; the helper still popped every recurrence key from
           ``data``.
@@ -390,23 +439,20 @@ def build_recurrence_rule_from_form(
     # longer declare it (defect D8) and the spec no longer carries it (plan
     # step R7b-4) -- so ``resolve`` derives the phase from the opening bound
     # this call states.
-    return author_rule(
-        RecurrenceSpec(
-            user_id=user_id,
-            unit=unit,
-            starts_on=starts_on,
-            interval_n=interval_n,
-            placement=placement,
-            nominal_day=nominal_day,
-            due_day_of_month=due_day_of_month,
-            # A create form that stated no bound authors an UNBOUNDED rule:
-            # there is no stored bound to leave alone, so absence and "never"
-            # are the same request here and only here.
-            end_bound=(
-                NEVER_ENDS if ctx.end_bound is None else ctx.end_bound
-            ),
+    return RecurrenceSpec(
+        user_id=user_id,
+        unit=unit,
+        starts_on=starts_on,
+        interval_n=interval_n,
+        placement=placement,
+        nominal_day=nominal_day,
+        due_day_of_month=due_day_of_month,
+        # A create form that stated no bound authors an UNBOUNDED rule:
+        # there is no stored bound to leave alone, so absence and "never"
+        # are the same request here and only here.
+        end_bound=(
+            NEVER_ENDS if ctx.end_bound is None else ctx.end_bound
         ),
-        calendar_for(user_id),
     )
 
 
@@ -418,11 +464,11 @@ def update_recurrence_rule_from_form(
 ) -> None:
     """Re-point an existing :class:`RecurrenceRule` from a form payload.
 
-    Sibling of :func:`build_recurrence_rule_from_form` for the
+    Sibling of :func:`recurrence_spec_from_form` for the
     pattern-changed-on-an-existing-rule branch of the ``update_*``
     routes.  When a template already owns a rule, the edit mutates
-    that same row in place -- preserving its primary key and the
-    template's ``recurrence_rule_id`` FK -- rather than creating a
+    that same row in place -- preserving its primary key and its owning
+    arc -- rather than creating a
     new rule, then pops every recurrence key from ``data`` so the
     caller's downstream ``setattr`` loop never sees a stray kwarg.
 
@@ -625,76 +671,41 @@ def update_recurrence_rule_from_form(
 
 
 
-def _rule_is_exclusively_owned(rule: RecurrenceRule, template: Any) -> bool:
-    """Return whether *rule* belongs to *template* and to nothing else.
-
-    A recurrence rule is written only through
-    :func:`app.services.recurrence.author_rule`, one fresh row per template,
-    so 1:1 is the invariant -- 45 references over 45 distinct rules on the
-    live clone.  It is not enforced by the schema, and which side should
-    enforce it is finding **F-6**'s ruling to take.  Until then a DELETE must
-    not act on the assumption: both template FKs are ``ON DELETE SET NULL``,
-    so destroying a shared rule would strip a SECOND template's cadence with
-    no error and no trace.
-
-    Args:
-        rule: The rule about to be deleted.
-        template: The template clearing it.
-
-    Returns:
-        ``True`` when the rule is this owner's and no other template
-        references it.
-    """
-    if rule.user_id != template.user_id:
-        return False
-    referencing = sum(
-        db.session.query(model).filter(
-            model.recurrence_rule_id == rule.id, model.id != template.id,
-        ).count()
-        for model in (TransactionTemplate, TransferTemplate)
-    )
-    return referencing == 0
-
-
 def _clear_recurrence_rule(template: Any) -> None:
-    """Detach and DELETE the template's recurrence rule.
+    """DELETE the template's recurrence rule.
 
-    What "this no longer recurs" means on the write side: the template stops
-    naming a rule AND the row it named ceases to exist.  Merely detaching
-    would produce exactly the orphan finding **F-6** measures on the
-    hard-delete path (5 such rows on production), from a second door.
+    What "this no longer recurs" means on the write side: the row stating the
+    cadence ceases to exist.  Merely detaching would produce exactly the orphan
+    finding **F-6** measured on the hard-delete path, from a second door.
 
-    A rule that is NOT exclusively this template's is detached but kept, and
-    the anomaly is logged rather than swallowed -- see
-    :func:`_rule_is_exclusively_owned`.
+    **This used to be five statements and a census, and plan step R-F6 made it
+    one.**  While the FK pointed from the template at the rule, two templates
+    could name one row, so a delete here had to count the OTHER references
+    first (``_rule_is_exclusively_owned``, deleted with this rewrite) and log
+    a warning when it found one -- a runtime probe standing in for a
+    constraint the schema could not carry.  The FK is on the rule now, under a
+    unique index per arm, so "this rule is this template's and no other's" is
+    true by construction and there is nothing left to ask.  Dis-associating it
+    is what deletes it: the relationship carries ``delete-orphan``.
 
-    The FK is nulled and FLUSHED before the delete so the statement order of a
-    destructive operation is legible here rather than being a property of the
-    unit of work's dependency sort.
+    Flushed before returning so the DELETE lands in statement order here rather
+    than wherever the unit of work's dependency sort would put it -- the same
+    reason the previous shape flushed.  **Not** because a caller re-authors
+    onto this template in the same request: an adversarial review of plan step
+    R-F6 measured that it cannot, since the one caller
+    (:func:`resolve_recurrence_rule_for_update`) reaches the clear only on the
+    branch where no cadence was submitted.  What the flush buys is that a
+    destructive statement is legible where it is written.
 
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate`` whose
             recurrence is being cleared.  Mutated in place; a no-op when it
             names no rule.
     """
-    rule = template.recurrence_rule
-    if rule is None:
+    if template.recurrence_rule is None:
         return
-    deletable = _rule_is_exclusively_owned(rule, template)
     template.recurrence_rule = None
-    template.recurrence_rule_id = None
     db.session.flush()
-    if deletable:
-        db.session.delete(rule)
-        return
-    log_event(
-        logger, logging.WARNING,
-        EVT_RECURRENCE_RULE_NOT_EXCLUSIVE, BUSINESS,
-        "Recurrence rule detached but not deleted -- not exclusively owned",
-        user_id=template.user_id,
-        template_id=template.id,
-        recurrence_rule_id=rule.id,
-    )
 
 
 
@@ -712,11 +723,10 @@ def resolve_recurrence_rule_for_update(
 
     * pattern present AND the template already owns a rule -> re-point
       that row in place via :func:`update_recurrence_rule_from_form`
-      (its primary key and the template's ``recurrence_rule_id`` FK
-      stay stable);
-    * pattern present, no existing rule -> build a fresh rule via
-      :func:`build_recurrence_rule_from_form` and link it onto
-      ``template.recurrence_rule_id``;
+      (its primary key and its owning arc stay stable);
+    * pattern present, no existing rule -> read the submission with
+      :func:`recurrence_spec_from_form` and author it ONTO the template via
+      :func:`app.services.recurrence.author_rule`, which is what links it;
     * pattern SUBMITTED AS EMPTY -> the user chose "Does not repeat", so any
       existing rule is cleared through :func:`_clear_recurrence_rule` --
       unless the template is a LOAN PAYMENT (see
@@ -752,8 +762,8 @@ def resolve_recurrence_rule_for_update(
     cadence to project against.  It is not a cosmetic refusal -- measured, the
     clear silently re-dated a loan's payoff, because
     ``recurring_transfer_query.active_recurring_transfer_template`` finds a
-    loan's payment by ``recurrence_rule_id IS NOT NULL`` and nulling that
-    column drops the standing overpayment the balance seam threads::
+    loan's payment by whether a rule names it, and deleting that rule
+    drops the standing overpayment the balance seam threads::
 
         loan standing extra before: 250.00
         loan standing extra after:    0.00
@@ -773,10 +783,9 @@ def resolve_recurrence_rule_for_update(
 
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate``
-            being updated.  Accessed for ``recurrence_rule``,
-            ``recurrence_rule_id`` (assigned when a new rule is built,
-            cleared when none was selected), and ``user_id``.  Mutated in
-            place.
+            being updated.  Accessed for ``recurrence_rule`` (which a
+            fresh rule is authored onto, and which is cleared when none
+            was selected) and ``user_id``.  Mutated in place.
         data: Marshmallow-validated payload; the recurrence keys are
             popped by the delegated helper.  Read for whether
             ``recurrence_unit`` and ``starts_on`` are PRESENT before those
@@ -834,13 +843,17 @@ def resolve_recurrence_rule_for_update(
             flash(message, "danger")
         return ctx.redirect.to_response()
 
-    rule = build_recurrence_rule_from_form(
+    spec = recurrence_spec_from_form(
         data,
         user_id=template.user_id,
         ctx=ctx,
     )
-    if rule is not None:
-        template.recurrence_rule_id = rule.id
+    if spec is not None:
+        # Authored ONTO the template (plan step R-F6), which is what links it:
+        # the rule carries the owning FK now, so there is no ``recurrence_rule_id``
+        # left for this branch to assign and no window in which a written rule
+        # belongs to nothing.
+        author_rule(spec, calendar_for(template.user_id), template)
     elif recurrence_submitted:
         _clear_recurrence_rule(template)
     return None
@@ -848,8 +861,9 @@ def resolve_recurrence_rule_for_update(
 
 __all__ = [
     "RecurrenceFormContext",
-    "build_recurrence_rule_for_create",
-    "build_recurrence_rule_from_form",
+    "author_recurrence_for_create",
+    "recurrence_spec_for_create",
+    "recurrence_spec_from_form",
     "update_recurrence_rule_from_form",
     "resolve_recurrence_rule_for_update",
 ]

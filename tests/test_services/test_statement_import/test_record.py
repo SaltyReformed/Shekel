@@ -22,9 +22,19 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
-from app.enums import StatementSourceEnum
-from app.exceptions import StatementAccountMismatch, StatementLineConflict
+from app import ref_cache
+from app.enums import (
+    StatementBalanceEvidenceEnum,
+    StatementSourceEnum,
+)
+from app.exceptions import (
+    StatementAccountMismatch,
+    StatementBalanceUnexplained,
+    StatementLineConflict,
+)
+from app.models.merchant import Merchant
 from app.models.statement_import import (
     AccountExternalIdentity,
     BankStatementLine,
@@ -44,10 +54,22 @@ from . import _csv_builder as build
 _SOURCE = StatementSourceEnum.SECU_CHECKING_CSV
 
 _ENTRIES = [
-    (date(2026, 3, 2), "-25.00", "POINT OF SALE DEBIT L340 COFFEE"),
-    (date(2026, 3, 3), "1500.00", "ACH DEPOSIT TOWN OF CLAYTON  PAYROLL"),
-    (date(2026, 3, 4), "-40.81", "POINT OF SALE DEBIT L340 FOOD LION"),
+    (date(2026, 3, 2), "-25.00",
+     "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)"),
+    (date(2026, 3, 3), "1500.00",
+     "ACH DEPOSIT TOWN OF CLAYTON  PAYROLL (TOWN OF CLAYTON PAYROLL)"),
+    (date(2026, 3, 4), "-40.81",
+     "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)"),
 ]
+
+#: What SECU NAMES the merchant on each of those, in the same order -- the
+#: parenthesised trailing token the adapter reads.  **Written out rather than
+#: re-parsed here**: a fixture that re-ran the parse would move with it, so a
+#: change to the adapter's rule would shift this list and its assertion
+#: together and grade nothing.  The shared entries carry a token because every
+#: one of the developer's 361 real lines does; a case that wants the ``None``
+#: state says so with its own rows.
+_MERCHANTS = ["Big Cheese Clayton", "TOWN OF CLAYTON PAYROLL", "Food Lion"]
 
 
 def _file(entries=None, start="100.00", account_number=None):
@@ -96,6 +118,24 @@ class TestItRecordsWhatTheBankSaid:
         assert outcome.recorded_count == 3
         assert db.session.query(BankStatementLine).count() == 3
 
+    def test_it_records_the_merchant_the_bank_NAMED(
+        self, app, db, seed_user,
+    ):
+        """The column a destination policy is keyed by, written by the adapter.
+
+        Plan step X-f6a-3d.  What makes this worth its own case at THIS tier is
+        that the adapter's answer has to reach the row: the parse is graded in
+        ``test_secu_csv``, and this is the only place that says the value
+        travels from the parse to the column rather than being dropped by the
+        staging call.
+        """
+        _record(seed_user, _file())
+
+        rows = db.session.query(BankStatementLine).order_by(
+            BankStatementLine.posted_on,
+        ).all()
+        assert [row.merchant_name for row in rows] == _MERCHANTS
+
     def test_it_records_the_banks_posted_day(self, app, db, seed_user):
         """The whole point of the arc: the day the BANK says, not the app."""
         _record(seed_user, _file())
@@ -132,14 +172,195 @@ class TestItRecordsWhatTheBankSaid:
         assert row.period_end == date(2026, 3, 4)
         assert row.user_id == seed_user["user"].id
 
-    def test_it_derives_the_opening_and_closing_from_the_chain(
+    def test_a_chained_file_is_PROVED_by_itself_and_the_ROW_says_so(
         self, app, db, seed_user,
     ):
-        """Never from the file's own header, which was measured to lag."""
+        """The stored columns, not just the value the door returned.
+
+        **The row itself had no assertion for an ANCHORED import**, so forcing
+        ``balance_effective_on`` to ``period_end`` or the evidence to a
+        constant left the whole suite green -- the column this step exists to
+        add could have stored the wrong thing forever.  Found by adversarial
+        review 2026-08-23.
+
+        The fixture chains from `$100.00` through -25.00, +1500.00 and -40.81,
+        so it closes at `$1,534.19` on 03-04 and its header states exactly
+        that.
+        """
         outcome = _record(seed_user, _file())
 
-        assert outcome.opening_balance == Decimal("100.00")
-        assert outcome.closing_balance == Decimal("1534.19")
+        row = db.session.query(StatementImport).one()
+        assert row.stated_balance == Decimal("1534.19")
+        assert row.balance_effective_on == date(2026, 3, 4)
+        assert ref_cache.statement_balance_evidence_member(
+            row.balance_evidence_id
+        ) is StatementBalanceEvidenceEnum.FILE_CHAIN
+        # The receipt and the row say ONE thing.
+        assert outcome.balance.effective_on == row.balance_effective_on
+        assert outcome.balance.evidence is StatementBalanceEvidenceEnum.FILE_CHAIN
+
+    def test_the_stored_day_is_NOT_the_day_the_header_names(
+        self, app, db, seed_user,
+    ):
+        """The 2026-08-16 LAG shape, end to end through the door.
+
+        **Measured on the developer's own export**: its header reads
+        ``$4,747.63`` as of 08-16 over a file listing two 08-14 lines worth
+        ``-$1,006.72``, and the figure is 08-13's closing.  Until this test the
+        shape reached only a pure unit -- no door-level case ever produced an
+        ``effective_on`` DIFFERENT from ``period_end``, which is why mutating
+        the stored day to ``period_end`` survived.  Found by adversarial review
+        2026-08-23.
+
+        Here the chain closes at `$1,534.19` on 03-04 and the header states
+        `$1,559.19` -- the 03-03 cumulative -- as of 03-09, so the figure is
+        placed at 03-03 while the row's span ends 03-04.
+        """
+        _record(
+            seed_user,
+            build.build(build.chained("100.00", _ENTRIES),
+                        balance_as_of="03/09/2026",
+                        stated_balance="1575.00"),
+        )
+
+        row = db.session.query(StatementImport).one()
+        assert row.period_end == date(2026, 3, 4)
+        assert row.stated_balance_on == date(2026, 3, 9)
+        assert row.balance_effective_on == date(2026, 3, 3)
+
+    def test_a_header_the_files_lines_CANNOT_REACH_records_no_anchor(
+        self, app, db, seed_user,
+    ):
+        """A date-range export states TODAY's balance, not the range's closing.
+
+        **Measured on the developer's own file**: he exported
+        2026-01-02..2026-03-31 on 2026-08-23 and its header reads
+        ``Balance as of 08/23/2026,2459.600000`` -- 145 days past its last line
+        and `$255.41` from the `$2,715.01` its own 139 lines imply.  The
+        movements explaining that difference are simply not in the file, so no
+        day inside it can place the figure and refusing it would reject an
+        honest export.  The CLAIM is recorded; the anchor is not.
+
+        A PRIOR import supplies the opening, because "cannot be placed" is a
+        statement about a known opening the figure fails to reconcile with --
+        and it OVERLAPS, as a real consecutive export does, or the walk stops
+        at the uncovered day between them and falls back to taking the figure
+        at face value.
+        """
+        _record(seed_user, _file())
+
+        _record(
+            seed_user,
+            build.build(
+                build.chained(
+                    "0.00",
+                    [_ENTRIES[2],
+                     (date(2026, 3, 6), "-10.00",
+                      "POINT OF SALE DEBIT L340 FUEL")],
+                    with_running=False,
+                ),
+                balance_as_of="08/16/2026", stated_balance="2501.31",
+            ),
+            file_name="range.csv",
+        )
+
+        row = (
+            db.session.query(StatementImport)
+            .filter_by(file_name="range.csv").one()
+        )
+        assert row.stated_balance == Decimal("2501.31")
+        assert row.stated_balance_on == date(2026, 8, 16)
+        assert row.balance_effective_on is None
+        assert row.balance_evidence_id is None
+
+    def test_a_chained_file_CONTRADICTING_itself_is_REFUSED(
+        self, app, db, seed_user,
+    ):
+        """The only refusal: the file's own chain against its own header."""
+        with pytest.raises(StatementBalanceUnexplained) as raised:
+            _record(
+                seed_user,
+                build.build(build.chained("100.00", _ENTRIES),
+                            balance_as_of="03/09/2026",
+                            stated_balance="9999.99"),
+            )
+
+        assert raised.value.stated == Decimal("9999.99")
+        assert raised.value.implied == Decimal("1534.19")
+        assert db.session.query(StatementImport).count() == 0
+
+    def test_recording_a_line_RELEASES_an_anchor_it_undercuts(
+        self, app, db, seed_user,
+    ):
+        """The door's half of the release, through the door.
+
+        A second export inserting a line into a day the first anchor had
+        already priced means that anchor was solved without it.  Reproduced as
+        a stored day two days early under a *corroborated* badge before the
+        release existed.
+        """
+        _record(seed_user, _file())
+        first = db.session.query(StatementImport).one()
+        assert first.balance_effective_on == date(2026, 3, 4)
+
+        # A later export the bank has INSERTED a line into, on a day the first
+        # anchor already covers.
+        _record(
+            seed_user,
+            build.build(build.chained(
+                "100.00",
+                _ENTRIES[:2] + [
+                    (date(2026, 3, 3), "-5.00", "POINT OF SALE DEBIT L340 X"),
+                    _ENTRIES[2],
+                ],
+            )),
+            file_name="inserted.csv",
+        )
+
+        db.session.refresh(first)
+        assert first.balance_effective_on is None
+        assert first.balance_evidence_id is None
+
+    def test_a_file_claiming_no_balance_records_NEITHER_column(
+        self, app, db, seed_user,
+    ):
+        """Both-or-neither, which the database also refuses to break.
+
+        ``ck_statement_imports_stated_balance_paired`` makes a half-written
+        pair unstorable; this is the door agreeing with it.
+        """
+        payload = build.build(build.chained("100.00", _ENTRIES))
+        without = b"\n".join(
+            line for line in payload.split(b"\n")
+            if not line.startswith(b"Balance as of")
+        )
+
+        _record(seed_user, without)
+
+        row = db.session.query(StatementImport).one()
+        assert row.stated_balance is None
+        assert row.stated_balance_on is None
+
+    def test_the_DATABASE_refuses_a_half_written_stated_balance(
+        self, app, db, seed_user,
+    ):
+        """One fact in two columns, enforced where a future adapter cannot miss.
+
+        The door writes both or neither today.  A second source adapter is one
+        forgotten field from writing a figure with no day -- which asserts
+        nothing about an account, and which the reader would then use to select
+        an anchor "as of NULL".  Stated structurally so the guarantee does not
+        rest on every adapter remembering.
+        """
+        _record(seed_user, _file())
+        row = db.session.query(StatementImport).one()
+
+        row.stated_balance = Decimal("2501.31")
+        row.stated_balance_on = None
+
+        with pytest.raises(IntegrityError):
+            db.session.flush()
+        db.session.rollback()
 
     def test_every_line_belongs_to_its_import_and_its_account(
         self, app, db, seed_user,
@@ -475,6 +696,292 @@ class TestItAbsorbsWhatALaterExportAdds:
         )
 
 
+    def test_a_merchant_arriving_later_is_recorded(
+        self, app, db, seed_user,
+    ):
+        """The arm a destination POLICY keys on (plan step X-f6a-3d).
+
+        A line whose merchant is NULL joins no policy, so a row recorded by an
+        adapter that could not name one would go on being offered a bare
+        chooser forever -- even after an export that DOES name one had been
+        imported over it.  Same rule, same direction, as the transaction-day
+        arm above; the consequence here is a decision the owner has to make
+        again rather than a date left wrong.
+        """
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)")]
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+        recorded = db.session.query(BankStatementLine).one()
+        assert recorded.merchant_name == "Big Cheese Clayton"
+        # Stand in for a row an older adapter wrote, which named no merchant.
+        # The MERCHANT ROW stays: it outlives the lines that named it, which
+        # is what makes the second import's fill a re-point rather than a
+        # create (plan step ``bank_import:X-gd-1``).
+        recorded.merchant_id = None
+        db.session.flush()
+
+        second = _record(seed_user, build.build(build.chained(
+            "100.00", entries,
+        )), file_name="again.csv")
+
+        assert second.recorded_count == 0
+        assert db.session.query(BankStatementLine).one().merchant_name == (
+            "Big Cheese Clayton"
+        )
+
+    def test_a_DISAGREEING_merchant_is_left_alone(
+        self, app, db, seed_user,
+    ):
+        """Only NULL is filled, and here that is a POLICY's key.
+
+        THE FIRING CONTROL for the arm's ``is None`` guard: widen it to an
+        unconditional write and this fails.  Overwriting would silently
+        re-point every destination policy the owner had stated against the old
+        name, which is a decision moving without anyone deciding it.
+        """
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)")]
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+        recorded = db.session.query(BankStatementLine).one()
+        renamed = Merchant(account_id=recorded.account_id, name="Cheese Shop")
+        db.session.add(renamed)
+        db.session.flush()
+        recorded.merchant_id = renamed.id
+        db.session.flush()
+
+        _record(seed_user, build.build(build.chained(
+            "100.00", entries,
+        )), file_name="again.csv")
+
+        # **Read back from the DATABASE, not from the instance this test just
+        # re-pointed.**  ``BankStatementLine.merchant`` is a relationship, and
+        # assigning the ``merchant_id`` COLUMN does not move a relationship
+        # that is already loaded -- so the in-session object would still name
+        # the merchant it was loaded with, whatever the arm under test did.
+        # What the next request sees is what is persisted.
+        db.session.expire_all()
+        assert db.session.query(BankStatementLine).one().merchant_name == (
+            "Cheese Shop"
+        )
+
+
+class TestTheMerchantWordsBecomeRows:
+    """Plan step ``bank_import:X-gd-1``, through the REAL door.
+
+    The parse is graded in ``test_secu_csv`` and the resolver in
+    ``test_models/test_merchant_schema.py``; this is the only place that says
+    the two meet -- that a word the adapter read reaches
+    ``budget.merchants`` as one row per merchant per account, and that a
+    re-import of the same file adds none.
+    """
+
+    def test_one_row_per_MERCHANT_not_per_line(self, app, db, seed_user):
+        """Three lines naming two merchants are two rows.
+
+        A rule is keyed on the merchant, so a second row for one name would
+        leave a stated answer reaching half that merchant's lines -- silently,
+        because nothing joins the two rows.
+        """
+        entries = [
+            (date(2026, 3, 2), "-25.00",
+             "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)"),
+            (date(2026, 3, 3), "-40.81",
+             "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)"),
+            (date(2026, 3, 4), "-12.00",
+             "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)"),
+        ]
+
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+
+        assert sorted(
+            row.name for row in db.session.query(Merchant).all()
+        ) == ["Big Cheese Clayton", "Food Lion"]
+        named = db.session.query(BankStatementLine).order_by(
+            BankStatementLine.posted_on,
+        ).all()
+        assert named[0].merchant_id == named[1].merchant_id
+        assert named[2].merchant_id != named[0].merchant_id
+
+    def test_RE_IMPORTING_the_same_file_adds_no_merchant(
+        self, app, db, seed_user,
+    ):
+        """The idempotence the identity key gives, at the door.
+
+        Re-importing an overlapping span records no line
+        (``recorded_count == 0``), and the merchant resolution runs anyway --
+        the absorb arm needs it.  ``ON CONFLICT DO NOTHING`` is what makes that
+        a no-op instead of an ``IntegrityError`` that would fail an import
+        which had nothing to add.
+        """
+        _record(seed_user, _file())
+        before = db.session.query(Merchant).count()
+
+        second = _record(seed_user, _file(), file_name="again.csv")
+
+        assert second.recorded_count == 0
+        assert db.session.query(Merchant).count() == before == 3
+
+    def test_a_line_the_source_names_NO_merchant_for_creates_none(
+        self, app, db, seed_user,
+    ):
+        """The NULL that keys nothing, through the door that decides it.
+
+        The parse-level ``None`` is graded in ``test_secu_csv`` and the
+        schema-level one in ``test_models/test_merchant_schema.py``; the DOOR
+        between them was covered by neither, which an adversarial review found
+        on 2026-08-25 (the case it replaces asserted an empty table over a
+        merchant that was never going to be created, and no mutation could fail
+        it).  Delete ``_merchant_words``' truthiness test or ``_stage_lines``'
+        ``if line.merchant else None`` and this account gains a merchant named
+        for nothing.
+        """
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 NO TOKEN HERE")]
+
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+
+        assert db.session.query(Merchant).count() == 0
+        line = db.session.query(BankStatementLine).one()
+        assert line.merchant_id is None
+        assert line.merchant_name is None
+
+    def test_a_merchant_is_scoped_to_the_ACCOUNT_that_imported_it(
+        self, app, db, seed_user,
+    ):
+        """Two accounts importing one payee hold two merchants.
+
+        A statement is one bank's record of ONE account and a rule is stated
+        per account, so the same word on two accounts is two subjects -- the
+        key that lets a Checking answer and a card answer differ.
+        """
+        second = _second_account(db, seed_user)
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)")]
+
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+        _record(
+            seed_user,
+            build.build(build.chained(
+                "100.00", entries, account_number="9999999999",
+            )),
+            file_name="second.csv", account=second,
+        )
+
+        rows = db.session.query(Merchant).filter(
+            Merchant.name == "Food Lion",
+        ).all()
+        assert sorted(row.account_id for row in rows) == sorted(
+            [seed_user["account"].id, second.id],
+        )
+
+
+class TestARefusedImportLeavesTheSessionUNTOUCHED:
+    """The claim ``_reconcile`` exists for, and the only refusal that sees it.
+
+    Plan step ``bank_import:X-gd-1`` split DECIDING from WRITING:
+    :func:`_reconcile` returns the partition and :func:`_write_records` writes
+    it, after the file's last refusal.  Before that split,
+    :func:`_absorb_gained_facts` ran inside the reconciliation's own loop, so a
+    refusal raised on group *k* left groups 1..*k*-1 dirty in the session and
+    the route's rollback is what discarded them -- the caveat the module
+    docstring carried since an adversarial review found it on 2026-08-20.
+
+    **THE REFUSAL HAS TO FIRE AFTER THE RECONCILIATION, and the two obvious
+    ones do not.**  Two adversarial reviews on 2026-08-25 measured a first
+    version of this class passing under BOTH mutations it named, and this is
+    why: ``StatementLineConflict`` is raised INSIDE ``_reconcile``, so no
+    placement of the writes downstream of it can be told apart, and
+    ``StatementAccountMismatch`` fires at ``verify_identity``, before the
+    reconciliation runs at all.  ``StatementBalanceUnexplained`` is the one
+    that lands in between -- ``resolve_anchor`` is the last refusal, and the
+    reconciliation has already decided everything by the time it raises.
+
+    **Asserted WITHOUT rolling back**, because what the rollback would hide is
+    the whole subject.
+    """
+
+    #: Two lines the re-import restates exactly, so both groups PAIR and the
+    #: pass decides to absorb before it is refused.  The first carries the
+    #: bank's own ``DATE MM-DD`` token, which is what
+    #: :attr:`~app.models.statement_import.BankStatementLine.transaction_on`
+    #: is read from -- so it can be absorbed without the DESCRIPTION changing,
+    #: and the description is what the pairing matches on.
+    _ENTRIES = [
+        (date(2026, 3, 2), "-25.00",
+         "POINT OF SALE DEBIT L340 DATE 03-01 COFFEE (Big Cheese Clayton)"),
+        (date(2026, 3, 4), "-40.81",
+         "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)"),
+    ]
+
+    @staticmethod
+    def _contradicting(entries):
+        """Return a well-chained file whose HEADER its own chain never reaches.
+
+        The refusal is ``resolve_anchor``'s and it is the last one the door
+        performs, which is the whole point -- see the class docstring.
+        """
+        return build.build(
+            build.chained("100.00", entries),
+            balance_as_of="03/09/2026", stated_balance="9999.99",
+        )
+
+    def test_it_absorbs_NOTHING_from_a_group_it_had_already_walked(
+        self, app, db, seed_user,
+    ):
+        """THE firing control for moving the absorb after the last refusal.
+
+        Restore the inline absorb inside ``_reconcile``'s ``pairing.held``
+        loop and this fails: the day is written, and only the route's rollback
+        takes it back.
+        """
+        _record(seed_user, build.build(build.chained("100.00", self._ENTRIES)))
+        recorded = db.session.query(BankStatementLine).order_by(
+            BankStatementLine.posted_on,
+        ).first()
+        assert recorded.transaction_on == date(2026, 3, 1)
+        # Stand in for a row an older adapter wrote, which knew no such day.
+        recorded.transaction_on = None
+        db.session.flush()
+
+        with pytest.raises(StatementBalanceUnexplained):
+            _record(
+                seed_user, self._contradicting(self._ENTRIES),
+                file_name="refused.csv",
+            )
+
+        assert db.session.query(BankStatementLine).order_by(
+            BankStatementLine.posted_on,
+        ).first().transaction_on is None
+
+    def test_it_creates_NO_merchant_row(self, app, db, seed_user):
+        """A refused file may not leave a merchant behind, and nothing sweeps one.
+
+        ``budget.merchants`` is reclaimed only when an IMPORT is deleted
+        (``statement_import.delete_import``), so a row a refused upload created
+        would survive with no line and no answer to justify it -- and would put
+        a merchant the owner never recorded onto the screen that asks where
+        merchants go.  Hoist :func:`~._merchants.resolve_merchants` out of
+        ``_write_records`` to anywhere before ``resolve_anchor`` and this
+        fails.
+        """
+        _record(seed_user, build.build(build.chained("100.00", self._ENTRIES)))
+        with_a_stranger = self._ENTRIES + [
+            (date(2026, 3, 9), "-11.00",
+             "POINT OF SALE DEBIT L340 NEW PLACE (Never Seen Ltd)"),
+        ]
+
+        with pytest.raises(StatementBalanceUnexplained):
+            _record(
+                seed_user, self._contradicting(with_a_stranger),
+                file_name="refused.csv",
+            )
+
+        assert db.session.query(Merchant).filter(
+            Merchant.name == "Never Seen Ltd",
+        ).count() == 0
+
+
+
 class TestTheAccountMappingIsAFactNotAGuess:
     """Ruling R-FP: the first import records it, every import after checks it."""
 
@@ -626,3 +1133,158 @@ class TestARecordedLineMayNotBeQuietlyRestated:
         second = _record(seed_user, _file(), file_name="again.csv")
 
         assert second.recorded_count == 0
+
+
+#: Two same-day same-amount lines: the shape whose ordinal was the only term of
+#: the identity key the bank never stated.  Measured across the developer's
+#: 2026-07-19, 2026-08-16 and 2026-08-18 exports, 0 of 1,041 real lines shared a
+#: ``(day, amount)`` with another -- so every case below is PLANTED, and each is
+#: a firing control for a refusal that used to fire on a file the bank had not
+#: restated at all.
+_TWINS = [
+    (date(2026, 3, 2), "-4.75",
+     "POINT OF SALE DEBIT L340 STARBUCKS #123 (Starbucks)"),
+    (date(2026, 3, 2), "-4.75",
+     "POINT OF SALE DEBIT L340 DUNKIN #456 (Dunkin)"),
+]
+
+#: A line on a LATER day, so a refusal over the twins costs it too.  This is
+#: what makes the cost of a false refusal visible: the whole file is refused,
+#: not the disputed line.
+_LATER = (date(2026, 3, 5), "-99.00",
+          "POINT OF SALE DEBIT L340 ACE HARDWARE (Ace Hardware)")
+
+
+class TestAGroupIsReconciledAsASet:
+    """Plan step X-f6a-4: the ordinal is a surrogate, not a comparison term."""
+
+    def test_the_same_two_lines_in_the_OTHER_order_record_nothing(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: the bank re-orders one day's two equal debits.
+
+        Measured against the positional code 2026-08-20, this refused the whole
+        file and told the owner the bank had restated a line it had not.  Both
+        lines are present in both files; only the ordinal this app assigned
+        moved.
+        """
+        _record(seed_user, _file(_TWINS))
+
+        second = _record(
+            seed_user, _file(list(reversed(_TWINS))), file_name="swapped.csv",
+        )
+
+        assert second.recorded_count == 0
+        assert db.session.query(BankStatementLine).count() == 2
+
+    def test_a_reorder_does_not_cost_the_file_its_GENUINELY_new_lines(
+        self, app, db, seed_user,
+    ):
+        """MONEY: what a false refusal actually costs is the rest of the export.
+
+        The re-ordered pair is two lines; the file also carries a line the app
+        has never seen.  Refusing the file loses that line -- and every other
+        line after it -- until someone repairs the account by hand.
+        """
+        _record(seed_user, _file(_TWINS))
+
+        second = _record(
+            seed_user,
+            _file(list(reversed(_TWINS)) + [_LATER]),
+            file_name="swapped_plus_new.csv",
+        )
+
+        assert second.recorded_count == 1
+        assert db.session.query(BankStatementLine).filter_by(
+            posted_on=date(2026, 3, 5),
+        ).one().amount == Decimal("-99.00")
+
+    def test_a_NEW_line_the_bank_lists_FIRST_is_recorded_as_the_new_one(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: a swipe finalizes onto an already-recorded day.
+
+        SECU INSERTS such a line into that day's block rather than appending it
+        -- the behaviour that made ``_refuse_restatement`` stop comparing
+        running balances -- so the file lists the NEW line FIRST and the
+        recorded one after it.  Under the positional rule that compared the new
+        line against the recorded one's wording and refused the whole file.
+        Exactly one line is new, and the recorded one keeps its own address.
+        """
+        _record(seed_user, _file([_TWINS[0]]))
+
+        second = _record(
+            seed_user,
+            _file([_TWINS[1], _TWINS[0]]),
+            file_name="inserted.csv",
+        )
+
+        assert second.recorded_count == 1
+        rows = {
+            row.description: row.sequence_in_group
+            for row in db.session.query(BankStatementLine).all()
+        }
+        assert rows == {_TWINS[0][2]: 0, _TWINS[1][2]: 1}
+
+    def test_a_second_IDENTICAL_charge_is_recorded_rather_than_dropped(
+        self, app, db, seed_user,
+    ):
+        """MONEY: the same coffee twice at the same shop is two movements.
+
+        This is what the ordinal exists for, asked of the set-wise
+        reconciliation: pairing by wording must be by COUNT, or the second
+        charge is read as a duplicate of the first and never recorded.
+        """
+        same = (date(2026, 3, 2), "-4.75", "POINT OF SALE DEBIT L340 COFFEE")
+        _record(seed_user, _file([same]))
+
+        second = _record(seed_user, _file([same, same]), file_name="twice.csv")
+
+        assert second.recorded_count == 1
+        assert db.session.query(BankStatementLine).count() == 2
+        assert sorted(
+            row.sequence_in_group
+            for row in db.session.query(BankStatementLine).all()
+        ) == [0, 1]
+
+    def test_a_RESTATED_line_in_a_shared_group_is_still_refused(
+        self, app, db, seed_user,
+    ):
+        """The refusal the policy is FOR survives the reconciliation change.
+
+        One of the two lines keeps its wording and pairs; the other's wording
+        is gone from the file and an unaccounted-for line stands in its place.
+        That is the bank re-wording an observation, and ruling R-FL refuses it.
+        """
+        _record(seed_user, _file(_TWINS))
+
+        restated = [
+            _TWINS[0],
+            (date(2026, 3, 2), "-4.75", "SOMETHING ELSE ENTIRELY"),
+        ]
+
+        with pytest.raises(StatementLineConflict) as caught:
+            _record(seed_user, _file(restated), file_name="restated.csv")
+
+        assert caught.value.recorded == _TWINS[1][2]
+        assert caught.value.submitted == "SOMETHING ELSE ENTIRELY"
+        assert db.session.query(BankStatementLine).count() == 2
+
+    def test_a_SHORTER_export_over_a_shared_group_refuses_nothing(
+        self, app, db, seed_user,
+    ):
+        """A file covering less than the app holds contradicts nothing.
+
+        The app holds both twins and the file states one.  Under the positional
+        rule the surviving line landed at ordinal 0 and was compared against
+        the OTHER twin's wording, which refused.  It is now what it is: a
+        shorter export, recording nothing and refusing nothing.
+        """
+        _record(seed_user, _file(_TWINS))
+
+        second = _record(
+            seed_user, _file([_TWINS[1]]), file_name="shorter.csv",
+        )
+
+        assert second.recorded_count == 0
+        assert db.session.query(BankStatementLine).count() == 2

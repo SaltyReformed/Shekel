@@ -42,7 +42,7 @@ class _DashboardCoreData:
     step C2-f2d-3, following the ruling C2-f2c recorded at
     ``investment_dashboard_service._context._ProjectionContext``).  It was
     ``pay_period_service.get_all_periods(user_id)`` -- ORM rows carrying the
-    two derived columns plan step **C4** drops -- and it is
+    two derived columns plan step **C4-c** dropped -- and it is
     :meth:`~app.services.balance_at.BalanceContext.reported_periods` off
     :attr:`balance_ctx` now, which is the SAME window the balance seam reports
     every per-period figure on this page over.  Two reads of one schedule was
@@ -84,7 +84,8 @@ class _DashboardCoreData:
         (pay-calendar plan step C2-f2d-3), and deriving it in the loader made
         :func:`~.._orchestrator.compute_debt_summary` RAISE
         ``PayCalendarError`` for a legacy owner -- a 546-day stored period and
-        no ``budget.pay_schedule`` row -- where it had answered ``None``.  That
+        no ``budget.pay_schedule`` row, a pairing plan step C4-b-2 has since
+        made unstorable -- where it had answered ``None``.  That
         owner has no loans, so the producer returns before any period is read:
         exactly the "a page must not fail for a fact it never uses" defect the
         pay cadence made at plan step R7a-2a, on the same bundle, through the
@@ -156,11 +157,32 @@ class _ProjectionContext:
             horizons and the trend all place "today" in one paycheck.
         params: The batch-loaded :class:`_AccountParams`.
         balance_ctx: The render's read pass.
+        horizon_offsets: The owner's forward balance horizons as
+            ``(label, pay-period offset)`` pairs, from
+            :func:`app.utils.period_projections.horizon_offsets`.  **A
+            loop invariant, which is why it is here** (plan step **R-F17**):
+            the offsets are a function of the owner's cadence alone, so
+            deriving them inside the per-account branch would re-answer one
+            question once per tile.  **Empty when :attr:`current_period` is
+            ``None``**, which since plan step ``pay_calendar:C4-d`` (ruling
+            **R-PC45**) is a PRODUCT rule rather than a safety one: an owner
+            whose schedule does not cover today publishes no horizon chips.
+            *It read as safety until that step -- "a calendar with no paydays
+            carries no cadence and REFUSES, and a current period is the proof
+            it has some" -- and that reason is gone, because a cadence-less
+            calendar is now unconstructible and
+            :attr:`~app.services.pay_calendar.PayCalendar.cadence` is total.*
+            The resolution still happens in one place
+            (:func:`.._orchestrator._build_projection_context`), which is where
+            ledger row **P81** asks whether the emptying is intended.  An
+            empty tuple is a total answer, so no consumer needs a second
+            nullable field to interpret.
     """
 
     current_period: DerivedPeriod | None
     params: _AccountParams
     balance_ctx: BalanceContext
+    horizon_offsets: tuple[tuple[str, int], ...]
 
 
 @dataclass(frozen=True)
@@ -320,10 +342,11 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
             the resolution is memoized on the read pass, so adding the loans
             costs the two narrow producers a measured ``0.19-0.59 ms`` and ZERO
             SQL per loan (best of five, both databases).
-        projected: The 3 / 6 / 12-month horizon balances by label, from
+        projected: The forward horizon balances by label, from
             :func:`app.utils.period_projections.project_balance_horizons`.
             Empty for a loan (a loan tile renders no horizons) and for an
-            account with no current period.
+            account with no current period; a horizon the owner's cadence does
+            not reach is absent rather than zeroed (plan step **R-F17**).
 
             **STORED although it is three samples of** :attr:`balances`, and
             that IS a second copy of facts this record already holds -- the
@@ -332,12 +355,13 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
             that the argument below is about the SIGNATURE and not about the
             duplication).
 
-            What is bought for it: deriving these three needs the current period
-            and the pay-period calendar, which this record does not carry, so a
-            derived form is a METHOD taking two arguments -- and a method here
-            would put the horizon-label rule on a value object instead of in
-            :mod:`app.utils.period_projections`, where the grid reads the same
-            rule.  The copy cannot go stale within a render (both are written
+            What is bought for it: deriving these needs the current period, the
+            pay-period calendar and the owner's resolved horizon offsets, none
+            of which this record carries, so a derived form is a METHOD taking
+            three arguments -- and a method here would put the horizon-label
+            rule on a value object instead of in
+            :mod:`app.utils.period_projections`, where the account detail page
+            reads the same rule.  The copy cannot go stale within a render (both are written
             once, from the same map, by the same builder), which is what makes
             this a normalization smell rather than the two-containers defect
             finding N-114 records.  The step that gives this record its periods

@@ -111,6 +111,18 @@
     </form>
     {% endcall %}
 
+    {# EDIT MODE ONLY, and only where the account HAS a books opening this app
+       reads: ``books_opening`` is ``None`` for an amortizing account, whose
+       opening is its loan's original principal (plan step X-f3c-2b-2a).  On the
+       CREATE form the two inputs above already state the same fact -- a
+       brand-new account holds no records for an assertion to contain, so its
+       opening equity IS the balance the owner types -- and a second pair of
+       boxes for the same thing is the two-doors-one-fact shape plan step X-f1e
+       deleted from this very form. #}
+    {% if account and books_opening %}
+    {% include "accounts/_books_opening.html" %}
+    {% endif %}
+
     {# Danger Zone: hard-delete's home after Loop B P4 retired the /accounts
        table (audit decision 12, developer ruling 2026-06-25).  Edit-mode only
        ({% if account %}) -- never on the create form.  Reached via each

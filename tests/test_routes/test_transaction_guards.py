@@ -19,7 +19,12 @@ from app.models.transfer import Transfer
 from app.models.ref import AccountType, Status, TransactionType
 from app.services import transfer_service
 from app.services import account_service
-from tests._test_helpers import create_loan_account
+from tests._test_helpers import (
+    create_loan_account,
+    open_books_before_the_first_assertion,
+    shadow_amount,
+)
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_savings(seed_user):
@@ -35,6 +40,10 @@ def _create_savings(seed_user):
     )
     db.session.add(acct)
     db.session.flush()
+    # Its BOOKS open before anything this fixture dates (plan step
+    # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day it
+    # asserts -- the owner's today -- and this suite settles on or before it.
+    open_books_before_the_first_assertion(db.session, acct)
     return acct
 
 
@@ -71,13 +80,14 @@ def _create_regular_txn(seed_user, seed_periods_today):
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     txn = Transaction(
         account_id=seed_user["account"].id,
+        user_id=seed_periods_today[0].user_id,
         pay_period_id=seed_periods_today[0].id,
         scenario_id=seed_user["scenario"].id,
         status_id=projected.id,
         name="Regular Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("50.00"),
+        amount_ownership=AmountOwnership.own(Decimal("50.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -99,7 +109,7 @@ class TestUpdateShadowGuard:
 
             resp = auth_client.patch(
                 f"/transactions/{expense.id}",
-                data={"estimated_amount": "500.00"},
+                data={"estimated_amount": "500.00", "estimated_amount_as_rendered": "50.00"},
             )
 
             assert resp.status_code == 200
@@ -110,8 +120,8 @@ class TestUpdateShadowGuard:
             expense = db.session.get(Transaction, expense.id)
             income = db.session.get(Transaction, income.id)
             assert xfer.amount == Decimal("500.00")
-            assert expense.estimated_amount == Decimal("500.00")
-            assert income.estimated_amount == Decimal("500.00")
+            assert shadow_amount(expense) == Decimal("500.00")
+            assert shadow_amount(income) == Decimal("500.00")
 
     def test_a_settled_figure_on_an_UNSETTLED_shadow_is_refused(
         self, app, db, auth_client, seed_user, seed_periods_today
@@ -401,7 +411,7 @@ class TestRegularTransactionUnaffected:
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"estimated_amount": "75.00"},
+                data={"estimated_amount": "75.00", "estimated_amount_as_rendered": "50.00"},
             )
 
             assert resp.status_code == 200
@@ -492,12 +502,13 @@ class TestDueDatePatch:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected.id,
                 name="Test Bill",
                 transaction_type_id=expense.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 due_date=date(2026, 1, 15),
             )
             db.session.add(txn)
@@ -543,12 +554,13 @@ class TestDueDatePatch:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected.id,
                 name="Stable",
                 transaction_type_id=expense.id,
-                estimated_amount=Decimal("750.00"),
+                amount_ownership=AmountOwnership.own(Decimal("750.00")),
                 notes="original note",
                 due_date=date(2026, 1, 5),
             )
@@ -572,12 +584,13 @@ class TestDueDatePatch:
 
             txn = Transaction(
                 account_id=seed_user["account"].id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=projected.id,
                 name="With Due",
                 transaction_type_id=expense.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 due_date=date(2026, 1, 10),
             )
             db.session.add(txn)
@@ -622,6 +635,7 @@ class TestLoanAccountTransactionGuard:
         return {
             "name": "Typed On Loan",
             "estimated_amount": "300.00",
+            "estimated_amount_as_rendered": "50.00",
             "account_id": account_id,
             "category_id": category.id,
             "pay_period_id": seed_periods_today[0].id,

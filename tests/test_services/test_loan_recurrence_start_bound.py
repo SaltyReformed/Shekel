@@ -59,6 +59,8 @@ from tests._test_helpers import (
     cadence_payload,
     create_account_of_type,
     create_loan_account,
+    derived_span,
+    last_covered_day,
     make_transfer_template,
 )
 
@@ -244,7 +246,9 @@ class TestStartBoundIsSynced:
         # first installment after the 2026-04-15 closing is 2026-05-20.
         with auth_client.application.app_context():
             transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
                 effective_from=seed_periods[0].start_date,
             )
             db.session.commit()
@@ -394,11 +398,11 @@ class TestNoPaymentGeneratesBeforeTheLoan:
         # Every period whose payments are all pre-origination is untouched; the
         # first real installment (2026-05-01, period 8) is the first debit.
         for period in seed_periods:
-            if period.end_date < date(2026, 5, 1):
+            if last_covered_day(period) < date(2026, 5, 1):
                 assert after[period.id] == before[period.id], (
-                    f"period {period.period_index} "
-                    f"({period.start_date}..{period.end_date}) moved before "
-                    f"the loan's first installment"
+                    f"period {derived_span(period).period_index} "
+                    f"({period.start_date}..{last_covered_day(period)}) "
+                    f"moved before the loan's first installment"
                 )
 
     def test_a_regeneration_cannot_reintroduce_them(
@@ -434,7 +438,9 @@ class TestNoPaymentGeneratesBeforeTheLoan:
 
         with auth_client.application.app_context():
             transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
                 effective_from=seed_periods[0].start_date,
             )
             db.session.commit()

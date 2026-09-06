@@ -40,7 +40,6 @@ from app.services import (
     credit_workflow,
     entry_credit_workflow,
     entry_service,
-    pay_period_service,
     pay_period_write,
     reconcile_service,
     recurrence_engine,
@@ -51,7 +50,9 @@ from app.services import (
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.services import account_service
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import calendar_for
 from app.utils.log_events import (
     ACCESS,
     BUSINESS,
@@ -71,6 +72,8 @@ from app.utils.log_events import (
     EVT_RECURRENCE_CONFLICTS_RESOLVED,
     EVT_RECURRENCE_GENERATED,
     EVT_RECURRENCE_REGENERATED,
+    EVT_SALARY_ROWS_FROZEN,
+    EVT_TRANSFER_RECURRENCE_REGENERATED,
     EVT_TRANSACTION_SETTLED_FROM_ENTRIES,
     EVT_TRANSFER_CREATED,
     EVT_TRANSFER_HARD_DELETED,
@@ -79,7 +82,8 @@ from app.utils.log_events import (
     EVT_TRANSFER_SOFT_DELETED,
     EVT_TRANSFER_UPDATED,
 )
-from tests._test_helpers import make_every_period_rule
+from tests._test_helpers import make_every_period_rule, rhythm_of
+from app.models.amount_ownership import AmountOwnership
 
 
 class _LogCapture:
@@ -145,7 +149,7 @@ class TestPayPeriodServiceLogging:
                 user_id=seed_user["user"].id,
                 first_payday=date(2027, 1, 1),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             assert len(created) == 3
 
@@ -265,7 +269,7 @@ class TestTransferServiceLogging:
             with _LogCapture("app.services.transfer_service") as cap:
                 transfer_service.update_transfer(
                     xfer.id, td["user"].id,
-                    amount=Decimal("123.45"),
+                    amount=Decimal("123.45"), amount_authored=True,
                     notes="updated notes",
                 )
 
@@ -341,6 +345,7 @@ def _projected_expense(app, db, seed_user, seed_periods):
     ).filter_by(name="Expense").one()
 
     txn = Transaction(
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -348,7 +353,7 @@ def _projected_expense(app, db, seed_user, seed_periods):
         name="Test Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("50.00"),
+        amount_ownership=AmountOwnership.own(Decimal("50.00")),
     )
     db.session.add(txn)
     db.session.flush()
@@ -412,8 +417,6 @@ def _envelope_transaction(app, db, seed_user, seed_periods):
     # pattern is a NOT NULL violation now, and ``make_every_period_rule``
     # starts it on the schedule's OPENING payday -- ``seed_periods[0]``, the
     # period this used to name directly.
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
@@ -422,13 +425,15 @@ def _envelope_transaction(app, db, seed_user, seed_periods):
         name="Groceries Envelope",
         default_amount=Decimal("400.00"),
         is_envelope=True,
-        recurrence_rule_id=rule.id,
         is_active=True,
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     txn = Transaction(
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -437,7 +442,7 @@ def _envelope_transaction(app, db, seed_user, seed_periods):
         name="Groceries Envelope",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("400.00"),
+        amount_ownership=AmountOwnership.own(Decimal("400.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -568,8 +573,11 @@ class TestReconcileServiceLogging:
             )
             with _LogCapture("app.services.reconcile_service") as cap:
                 count = reconcile_service.record_settled_days(
-                    seed_user["user"].id, seed_user["account"].id,
-                    {entry.id}, statement,
+                    reconcile_service.Statement(
+                        calendar_for(seed_user["user"].id),
+                        seed_user["account"].id, statement,
+                    ),
+                    {entry.id},
                 )
 
         assert count == 1
@@ -609,8 +617,11 @@ class TestReconcileServiceLogging:
             )
             with _LogCapture("app.services.reconcile_service") as cap:
                 count = reconcile_service.record_settled_days(
-                    seed_user["user"].id, seed_user["account"].id,
-                    {entry.id}, statement,
+                    reconcile_service.Statement(
+                        calendar_for(seed_user["user"].id),
+                        seed_user["account"].id, statement,
+                    ),
+                    {entry.id},
                 )
 
         assert count == 0
@@ -699,8 +710,6 @@ def _recurrence_setup(app, db, seed_user, seed_periods):
     # pattern is a NOT NULL violation now, and ``make_every_period_rule``
     # starts it on the schedule's OPENING payday -- ``seed_periods[0]``, the
     # period this used to name directly.
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
@@ -708,11 +717,12 @@ def _recurrence_setup(app, db, seed_user, seed_periods):
         transaction_type_id=expense_type.id,
         name="Recurring Test",
         default_amount=Decimal("100.00"),
-        recurrence_rule_id=rule.id,
         is_active=True,
     )
     db.session.add(template)
     db.session.commit()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
     return template
 
 
@@ -725,7 +735,9 @@ class TestRecurrenceEngineLogging:
             "app.services.recurrence_engine",
         ) as cap:
             created = recurrence_engine.generate_for_template(
-                _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:3]),
+                _recurrence_setup, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
+                ),
                 seed_user["scenario"].id,
             )
 
@@ -736,23 +748,115 @@ class TestRecurrenceEngineLogging:
         assert record.count == 3
         assert record.user_id == seed_user["user"].id
 
-    def test_regenerate_emits_event(self, app, db, seed_user, _recurrence_setup, seed_periods):
-        """regenerate_for_template emits ``recurrence_regenerated``."""
+    def test_regenerate_emits_THIS_engines_event_and_not_the_other(
+        self, app, db, seed_user, _recurrence_setup, seed_periods,
+    ):
+        """regenerate_for_template emits ``recurrence_regenerated``.
+
+        **And not the transfer engine's**, which is the half plan step
+        balance:X-au-d made worth asserting.  Both engines run ONE shared body
+        (``recurrence_engine._pass.regenerate_definition``) and supply their own
+        ``PassReporting`` -- a logger and three strings, constructed
+        POSITIONALLY.  A swap of the five callables beside it is caught by
+        arity; a swap of the two engines' reporting records is not, and would
+        file each engine's regeneration under the other's audit event in
+        silence.  The transfer engine's twin is
+        ``test_transfer_recurrence``'s ``EVT_TRANSFER_RECURRENCE_REGENERATED``
+        assertion, so the pair closes the swap in both directions.  Named by an
+        adversarial review of that step.
+        """
         with app.app_context():
             recurrence_engine.generate_for_template(
-                _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:3]),
+                _recurrence_setup, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
+                ),
                 seed_user["scenario"].id,
             )
             db.session.commit()
             with _LogCapture("app.services.recurrence_engine") as cap:
                 recurrence_engine.regenerate_for_template(
-                    _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:3]),
+                    _recurrence_setup, GenerationSchedule.for_period_ids(
+                        BalanceContext.build(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
+                    ),
                     seed_user["scenario"].id,
                 )
 
         record = cap.find(EVT_RECURRENCE_REGENERATED)
         assert record is not None
         assert record.template_id == _recurrence_setup.id
+        assert cap.find(EVT_TRANSFER_RECURRENCE_REGENERATED) is None, (
+            "this engine must emit its OWN event: finding the transfer "
+            "engine's here means the two PassReporting records are swapped"
+        )
+
+    def test_archiving_a_salary_profile_emits_its_frozen_count(
+        self, app, db, seed_user, _recurrence_setup, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Archiving a salary profile emits ``salary_rows_frozen``.
+
+        Plan step **balance:X-au-d**: the archive records what each row it
+        priced was last worth, and the COUNT is what the audit trail carries.
+        Asserted because a freeze that silently skipped a row would still leave
+        the balance unmoved -- the skipped row keeps its declaration and
+        re-prices later -- so the outcome alone cannot see it.  Named by an
+        adversarial review of that step.
+        """
+        # pylint: disable=import-outside-toplevel  -- the salary models and the
+        # archive service are not this module's subject and would put the
+        # paycheck stack on every logging test's load path.
+        from app.models.ref import FilingStatus
+        # Pylint: ``import-outside-toplevel`` -- see above.
+        from app.models.salary_profile import SalaryProfile
+        # Pylint: ``import-outside-toplevel`` -- see above.
+        from app.services import salary_profile_service
+
+        with app.app_context():
+            # The template is built HERE rather than taken from
+            # ``_recurrence_setup``: ``is_salary_linked_template`` reads the
+            # identity-mapped ``salary_profiles`` collection, so a template
+            # loaded before its profile existed carries an empty one and would
+            # make this case grade a stale relationship rather than the act.
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=next(iter(seed_user["categories"].values())).id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                name="X-au-d logging control",
+                default_amount=Decimal("11.11"),
+            )
+            db.session.add(template)
+            db.session.flush()
+            db.session.add(SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=db.session.query(FilingStatus).first().id,
+                template_id=template.id,
+                name="X-au-d logging control",
+                annual_salary=Decimal("104000.00"),
+                state_code="NC",
+                is_active=True,
+            ))
+            db.session.flush()
+            make_every_period_rule(db.session, template)
+            created = recurrence_engine.generate_for_template(
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(seed_user["user"].id),
+                    {p.id for p in seed_periods[:3]},
+                ),
+                seed_user["scenario"].id,
+            )
+            db.session.flush()
+            profile = template.salary_profiles[0]
+
+            with _LogCapture("app.services.salary_profile_service") as cap:
+                frozen = salary_profile_service.archive_profile(profile)
+
+            assert frozen == len(created) == 3
+            record = cap.find(EVT_SALARY_ROWS_FROZEN)
+            assert record is not None
+            assert record.frozen_count == 3
+            assert record.salary_profile_id == profile.id
+            assert record.template_id == template.id
 
     def test_cross_user_blocked_emits_event(
         self, app, db, seed_user, _recurrence_setup, seed_periods,
@@ -763,7 +867,9 @@ class TestRecurrenceEngineLogging:
             "app.services.recurrence_engine",
         ) as cap:
             created = recurrence_engine.generate_for_template(
-                _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:1]),
+                _recurrence_setup, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(_recurrence_setup.user_id), {p.id for p in seed_periods[:1]},
+                ),
                 seed_second_user["scenario"].id,
             )
 
@@ -809,11 +915,12 @@ class TestRecurrenceEngineLogging:
             user_id=seed_second_user["user"].id,
             first_payday=date(2027, 6, 1),
             num_periods=1,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
         db.session.flush()
 
         s2_txn = Transaction(
+            user_id=s2_periods[0].user_id,
             pay_period_id=s2_periods[0].id,
             scenario_id=seed_second_user["scenario"].id,
             account_id=seed_second_user["account"].id,
@@ -821,7 +928,7 @@ class TestRecurrenceEngineLogging:
             name="Other Owner Txn",
             category_id=seed_second_user["categories"]["Rent"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("75.00"),
+            amount_ownership=AmountOwnership.own(Decimal("75.00")),
             is_override=True,
         )
         db.session.add(s2_txn)
@@ -832,7 +939,6 @@ class TestRecurrenceEngineLogging:
         ) as cap:
             recurrence_engine.resolve_conflicts(
                 [s2_txn.id], "update", seed_user["user"].id,
-                new_amount=Decimal("80.00"),
             )
 
         record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)
@@ -861,6 +967,7 @@ class TestCarryForwardLogging:
 
         # One ad-hoc projected expense in period 0 -- discrete partition.
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -868,7 +975,7 @@ class TestCarryForwardLogging:
             name="Ad-hoc Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -879,8 +986,8 @@ class TestCarryForwardLogging:
             count = carry_forward_service.carry_forward_unpaid(
                 source_period_id=seed_periods[0].id,
                 target_period_id=seed_periods[1].id,
-                user_id=seed_user["user"].id,
                 scenario_id=seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
         assert count == 1
@@ -908,8 +1015,6 @@ class TestTransferRecurrenceLogging:
         # Build a transfer template and rule.
         from app.models.transfer_template import TransferTemplate  # noqa: WPS433
 
-        rule = make_every_period_rule(db.session, td["user"].id)
-
         template = TransferTemplate(
             user_id=td["user"].id,
             from_account_id=td["account"].id,
@@ -917,17 +1022,20 @@ class TestTransferRecurrenceLogging:
             category_id=td["category"].id,
             name="Recurring Transfer",
             default_amount=Decimal("75.00"),
-            recurrence_rule_id=rule.id,
             is_active=True,
         )
         db.session.add(template)
         db.session.commit()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_every_period_rule(db.session, template)
 
         with app.app_context(), _LogCapture(
             "app.services.transfer_recurrence",
         ) as cap:
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), td["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods[:2]},
+                ), td["scenario"].id,
             )
 
         assert len(created) == 2

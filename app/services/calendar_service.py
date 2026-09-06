@@ -25,26 +25,29 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import balance_at, cash_ledger
 from app.services.account_resolver import resolve_analytics_account
-from app.services.calendar_infrequency import (
-    badge_cadence,
-    is_infrequent,
+from app.services.calendar_day_flows import (
+    MAX_VISIBLE_DAY_FLOWS,
+    DayEntry,
+    DayOverflow,
+    build_day_entry,
+    day_overflow,
+    fold_income_expense,
+    order_for_display,
 )
-from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
+from app.services.calendar_infrequency import badge_cadence
+from app.services.pay_calendar import (
+    DerivedPeriod,
+    PayCadence,
+    PeriodWindow,
+    saved_paydays_in_month_through,
+)
 from app.services.balance_at import BalanceContext
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_balance_contributing,
 )
-from app.utils.dates import attribution_date
 
 logger = logging.getLogger(__name__)
-
-# Day cells show at most this many named flow lines; any beyond collapse to
-# a single "+N more" line whose residual net is computed in the service
-# (templates never do money math).  The locked calendar anatomy fixes this
-# at three (income first, then expenses by descending magnitude).
-MAX_VISIBLE_DAY_FLOWS = 3
-
 
 class CalendarAccountNotResolvableError(LookupError):
     """Raised when the calendar cannot resolve a backing ACCOUNT.
@@ -71,51 +74,6 @@ class CalendarAccountNotResolvableError(LookupError):
     handler renders the repair.  Two conditions that shared one exception are
     two exceptions again, and this one means exactly what its name says.
     """
-
-
-@dataclass(frozen=True)
-class DayEntry:  # pylint: disable=too-many-instance-attributes
-    """A single transaction's representation on a calendar day.
-
-    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
-    because this is a cohesive value record -- one transaction's row on a
-    calendar day -- consumed verbatim by the calendar surface: the CSV
-    month export reads the display fields as adjacent columns (folding the
-    booleans into single Income/Expense, Status, Large, and Infrequent
-    columns), the month-detail table renders name/category/amount and the
-    income/paid flags as individual cells, and the route reads
-    amount/is_income for day totals.  The two category fields are read as
-    independent columns, never as a unit.  Every field is an irreducible
-    column of the row; splitting it would fragment one domain concept and
-    break every consumer for no design gain.
-    """
-
-    transaction_id: int
-    name: str
-    amount: Decimal
-    is_income: bool
-    is_paid: bool
-    is_large: bool
-    is_infrequent: bool
-    category_group: str | None
-    category_item: str | None
-    due_date: date | None
-
-
-@dataclass(frozen=True)
-class DayOverflow:
-    """The collapsed "+N more" residual for a day with more flows than fit.
-
-    A day cell renders at most :data:`MAX_VISIBLE_DAY_FLOWS` named flow lines;
-    the remainder collapse to one "+N more" line.  This carries that line's
-    two service-computed values so the template does no money math: the
-    ``count`` of hidden flows and their signed ``net`` (income positive,
-    expense negative).  Only days whose flow count exceeds the cap have an
-    entry (see :func:`_assign_transactions_to_days`).
-    """
-
-    count: int
-    net: Decimal
 
 
 @dataclass(frozen=True)
@@ -393,12 +351,12 @@ def _query_transactions_for_range(
     as ruling R-Q and plan step C2-c answered it for the balance seam.
 
     Fetches by PERIOD MEMBERSHIP -- all balance-contributing rows whose
-    ``pay_period_id`` is one of *periods* --
-    NOT by raw ``due_date``.  This is the basis the clamped
-    :func:`~app.utils.dates.attribution_date` display rule and the daily
-    balance producer both use: a transaction is attributed to a day inside
-    its own pay period, so the day cell that renders it and the balance line
-    that steps for it share one period-anchored day.  A ``due_date`` that
+    ``pay_period_id`` is one of *periods* -- NOT by raw ``due_date``.  This is
+    the basis the clamped
+    :meth:`~app.services.pay_calendar.DerivedPeriod.attribution_day` display
+    rule and the daily balance producer both use: a transaction is attributed
+    to a day inside its own pay period, so the day cell that renders it and the
+    balance line that steps for it share one period-anchored day.  A ``due_date`` that
     strays outside its period (the reason the prior query needed a second
     due-date-in-range path) is pulled back to the period boundary by the
     clamp; fetching by membership means such a row is still loaded for the
@@ -458,76 +416,6 @@ def _query_transactions_for_range(
         )
         .all()
     )
-
-
-def _build_day_entry(
-    txn: Transaction,
-    amount: Decimal,
-    income_type_id: int,
-    threshold: Decimal,
-    pay_cadence: PayCadence | None,
-) -> DayEntry:
-    """Create a DayEntry from a transaction.
-
-    Args:
-        txn: The transaction to convert.
-        amount: What the row is WORTH, from the build's one
-            :func:`~app.services.cash_ledger.contributions_by_id` call
-            (:attr:`_MonthBuildContext.contributions`).  It replaced
-            ``txn.effective_amount`` at plan step X-au-c2: that model property
-            could not answer for a row whose amount is DERIVED, because such a
-            row stores no figure and resolving one needs a database -- and, for
-            a paycheck, the owner's whole pay-period set.
-        income_type_id: Ref ID for the Income transaction type.
-        threshold: Amount at or above which a transaction is large.
-        pay_cadence: The owner's pay cadence for the infrequent badge, or
-            ``None`` when no row in this build repeats
-            (:func:`~app.services.calendar_infrequency.badge_cadence`).
-
-    Returns:
-        A frozen DayEntry dataclass.
-    """
-    return DayEntry(
-        transaction_id=txn.id,
-        name=txn.name,
-        amount=amount,
-        is_income=txn.transaction_type_id == income_type_id,
-        is_paid=bool(txn.status and txn.status.is_settled),
-        is_large=abs(amount) >= threshold,
-        is_infrequent=is_infrequent(txn, pay_cadence),
-        category_group=txn.category.group_name if txn.category else None,
-        category_item=txn.category.item_name if txn.category else None,
-        due_date=txn.due_date,
-    )
-
-
-def _fold_income_expense(
-    entries: list[DayEntry],
-) -> tuple[Decimal, Decimal]:
-    """Fold a collection of day entries into an (income, expense) pair.
-
-    The single income/expense sign-fold for the calendar surface: income
-    is the signed sum of the ``is_income`` entries; expense is the sum of
-    ``abs(amount)`` over the non-income entries.  Both legs seed at
-    ``Decimal("0")`` so an empty or all-one-sign collection yields a
-    ``Decimal``, never an int ``0`` -- money is always Decimal.  Applied
-    per day to build :attr:`MonthSummary.day_totals`, from which the
-    month headline totals are then summed, so the per-day cells the
-    analytics calendar renders and the month total derive from one rule
-    and cannot drift.
-
-    Args:
-        entries: The :class:`DayEntry` records for one day (or any
-            collection to fold); each carries ``amount`` and ``is_income``.
-
-    Returns:
-        ``(income, expense)`` as a pair of ``Decimal`` values.
-    """
-    income = sum((e.amount for e in entries if e.is_income), Decimal("0"))
-    expense = sum(
-        (abs(e.amount) for e in entries if not e.is_income), Decimal("0"),
-    )
-    return income, expense
 
 
 def _assign_transactions_to_days(
@@ -605,51 +493,29 @@ def _assign_transactions_to_days(
             continue
 
         seen_ids.add(txn.id)
-        entry = _build_day_entry(
+        entry = build_day_entry(
             txn, ctx.contributions[txn.id], income_type_id, threshold,
             ctx.pay_cadence,
         )
         day_map[display_day].append(entry)
 
-    # Order each day income first, then expenses by descending magnitude.
+    # The three day-level readings of one amount live together in
+    # :mod:`~app.services.calendar_day_flows`, which is where the rule that
+    # two are FIGURES and one is a RANKING is written down.
     for day in day_map:
-        day_map[day].sort(key=lambda e: (not e.is_income, -abs(e.amount)))
+        order_for_display(day_map[day])
 
     day_totals = {
-        day: _fold_income_expense(entries)
+        day: fold_income_expense(entries)
         for day, entries in day_map.items()
     }
-    day_overflow = {
-        day: _day_overflow(entries)
+    overflow = {
+        day: day_overflow(entries)
         for day, entries in day_map.items()
         if len(entries) > MAX_VISIBLE_DAY_FLOWS
     }
 
-    return dict(day_map), day_totals, day_overflow
-
-
-def _day_overflow(entries: list[DayEntry]) -> DayOverflow:
-    """Summarize the flows past the visible cap into a "+N more" residual.
-
-    The entries are pre-sorted (income first, then expenses by descending
-    magnitude), so the hidden tail is everything after the first
-    :data:`MAX_VISIBLE_DAY_FLOWS`.  The residual ``net`` is signed (income
-    positive, expense negative) and seeded at ``Decimal("0")`` so it stays a
-    ``Decimal``.  Called only for days whose flow count exceeds the cap.
-
-    Args:
-        entries: One day's ordered :class:`DayEntry` list (length greater
-            than :data:`MAX_VISIBLE_DAY_FLOWS`).
-
-    Returns:
-        The :class:`DayOverflow` for the hidden tail.
-    """
-    hidden = entries[MAX_VISIBLE_DAY_FLOWS:]
-    net = sum(
-        (e.amount if e.is_income else -abs(e.amount) for e in hidden),
-        Decimal("0"),
-    )
-    return DayOverflow(count=len(hidden), net=net)
+    return dict(day_map), day_totals, overflow
 
 
 @dataclass(frozen=True)
@@ -718,11 +584,11 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
     Returns:
         A MonthSummary for the target month.
     """
-    day_entries, day_totals, day_overflow = _assign_transactions_to_days(
+    day_entries, day_totals, overflow = _assign_transactions_to_days(
         ctx, month,
     )
     # Month headline totals are the sum of the per-day folds, so the
-    # month and per-day numbers derive from the one _fold_income_expense
+    # month and per-day numbers derive from the one fold_income_expense
     # rule and cannot disagree.
     total_income = sum(
         (income for income, _expense in day_totals.values()), Decimal("0"),
@@ -734,13 +600,19 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
     end_balance = _compute_month_end_balance(
         ctx.account, ctx.year, month, ctx.balance_ctx,
     )
-    third_paycheck_months = _detect_third_paycheck_months(ctx.periods, ctx.year)
-
-    paycheck_days = sorted({
-        p.start_date.day
-        for p in ctx.periods
-        if p.start_date.year == ctx.year and p.start_date.month == month
-    })
+    # ONE read of "which paydays does this month hold", answering both the
+    # markers and the three-paycheck flag (plan step **balance:X-bh-1**): two
+    # scans of ``ctx.periods`` before it, the second of which
+    # (``_detect_third_paycheck_months``) rebuilt a whole-year set per card AND
+    # was a second implementation of what ``paycheck_calculator`` asks to
+    # decide a 24-per-year deduction's cadence.  The SAVED half, because this
+    # card's money is -- ruling **balance:R-IB** and ledger row **N-394** carry
+    # why, and ``saved_paydays_in_month_through`` states it beside its twin.
+    month_paydays = saved_paydays_in_month_through(
+        ctx.balance_ctx.calendar(),
+        date(ctx.year, month, calendar.monthrange(ctx.year, month)[1]),
+    )
+    paycheck_days = sorted({payday.day for payday in month_paydays})
 
     daily = (
         _compute_daily_view(ctx, month, day_totals)
@@ -754,10 +626,10 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
         total_expenses=total_expenses,
         net=total_income - total_expenses,
         projected_end_balance=end_balance,
-        is_third_paycheck_month=month in third_paycheck_months,
+        is_third_paycheck_month=len(month_paydays) >= 3,
         day_entries=day_entries,
         day_totals=day_totals,
-        day_overflow=day_overflow,
+        day_overflow=overflow,
         paycheck_days=paycheck_days,
         daily=daily,
         account_name=ctx.account.name,
@@ -890,10 +762,13 @@ def _get_display_day(
     month boundaries).
 
     The attribution date is the shared
-    :func:`~app.utils.dates.attribution_date` rule -- ``due_date`` (fallback:
-    the pay period ``start_date``) clamped into the transaction's own pay
-    period span.  The clamp prevents a due_date that strays just outside its
-    period from leaking a flow onto a neighboring period's day.
+    :meth:`~app.services.pay_calendar.DerivedPeriod.attribution_day` rule --
+    ``due_date`` (fallback: the pay period ``start_date``) clamped into the
+    transaction's own pay period span, which prevents a due_date that strays
+    just outside its period from leaking a flow onto a neighboring period's
+    day.  **It is asked OF the period since plan step C4-a-2**, which deleted
+    the three-argument ``utils.dates.attribution_date`` this called: the span
+    and the rule now travel as one value.
 
     **The span is the one the row was SELECTED by, passed in for exactly that
     reason** (plan step C2-f1, caught by adversarial review before it shipped).
@@ -915,12 +790,12 @@ def _get_display_day(
     display-timezone civil day since ruling R-DH (b)) and a still-projected one
     on ``max(attribution, as_of + 1)`` (ruling R-G).  Neither is the budget
     attribution date this function returns, so a chip and its own balance step
-    can sit days apart -- median 2, p75 6, max 25
-    on the real Checking account (finding N-42).  The two agreed by
-    construction before the cutover because the retired ramp distributed the
-    same still-projected rows over these same attribution days.  The grid met
-    the identical split and answered it with ruling R-K's remainder rows
-    row; the calendar has no such row yet, and which way it should go -- move
+    can sit days apart -- median 2, p75 7, max 25 over 126 settled Checking
+    rows, re-measured 2026-08-28 (N-42).  The two agreed by construction
+    before the cutover because the retired ramp distributed the same
+    still-projected rows over these same attribution days.  The grid met the
+    identical split and answered it with ruling R-K's remainder rows row; the
+    calendar has no such row yet, and which way it should go -- move
     the chip to the cash clock, add a reconciling figure, or label the
     divergence -- is the developer's to rule.
 
@@ -935,28 +810,10 @@ def _get_display_day(
         The day of *target_month* to render the row on, or ``None`` when its
         attribution date falls in another month.
     """
-    landing = attribution_date(
-        txn.due_date, period.start_date, period.end_date,
-    )
+    landing = period.attribution_day(txn.due_date)
     if landing.month == target_month and landing.year == target_year:
         return landing.day
     return None
-
-
-def _detect_third_paycheck_months(
-    periods: PeriodWindow,
-    year: int,
-) -> set[int]:
-    """Identify months with 3+ pay period start_dates in the given year.
-
-    Standard biweekly pay produces exactly 2 such months per year.
-    """
-    month_counts: dict[int, int] = defaultdict(int)
-    for p in periods:
-        if p.start_date.year == year:
-            month_counts[p.start_date.month] += 1
-
-    return {m for m, count in month_counts.items() if count >= 3}
 
 
 def _compute_month_end_balance(

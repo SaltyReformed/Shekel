@@ -59,7 +59,7 @@ from decimal import Decimal
 from app.utils.balance_predicates import is_projected
 
 from ._amount_source import AmountBasis
-from ._amounts import _expense_amount, income_amount
+from ._amounts import _entry_aware_amount, contribution_of
 
 
 def sum_projected(transactions, basis: AmountBasis):
@@ -90,12 +90,18 @@ def sum_projected(transactions, basis: AmountBasis):
     rows on it (collapsed from the historically-separate ``_sum_remaining`` /
     ``_sum_all`` once both became Projected-only).
 
-    Income uses :func:`~app.services.cash_ledger._amounts.income_amount`
-    (what the row CONTRIBUTES, or a live override when present).  Expenses use
-    :func:`~app.services.cash_ledger._amounts._expense_amount`, which
-    applies the entry-checking formula for projected expenses with loaded
-    entries and honors a live override, falling back to the contribution
-    otherwise.
+    Income is :func:`~app.services.cash_ledger._amounts.contribution_of` --
+    what the row is worth against the amount model.  Expenses are
+    :func:`~app.services.cash_ledger._amounts._entry_aware_amount`, which
+    applies the entry-checking reservation to a projected expense carrying
+    purchases and is the same contribution otherwise.
+
+    **Both legs asked a LIVE OVERRIDE first until the per-kind cutovers**, and
+    the two calls this reduction makes are what is left after they went: the
+    expense leg's at plan step X-au-g-2c-2 and the income leg's at
+    **X-au-d**.  The override laid a recomputed figure over a stored one; a
+    derived row stores none, so there is nothing to lay it over and the two
+    legs are the valuation alone.
 
     **The basis is REQUIRED, and that is the point** (plan step S1-c).  It used
     to be one optional ``amount_overrides`` map defaulting to ``None``, which is
@@ -118,14 +124,16 @@ def sum_projected(transactions, basis: AmountBasis):
     is WORTH is now a function of the row, so ruling R-G's clamp in the seam's
     fold is the only place a cash balance consults a date.
 
-    Scoped honestly, because "no clock" would be a stronger claim than the code
-    supports: the *override map* this reduction is HANDED can still be built
-    from a wall-clock read one package over
-    (``loan_payment_service.LoanPricing`` pins ``date.today()`` when the read
-    pass's basis is built, and resolves a derive-mode loan-payment shadow's P&I
-    against it -- finding **N-40**, recorded and unchanged here).  This function
-    reads no clock; its inputs are not yet guaranteed to have been built without
-    one.
+    **The claim is now the strong one, and plan step X-au-g-2b is what earned
+    it**: this function reads no clock AND neither does anything it is handed.
+    The paragraph here used to scope itself down, because the *override map*
+    this reduction takes was built from a wall-clock read a module over --
+    :class:`._loan_pricing.LoanPricing` pinned ``date.today()`` when the read
+    pass's basis was built and resolved a derive-mode loan-payment shadow's
+    P&I against it (finding **N-40**).  Ruling **R-IJ** put that P&I on the
+    installment's own due date, which left the package with no ``date.today()``
+    call at all (a control asserts it:
+    ``test_amount_source.TestTheAmountModelReadsNoClock``).
 
     Args:
         transactions: Transaction objects for a single pay period.
@@ -145,8 +153,8 @@ def sum_projected(transactions, basis: AmountBasis):
             continue
 
         if txn.is_income:
-            income += income_amount(txn, basis)
+            income += contribution_of(txn, basis)
         elif txn.is_expense:
-            expenses += _expense_amount(txn, basis)
+            expenses += _entry_aware_amount(txn, basis)
 
     return income, expenses

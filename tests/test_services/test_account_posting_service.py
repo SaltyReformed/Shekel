@@ -40,6 +40,8 @@ from app.enums import (
     PostingSourceEnum,
 )
 from app.exceptions import UndatedSettleError
+from sqlalchemy import text as sa_text
+
 from app.extensions import db as _db
 from app.models.account import AccountAnchorHistory
 from app.models.journal_entry import JournalEntry, Posting
@@ -61,19 +63,27 @@ from app.services import (
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.pay_calendar import PayCalendarError
 from app.services.auth_service import hash_password
-from app.utils.dates import to_display_date
+from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
+    rhythm_of,
+    an_entered_day,
+    append_only_guard_lifted,
     correction_net_in_period,
     create_account_of_type,
+    create_account_via_service,
     create_envelope_txn,
     create_loan_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    derived_span,
     ledger_net,
     observed_day_of,
-    restamp_opening_assertion,
+    open_owner_calendar,
+    restate_account_opening,
+    settle_day_columns,
     settle_instant_on,
 )
+from app.services.settle_day import record_settle_day
 
 
 # ---------------------------------------------------------------------------
@@ -81,9 +91,53 @@ from tests._test_helpers import (
 # ---------------------------------------------------------------------------
 
 
-def _make_account(seed_user, balance, type_name="Savings", name="Anchor Acct"):
-    """Create an account with a controlled opening anchor; commit; return it."""
+def _make_account(
+    seed_user, balance, type_name="Savings", name="Anchor Acct",
+    observed_on=None,
+):
+    """Create an account with a controlled opening anchor; commit; return it.
+
+    An account that has ALREADY EXISTED: its books are opened before anything
+    a fixture here could date, so a settle may be recorded before the account's
+    own creation day (ruling **R-HG** forbids one on or before the books).
+    That is what most cases in this file need, and it costs an extra
+    ``budget.account_openings`` row -- which is the production shape after a
+    restatement, and which leaves the original ``account_opening`` entry on
+    file REVERSED rather than deleted.  A case counting opening entries wants
+    :func:`_make_account_as_created` instead.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        balance: The opening anchor balance, as a string.
+        type_name: The ``ref.account_types`` name.
+        name: The account name.
+        observed_on: The civil day the origination assertion is true for, or
+            ``None`` for ``create_account_of_type``'s day-before-today default.
+            A case whose subject is WHICH day the opening is about states it
+            here rather than re-stamping the row afterwards, because the table
+            is append-only (plan step X-f3c-2c).
+    """
     account = create_account_of_type(
+        seed_user, _db.session, type_name, name,
+        anchor_balance=Decimal(balance),
+        observed_on=observed_on,
+    )
+    _db.session.commit()
+    return account
+
+
+def _make_account_as_created(
+    seed_user, balance, type_name="Savings", name="Anchor Acct",
+):
+    """Create an account and leave its books where ``create_account`` put them.
+
+    For the cases whose SUBJECT is the posting that factory writes -- one
+    ``account_opening`` entry, dated on the day the books opened.  They record
+    no movement, so they need none of what :func:`_make_account`'s restatement
+    buys, and the reversal it leaves behind is precisely what they would
+    miscount.
+    """
+    account = create_account_via_service(
         seed_user, _db.session, type_name, name,
         anchor_balance=Decimal(balance),
     )
@@ -101,17 +155,6 @@ def _make_account(seed_user, balance, type_name="Savings", name="Anchor Acct"):
 _PINNED_OPENING_AT = datetime(2026, 3, 17, 16, 0, tzinfo=timezone.utc)
 _PINNED_OPENING_DAY = date(2026, 3, 17)
 _ONE_HOUR = timedelta(hours=1)
-
-
-def _pin_opening(account, at=_PINNED_OPENING_AT):
-    """Re-stamp the factory opening assertion to a controlled instant; return it.
-
-    The shared builder ``tests/_test_helpers.restamp_opening_assertion``, which
-    the cash-walk suite uses for the same reason: an event stream whose anchor
-    is the wall clock is not a deterministic fixture.
-    """
-    restamp_opening_assertion(_db.session, account, at)
-    return at
 
 
 def _origin_day(account):
@@ -160,6 +203,10 @@ def _add_assertion(account, balance, created_at, pay_period_id=None):
         # The civil day this assertion is the closing balance FOR, kept in step
         # with the pinned instant by the shared rule (ruling R-DH, plan step 2).
         observed_on=observed_day_of(created_at),
+        # The ENTERED day, in step with the pinned instant (**N-299**).
+        # The column's default is the wall clock, which a row built to sit in
+        # the PAST must not inherit: it would claim to have been typed today.
+        recorded_on=observed_day_of(created_at),
     )
     _db.session.add(row)
     _db.session.flush()
@@ -288,21 +335,35 @@ class TestWalkAccountLedger:
     """
 
     def test_opening_only_walk(self, app, db, seed_user):
-        """A fresh account walks to one opening correction from zero.
+        """A fresh account walks to its OPENING EQUITY plus an agreeing assertion.
 
-        Savings anchored $500.00 with no settled activity: one correction,
-        the opening, with ledger_before 0.00 (so its delta is the full
-        anchor, 500.00).
+        Savings anchored $500.00 with no settled activity.  TWO corrections
+        since plan step X-f3c-2a, and the pair is the point:
+
+        * the account's OPENING EQUITY -- ``budget.account_openings``, written
+          by ``create_account`` from the balance the owner typed -- booking
+          ``500.00 - 0.00`` onto the linked ledger against ``anchor_equity``;
+        * the owner's ASSERTION, whose ``ledger_before`` is already 500.00, so
+          it corrects NOTHING and books no journal entry.
+
+        The posted ledger is identical to what it was before the step: one
+        ``account_opening`` entry of $500.00.  What changed is where that
+        figure comes FROM -- a stored fact rather than the earliest assertion's
+        delta, so a BACK-DATED assertion can no longer re-elect it.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert len(corrections) == 1
-            assert corrections[0].anchor.is_opening is True
-            assert corrections[0].anchor.anchor_balance == Decimal("500.00")
+            assert len(corrections) == 2
+            assert corrections[0].opens_the_books is True
+            assert corrections[0].target_balance == Decimal("500.00")
             assert corrections[0].ledger_before == Decimal("0.00")
+            # The assertion agrees with the books, so it books nothing.
+            assert corrections[1].opens_the_books is False
+            assert corrections[1].target_balance == Decimal("500.00")
+            assert corrections[1].ledger_before == Decimal("500.00")
 
     def test_a_settle_on_an_earlier_day_is_inside_the_opening(
         self, app, db, seed_user,
@@ -310,9 +371,15 @@ class TestWalkAccountLedger:
         """A settle dated an EARLIER DAY than the opening is in ledger_before.
 
         Savings anchored $500.00; a $200.00 expense settled the day BEFORE the
-        origination assertion: the source is absorbed, so the opening's
-        ledger_before is -200.00 (and its delta 500 - (-200) = +700.00 -- the
-        anchor already reflected that spend).
+        origination assertion: the source is absorbed, so the ASSERTION's
+        ledger_before is 300.00 and its delta is ``500 - 300 = +200.00`` -- the
+        anchor already reflected that spend.
+
+        *It read ``ledger_before == -200.00`` and a ``+700.00`` delta until plan
+        step X-f3c-2a, because the walk seeded at ZERO and the opening's delta
+        had to carry the whole of the account's opening equity on top of the
+        correction.  The two are separated now: the books open at $500.00 and
+        the assertion corrects the $200.00 the records moved.*
 
         **The boundary is a DAY, inclusive, for every assertion kind** (ruling
         R-DH (a)).  This case is the strictly-earlier one, which no variant of
@@ -332,8 +399,10 @@ class TestWalkAccountLedger:
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert len(corrections) == 1
-            assert corrections[0].ledger_before == Decimal("-200.00")
+            assert len(corrections) == 2
+            assert corrections[0].ledger_before == Decimal("0.00")
+            assert corrections[0].target_balance == Decimal("500.00")
+            assert corrections[1].ledger_before == Decimal("300.00")
 
     def test_a_settle_on_the_openings_own_day_is_absorbed(
         self, app, db, seed_user,
@@ -342,10 +411,12 @@ class TestWalkAccountLedger:
 
         Savings anchored $500.00 with its opening pinned to 12:00 EDT; a $200.00
         expense settled an hour after it, and again an hour before it -- both the
-        SAME civil day.  The opening's ``ledger_before`` is -200.00 both times:
-        the settle is inside the asserted balance, so the opening's own delta is
-        ``500 - (-200) = +700.00`` and the walk lands on $500.00, the balance
-        the user typed.
+        SAME civil day.  The ASSERTION's ``ledger_before`` is 300.00 both times:
+        the settle is inside the asserted balance, so the assertion's delta is
+        ``500 - 300 = +200.00`` and the walk lands on $500.00, the balance the
+        user typed.  (It read -200.00 and a +700.00 delta until plan step
+        X-f3c-2a seeded the walk at the account's stored opening equity instead
+        of at zero.)
 
         **This is ruling R-DH (a) with no exception for the opening** (finding
         N-133 / F1, ruled 2026-07-31).  An assertion is the CLOSING balance for
@@ -377,8 +448,13 @@ class TestWalkAccountLedger:
         smaller offset.
         """
         with app.app_context():
-            account = _make_account(seed_user, "500.00")
-            pinned = _pin_opening(account)
+            # Opened ON the pinned day, so the origination assertion IS the
+            # one this case is about -- appending a second would give the walk
+            # a correction the case did not write (plan step X-f3c-2c).
+            account = _make_account(
+                seed_user, "500.00", observed_on=_PINNED_OPENING_DAY,
+            )
+            pinned = _PINNED_OPENING_AT
             settle = _settle_expense(
                 seed_user, account, "200.00", _PINNED_OPENING_DAY,
             )
@@ -393,8 +469,8 @@ class TestWalkAccountLedger:
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert len(corrections) == 1
-            assert corrections[0].ledger_before == Decimal("-200.00")
+            assert len(corrections) == 2
+            assert corrections[1].ledger_before == Decimal("300.00")
 
     def test_a_settle_dated_before_the_origination_is_absorbed(
         self, app, db, seed_user,
@@ -403,7 +479,9 @@ class TestWalkAccountLedger:
 
         The $200.00 expense carries the 2024 bootstrap period's start day, which
         precedes the origination assertion (test-run time, 2026+), so it is
-        absorbed: ledger_before -200.00.
+        absorbed: the assertion's ledger_before is 300.00 -- the account's
+        $500.00 opening equity less the $200.00 the records moved (it read
+        -200.00 against a zero seed until plan step X-f3c-2a).
 
         **It reached that day through a FALLBACK until plan step X-f1** -- the
         row carried no ``paid_at`` and every reader substituted its pay period's
@@ -422,7 +500,7 @@ class TestWalkAccountLedger:
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert corrections[0].ledger_before == Decimal("-200.00")
+            assert corrections[1].ledger_before == Decimal("300.00")
 
     def test_a_settled_row_with_no_day_is_REFUSED_by_this_walk_too(
         self, app, db, seed_user,
@@ -448,7 +526,7 @@ class TestWalkAccountLedger:
             # reach this walk with one: a bulk update bypasses the ORM, exactly
             # as the real hazard does.
             # The whole RECORD goes with the day, because
-            # ``ck_transactions_settle_day_needs_basis`` refuses a day that
+            # ``ck_transactions_settle_day_needs_a_record`` refuses a day that
             # names no figure (plan step X-au-c3).  The break under test is
             # still the missing DAY on a settled STATUS, which no constraint
             # can state -- the predicate is ``ref.statuses.is_settled`` and a
@@ -458,6 +536,11 @@ class TestWalkAccountLedger:
             ).update(
                 {
                     "settled_on": None,
+                    # The day's BASIS goes with the day, because
+                    # ``ck_transactions_settle_day_basis_pairing`` is a
+                    # BICONDITIONAL: a basis left behind with no day is as
+                    # unstorable as a day with no basis (plan step X-az).
+                    "settled_day_basis_id": None,
                     "settled_amount": None,
                     "settled_basis_id": None,
                 },
@@ -581,7 +664,7 @@ class TestWalkAccountLedger:
                 amount=Decimal("40.00"),
                 description="ticked on the second reading",
                 purchased_on=posted_on,
-                settled_on=posted_on,
+                **settle_day_columns(posted_on),
                 is_credit=False,
             )
             _db.session.add(entry)
@@ -649,8 +732,12 @@ class TestWalkAccountLedger:
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert len(corrections) == 1
-            assert corrections[0].ledger_before == Decimal("50.00")
+            assert len(corrections) == 2
+            # [0] is the account's OPENING EQUITY; the assertion follows it and
+            # absorbs the pre-anchor transfer leg (plan step X-f3c-2a).
+            assert corrections[0].opens_the_books is True
+            assert corrections[0].ledger_before == Decimal("0.00")
+            assert corrections[1].ledger_before == Decimal("550.00")
 
     def test_trueup_day_partition(self, app, db, seed_user):
         """The CRITICAL-1 case: a true-up absorbs only settles up to its own day.
@@ -691,11 +778,18 @@ class TestWalkAccountLedger:
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert len(corrections) == 2
-            assert corrections[0].anchor.is_opening is True
+            assert len(corrections) == 3
+            assert corrections[0].opens_the_books is True
             assert corrections[0].ledger_before == Decimal("0.00")
-            assert corrections[1].anchor.is_opening is False
-            assert corrections[1].ledger_before == Decimal("300.00")
+            assert corrections[0].target_balance == Decimal("500.00")
+            # The ORIGINATION assertion: the books already read 500.00, so it
+            # corrects nothing.
+            assert corrections[1].opens_the_books is False
+            assert corrections[1].ledger_before == Decimal("500.00")
+            # The TRUE-UP: 500.00 opening less the 200.00 settle on its own
+            # side of the day boundary, asserted up to 350.00.
+            assert corrections[2].opens_the_books is False
+            assert corrections[2].ledger_before == Decimal("300.00")
 
     def test_two_assertions_on_one_day_both_absorb_it_in_recording_order(
         self, app, db, seed_user,
@@ -730,30 +824,53 @@ class TestWalkAccountLedger:
         the code no longer has.
         """
         with app.app_context():
-            account = _make_account(seed_user, "500.00")
-            pinned = _pin_opening(account)
-            settle = _settle_expense(
-                seed_user, account, "75.00", _PINNED_OPENING_DAY,
-            )
-            _add_assertion(account, "425.00", pinned + 3 * _ONE_HOUR)
+            # **The shared civil day is TODAY's, and the account is OPENED on
+            # it** (plan step X-f3c-2c).  Two things forced that.
+            #
+            # The account must be opened on the day rather than re-asserted
+            # onto it: an assertion is append-only, so appending would leave
+            # the ORIGINATION standing on ``create_account_of_type``'s
+            # day-before-today -- a fourth correction nobody wrote, of
+            # ``+$75.00``, past every event this case names, while the three
+            # preconditions below (which do not look at the origination) went
+            # on passing.  Found by the adversarial review of this step.
+            #
+            # And the day must be the FROZEN today, because RECORDING order is
+            # what this case grades.  ``create_account`` stamps the
+            # origination's ``created_at`` from the clock, which no fixture
+            # moves per account; on any earlier day the true-up would be
+            # recorded first and the pair would apply in the wrong order.
+            day = display_today()
+            account = _make_account(seed_user, "500.00", observed_on=day)
+            settle = _settle_expense(seed_user, account, "75.00", day)
+            trueup_at = settle_instant_on(day) + 3 * _ONE_HOUR
+            _add_assertion(account, "425.00", trueup_at)
             _db.session.commit()
 
             # ONE civil day for all three events -- the precondition that makes
             # the two figures below a statement about the RULE rather than
-            # about their dates.
-            assert to_display_date(pinned) == _PINNED_OPENING_DAY
-            assert settle.settled_on == _PINNED_OPENING_DAY
-            assert to_display_date(
-                pinned + 3 * _ONE_HOUR,
-            ) == _PINNED_OPENING_DAY
+            # about their dates.  The ORIGINATION is included now: leaving it
+            # out is what let the premise go false unnoticed.
+            assert _origin_day(account) == day
+            assert settle.settled_on == day
+            assert to_display_date(trueup_at) == day
 
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert corrections[0].anchor.is_opening is True
-            assert corrections[0].ledger_before == Decimal("-75.00")
-            assert corrections[1].anchor.is_opening is False
-            assert corrections[1].ledger_before == Decimal("500.00")
+            # THREE, not "at least three": a fourth would be an event no line
+            # above wrote, and every index below would still read as it does.
+            assert len(corrections) == 3
+            assert corrections[0].opens_the_books is True
+            assert corrections[0].ledger_before == Decimal("0.00")
+            # The two assertions, in recording order.  The first absorbs the
+            # day's settle on top of the 500.00 the books opened with (it read
+            # -75.00 against a zero seed until plan step X-f3c-2a); the second
+            # sees the first's reset.
+            assert corrections[1].opens_the_books is False
+            assert corrections[1].ledger_before == Decimal("425.00")
+            assert corrections[2].opens_the_books is False
+            assert corrections[2].ledger_before == Decimal("500.00")
 
     def test_reverted_source_drops_out(self, app, db, seed_user):
         """A reverted settle nets to zero in the ledger and leaves the walk.
@@ -822,7 +939,7 @@ class TestSyncAccountAnchorPostings:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            account = _make_account(seed_user, "500.00")
+            account = _make_account_as_created(seed_user, "500.00")
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
             )
@@ -898,7 +1015,7 @@ class TestSyncAccountAnchorPostings:
         """A second sync at the same state writes no new entry."""
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            account = _make_account(seed_user, "500.00")
+            account = _make_account_as_created(seed_user, "500.00")
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
             )
@@ -1124,8 +1241,24 @@ class TestSyncAccountAnchorPostings:
                 account.user_id, trueup_row.observed_on,
             )
 
-            _db.session.delete(trueup_row)
-            _db.session.flush()
+            # **The append-only refusal is lifted for this statement**
+            # (plan step X-f3c-2c).  This case's whole subject is a posted
+            # correction whose history row has vanished -- the docstring above
+            # calls it unreachable through production lifecycles, and it is now
+            # unreachable through any lifecycle at all.  The defensive branch
+            # it grades is still live code, so the case reaches past the outer
+            # guard rather than the branch going ungraded.
+            with append_only_guard_lifted(
+                _db.session, "budget.account_anchor_history",
+            ):
+                # Raw rather than ``session.delete``: the object-layer listener
+                # refuses an ORM delete as well, and this case is about what
+                # the RECONCILE does once the row is gone rather than about
+                # either guard.
+                _db.session.execute(sa_text(
+                    "DELETE FROM budget.account_anchor_history WHERE id = :i"
+                ), {"i": trueup_row.id})
+                _db.session.expire_all()
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
             )
@@ -1251,8 +1384,7 @@ class TestCorrectionPeriodAttribution:
         """Add (and return) a pay period whose range contains the assertion day."""
         period = PayPeriod(
             user_id=seed_user["user"].id,
-            start_date=date(2026, 3, 21), end_date=self._ASSERTION_DAY,
-            period_index=index,
+            start_date=date(2026, 3, 21),
         )
         _db.session.add(period)
         _db.session.flush()
@@ -1262,8 +1394,7 @@ class TestCorrectionPeriodAttribution:
         """Add (and return) the period that STARTS the day after the assertion."""
         period = PayPeriod(
             user_id=seed_user["user"].id,
-            start_date=date(2026, 4, 4), end_date=date(2026, 4, 17),
-            period_index=index,
+            start_date=date(2026, 4, 4),
         )
         _db.session.add(period)
         _db.session.flush()
@@ -1290,8 +1421,13 @@ class TestCorrectionPeriodAttribution:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            account = _make_account(seed_user, "500.00")
-            _pin_opening(account)
+            # Opened ON the pinned day, so the origination IS the assertion
+            # this case reasons from: appending a second would leave the
+            # factory's own row standing on a LATER day, as a correction the
+            # case did not write (plan step X-f3c-2c).
+            account = _make_account(
+                seed_user, "500.00", observed_on=_PINNED_OPENING_DAY,
+            )
             containing = self._period_containing_the_day(seed_user)
             following = self._period_after_the_day(seed_user)
             at = settle_instant_on(self._ASSERTION_DAY)
@@ -1337,8 +1473,11 @@ class TestCorrectionPeriodAttribution:
         it -- the state a user reaches by asserting a balance past the end of
         their generated schedule.  ``600 - 500 = +100.00``.
         """
-        account = _make_account(seed_user, "500.00")
-        _pin_opening(account)
+        # Opened ON the pinned day, for the reason the sibling cases state
+        # (plan step X-f3c-2c).
+        account = _make_account(
+            seed_user, "500.00", observed_on=_PINNED_OPENING_DAY,
+        )
         _add_assertion(
             account, "600.00", settle_instant_on(self._ASSERTION_DAY),
         )
@@ -1464,13 +1603,13 @@ class TestSyncEntryPoints:
             )
             _db.session.add(what_if)
             _db.session.flush()
-            account = _make_account(seed_user, "500.00")
+            account = _make_account_as_created(seed_user, "500.00")
             origin = _origin_day(account)
             txn = create_settled_cash_transaction(
                 seed_user, _db.session, seed_user["bootstrap_period"],
                 Decimal("40.00"), account=account, scenario=what_if,
             )
-            txn.settled_on = origin + timedelta(days=1)
+            record_settle_day(txn, an_entered_day(origin + timedelta(days=1)))
             _db.session.commit()
 
             account_posting_service.sync_account_anchor_postings_all_scenarios(
@@ -1566,7 +1705,7 @@ class TestSyncEntryPoints:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            account = _make_account(seed_user, "750.00")
+            account = _make_account_as_created(seed_user, "750.00")
             assert posting_service.account_posting_total(
                 account.id, scenario_id,
             ) == Decimal("750.00")
@@ -1582,8 +1721,15 @@ class TestSyncEntryPoints:
         A settle dated in the 2024 bootstrap period -- BEFORE the account's
         origination assertion -- so the effect-time self-heal at the
         ``sync_transaction_postings`` tail re-derives the opening in the same
-        transaction: the opening key moves to +700.00 (500 - (-200)) and the
-        account's total stays exactly on the 500.00 anchor.
+        transaction: the account's total stays exactly on the 500.00 anchor.
+
+        **The $700.00 is now TWO entries, and the split is the improvement**
+        (plan step X-f3c-2a).  The ``account_opening`` entry books the
+        account's opening EQUITY -- $500.00, the stored fact -- and the
+        $200.00 the records moved books as an ``account_trueup`` against the
+        origination assertion.  It was one $700.00 opening entry before, which
+        conflated capital brought on with a correction to it and is why a
+        BACK-DATED assertion could re-elect the whole figure.
 
         The row reached that day through the NULL-``paid_at`` fallback until
         plan step X-f1; it states the day directly now, and the figure is
@@ -1608,7 +1754,14 @@ class TestSyncEntryPoints:
             assert sum(
                 (_entry_legs(entry.id)[linked.id][0] for entry in openings),
                 Decimal("0"),
-            ) == Decimal("700.00")
+            ) == Decimal("500.00")
+            trueups = _correction_entries(
+                account.id, scenario_id, PostingSourceEnum.ACCOUNT_TRUEUP,
+            )
+            assert sum(
+                (_entry_legs(entry.id)[linked.id][0] for entry in trueups),
+                Decimal("0"),
+            ) == Decimal("200.00")
 
     def test_wired_trueup_and_revert_self_heal_end_to_end(
         self, app, db, seed_user,
@@ -1629,8 +1782,20 @@ class TestSyncEntryPoints:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             account = _make_account(seed_user, "500.00")
+            # The frozen suite TODAY, as a civil day.  It read
+            # ``_db.func.now()`` until plan step X-f3c-2b, which is a SQL
+            # expression rather than a date: it reached ``settled_on`` without
+            # ever being evaluated in Python, so the column took whatever the
+            # (clock-rewritten) server said and this file's own
+            # ``_settle_expense`` contract -- "a pinned civil DAY", which every
+            # other caller honours -- was the one thing it did not supply.  The
+            # books-boundary read is the first Python consumer of that value
+            # and it surfaced as a ``TypeError`` from comparing a clause.  The
+            # day is the same one the rewritten server clock produced, so the
+            # arithmetic below is unchanged; what is gone is a settle whose day
+            # came from a different clock than the assertion that absorbs it.
             txn = _settle_expense(
-                seed_user, account, "200.00", _db.func.now(),
+                seed_user, account, "200.00", display_today(),
             )
             _db.session.commit()
 
@@ -1682,12 +1847,10 @@ class TestSyncEntryPoints:
             )
             _db.session.add(user2)
             _db.session.flush()
-            period2 = PayPeriod(
-                user_id=user2.id, start_date=seed_user["bootstrap_period"].start_date,
-                end_date=seed_user["bootstrap_period"].end_date, period_index=0,
-            )
-            _db.session.add(period2)
-            _db.session.flush()
+            # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+            period2 = open_owner_calendar(
+                user2.id, seed_user["bootstrap_period"].start_date,
+            )[0]
             checking_type_id = seed_user["account"].account_type_id
             account2 = account_service.create_account(
                 account_service.AccountSpec(
@@ -1764,17 +1927,20 @@ class TestLedgerAgreesWithTheGridOnAssertionPeriods:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            account = _make_account(seed_user, "500.00")
-            _pin_opening(account)
+            # Opened ON the pinned day, so the origination IS the assertion
+            # this case reasons from: appending a second would leave the
+            # factory's own row standing on a LATER day, as a correction the
+            # case did not write (plan step X-f3c-2c).
+            account = _make_account(
+                seed_user, "500.00", observed_on=_PINNED_OPENING_DAY,
+            )
             first = PayPeriod(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 3, 21), end_date=date(2026, 4, 3),
-                period_index=1,
+                start_date=date(2026, 3, 21),
             )
             second = PayPeriod(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 4, 4), end_date=date(2026, 4, 17),
-                period_index=2,
+                start_date=date(2026, 4, 4),
             )
             _db.session.add_all([first, second])
             _db.session.flush()
@@ -1799,7 +1965,7 @@ class TestLedgerAgreesWithTheGridOnAssertionPeriods:
             periods = (
                 _db.session.query(PayPeriod)
                 .filter_by(user_id=seed_user["user"].id)
-                .order_by(PayPeriod.period_index)
+                .order_by(PayPeriod.start_date)
                 .all()
             )
             grid = balance_at.grid_balance_view(account, ctx)
@@ -1882,7 +2048,7 @@ class TestTheSharedFilingDoor:
             from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
             pay_period_write.record_paydays(
                 user_id=seed_second_user["user"].id,
-                first_payday=date(2025, 1, 1), num_periods=4, cadence_days=14,
+                first_payday=date(2025, 1, 1), num_periods=4, rhythm=rhythm_of(14),
             )
             _db.session.commit()
             account = _make_account(seed_user, "500.00")
@@ -2001,15 +2167,27 @@ class TestTheSharedFilingDoor:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            earliest = min(seed_periods, key=lambda p: p.period_index)
+            earliest = min(seed_periods, key=lambda p: derived_span(p).period_index)
             assert earliest.start_date > self._PRE_SCHEDULE_DAY, (
                 "the fixture must place the probe day before every payday"
             )
 
             account = _make_account(seed_user, "500.00")
-            _pin_opening(account, datetime(
-                2023, 6, 14, 16, 0, tzinfo=timezone.utc,
-            ))
+            # **The BOOKS are restated onto the probe day, and the assertion is
+            # left where it is** (plan step X-f3c-2c).  What files here is the
+            # account's BOOKS and not its assertion: the ``account_opening``
+            # entry is dated on ``budget.account_openings.opened_on`` (plan step
+            # X-f3c-2a).  This case used to move the ASSERTION one day after the
+            # probe day and let ruling **R-HG**'s day-before rule carry the
+            # books there -- two acts spelled as one, and the assertion half is
+            # now impossible twice over: the table is append-only, and
+            # ``resolve_observation_day`` floors an assertion at the calendar's
+            # own first day, which is 2026-01-02 here.  Restating the opening is
+            # the act that was always meant, and it is a production door
+            # (plan step X-f3c-2b-2a).
+            restate_account_opening(
+                _db.session, account, self._PRE_SCHEDULE_DAY,
+            )
             _db.session.commit()
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,

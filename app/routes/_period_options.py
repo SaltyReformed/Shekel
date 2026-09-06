@@ -14,6 +14,34 @@ user moves an expense TO, except the one the row is in already" is a policy
 about editing, and the row's own period is the caller's fact rather than the
 schedule's.
 
+**It TAKES the calendar rather than an owner id** (plan step `C4-a-5`), which
+is what ``statement_match._candidates.destinations_for`` did one leaf earlier
+under ruling **R-PC36**.  It derived its own until then, and that was fine
+while a caller wanted nothing but the ``<option>`` list.
+
+**ONE of the three call sites needs it, and the other two pay nothing**, which
+is the honest form: an adversarial review of this step caught a first draft
+claiming "the route holds a calendar either way" of all three.
+``transactions/forms.get_full_edit``'s TRANSACTION branch binds the calendar
+and asks it twice -- once for this list and once for the card's context line,
+which names the row's own paycheck -- and deriving a second one there is the
+shape of ledger row **P68**, CLOSED by plan step C2-f3c: one owner's calendar
+derived twice in one render, with nothing holding the two answers equal.  Its
+still-open sibling is **P69**.  *An adversarial review read the first draft's
+bare "is ledger row P68" as a citation of a live row and reported the id as a
+phantom; it is neither.  ``ledger.md`` carries OPEN findings only -- "a row
+leaves when its fix SHIPS" -- so a closed row is absent from it BY DESIGN, and
+seven other sites in ``app/`` cite P68 for this shape.  What the first draft
+got wrong was the TENSE, not the id.*  The two TRANSFER branches
+(``transactions/forms`` for a grid shadow cell, ``transfers/forms`` for the
+transfers page) hold no calendar of their own and pass
+``calendar_for(current_user.id)`` inline: for them this is the same single
+derivation it always was, moved one frame up the stack and costing nothing
+either way.
+
+Deriving it is now the route's job, which is also where the refusal belongs: a
+caller that cannot build a calendar has no form to render.
+
 **The narrowing is a CONVENIENCE, not the guard**, and saying so is the honest
 statement: the PATCH handlers re-resolve the submitted ``pay_period_id``
 against the owner (``routes/transactions/_helpers`` and
@@ -23,12 +51,12 @@ including a closed one.  What this list decides is what the browser OFFERS.
 
 from datetime import date
 
-from app.services.pay_calendar import DerivedPeriod, calendar_for
+from app.services.pay_calendar import DerivedPeriod, PayCalendar
 from app.utils.dates import display_today
 
 
 def period_move_options(
-    user_id: int, current_period_id: "int | None",
+    calendar: PayCalendar, current_period_id: "int | None",
 ) -> "list[DerivedPeriod]":
     """Return the periods a row currently in *current_period_id* may move to.
 
@@ -61,9 +89,10 @@ def period_move_options(
     fewer.
 
     Args:
-        user_id: The owner whose schedule to offer.  The calendar is derived
-            from their complete payday set, so a period's end here is the one
-            every other surface reports.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
+            derived by the route from their COMPLETE payday set -- so a
+            period's end here is the one every other surface reports.  Taken
+            rather than derived: see the module docstring.
         current_period_id: The ``budget.pay_periods.id`` the row sits in
             today, forced into the result.  ``None`` for a caller with no such
             row, which then gets the not-yet-ended periods alone.
@@ -79,11 +108,17 @@ def period_move_options(
         than a broken one.
 
     Raises:
-        PayCalendarError: The owner's paydays cannot define a calendar (see
-            :func:`~app.services.pay_calendar.calendar_for`).
+        PayCalendarError: *calendar*'s saved periods do not cover an unbroken
+            span (:meth:`~app.services.pay_calendar.PayCalendar.saved`).  **The
+            SOURCE of this moved and the raise did not**, which is why the
+            section survives the signature change: it used to name
+            :func:`~app.services.pay_calendar.calendar_for`, called here, and
+            an adversarial review of this step caught the block being deleted
+            with that call while :meth:`~.PayCalendar.saved` below still
+            raises.
     """
     today: date = display_today()
     return [
-        period for period in calendar_for(user_id).saved()
+        period for period in calendar.saved()
         if period.end_date >= today or period.period_id == current_period_id
     ]

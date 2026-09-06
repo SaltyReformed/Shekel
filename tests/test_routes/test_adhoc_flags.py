@@ -24,8 +24,10 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services.balance_at import BalanceContext
 from app.services import carry_forward_service
 from app.services.row_valuation import settled_figure
+from app.models.amount_ownership import AmountOwnership
 
 
 def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False,
@@ -35,9 +37,10 @@ def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False
     type_enum = TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE
     txn = Transaction(
         name=name,
-        estimated_amount=Decimal(amount),
+        amount_ownership=AmountOwnership.own(Decimal(amount)),
         transaction_type_id=ref_cache.txn_type_id(type_enum),
         status_id=ref_cache.status_id(status),
+        user_id=period.user_id,
         pay_period_id=period.id,
         account_id=seed_user["account"].id,
         category_id=list(seed_user["categories"].values())[0].id,
@@ -404,6 +407,9 @@ class TestAdhocFlagPersistence:
             )
             resp = auth_client.patch(f"/transactions/{txn.id}", data={
                 "estimated_amount": "150.00",
+                # What the quick-edit box was rendered with (R-JR); differing
+                # from the submitted figure is what makes this a real retype.
+                "estimated_amount_as_rendered": str(txn.estimated_amount),
                 "version_id": txn.version_id,
             })
             assert resp.status_code == 200
@@ -526,8 +532,8 @@ class TestAdhocEnvelopeCarryForward:
             _add_entry(txn, seed_user, "15.00", "Partial spend")
 
             carry_forward_service.carry_forward_unpaid(
-                source.id, target.id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                source.id, target.id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 

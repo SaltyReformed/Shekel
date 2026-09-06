@@ -8,12 +8,20 @@ form point their live preview at it (``_recurrence_fields.html``) -- so none of
 this belongs inside the transaction-template CRUD module it used to live in.
 ``templates.preview_recurrence`` is now the route decorator and one call.
 
-The preview reads request args and never writes: it resolves a TRANSIENT rule
-through the same authoring seam a save goes through
-(:func:`app.services.recurrence.build_transient_rule`), so what the user is
-shown is what saving would produce.  Before plan step R2c-1 it built the rule by
-hand and derived the ``Every N Periods`` phase inline, which is exactly the
-kind of second copy of a derivation the seam exists to remove.
+The preview reads request args and never writes: it RESOLVES the submitted
+recurrence through the same producer a save resolves through
+(:func:`app.services.recurrence.resolve`), so what the user is shown is what
+saving would produce.  Before plan step R2c-1 it built the rule by hand and
+derived the ``Every N Periods`` phase inline, which is exactly the kind of
+second copy of a derivation the seam exists to remove.
+
+**It stopped building a transient ROW at plan step R-F6.**  It used to author
+the submission onto an unsaved ``RecurrenceRule`` and hand that to
+``rule_occurrences``, which read it straight back into a spec -- a submission
+turned into a fake row and back to answer a question about a schedule.  That
+round-trip also stopped being expressible: a rule belongs to exactly one
+definition (``ck_recurrence_rules_one_owner``) and the preview has none, since
+the template it previews may not exist yet.
 
 Route-layer module rather than service because these read ``request`` and
 ``current_user``; the leading underscore marks it route-internal.
@@ -26,19 +34,18 @@ from flask_login import current_user
 from markupsafe import Markup
 
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
-from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import DerivedPeriod, PayCalendar, calendar_for
 from app.services.recurrence import (
     NEVER_ENDS,
     EndBoundInputError,
     RecurrenceResolutionError,
     RecurrenceSpec,
-    build_transient_rule,
     end_bound_from_token,
     modelled_placement,
     modelled_unit,
+    occurrence_placements,
     placed_periods,
-    rule_occurrences,
+    resolve,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,19 +101,26 @@ def _submitted_iso_date(field: str) -> date | None:
         return None
 
 
-def build_preview_rule(
+def build_preview_spec(
     unit: RecurrenceUnitEnum,
     placement: PeriodPlacementEnum,
     starts_on: date,
-    calendar: PayCalendar,
-) -> RecurrenceRule:
-    """Build an unsaved, fully resolved rule from the preview request args.
+) -> RecurrenceSpec:
+    """Build the authored recurrence the preview request describes.
 
-    Goes through the authoring seam like every other writer, but via
-    :func:`~app.services.recurrence.build_transient_rule`, which resolves
-    without touching the session -- so the previewed rule carries the columns
-    the saved one would, including the ``Every N Periods`` phase this route
-    used to derive for itself.
+    **It states the recurrence rather than building a ROW, since plan step
+    R-F6**, and deleting that round-trip is the point.  The route used to hand
+    these arguments to ``build_transient_rule``, which wrote them onto an
+    unsaved :class:`~app.models.recurrence_rule.RecurrenceRule` that
+    ``rule_occurrences`` then read straight back into a spec -- so a submission
+    became a fake row and a spec again to answer a question about a schedule.
+    The occurrence walk takes the RESOLVED recurrence, which
+    :func:`~app.services.recurrence.resolve` produces from the spec directly.
+
+    That round-trip also stopped being expressible: a recurrence rule belongs
+    to exactly one definition now (``ck_recurrence_rules_one_owner``), and the
+    preview has no definition -- it is showing what saving WOULD produce, for a
+    template that may not exist yet.
 
     Takes the AXES the form authors rather than a pattern id (plan step
     R7b-2): the preview reads the same two controls the save posts, so neither
@@ -128,51 +142,50 @@ def build_preview_rule(
         placement: The submitted placement, likewise.
         starts_on: The submitted first occurrence, already parsed by the
             caller.
-        calendar: The user's pay-period schedule.
 
     Returns:
-        The transient :class:`~app.models.recurrence_rule.RecurrenceRule`.
+        The :class:`~app.services.recurrence.RecurrenceSpec` the request
+        describes.  UNRESOLVED -- the caller resolves it against the owner's
+        schedule, which is where every refusal this endpoint reports comes
+        from.
     """
-    return build_transient_rule(
-        RecurrenceSpec(
-            user_id=current_user.id,
-            unit=unit,
-            # The rule's FIRST OCCURRENCE (plan step R7c-b).  It replaced an
-            # owner-checked ``start_period_id`` at plan step R7b-4, and the
-            # ownership probe went with it rather than being relocated: a DATE
-            # names nothing of anyone else's, so the disclosure this endpoint
-            # was guarded against (audit finding H3 -- another user's
-            # pay-period structure) is not expressible in the argument any
-            # more.
-            starts_on=starts_on,
-            interval_n=request.args.get("interval_n", type=int, default=1),
-            placement=placement,
-            # The day a clamped first occurrence MEANT.  Unbounded here like
-            # every other numeric arg: a value the date does not leave open is
-            # refused by ``RecurrenceSpec`` itself, which is the caller's
-            # ``RecurrenceResolutionError`` handler's job -- see
-            # :func:`recurrence_preview_fragment` for why every bound is stated
-            # once rather than a third time on this endpoint.
-            nominal_day=request.args.get("nominal_day", type=int),
-            # Composed through the SUBMISSION door, not the storage one (plan
-            # step R7b-3).  These are query args -- a submission -- so a
-            # mistake in them is user input, and
-            # ``end_bound_from_columns`` would have reported it as a row
-            # written around ``ck_recurrence_rules_single_end_bound``: a log
-            # line asserting corrupted data that does not exist.  The form
-            # posts the same three controls the save does, so the preview
-            # reads one submission the way the save reads it.
-            end_bound=end_bound_from_token(
-                request.args.get(
-                    "recurrence_end_mode", default=NEVER_ENDS.token,
-                ),
-                end_date=_submitted_iso_date("end_date"),
-                max_occurrences=request.args.get(
-                    "max_occurrences", type=int,
-                ),
+    return RecurrenceSpec(
+        user_id=current_user.id,
+        unit=unit,
+        # The rule's FIRST OCCURRENCE (plan step R7c-b).  It replaced an
+        # owner-checked ``start_period_id`` at plan step R7b-4, and the
+        # ownership probe went with it rather than being relocated: a DATE
+        # names nothing of anyone else's, so the disclosure this endpoint
+        # was guarded against (audit finding H3 -- another user's
+        # pay-period structure) is not expressible in the argument any
+        # more.
+        starts_on=starts_on,
+        interval_n=request.args.get("interval_n", type=int, default=1),
+        placement=placement,
+        # The day a clamped first occurrence MEANT.  Unbounded here like
+        # every other numeric arg: a value the date does not leave open is
+        # refused by ``RecurrenceSpec`` itself, which is the caller's
+        # ``RecurrenceResolutionError`` handler's job -- see
+        # :func:`recurrence_preview_fragment` for why every bound is stated
+        # once rather than a third time on this endpoint.
+        nominal_day=request.args.get("nominal_day", type=int),
+        # Composed through the SUBMISSION door, not the storage one (plan
+        # step R7b-3).  These are query args -- a submission -- so a
+        # mistake in them is user input, and
+        # ``end_bound_from_columns`` would have reported it as a row
+        # written around ``ck_recurrence_rules_single_end_bound``: a log
+        # line asserting corrupted data that does not exist.  The form
+        # posts the same three controls the save does, so the preview
+        # reads one submission the way the save reads it.
+        end_bound=end_bound_from_token(
+            request.args.get(
+                "recurrence_end_mode", default=NEVER_ENDS.token,
+            ),
+            end_date=_submitted_iso_date("end_date"),
+            max_occurrences=request.args.get(
+                "max_occurrences", type=int,
             ),
         ),
-        calendar,
     )
 
 
@@ -185,8 +198,8 @@ def render_preview_html(
         preview_periods: The matched
             :class:`~app.services.pay_calendar.DerivedPeriod` values to list --
             the calendar's own view of a pay period, which is what
-            :func:`~app.services.recurrence.rule_occurrences` answers in.  Only
-            the two dates are rendered.
+            :func:`~app.services.recurrence.occurrence_placements` answers
+            in.  Only the two dates are rendered.
 
     Returns:
         The fragment markup.
@@ -298,7 +311,7 @@ def recurrence_preview_fragment() -> str:
     (plan step R2e-2's rule, on the two fields plan step R7b-2 replaced its one
     with).  They used to be checked against the ``ref`` table, and the two are
     not the same set: a row no enum member names passes a table lookup and then
-    raises inside the authoring seam :func:`build_preview_rule` goes through --
+    raises inside the resolver :func:`build_preview_spec`'s output goes through --
     so the preview would 500 on the same input the picker refuses to offer.
 
     An ABSENT unit is the form's "does not repeat" option, which has no
@@ -362,8 +375,8 @@ def recurrence_preview_fragment() -> str:
     effective_from = starts_on
 
     try:
-        rule = build_preview_rule(
-            unit, placement, starts_on, calendar,
+        resolved = resolve(
+            build_preview_spec(unit, placement, starts_on), calendar,
         )
         # ``effective_from`` is this ROUTE's display choice, made above --
         # "show me the next five from here" -- never the rule's opening bound,
@@ -373,7 +386,7 @@ def recurrence_preview_fragment() -> str:
         # still shared, so this surface and the generation seam cannot come to
         # disagree about which periods a rule fires in.
         matching = placed_periods(
-            rule_occurrences(rule, calendar),
+            occurrence_placements(resolved, calendar),
             ending_on_or_after=effective_from,
         )
     except (RecurrenceResolutionError, EndBoundInputError) as exc:
@@ -404,7 +417,7 @@ def recurrence_preview_fragment() -> str:
 __all__ = [
     "NOTHING_TO_PREVIEW",
     "PREVIEW_OCCURRENCE_LIMIT",
-    "build_preview_rule",
+    "build_preview_spec",
     "recurrence_preview_fragment",
     "render_preview_html",
 ]

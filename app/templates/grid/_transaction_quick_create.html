@@ -11,10 +11,18 @@
 
    Expected context:
      category            -- Category object
-     period              -- PayPeriod object
+     period_id           -- int; budget.pay_periods.id of this column's paycheck
      account_id          -- Account ID for the viewed account
      scenario_id         -- baseline scenario ID
      transaction_type_id -- income or expense type ID
+
+   It took the whole `period` object until plan step C2-f3e and read one
+   scalar off it, twice, which left this family of three create partials
+   stating its period contract two ways -- `_transaction_empty_cell.html`
+   had taken the id at C2-f2b (ledger row `P51`).  The route still HOLDS a
+   whole `DerivedPeriod` at that point; what changed is that it hands over
+   the one value this markup uses, so a later reader cannot mistake the
+   contract for "a period row" and start reading dates off it.
 #}
 <form class="txn-quick-edit d-flex flex-column gap-1"
       data-mode="create"
@@ -24,7 +32,7 @@
       hx-disabled-elt="find input">
   <input type="hidden" name="account_id" value="{{ account_id }}">
   <input type="hidden" name="category_id" value="{{ category.id }}">
-  <input type="hidden" name="pay_period_id" value="{{ period.id }}">
+  <input type="hidden" name="pay_period_id" value="{{ period_id }}">
   <input type="hidden" name="scenario_id" value="{{ scenario_id }}">
   <input type="hidden" name="transaction_type_id" value="{{ transaction_type_id }}">
   {# Hidden default submit button: with TWO text-entry fields and no
@@ -55,7 +63,7 @@
             title="More options (F2)"
             aria-label="More options"
             data-category-id="{{ category.id }}"
-            data-period-id="{{ period.id }}"
+            data-period-id="{{ period_id }}"
             data-transaction-type-id="{{ transaction_type_id }}"
             data-account-id="{{ account_id }}">
       <i class="bi bi-three-dots"></i>

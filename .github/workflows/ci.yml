@@ -393,6 +393,34 @@ jobs:
       - name: Run tests
         run: pytest --tb=short -q --durations=25
 
+      # ── 7b. Audit-trigger benchmarks, SERIALLY ───────────────────
+      # ``tests/test_performance`` is excluded from step 7 by
+      # ``pytest.ini``'s ``--ignore``, and until 2026-08-28 that meant
+      # it ran NOWHERE: its five tests had errored at setup since
+      # 2026-05-20 (commit 8368cd57 pointed the fixture at
+      # ``account_service.create_account``, which refuses an owner with
+      # no pay periods, while the fixture that creates them runs after
+      # it) and no local run, no wrapper run and no CI run reported a
+      # thing.  Same directory-is-invisible mechanism as the
+      # ``tests/manual/`` rot that step 5a3 answers.
+      #
+      # It gets its own invocation rather than joining step 7 because
+      # these tests assert a WALL-CLOCK RATIO -- the same statement
+      # timed with and without the audit trigger -- and that ratio is
+      # destroyed by oversubscription.  Measured 2026-08-28, identical
+      # tree, same five tests: serially the regenerate benchmark reads
+      # 0.8-3.0% overhead; under ``-n 12`` it reads 24.3-26.6%.  The
+      # contention inflates the measurement by 25 points, so collecting
+      # them into the parallel run would not "stop ignoring them", it
+      # would put a guaranteed flake on a branch-protected gate.
+      #
+      # ``--override-ini=addopts=`` drops the whole default addopts
+      # line (which is what carries the ``--ignore`` and ``-n 12``);
+      # ``-n 0`` then runs them in-process, the only condition under
+      # which the numbers mean anything.  Five tests, ~8 s.
+      - name: Run audit-trigger benchmarks (serial)
+        run: pytest tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
+
   # ── Polyglot linters ──────────────────────────────────────────────
   # Non-Python lint floors adopted in docs/audits/polyglot-cleanup
   # (shell, JS/CSS, Jinja templates, workflows, Dockerfile, YAML,

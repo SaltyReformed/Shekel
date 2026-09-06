@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from marshmallow import ValidationError as MarshmallowValidationError
 
 from app.extensions import db
 from app.models.ref import Status, TransactionType
@@ -22,13 +23,25 @@ from app.services.auth_service import hash_password
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.exceptions import NotFoundError, ValidationError
 from app import ref_cache
-from app.enums import RoleEnum, StatusEnum
-from app.services import account_service, pay_period_service, status_seam
+from app.enums import RoleEnum, SettlementBasisEnum, StatusEnum
+from app.services import (
+    account_service,
+    cash_ledger,
+    status_seam,
+)
 from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
-from app.models.account import AccountAnchorHistory
-from tests._test_helpers import settlement_if_settling
+from tests._test_helpers import (
+    rhythm_of,
+    account_never_asserted,
+    an_entered_day,
+    reassert_balance_on,
+    settle_day_columns,
+    settle_instant_on,
+    settlement_if_settling,
+)
 from tests._test_helpers import mark_purchase_settled
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helper ────────────────────────────────────────────────────────
@@ -148,6 +161,7 @@ class TestCreateEntry:
 
             txn = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -155,7 +169,7 @@ class TestCreateEntry:
                 name="Rent",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -184,6 +198,7 @@ class TestCreateEntry:
             )
             txn = Transaction(
                 template_id=None,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -191,7 +206,7 @@ class TestCreateEntry:
                 name="Ad-hoc expense",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -264,7 +279,7 @@ class TestCreateEntry:
                 user_id=user_id,
                 from_account_id=account_id,
                 to_account_id=second_account.id,
-                amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 pay_period_id=period_id,
                 scenario_id=scenario_id,
                 status_id=projected.id,
@@ -276,6 +291,7 @@ class TestCreateEntry:
             # Ad-hoc (no template), so ``tracks_purchases`` reads the row's own
             # ``is_envelope`` and the transfer guard is what refuses it.
             txn = Transaction(
+                user_id=user_id,
                 pay_period_id=period_id,
                 scenario_id=scenario_id,
                 account_id=account_id,
@@ -283,7 +299,7 @@ class TestCreateEntry:
                 name="Shadow with tracking on",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 is_envelope=True,
                 transfer_id=transfer.id,
             )
@@ -326,6 +342,7 @@ class TestCreateEntry:
 
             txn = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -333,7 +350,7 @@ class TestCreateEntry:
                 name="Salary",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("3000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("3000.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -583,7 +600,7 @@ class TestCompanionAccess:
                 user_id=seed_second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -601,6 +618,7 @@ class TestCompanionAccess:
 
             txn = Transaction(
                 template_id=template.id,
+                user_id=periods[0].user_id,
                 pay_period_id=periods[0].id,
                 scenario_id=seed_second_user["scenario"].id,
                 account_id=seed_second_user["account"].id,
@@ -608,7 +626,7 @@ class TestCompanionAccess:
                 name="Other Groceries",
                 category_id=seed_second_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("400.00"),
+                amount_ownership=AmountOwnership.own(Decimal("400.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -1294,6 +1312,62 @@ class TestComputeRemaining:
 
             assert remaining == Decimal("-50.00")
 
+    def test_a_REFUND_carries_remaining_ABOVE_the_budget(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """`$100.00` budget, one `-$50.00` refund: remaining is `$150.00`.
+
+        Developer ruling 2026-09-01, ruling **bank_import:R-II**, plan step
+        ``bank_import:X-gj-2b-3``.  A merchant credit files as a NEGATIVE
+        purchase, so this figure is UNBOUNDED ABOVE and the base is a NET cash
+        target: `$150.00` of net spending may still be recorded against a
+        `$100.00` plan, because `-$50.00` of it has already happened.
+
+        Capping it at the budget was put to the developer with these numbers
+        and refused -- it breaks ``sum(entries) + remaining == budget``, which
+        every surface that renders this depends on, and it would make the
+        dashboard disagree with the balance reservation beside it.  Asserted
+        because a cap is the change somebody will reach for when they meet
+        `$150.00` on a `$100.00` envelope and read it as a bug.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _make_entry(
+                txn, seed_user["user"], amount="-50.00",
+                description="Amazon refund",
+            )
+
+            remaining = entry_service.compute_remaining(
+                Decimal("100.00"), [entry],
+            )
+
+            assert remaining == Decimal("150.00")
+            # THE IDENTITY the figure exists inside.
+            assert remaining + entry.amount == Decimal("100.00")
+
+    def test_a_PARTLY_refunded_envelope_nets_below_its_budget(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The control: `$80.00` spent and `$30.00` back is `$50.00` consumed.
+
+        Without it the case above is satisfied by an implementation that
+        ignores negative entries entirely, which would answer `$100.00` there
+        and `$20.00` here.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            entries = [
+                _make_entry(txn, user, amount="80.00"),
+                _make_entry(
+                    txn, user, amount="-30.00", description="Amazon refund",
+                ),
+            ]
+
+            assert entry_service.compute_remaining(
+                Decimal("100.00"), entries,
+            ) == Decimal("50.00")
+
     def test_compute_remaining_empty_entries(self, app):
         """No entries: remaining equals the estimated amount."""
         with app.app_context():
@@ -1444,80 +1518,6 @@ class TestPurchasesTotal:
 
             actual = purchases_total(entries)
             assert actual == Decimal("200.00")
-
-
-# ── Date Validation Tests (OP-4) ─────────────────────────────────
-
-
-class TestCheckPurchaseDateInPeriod:
-    """Tests for entry_service.check_purchase_date_in_period().
-
-    It reads ``purchased_on`` and not ``settled_on``, and that distinction is
-    what the plan step S1-c column split is for: this warning asks "is this
-    purchase budgeted to the right pay period", which is a BUDGET-clock
-    question.  When the money reached the bank is a cash-clock fact and
-    belongs to the balance fold, not to a budgeting warning.
-    """
-
-    def test_date_within_period(
-        self, app, db, seed_user, seed_entry_template, seed_periods,
-    ):
-        """Date inside the pay period returns True.
-
-        Period 0: 2026-01-02 to 2026-01-15.
-        """
-        with app.app_context():
-            txn = seed_entry_template["transaction"]
-            result = entry_service.check_purchase_date_in_period(
-                date(2026, 1, 5), txn,
-            )
-            assert result is True
-
-    def test_date_before_period(
-        self, app, db, seed_user, seed_entry_template, seed_periods,
-    ):
-        """Date before the pay period start returns False."""
-        with app.app_context():
-            txn = seed_entry_template["transaction"]
-            result = entry_service.check_purchase_date_in_period(
-                date(2025, 12, 31), txn,
-            )
-            assert result is False
-
-    def test_date_after_period(
-        self, app, db, seed_user, seed_entry_template, seed_periods,
-    ):
-        """Date after the pay period end returns False."""
-        with app.app_context():
-            txn = seed_entry_template["transaction"]
-            result = entry_service.check_purchase_date_in_period(
-                date(2026, 1, 20), txn,
-            )
-            assert result is False
-
-    def test_date_on_period_start(
-        self, app, db, seed_user, seed_entry_template, seed_periods,
-    ):
-        """Date exactly on period start_date returns True."""
-        with app.app_context():
-            txn = seed_entry_template["transaction"]
-            period = txn.pay_period
-            result = entry_service.check_purchase_date_in_period(
-                period.start_date, txn,
-            )
-            assert result is True
-
-    def test_date_on_period_end(
-        self, app, db, seed_user, seed_entry_template, seed_periods,
-    ):
-        """Date exactly on period end_date returns True."""
-        with app.app_context():
-            txn = seed_entry_template["transaction"]
-            period = txn.pay_period
-            result = entry_service.check_purchase_date_in_period(
-                period.end_date, txn,
-            )
-            assert result is True
 
 
 # ── Schema Tests ──────────────────────────────────────────────────
@@ -1679,6 +1679,151 @@ class TestEntryCreateSchema:
             assert data["amount"] == Decimal("51.00")
 
 
+class TestNeitherHandDoorTakesATypedSign:
+    """R-II's tier split, as the developer RE-RULED it on 2026-09-01.
+
+    Ruling **bank_import:R-II** put the row invariant (``amount <> 0``) at the
+    service tier, where the bank-import door meets it too
+    (``entry_service._refusals._reject_zero_amount``), and moved POSITIVITY off
+    the table onto the hand-entry door.
+
+    **This class asserted the OPPOSITE of what it asserts now, and the reason
+    is a measurement rather than a preference.**  It read *the update schema
+    ACCEPTS a negative because a refund is one*, and defended the asymmetry as
+    R-II's point.  ``EntryUpdateSchema`` is reached ONLY by the human PATCH
+    route -- the bank-import door writes through ``entry_service`` and passes
+    no schema at all -- so both doors carrying this rule are doors a person
+    types at, and one of them had no bound.  A typed ``-45.00`` where ``45.00``
+    was meant booked a REFUND in silence and moved the projection by twice the
+    figure, while the identical keystroke on the ADD form was a 422.
+
+    **Both doors take a MAGNITUDE now**, and the direction is a control
+    (``entry_service.purchase_amount``).  The editable-refund problem the old
+    asymmetry solved is solved better: the edit form renders the magnitude and
+    preselects the direction, so re-describing a stored refund changes no
+    figure and needs no negative in the box.
+    """
+
+    def test_create_schema_still_refuses_a_typed_negative(self, app):
+        """The ADD form's rule survives R-II: a typed negative is a typo."""
+        with app.app_context():
+            schema = EntryCreateSchema()
+            with pytest.raises(MarshmallowValidationError) as exc_info:
+                schema.load({
+                    "amount": "-28.29",
+                    "description": "Amazon refund",
+                    "purchased_on": "2026-01-05",
+                })
+            assert "amount" in exc_info.value.messages
+
+    def test_update_schema_ALSO_refuses_a_typed_negative(self, app):
+        """The EDIT door's bound, restored on the developer's 2026-09-01 ruling.
+
+        It is the same rule as the create door's now, and stating BOTH in one
+        class is what keeps a future edit from removing one and leaving the
+        other -- which is the shape that produced the silent refund.
+        """
+        with app.app_context():
+            schema = EntryUpdateSchema()
+            with pytest.raises(MarshmallowValidationError) as exc_info:
+                schema.load({"amount": "-28.29"})
+            assert "amount" in exc_info.value.messages
+
+    def test_a_refund_is_stated_by_the_DIRECTION_on_both_doors(self, app):
+        """The control the two refusals above must not have deleted.
+
+        A refund is still recordable -- that is ruling **R-II** -- and this is
+        how: a magnitude plus ``direction``, composed by
+        :func:`~app.services.entry_service.purchase_amount`.  Without this case
+        the pair above is satisfied by a door that cannot record a refund at
+        all.
+        """
+        with app.app_context():
+            for schema in (EntryCreateSchema(), EntryUpdateSchema()):
+                data = schema.load({
+                    "amount": "28.29", "direction": "refund",
+                    "description": "Amazon refund",
+                    "purchased_on": "2026-01-05",
+                })
+                assert data["amount"] == Decimal("28.29")
+                assert data["direction"] == "refund"
+            assert entry_service.purchase_amount(
+                Decimal("28.29"), records_a_refund=True,
+            ) == Decimal("-28.29")
+            assert entry_service.purchase_amount(
+                Decimal("28.29"), records_a_refund=False,
+            ) == Decimal("28.29")
+
+    def test_neither_door_lets_a_zero_through_to_the_database(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """Zero is refused as a ValidationError, never as an IntegrityError.
+
+        The CHECK is the backstop; a zero reaching it surfaces to the user as
+        *Something went wrong* over a traceback.  Both write doors ask
+        ``_reject_zero_amount`` instead, so the refusal names the field.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+
+            with pytest.raises(ValidationError, match="cannot be zero"):
+                entry_service.create_entry(
+                    transaction_id=txn.id,
+                    user_id=user.id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("0.00"),
+                        description="Nothing",
+                        purchased_on=date(2026, 1, 5),
+                    ),
+                )
+
+            entry = entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("10.00"),
+                    description="Real purchase",
+                    purchased_on=date(2026, 1, 5),
+                ),
+            )
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="cannot be zero"):
+                entry_service.update_entry(
+                    entry.id, user.id, amount=Decimal("0.00"),
+                )
+
+    def test_a_refund_round_trips_through_the_service_door(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """A negative purchase is created and STORED as a negative.
+
+        The act plan step ``bank_import:X-gj-2b`` exists to make possible,
+        asserted at the tier the bank-import door actually uses -- it calls
+        ``create_entry`` directly and never passes through a Marshmallow schema.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+
+            entry = entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("-28.29"),
+                    description="Amazon refund",
+                    purchased_on=date(2026, 1, 5),
+                ),
+            )
+            db.session.commit()
+
+            assert entry.amount == Decimal("-28.29")
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).amount == Decimal("-28.29")
+
+
 class TestEntryUpdateSchema:
     """Tests for EntryUpdateSchema validation."""
 
@@ -1706,7 +1851,15 @@ class TestEntryUpdateSchema:
             assert data == {}
 
     def test_update_rejects_zero_amount(self, app):
-        """Amount of 0 is rejected in update schema too."""
+        """Amount of 0 is rejected in update schema too.
+
+        The half of the old bound that SURVIVED ruling **bank_import:R-II**: a
+        purchase worth nothing is not a purchase, and that is the row's own
+        invariant (``amount <> 0``) rather than a statement about the sign.
+        Kept on the schema so it answers 422 -- the service gate under it
+        (``_reject_zero_amount``) answers 400, which is the right code for a
+        caller that reached the service without a form.
+        """
         with app.app_context():
             schema = EntryUpdateSchema()
             from marshmallow import ValidationError as MarshmallowError
@@ -1714,14 +1867,13 @@ class TestEntryUpdateSchema:
                 schema.load({"amount": "0"})
             assert "amount" in exc_info.value.messages
 
-    def test_update_rejects_negative_amount(self, app):
-        """Negative amount is rejected in update schema."""
-        with app.app_context():
-            schema = EntryUpdateSchema()
-            from marshmallow import ValidationError as MarshmallowError
-            with pytest.raises(MarshmallowError) as exc_info:
-                schema.load({"amount": "-5.00"})
-            assert "amount" in exc_info.value.messages
+    # **The negative-amount case that stood here is GONE, not moved** (plan
+    # step ``bank_import:X-gj-2b-3``).  It was a second copy of
+    # ``TestNeitherHandDoorTakesATypedSign``'s subject -- adversarial test-quality
+    # review found the pair -- and both asserted the contract the developer
+    # re-ruled on 2026-09-01: the edit door takes a MAGNITUDE, and a refund is
+    # stated by ``direction``.  One class states that now, with the control
+    # that a refund is still recordable, rather than two that agreed.
 
     def test_update_unknown_fields_excluded(self, app):
         """Unknown fields are excluded by BaseSchema (Meta.unknown = EXCLUDE)."""
@@ -1853,14 +2005,23 @@ class TestTheMarkPurchaseSettledHelperGuardsItsPrecondition:
     ):
         """The N-132 shape itself: settled AFTER the account's latest assertion.
 
-        The seeded account asserts its opening balance for the first period's
-        start day; a purchase settled a week later is not inside it, however
-        the fixture is spelled, so a suite expecting the settled bucket is
-        asking for a state its own account cannot be in.  The message names
-        BOTH days so the fix -- move the assertion, or accept the outstanding
-        bucket -- is visible without reading the helper.
+        The account asserts its balance for the first period's start day; a
+        purchase settled a week later is not inside it, however the fixture is
+        spelled, so a suite expecting the settled bucket is asking for a state
+        its own account cannot be in.  The message names BOTH days so the fix
+        -- assert again, or accept the outstanding bucket -- is visible without
+        reading the helper.
+
+        **The asserted day is stated here rather than inherited** (plan step
+        X-f3c-2c): the seeded account carries only its ORIGINATION assertion,
+        dated on the bootstrap day before the calendar, so a case that turns on
+        which day was last asserted says which day that is.
         """
         with app.app_context():
+            reassert_balance_on(
+                db.session, seed_user["account"],
+                settle_instant_on(seed_periods[0].start_date),
+            )
             txn = seed_entry_template["transaction"]
             entry = _outstanding_debit(txn, seed_user)
             db.session.commit()
@@ -1894,10 +2055,15 @@ class TestTheMarkPurchaseSettledHelperGuardsItsPrecondition:
         with app.app_context():
             txn = seed_entry_template["transaction"]
             entry = _outstanding_debit(txn, seed_user)
-            account = seed_user["account"]
-            db.session.query(AccountAnchorHistory).filter_by(
-                account_id=account.id,
-            ).delete()
+            # **Built rather than emptied** (plan step X-f3c-2c): an assertion
+            # is append-only at the database tier, so an account that has
+            # asserted nothing is one the assertion factory never touched.  The
+            # guard reads the ACCOUNT it is handed, which is what lets this
+            # case grade it against an account other than the purchase's.
+            account = account_never_asserted(
+                seed_user, db.session, name="Silent",
+                opening_equity=Decimal("0.00"),
+            )
             db.session.commit()
 
             with pytest.raises(AssertionError) as excinfo:
@@ -1914,9 +2080,14 @@ class TestTheMarkPurchaseSettledHelperGuardsItsPrecondition:
         refused everything.  A purchase settled on the account's own asserted
         day passes, and ``settled_on`` defaults to the purchase's own
         ``purchased_on`` -- "it posted the day I bought it", the shape a
-        same-day debit has.
+        same-day debit has.  The asserted day is stated here for the reason the
+        case above states it (plan step X-f3c-2c).
         """
         with app.app_context():
+            reassert_balance_on(
+                db.session, seed_user["account"],
+                settle_instant_on(seed_periods[0].start_date),
+            )
             txn = seed_entry_template["transaction"]
             entry = _outstanding_debit(
                 txn, seed_user, purchased_on=seed_periods[0].start_date,
@@ -1970,19 +2141,6 @@ class TestASettledRowsPurchasesAreClosed:
     """
 
     @staticmethod
-    def _archive(txn):
-        """Move *txn* Projected -> Paid -> Settled through the real seam."""
-        status_seam.apply_status_change(
-            txn, ref_cache.status_id(StatusEnum.DONE),
-            settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
-        )
-        status_seam.apply_status_change(
-            txn, ref_cache.status_id(StatusEnum.SETTLED),
-            settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.SETTLED)),
-        )
-        db.session.flush()
-
-    @staticmethod
     def _close(txn):
         """Move *txn* Projected -> Paid through the real seam."""
         status_seam.apply_status_change(
@@ -1991,44 +2149,23 @@ class TestASettledRowsPurchasesAreClosed:
         )
         db.session.flush()
 
-    def test_create_is_refused(self, app, db, seed_user, seed_entry_template):
-        """A purchase cannot be recorded against an archived row.
-
-        Shown to FIRE: without the guard the entry is created and persists.
-        """
-        with app.app_context():
-            txn = db.session.get(
-                Transaction, seed_entry_template["transaction"].id,
-            )
-            self._archive(txn)
-
-            with pytest.raises(ValidationError, match="has settled"):
-                entry_service.create_entry(
-                    transaction_id=txn.id,
-                    user_id=seed_user["user"].id,
-                    details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
-                        description="Late purchase",
-                        purchased_on=display_today(),
-                    ),
-                )
-
-            assert db.session.query(TransactionEntry).filter_by(
-                transaction_id=txn.id,
-            ).count() == 0
-
     def test_update_is_refused(self, app, db, seed_user, seed_entry_template):
-        """An existing purchase on an archived row cannot be re-priced.
+        """An existing purchase on a settled row cannot be re-priced.
 
-        The row was archived carrying a $50.00 purchase; re-pricing it to
+        The row was closed carrying a $50.00 purchase; re-pricing it to
         $500.00 would rewrite what the books already say the row cost.
+
+        Specimen was the terminal ``Settled`` ARCHIVE until plan step
+        **balance:X-am** deleted that status.  ``_reject_settled_parent`` reads
+        the BAND and never the member -- that is this class's whole subject --
+        so the case moves to Paid unchanged.
         """
         with app.app_context():
             txn = db.session.get(
                 Transaction, seed_entry_template["transaction"].id,
             )
             entry = _make_entry(txn, seed_user["user"], amount="50.00")
-            self._archive(txn)
+            self._close(txn)
 
             with pytest.raises(ValidationError, match="has settled"):
                 entry_service.update_entry(
@@ -2040,13 +2177,27 @@ class TestASettledRowsPurchasesAreClosed:
             assert entry.amount == Decimal("50.00")
 
     def test_delete_is_refused(self, app, db, seed_user, seed_entry_template):
-        """A purchase cannot be removed from an archived row."""
+        """An UNDATED purchase cannot be removed from a settled row.
+
+        **The refusal's SENTENCE has moved twice.**  Plan step
+        ``bank_import:X-f6f`` gave the ARCHIVE one of its own, because the
+        shared message said the row *records a fixed figure* -- false for an
+        archived ``purchases`` row -- and told the owner to set it back to
+        Projected, which the state machine refused for a terminal status.  Plan
+        step **balance:X-am** then deleted the archive, and with it that
+        sentence: the remedy it could not offer is now available from every
+        settled row, so one message serves again.
+
+        What is left here is the arithmetic arm -- removing an UNDATED debit
+        purchase shrinks what the row recorded as costing, on a past day, with
+        no external evidence -- which is the case that was always band-wide.
+        """
         with app.app_context():
             txn = db.session.get(
                 Transaction, seed_entry_template["transaction"].id,
             )
             entry = _make_entry(txn, seed_user["user"], amount="50.00")
-            self._archive(txn)
+            self._close(txn)
             entry_id = entry.id
 
             with pytest.raises(ValidationError, match="has settled"):
@@ -2071,7 +2222,9 @@ class TestASettledRowsPurchasesAreClosed:
 
         The row is left exactly as the close left it: worth what it recorded,
         with no purchase persisted.  Shown to FIRE: narrowing the guard back to
-        ``is_archived`` lets the entry through.
+        ``is_archived`` let the entry through -- that predicate is itself
+        deleted at plan step **balance:X-am** with the status it named, so the
+        narrowing this case refuses is no longer expressible.
         """
         with app.app_context():
             txn = db.session.get(
@@ -2130,7 +2283,7 @@ class TestASettledRowsPurchasesAreClosed:
             posted_on = display_today()
 
             entry_service.update_entry(
-                entry.id, seed_user["user"].id, settled_on=posted_on,
+                entry.id, seed_user["user"].id, settle_day=an_entered_day(posted_on),
             )
             db.session.flush()
 
@@ -2142,7 +2295,7 @@ class TestASettledRowsPurchasesAreClosed:
             # And it can be WITHDRAWN again, which is what "the statement does
             # not actually show it" means.
             entry_service.update_entry(
-                entry.id, seed_user["user"].id, settled_on=None,
+                entry.id, seed_user["user"].id, settle_day=None,
             )
             db.session.flush()
             assert entry.settled_on is None
@@ -2168,10 +2321,459 @@ class TestASettledRowsPurchasesAreClosed:
             with pytest.raises(ValidationError, match="has settled"):
                 entry_service.update_entry(
                     entry.id, seed_user["user"].id,
-                    settled_on=display_today(),
+                    settle_day=an_entered_day(display_today()),
                     amount=Decimal("500.00"),
                 )
 
             # The guard runs BEFORE the setattr loop, so nothing is staged.
             assert entry.amount == Decimal("50.00")
             assert entry.settled_on is None
+
+    def test_the_PURCHASE_DAY_is_recordable_on_a_closed_row(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The second field the guard admits, and the one it was WRONG about.
+
+        ``purchased_on`` is the BUDGET clock -- the day the purchase was made.
+        A census of every reader in ``app/`` finds no money rule among them:
+        ``Transaction.entries``' ordering, the out-of-period WARNING, the
+        reconcile panel's sort and its offer predicate, the matcher's
+        ``expected_on``, and three template fields.  What the row COST is
+        ``amount`` and ``is_credit``, and neither moves here.
+
+        **It was refused until plan step ``bank_import:X-f6a-3b``**, because
+        :data:`~app.services.entry_service._doors._COST_BEARING_FIELDS` was
+        spelled ``_UPDATABLE_FIELDS - {"settled_on"}`` -- a set defined by what
+        it excludes, which silently claimed two fields nothing prices.  Ruling
+        **R-FW**'s purchase-day correction submits this field beside
+        ``settled_on`` in ONE ``update_entry`` call, so on the developer's own
+        statement 13 of the 15 corrections the review screen offered were
+        refused: the screen rendered an Accept button that could never succeed.
+
+        Shown to FIRE: restoring ``purchased_on`` to the cost-bearing set makes
+        this raise.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            made_on = display_today() - timedelta(days=5)
+            entry = _make_entry(
+                txn, seed_user["user"], amount="50.00", purchased_on=made_on,
+            )
+            self._close(txn)
+            recorded_before = settled_figure(txn)
+
+            corrected = made_on - timedelta(days=3)
+            entry_service.update_entry(
+                entry.id, seed_user["user"].id, purchased_on=corrected,
+            )
+            db.session.flush()
+
+            assert entry.purchased_on == corrected
+            # What the row COST is untouched, which is the whole reason the
+            # field is admitted.
+            assert settled_figure(txn) == recorded_before
+
+    def test_the_DESCRIPTION_is_editable_on_a_closed_row(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The other field the corrected set stopped claiming.
+
+        Nothing outside ``app/templates/`` reads it, so renaming a purchase on
+        a closed row changes no figure and no derivation.  It was refused for
+        the same reason ``purchased_on`` was: the set was defined by
+        subtraction rather than by what prices a row.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            entry = _make_entry(txn, seed_user["user"], amount="50.00")
+            self._close(txn)
+            recorded_before = settled_figure(txn)
+
+            entry_service.update_entry(
+                entry.id, seed_user["user"].id, description="Food Lion",
+            )
+            db.session.flush()
+
+            assert entry.description == "Food Lion"
+            assert settled_figure(txn) == recorded_before
+
+
+class TestASettledRowMayStillGAINAPurchase:
+    """Plan step ``bank_import:X-f6a-3b``: the ADD is its own rule.
+
+    **Adding a purchase and removing one are not the same question**, and
+    keeping them under one refusal made the evidenced direction share a guard
+    with the optimistic one.  Removing a purchase shrinks a recorded cost on
+    nothing but the user's second thoughts.  Adding one to a row whose figure IS
+    its purchases raises that cost by exactly the figure a bank statement just
+    showed -- which is the whole of what the statement importer does.
+
+    **The rule is about the row's FIGURE, not its status**, and the two bases
+    behave oppositely (measured on a production clone 2026-08-18):
+
+      * a ``purchases`` settlement stores no figure, so the close IS
+        ``Sigma(entries)``.  A new posted purchase raises it by its own amount
+        and ``settled_cash_leg`` subtracts the same amount, so the envelope's
+        own leg does not move and the purchase books its own dated cash.
+        Adding `$18.64` to one 2026-05-21 close shrank that day's anchor
+        true-up by exactly `$18.64`;
+      * a ``derived`` or ``corrected`` settlement stores its figure, fixed
+        before the purchase existed.  The subtraction then removes money the
+        gross never held: `-163.95` became **`+203.67`**, an expense row
+        publishing an inflow, while the true-up moved `$0.00` so the spending
+        was not recorded at all.
+
+    :func:`~app.services.entry_service._doors._reject_settled_addition` is the
+    only thing that makes the second state unrepresentable --
+    ``cash_ledger.cash_leg_of`` states no precondition and cannot see one.
+    """
+
+    @staticmethod
+    def _close(txn):
+        """Move *txn* Projected -> Paid through the real seam."""
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.DONE),
+            settlement=settlement_if_settling(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            ),
+        )
+        db.session.flush()
+
+    def test_a_purchases_basis_close_ADMITS_a_new_purchase(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The row's recorded cost GROWS by exactly the purchase.
+
+        That is not a side effect to be tolerated -- it is what the row's
+        settlement record MEANS.  A ``purchases`` basis stores no figure, so
+        saying "this envelope also paid for that" is saying "it cost this much
+        more", and the bank is the evidence.
+
+        **The purchase states the day the bank took it**, which is what the
+        rule requires of an addition to a closed row: without it the amount
+        would come out of the envelope's own leg on the day the row closed
+        rather than booking its own dated cash.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            _make_entry(txn, seed_user["user"], amount="50.00")
+            self._close(txn)
+            assert txn.settled_basis_id == ref_cache.settlement_basis_id(
+                SettlementBasisEnum.PURCHASES,
+            )
+            recorded_before = settled_figure(txn)
+
+            entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("30.00"),
+                    description="Food Lion",
+                    purchased_on=display_today(),
+                    settle_day=an_entered_day(display_today()),
+                ),
+            )
+            db.session.flush()
+
+            assert settled_figure(txn) == recorded_before + Decimal("30.00")
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).count() == 2
+
+    def test_a_POSTED_addition_leaves_the_envelope_s_OWN_leg_alone(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The money property the whole rule rests on.
+
+        A purchase carrying a bank posting day is a cash movement of its own
+        (ruling **R-FM**), so its envelope's close must book only the
+        remainder.  On a ``purchases`` basis the two terms move together --
+        ``gross`` and ``Sigma(posted)`` both rise by the new amount -- so the
+        envelope's leg is byte-identical and the account's total falls by
+        exactly the purchase.  That is what makes the import RECORD the
+        movement instead of redistributing one it already had.
+
+        Shown to FIRE: without the ``Sigma(posted)`` term the leg would move by
+        the whole `$30.00`.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            _make_entry(txn, seed_user["user"], amount="50.00")
+            self._close(txn)
+            leg_before = cash_ledger.settled_cash_leg(txn)
+            assert leg_before == Decimal("-50.00")
+
+            entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("30.00"),
+                    description="Food Lion",
+                    purchased_on=display_today(),
+                    settle_day=an_entered_day(display_today()),
+                ),
+            )
+            db.session.flush()
+            db.session.expire(txn)
+
+            assert cash_ledger.settled_cash_leg(txn) == leg_before
+            assert cash_ledger.posted_purchase_sum(txn) == Decimal("30.00")
+
+    def test_a_STORED_FIGURE_close_refuses_a_new_purchase(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The arm that would fabricate an inflow, refused at the door.
+
+        The row closed with no purchases, so its settlement stores `$500.00`
+        and nothing can raise it.  Recording a `$600.00` purchase against it
+        would take `$600.00` out of a `$500.00` gross.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            self._close(txn)
+            assert txn.settled_basis_id == ref_cache.settlement_basis_id(
+                SettlementBasisEnum.DERIVED,
+            )
+
+            with pytest.raises(ValidationError, match="records a fixed figure"):
+                entry_service.create_entry(
+                    transaction_id=txn.id,
+                    user_id=seed_user["user"].id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("600.00"),
+                        description="BJs",
+                        purchased_on=display_today(),
+                        settle_day=an_entered_day(display_today()),
+                    ),
+                )
+
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).count() == 0
+
+    def test_the_state_the_refusal_prevents_publishes_a_FABRICATED_INFLOW(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The guard's firing control, built the only way it can be reached.
+
+        ``cash_leg_of`` is TOTAL in every other direction and states no
+        precondition here, so nothing but
+        :func:`~app.services.entry_service._doors._reject_settled_addition`
+        keeps this unrepresentable.  A test that only asserted the refusal
+        would pass just as well if the underlying state were harmless -- so
+        this one builds it through the ORM, past every door, and measures what
+        the money rule then answers.
+
+        `-500.00` becomes `+100.00`: an EXPENSE row reporting that the account
+        RECEIVED `$100.00`.  Both legs still net to `-500.00`, which is why no
+        rendered balance moves and why the balance instrument is blind to it.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            self._close(txn)
+            assert cash_ledger.settled_cash_leg(txn) == Decimal("-500.00")
+
+            # PAST the door on purpose -- see the docstring.
+            entry = TransactionEntry(
+                transaction_id=txn.id, account_id=txn.account_id,
+                user_id=seed_user["user"].id,
+                amount=Decimal("600.00"), description="BJs",
+                purchased_on=display_today(), **settle_day_columns(display_today()),
+                is_credit=False,
+            )
+            db.session.add(entry)
+            db.session.flush()
+            db.session.expire(txn)
+
+            assert cash_ledger.settled_cash_leg(txn) == Decimal("100.00")
+            # ...and the two legs still sum to what the close alone booked, so
+            # the account total is intact and only the COMPOSITION is false.
+            assert (
+                cash_ledger.settled_cash_leg(txn) - Decimal("600.00")
+                == Decimal("-500.00")
+            )
+
+    def test_an_UNDATED_purchase_is_refused_on_a_closed_row(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The rule admits the case its argument supports, and no more.
+
+        "The envelope's own leg is unchanged" holds only for a POSTED
+        purchase.  An undated one is not in ``posted_purchase_sum``, so the
+        gross rises with nothing subtracting it and the row's own leg moves by
+        the purchase amount ON THE DAY THE ROW CLOSED -- a past day the owner
+        may already have checked against a statement, with no external evidence
+        for the movement.  The second assertion measures exactly that, past the
+        door, so the refusal is shown to prevent something.
+
+        Developer ruling 2026-08-19, after adversarial financial review found
+        the guard branching on the parent alone.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            _make_entry(txn, seed_user["user"], amount="50.00")
+            self._close(txn)
+            assert cash_ledger.settled_cash_leg(txn) == Decimal("-50.00")
+
+            with pytest.raises(ValidationError, match="when your bank took"):
+                entry_service.create_entry(
+                    transaction_id=txn.id,
+                    user_id=seed_user["user"].id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("30.00"),
+                        description="Food Lion",
+                        purchased_on=display_today(),
+                    ),
+                )
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).count() == 1
+
+            # What the refusal prevents, built past the door: the closed row's
+            # OWN leg moves, on its own settle day.
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id, account_id=txn.account_id,
+                user_id=seed_user["user"].id, amount=Decimal("30.00"),
+                description="Food Lion", purchased_on=display_today(),
+                **settle_day_columns(None), is_credit=False,
+            ))
+            db.session.flush()
+            db.session.expire(txn)
+            assert cash_ledger.settled_cash_leg(txn) == Decimal("-80.00")
+
+
+class TestAPurchaseMayBeBornCarryingItsPostingDay:
+    """``EntryDetails.settled_on``, plan step ``bank_import:X-f6a-3b``.
+
+    The field was deliberately absent on the premise that *at the moment a
+    purchase is recorded there is nothing to have observed*.  True of the
+    add-purchase form; false of a purchase created FROM a bank statement line,
+    where the observation is what caused the record to exist.
+
+    **Both of the update door's posting-day rules come with it**, because a
+    door that accepts a field and leaves its rules to the other door is a
+    boundary that holds on one and not the other.
+    """
+
+    def test_the_posting_day_is_written_at_create(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """One act, not two.
+
+        A follow-up ``update_entry`` would re-run the payback sync and the
+        posting reconcile against an intermediate state in which a purchase the
+        bank has already taken looks outstanding -- and would leave that state
+        committed if anything after it refused.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            posted = display_today()
+            entry = entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("30.00"),
+                    description="Food Lion",
+                    purchased_on=posted - timedelta(days=2),
+                    settle_day=an_entered_day(posted),
+                ),
+            )
+            db.session.flush()
+
+            assert entry.settled_on == posted
+            assert entry.purchased_on == posted - timedelta(days=2)
+
+    def test_omitting_it_leaves_the_purchase_OUTSTANDING(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The default is unchanged: a hand-typed purchase observes nothing."""
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            entry = entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("30.00"),
+                    description="Food Lion",
+                    purchased_on=display_today(),
+                ),
+            )
+            db.session.flush()
+
+            assert entry.settled_on is None
+
+    def test_a_posting_day_BEFORE_the_purchase_day_is_refused(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """Money cannot leave the account before it is spent.
+
+        ``ck_transaction_entries_settled_not_before_purchase`` is the backstop;
+        this is the door, so the user gets both dates rather than a 500 from an
+        ``IntegrityError``.  Shown to FIRE: without the call the insert reaches
+        the CHECK.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            with pytest.raises(
+                ValidationError, match="cannot reach your bank before",
+            ):
+                entry_service.create_entry(
+                    transaction_id=txn.id,
+                    user_id=seed_user["user"].id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("30.00"),
+                        description="Food Lion",
+                        purchased_on=display_today(),
+                        settle_day=an_entered_day(display_today() - timedelta(days=1)),
+                    ),
+                )
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).count() == 0
+
+    def test_a_FUTURE_posting_day_is_refused(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """Ruling **R-FM**'s bound, applied at both doors rather than one.
+
+        A day the bank has not reached releases the purchase's reservation now
+        and books its cash later.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            with pytest.raises(ValidationError, match="cannot be in the future"):
+                entry_service.create_entry(
+                    transaction_id=txn.id,
+                    user_id=seed_user["user"].id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("30.00"),
+                        description="Food Lion",
+                        purchased_on=display_today(),
+                        settle_day=an_entered_day(display_today() + timedelta(days=1)),
+                    ),
+                )
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).count() == 0

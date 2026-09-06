@@ -96,6 +96,15 @@ def _make_transaction_with_null_account_id(
     ``transaction_type_id`` are resolved via the seeded ref data
     (Projected status, Expense type) -- the choice does not affect
     backfill semantics, which depend only on ``pay_period_id``.
+
+    ``user_id`` joined that set at plan step ``pay_calendar:C13-a`` and is
+    read off the pay period in SQL, because this helper is given an id
+    rather than a row.  That is the same expression C13-a's own backfill
+    uses and the fact ``fk_transactions_owner_period`` holds.  The row's
+    NULL ``account_id`` leaves ``fk_transactions_owner_account``
+    unchecked -- a composite key is MATCH SIMPLE, so a NULL in any
+    referencing column satisfies it -- which is what keeps this
+    pre-C-40 shape constructible.
     """
     projected = (
         db.session.query(Status).filter_by(name="Projected").one()
@@ -105,10 +114,12 @@ def _make_transaction_with_null_account_id(
     )
     row = db.session.execute(_db.text(
         "INSERT INTO budget.transactions "
-        "(account_id, pay_period_id, scenario_id, status_id, name, "
+        "(account_id, user_id, pay_period_id, scenario_id, status_id, name, "
         " transaction_type_id, estimated_amount, version_id, "
         " is_deleted, is_override) "
-        "VALUES (NULL, :pp, :sc, :st, :name, :tt, :amt, 1, FALSE, FALSE) "
+        "VALUES (NULL, "
+        "        (SELECT user_id FROM budget.pay_periods WHERE id = :pp), "
+        "        :pp, :sc, :st, :name, :tt, :amt, 1, FALSE, FALSE) "
         "RETURNING id"
     ), {
         "pp": pay_period_id,
@@ -400,13 +411,15 @@ class TestBackfillResolution:
         # Insert one row WITH account_id set and one WITHOUT.
         db.session.execute(_db.text(
             "INSERT INTO budget.transactions "
-            "(account_id, pay_period_id, scenario_id, status_id, name, "
-            " transaction_type_id, estimated_amount, version_id, "
+            "(account_id, user_id, pay_period_id, scenario_id, status_id, "
+            " name, transaction_type_id, estimated_amount, version_id, "
             " is_deleted, is_override) "
-            "VALUES (:acc, :pp, :sc, :st, :name, :tt, :amt, 1, FALSE, FALSE) "
+            "VALUES (:acc, :uid, :pp, :sc, :st, :name, :tt, :amt, 1, "
+            "        FALSE, FALSE) "
             "RETURNING id"
         ), {
             "acc": seed_user["account"].id,
+            "uid": seed_periods[0].user_id,
             "pp": seed_periods[0].id,
             "sc": seed_user["scenario"].id,
             "st": db.session.query(Status).filter_by(name="Projected").one().id,

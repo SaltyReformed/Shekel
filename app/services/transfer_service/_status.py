@@ -34,11 +34,11 @@ applied in place, no ``request`` / ``session`` imports, no flush, no commit --
 the caller owns the session boundary.
 """
 
-from datetime import date
-
+from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services import status_seam
+from app.services.settle_day import SettleDay, recorded_settle_day
 from app.services.state_machine import verify_transition
 from app.services.transfer_service._validation import TransferRows
 from app.utils.balance_predicates import settled_status_ids
@@ -49,7 +49,7 @@ def apply_status_to_all_three(
     rows: TransferRows,
     new_status_id: int,
     *,
-    settled_on: date | None = None,
+    settle_day: SettleDay | None = None,
     settlement: "status_seam.Settlement | None" = None,
 ) -> None:
     """Move a transfer and both shadows to one status, through the ONE seam.
@@ -78,8 +78,10 @@ def apply_status_to_all_three(
     Args:
         rows: The transfer and both shadows being moved.
         new_status_id: The ``ref.statuses.id`` all three rows move to.
-        settled_on: The civil day the money moved, when the CALLER knows it --
-            the reconcile tick's statement date, threaded from
+        settle_day: The civil day the money moved and HOW that day is known
+            (:class:`app.services.settle_day.SettleDay`), when the CALLER knows
+            it -- the reconcile tick's statement date on the ``asserted``
+            basis, threaded from
             :func:`app.services.transfer_service._settle.settle`.  ``None``
             derives the day, which is what every door that does not know one
             means.  **Taken here rather than corrected afterwards** and that is
@@ -144,15 +146,31 @@ def apply_status_to_all_three(
         # the three that is EVIDENCE: a statement said the money moved that day.
         # The rest are repairs -- a sibling's record, then the user's today --
         # and a repair may not overrule a fact.
-        pair_day = settled_on
+        pair_day = settle_day
         for leg in legs:
             # ``is not None`` rather than truthiness: the coding standard
             # forbids relying on falsiness for a business value, and while no
-            # ``date`` is falsy today, an ``or`` chain read as if one could be.
+            # ``SettleDay`` is falsy today, an ``or`` chain read as if one could
+            # be.
+            #
+            # **The sibling's BASIS travels with its day** (plan step X-az).  A
+            # repair may not invent either term, and the KIND of day is a term:
+            # taking the day and re-stamping it ``entered`` would report a bank
+            # observation the sibling holds as the owner's own typing, which is
+            # the same class of laundering finding **N-332** is about.
             if pair_day is None:
-                pair_day = leg.settled_on
+                pair_day = recorded_settle_day(leg)
         if pair_day is None:
-            pair_day = display_today()
+            # Neither leg knows and no caller said: the pair settles today on
+            # the owner's own word, which is what ``entered`` names.  The same
+            # answer :func:`app.services.status_seam.apply_status_change` gives
+            # a lone transaction in the same position, stated here because the
+            # PAIR needs one day for both legs and the seam's per-row rule would
+            # give each its own.
+            pair_day = SettleDay(
+                day=display_today(),
+                basis=SettledDayBasisEnum.ENTERED,
+            )
     # ONE settlement RECORD for the PAIR, resolved by the same rule and for the
     # same reason as the day above: a REPAIR may not invent either term.
     # ``restore_transfer`` moves a shadow that drifted out of its parent's
@@ -170,7 +188,7 @@ def apply_status_to_all_three(
     for shadow in rows.shadows:
         status_seam.apply_status_change(
             shadow, new_status_id,
-            settled_on=pair_day, settlement=pair_settlement,
+            settle_day=pair_day, settlement=pair_settlement,
         )
     # The parent carries neither a ``settled_on`` column nor a settlement
     # record, so it takes neither: a transfer's money moves on its two shadow
@@ -181,7 +199,7 @@ def apply_status_to_all_three(
 def apply_settle_day_to_pair(
     expense_shadow: Transaction,
     income_shadow: Transaction,
-    day: date | None,
+    day: SettleDay | None,
     *,
     settlement: "status_seam.Settlement | None" = None,
 ) -> None:
@@ -206,12 +224,15 @@ def apply_settle_day_to_pair(
     Args:
         expense_shadow: The expense-side shadow :class:`Transaction`.
         income_shadow: The income-side shadow :class:`Transaction`.
-        day: The civil day both shadows record (Transfer Invariant 3 -- the two
-            are always equal, which ``posting_service._entry_date`` depends on:
-            it reads the INCOME shadow's day for the pair).  ``None`` means the
-            user's today, which is the F-048 / C-22 rule for a transfer created
-            already settled: it settled at creation.  The default is resolved
-            HERE rather than at the call site so there is one statement of it.
+        day: The civil day both shadows record and HOW that day is known
+            (:class:`app.services.settle_day.SettleDay`; Transfer Invariant 3 --
+            the two legs are always equal, which
+            ``posting_service._entry_date`` depends on: it reads the INCOME
+            shadow's day for the pair).  ``None`` means the user's today on the
+            ``entered`` basis, which is the F-048 / C-22 rule for a transfer
+            created already settled: it settled at creation, on nobody's word
+            but the owner's.  The default is resolved HERE rather than at the
+            call site so there is one statement of it.
         settlement: WHAT moved, for the BORN-SETTLED create alone
             (:class:`app.services.status_seam.Settlement`).  Its shadows are
             constructed already in the settled status, so the seam sees an
@@ -231,19 +252,22 @@ def apply_settle_day_to_pair(
             still verified by the state machine, so a drifted shadow refuses
             here rather than being silently re-dated.  Both propagate from the
             seam.
-        TypeError: If *day* is a ``datetime`` rather than a civil ``date``
-            (propagated from the seam).
+        TypeError: If *day*'s own day is a ``datetime`` rather than a civil
+            ``date`` -- refused by :class:`~app.services.settle_day.SettleDay`'s
+            constructor at whichever call site built it.
     """
-    pair_day = day if day is not None else display_today()
+    pair_day = day if day is not None else SettleDay(
+        day=display_today(), basis=SettledDayBasisEnum.ENTERED,
+    )
     for shadow in (expense_shadow, income_shadow):
         status_seam.apply_status_change(
             shadow, shadow.status_id,
-            settled_on=pair_day, settlement=settlement,
+            settle_day=pair_day, settlement=settlement,
         )
 
 
 def apply_settle_day_correction(
-    rows: TransferRows, day: date | None,
+    rows: TransferRows, day: SettleDay | None,
 ) -> None:
     """Correct the civil day a SETTLED transfer's money moved, through the seam.
 
@@ -278,7 +302,12 @@ def apply_settle_day_correction(
             correction arriving WITH a settle no longer reaches here at all --
             the settle takes the day at the status flip, so what this door sees
             is a correction to a row whose money had already moved.
-        day: The corrected civil day, or ``None``.
+        day: The corrected civil day and how it is known
+            (:class:`app.services.settle_day.SettleDay`), or ``None``.  A day
+            that reached here from the transfer PATCH carries the ``entered``
+            basis, stamped by
+            :func:`app.services.status_seam.settle_day_for_status`; a day the
+            statement matcher corrects carries ``observed``.
 
     Raises:
         ValidationError: When *day* is supplied for an unsettled transfer (no
@@ -287,8 +316,9 @@ def apply_settle_day_correction(
             or when *day* is ``None`` for a settled one (every settled row
             carries the day its money moved; the way to remove the day is to
             revert the transfer out of the settled band, which clears it).
-        TypeError: If *day* is a ``datetime`` rather than a civil ``date``
-            (propagated from the seam).
+        TypeError: If *day*'s own day is a ``datetime`` rather than a civil
+            ``date`` -- refused by :class:`~app.services.settle_day.SettleDay`'s
+            constructor at whichever call site built it.
     """
     if rows.transfer.status_id not in settled_status_ids():
         status_seam.reject_settle_day_without_settled_status(

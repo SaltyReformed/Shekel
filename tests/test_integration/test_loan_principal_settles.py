@@ -77,6 +77,7 @@ from app.utils.dates import add_months, display_today
 from app.utils.money import round_money
 from tests._test_helpers import (
     add_escrow_line,
+    amount_basis_for_scenario,
     create_loan_account,
     loan_params_for,
 )
@@ -275,7 +276,7 @@ def _resolve_balance(
     """
     anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
     context = loan_payment_service.load_loan_context(
-        account_id, scenario_id, loan_params,
+        account_id, amount_basis_for_scenario(scenario_id), loan_params,
     )
     inputs = loan_resolver.LoanInputs(
         loan_params, anchor_events, context.payments,

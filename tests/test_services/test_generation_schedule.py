@@ -15,7 +15,7 @@ streamed clone of ``shekel-prod-db``), one class each below:
 * **D25** -- ``calculate_paycheck`` received the same truncated list as its
   ``all_periods``, so third-paycheck detection read 1-3 periods instead of 61.
   One salary row was STORED $502.45 below its true net pay.  The read-time
-  recompute (``income_service.live_projected_net``) kept that figure off every
+  recompute (the read-time repair X-au-d deleted) kept that figure off every
   surface, so what it endangered was the stored cache the grid's inline editor
   pre-fills from -- see the migration's docstring for the measurement.
 * **D2** -- a rule's chosen start period was not in the window, so the opening
@@ -72,18 +72,45 @@ from app.models.ref import CalcMethod, DeductionTiming, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.services import pay_period_service, pay_period_write, period_population, recurrence_engine
+from app.routes._period_population import populate_new_periods
+from app.services import (
+    cash_ledger,
+    pay_period_write,
+    period_population,
+    recurrence_engine,
+)
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import (
+    PayCalendar,
+    saved_paydays_in_month_through,
+)
 from tests._test_helpers import (
+    rhythm_of,
+    counting_calls,
+    counting_read_passes,
+    create_account_of_type,
+    derived_span,
+    last_covered_day,
     make_cadence_rule,
+    make_transfer_template,
+    payroll_basis,
+    populate_in_a_fresh_pass,
     seed_fica_config,
     seed_state_tax_config,
     seed_tax_bracket_set,
+    state_template_price,
 )
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     MONTHLY_FIRST,
 )
+from app.services.amount_ownership import state_own_amount
+
+#: The one database door every pay-calendar derivation goes through, as
+#: ``tests/test_arch/test_one_read_pass_per_render.py`` names it.  A service
+#: that derives one below its caller's door shows up here as a non-zero count.
+_CALENDAR_DOOR = ("app.services.pay_calendar._loader", "calendar_for")
 
 # ``seed_periods`` runs 10 biweekly periods from 2026-01-02, so the paydays are
 # 01-02, 01-16, 01-30, 02-13, 02-27, 03-13, 03-27, 04-10, 04-24, 05-08.
@@ -111,24 +138,25 @@ def _make_template(seed_user, cadence, **rule_kwargs):
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`.
     """
     rule_kwargs.pop("offset_periods", None)
-    rule = make_cadence_rule(
-        seed_user["user"].id, cadence,
-        interval_n=rule_kwargs.pop("interval_n", 1),
-        fires_on_day=rule_kwargs.pop("day_of_month", None),
-        fires_in_month=rule_kwargs.pop("month_of_year", None),
-        **rule_kwargs,
-    )
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Car Payment"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name="Phone Allowance",
         default_amount=Decimal("39.54"),
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template, cadence,
+        interval_n=rule_kwargs.pop("interval_n", 1),
+        fires_on_day=rule_kwargs.pop("day_of_month", None),
+        fires_in_month=rule_kwargs.pop("month_of_year", None),
+        **rule_kwargs,
+    )
     return template
 
 
@@ -154,12 +182,35 @@ def _rows(template, scenario_id):
     return result
 
 
+def _placements(template, scenario_id):
+    """Return what a pass DECIDED, free of row identity.
+
+    ``_rows`` keys by period and hands back the ``Transaction`` objects, which
+    two passes over two templates can never compare equal.  What a generate
+    pass decides is which paycheck each row lands in and what the definition
+    says there, so that is what this reduces to.
+
+    Args:
+        template: The template whose rows to read.
+        scenario_id: The scenario to read within.
+
+    Returns:
+        ``{start_date: [(due_date, estimated_amount), ...]}``, the due dates
+        sorted so a repeated paycheck compares stably.
+    """
+    return {
+        start: sorted((row.due_date, row.estimated_amount) for row in rows)
+        for start, rows in _rows(template, scenario_id).items()
+    }
+
+
 def _append_period(seed_user, seed_periods):
     """Append one 14-day pay period after the seeded schedule.
 
-    Reproduces what ``pay_period_admin.extend_pay_periods`` creates before it
-    calls ``period_population``: a flushed batch of new periods, and nothing
-    else changed.
+    Reproduces exactly what ``pay_period_admin.extend_pay_periods`` returns: a
+    flushed batch of new, EMPTY periods, and nothing else changed.  The
+    repopulation is the caller's second call since ruling **R-R38**, which is
+    what :func:`_populate` runs.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -170,9 +221,9 @@ def _append_period(seed_user, seed_periods):
     """
     created = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        first_payday=seed_periods[-1].end_date + timedelta(days=1),
+        first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
         num_periods=1,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
     return created
@@ -193,7 +244,7 @@ class TestTheScheduleShapeTheseTestsRestOn:
                 if period.start_date.year == 2026
                 and period.start_date.month == 1
             ]
-            assert [period.period_index for period in january] == [0, 1, 2]
+            assert [derived_span(period).period_index for period in january] == [0, 1, 2]
             assert (
                 seed_periods[_JANUARY_THIRD_PAYCHECK_INDEX].start_date
                 == date(2026, 1, 30)
@@ -237,7 +288,7 @@ class TestAnExtendDoesNotDuplicateAMonthlyFirstRow:
             )
             recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_user(seed_user["user"].id),
+                GenerationSchedule.for_pass(BalanceContext.build(seed_user["user"].id)),
                 scenario_id,
             )
             db.session.flush()
@@ -248,9 +299,7 @@ class TestAnExtendDoesNotDuplicateAMonthlyFirstRow:
             )
 
             appended = _append_period(seed_user, seed_periods)
-            period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, appended,
-            )
+            populate_in_a_fresh_pass(seed_user["user"].id, {p.id for p in appended})
             db.session.flush()
 
             after = _rows(template, scenario_id)
@@ -279,7 +328,7 @@ class TestAnExtendDoesNotDuplicateAMonthlyFirstRow:
             )
             recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_user(seed_user["user"].id),
+                GenerationSchedule.for_pass(BalanceContext.build(seed_user["user"].id)),
                 scenario_id,
             )
             db.session.flush()
@@ -287,14 +336,10 @@ class TestAnExtendDoesNotDuplicateAMonthlyFirstRow:
             # Two appends: 2026-05-22 (May, covered) then 2026-06-05, which
             # opens June.
             first = _append_period(seed_user, seed_periods)
-            period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, first,
-            )
+            populate_in_a_fresh_pass(seed_user["user"].id, {p.id for p in first})
             second = _append_period(seed_user, seed_periods + first)
             assert second[0].start_date == date(2026, 6, 5)
-            period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, second,
-            )
+            populate_in_a_fresh_pass(seed_user["user"].id, {p.id for p in second})
             db.session.flush()
 
             after = _rows(template, scenario_id)
@@ -324,8 +369,8 @@ class TestTheWindowStillNarrowsWhatIsWritten:
 
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_periods(
-                    seed_user["user"].id, [seed_periods[4]],
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(seed_user["user"].id), {seed_periods[4].id},
                 ),
                 scenario_id,
             )
@@ -371,8 +416,8 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
 
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_periods(
-                    seed_user["user"].id, window,
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(seed_user["user"].id), {p.id for p in window},
                 ),
                 scenario_id,
                 effective_from=window[0].start_date,
@@ -387,11 +432,19 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
     ):
         """The same shape through the real repopulation entry point.
 
-        ``populate_periods_from_active_templates`` is what an extend runs, and
-        it defaults its boundary to the new batch's opening payday -- so this
-        drives D2's actual production path rather than a reconstruction of it.
-        A rule whose first paycheck is index 5 must gain nothing when periods
-        2-3 are (re)populated.
+        ``populate_periods_from_active_templates`` is what an extend runs, so
+        this drives D2's actual production path rather than a reconstruction
+        of it.  A rule whose first paycheck is index 5 must gain nothing when
+        periods 2-3 are (re)populated.
+
+        **It said "and it defaults its boundary to the new batch's opening
+        payday" until pay-calendar plan step C2-f3c**, which deleted that
+        boundary as a provable no-op: every period of a write window ends on
+        or after that window's own opening payday, so bounding placements by
+        it could never drop one.  What holds this case up is therefore the
+        RULE's own opening bound resolved against the owner's whole calendar,
+        which is what D2 was about; the caller-supplied-boundary shape is
+        still covered by the sibling case above, which passes one explicitly.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -401,9 +454,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
                 starts_on=seed_periods[5].start_date,
             )
 
-            period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, seed_periods[2:4],
-            )
+            populate_in_a_fresh_pass(seed_user["user"].id, {p.id for p in seed_periods[2:4]})
             db.session.flush()
 
             assert _rows(template, scenario_id) == {}
@@ -427,8 +478,8 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
 
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_periods(
-                    seed_user["user"].id, [seed_periods[5]],
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(seed_user["user"].id), {seed_periods[5].id},
                 ),
                 scenario_id,
             )
@@ -462,12 +513,12 @@ class TestThePredictionIsTheGenerationCall:
             template = _make_template(
                 seed_user, MONTHLY_FIRST,
             )
-            schedule = GenerationSchedule.for_user(seed_user["user"].id)
+            schedule = GenerationSchedule.for_pass(BalanceContext.build(seed_user["user"].id))
 
             predicted = [
                 period.start_date for period in seed_periods
                 if recurrence_engine.can_generate_in_period(
-                    template, period, scenario_id, schedule=schedule,
+                    template, period.id, scenario_id, schedule=schedule,
                 )
             ]
 
@@ -488,15 +539,36 @@ class TestThePredictionIsTheGenerationCall:
 
 
 class TestThePaycheckSeesTheWholeSchedule:
-    """D25: ``all_periods`` is the owner's schedule, not the pass's window."""
+    """D25: the engine counts paydays off the OWNER's calendar, not a window.
+
+    The defect was an ``all_periods`` argument beside the basis, which every
+    window, year slice and one-period sample satisfied.  Plan step
+    **balance:X-bh-1** deleted that argument: the engine reads
+    ``basis.calendar``, and a
+    :class:`~app.services.pay_calendar.PayCalendar` is constructible only from
+    a COMPLETE payday set.  So the narrow read these cases guard against is no
+    longer something a caller of the generation seam can express -- reaching it
+    now means building a SECOND calendar holding one payday, which is a
+    different owner's schedule rather than a narrowed view of this one.
+
+    **THE REQUIREMENT MOVED AT PLAN STEP balance:X-au-d AND THESE CASES MOVED
+    WITH IT.**  They asserted the figure GENERATION stored; generation prices
+    nothing now -- a salary row DECLARES its definition and stores no figure at
+    all -- so the whole-schedule requirement lives where the derivation does,
+    in :meth:`~app.services.income_service.SalaryPricing._breakdown_by_period`, which
+    derives its own calendar.  Each case therefore asserts what the AMOUNT
+    MODEL answers for the generated row rather than what the row holds, and
+    D25's defect is graded exactly as before: a producer counting one January
+    payday answers the windowed figure.
+    """
 
     def _salary_template(self, seed_user):
         """Create a salary profile whose deduction skips the 3rd paycheck.
 
         ``deductions_per_year=24`` is the cadence
-        ``paycheck_calculator._deduction_applies_in_period`` skips on a month's
-        third payday -- the exact judgement the truncated ``all_periods``
-        got wrong on production.
+        ``paycheck_calculator._deduction_applies_at`` skips on a month's third
+        payday -- the exact judgement the truncated period set got wrong on
+        production.
 
         Args:
             seed_user: The ``seed_user`` fixture dict.
@@ -504,20 +576,20 @@ class TestThePaycheckSeesTheWholeSchedule:
         Returns:
             ``(template, profile)``, both flushed.
         """
-        rule = make_cadence_rule(
-            seed_user["user"].id, EVERY_PERIOD,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]["Car Payment"].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
             name="Day Job",
             default_amount=Decimal("0.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, EVERY_PERIOD,
+        )
 
         profile = SalaryProfile(
             user_id=seed_user["user"].id,
@@ -528,7 +600,6 @@ class TestThePaycheckSeesTheWholeSchedule:
             name="Day Job",
             annual_salary=Decimal("104000.00"),
             state_code="NC",
-            pay_periods_per_year=26,
         )
         db.session.add(profile)
         db.session.flush()
@@ -570,8 +641,8 @@ class TestThePaycheckSeesTheWholeSchedule:
             template, profile = self._salary_template(seed_user)
             period = seed_periods[_JANUARY_THIRD_PAYCHECK_INDEX]
 
-            schedule = GenerationSchedule.for_periods(
-                seed_user["user"].id, [period],
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(seed_user["user"].id), {period.id},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, scenario_id,
@@ -587,28 +658,72 @@ class TestThePaycheckSeesTheWholeSchedule:
                 load_tax_configs_for_year,
             )
             configs = load_tax_configs_for_year(profile.user_id, profile, 2026)
-            # The engine takes DERIVED periods (pay-calendar plan step
-            # C2-f2d-3), and this case's whole point is the difference between
-            # the WHOLE schedule and a one-period window -- so both are taken
-            # off the same calendar and only the SLICE differs.
-            calendar = schedule.calendar
-            derived = calendar.saved()
-            derived_period = calendar.period_by_id(period.id)
-            whole_break = paycheck_calculator.calculate_paycheck(
-                profile, derived_period, derived, configs,
+            # Pylint: ``import-outside-toplevel`` -- see above.
+            from app.services.payroll_basis import (  # pylint: disable=import-outside-toplevel
+                PayrollBasis,
             )
+            # The engine takes a DERIVED calendar (pay-calendar plan step
+            # C2-f2d-3 and plan step balance:X-bh-1), and this case's whole
+            # point is the difference between the OWNER's calendar and one
+            # built over a single payday.
+            calendar = schedule.calendar
+            derived_period = calendar.period_by_id(period.id)
+            # The WHOLE schedule is what the seam itself hands the engine:
+            # ``schedule.calendar`` IS ``ctx.calendar()``, built by
+            # ``calendar_for`` from every saved payday, and there is no
+            # argument beside it for a caller to narrow.  The windowed read
+            # below is reachable only by building a SECOND calendar over one
+            # payday -- which is what plan step balance:X-bh-1 turned this
+            # defect into: not a shorter argument, a different schedule.
+            whole_break = paycheck_calculator.calculate_paycheck(
+                PayrollBasis(profile, calendar), derived_period, configs,
+            )
+            # The narrow calendar states nothing about the owner's pay
+            # history, which since ruling balance:R-IA's 2026-08-31 amendment
+            # is what every unasked owner has -- so it still counts one
+            # January payday and still calls a third paycheck a first.  D25's
+            # shape survives plan step balance:X-bh-2 unchanged for the
+            # default reading, and that is deliberate: the step widens what a
+            # calendar can be TOLD, not what it assumes.
             windowed_break = paycheck_calculator.calculate_paycheck(
-                profile, derived_period, [derived_period], configs,
+                payroll_basis(profile, [derived_period]),
+                derived_period, configs,
             )
             whole = whole_break.earnings.net_pay
             windowed = windowed_break.earnings.net_pay
 
             assert len(created) == 1
-            assert created[0].estimated_amount == whole
+            # The row STORES nothing (plan step balance:X-au-d), so the figure
+            # under test is the one the amount model answers for it -- which is
+            # where the whole-schedule requirement now lives.  A row asserted
+            # by its column would compare ``None`` here.
+            assert created[0].estimated_amount is None
+            priced = cash_ledger.amounts_by_id(
+                created,
+                cash_ledger.amount_basis(seed_user["user"].id, scenario_id),
+            )
+            assert priced[created[0].id] == whole
             assert whole != windowed, (
                 "the window and the whole schedule now agree for this period, "
                 "so this test no longer guards anything -- check that "
                 "seed_periods still puts three paydays in January"
+            )
+            # What X-bh-2 added, asserted rather than described: the SAME
+            # one-payday calendar, told that the owner's paychecks began
+            # earlier, reconstructs January's other two paydays from the
+            # cadence and prices this paycheck exactly as the whole schedule
+            # does.  So the narrow context is no longer enough to misprice ON
+            # ITS OWN -- it must also be paired with an owner who has stated
+            # a history, and stating a TRUE history makes it agree.
+            assert paycheck_calculator.calculate_paycheck(
+                payroll_basis(
+                    profile, [derived_period],
+                    history_opens_on=date(2025, 1, 1),
+                ),
+                derived_period, configs,
+            ).earnings.net_pay == whole, (
+                "with the owner's history stated, the backward rhythm "
+                "reconstructs January's other two paydays from the cadence"
             )
             # The direction is the money: the truncated read took a deduction
             # a third paycheck does not pay, so it UNDERSTATED the income.
@@ -641,8 +756,9 @@ class TestThePaycheckSeesTheWholeSchedule:
 
         The comparison above is relative -- two equal-but-wrong figures would
         satisfy it.  January's FIRST payday pays the $500 deduction and its
-        THIRD does not, so the two generated rows must differ by exactly that,
-        net of the tax the deduction shelters.
+        THIRD does not, so the two rows must differ by exactly that, net of the
+        tax the deduction shelters.  Read through the amount model rather than
+        off the rows, for the reason the class docstring states.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -650,14 +766,17 @@ class TestThePaycheckSeesTheWholeSchedule:
 
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_user(seed_user["user"].id),
+                GenerationSchedule.for_pass(BalanceContext.build(seed_user["user"].id)),
                 scenario_id,
             )
             db.session.flush()
 
+            priced = cash_ledger.amounts_by_id(
+                created,
+                cash_ledger.amount_basis(seed_user["user"].id, scenario_id),
+            )
             by_start = {
-                row.pay_period.start_date: row.estimated_amount
-                for row in created
+                row.pay_period.start_date: priced[row.id] for row in created
             }
             first = by_start[date(2026, 1, 2)]
             third = by_start[date(2026, 1, 30)]
@@ -672,12 +791,20 @@ class TestThePaycheckSeesTheWholeSchedule:
 
 
 class TestAWindowMustBelongToTheOwner:
-    """The refusals that make a partial schedule unconstructible."""
+    """The ONE refusal left, and the two states that stopped being refusable.
+
+    Pay-calendar plan step **C2-f3c** deleted this value's second read of the
+    schedule -- it took a tuple of ORM rows BESIDE the calendar and reconciled
+    them -- so two of the three checks here lost their subject rather than
+    their teeth.  Each is graded below as what it now is: an unsaved period has
+    no spelling in a window of ids, and a scrambled stored ordinal cannot
+    change any answer the seam gives.
+    """
 
     def test_another_users_period_is_refused(
         self, app, db, seed_user, seed_second_user, seed_periods,
     ):
-        """A window period outside the owner's schedule raises.
+        """A window id outside the owner's calendar raises.
 
         Silent would be worse than loud: the intersection would match nothing
         and the pass would report "generated 0 rows" for a definition that
@@ -691,107 +818,185 @@ class TestAWindowMustBelongToTheOwner:
             )
             assert foreign is not None, "the second user needs a period to lend"
 
-            with pytest.raises(RecurrenceWindowError, match="not in this owner"):
-                GenerationSchedule.for_periods(
-                    seed_user["user"].id, [foreign],
+            with pytest.raises(RecurrenceWindowError, match="are not in user"):
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(seed_user["user"].id), {foreign.id},
                 )
 
-    def test_an_unsaved_period_is_refused(
+    def test_an_unsaved_period_has_no_spelling_in_a_window(
         self, app, db, seed_user, seed_periods,
     ):
-        """A window period with no id cannot be matched against the schedule.
+        """An unsaved period cannot even be OFFERED as a window any more.
 
-        The repopulation paths flush before populating, so this names a caller
-        that skipped that rather than a state the application reaches.
+        **This graded a refusal until pay-calendar plan step C2-f3c.**  The
+        window was a list of ORM rows, so a caller could hand over one that had
+        never been flushed and whose ``id`` was therefore ``None``; the value
+        refused it with "has no id".  A window is a set of
+        ``budget.pay_periods.id`` values now, and the id of an unsaved period
+        is ``None`` -- which is not one of the owner's saved ids, so the ONE
+        surviving check answers it.  The state is refused because it is
+        incoherent, not because a second rule was written for it.
         """
         with app.app_context():
             unsaved = PayPeriod(
                 user_id=seed_user["user"].id,
                 start_date=date(2026, 6, 5),
-                end_date=date(2026, 6, 18),
-                period_index=99,
             )
+            assert unsaved.id is None, "the premise: it was never flushed"
 
-            with pytest.raises(RecurrenceWindowError, match="has no id"):
-                GenerationSchedule.for_periods(
-                    seed_user["user"].id, [unsaved],
+            with pytest.raises(RecurrenceWindowError, match="are not in user"):
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(seed_user["user"].id), {unsaved.id},
                 )
 
-    def test_a_stored_ordinal_out_of_payday_order_is_refused(
+    # **``test_a_stored_ordinal_out_of_payday_order_changes_nothing`` was
+    # deleted at plan step ``pay_calendar:C4-c``, and it is worth saying what
+    # it did rather than leaving a gap.**  It scrambled
+    # ``budget.pay_periods.period_index`` underneath an ``EVERY_N_PERIODS``
+    # rule at ``interval_n=2`` -- the seam's only ordinal-sensitive expression
+    # is ``(period.period_index - offset) % interval_n`` and at 1 it is zero
+    # for every ordinal, so 2 was the whole test -- and asserted the generate
+    # pass produced byte-identical rows.  It graded a RAISE until plan step
+    # C2-f3c, when the second read went and the disagreement stopped being
+    # detectable; C4-c dropped the column, so the disagreement stopped being
+    # CONSTRUCTIBLE.  The ordinal is a row's position in payday order now, and
+    # ``derive_periods`` is the one thing that computes it.
+
+    def test_a_narrowed_WINDOW_still_resolves_against_the_whole_schedule(
         self, app, db, seed_user, seed_periods,
     ):
-        """The check plan step C2-b2 gave a new subject, exercised.
+        """Defect **D22**, graded BEHAVIOURALLY because the type cannot grade it.
 
-        ``periods`` is read ordered by the stored ``period_index`` and
-        ``calendar`` by payday, so the two agree only while the stored ordinal
-        agrees with payday order.  C2-b2 made that a real comparison rather
-        than a tautology -- before it, the calendar was built FROM ``periods``
-        and could not disagree -- and an adversarial review pointed out the
-        raise had no test at all, which is the shape this class's own docstring
-        warns about.
+        The window states what a pass may WRITE; it may never state what a rule
+        MEANS.  That is the $118.62 / $502.45 shape: `period_population` hands
+        each engine the newly created batch, and reading the rule against that
+        batch makes the batch's own first payday look like the owner's.
 
-        The state is legacy or direct-DB only: ``pay_period_write`` writes
-        ``period_index`` from the derivation, where it IS the position in
-        payday order.  Reaching it silently would re-phase every
-        ``Every N Periods`` rule for this owner, so it is refused.
+        **This case asserts the ANSWER, not the shape, and an adversarial
+        review of plan step C2-f3c is why.**  What stood here asserted
+        ``schedule.calendar is calendar`` and the calendar's own ordinals --
+        one a restatement of the dataclass assignment, the other a fact the
+        test itself built -- so it could not fire on the defect it was named
+        for.  It cannot be graded at the type level either, though plan step
+        R7d-c-1 moved WHERE the hole is: the value took its calendar then, so
+        ``PayCalendar.from_paydays`` over a window's pairs was one line and one
+        argument (``PeriodWindow``'s own docstring records that, as ledger row
+        **P24**); it takes the READ PASS now and derives the calendar, so the
+        narrowed schedule has to be seated in the pass's memo instead.  Neither
+        is a state the type refuses, which is why the grade is BEHAVIOURAL: the
+        one thing a narrowed calendar changes is that a ``Monthly First`` rule
+        resolved against a one-period window fires in EVERY period, because
+        that window's only month holds exactly one payday.
 
-        The swap parks one row on a spare ordinal and FLUSHES between each
-        step: ``uq_pay_periods_user_index`` is checked per statement, so a
-        direct exchange collides inside the one flush that would carry both
-        ``UPDATE`` statements.
+        The control is the pair: the same rule, the same one-period window, one
+        schedule built the way `period_population` builds it and one built the
+        way D22 built it.  If the narrowed calendar answered the same, this
+        test would be measuring nothing.
         """
         with app.app_context():
-            rows = pay_period_service.get_all_periods(seed_user["user"].id)
-            first, second = rows[0], rows[1]
-            first_index, second_index = first.period_index, second.period_index
-            spare = max(row.period_index for row in rows) + 1
+            scenario_id = seed_user["scenario"].id
+            template = _make_template(seed_user, MONTHLY_FIRST)
+            ctx = BalanceContext.build(seed_user["user"].id)
+            calendar = ctx.calendar()
+            # seed_periods[4] opens 2026-02-27 -- the SECOND payday of
+            # February (the first is 02-13), so a whole-schedule Monthly First
+            # does NOT name it.
+            target = seed_periods[4]
 
-            first.period_index = spare
-            db.session.flush()
-            second.period_index = first_index
-            db.session.flush()
-            first.period_index = second_index
-            db.session.flush()
-
-            # The premise: the stored ordinal now disagrees with payday order.
-            reread = pay_period_service.get_all_periods(seed_user["user"].id)
-            assert reread[0].id == second.id
-            assert reread[0].start_date > reread[1].start_date
-
-            with pytest.raises(
-                RecurrenceWindowError, match="not the same periods",
-            ):
-                GenerationSchedule.for_user(seed_user["user"].id)
-
-    def test_the_whole_schedule_is_loaded_not_taken_from_the_caller(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """``for_periods`` reads the owner's periods itself.
-
-        This is what makes the D22 shape unconstructible rather than merely
-        discouraged: a caller states the window and has no way to state the
-        schedule, so the window can never stand in for it again.
-        """
-        with app.app_context():
-            schedule = GenerationSchedule.for_periods(
-                seed_user["user"].id, [seed_periods[9]],
+            whole = GenerationSchedule.for_period_ids(ctx, {target.id})
+            # Through ``saved_paydays_in_month_through`` since plan step
+            # balance:X-bh-2, which deleted ``earliest_start_in_month`` as
+            # unreached in ``app/`` (ledger row N-396).  The SAVED twin, not
+            # the total one: this asks what the recorded February holds, and
+            # the rhythm's backward half would answer about a month the record
+            # opens inside -- a different question from the one the premise
+            # states.
+            assert saved_paydays_in_month_through(
+                whole.calendar, date(2026, 2, 28),
+            )[0] == seed_periods[3].start_date != target.start_date, (
+                "the premise: February's FIRST payday is not the target's"
             )
 
-            assert len(schedule.write_periods) == 1
-            assert [p.period_index for p in schedule.periods] == list(range(10))
-            assert [
-                p.period_index for p in schedule.calendar.periods
-            ] == list(range(10))
+            created = recurrence_engine.generate_for_template(
+                template, whole, scenario_id,
+            )
+            db.session.flush()
+            assert created == [], (
+                "resolved against the owner's whole calendar, a Monthly First "
+                "rule must not fire in a month's second paycheck"
+            )
 
-    def test_the_read_only_window_cannot_be_mutated(
+            # The CONTROL: the same window against a calendar narrowed to it --
+            # D22 exactly -- fires, because that calendar's February holds one
+            # payday and it is the target's.
+            # **Building the control now takes reaching INTO the pass's memo,
+            # and that is the property plan step R7d-c-1 added.**  This value
+            # took a calendar until that step, so D22 was one argument away;
+            # it takes the read pass and DERIVES the calendar, so the only way
+            # left to hand generation a narrowed schedule is to seat one in the
+            # memo the pass would otherwise fill itself.  The control is kept
+            # at full strength -- through the ENGINE, not through the resolver
+            # underneath it -- because what it grades is what generation does.
+            narrowed_ctx = BalanceContext.build(seed_user["user"].id)
+            # pylint: disable-next=protected-access  # the memo IS the subject:
+            # see the comment above -- no public door can seat a calendar here,
+            # which is exactly what this control has to prove still matters.
+            narrowed_ctx._calendars[seed_user["user"].id] = (
+                PayCalendar.from_paydays(
+                    paydays=[(target.id, target.start_date)],
+                    cadence_days=calendar.cadence_days,
+                    user_id=seed_user["user"].id,
+                    history_opens_on=None,
+                )
+            )
+            narrowed = GenerationSchedule.for_period_ids(
+                narrowed_ctx, {target.id},
+            )
+            assert saved_paydays_in_month_through(
+                narrowed.calendar, date(2026, 2, 28),
+            ) == (target.start_date,), (
+                "the control: the slice thinks the target IS February's first"
+            )
+            # And it does not merely ANSWER differently, it answers wrongly:
+            # the slice's only period runs to a cadence projection, so January
+            # AND February both land in it, where the whole-schedule read
+            # places those two occurrences in two different paychecks.
+            #
+            # **Asserted on the ROWS since plan step R17.**  This used to be
+            # observed through ``RecurrenceCadenceUnsupported`` -- two
+            # occurrences in one paycheck were unstorable, so the narrowed
+            # schedule refused and the refusal stood in for the defect.  The
+            # re-keyed index stores them, so the defect is now named directly:
+            # one paycheck, two occurrences, from a schedule that should have
+            # placed them apart.  That is a stronger assertion than the refusal
+            # was, because it says WHAT went wrong rather than that something
+            # did.
+            wrong = recurrence_engine.generate_for_template(
+                _make_template(seed_user, MONTHLY_FIRST),
+                narrowed, scenario_id,
+            )
+            db.session.flush()
+            assert len(wrong) == 2, (
+                "the narrowed calendar must place both occurrences, or this "
+                "control no longer reproduces D22"
+            )
+            assert {row.pay_period_id for row in wrong} == {target.id}, (
+                "D22: a calendar narrowed to the window funds two months' "
+                "occurrences from one paycheck"
+            )
+
+    def test_the_window_is_a_frozen_set(
         self, app, db, seed_user, seed_periods,
     ):
-        """``write_periods`` is a mapping proxy, so the value stays frozen."""
+        """``write_period_ids`` is a frozenset, so the value stays frozen."""
         with app.app_context():
-            schedule = GenerationSchedule.for_user(seed_user["user"].id)
+            schedule = GenerationSchedule.for_pass(
+                BalanceContext.build(seed_user["user"].id),
+            )
 
-            with pytest.raises(TypeError):
-                schedule.write_periods[999] = seed_periods[0]
+            assert isinstance(schedule.write_period_ids, frozenset)
+            with pytest.raises(AttributeError):
+                schedule.write_period_ids.add(999)
 
 
 class TestGenerationIsStillGated:
@@ -808,7 +1013,7 @@ class TestGenerationIsStillGated:
 
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_user(seed_user["user"].id),
+                GenerationSchedule.for_pass(BalanceContext.build(seed_user["user"].id)),
                 seed_second_user["scenario"].id,
             )
 
@@ -823,7 +1028,7 @@ class TestGenerationIsStillGated:
             template = _make_template(
                 seed_user, EVERY_PERIOD,
             )
-            schedule = GenerationSchedule.for_user(seed_user["user"].id)
+            schedule = GenerationSchedule.for_pass(BalanceContext.build(seed_user["user"].id))
 
             first = recurrence_engine.generate_for_template(
                 template, schedule, scenario_id,
@@ -848,18 +1053,18 @@ class TestGenerationIsStillGated:
             )
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_user(seed_user["user"].id),
+                GenerationSchedule.for_pass(BalanceContext.build(seed_user["user"].id)),
                 scenario_id,
             )
             db.session.flush()
             settled = created[0]
             settled.status_id = ref_cache.status_id(StatusEnum.DONE)
-            settled.estimated_amount = Decimal("77.77")
+            state_own_amount(settled, Decimal("77.77"))
             db.session.flush()
 
             recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_user(seed_user["user"].id),
+                GenerationSchedule.for_pass(BalanceContext.build(seed_user["user"].id)),
                 scenario_id,
             )
             db.session.flush()
@@ -905,7 +1110,7 @@ class TestABoundedRuleDoesNotRestartItsCount:
 
             recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_user(seed_user["user"].id),
+                GenerationSchedule.for_pass(BalanceContext.build(seed_user["user"].id)),
                 scenario_id,
             )
             db.session.flush()
@@ -917,8 +1122,8 @@ class TestABoundedRuleDoesNotRestartItsCount:
 
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_periods(
-                    seed_user["user"].id, seed_periods[5:8],
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(seed_user["user"].id), {p.id for p in seed_periods[5:8]},
                 ),
                 scenario_id,
             )
@@ -952,17 +1157,17 @@ class TestTheTransferEngineTakesTheSameSchedule:
         savings = create_savings_account(
             seed_user, db.session, "Savings", Decimal("0.00"),
         )
-        rule = make_cadence_rule(seed_user["user"].id, cadence)
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=savings.id,
-            recurrence_rule_id=rule.id,
             name="Savings Sweep",
             default_amount=Decimal("50.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(template, cadence)
         return template
 
     def test_an_extend_does_not_duplicate_a_monthly_first_transfer(
@@ -988,7 +1193,7 @@ class TestTheTransferEngineTakesTheSameSchedule:
             )
             transfer_recurrence.generate_for_template(
                 template,
-                GenerationSchedule.for_user(seed_user["user"].id),
+                GenerationSchedule.for_pass(BalanceContext.build(seed_user["user"].id)),
                 scenario_id,
             )
             db.session.flush()
@@ -1010,9 +1215,7 @@ class TestTheTransferEngineTakesTheSameSchedule:
             assert may_starts() == [date(2026, 5, 8)]
 
             appended = _append_period(seed_user, seed_periods)
-            period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, appended,
-            )
+            populate_in_a_fresh_pass(seed_user["user"].id, {p.id for p in appended})
             db.session.flush()
 
             assert may_starts() == [date(2026, 5, 8)]
@@ -1040,7 +1243,7 @@ class TestRegenerateSweepsOnlyWhatItRewrites:
             )
             recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_user(seed_user["user"].id),
+                GenerationSchedule.for_pass(BalanceContext.build(seed_user["user"].id)),
                 scenario_id,
             )
             db.session.flush()
@@ -1048,8 +1251,8 @@ class TestRegenerateSweepsOnlyWhatItRewrites:
 
             recurrence_engine.regenerate_for_template(
                 template,
-                GenerationSchedule.for_periods(
-                    seed_user["user"].id, seed_periods[5:],
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(seed_user["user"].id), {p.id for p in seed_periods[5:]},
                 ),
                 scenario_id,
             )
@@ -1062,21 +1265,313 @@ class TestRegenerateSweepsOnlyWhatItRewrites:
             ]
 
 
+class TestTheSweepDomainIsTheWINDOWAndNotABoundOnIt:
+    """What let ``regeneration_bound`` go, graded where it is visible.
+
+    The helper existed because the sweep was SQL against a column: "no lower
+    bound" had to become a concrete date, and the date had to be the WRITE
+    WINDOW's opening or the sweep reached rows the pass would never rewrite.
+    Plan step C2-f3c deleted it on the strength of a stronger property -- the
+    domain IS the window, so it cannot exceed the window whatever the bound is.
+
+    **The sibling class's narrow-window case cannot see that property**
+    (adversarial review of C2-f3c).  It uses a contiguous TAIL, where "the ids
+    in the window" and "every period from the window's opening onward" select
+    the identical rows -- so it passes byte-identically on both trees and
+    measures nothing about the change.  Only a window with a HOLE in it
+    separates the two readings, and nothing else in the suite builds one.
+
+    Not reachable from ``app/`` today: both ``regenerate_for_template`` callers
+    pass a whole-schedule window.  That was equally true of the asymmetry
+    ``regeneration_bound`` was written to close, which is the argument for
+    grading it rather than trusting it.
+    """
+
+    def test_a_window_with_a_HOLE_sweeps_neither_side_of_the_hole(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Periods 2 and 6 are the window; 3, 4 and 5 keep their rows."""
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            template = _make_template(seed_user, EVERY_PERIOD)
+            recurrence_engine.generate_for_template(
+                template,
+                GenerationSchedule.for_pass(
+                    BalanceContext.build(seed_user["user"].id),
+                ),
+                scenario_id,
+            )
+            db.session.flush()
+            assert len(_rows(template, scenario_id)) == 10
+
+            # The rule is CLEARED, so every row the pass can see is an orphan
+            # and the RETIRE branch is what decides.  That makes the domain
+            # visible: exactly the rows it reaches are the rows that go.
+            db.session.delete(template.recurrence_rule)
+            db.session.flush()
+            db.session.refresh(template)
+
+            holed = {seed_periods[2].id, seed_periods[6].id}
+            recurrence_engine.regenerate_for_template(
+                template,
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(seed_user["user"].id), holed,
+                ),
+                scenario_id,
+            )
+            db.session.flush()
+
+            survivors = {
+                row.pay_period_id
+                for rows in _rows(template, scenario_id).values()
+                for row in rows
+            }
+            assert survivors == {
+                period.id for period in seed_periods
+            } - holed, (
+                "a sweep bounded by the window's OPENING rather than shaped by "
+                "the window itself takes periods 3, 4 and 5 with it -- they "
+                "sit inside the hole and no pass would recreate them"
+            )
+
+
+class TestTheGeneratePassTakesTheReadPass:
+    """What plan step R7d-c-1 changed, and the ordering rule it bought.
+
+    :class:`~app.services.generation_schedule.GenerationSchedule` took a
+    :class:`~app.services.pay_calendar.PayCalendar` until that step and takes a
+    :class:`~app.services.balance_at.BalanceContext` now, deriving the calendar
+    from it.  The reason is plan step R7d-c-2: a loan payment's closing bound
+    stops being the ``budget.recurrence_rules.end_date`` column and becomes a
+    fold over the loan, which needs a read pass, and the 2026-08-16 ruling
+    forbids a producer below the route building one.
+
+    Three properties are graded here, and only the first is a tidiness claim:
+
+    * the value derives NOTHING of its own -- the pass's memo is the request's
+      one derivation;
+    * a pass whose calendar was resolved BEFORE the write that created the
+      window's periods is REFUSED, loudly, rather than silently generating
+      into a schedule that does not hold them.  That is the whole safety
+      argument for letting a lazily-derived value in here at all;
+    * a repopulation opens exactly ONE pass for the whole batch, whatever the
+      template count, so the batch holds one calendar derivation, one
+      baseline-scenario resolution and one answer per loan.  **It is NOT an
+      order-independence claim**: a first draft said a transfer this loop
+      generates into a loan would change a later definition's bound, and
+      ``period_population``'s docstring carries the measurement that refutes
+      it -- future rows do not move a derived payoff, because the ESTIMATED
+      tier prices every uncovered future installment from the DEFINITION.
+    """
+
+    def test_the_schedule_derives_nothing_of_its_own(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The pass's memo is the derivation; the value adds none.
+
+        The COLD case is the one that matters: it pins that constructing this
+        value costs exactly ONE derivation rather than none (which would mean
+        the calendar came from somewhere else) or two.
+        """
+        with app.app_context():
+            cold = BalanceContext.build(seed_user["user"].id)
+            with counting_calls(_CALENDAR_DOOR) as counts:
+                schedule = GenerationSchedule.for_pass(cold)
+            assert counts["calendar_for"] == 1, (
+                f"constructing over a cold pass derived the owner's calendar "
+                f"{counts['calendar_for']} times; the pass memoizes one"
+            )
+
+            with counting_calls(_CALENDAR_DOOR) as again:
+                second = GenerationSchedule.for_pass(cold)
+                assert second.calendar is schedule.calendar, (
+                    "two schedules over one pass must answer the SAME calendar "
+                    "object, or the memo is not what they are reading"
+                )
+            assert again["calendar_for"] == 0, (
+                f"a second schedule over the same pass derived "
+                f"{again['calendar_for']} more calendars; the memo is what "
+                f"holds a request to one"
+            )
+
+    def test_a_pass_resolved_before_the_write_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A stale pass cannot generate into periods it cannot see.
+
+        The failure mode this refusal exists for: a caller builds the read
+        pass, reads its calendar for some earlier decision, THEN records new
+        paydays, then asks this value to write into them.  The pass's memo
+        still holds the pre-write schedule, so the new ids are not in it -- and
+        without the refusal the window would simply intersect to nothing and
+        the extend would report "generated 0 rows" for every definition the
+        owner has.
+        """
+        with app.app_context():
+            stale = BalanceContext.build(seed_user["user"].id)
+            stale.calendar()  # resolved BEFORE the write below
+
+            created = _append_period(seed_user, seed_periods)
+            new_ids = {period.id for period in created}
+
+            with pytest.raises(RecurrenceWindowError, match="are not in user"):
+                GenerationSchedule.for_period_ids(stale, new_ids)
+
+            # The CONTROL: the same window, a pass whose memo is still empty
+            # when it is asked -- which is the order ``period_population``
+            # runs in.  Without this the raise above would be satisfied by any
+            # window this owner cannot write into, including a broken one.
+            fresh = BalanceContext.build(seed_user["user"].id)
+            schedule = GenerationSchedule.for_period_ids(fresh, new_ids)
+            assert schedule.write_period_ids == frozenset(new_ids), (
+                "a pass resolved AFTER the write must accept the same window "
+                "the stale one was refused for"
+            )
+
+    def test_a_stale_pass_through_for_pass_is_NOT_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The refusal above does NOT cover :meth:`for_pass`, and here is what does.
+
+        **An adversarial review of plan step R7d-c-1 measured this after the
+        docstring claimed the opposite.**  :meth:`for_period_ids` catches a
+        stale pass because its window comes from somewhere else; ``for_pass``
+        takes its window FROM the calendar, so the window is a subset by
+        construction and ``__post_init__`` has nothing to compare.  A stale
+        pass there does not raise -- it UNDER-GENERATES in silence, leaving the
+        periods it cannot see empty.
+
+        Pinned rather than fixed, because the type cannot tell a stale memo
+        from a fresh one and no ``for_pass`` caller in ``app/`` creates a pay
+        period.  What this case protects is the next reader of that docstring:
+        if a later step teaches ``for_pass`` to refuse, this test says so by
+        failing.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            template = _make_template(seed_user, EVERY_PERIOD)
+            db.session.flush()
+
+            stale = BalanceContext.build(seed_user["user"].id)
+            covered_before = {
+                period.period_id
+                for period in stale.calendar().saved()
+            }
+
+            created_periods = _append_period(seed_user, seed_periods)
+            new_ids = {period.id for period in created_periods}
+
+            # NO raise -- the contrast with the case above is the whole point.
+            schedule = GenerationSchedule.for_pass(stale)
+            assert schedule.write_period_ids.isdisjoint(new_ids), (
+                "a stale pass's window cannot name a period recorded after it "
+                "resolved; if it can, the memo is not what for_pass reads"
+            )
+
+            created = recurrence_engine.generate_for_template(
+                template, schedule, scenario_id,
+            )
+            db.session.flush()
+            placed = {row.pay_period_id for row in created}
+            assert placed, "the pass generated nothing, so nothing is graded"
+            assert placed <= covered_before, (
+                "a stale pass wrote into a period it could not see"
+            )
+            assert placed.isdisjoint(new_ids), (
+                f"the stale pass covered {placed & new_ids}, so this case is "
+                f"no longer measuring the silent gap it was written for"
+            )
+
+    def test_one_read_pass_serves_the_whole_repopulation(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Seven definitions across BOTH engines, one pass for the batch.
+
+        ``populate_periods_from_active_templates`` runs both engines over every
+        active definition the owner has.  A pass rebuilt per template would
+        derive the owner's whole pay calendar once per definition, resolve the
+        baseline scenario once per definition, and -- from plan step R7d-c-2 --
+        re-fold every destination loan once per definition.  The count is ONE
+        for the batch.
+
+        **The counted call is the ROUTE's half since ruling R-R38**, and what
+        the count grades moved with it.  The producer cannot open a second pass
+        any more -- it takes one and has no constructor -- so "one per batch
+        rather than one per template" is now a property of the SIGNATURE.  What
+        this case still measures is that ``populate_new_periods`` opens exactly
+        one for the batch rather than looping the doors' periods and opening
+        one each, which no signature prevents.  Counting the producer alone
+        would read ZERO and grade nothing.
+        """
+        with app.app_context():
+            for index in range(6):
+                template = _make_template(seed_user, EVERY_PERIOD)
+                template.name = f"Recurring {index}"
+                db.session.flush()
+            # The TRANSFER loop is a second pass over a second table, and an
+            # adversarial review of plan step R7d-c-1 found this case graded
+            # only the transaction one: with no transfer template the engine
+            # iterates nothing, so a per-template rebuild THERE would read one
+            # pass and pass.
+            destination = create_account_of_type(
+                seed_user, db.session, "Savings", name="Holiday Fund",
+            )
+            make_transfer_template(db.session, seed_user, destination)
+            db.session.flush()
+
+            created = _append_period(seed_user, seed_periods)
+            new_ids = {period.id for period in created}
+
+            with counting_read_passes() as passes:
+                written = populate_new_periods(seed_user["user"].id, created)
+            assert written >= 7, (
+                f"the count was taken over a repopulation that wrote {written} "
+                f"rows; SEVEN definitions were seeded across the two engines "
+                f"and both loops have to have run for this count to grade them"
+            )
+            assert passes["n"] == 1, (
+                f"the repopulation opened {passes['n']} read passes for one "
+                f"batch of {written} rows; one pass per batch is what makes "
+                f"the answer independent of template order"
+            )
+
+
 class TestOneScheduleReadServesTheWholeRequest:
     """The N+1 an adversarial review measured, and the gate against its return.
 
     ``can_generate_in_period`` runs once per envelope row being carried
-    forward.  Building a ``GenerationSchedule`` inside it cost one
-    ``get_all_periods`` query AND one full forward occurrence walk per row --
-    measured at 12 queries for the preview and 24 for the execute over 12
-    envelope rows, against a baseline of 0.  The schedule is now resolved once
-    in ``_build_carry_forward_context`` and threaded.
+    forward.  Building a ``GenerationSchedule`` inside it cost one schedule
+    read AND one full forward occurrence walk per row -- measured at 12 queries
+    for the preview and 24 for the execute over 12 envelope rows, against a
+    baseline of 0.  The schedule is resolved once in
+    ``_build_carry_forward_context`` and threaded.
+
+    **The instrument changed at pay-calendar plan step C2-f3c and the claim got
+    stronger.**  It counted ``pay_period_service.get_all_periods``, which the
+    value used to read for itself; that reader is deleted and the value TOOK
+    the caller's :class:`~app.services.pay_calendar.PayCalendar`.  So the
+    number this asserts is ZERO derivations inside the service -- the request's
+    one derivation happens at its door, which is what ledger row **P68** asked
+    for.  ``tests/test_arch/test_one_read_pass_per_render.py`` grades the
+    render's total; this grades the service's share of it.
+
+    **Plan step R7d-c-1 made it the read PASS, and the zero now has a
+    precondition worth stating**: the derivation is the pass's memo rather than
+    a value the route computed, so it happens wherever it is first asked for.
+    The route asks at its door (``_resolve_carry_forward_context`` reads
+    ``balance_ctx.calendar()`` to look both periods up), so zero below the door
+    is still the shape the application runs -- and the second measurement below
+    grades the thing that actually prevents the N+1: handed a pass whose memo
+    is EMPTY, the service derives ONE calendar for twelve envelope rows, not
+    twelve.  The old assertion could not see that at all; a service deriving
+    one per row from its own ``calendar_for`` would have failed it, but so
+    would a service deriving exactly one, and only the first is the defect.
     """
 
-    def test_a_twelve_row_carry_forward_reads_the_schedule_once(
-        self, app, db, seed_user, seed_periods, monkeypatch,
+    def test_a_twelve_row_carry_forward_derives_no_calendar(
+        self, app, db, seed_user, seed_periods,
     ):
-        """Twelve envelope rows, one schedule read on each path."""
+        """Twelve envelope rows, zero calendar derivations inside the service."""
         with app.app_context():
             # Pylint: ``import-outside-toplevel`` -- the carry-forward service
             # is this class's collaborator only.
@@ -1092,39 +1587,229 @@ class TestOneScheduleReadServesTheWholeRequest:
                 db.session.flush()
                 recurrence_engine.generate_for_template(
                     template,
-                    GenerationSchedule.for_user(seed_user["user"].id),
+                    GenerationSchedule.for_pass(
+                        BalanceContext.build(seed_user["user"].id),
+                    ),
                     scenario_id,
                 )
             db.session.commit()
 
-            calls = {"n": 0}
-            real = pay_period_service.get_all_periods
-
-            def counting(user_id):
-                """Count each schedule read, then delegate."""
-                calls["n"] += 1
-                return real(user_id)
-
-            monkeypatch.setattr(
-                pay_period_service, "get_all_periods", counting,
+            # **The N+1 gate proper** (plan step R7d-c-1), and it runs FIRST
+            # because the execute below carries these rows and a second
+            # preview over the same pair then plans nothing.  A pass whose memo
+            # is EMPTY derives ONE calendar for the whole preview, not one per
+            # envelope row -- which is the claim the two zeros further down
+            # cannot make, because a memo that was already full satisfies them
+            # whatever the service would have caused on its own.
+            cold = BalanceContext.build(seed_user["user"].id)
+            with counting_calls(_CALENDAR_DOOR) as cold_counts:
+                cold_preview = carry_forward_service.preview_carry_forward(
+                    seed_periods[0].id, seed_periods[1].id, scenario_id,
+                    balance_ctx=cold,
+                )
+            assert len(cold_preview.plans) == 12, (
+                "the cold count was taken over a preview that planned nothing, "
+                "so the envelope branch this grades never ran"
+            )
+            assert cold_counts["calendar_for"] == 1, (
+                f"twelve envelope rows caused "
+                f"{cold_counts['calendar_for']} calendar derivations on a pass "
+                f"that had none; the memo is what holds it to one, and one per "
+                f"row is the N+1 this class exists to prevent"
             )
 
-            calls["n"] = 0
-            carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, scenario_id,
+            # The ROUTE's shape: one pass, and its calendar derived at the
+            # door -- ``_resolve_carry_forward_context`` reads it to look both
+            # periods up before the service is called at all.
+            balance_ctx = BalanceContext.build(seed_user["user"].id)
+            balance_ctx.calendar()
+
+            with counting_calls(_CALENDAR_DOOR) as counts:
+                preview = carry_forward_service.preview_carry_forward(
+                    seed_periods[0].id, seed_periods[1].id, scenario_id,
+                    balance_ctx=balance_ctx,
+                )
+            assert len(preview.plans) == 12, (
+                "the count was taken over a preview that planned nothing, so "
+                "the envelope branch this grades never ran"
             )
-            assert calls["n"] == 1, (
-                f"the preview read the schedule {calls['n']} times for 12 "
-                f"envelope rows; it must resolve one and thread it"
+            assert counts["calendar_for"] == 0, (
+                f"the preview derived the owner's calendar "
+                f"{counts['calendar_for']} times below its door; it takes the "
+                f"one the route's pass already holds"
             )
 
-            calls["n"] = 0
-            carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, scenario_id,
+            with counting_calls(_CALENDAR_DOOR) as counts:
+                carried = carry_forward_service.carry_forward_unpaid(
+                    seed_periods[0].id, seed_periods[1].id, scenario_id,
+                    balance_ctx=balance_ctx,
+                )
+            assert carried == 12, (
+                "the count was taken over an execute that carried nothing"
             )
-            assert calls["n"] == 1, (
-                f"the execute path read the schedule {calls['n']} times for "
-                f"12 envelope rows; it must resolve one and thread it"
+            assert counts["calendar_for"] == 0, (
+                f"the execute path derived the owner's calendar "
+                f"{counts['calendar_for']} times below its door; it takes the "
+                f"one the route's pass already holds"
             )
+
+            # **The instrument's own control**, and an adversarial review of
+            # plan step C2-f3c is why it is here: ``== 0`` is satisfied
+            # identically by "the service derives nothing" and by "the counter
+            # is blind", and only one of those is the claim.
+            #
+            # It calls the door the way ``app/`` code calls it -- through the
+            # module attribute -- because that is the only shape
+            # ``counting_calls`` can see.  The instrument patches every
+            # ``app.*`` module holding the real function as an attribute of
+            # that NAME, so a producer that did ``from ... import calendar_for
+            # as _cal`` would derive uncounted and both zeros above would read
+            # green through the N+1 this class exists to prevent.  That hole is
+            # the instrument's, not this step's; what this control pins is that
+            # the counter is live for the ordinary spelling.
+            from app.services import pay_calendar  # pylint: disable=import-outside-toplevel
+
+            with counting_calls(_CALENDAR_DOOR) as control:
+                pay_calendar.calendar_for(seed_user["user"].id)
+            assert control["calendar_for"] == 1, (
+                f"the counter saw {control['calendar_for']} of one direct call "
+                f"to the door it is keyed on, so both zeros above mean nothing"
+            )
+
+
+class TestNoOrmPayPeriodEntersTheSeam:
+    """The generation seam names ``budget.pay_periods`` in exactly one way: ids.
+
+    **What makes plan step C4 safe for this seam**, and the property
+    pay-calendar plan step C2-f3c actually delivered.  Every module below used
+    to hold an ORM ``PayPeriod`` -- the schedule value carried a tuple of them,
+    the placements carried one each, the row select joined the table on
+    ``end_date``, and the amount producer resolved an id back to a derived
+    period.  Reading a period's BOUNDS off the row means reading
+    ``end_date`` and ``period_index``, the two columns C4-c dropped, and finding
+    those readers by hand is what ledger row **P70** records going wrong: an
+    AST census found SIX in query position where the step's own specification
+    named two.
+
+    Graded on the IMPORT rather than on the attribute, because
+    ``txn.pay_period.end_date`` reaches the same columns through a relationship
+    with no ``PayPeriod`` name in sight, while a module that imports the model
+    at all is a module that can grow one.  The seam takes ids in and derived
+    periods through, so it has no reason to name the mapped class.
+    """
+
+    #: Every module of the generation seam, as repository-relative paths.  The
+    #: two engines, the value they share, the shared queries, and the
+    #: orchestrator above them.
+    _SEAM = (
+        "app/services/generation_schedule.py",
+        "app/services/period_population.py",
+        "app/services/transfer_recurrence.py",
+        "app/services/_recurrence_common.py",
+        "app/services/recurrence_engine/__init__.py",
+        "app/services/recurrence_engine/_amounts.py",
+        "app/services/recurrence_engine/_conflicts.py",
+        "app/services/recurrence_engine/_generate.py",
+        "app/services/recurrence_engine/_maintain.py",
+        "app/services/recurrence_engine/_plan.py",
+    )
+
+    def _pay_period_imports(self, relative_path):
+        """Return every import of the pay-period MODEL in *relative_path*.
+
+        Keyed on what was imported rather than on the local binding, so
+        ``from app.models.pay_period import PayPeriod as Row`` cannot hide.
+
+        Args:
+            relative_path: Path under the repository root to parse.
+
+        Returns:
+            The set of ``(module, name)`` pairs naming the model.
+        """
+        # Pylint: ``import-outside-toplevel`` -- this census is the only user.
+        import ast  # pylint: disable=import-outside-toplevel
+        import pathlib  # pylint: disable=import-outside-toplevel
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        tree = ast.parse((root / relative_path).read_text())
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    # BOTH spellings: ``from app.models.pay_period import
+                    # PayPeriod`` and ``from app.models import pay_period``.
+                    # An adversarial review of plan step C2-f3c found the
+                    # second walked straight past this census.
+                    if module.endswith("models.pay_period"):
+                        found.add((module, alias.name))
+                    elif f"{module}.{alias.name}".endswith("models.pay_period"):
+                        found.add((module, alias.name))
+            elif isinstance(node, ast.Import):
+                found.update(
+                    (alias.name, alias.name) for alias in node.names
+                    if alias.name.endswith("models.pay_period")
+                )
+        return found
+
+    def test_no_seam_module_imports_the_pay_period_model(self):
+        """None of the ten modules names ``app.models.pay_period``."""
+        offenders = {
+            relative: self._pay_period_imports(relative)
+            for relative in self._SEAM
+            if self._pay_period_imports(relative)
+        }
+        assert offenders == {}, offenders
+
+    def test_the_census_sees_an_import_when_there_is_one(self):
+        """The CONTROL: a module that DOES import the model is detected.
+
+        Without it the assertion above passes for a census that parses nothing
+        -- a wrong path, a swallowed error, an ``ast`` walk that misses
+        ``ImportFrom``.  ``pay_period_write`` is the one module in ``app/``
+        whose whole job is writing that table, so it will always import it.
+        """
+        assert ("app.models.pay_period", "PayPeriod") in (
+            self._pay_period_imports("app/services/pay_period_write.py")
+        )
+
+    def test_the_census_sees_every_spelling_of_the_import(self, tmp_path):
+        """The CONTROL for the census's own BRANCHES, one per import form.
+
+        The live tree exercises exactly one of the three: ``from
+        app.models.pay_period import PayPeriod``.  An adversarial review of
+        plan step C2-f3c found the ``from app.models import pay_period``
+        spelling walking past the census unseen, and the ``ast.Import`` arm
+        with no firing control at all -- nothing in ``app/`` writes ``import
+        app.models.pay_period``, so it could have been deleted silently.
+        """
+        # Pylint: ``import-outside-toplevel`` -- this control is the only user.
+        import ast  # pylint: disable=import-outside-toplevel
+
+        spellings = {
+            "from app.models.pay_period import PayPeriod\n":
+                ("app.models.pay_period", "PayPeriod"),
+            "from app.models import pay_period\n":
+                ("app.models", "pay_period"),
+            "import app.models.pay_period\n":
+                ("app.models.pay_period", "app.models.pay_period"),
+        }
+        for source, expected in spellings.items():
+            tree = ast.parse(source)
+            found = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    for alias in node.names:
+                        if module.endswith("models.pay_period"):
+                            found.add((module, alias.name))
+                        elif f"{module}.{alias.name}".endswith(
+                            "models.pay_period",
+                        ):
+                            found.add((module, alias.name))
+                elif isinstance(node, ast.Import):
+                    found.update(
+                        (alias.name, alias.name) for alias in node.names
+                        if alias.name.endswith("models.pay_period")
+                    )
+            assert expected in found, (source, found)

@@ -23,6 +23,12 @@ Start from the actual diff, not assumptions:
 The linters already catch the mechanical rules. Your job is the judgment the
 linters cannot make. Spend your attention there.
 
+The checklist below deliberately RESTATES the standards in
+`.claude/rules/coding.md`, `.claude/rules/database.md`, `.claude/rules/testing.md`
+and CLAUDE.md's Transfer Invariants, so a review carries them even when those
+files have not loaded. They are the source of truth: a ruling that changes one
+of them updates this mirror in the same commit.
+
 ## Standards to enforce (judgment-level)
 
 Financial correctness:

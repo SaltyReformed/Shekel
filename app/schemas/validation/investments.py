@@ -121,6 +121,16 @@ class InvestmentParamsCreateSchema(BaseSchema):
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=0, max=1),
     )
+    # R-SAL5: WHICH salary profile funds this account's employer
+    # contribution.  ``allow_none`` because an account may genuinely have no
+    # answer -- and a NULL models NO employer money rather than a figure
+    # priced off an arbitrary profile (developer, 2026-09-04, read at
+    # ``investment_projection.AccountPayrollFeed.funds_employer``).  A
+    # positive-integer check is ALL a schema can do here: whether the id is
+    # the requester's OWN profile is an ownership question, answered at the
+    # route by ``auth_helpers.require_owned_fk`` -- the same split
+    # ``salary:R14-a`` made for the mirror-image ``target_account_id``.
+    salary_profile_id = RowId(load_default=None, allow_none=True)
 
     @validates_schema
     def validate_employer_contribution_type(self, data, **kwargs):
@@ -204,6 +214,22 @@ class InvestmentParamsUpdateSchema(BaseSchema):
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=0, max=1),
     )
+    # R-SAL5: WHICH salary profile funds this account's employer
+    # contribution.  ``allow_none`` because an account may genuinely have no
+    # answer -- and a NULL models NO employer money rather than a figure
+    # priced off an arbitrary profile (developer, 2026-09-04, read at
+    # ``investment_projection.AccountPayrollFeed.funds_employer``).  A
+    # positive-integer check is ALL a schema can do here: whether the id is
+    # the requester's OWN profile is an ownership question, answered at the
+    # route by ``auth_helpers.require_owned_fk`` -- the same split
+    # ``salary:R14-a`` made for the mirror-image ``target_account_id``.
+    # No ``load_default`` on UPDATE, matching every other field here: an
+    # omitted key leaves the stored profile alone, where a default of ``None``
+    # would let a partial payload silently unfund the account.  The form's
+    # "-- Not set --" option submits ``""``, which ``_normalize_empty_inputs``
+    # keeps as an explicit ``None`` because the field is nullable -- so
+    # CLEARING it from the UI still works and is the only way to clear it.
+    salary_profile_id = RowId(allow_none=True)
 
     @validates_schema
     def validate_employer_contribution_type(self, data, **kwargs):

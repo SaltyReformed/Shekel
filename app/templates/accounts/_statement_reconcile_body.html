@@ -1,0 +1,574 @@
+{% from "_money_macros.html" import money %}
+{% from "accounts/_statement_reconcile_macros.html" import act_card, line_card, nothing_on_this_tab, show_the_other, skip_card %}
+
+{# THE WHOLE RECONCILE SURFACE, and the Apply door's own answer.
+
+   Plan step bank_import:X-gj-1b; the direction was locked at Loop A round 4
+   on 2026-08-29 and is docs/design/bank_import_audit.md.
+
+   IT IS A PARTIAL rather than part of the page because applying a pass
+   ANSWERS WITH THIS: the receipt at the top says what landed and quotes every
+   refusal, and everything below it is re-derived from the state that pass
+   left.  One template, so what htmx swaps in after a POST cannot drift from
+   what a reload shows.  Why not a flash: it rides in the signed session
+   cookie, and the longest sentence a batch item can carry measures 497 bytes
+   against the 4 KB a browser will store -- nine of them overflow it, and an
+   overflowed cookie is dropped, which logs the owner out.
+
+   THE FORM SWAPS WITH show:top, and that is load-bearing.  The POST
+   re-renders this WHOLE body and the receipt is the panel at its top, while
+   the Apply button sits in a sticky footer at the bottom of a long list --
+   and htmx does not scroll on swap.
+
+   R-FP AND R-HS ARE STRUCTURAL HERE.  A card is applied only if its own OK
+   checkbox is in the body, and a browser submits a checkbox only when it is
+   ticked -- so a pre-filled destination on a card nobody touched writes
+   nothing.  There is no state in which an untouched control moves money.
+
+   Context: account, page (ReconcilePage), show_all (whether this render
+   lifted the bound on settled acts), chips ((HoldingChip, href) pairs),
+   categories, outcome
+   (BatchOutcome or None), offers (the RuleOffers a pass earned -- one per
+   merchant it filed spending for), rules (StatedRules or None -- a SEPARATE
+   receipt because stating where a merchant goes moves no money), error (a
+   sentence or None), unacted (a sentence or None). #}
+
+<div id="statement-reconcile-body">
+
+  {# ONE receipt for every surface that applies through ``apply_reviewed``. #}
+  {% include "accounts/_statement_pass_receipt.html" %}
+
+  {% if unacted %}
+  <div class="alert alert-warning d-flex gap-2 align-items-start" role="alert">
+    <i class="bi bi-exclamation-triangle mt-1"></i>
+    <div>{{ unacted }}</div>
+  </div>
+  {% endif %}
+
+  {# ── The offer a pass EARNS: one standing answer per merchant ─────── #}
+  {# Ruling bank_import:R-IB (developer, 2026-08-30).  It is asked HERE, once
+     per merchant, about what the door actually APPLIED -- not on the card,
+     where it was one question per LINE (86 controls for 21 answers on the
+     developer's own pass) and was read from what was OK'd rather than from
+     what landed, so a refused purchase still wrote a standing rule.
+
+     IT POSTS TO THE DOOR THE REVIEW QUEUE AND THE REGISTER ALREADY USE, at
+     the field names merchant_rules.rule_payload reads, so three surfaces
+     share one grader and one writer.  KEYED BY MERCHANT and never by a
+     rendered position (R-HC): the key is what pairs an answer with the
+     merchant it is about, and making it the merchant id is what leaves a
+     contradiction no form to take.
+
+     EVERY GROUP OPENS ON "Not now".  Nothing here is pre-selected, because
+     the owner has not said it yet -- the destination they picked is on the
+     card and this is a different question about the FUTURE. #}
+  {% if offers %}
+  <form class="card mb-3" method="post"
+        action="{{ url_for('accounts.state_reconcile_merchant_rules', account_id=account.id) }}"
+        hx-post="{{ url_for('accounts.state_reconcile_merchant_rules', account_id=account.id) }}"
+        hx-target="#statement-reconcile-body"
+        hx-swap="outerHTML show:top"
+        hx-disabled-elt="find button[type=submit]">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="tab" value="{{ page.tab.value }}">
+    <div class="card-header">
+      <i class="bi bi-signpost-split"></i> Should any of these stand?
+    </div>
+    <div class="card-body">
+      {% for offer in offers %}
+      <div{% if not loop.first %} class="mt-3"{% endif %}>
+        <input type="hidden" name="rule_merchant-{{ offer.merchant_id }}"
+               value="{{ offer.merchant_id }}">
+        <p class="small mb-2">
+          {% if offer.is_split %}
+          You filed {{ offer.filed_count }} <strong>{{ offer.merchant }}</strong>
+          purchase(s) in more than one place. Which should be the standing
+          answer?
+          {% else %}
+          You filed {{ offer.filed_count }} <strong>{{ offer.merchant }}</strong>
+          purchase(s) into <strong>{{ offer.answers[0].label }}</strong>.
+          {% endif %}
+        </p>
+        {% if offer.offerable %}
+        <div class="form-check">
+          <input class="form-check-input" type="radio" checked
+                 id="rule-{{ offer.merchant_id }}-none"
+                 name="rule-{{ offer.merchant_id }}" value="unset">
+          <label class="form-check-label small"
+                 for="rule-{{ offer.merchant_id }}-none">Not now</label>
+        </div>
+        {% endif %}
+        {% for answer in offer.offerable %}
+        <div class="form-check">
+          <input class="form-check-input" type="radio"
+                 id="rule-{{ offer.merchant_id }}-{{ loop.index0 }}"
+                 name="rule-{{ offer.merchant_id }}"
+                 value="{% if answer.statement.template_id %}t:{{ answer.statement.template_id }}{% else %}new{% endif %}">
+          <label class="form-check-label small"
+                 for="rule-{{ offer.merchant_id }}-{{ loop.index0 }}">
+            Always file {{ offer.merchant }} in
+            <strong>{{ answer.label }}</strong>{% if offer.is_split %}
+            ({{ answer.count }} this time){% endif %}
+          </label>
+        </div>
+        {% if not answer.statement.template_id %}
+        {# The name and category a NEW-envelope answer needs, paired with the
+           merchant because that is the key the form reads them by.  Read only
+           for the `new` arm, so they ride along harmlessly when a template
+           option is the one chosen -- and `offerable` admits at most ONE
+           new-envelope answer, so exactly one pair is ever emitted. #}
+        <input type="hidden" name="rule_name-{{ offer.merchant_id }}"
+               value="{{ answer.statement.envelope_name }}">
+        {# `transactions.category_id` is NULLABLE with ON DELETE SET NULL, so
+           this can be None -- which Jinja renders as the literal "None" and
+           MerchantRuleBatchSchema then refuses for EVERY item in the body,
+           400-ing the whole offer including a pure "Not now" press.  No app
+           writer reaches a NULL category on a purchase-tracking row today,
+           but that safety is an enumeration of writers and this project has
+           been burned by one; the guard costs a condition. #}
+        {% if answer.statement.category_id is not none %}
+        <input type="hidden" name="rule_category-{{ offer.merchant_id }}"
+               value="{{ answer.statement.category_id }}">
+        {% endif %}
+        {% endif %}
+        {% endfor %}
+        {% for answer in offer.unofferable %}
+        {# WHAT CANNOT BE MADE STANDING, and WHY -- two different reasons and
+           they get two different sentences.  `blocked` is the rule door's own
+           refusal, so the offer never renders a press that cannot succeed;
+           its absence here means the answer is fine and it is the WIRE that
+           cannot carry a second new-envelope name (`rule_name-<key>` is keyed
+           by merchant).  Naming them rather than dropping them is what keeps
+           the receipt's counts equal to what the pass filed. #}
+        <p class="small text-body-secondary mb-0">
+          {{ answer.count }} went into <strong>{{ answer.label }}</strong>, and
+          {% if answer.blocked %}
+          that cannot be a standing answer: {{ answer.blocked }}.
+          {% else %}
+          only one new envelope can be made standing from one press, so this
+          one cannot be offered here.
+          {% endif %}
+        </p>
+        {% endfor %}
+      </div>
+      {% endfor %}
+      <button type="submit" class="btn btn-sm btn-outline-primary mt-3">
+        Save these answers
+      </button>
+      <p class="small text-body-secondary mt-2 mb-0">
+        This changes no money. It fills these in for you on later statements.
+      </p>
+    </div>
+  </form>
+  {% endif %}
+
+  {% if rules %}
+  {# A SEPARATE receipt from the pass's, because it reports a separate act:
+     stating where a merchant goes moves no money, and folding the two would
+     put "3 recorded" beside "2 merchants answered for" under one heading that
+     could only be true of one of them. #}
+  <div class="card mb-3 border-{% if rules.refused %}warning{% else %}success{% endif %}">
+    <div class="card-header">
+      <i class="bi bi-signpost-split"></i> Where your merchants go
+    </div>
+    <div class="card-body">
+      {% if rules.stated %}
+      <ul class="mb-0 small">
+        {% for said in rules.stated %}
+        <li class="mb-1">{{ said }}</li>
+        {% endfor %}
+      </ul>
+      {% elif rules.unchanged_count %}
+      <p class="mb-0 text-body-secondary">
+        Nothing changed -- every answer was already what you had said.
+      </p>
+      {% else %}
+      {# NOT "already what you had said", which is what this arm claimed until
+         ruling bank_import:R-IB made an empty press the DEFAULT one: the
+         offer opens every group on "Not now", those are dropped before the
+         door sees them, and the door then reports nothing stated, nothing
+         refused and nothing unchanged.  Saying the owner had already answered
+         would be a receipt claiming standing answers the app does not hold. #}
+      <p class="mb-0 text-body-secondary">
+        Nothing was recorded -- every merchant was left on <em>Not now</em>.
+      </p>
+      {% endif %}
+      <p class="mt-2 mb-0 small text-body-secondary">This changed no money.</p>
+    </div>
+    {% if rules.refused %}
+    <div class="card-body border-top">
+      <p class="fw-semibold mb-2">These were not recorded:</p>
+      <ul class="mb-0 small">
+        {% for reason in rules.refused %}
+        <li class="mb-1">{{ reason }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# ── The hero: the number is the hero ──────────────────────────────── #}
+  {# FOUR FIGURES, ALL THE SERVICE'S.  The three money figures are
+     all-or-nothing and travel with the day they are about: an account with no
+     anchored import has a bank side nothing places, and printing two of three
+     would invite a subtraction the app cannot perform. #}
+  <div class="rec-hero">
+    {% if page.hero.day %}
+    <div class="rec-figure">
+      <div class="rec-caption">BANK, {{ page.hero.day }}</div>
+      <div class="rec-number font-mono">{{ money(page.hero.bank) }}</div>
+    </div>
+    <div class="rec-figure">
+      <div class="rec-caption">BOOKS, {{ page.hero.day }}</div>
+      <div class="rec-number font-mono">{{ money(page.hero.books) }}</div>
+    </div>
+    <div class="rec-figure">
+      <div class="rec-caption">OFF BY</div>
+      <div class="rec-number font-mono{% if page.hero.off_by %} rec-off{% else %} rec-agreed{% endif %}">{{ money(page.hero.off_by) }}</div>
+    </div>
+    {% else %}
+    <div class="rec-figure rec-figure-wide">
+      <div class="rec-caption">BANK AND BOOKS</div>
+      <div class="rec-number rec-number-absent">no day yet</div>
+      <div class="rec-note small text-body-secondary">
+        Nothing places this account's bank balance on a day, so the two
+        records cannot be compared. Import a statement that carries a running
+        balance, or set this account's anchor.
+      </div>
+    </div>
+    {% endif %}
+    <div class="rec-figure">
+      <div class="rec-caption">TO EXPLAIN</div>
+      <div class="rec-number rec-accent font-mono">{{ page.hero.to_explain }}</div>
+    </div>
+    {# PROVENANCE, right of the figures, and it is NOT one of them.  The four
+       numbers answer "am I done"; this answers "is what I am looking at
+       current", which is a fact about the last import the owner performed.
+       The whole line is the service's (ReconcilePage.last_import) -- what a
+       re-import of an overlapping span RECORDED is its own column and not the
+       size of its file, and the two figures beside each other are comparable
+       because both count lines of that same import.
+
+       ABSENT for an account nobody has imported into, which is the same state
+       the hero's own "no day yet" arm is drawn for.
+
+       THE INSTANT IS RENDERED IN THE DISPLAY TIMEZONE HERE, never truncated
+       in the service: an import performed at 21:00 Eastern is stored on the
+       next UTC day, and `local_datetime` is the one place this app converts.
+
+       THE RECEIPT is the statements page's "Filed by your rules" card, which
+       is what ruling R-GH's receipt IS -- every filed act itemised, with the
+       one-click undo.  It is reached by anchor, and the anchor is the card's
+       own id there.  On an account whose rules have never fired that card is
+       absent and the link lands at the top of the statements page, which is
+       where the import history and the upload form are: a page that answers
+       the question either way rather than a control that cannot succeed. #}
+    {% if page.last_import %}
+    <p class="rec-provenance small">
+      Last import
+      <span class="font-mono">{{ page.last_import.at | local_datetime }}</span>
+      &middot;
+      <span class="font-mono">{{ page.last_import.recorded_count }}</span>
+      lines recorded &middot;
+      <span class="font-mono">{{ page.last_import.filed_by_rules }}</span>
+      filed by rules &middot;
+      <a href="{{ url_for('accounts.statements', account_id=account.id, _anchor='filed-by-rules') }}">receipt</a>
+    </p>
+    {% endif %}
+  </div>
+  <p class="rec-done small">
+    {% if page.is_done %}
+    Done: your books and your bank agree, through the last day both records
+    reach, and nothing is waiting to be explained.
+    {% else %}
+    Done is $0.00 off and 0 to explain.
+    {% if page.hero.unpriced_after %}
+    {# NOT IMPLIED BY THE OTHER THREE, and stated because of that: the
+       comparison walks BACK to the last day both records speak for, so an
+       account whose statements stop three weeks before its records do would
+       otherwise report a perfectly balanced comparison three weeks old. #}
+    This comparison is priced through {{ page.hero.day }};
+    {{ page.hero.unpriced_after }} later day(s) your records reach cannot be
+    priced from your bank's own figures.
+    {% endif %}
+    {% endif %}
+  </p>
+
+  {# ── Holding chips: what is NOT work (R-HQ) ────────────────────────── #}
+  {% if chips %}
+  <div class="rec-chips">
+    {% for chip, href in chips %}
+    {% if href %}
+    <a class="rec-chip" href="{{ href }}">
+      <span class="rec-chip-count font-mono">{{ chip.count }}</span>
+      {{ chip.label }}{% if chip.amount %} <span class="font-mono">{{ money(chip.amount) }}</span>{% endif %}{% if chip.day %} <span class="font-mono">to {{ chip.day }}</span>{% endif %}
+    </a>
+    {% else %}
+    <span class="rec-chip rec-chip-flat">
+      <span class="rec-chip-count font-mono">{{ chip.count }}</span>
+      {{ chip.label }}{% if chip.amount %} <span class="font-mono">{{ money(chip.amount) }}</span>{% endif %}{% if chip.day %} <span class="font-mono">to {{ chip.day }}</span>{% endif %}
+    </span>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# What the account's OPENING already accounts for (balance:X-f3c-2b-2b).
+     NOT a holding chip: it WAS one, and the sentence under it repeated the
+     chip's own count, day and link three lines later -- the clutter this
+     rebuild removed, found by adversarial design review 2026-08-31.  Both
+     halves are composed in the SERVICE; the anchor is the one fact a service
+     may not build, and it is the same URL the review body and the workbench
+     render for the same value. #}
+  {% if page.books_bound %}
+  <p class="rec-books-bound small text-body-secondary">
+    {{ page.books_bound.said }}
+    <a href="{{ url_for('accounts.edit_account', account_id=account.id) }}#books-opening">{{ page.books_bound.restatement_act }}</a>.
+  </p>
+  {% endif %}
+
+  {# ── The tab bar ───────────────────────────────────────────────────── #}
+  {# EVERY TAB, since plan step X-gj-1c.  The route narrowed this to the three
+     it had cards for while Explained and Filed by rules were unbuilt -- a tab
+     that led nowhere would be the affordance-that-cannot-succeed shape R-HW
+     bounds -- and both are built now, so the whole of `page.counts` is the
+     bar.  A LINK DROPS `all`: the bound is a fact about how much of ONE tab
+     you asked to see, so arriving at another opens it bounded, and its own
+     footer offers the rest. #}
+  <nav class="rec-tabs" aria-label="Reconcile">
+    {% for count in page.counts %}
+    <a class="rec-tab{% if count.tab == page.tab %} rec-tab-open{% endif %}"
+       href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab=count.tab.value) }}"
+       {% if count.tab == page.tab %}aria-current="page"{% endif %}>
+      {{ count.tab.label }}
+      <span class="rec-tab-count font-mono">{{ count.count }}</span>
+    </a>
+    {% endfor %}
+    <button class="rec-legend-toggle" type="button" data-rec-legend-toggle
+            aria-label="What the four words mean">?</button>
+  </nav>
+  {# RENDERED VISIBLE, and the dismissal is JavaScript's (R-HP).  It shipped
+     `hidden` with the server, so with scripting off the ONE piece of
+     explanatory prose the locked direction gives this page -- what the four
+     words mean -- never appeared at all.  The direction calls it "the only
+     explanatory prose on the page", so its default has to be the state that
+     is right when nothing runs; `statement_reconcile.js` hides it on load for
+     a browser that remembers dismissing it. #}
+  <p class="rec-legend" data-rec-legend>
+    <strong>Match</strong> a row you already hold &middot;
+    <strong>Add</strong> new spending or income &middot;
+    <strong>Transfer</strong> between your own accounts &middot;
+    <strong>Skip</strong> explained by nothing
+    <button class="rec-legend-close" type="button" data-rec-legend-close
+            aria-label="Hide this">&times;</button>
+  </p>
+
+  {# ── The cards ─────────────────────────────────────────────────────── #}
+  {# WHICH KIND THIS PAGE HOLDS IS THE SERVICE'S FACT (ReconcilePage.kind, a
+     CardKind; plan steps X-gj-1c and X-gj-4c-2), asked once here.  It is set
+     by the arm that BUILT the cards, not looked up from a table beside it, so
+     a page cannot claim a kind its own sections are not.  It is not a name test
+     in Jinja: the three kinds are three values carrying disjoint fields, and
+     the tab is what decides which the sections hold.
+
+     THREE ARMS, ONE PER KIND, AND NO `else`.  That is the shape
+     VerbOffer.is_match/is_add already takes, and it is deliberate: a default
+     arm would render some future fourth kind through whichever partial
+     happened to be last.  What holds the three complete is the route test
+     driven from the Tab enum -- every tab renders the control its kind carries
+     -- because a kind with no arm here draws a blank tab rather than raising.
+
+     AN ACT TAB AND A SKIP TAB RENDER OUTSIDE THE APPLY FORM, and that is
+     structural rather than tidiness.  Undo is a form of its own, a form cannot
+     nest in a form, and there is nothing on either tab to Apply -- no OK
+     checkbox, no sweep, no submit -- so rendering the band at all would be a
+     control that cannot succeed (R-HW). #}
+  {% if page.kind.is_act %}
+  {% for section in page.sections %}
+  {% for card in section.cards %}
+  {# THE ACTION CARRIES THE VIEW.  `release_and_return` reads the tab and the
+     bound out of request.values, which a POST's own query string feeds, so the
+     owner comes back to the tab they were on showing what they had asked to
+     see.  `url_for` drops a None argument, so the ordinary render posts the
+     plain URL. #}
+  {{ act_card(
+       url_for('accounts.release_from_reconcile',
+               account_id=account.id, tab=page.tab.value,
+               all=1 if show_all else None),
+       card) }}
+  {% endfor %}
+  {% if section.withheld %}
+  {# The settled tabs' own tail: every act that NO LONGER HOLDS is above this
+     whatever its age, which is `accepted_register`'s rule and not a promise
+     made here. #}
+  {% call show_the_other(account, page, section.withheld, "act(s)") %}
+    -- the newest are listed above, and any that no longer hold are always
+    listed whatever their age.
+  {% endcall %}
+  {% endif %}
+  {% else %}
+  {{ nothing_on_this_tab() }}
+  {% endfor %}
+  {% if page.sections %}
+  {# WHAT UNDO DOES AND DOES NOT DO, said once under the list rather than on
+     every card.  Only where there IS a list: on an empty tab it would be a
+     paragraph about a control nothing renders. #}
+  {% if show_all %}
+  <p class="rec-more small text-body-secondary">
+    Every act on this tab is listed.
+  </p>
+  {% endif %}
+  <p class="rec-more small text-body-secondary">
+    Undoing an act puts its statement line(s) back among the ones to explain.
+    It does not put the dates back -- your bank is still the best record of
+    when that money moved. It DOES remove rows the act itself created: a
+    purchase recorded from a bank line, a recorded difference, and the budget
+    line created to hold a purchase where nothing else is filed under it.
+  </p>
+  {% endif %}
+  {% endif %}
+
+  {% if page.kind.is_skip %}
+  {# THE RECORDED SKIPS (plan step X-gj-4c-2, rulings R-JG, R-JH and R-GX).
+     THE ACTION CARRIES THE VIEW, exactly as the settled tabs' Undo does: the
+     tab, and whether this render had lifted the bound.  Without the second an
+     undo pressed while showing everything answers with the bounded list and
+     the record collapses under the reader mid-scroll.  `url_for` drops a None
+     argument, so the ordinary render posts the plain URL. #}
+  {% for section in page.sections %}
+  {% for card in section.cards %}
+  {{ skip_card(
+       url_for('accounts.unskip_from_reconcile',
+               account_id=account.id, tab=page.tab.value,
+               all=1 if show_all else None),
+       card) }}
+  {% endfor %}
+  {% if section.withheld %}
+  {% call show_the_other(account, page, section.withheld, "skip(s)") %}
+    -- the newest are listed above.
+  {% endcall %}
+  {% endif %}
+  {% else %}
+  {{ nothing_on_this_tab() }}
+  {% endfor %}
+  {% if page.sections %}
+  {% if show_all %}
+  <p class="rec-more small text-body-secondary">
+    Every skip on this tab is listed.
+  </p>
+  {% endif %}
+  {# WHAT UNDO DOES, AND THE ONE THING A SKIP NEVER DID, said once under the
+     list rather than on every card (R-HR).  The second sentence is what the
+     SKIP pane says where the verb is pressed, and it is the fact this act is
+     easiest to misread: the money the bank showed is still not in the books,
+     so the difference the hero reports is unchanged by everything on this
+     tab. #}
+  <p class="rec-more small text-body-secondary">
+    Undoing a skip puts its statement line back among the ones to explain. It
+    takes nothing else back: skipping recorded no money and moved none, and it
+    closed no difference between your books and your bank.
+  </p>
+  {% endif %}
+  {% endif %}
+
+  {% if page.kind.is_line %}
+  <form method="post"
+        action="{{ url_for('accounts.apply_statement_reconcile', account_id=account.id) }}"
+        hx-post="{{ url_for('accounts.apply_statement_reconcile', account_id=account.id) }}"
+        hx-target="#statement-reconcile-body"
+        hx-swap="outerHTML show:top"
+        hx-disabled-elt="find button[type=submit]"
+        data-rec-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {# ONE reader for both methods (``_requested_tab``): the GET carries the
+       tab as a query argument and the POST as this field, so a pass can never
+       be applied against one tab and answered with another. #}
+    <input type="hidden" name="tab" value="{{ page.tab.value }}">
+
+    {% for section in page.sections %}
+    {% if section.section %}
+    <div class="rec-section-rule">
+      <span>{{ section.section.heading }}</span>
+      <span class="rec-section-count font-mono">{{ section.count }}</span>
+    </div>
+    {% endif %}
+    {% for card in section.cards %}
+    {{ line_card(account, card, categories) }}
+    {% endfor %}
+    {% if section.withheld %}
+    <p class="small text-body-secondary">
+      {{ section.withheld }} more are not shown here.
+    </p>
+    {% endif %}
+    {% else %}
+    {{ nothing_on_this_tab() }}
+    {% endfor %}
+
+    {# ── The sticky footer band ─────────────────────────────────────── #}
+    {% if page.sections %}
+    <div class="rec-footer">
+      {% if page.sweeps %}
+      {# PER CLASS, never a "tick all" (R-FZ(c)): filing into a budget line
+         still open is absorbed by what it reserved, raising what a CLOSED one
+         recorded changes a figure the owner had finished with, and minting an
+         envelope is the one act an undo cannot fully reverse.  The COUNT is
+         the service's, over the cards actually rendered, so a caption cannot
+         promise a number the click does not deliver.  JS-only, like every
+         sweep in this package: with scripting off each card still has its own
+         OK. #}
+      <div class="rec-sweeps">
+        {% for sweep in page.sweeps %}
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox"
+                 id="sweep-{{ sweep.css_class }}"
+                 data-rec-sweep="{{ sweep.css_class }}">
+          <label class="form-check-label small" for="sweep-{{ sweep.css_class }}">
+            OK all {{ sweep.count }} line(s) {{ sweep.label }}
+          </label>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <div class="rec-footer-end">
+        <span class="rec-keys font-mono" data-rec-scripted hidden>
+          j/k move &middot; Enter OK &middot; o open
+        </span>
+        <span class="htmx-indicator text-body-secondary small">
+          <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+          Applying...
+        </span>
+        {# THE COUNT IS JAVASCRIPT'S AND THE LABEL MUST BE TRUE WITHOUT IT.
+           This read "Apply 0 OK'd" when the server rendered it, which is
+           false the moment a card is ticked and scripting is off -- the same
+           class as a caption promising a number a template computed.  The
+           span opens EMPTY and `countOk` fills it, so the sentence reads
+           "Apply the cards you OK'd" until something can keep a number
+           honest. #}
+        <button type="submit" class="btn btn-primary">
+          Apply <span data-rec-ok-count></span> the cards you OK'd
+        </button>
+      </div>
+    </div>
+    {% endif %}
+  </form>
+
+  {% endif %}
+
+  {# ── What this pass did NOT look at ────────────────────────────────── #}
+  {# WHICH bounds belong here is decided in the SERVICE
+     (``ReconcilePage.unexamined``), not by this template picking three of
+     four: the fourth is a holding chip above the fold, and stating it twice
+     on one screen is the clutter this rebuild removed. #}
+  {% if page.unexamined %}
+  <div class="alert alert-secondary" role="alert">
+    <div class="fw-semibold mb-1">What this page did not look at</div>
+    <ul class="mb-0 small">
+      {% for said in page.unexamined %}
+      <li>{{ said }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+</div>

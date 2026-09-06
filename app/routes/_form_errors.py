@@ -171,7 +171,7 @@ def load_form_or_redirect(
         The deserialized payload when it is valid, or a Flask redirect
         :class:`Response` when it is not.  The caller distinguishes them with
         ``isinstance(result, Response)``, the idiom
-        ``build_recurrence_rule_from_form`` already uses for the same
+        ``recurrence_spec_from_form`` already uses for the same
         two-outcome shape.
     """
     try:

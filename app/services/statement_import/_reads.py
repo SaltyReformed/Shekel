@@ -11,14 +11,19 @@ import.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
+from app import ref_cache
 from app.extensions import db
 from app.models.ref import StatementSource
 from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_line_skip import StatementLineSkip
+from app.models.statement_match import StatementMatchMember
+from app.services.statement_match import removals_by_match
 
 from ._adapters import supported_sources
+from ._anchor import ImportedBalance
 
 
 @dataclass(frozen=True)
@@ -109,25 +114,320 @@ def recorded_span(account_id: int) -> RecordedSpan:
     )
 
 
-def import_history(account_id: int, limit: int = 20) -> "list[StatementImport]":
+def matches_by_import(account_id: int) -> "dict[int, list[int]]":
+    """Return which accepted matches name a line each of *account_id*'s imports owns.
+
+    **ONE statement, and ONE spelling of the question**, because two callers
+    ask it for different reasons and a confirmation that counted differently
+    from the act it confirms would be a confirmation that lies:
+    :func:`import_history` takes ``len()`` of each list to say what a delete
+    would release, and :func:`~._undo.delete_import` iterates the list to
+    release them.
+
+    Args:
+        account_id: The account whose imports to read.
+
+    Returns:
+        ``{import_id: [match_id, ...]}``, each list ascending, covering only
+        the imports that own a matched line.  An import with none is absent,
+        and both callers read that as the empty list -- which is the honest
+        answer rather than an absence to branch on.
+    """
+    rows = (
+        db.session.query(
+            BankStatementLine.import_id, StatementMatchMember.match_id,
+        )
+        .join(
+            StatementMatchMember,
+            StatementMatchMember.bank_statement_line_id == BankStatementLine.id,
+        )
+        .filter(BankStatementLine.account_id == account_id)
+        .distinct()
+        .order_by(BankStatementLine.import_id, StatementMatchMember.match_id)
+        .all()
+    )
+    by_import: "dict[int, list[int]]" = {}
+    for import_id, match_id in rows:
+        by_import.setdefault(import_id, []).append(match_id)
+    return by_import
+
+
+def skips_by_import(account_id: int) -> "dict[int, int]":
+    """Return how many SKIP decisions each of this account's imports holds.
+
+    Plan step ``bank_import:X-gj-4a``, ruling **bank_import:R-JG**.  A skip
+    claims nothing but its own line, so
+    ``fk_statement_line_skips_line_account`` CASCADES rather than refusing a
+    delete -- which means deleting an import destroys the owner's own answers,
+    silently, unless something counts them.
+
+    **ONE derivation for the confirmation and the act**, which is
+    :func:`matches_by_import`' own rule and for its own reason: the page reads
+    it to say what a delete WOULD take and :func:`~._undo.delete_import` reads
+    it to say what it DID, so a confirmation cannot count differently from the
+    act it confirms.
+
+    Args:
+        account_id: The account whose imports to read.
+
+    Returns:
+        ``{import_id: count}``, covering only the imports that own a skipped
+        line.  An import with none is absent, and both callers read that as
+        zero -- the honest answer rather than an absence to branch on.
+    """
+    rows = (
+        db.session.query(
+            BankStatementLine.import_id,
+            db.func.count(StatementLineSkip.id),
+        )
+        .join(
+            StatementLineSkip,
+            db.and_(
+                StatementLineSkip.bank_statement_line_id
+                == BankStatementLine.id,
+                StatementLineSkip.account_id == BankStatementLine.account_id,
+            ),
+        )
+        .filter(BankStatementLine.account_id == account_id)
+        .group_by(BankStatementLine.import_id)
+        .all()
+    )
+    return dict(rows)
+
+
+@dataclass(frozen=True)
+class ImportRemovalPreview:
+    """What deleting one import would take back, and what stops it.
+
+    Plan step ``bank_import:X-f6f``, ruling **R-GG**.  A delete releases every
+    match naming one of this import's lines, and a release removes the rows
+    its act CREATED -- so the destructive control has to say how many and how
+    much before it is pressed.
+
+    **A BLOCKED delete is the most important thing this value carries**, and a
+    first version left it out: a release that refuses takes the whole import
+    delete down with it, so the page went on printing *"DESTROYS 2 row(s) ...
+    worth -$57.96"* over a press that destroys nothing and cannot succeed,
+    which is a money figure attached to a no-op and an import the owner cannot
+    delete until they find the row by hand.  Reproduced by adversarial security
+    review 2026-08-24 in one ordinary edit of a created purchase.
+
+    Attributes:
+        rows: How many rows the delete would destroy.
+        cash: The signed money the account would stop recording, positive INTO
+            the account.  Beside the count for the reason ruling **R-GD(a)**
+            gives one door over: a consent naming a count and no figure is a
+            consent to an amount nobody stated.
+        blocked: The sentence explaining why the delete would be REFUSED, or
+            ``None``.  When it is set, :attr:`rows` and :attr:`cash` describe a
+            removal that cannot happen yet, and the page says the refusal
+            instead of the figure.
+        skips: How many SKIP decisions the delete would destroy (plan step
+            ``bank_import:X-gj-4a``, ruling **R-JG**).  **On the CONSENT and
+            not only on the receipt**, which is this value's founding
+            argument: ``ImportRemoval.skips_forgotten`` says how many went
+            AFTER the irreversible act, and an owner who has worked a
+            378-line statement down to zero is entitled to know before they
+            press that their answers go with it.  A skip cascades away with
+            its line rather than blocking the delete, so nothing else would
+            tell them.  Named by adversarial review 2026-09-02.
+    """
+
+    rows: int
+    cash: Decimal
+    blocked: "str | None"
+    skips: int
+
+
+def _removal_preview(match_ids, removals, skips: int) -> ImportRemovalPreview:
+    """Fold one import's acts into what deleting it would do.
+
+    Args:
+        match_ids: The acts naming a line this import owns.
+        removals: ``{match_id: PlannedRemovals}`` from
+            ``statement_match.removals_by_match``.
+        skips: How many SKIP decisions this import's lines carry
+            (:func:`skips_by_import`).
+
+    Returns:
+        Its :class:`ImportRemovalPreview`.
+    """
+    planned = [
+        removals[match_id] for match_id in match_ids if match_id in removals
+    ]
+    return ImportRemovalPreview(
+        rows=sum(len(one.rows) for one in planned),
+        cash=sum((one.cash_amount for one in planned), Decimal("0.00")),
+        skips=skips,
+        # The FIRST refusal, because one is enough to stop the whole delete and
+        # the owner fixes them one at a time anyway.
+        blocked=next(
+            (one.refusal for one in planned if one.refusal is not None), None,
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class ImportRecord:  # pylint: disable=too-many-instance-attributes
+    """One import as the page shows it: what it DID, and what undoing it costs.
+
+    Pylint: too-many-instance-attributes -- **nine because the page's import
+    row shows nine things** (9/7), not because the value wants splitting.  The
+    ninth arrived with plan step ``bank_import:X-f6f``: a delete now destroys
+    rows the review CREATED from these lines, and a destructive control that
+    does not name them is the one thing this class exists to prevent.  It is
+    ONE field rather than three because the three are read together and only
+    together -- what would go, what it is worth, and whether it can go at all
+    -- and a template branching on one of them while printing another is
+    exactly the defect that shape prevents.
+    ``StatementLine``, ``CandidateRow``, ``CreatedPurchase`` and
+    ``PurchaseDestination`` carry the same disable for the same reason: a row
+    that genuinely states N things is not improved by hiding ``N - 7`` of them.
+
+    **The line count on the destructive control is `recorded_count`, and a
+    "live" count beside it was DELETED as a guard against an unreachable
+    state.**  A first version carried both, on the reasoning that a stored
+    figure must not stand in for a live one.  Adversarial review measured the
+    premise false: the only things that remove a ``bank_statement_lines`` row
+    are the import's own cascade and the account's, so for any import this page
+    can render the two are identically equal, always.  CLAUDE.md rule 13
+    forbids handling an impossible scenario, and a "live" number that can never
+    differ is a claim to freshness the schema does not support.
+    :attr:`matches_affected` is genuinely live -- a match can be released
+    independently -- and earns its query.
+
+    Attributes:
+        import_id: The act, so a delete control can name it.
+        created_at: When it ran.
+        file_name: What was uploaded.
+        period_start: The earliest day it covered.
+        period_end: The latest.
+        line_count: Lines the file held.
+        recorded_count: Lines this act wrote.  The difference from
+            :attr:`line_count` is the overlap with what was already known, and
+            showing it is what makes idempotency VISIBLE.
+        matches_affected: Accepted matches naming at least one of those lines.
+            Each would be RELEASED by a delete, so the control says so before
+            it is pressed.
+        removes: What deleting this import would take back, and what stops it
+            (:class:`ImportRemovalPreview`, ruling **R-GG**).
+        balance: What the file said the account held and how firmly, or
+            ``None`` when it stated no balance.  A RECEIPT is transient and
+            this table is the record, so an anchor the import only ASSUMED has
+            to stay readable after the flash is gone -- otherwise the basis is
+            a fact written and never seen, which is the shape this arc keeps
+            finding.
+    """
+
+    import_id: int
+    created_at: datetime
+    file_name: str
+    period_start: date
+    period_end: date
+    line_count: int
+    recorded_count: int
+    matches_affected: int
+    removes: "ImportRemovalPreview"
+    balance: "ImportedBalance | None"
+
+
+def import_history(
+    owner_id: int, account_id: int, limit: int = 20,
+) -> "list[ImportRecord]":
     """Return *account_id*'s most recent imports, newest first.
 
     Args:
+        owner_id: The user the route proved owns the account.  **Taken
+            since plan step ``bank_import:X-f6f``**, because this page now
+            offers a control that DESTROYS rows and the reader feeding its
+            confirmation narrows by the same two columns the write door
+            itself uses.
         account_id: The account whose imports to list.
         limit: How many to return.  Bounded rather than unbounded because this
             feeds a page section, and an account imported weekly for years
-            would otherwise render thousands of rows; the page says so rather
-            than truncating silently.
+            would otherwise render thousands of rows.
+            **The page SAYS SO, and until 2026-08-20 this docstring claimed it
+            did while the section heading was the bare word "Imports".**  That
+            became load-bearing when plan step ``bank_import:X-f6a-4`` put a
+            destructive control inside the truncated table and wrote two
+            refusal messages promising it is there: a line names the import
+            that FIRST recorded it, so the oldest import owns nearly every line
+            and is the first to fall off a newest-first list.  Finding
+            **N-330** owns raising or paging the bound; saying it is what stops
+            the truncation being silent meanwhile.  Found by adversarial
+            financial review 2026-08-20.
 
     Returns:
-        The imports, newest first, with their source eagerly loaded.
+        One :class:`ImportRecord` per import, newest first.  **Values rather
+        than ORM rows** (plan step ``bank_import:X-f6a-4``): the page needs two
+        facts that are not columns -- what an import still owns, and what
+        undoing it would release -- and a template reaching through a mapped
+        row for one and a passed-in map for the other is two shapes for one
+        table section.
     """
-    return (
+    imports = (
         db.session.query(StatementImport)
         .filter(StatementImport.account_id == account_id)
         .order_by(StatementImport.created_at.desc(), StatementImport.id.desc())
         .limit(limit)
         .all()
+    )
+    if not imports:
+        return []
+    by_import = matches_by_import(account_id)
+    # ONE derivation, shared with the act: the delete releases every match
+    # naming one of this import's lines, and what each release removes is that
+    # door's answer rather than this page's guess.  **Bounded to the acts the
+    # rendered imports actually name**, because this page shows at most
+    # *limit* of them and an unbounded fold cost 475 queries on a 230-act
+    # account (adversarial security review 2026-08-24).
+    removals = removals_by_match(
+        owner_id, account_id,
+        {match_id for ids in by_import.values() for match_id in ids},
+    )
+    # ONE aggregate for every rendered import, shared with the act that
+    # performs the delete -- see :func:`skips_by_import`.
+    skips = skips_by_import(account_id)
+    return [
+        ImportRecord(
+            import_id=row.id,
+            created_at=row.created_at,
+            file_name=row.file_name,
+            period_start=row.period_start,
+            period_end=row.period_end,
+            line_count=row.line_count,
+            recorded_count=row.recorded_count,
+            matches_affected=len(by_import.get(row.id, ())),
+            removes=_removal_preview(
+                by_import.get(row.id, ()), removals, skips.get(row.id, 0),
+            ),
+            balance=_imported_balance(row),
+        )
+        for row in imports
+    ]
+
+
+def _imported_balance(row: StatementImport) -> "ImportedBalance | None":
+    """Return one import's balance facts as a value, or ``None``.
+
+    Args:
+        row: The :class:`~app.models.statement_import.StatementImport`.
+
+    Returns:
+        Its :class:`ImportedBalance`, or ``None`` when the file stated no
+        balance.  ``stated_balance`` alone is tested, and that is exact rather
+        than economical: ``ck_statement_imports_stated_balance_paired`` holds
+        it and its day NULL together.
+    """
+    if row.stated_balance is None:
+        return None
+    return ImportedBalance(
+        stated=row.stated_balance,
+        stated_on=row.stated_balance_on,
+        effective_on=row.balance_effective_on,
+        evidence=ref_cache.statement_balance_evidence_member(
+            row.balance_evidence_id,
+        ),
     )
 
 

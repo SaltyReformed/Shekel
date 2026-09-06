@@ -515,8 +515,8 @@ class TestRestrictBehavior:
             db.session.execute(text(
                 "INSERT INTO salary.salary_profiles "
                 "(user_id, scenario_id, filing_status_id, "
-                " annual_salary, state_code, pay_periods_per_year) "
-                "VALUES (:uid, :sid, 1, 50000.00, 'NC', 26)"
+                " annual_salary, state_code) "
+                "VALUES (:uid, :sid, 1, 50000.00, 'NC')"
             ), {"uid": user_id, "sid": scenario_id})
             db.session.commit()
             try:

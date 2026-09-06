@@ -1,12 +1,18 @@
-"""Integration: a derive-from-loan transfer's cash amount is live-derived.
+"""Integration: a derive-from-loan transfer's cash amount is DERIVED.
 
-Commit 5 of the loan rate-period work.  A recurring loan-payment
-transfer flagged ``derive_from_loan`` reflects the loan's current
-monthly payment (P&I + escrow) via the read-time override
-(:func:`app.services.loan_payment_service.live_loan_transfer_amounts`),
-and an escrow change reflows that amount WITHOUT regenerating the
-transfer -- the stored ``Transfer.amount`` stays put; only the live
-override changes.
+Commit 5 of the loan rate-period work.  A recurring loan-payment transfer
+flagged ``derive_from_loan`` is worth the loan's current monthly payment (P&I +
+escrow), and an escrow change reflows that amount WITHOUT regenerating the
+transfer -- the stored ``Transfer.amount`` stays put.
+
+**The MECHANISM changed at plan step X-au-g-2c-2 and the CLAIM did not**, which
+is why the figures below are untouched.  A read-time OVERRIDE
+(``LoanPricing.live_cash``) used to supersede each shadow's stored figure; a
+shadow stores no figure at all now -- it declares ``PARENT_TRANSFER`` and is
+priced by amount rule 4 -- so the same arithmetic arrives through the amount
+model and there is no stale copy left for an override to beat.  Every case here
+asks :func:`_derived_cash`, which is what a SCREEN reads
+(``cash_ledger.amounts_by_id``).
 
 Every monetary expectation is hand-computed with the arithmetic shown.
 """
@@ -17,18 +23,25 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import AcctTypeEnum
 from app.extensions import db
-from app.models.escrow_line import EscrowComponentVersion
+from app.models.escrow_line import EscrowComponentVersion, EscrowLine
+from app.models.loan_features import RateHistory
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
+    cash_ledger,
     loan_ledger,
-    loan_payment_service,
     loan_posting_service,
     transfer_recurrence,
 )
+from app.services import escrow_calculator
+from app.services.loan_loaders import (
+    load_escrow_lines,
+    loan_payment_due_date,
+)
 from app.services.rate_period_engine import monthly_due_date
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     add_escrow_line,
@@ -40,34 +53,40 @@ from tests.oracles.recurrence_baseline import MONTHLY
 from app.services.row_valuation import owned_contribution
 
 
-def _live_overrides(scenario_id, rows):
-    """The loan-payment live override map for *rows*, built per row.
+def _derived_cash(seed_user, rows):
+    """What a SCREEN shows for *rows* -- the figure the amount model resolves.
 
     Plan step X-au-c2b split ``live_loan_transfer_amounts`` into an owner-scoped
-    DERIVATION (:func:`loan_payment_service.loan_pricing`) and a per-row lookup,
-    and collapsed the settle-time twin ``live_loan_payment_amount`` into the
-    same rule.  The ``{transaction_id: Decimal}`` map this file grades is now
-    something a caller builds, so it is built here and every assertion below
-    keeps its original shape and figures.
+    DERIVATION and a per-row lookup, and collapsed the settle-time twin
+    ``live_loan_payment_amount`` into the same rule; plan step X-au-g-2c-2 then
+    deleted that rule outright, because a transfer shadow stores no figure for a
+    read-time override to supersede.  So the ``{transaction_id: Decimal}`` map
+    this file grades is now the amount model's own
+    (``cash_ledger.amounts_by_id``), and the assertions below keep their
+    original figures.
 
-    A FRESH pricing per call, deliberately: the tests that mutate an escrow line
-    and re-read must see the new figure, and a derivation memoizes for the
+    **It covers EVERY row it is given, where the override map covered only the
+    rows that had one.**  That is the substantive difference, and two cases turn
+    on it: a manual payment and a non-derive transfer used to be ABSENT from the
+    map (``assert overrides == {}``) and are now PRESENT with their definition's
+    own price, which is a sharper claim -- absence could not distinguish "no
+    override" from "not priced at all".
+
+    A FRESH basis per call, deliberately: the cases that mutate an escrow line
+    and re-read must see the new figure, and a basis memoizes each loan for the
     length of the read pass it was built for.
 
     Args:
-        scenario_id: The scenario to resolve each loan against.
-        rows: The shadows to ask about.
+        seed_user: The owner fixture; its user and scenario pin the basis.
+        rows: The shadows to price.
 
     Returns:
-        ``{transaction_id: Decimal}`` over the rows that have a live figure.
+        ``{transaction_id: Decimal}`` covering every row.
     """
-    pricing = loan_payment_service.loan_pricing(scenario_id, date.today())
-    answers = {}
-    for row in rows:
-        cash = pricing.live_cash(row)
-        if cash is not None:
-            answers[row.id] = cash
-    return answers
+    basis = cash_ledger.amount_basis(
+        seed_user["user"].id, seed_user["scenario"].id,
+    )
+    return cash_ledger.amounts_by_id(rows, basis)
 
 def _build_derived_loan_transfer(seed_user, escrow_annual):
     """Create a $200k/6%/360 mortgage + a derive_from_loan recurring transfer.
@@ -103,14 +122,10 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
     # Authored through the write door (plan step R7c-b): the day a rule fires
     # on is its first occurrence's own day, so "the 1st" is a DATE the fixture
     # schedule reaches rather than a separate column.
-    rule = make_cadence_rule(
-        user.id, MONTHLY, fires_on_day=1,
-    )
     template = TransferTemplate(
         user_id=user.id,
         from_account_id=checking.id,
         to_account_id=loan.id,
-        recurrence_rule_id=rule.id,
         name="Live Mortgage Payment",
         # Deliberately stale stored amount -- the live override must win.
         default_amount=Decimal("1.00"),
@@ -120,6 +135,10 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
     template.settings = LoanPaymentSettings(derive_from_loan=True)
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template, MONTHLY, fires_on_day=1,
+    )
 
     periods = seed_user["periods"] if "periods" in seed_user else None
     return loan, escrow, scenario_id, template, rule, periods
@@ -156,14 +175,16 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         db.session.commit()
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
         assert shadows, "expected generated shadow transactions"
 
-        overrides = _live_overrides(scenario_id, shadows)
+        overrides = _derived_cash(seed_user, shadows)
         # Every shadow of this loan's transfer gets the live PITI.
         assert overrides, "expected live overrides for the derive_from_loan transfer"
         assert all(v == Decimal("1499.10") for v in overrides.values())
@@ -182,7 +203,7 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
         escrow.annual_amount = Decimal("4800.00")
         db.session.commit()
 
-        overrides_after = _live_overrides(scenario_id, shadows)
+        overrides_after = _derived_cash(seed_user, shadows)
         assert all(v == Decimal("1599.10") for v in overrides_after.values())
         # Still no regeneration: stored transfer amounts unchanged.
         stored_after = {
@@ -197,10 +218,18 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
 def test_non_derived_transfer_has_no_live_override(
     app, db, seed_user, seed_periods,
 ):
-    """A transfer whose template is NOT derive_from_loan gets no override.
+    """A transfer whose template is NOT derive_from_loan is worth its DEFINITION's price.
 
-    Confirms the seam is dormant unless explicitly enabled (the
-    "only new transfers" choice: every pre-existing template is False).
+    Confirms the loan derivation is dormant unless explicitly enabled (the
+    "only new transfers" choice: every pre-existing template is False).  The
+    fixture's stored base is a deliberately stale ``$1.00``, so a shadow worth
+    ``$1.00`` is one the loan did not price and a shadow worth ``$1,499.10``
+    is one it did.
+
+    **It asserted an EMPTY override map until plan step X-au-g-2c-2**, which
+    could not tell "the loan did not price this" from "nothing priced this at
+    all".  Naming the figure is the stronger claim, and it is the one that
+    would catch a shadow that had stopped being priced.
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -209,13 +238,16 @@ def test_non_derived_transfer_has_no_live_override(
         template.settings.derive_from_loan = False
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         db.session.commit()
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = _live_overrides(scenario_id, shadows)
-        assert overrides == {}
+        assert shadows, "expected generated shadow transactions"
+        resolved = _derived_cash(seed_user, shadows)
+        assert all(v == Decimal("1.00") for v in resolved.values())
 
 
 def test_derived_transfer_due_date_matches_loan_due_date(
@@ -237,7 +269,9 @@ def test_derived_transfer_due_date_matches_loan_due_date(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         created = transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         db.session.commit()
 
@@ -290,7 +324,9 @@ def test_derived_override_is_per_shadow_date_aware(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         # Append a second version on the SAME line: 400/mo effective 2026-03-15.
         db.session.add(EscrowComponentVersion(
@@ -301,7 +337,7 @@ def test_derived_override_is_per_shadow_date_aware(
         db.session.commit()
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = _live_overrides(scenario_id, shadows)
+        overrides = _derived_cash(seed_user, shadows)
         cutoff = date(2026, 3, 15)
         before = [s for s in shadows if s.due_date < cutoff]
         after = [s for s in shadows if s.due_date >= cutoff]
@@ -342,7 +378,9 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         db.session.add(EscrowComponentVersion(
             line_id=escrow.line_id,
@@ -369,7 +407,7 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
             < income_shadow.due_date
         )
 
-        overrides = _live_overrides(scenario_id, [income_shadow])
+        overrides = _derived_cash(seed_user, [income_shadow])
         assert overrides[income_shadow.id] == Decimal("1699.10")
 
         resp = auth_client.post(f"/transactions/{income_shadow.id}/mark-done")
@@ -407,16 +445,23 @@ def test_settling_derived_loan_payment_captures_live_amount(
     interest 1,000.00 (200,000 * 0.06 / 12), escrow 300.00, and principal
     199.10 (= P&I 1,199.10 - interest 1,000.00).
 
-    The stored ``estimated_amount`` is deliberately left alone: it is the base
-    ``loan_payment_service._manual_shadow_amount`` derives from, so a settle
-    that wrote it would make the next settle derive from its own output.
+    **The shadow's own ``estimated_amount`` is NULL and that is the point of
+    the cutover** (plan step X-au-g-2c-2).  It held the generated ``$1.00`` and
+    was deliberately left alone, because it was the base the deleted
+    ``_manual_shadow_amount`` derived from -- so a settle that wrote it would
+    have made the next settle derive from its own output (finding N-259's
+    shape).  The column is empty on a derived row, so that hazard has no state
+    to occur in, and what a PROJECTED shadow is worth is asked of the amount
+    model rather than of the column.
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         db.session.commit()
 
@@ -431,8 +476,16 @@ def test_settling_derived_loan_payment_captures_live_amount(
             .first()
         )
         assert income_shadow is not None
-        # Pre-settle the shadow shows the stale stored estimate ($1.00).
-        assert owned_contribution(income_shadow) == Decimal("1.00")
+        # Pre-settle the shadow is worth the LIVE PITI, and the parent's stale
+        # $1.00 is what it would have shown before the cutover.  Asked of the
+        # amount model, because ``owned_contribution`` REFUSES a derived row --
+        # its name is the assertion, and a projected shadow no longer owns
+        # anything.
+        assert _derived_cash(seed_user, [income_shadow])[
+            income_shadow.id
+        ] == Decimal("1499.10")
+        assert income_shadow.estimated_amount is None
+        assert income_shadow.transfer.amount == Decimal("1.00")
         income_shadow_id = income_shadow.id
         transfer_id = income_shadow.transfer_id
 
@@ -447,7 +500,9 @@ def test_settling_derived_loan_payment_captures_live_amount(
         # Capture-on-settle froze the LIVE PITI, not the $1.00 estimate.
         assert settled.settled_amount == Decimal("1499.10")
         assert owned_contribution(settled) == Decimal("1499.10")
-        assert settled.estimated_amount == Decimal("1.00")
+        # The PLAN column stays empty: a settle RECORDS what moved beside the
+        # plan (plan step X-au-c3) and never writes into it.
+        assert settled.estimated_amount is None
         # Both legs mirror the captured actual (Transfer Invariant 3).
         expense = (
             db.session.query(Transaction)
@@ -477,23 +532,29 @@ def test_settled_loan_payment_freeze_is_one_shot(
 ):
     """A re-settle never rewrites an already-frozen loan payment's actual cash.
 
-    Capture-on-settle is ONE-SHOT.  After the first settle freezes 1,499.10,
-    ``live_loan_payment_amount`` returns None for the now-DONE shadow (the
-    ``is_projected`` guard), so a stale-tab re-POST of ``mark_done`` -- admitted
-    by the ``done -> done`` identity transition on the still-present mark-paid
-    button -- leaves the frozen figure untouched.  Since plan step X-f2-c3
-    there are TWO guards: that one, and the settle act running only on the way
-    INTO the settled band, so a re-settle does not reach the derivation at all.  Without the guard the
-    capture would recompute the CURRENT live amount and silently corrupt the
-    confirmed payment's recorded cash (the value it would return here proves the
-    skip: a non-None result would overwrite the freeze).
+    Capture-on-settle is ONE-SHOT.  A stale-tab re-POST of ``mark_done`` --
+    admitted by the ``done -> done`` identity transition on the still-present
+    mark-paid button -- leaves the frozen figure untouched.
+
+    **The two guards holding that are BOTH structural since plan step
+    X-au-g-2c-2**, where one was a producer's ``is_projected`` gate.  The
+    settle act runs only on the way INTO the settled band, so a re-settle never
+    reaches a derivation at all; and what a settled row is worth is read from
+    its own settlement RECORD (``row_valuation.fixed_contribution``) before any
+    producer is asked, so even a direct ask answers the frozen figure rather
+    than a fresh one.  The second is asserted here in place of the deleted
+    ``live_cash(settled) is None``: a ``None`` proved the producer would not
+    fire, and what matters is the stronger statement that the recorded cash is
+    what the row is worth.
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         db.session.commit()
 
@@ -518,11 +579,13 @@ def test_settled_loan_payment_freeze_is_one_shot(
         assert settled.status.is_settled is True
         assert settled.settled_amount == Decimal("1499.10")
 
-        # The freeze is one-shot: the derivation returns None for a settled
-        # shadow, so the settle capture can never fire a second time.
-        assert loan_payment_service.loan_pricing(
-            scenario_id, date.today(),
-        ).live_cash(settled) is None
+        # The freeze is one-shot: a settled row answers from its own RECORD,
+        # so even asking the model directly cannot produce a fresher figure to
+        # overwrite it with.
+        assert _derived_cash(seed_user, [settled])[settled.id] == Decimal(
+            "1499.10",
+        )
+        assert owned_contribution(settled) == Decimal("1499.10")
 
         # A stale-tab re-settle leaves the frozen figure untouched.
         resp2 = auth_client.post(
@@ -589,12 +652,14 @@ def test_derived_override_includes_standing_extra(
         template.settings.extra_principal = Decimal("100.00")
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         db.session.commit()
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = _live_overrides(scenario_id, shadows)
+        overrides = _derived_cash(seed_user, shadows)
         assert overrides
         assert all(v == Decimal("1599.10") for v in overrides.values())
 
@@ -617,12 +682,14 @@ def test_manual_payment_with_extra_gets_base_plus_extra(
         template.default_amount = Decimal("1499.10")
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         db.session.commit()
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = _live_overrides(scenario_id, shadows)
+        overrides = _derived_cash(seed_user, shadows)
         assert overrides
         assert all(v == Decimal("1599.10") for v in overrides.values())
 
@@ -648,10 +715,19 @@ def test_manual_payment_with_extra_gets_base_plus_extra(
 def test_manual_payment_without_extra_gets_no_override(
     app, db, seed_user, seed_periods,
 ):
-    """A MANUAL payment with no extra keeps its stored amount (no live override).
+    """A MANUAL payment with no extra is worth its DEFINITION's base.
 
-    Nothing to re-derive and no extra to add, so the stored base IS the cash --
-    the override map is empty for it (the seam stays dormant).
+    Nothing to re-derive and no extra to add, so the base the operator owns IS
+    the cash.  ``$1,499.10`` here, and the loan's own contractual installment
+    happens to be the same figure -- which is what makes the SECOND assertion
+    load-bearing: the escrow is raised afterwards, and a manual payment must NOT
+    follow it.  Without that, this case would pass just as well on a rule that
+    had quietly started deriving from the loan.
+
+    **It asserted an EMPTY map until plan step X-au-g-2c-2** -- the read-time
+    override was dormant for this shape, so the row simply did not appear.
+    Absence could not tell "no override" from "not priced at all"; the row is
+    priced now, by rule 4's manual arm, and the figure is stated.
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -662,13 +738,97 @@ def test_manual_payment_without_extra_gets_no_override(
         template.default_amount = Decimal("1499.10")
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         db.session.commit()
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = _live_overrides(scenario_id, shadows)
-        assert overrides == {}
+        assert shadows, "expected generated shadow transactions"
+        resolved = _derived_cash(seed_user, shadows)
+        assert all(v == Decimal("1499.10") for v in resolved.values())
+
+        # Raise the escrow: a DERIVE payment would move to $1,599.10 and a
+        # manual one must not, which is what says the base is the operator's.
+        # The VERSION carries the figure -- ``EscrowLine`` has no
+        # ``annual_amount`` at all, so writing one there sets an unmapped
+        # attribute and this case would "pass" without the escrow moving.
+        version = (
+            db.session.query(EscrowComponentVersion)
+            .join(EscrowLine, EscrowLine.id == EscrowComponentVersion.line_id)
+            .filter(EscrowLine.account_id == loan.id)
+            .one()
+        )
+        version.annual_amount = Decimal("4800.00")
+        db.session.commit()
+
+        # The control on the control: the raise really took effect, so the
+        # assertion below is about the RULE and not about a write that never
+        # happened.  Measured over the axis the RULE reads -- each shadow's own
+        # installment date (``_shadow_live_amount`` resolves the escrow on
+        # ``loan_payment_due_date``) -- and not a date chosen here.  A hard-coded
+        # date coincides only while the write mutates the standing version in
+        # place; converting it to "append a later version", which is the shape
+        # ``add_escrow_line`` itself produces, would leave the probe green while
+        # the shadows read the old figure and this case went back to proving
+        # nothing.
+        lines = load_escrow_lines(loan.id)
+        assert {
+            escrow_calculator.escrow_monthly_as_of(
+                lines, loan_payment_due_date(shadow, 1),
+            )
+            for shadow in shadows
+        } == {Decimal("400.00")}
+
+        after = _derived_cash(seed_user, shadows)
+        assert all(v == Decimal("1499.10") for v in after.values())
+
+
+def test_a_DERIVE_payment_on_the_same_fixture_DOES_follow_the_escrow(
+    app, db, seed_user, seed_periods,
+):
+    """The other half of the manual case's discrimination, asserted not argued.
+
+    ``test_manual_payment_without_extra_gets_no_override`` above proves a manual
+    payment does not follow an escrow raise, and its probe proves the raise took
+    effect -- but "a DERIVE payment WOULD have moved to $1,599.10" was left as an
+    inference from ``_shadow_live_amount``'s formula rather than measured.  An
+    adversarial review of this step asked for the pair, and it is cheap: the same
+    fixture, the same raise, ``derive_from_loan`` left ON.
+
+    P&I 1,199.10 + the raised escrow 400.00 = 1,599.10.
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        template.default_amount = Decimal("1499.10")
+        db.session.flush()
+        transfer_recurrence.generate_for_template(
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
+        )
+        db.session.commit()
+
+        shadows = _loan_transfer_shadows(loan.id, scenario_id)
+        assert all(
+            v == Decimal("1499.10")
+            for v in _derived_cash(seed_user, shadows).values()
+        )
+
+        version = (
+            db.session.query(EscrowComponentVersion)
+            .join(EscrowLine, EscrowLine.id == EscrowComponentVersion.line_id)
+            .filter(EscrowLine.account_id == loan.id)
+            .one()
+        )
+        version.annual_amount = Decimal("4800.00")
+        db.session.commit()
+
+        after = _derived_cash(seed_user, shadows)
+        assert all(v == Decimal("1599.10") for v in after.values())
 
 
 def test_settling_with_extra_lands_the_extra_in_principal(
@@ -693,7 +853,9 @@ def test_settling_with_extra_lands_the_extra_in_principal(
         template.settings.extra_principal = Decimal("100.00")
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         db.session.commit()
 
@@ -748,7 +910,9 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         template.default_amount = Decimal("1499.10")
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+            ), scenario_id,
         )
         db.session.commit()
 
@@ -773,5 +937,85 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         assert settled.settled_amount == Decimal("1599.10")
         # The manual BASE is untouched, so a second settle would freeze the
         # same 1,599.10 rather than 1,699.10: the derivation must never read
-        # its own output.
-        assert settled.estimated_amount == Decimal("1499.10")
+        # its own output.  **That base is on a DIFFERENT ROW since plan step
+        # X-au-g-2c-2**, which is what makes the compounding cycle structurally
+        # impossible rather than merely not-currently-written: the manual arm
+        # reads the PARENT TRANSFER's figure, and a settle writes neither that
+        # nor the shadow's plan column -- the shadow has no plan column to
+        # write, which is the pairing CHECK saying so.
+        assert settled.estimated_amount is None
+        assert settled.transfer.amount == Decimal("1499.10")
+
+
+def test_each_shadows_cash_is_its_own_installments_pi(
+    app, db, seed_user, seed_periods,
+):
+    """A shadow's P&I is its INSTALLMENT's, not the read date's (ruling R-IJ).
+
+    Finding **N-40**, closed structurally at plan step X-au-g-2b.  The
+    derivation resolved ONE ``compute_monthly_payment_baseline(..., as_of)``
+    per loan per read pass and added it to every shadow alike, while the escrow
+    in the same sum already resolved on each shadow's own due date.  So a loan
+    whose payment recasts mid-horizon priced every projected installment at the
+    payment in force on the day the page was rendered.
+
+    The loan: $200,000 / 6% / 360 from 2026-01-01, escrow $3,600/yr, plus a
+    recorded recast effective **2026-04-01** stating a $1,500.00 P&I.
+
+        period 0 P&I = amortize(200000, 0.06, 360) = 1,199.10
+        period 1 P&I = 1,500.00 (the lender's recorded recast)
+        escrow       = 3600 / 12 = 300.00
+
+        installment before 2026-04-01 -> 1,199.10 + 300.00 = 1,499.10
+        installment on/after it       -> 1,500.00 + 300.00 = 1,800.00
+
+    Both figures must appear, and the split must fall on the recast date.  A
+    fixture whose shadows all landed on one side of the boundary would assert
+    the same thing about a producer that read one clock, which is why the
+    boundary itself is asserted rather than the figures alone.
+    """
+    with app.app_context():
+        loan, _escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        # The lender's recorded recast: a rate change carrying its own P&I, so
+        # period 1's level payment is stated rather than derived (and the
+        # expectation below is a quoted contract term, not an amortization).
+        db.session.add(RateHistory(
+            account_id=loan.id,
+            effective_date=date(2026, 4, 1),
+            interest_rate=Decimal("0.07000"),
+            monthly_pi=Decimal("1500.00"),
+        ))
+        db.session.flush()
+        transfer_recurrence.generate_for_template(
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            ), scenario_id,
+        )
+        db.session.commit()
+
+        shadows = _loan_transfer_shadows(loan.id, scenario_id)
+        assert shadows, "expected generated shadow transactions"
+
+        resolved = _derived_cash(seed_user, shadows)
+        priced = {
+            loan_payment_due_date(shadow, 1): resolved[shadow.id]
+            for shadow in shadows
+        }
+
+        assert priced, "expected derived cash for the derive_from_loan transfer"
+        # The fixture really does straddle the recast -- otherwise a producer
+        # reading one clock would satisfy the mapping below.
+        assert set(priced.values()) == {Decimal("1499.10"), Decimal("1800.00")}, (
+            f"the fixture did not straddle the recast: {sorted(priced.items())}"
+        )
+        for due, cash in priced.items():
+            expected = (
+                Decimal("1800.00") if due >= date(2026, 4, 1)
+                else Decimal("1499.10")
+            )
+            assert cash == expected, (
+                f"installment due {due} priced {cash}, expected {expected}"
+            )

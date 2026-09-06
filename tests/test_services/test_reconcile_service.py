@@ -17,8 +17,14 @@ from dataclasses import fields, replace
 from datetime import date
 from decimal import Decimal
 
+
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    SettledDayBasisEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -26,20 +32,35 @@ from app.models.transaction_template import TransactionTemplate
 from app.services import (
     account_service,
     cash_ledger,
-    pay_period_service,
     pay_period_write,
     reconcile_service,
     status_seam,
     transfer_service,
+)
+from app.services.cash_ledger import amount_basis
+from app.services.pay_calendar import (
+    PayCalendar,
+    calendar_for,
 )
 from app.services.reconcile_service import _transactions
 from app.utils.log_events import (
     EVT_TRANSACTIONS_RECONCILED,
     EVT_TRANSFERS_RECONCILED,
 )
-from tests._test_helpers import settlement_basis_id, settlement_if_settling
+from tests._test_helpers import (
+    rhythm_of,
+    an_entered_day,
+    count_amount_bases,
+    last_covered_day,
+    open_books_before_the_first_assertion,
+    settle_day_columns,
+    settlement_basis_id,
+    settlement_if_settling,
+)
 from tests._test_helpers import create_transfer
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
 
 
 def _make_entry(transaction, user, amount="50.00", description="Kroger",
@@ -94,6 +115,35 @@ def _statement(account_id, observed_on=_OBSERVED_ON):
     return replace(
         cash_ledger.governing_anchor(account_id), observed_on=observed_on,
     )
+
+
+def _reconciled(seed_user, account_id=None, observed_on=_OBSERVED_ON,
+                owner_id=None):
+    """Return the STATEMENT these tests reconcile against.
+
+    The value both halves of the package take since pay-calendar plan step
+    **C4-a-2**: the owner's pay CALENDAR (whose rows may be offered, and the
+    span each is dated against), the account, and the assertion.  Built here so
+    a case that wants a MISMATCHED pair -- another owner's calendar against this
+    owner's account -- says so by naming the odd one out rather than by
+    assembling three values by hand.
+
+    Args:
+        seed_user: The seeded owner bundle.
+        account_id: The account to reconcile; the seed user's own when omitted.
+        observed_on: The civil day to present the assertion for.
+        owner_id: Whose CALENDAR to date the rows against; the seed user's when
+            omitted.  Named separately from *account_id* precisely so the
+            ownership cases can cross the two.
+
+    Returns:
+        The :class:`~app.services.reconcile_service.Statement`.
+    """
+    account = seed_user["account"].id if account_id is None else account_id
+    owner = seed_user["user"].id if owner_id is None else owner_id
+    return reconcile_service.Statement(
+        calendar_for(owner), account, _statement(account, observed_on),
+    )
 _BEFORE_THE_STATEMENT = date(2026, 1, 5)
 _AFTER_THE_STATEMENT = date(2026, 1, 12)
 
@@ -136,8 +186,7 @@ class TestTheOutstandingSet:
     def _reconcile(seed_user, entry_ids):
         """Run the writer against the seed user's own checking account."""
         return reconcile_service.record_settled_days(
-            seed_user["user"].id, seed_user["account"].id,
-            set(entry_ids), _statement(seed_user["account"].id),
+            _reconciled(seed_user), set(entry_ids),
         )
 
     @staticmethod
@@ -145,10 +194,7 @@ class TestTheOutstandingSet:
         """Return the ids the reader offers for the seed user's account."""
         return [
             purchase.entry_id
-            for group in reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id,
-                _statement(seed_user["account"].id),
-            ).groups
+            for group in reconcile_service.outstanding_set(_reconciled(seed_user)).groups
             for purchase in group.purchases
         ]
 
@@ -216,7 +262,7 @@ class TestTheOutstandingSet:
         with app.app_context():
             txn = seed_entry_template["transaction"]
             entry = _outstanding_debit(txn, seed_user)
-            entry.settled_on = _BEFORE_THE_STATEMENT
+            record_settle_day(entry, an_entered_day(_BEFORE_THE_STATEMENT))
             db.session.commit()
 
             assert self._listed(seed_user) == []
@@ -370,9 +416,11 @@ class TestTheOutstandingSet:
             )
             db.session.flush()
             # An AD-HOC envelope rather than a second row off the shared
-            # template: ``idx_transactions_template_period_scenario`` is
-            # unique, so one template cannot carry two rows in one period.
+            # template: both rows would answer no occurrence, and
+            # ``idx_transactions_template_scenario_undated`` holds one undated
+            # row per template per paycheck.
             txn_b = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=account_b.id,
@@ -382,7 +430,7 @@ class TestTheOutstandingSet:
                 transaction_type_id=(
                     seed_entry_template["transaction"].transaction_type_id
                 ),
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 is_envelope=True,
             )
             db.session.add(txn_b)
@@ -418,9 +466,10 @@ class TestTheOutstandingSet:
         with app.app_context():
             other_period = pay_period_write.record_paydays(
                 user_id=seed_second_user["user"].id,
-                first_payday=date(2026, 1, 2), num_periods=1, cadence_days=14,
+                first_payday=date(2026, 1, 2), num_periods=1, rhythm=rhythm_of(14),
             )[0]
             other_txn = Transaction(
+                user_id=other_period.user_id,
                 pay_period_id=other_period.id,
                 scenario_id=seed_second_user["scenario"].id,
                 account_id=seed_second_user["account"].id,
@@ -429,7 +478,7 @@ class TestTheOutstandingSet:
                 transaction_type_id=(
                     seed_entry_template["transaction"].transaction_type_id
                 ),
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 is_envelope=True,
             )
             db.session.add(other_txn)
@@ -448,69 +497,28 @@ class TestTheOutstandingSet:
                 TransactionEntry, other_entry.id,
             ).settled_on is None
 
-    def test_the_OWNER_clause_is_load_bearing_on_its_own(
-        self, app, db, seed_user, seed_second_user, seed_periods,
-        seed_entry_template,
-    ):
-        """The one shape that isolates ``PayPeriod.user_id == owner_id``.
-
-        A transaction on THIS user's account whose pay period belongs to
-        ANOTHER user.  Nothing in the schema forbids the row --
-        ``Transaction.account_id`` and ``Transaction.pay_period_id`` are
-        independent foreign keys with no composite constraint tying them to one
-        owner -- and nothing in the app creates it, so this is a forged /
-        corrupt row and the owner clause is the defence in depth against it.
-
-        It is the ONLY shape that grades that clause.  Every other cross-user
-        fixture puts the foreign row on the foreign ACCOUNT too, which the
-        account clause rejects first, so the owner clause could be deleted and
-        the whole reconcile suite would stay green (measured, in this step's
-        adversarial review).  Here the account clause PASSES by construction and
-        only the owner clause can reject it.
-
-        The consequence if it were dropped: whoever holds the corrupt row's id
-        could have another user's purchase stamped as reconciled against a
-        balance that user never asserted -- and, because ``settled_on`` is then
-        non-NULL, that user's own panel would stop offering it.
-        """
-        with app.app_context():
-            other_period = pay_period_write.record_paydays(
-                user_id=seed_second_user["user"].id,
-                first_payday=date(2026, 1, 2), num_periods=1, cadence_days=14,
-            )[0]
-            crossed = Transaction(
-                # THIS user's account ...
-                account_id=seed_user["account"].id,
-                # ... under the OTHER user's pay period.
-                pay_period_id=other_period.id,
-                scenario_id=seed_second_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="Cross-owner groceries",
-                transaction_type_id=(
-                    seed_entry_template["transaction"].transaction_type_id
-                ),
-                estimated_amount=Decimal("500.00"),
-                is_envelope=True,
-            )
-            db.session.add(crossed)
-            db.session.flush()
-            entry = _make_entry(
-                crossed, seed_second_user["user"], amount="50.00",
-                description="Crossed", purchased_on=_BEFORE_THE_STATEMENT,
-            )
-            db.session.commit()
-
-            # The account clause cannot reject this row -- it IS on this
-            # account.  Stated so the test cannot silently stop isolating.
-            assert crossed.account_id == seed_user["account"].id
-
-            assert self._listed(seed_user) == []
-            assert self._reconcile(seed_user, [entry.id]) == 0
-
-            db.session.expire_all()
-            assert db.session.get(
-                TransactionEntry, entry.id,
-            ).settled_on is None
+    # **``test_the_OWNER_clause_is_load_bearing_on_its_own`` was DELETED at
+    # plan step ``pay_calendar:C13-a``**, and this note is what a reader
+    # looking for it needs.  That case built a transaction on THIS owner's
+    # account under ANOTHER owner's pay period -- a row the schema then
+    # permitted -- to reach the ownership half of this package's scope.
+    # ``fk_transactions_owner_period`` refuses that INSERT now, so the case
+    # could only assert the refusal, which is
+    # ``test_c13a_transaction_owner_key.test_a_stranger_s_account_is_refused``
+    # verbatim and belongs there.
+    #
+    # **What it graded is NOT lost, and a first version of its replacement
+    # said it was.**  The scope it reached is
+    # ``Transaction.pay_period_id.in_(statement.owned_period_ids)`` -- a
+    # PERIOD SET since pay-calendar plan step C4-a-2, not the
+    # ``pay_periods.user_id`` comparison that replacement named -- and
+    # ``TestTheScopeIsTheCALENDARsNotTheTables`` below grades both arms of it
+    # through a short calendar, an input the composite keys still permit.
+    # Measured 2026-09-02: deleting ``_purchases.py``'s clause fails
+    # ``test_the_PURCHASE_arm_is_scoped_the_same_way``.  So the clause is
+    # live, graded, and load-bearing for ``_block_headings``' totality, and
+    # ``C13-b`` must not treat it as one of finding **P75**'s nineteen: those
+    # are reads that REFUSE, and this one SCOPES.
 
     def test_a_mixed_submission_stamps_only_what_is_in_scope(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -594,6 +602,95 @@ class TestTheOutstandingSet:
             ]
 
 
+class TestARefundIsAnOutstandingPurchaseAndTheTallyNETS:
+    """A merchant credit the bank has not been seen to pay back.
+
+    Ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``.  A refund
+    IS a negative purchase, so one with no recorded posting day satisfies every
+    clause of ``_outstanding_scope`` -- debit, unsettled, made on or before the
+    statement day, under a projected parent on this account -- and the panel
+    offers it.  ``OutstandingPurchase.amount`` claimed to be POSITIVE and was
+    not.
+
+    **The bank-import door's own refunds are NOT this set.**
+    ``statement_match._create._born_purchase`` gives a purchase the bank's
+    posting day at birth, so a refund it files is settled from the moment it
+    exists.  What reaches here is a negative the owner typed on the edit door,
+    or one whose posting day they cleared -- both of which
+    ``EntryUpdateSchema`` allows by design.
+
+    **The tally NETS, and that is the decision rather than an accident.**  The
+    panel's sentence is about what the envelope is *still holding back*, and a
+    refund it holds is money it expects to ARRIVE.  A magnitude sum would make
+    the figure disagree with the reservation the sentence names -- the defect
+    that sentence has already been corrected for once, by `$488.16`.
+    """
+
+    def test_a_negative_purchase_is_OFFERED_and_the_total_nets(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """`$120.00` out and `-$45.00` back: two rows, `$75.00` net."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            charge = _outstanding_debit(txn, seed_user, amount="120.00")
+            refund = _outstanding_debit(txn, seed_user, amount="-45.00")
+            db.session.commit()
+
+            offered = reconcile_service.outstanding_set(_reconciled(seed_user))
+
+            assert sorted(self._listed(seed_user)) == sorted(
+                [charge.id, refund.id],
+            ), "a refund with no posting day is outstanding like any purchase"
+            assert offered.purchase_count == 2, (
+                "the COUNT is a count of ticks the owner has to make"
+            )
+            assert offered.purchase_total == Decimal("75.00"), (
+                "120.00 out and 45.00 back is 75.00 of net movement still "
+                "held back -- a magnitude sum would read 165.00"
+            )
+
+    def test_a_refund_the_BANK_DOOR_filed_is_not_offered(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The control: a recorded posting day is what takes a row OUT.
+
+        Without it the case above passes on a scope that offers every purchase
+        whatever its posting day -- which would put the whole import's work
+        back on the panel.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(txn, seed_user, amount="-45.00")
+            # **BOTH columns, because they are ONE fact.**
+            # ``ck_transaction_entries_settle_day_basis_pairing`` is a
+            # biconditional, so naming only the day is an ``IntegrityError``
+            # rather than a row -- and ``observed`` is the basis the bank
+            # import writes (plan step **X-az**), which is the state this case
+            # is about.
+            for column, value in settle_day_columns(
+                _BEFORE_THE_STATEMENT, SettledDayBasisEnum.OBSERVED,
+            ).items():
+                setattr(entry, column, value)
+            db.session.commit()
+
+            offered = reconcile_service.outstanding_set(_reconciled(seed_user))
+
+            assert self._listed(seed_user) == []
+            assert offered.purchase_count == 0
+            assert offered.purchase_total == Decimal("0.00")
+
+    @staticmethod
+    def _listed(seed_user):
+        """Return the ids the reader offers -- the same read as the class above."""
+        return [
+            purchase.entry_id
+            for group in reconcile_service.outstanding_set(
+                _reconciled(seed_user),
+            ).groups
+            for purchase in group.purchases
+        ]
+
+
 class TestTheSetIsGroupedByItsParent:
     """Ruling **R-EW**: a purchase nests under the thing it belongs to.
 
@@ -634,6 +731,7 @@ class TestTheSetIsGroupedByItsParent:
         db.session.flush()
         txn = Transaction(
             template_id=template.id,
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -641,7 +739,7 @@ class TestTheSetIsGroupedByItsParent:
             name=name,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=template.transaction_type_id,
-            estimated_amount=Decimal("80.00"),
+            amount_ownership=AmountOwnership.own(Decimal("80.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -650,8 +748,7 @@ class TestTheSetIsGroupedByItsParent:
     @staticmethod
     def _resolve(seed_user, observed_on=_OBSERVED_ON):
         return reconcile_service.outstanding_set(
-            seed_user["user"].id, seed_user["account"].id,
-            _statement(seed_user["account"].id, observed_on),
+            _reconciled(seed_user, observed_on=observed_on),
         )
 
     def test_each_envelope_is_one_block_carrying_its_own_purchases(
@@ -697,7 +794,7 @@ class TestTheSetIsGroupedByItsParent:
             assert [group.name for group in result.groups] == [
                 "Weekly Groceries", "Gas",
             ]
-            assert [g.period_start for g in result.groups] == [
+            assert [g.period.start_date for g in result.groups] == [
                 seed_periods[0].start_date, seed_periods[0].start_date,
             ]
             assert [len(g.purchases) for g in result.groups] == [2, 1]
@@ -734,6 +831,7 @@ class TestTheSetIsGroupedByItsParent:
             first = seed_entry_template["transaction"]
             second = Transaction(
                 template_id=first.template_id,
+                user_id=seed_periods[1].user_id,
                 pay_period_id=seed_periods[1].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -741,7 +839,7 @@ class TestTheSetIsGroupedByItsParent:
                 name=first.name,
                 category_id=first.category_id,
                 transaction_type_id=first.transaction_type_id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(second)
             db.session.flush()
@@ -755,11 +853,18 @@ class TestTheSetIsGroupedByItsParent:
                 "Weekly Groceries", "Weekly Groceries",
             ]
             # ONE name, TWO periods -- which is what the heading renders.
-            assert [g.period_start for g in result.groups] == [
+            # The span is the one the owner's calendar DERIVES (pay-calendar
+            # plan step C4-a-2); on this fixture's contiguous biweekly schedule
+            # it equals the stored pair, which is what the second assertion
+            # measures rather than assumes.
+            assert [g.period.start_date for g in result.groups] == [
                 seed_periods[0].start_date, seed_periods[1].start_date,
             ]
-            assert [g.period_end for g in result.groups] == [
-                seed_periods[0].end_date, seed_periods[1].end_date,
+            assert [g.period.end_date for g in result.groups] == [
+                last_covered_day(seed_periods[0]), last_covered_day(seed_periods[1]),
+            ]
+            assert [g.period.period_id for g in result.groups] == [
+                seed_periods[0].id, seed_periods[1].id,
             ]
             assert [g.total for g in result.groups] == [
                 Decimal("40.00"), Decimal("60.00"),
@@ -940,6 +1045,7 @@ class TestTheTransactionArm:
         db.session.flush()
         txn = Transaction(
             template_id=template.id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -947,7 +1053,7 @@ class TestTheTransactionArm:
             name=name,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=type_id,
-            estimated_amount=Decimal(amount),
+            amount_ownership=AmountOwnership.own(Decimal(amount)),
             due_date=due_date,
         )
         db.session.add(txn)
@@ -960,8 +1066,7 @@ class TestTheTransactionArm:
         return {
             group.settle.transaction_id: group.settle
             for group in reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id,
-                _statement(seed_user["account"].id, observed_on),
+                _reconciled(seed_user, observed_on=observed_on),
             ).groups
             if group.settle is not None
         }
@@ -980,12 +1085,10 @@ class TestTheTransactionArm:
         """
         return reconcile_service.record_reconciliation(
             reconcile_service.ReconcileSubmission(
-                owner_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
+                statement=_reconciled(seed_user, observed_on=observed_on),
                 entry_ids=set(),
                 transaction_ids=set(ids),
                 corrections=corrections or {},
-                anchor=_statement(seed_user["account"].id, observed_on),
             ),
         )
 
@@ -1041,7 +1144,7 @@ class TestTheTransactionArm:
     ):
         """The date bound, from both doors.
 
-        ``attribution_date <= observed_on`` IS the overdue set (ruling R-G
+        ``attribution_day <= observed_on`` IS the overdue set (ruling R-G
         clamps a projected row's landing day up to ``as_of + 1``), so a row the
         projection has not reached yet is not something a statement can show.
         A forged id for it settles nothing.
@@ -1060,7 +1163,7 @@ class TestTheTransactionArm:
     def test_the_bound_is_the_DUE_DATE_when_the_row_carries_one(
         self, app, db, seed_user, seed_periods,
     ):
-        """The landing day is ``attribution_date``, not the period's start.
+        """The landing day is ``attribution_day``, not the period's start.
 
         A bill due on the 20th of a period that STARTS on the 2nd is not
         overdue on the 10th, even though its period is.  The SQL half of the
@@ -1139,9 +1242,18 @@ class TestTheTransactionArm:
             # with the transfer arm out of the picture.  Without this the case
             # above would pass for a panel that offered the shadow through the
             # WRONG arm and settled one leg.
+            owner_id = seed_user["user"].id
             assert shadow.id not in _transactions.outstanding_transactions(
-                seed_user["user"].id, seed_user["account"].id,
-                _statement(seed_user["account"].id),
+                # The PANEL's own STATEMENT, which ``outstanding_set`` builds
+                # once and threads (pay-calendar plan step C4-a-2): the arm
+                # takes the value rather than three arguments it would
+                # reassemble.
+                _reconciled(seed_user),
+                # The PANEL's own basis, which ``outstanding_set`` builds once
+                # (plan step X-au-j).  Built here rather than defaulted inside
+                # the arm: the parameter is required precisely so a producer
+                # cannot quietly rebuild its caller's derivations.
+                amount_basis(owner_id, seed_user["scenario"].id),
             )
 
     def test_a_settled_row_is_neither_offered_nor_re_settled(
@@ -1164,30 +1276,38 @@ class TestTheTransactionArm:
 
     def test_another_users_row_is_neither_offered_nor_settled(
         self, app, db, seed_user, seed_periods, seed_entry_template,
+        seed_second_user,
     ):
-        """Ownership, from both doors -- a forged id from another budget.
+        """Ownership, from both doors -- a REAL second budget.
 
         The scope reaches the owner through the row's PAY PERIOD, which is the
         only user_id a Transaction has, so this grades the join as well as the
         clause.
+
+        **The other owner is a seeded user rather than an id nobody holds**
+        (plan step X-au-j).  It was ``seed_user.id + 1000`` until this step,
+        which no ``users`` row answers to -- so every join dropped it for the
+        trivial reason and the ownership clause was never the thing under test.
+        A second budget that really exists, with its own baseline scenario and
+        its own periods, is the threat this control is written for, and it is
+        the shape the panel's amount basis now requires: that basis is built
+        for the OWNER being asked about (``require_baseline_scenario``), which
+        an unowned id cannot answer at all.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
             db.session.commit()
-            other_id = seed_user["user"].id + 1000
+            other_id = seed_second_user["user"].id
 
             assert reconcile_service.outstanding_set(
-                other_id, seed_user["account"].id,
-                _statement(seed_user["account"].id),
+                _reconciled(seed_user, owner_id=other_id),
             ).groups == ()
             assert reconcile_service.record_reconciliation(
                 reconcile_service.ReconcileSubmission(
-                    owner_id=other_id,
-                    account_id=seed_user["account"].id,
+                    statement=_reconciled(seed_user, owner_id=other_id),
                     entry_ids=set(),
                     transaction_ids={txn.id},
                     corrections={},
-                    anchor=_statement(seed_user["account"].id),
                 ),
             ) == 0
 
@@ -1215,16 +1335,21 @@ class TestTheTransactionArm:
             db.session.commit()
 
             assert reconcile_service.outstanding_set(
-                seed_user["user"].id, other.id, _statement(other.id),
+                _reconciled(seed_user, account_id=other.id),
             ).groups == ()
             assert reconcile_service.record_reconciliation(
                 reconcile_service.ReconcileSubmission(
-                    owner_id=seed_user["user"].id,
-                    account_id=other.id,
+                    # The other ACCOUNT, this owner's calendar and THIS
+                    # account's assertion -- the cross-account pairing the
+                    # case is named for, so it is spelled out rather than
+                    # taken from the helper.
+                    statement=reconcile_service.Statement(
+                        calendar_for(seed_user["user"].id), other.id,
+                        _statement(seed_user["account"].id),
+                    ),
                     entry_ids=set(),
                     transaction_ids={txn.id},
                     corrections={},
-                    anchor=_statement(seed_user["account"].id),
                 ),
             ) == 0
 
@@ -1340,6 +1465,197 @@ class TestTheTransactionArm:
             assert self._settle(seed_user, []) == 0
 
 
+# **``TestThePanelIsDatedByTheDERIVEDSpan`` was deleted at plan step
+# ``pay_calendar:C4-c``, and it is worth saying what it did rather than
+# leaving a gap.**  It was plan step C4-a-2's grade: four cases planted a
+# ``budget.pay_periods.end_date`` of 2026-01-08 on a period the paydays
+# end on 01-15, with a statement day of 01-10 between the two, and
+# asserted that the panel's caption, its block heading and its offer set
+# all answered from the DERIVATION -- one of them a control showing the
+# stored column really would have moved the landing day.  They were the
+# only FIRING controls this module could have (ledger row **P53**):
+# every fixture builds periods through ``pay_period_write``, so a stored
+# end and a derived end agree by construction and a case written on one
+# passes against the other.
+#
+# The column is dropped.  The plant is not expressible, the two answers
+# are one answer, and P53 closes with the class rather than being left
+# open under a test that can no longer be written.  The panel's dating is
+# still graded -- ``TestTheScopeIsTheCALENDARsNotTheTables`` below drives
+# the same three surfaces on ordinary schedules.
+
+
+class TestTheScopeIsTheCALENDARsNotTheTables:
+    """A row the calendar never saw is NOT OFFERED, rather than a 500.
+
+    Pay-calendar plan step **C4-a-2**, second design.  The panel dates every row
+    it offers off the owner's calendar
+    (:meth:`~app.services.pay_calendar.PayCalendar.require_period`), and the
+    first cut reached that lookup from a scope written on
+    ``pay_periods.user_id``.  Two reads of two different things then have to
+    agree, and under ``READ COMMITTED`` they need not: ``/grid`` and
+    ``/dashboard`` append paydays AND populate rows into them inside one
+    ``write_transaction`` (``routes/_period_population.py``, ruling **R-R38**),
+    so a concurrent render on a lapsed schedule creates rows this panel's query
+    admits and its span lookup cannot date.  Both of this package's COMMAND
+    doors render after committing -- the reconcile POST and the true-up PATCH
+    through ``prompt_fragment`` -- which made it a 500 on a money screen
+    (balance finding **N-358**).
+
+    **The scope is the calendar's own saved ids now, so the state is
+    inexpressible rather than merely unlikely** -- the shape
+    ``statement_match._candidates`` already had, and the rule
+    ``require_period``'s own docstring states: *where the precondition is
+    carried by the QUERY, the total form is honest.*
+
+    These cases hold the property directly, by handing the panel a calendar
+    that legitimately lacks a period the ACCOUNT's rows are filed in.  That is
+    the same shape the concurrency produces and needs no concurrency to build.
+    """
+
+    @staticmethod
+    def _bill(seed_user, period, name="Electricity"):
+        """Create one projected bill in *period*, due on its payday."""
+        type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=type_id,
+            name=name,
+            default_amount=Decimal("180.00"),
+            is_envelope=False,
+        )
+        db.session.add(template)
+        db.session.flush()
+        txn = Transaction(
+            template_id=template.id,
+            user_id=period.user_id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            name=name,
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=type_id,
+            amount_ownership=AmountOwnership.own(Decimal("180.00")),
+            due_date=period.start_date,
+        )
+        db.session.add(txn)
+        db.session.flush()
+        return txn
+
+    @staticmethod
+    def _short_calendar(seed_user, drop_period_id):
+        """Return the owner's calendar with one payday REMOVED.
+
+        Stands in for the calendar a request read a moment before a concurrent
+        writer created that payday.  Built from the owner's real paydays minus
+        one rather than from literals, so the periods it does hold are the ones
+        the database holds.
+
+        Args:
+            seed_user: The seeded owner bundle.
+            drop_period_id: The ``budget.pay_periods.id`` to leave out.
+
+        Returns:
+            The shortened :class:`~app.services.pay_calendar.PayCalendar`.
+        """
+        whole = calendar_for(seed_user["user"].id)
+        return PayCalendar.from_paydays(
+            [
+                (period.period_id, period.start_date)
+                for period in whole.periods
+                if period.period_id != drop_period_id
+            ],
+            whole.cadence_days,
+            seed_user["user"].id,
+            history_opens_on=None,
+        )
+
+    def test_a_row_in_a_period_the_calendar_lacks_is_not_offered(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The whole property, and the case that used to be a 500.
+
+        Two bills, one in each of the first two periods, both overdue against
+        the statement.  Asked with a calendar that holds only the first, the
+        panel offers the first and simply does not ask about the second.
+        """
+        with app.app_context():
+            inside = self._bill(seed_user, seed_periods[0], "Electricity")
+            outside = self._bill(seed_user, seed_periods[1], "Internet")
+            db.session.commit()
+
+            offered = {
+                group.settle.transaction_id
+                for group in reconcile_service.outstanding_set(
+                    reconcile_service.Statement(
+                        self._short_calendar(seed_user, seed_periods[1].id),
+                        seed_user["account"].id,
+                        _statement(
+                            seed_user["account"].id, date(2026, 1, 20),
+                        ),
+                    ),
+                ).groups
+                if group.settle is not None
+            }
+
+            assert inside.id in offered
+            assert outside.id not in offered
+
+    def test_the_WHOLE_calendar_offers_the_row_the_short_one_dropped(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The firing control for the case above.
+
+        Without it that test passes for a panel that offers nothing at all, or
+        for a bill the fixture never made overdue.  Same rows, same day, the
+        owner's REAL calendar: both are offered.
+        """
+        with app.app_context():
+            inside = self._bill(seed_user, seed_periods[0], "Electricity")
+            outside = self._bill(seed_user, seed_periods[1], "Internet")
+            db.session.commit()
+
+            offered = {
+                group.settle.transaction_id
+                for group in reconcile_service.outstanding_set(
+                    _reconciled(seed_user, observed_on=date(2026, 1, 20)),
+                ).groups
+                if group.settle is not None
+            }
+
+            assert inside.id in offered
+            assert outside.id in offered
+
+    def test_the_PURCHASE_arm_is_scoped_the_same_way(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The third arm, which is what keeps the block HEADING total.
+
+        ``_block_headings`` labels the parents every arm produced, so a purchase
+        arm still scoped on ``pay_periods.user_id`` would have handed it a
+        parent the calendar cannot date -- the same 500 through a different
+        door.  A purchase against a parent outside the short calendar is not
+        offered either.
+        """
+        with app.app_context():
+            later = self._bill(seed_user, seed_periods[1], "Internet")
+            _make_entry(later, seed_user["user"], amount="30.00")
+            db.session.commit()
+
+            groups = reconcile_service.outstanding_set(
+                reconcile_service.Statement(
+                    self._short_calendar(seed_user, seed_periods[1].id),
+                    seed_user["account"].id,
+                    _statement(seed_user["account"].id, date(2026, 1, 20)),
+                ),
+            ).groups
+
+            assert later.id not in {group.transaction_id for group in groups}
+
+
 class TestTheTransferArm:
     """Plan step **X-f2-c3**: the panel offers a TRANSFER's shadow too.
 
@@ -1359,7 +1675,14 @@ class TestTheTransferArm:
 
     @staticmethod
     def _savings(seed_user, name="Savings"):
-        """Create a second cash account for the transfer's other leg."""
+        """Create a second cash account for the transfer's other leg.
+
+        Its BOOKS open before anything this class dates (plan step X-f3c-2b,
+        ruling **R-HG**): ``create_account`` opens them on the assertion's own
+        day, which is today, and every transfer here settles on a statement day
+        earlier than that.  It moves no figure -- the assertion still clears
+        whatever settled on its own day.
+        """
         account = account_service.create_account(
             account_service.AccountSpec(
                 user_id=seed_user["user"].id,
@@ -1369,6 +1692,7 @@ class TestTheTransferArm:
             ),
         )
         db.session.flush()
+        open_books_before_the_first_assertion(db.session, account)
         return account
 
     @classmethod
@@ -1483,10 +1807,7 @@ class TestTheTransferArm:
         with app.app_context():
             _transfer, shadow = self._transfer_out(seed_user, seed_periods)
 
-            groups = reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id,
-                _statement(seed_user["account"].id),
-            ).groups
+            groups = reconcile_service.outstanding_set(_reconciled(seed_user)).groups
             block = next(
                 group for group in groups
                 if group.transaction_id == shadow.id
@@ -1515,15 +1836,12 @@ class TestTheTransferArm:
             )
             db.session.commit()
 
-            outgoing = reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id,
-                _statement(seed_user["account"].id),
-            )
+            outgoing = reconcile_service.outstanding_set(_reconciled(seed_user))
             assert outgoing.payment_total >= Decimal("75.00")
             assert outgoing.deposit_count == 0
 
             incoming = reconcile_service.outstanding_set(
-                seed_user["user"].id, savings.id, _statement(savings.id),
+                _reconciled(seed_user, account_id=savings.id),
             )
             assert incoming.deposit_count == 1
             assert incoming.deposit_total == Decimal("75.00")
@@ -1864,10 +2182,7 @@ class TestWhatATickBooks:
             )
             db.session.commit()
 
-            result = reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id,
-                _statement(seed_user["account"].id),
-            )
+            result = reconcile_service.outstanding_set(_reconciled(seed_user))
             assert result.deposit_count == 1
             assert result.deposit_total == Decimal("1958.87")
             assert result.payment_count == 0
@@ -1895,10 +2210,7 @@ class TestWhatATickBooks:
             _make_entry(txn, seed_user["user"], amount="60.00")
             db.session.commit()
 
-            result = reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id,
-                _statement(seed_user["account"].id),
-            )
+            result = reconcile_service.outstanding_set(_reconciled(seed_user))
             assert result.purchase_count == 2
             assert result.purchase_total == Decimal("100.00")
             assert result.payment_count == 1
@@ -2031,12 +2343,10 @@ class TestTheCashFigureBesideTheBookedOne:
             offered_cash = self._offered(seed_user)[txn.id].cash_amount
             assert reconcile_service.record_reconciliation(
                 reconcile_service.ReconcileSubmission(
-                    owner_id=seed_user["user"].id,
-                    account_id=seed_user["account"].id,
+                    statement=_reconciled(seed_user),
                     entry_ids=set(),
                     transaction_ids={txn.id},
                     corrections={},
-                    anchor=_statement(seed_user["account"].id),
                 ),
             ) == 1
             db.session.commit()
@@ -2180,10 +2490,7 @@ class TestTheSectionsAndTheOrder:
 
     @staticmethod
     def _resolved(seed_user):
-        return reconcile_service.outstanding_set(
-            seed_user["user"].id, seed_user["account"].id,
-            _statement(seed_user["account"].id),
-        )
+        return reconcile_service.outstanding_set(_reconciled(seed_user))
 
     def test_each_arm_TAGS_its_kind_and_income_is_a_DEPOSIT(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -2318,3 +2625,66 @@ class TestTheSectionsAndTheOrder:
         assert {
             kind for kind in kinds if kind.section_note
         } == {reconcile_service.OfferKind.TRANSFER}
+
+
+class TestThePanelHoldsONEAmountBasis:
+    """Plan step **X-au-j**, finding **N-295**: the derivations are the PANEL's.
+
+    An :class:`~app.services.cash_ledger.AmountBasis` holds the owner's live
+    derivations -- the paycheck engine run over the whole pay-period set, and
+    each loan's P&I, payment day and escrow history.  ``amount_basis``'s own
+    docstring says calling those per row is finding **N-228**, and N-295
+    recorded the reconcile panel doing exactly that: both source-row arms
+    priced every offered row through their own ``settle_amount``, and each of
+    those built its own.
+
+    It is ``test_statement_match``'s ``TestThePassHoldsONEAmountBasis`` one
+    package over, and it fails the same way: a later change that let a producer
+    build its own would restore the cost in SILENCE, because every figure would
+    still be right.  Only the wall clock moves, which is why the count is
+    asserted and the timing is not.
+    """
+
+    def test_one_basis_serves_every_row_the_panel_offers(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """The firing control: ONE construction, however many rows are offered.
+
+        **The rows are PROJECTED deliberately, and that is what makes this
+        control sharp.**  A settled row is valued from its own record
+        (``row_valuation.fixed_contribution``) and never reaches the resolver,
+        so a panel of settled rows builds one basis whether or not this step
+        shipped -- the assertion would hold over a broken tree.
+        """
+        with app.app_context():
+            # Six offerable bills, plus the seed fixture's own envelope close.
+            for index in range(6):
+                TestTheTransactionArm._bill(
+                    seed_user, seed_periods[0],
+                    name=f"Bill {index}", amount=f"{100 + index}.00",
+                )
+            db.session.commit()
+
+            built = count_amount_bases(monkeypatch)
+
+            offers = {
+                group.settle.transaction_id: group.settle
+                for group in reconcile_service.outstanding_set(_reconciled(seed_user)).groups
+                if group.settle is not None
+            }
+
+            assert len(offers) >= 6, (
+                "the panel must offer several rows -- otherwise one basis and "
+                "one per row are the same number and this grades nothing"
+            )
+            assert len(built) == 1, (
+                f"the panel built {len(built)} amount bases for "
+                f"{len(offers)} offered rows; X-au-j makes it one"
+            )
+            # And it is the OWNER's own, not some other budget's: a basis
+            # prices from a scenario's salary profiles and a scenario's loans,
+            # so a foreign one answers a different figure with nothing to say
+            # so (``resolve_transaction_amount`` refuses it).
+            assert built == [
+                (seed_user["user"].id, seed_user["scenario"].id),
+            ]

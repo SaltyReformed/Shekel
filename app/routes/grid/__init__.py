@@ -50,15 +50,22 @@ from app.routes.grid._bp import grid_bp
 from app.routes.grid import page  # noqa: F401, E402
 from app.routes.grid import partials  # noqa: F401, E402
 
-# ``PLAN_WINDOW_PERIODS``, ``_ACCRUAL_ROW_LABELS`` and ``_accrual_row_label``
-# are re-exported for the tests that reach for them by their pre-split path
-# (``tests/test_routes/test_grid.py``); they are internals of the modules
-# above, named here only so the split moved no test.
+# ``_ACCRUAL_ROW_LABELS`` and ``_accrual_row_label`` are re-exported for the
+# tests that reach for them by their pre-split path
+# (``tests/test_routes/test_grid.py``); they are internals of the module above,
+# named here only so the split moved no test.
+#
+# **``PLAN_WINDOW_PERIODS`` was re-exported beside them under the same
+# sentence, and the sentence was false**: NO test ever imported it, measured
+# during recurrence plan step R-F17's adversarial review.  It went with the
+# constant when that step made the Plan tab's window a span of MONTHS the
+# owner's cadence resolves; the replacement is deliberately not re-exported,
+# because a re-export justified by a reader that does not exist is the shape
+# this project deletes rather than renames.
 from app.routes.grid._shared import (  # noqa: F401, E402
     _ACCRUAL_ROW_LABELS,
     _accrual_row_label,
 )
-from app.routes.grid.page import PLAN_WINDOW_PERIODS  # noqa: F401, E402
 
 
 __all__ = ["RowKey", "grid_bp"]

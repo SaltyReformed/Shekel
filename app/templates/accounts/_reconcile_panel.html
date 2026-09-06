@@ -1,5 +1,28 @@
 {% from "_money_macros.html" import money %}
-{% macro settle_row(group, panel_id, label, period_start=none, period_end=none) %}
+{% macro period_span(period) -%}
+{#- WHICH paycheck a block belongs to, in this panel's narrow register.
+
+   ONE spelling for the two places that print it -- the with-children arm's
+   heading and the childless arm's inline row -- because it is one register and
+   was written out twice.  ``period`` is a
+   ``pay_calendar.DerivedPeriod``: the span is DERIVED from the owner's paydays
+   since pay-calendar plan step C4-a-2, where both halves were columns read off
+   ``budget.pay_periods`` and C4-c dropped one of them.
+
+   **The FORMAT is still this file's and that is a live question, not a
+   decision made here** (ledger row P47).  ``%b %-d - %b %-d`` matches
+   ``dashboard/_pulse.html`` exactly and matches none of the three registers
+   ``utils.dates`` publishes, so the pair is a cross-file duplicate that a
+   shared register would close; which register each screen should speak is the
+   developer's ruling and is deliberately not smuggled in here.
+-#}
+<span class="text-body-secondary fw-normal fs-xs ms-1">
+  {{ period.start_date.strftime('%b %-d') }}
+  -
+  {{ period.end_date.strftime('%b %-d') }}
+</span>
+{%- endmacro %}
+{% macro settle_row(group, panel_id, label, period=none) %}
 {# ONE rendering of a settle offer, used by BOTH arms.
 
    It was two, and the duplicate honoured ``is_correctable`` in only one of
@@ -9,12 +32,12 @@
    its correction box silently.  A rule enforced in one of two copies is the
    shape ruling R-FB's box exists to make reliable.
 
-   ``period_start`` / ``period_end`` are passed only by the CHILDLESS arm,
-   where this row IS the heading: ``OutstandingGroup`` argues the pay-period
-   span is load-bearing because the recurrence engine materialises one row per
-   template per period, so one envelope in two periods is two blocks with one
-   name.  R-FC made most of the panel childless, which is exactly where that
-   ambiguity would have gone unlabelled.
+   ``period`` is passed only by the CHILDLESS arm, where this row IS the
+   heading: ``OutstandingGroup`` argues the pay-period span is load-bearing
+   because the recurrence engine materialises one row per template per period,
+   so one envelope in two periods is two blocks with one name.  R-FC made most
+   of the panel childless, which is exactly where that ambiguity would have
+   gone unlabelled.
 #}
 <li class="list-group-item d-flex align-items-center gap-2">
   <input class="form-check-input mt-0 flex-shrink-0" type="checkbox"
@@ -26,10 +49,8 @@
       {{ group.settle.attributed_on.strftime('%m/%d') }}
     </span>
     {{ label }}
-    {% if period_start %}
-    <span class="text-body-secondary fw-normal fs-xs ms-1">
-      {{ period_start.strftime('%b %-d') }} - {{ period_end.strftime('%b %-d') }}
-    </span>
+    {% if period %}
+    {{ period_span(period) }}
     {% endif %}
     {% if group.settle.cash_amount is not none %}
     {# Finding N-226, widened by ruling R-FM.  An envelope books
@@ -97,8 +118,9 @@
    Expected context:
      account            -- the Account whose balance was asserted.
      outstanding        -- a ``reconcile_service.OutstandingSet``: ``groups``
-                           (each with ``name``, ``period_start`` /
-                           ``period_end``, ``purchases``, ``total``, ``kind``,
+                           (each with ``name``, ``period`` (a
+                           ``pay_calendar.DerivedPeriod``), ``purchases``,
+                           ``total``, ``kind``,
                            ``settle``, ``section``), the three
                            count/total pairs, and ``is_empty``.  Already scoped
                            to this account's owner and to what the asserted day
@@ -186,11 +208,7 @@
       <div class="d-flex justify-content-between align-items-baseline gap-2 mb-1">
         <h6 class="mb-0 text-truncate">
           {{ group.name }}
-          <span class="text-body-secondary fw-normal fs-xs ms-1">
-            {{ group.period_start.strftime('%b %-d') }}
-            -
-            {{ group.period_end.strftime('%b %-d') }}
-          </span>
+          {{ period_span(group.period) }}
         </h6>
         <span class="small text-body-secondary font-mono flex-shrink-0">
           {{ money(group.total) }}
@@ -235,11 +253,9 @@
        childless arm is where R-FC sent most of the envelopes. #}
     <ul class="list-group mb-2">
       {% if group.settle_closes_an_envelope %}
-      {{ settle_row(group, panel_id, "Close " ~ group.name,
-                    group.period_start, group.period_end) }}
+      {{ settle_row(group, panel_id, "Close " ~ group.name, group.period) }}
       {% else %}
-      {{ settle_row(group, panel_id, group.name, group.period_start,
-                    group.period_end) }}
+      {{ settle_row(group, panel_id, group.name, group.period) }}
       {% endif %}
     </ul>
     {% endif %}

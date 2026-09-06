@@ -62,8 +62,18 @@ boundary.
 from app import ref_cache
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
+from app.models.transaction_template import TransactionTemplate
+from app.models.transfer_template import TransferTemplate
 from app.services.pay_calendar import PayCalendar
+from app.services.recurrence._frequency import RecurrenceResolutionError
 from app.services.recurrence._resolution import RecurrenceSpec, resolve
+
+#: What a recurrence rule may belong to: the two recurring-definition kinds,
+#: which are the two arms of ``budget.recurrence_rules``' owning arc.  Named
+#: rather than spelled inline because :func:`author_rule` is the one door that
+#: binds an owner, and a third definition kind would be one edit here plus the
+#: column and the arm it needs.
+RecurrenceOwner = TransactionTemplate | TransferTemplate
 
 
 def _author(
@@ -152,7 +162,16 @@ def _author(
     """
     resolved = resolve(spec, calendar)
 
-    rule.user_id = spec.user_id
+    # **The owner is NOT written here, since plan step R-F6**, and it is the
+    # one authored-looking value this function does not touch: a rule's owner
+    # is the definition holding it (``rule.transaction_template`` /
+    # ``rule.transfer_template``), and ``RecurrenceRule.user_id`` reads through
+    # to that definition's.  ``spec.user_id`` states which owner the caller
+    # BELIEVES it is authoring for, and its whole job is the pairing check in
+    # ``resolve`` above -- a spec resolved against somebody else's pay calendar
+    # produces a plausible wrong date rather than an error.  Writing it onto
+    # the row would put a second copy of the owner beside the first, which is
+    # what that step deleted.
     rule.due_day_of_month = spec.due_day_of_month
     # ---- what the rule AUTHORS -------------------------------------------
     #
@@ -190,15 +209,44 @@ def _author(
 def build_transient_rule(
     spec: RecurrenceSpec, calendar: PayCalendar,
 ) -> RecurrenceRule:
-    """Build a resolved rule WITHOUT adding it to the session.
+    """Build a resolved rule on an UNSAVED owner, adding neither to the session.
 
-    For the read-only caller that needs a real rule to hand to the engine but
-    must not persist one: the recurrence preview endpoint
-    (``templates.preview_recurrence``), which resolves the user's submitted
-    form values so the preview shows what saving would actually produce.
+    For the read-only caller that needs a real rule OBJECT -- one carrying the
+    columns a saved rule would -- without writing a row.
+
+    **Its production caller left at plan step R-F6 and its remaining callers
+    are all tests.**  The recurrence PREVIEW was the production one and no
+    longer builds a row at all: it resolves the submitted spec directly, which
+    is the spec-to-row-to-spec round-trip that step removed.  What still needs
+    a rule OBJECT is the frozen baseline oracle
+    (``tests/oracles/recurrence_baseline``), because
+    ``recurrence_engine.compute_due_date`` takes one, plus the test helpers
+    and route-helper cases that hand a resolved rule to a producer without
+    persisting it.  Plan step **R5** deletes ``compute_due_date``; this entry
+    point is re-examined with the last caller rather than removed ahead of it.
+
+    **It BUILDS the owner rather than taking one, and an adversarial review of
+    this step is why.**  A rule belongs to exactly one definition -- the schema
+    says so for a ROW (``ck_recurrence_rules_one_owner``) and this says so for
+    an OBJECT, so :attr:`RecurrenceRule.user_id`, which reads through to the
+    owner, has an answer for every rule the application constructs.  The first
+    shape took the owner as an ARGUMENT, and that was measured writing a row:
+    handed an already-flushed template, ``owner.recurrence_rule = rule`` puts
+    the "transient" rule inside the ``save-update`` cascade and the next flush
+    INSERTs it -- something the pre-R-F6 version could not do under any
+    argument.  Constructing the owner here is what makes "adds nothing to the
+    session" a property of the function rather than of its callers: the
+    template is created unsaved, referenced by nothing else, and discarded with
+    the rule.
+
+    The TRANSACTION arm is used because a transient rule's arm is read by
+    nothing -- ``user_id`` is the only thing anyone asks an unsaved rule, and
+    both arms answer it identically.  A caller that needed a specific kind
+    would need a saved one.
 
     Args:
-        spec: What to author.
+        spec: What to author.  Its ``user_id`` is the owner the built
+            definition names, and therefore what ``rule.user_id`` reports.
         calendar: The owner's pay-period schedule.
 
     Returns:
@@ -210,30 +258,85 @@ def build_transient_rule(
     """
     rule = RecurrenceRule()
     _author(rule, spec, calendar)
+    TransactionTemplate(user_id=spec.user_id).recurrence_rule = rule
     return rule
 
 
 def author_rule(
-    spec: RecurrenceSpec, calendar: PayCalendar,
+    spec: RecurrenceSpec, calendar: PayCalendar, owner: RecurrenceOwner,
 ) -> RecurrenceRule:
-    """Create a recurrence rule and flush it, so it carries an id.
+    """Create a recurrence rule ON its definition, and flush it.
 
-    Flushed rather than merely added because every caller links the new rule
-    onto a template's ``recurrence_rule_id`` immediately afterwards.
+    **The owner is an ARGUMENT since plan step R-F6, and that is the whole of
+    what changed.**  A rule used to be authored free-standing and flushed for
+    its id, which the caller then wrote onto the definition's
+    ``recurrence_rule_id`` -- so the link was the CALLER'S job, and a caller
+    that forgot it (or a route that deleted the definition afterwards) left a
+    rule belonging to nothing.  Finding **F-6** is three such rows.  The link
+    is made here now, and the schema refuses a rule without one
+    (``ck_recurrence_rules_one_owner``), so there is no order of operations
+    left for a caller to get wrong.
+
+    Assigned through ``owner.recurrence_rule`` rather than by picking the arc's
+    arm here: both definition kinds spell the relationship that way, so this
+    stays kind-agnostic and SQLAlchemy writes whichever FK column the owner's
+    own mapper names.  Same reason
+    :func:`app.services.template_amount_service.set_amount` takes the template
+    rather than a column for the other satellite of these two parents.
+
+    **The OWNER decides whose rule this is, and the spec's own ``user_id`` is
+    CHECKED against it rather than overwritten.**  Overwriting was the first
+    shape and it was measured wrong the same day, by
+    ``test_recurrence_authoring.TestTheAuthoredSurfaceIsWholeAndClosed
+    ::test_every_spec_field_reaches_the_row``: a field a caller may state and
+    the door silently discards is a field that lies about what it does, which
+    is exactly the property that census exists to refuse.  So the pairing is
+    stated in three places and all three must agree -- the spec, the calendar
+    and the definition -- and the two comparisons that close the triangle are
+    this one and ``resolve``'s own ``_require_owner_match``.
+
+    It is not a fence standing in for a constraint, which is what plan step
+    R-F6 removes elsewhere: no schema can hold it.  The rule's owner IS the
+    definition (``ck_recurrence_rules_one_owner`` makes that structural), and
+    what this refuses is the caller having RESOLVED the cadence against a
+    different owner's paydays -- a fact about a computation that has already
+    happened by the time any row exists.
+
+    Still flushed, and now for a different reason: not to hand the caller an
+    id, but so that a spec the database refuses -- a cadence past a CHECK, a
+    definition that already carries a rule -- surfaces inside the caller's own
+    request rather than at an unrelated commit later.
 
     Args:
-        spec: What to author.
-        calendar: The owner's pay-period schedule.
+        spec: What to author.  Its ``user_id`` must name *owner*'s owner.
+        calendar: The owner's pay-period schedule.  Refused by ``resolve`` when
+            it is not the OWNER'S -- a pay-period cadence's first occurrence
+            and its phase are both measured against it, so the mismatched pair
+            would produce a plausible wrong date rather than an error.
+        owner: The ``TransactionTemplate`` or ``TransferTemplate`` this rule
+            belongs to.  Mutated: its ``recurrence_rule`` is set to the new
+            rule.  It need not be flushed -- SQLAlchemy orders the parent's
+            INSERT before the rule's.
 
     Returns:
         The flushed :class:`RecurrenceRule`.
 
     Raises:
-        RecurrenceResolutionError: When the spec cannot be resolved -- see
-            :func:`~app.services.recurrence.resolve`.
+        RecurrenceResolutionError: When *spec* names a different owner than
+            *owner* does, or when it cannot be resolved against *owner*'s
+            schedule -- see :func:`~app.services.recurrence.resolve`.
     """
+    if spec.user_id != owner.user_id:
+        raise RecurrenceResolutionError(
+            f"a recurrence authored for user {spec.user_id} cannot be written "
+            f"onto a definition owned by user {owner.user_id}.  The rule would "
+            f"belong to the definition's owner while its first occurrence and "
+            f"phase were resolved against the other's paydays, which is a "
+            f"plausible wrong date rather than an error."
+        )
     rule = RecurrenceRule()
     _author(rule, spec, calendar)
+    owner.recurrence_rule = rule
     db.session.add(rule)
     db.session.flush()
     return rule
@@ -244,9 +347,10 @@ def reauthor_rule(
 ) -> None:
     """Replace an existing rule's entire authored state, in place.
 
-    The rule keeps its primary key -- and therefore the owning template's
-    ``recurrence_rule_id`` FK and every generated row's lineage -- while every
-    column it defines is re-derived from *spec*.
+    The rule keeps its primary key and its owning arc -- and therefore every
+    generated row's lineage -- while every column it defines is re-derived from
+    *spec*.  It cannot change owner: the arc is not part of the authored state
+    and nothing in a spec names a definition.
 
     Args:
         rule: The rule to re-author.

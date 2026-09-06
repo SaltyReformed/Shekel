@@ -35,11 +35,20 @@ from app.services import (
     status_seam,
     transaction_service,
 )
-from app.services.state_machine import verify_transition
+from app.services.amount_ownership import state_own_amount
+from app.services.settle_day import recorded_settle_day
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction, require_owner
 from app.utils.balance_predicates import is_credit
 from app.routes.transactions._bp import transactions_bp
+from app.routes.transactions._gates import (
+    _reject_tracking_on_income,
+    _reject_generated_due_date_edit,
+    _reject_typed_payback_figure,
+    _resolve_status_change,
+)
+from app.routes._authored_figure import figure_was_authored
+from app.utils.rendered_figure import as_rendered_field
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
     _credit_payback_idempotent_response,
@@ -120,101 +129,35 @@ _POSTING_RELEVANT_FIELDS = frozenset({
 # to be re-run on the transaction side by this step's own edit door (finding
 # **N-185**).  Naming the pair here is what keeps the loop from growing a third
 # member silently.
-#: The fields the STATUS SEAM owns, excluded from the field-application loop
-#: so it cannot become a second writer of any of them.  ``settled_amount``
+#: The fields a SEAM owns, excluded from the field-application loop so it
+#: cannot become a second writer of any of them.  ``settled_amount``
 #: joined at plan step X-au-c3: it states WHAT MOVED, so a bare ``setattr``
 #: could book money on a row that never settled and could do it beside a basis
 #: saying something else.  It reaches the record only through
 #: ``apply_requested_status``, which hands it to the settle verb or refuses it
 #: with a designed 400 when no settle is happening.
+#:
+#: ``estimated_amount`` joined at plan step **X-au-k**, and it is the one
+#: member this set no longer has to be TRUSTED about: the column is read-only
+#: on the model now, so a ``setattr`` that reached it raises ``AttributeError``
+#: rather than half-writing the amount-ownership pair.  It stays named here
+#: because the loop must SKIP it deliberately rather than crash, and because a
+#: reader asking which fields a seam owns should find all four in one place.
 _SEAM_OWNED_FIELDS = frozenset(
-    {"status_id", "settled_on", "settled_amount"}
+    {"status_id", "settled_on", "settled_amount", "estimated_amount"}
 )
 
 
-def _resolve_status_change(txn, data):
-    """Validate a PATCH status transition early, before any column is mutated.
-
-    Runs the status-dependent guards for a regular (non-shadow)
-    :func:`update_transaction` before the ``setattr`` loop dirties the session:
-    verifies the requested transition through the state machine (F-161 / C-21)
-    and blocks the Credit status on purchase-tracking transactions (credit is
-    per-entry, scope doc 5.2).  Doing it here gives the precise 400 precedence
-    (an illegal transition reports before a finalised-field lock or an FK error)
-    and leaves the row untouched on rejection.  ``settled_on`` is NOT decided here:
-    the status seam (:func:`status_seam.apply_status_change`, invoked
-    once the field is applied) owns the stamp/clear and re-runs this same
-    verification as the single source of truth -- this early call exists purely
-    for error precedence.
-
-    Args:
-        txn: The Transaction being edited.
-        data: The schema-loaded PATCH payload.
-
-    Returns:
-        ``None`` when the status change is allowed (or absent), or a Flask
-        ``(msg, 400)`` response tuple the caller returns directly when a guard
-        rejects the request.
-    """
-    if "status_id" not in data:
-        return None
-
-    # Verify the transition BEFORE any other status-dependent work.  An illegal
-    # transition -- for example settled -> projected -- short-circuits the
-    # request with a 400 and leaves the row untouched.  Audit reference: F-161 /
-    # commit C-21 of the 2026-04-15 security remediation plan.
-    try:
-        verify_transition(txn, data["status_id"])
-    except ValidationError as exc:
-        return _error_transaction_response(txn.id, str(exc))
-
-    # Block Credit status on entry-capable transactions -- credit
-    # handling is per-entry, not per-transaction (scope doc section 5.2).
-    credit_id = ref_cache.status_id(StatusEnum.CREDIT)
-    if data["status_id"] == credit_id and txn.tracks_purchases:
-        return _error_transaction_response(
-            txn.id,
-            "Cannot set Credit status on transactions with individual "
-            "purchase tracking. Use entry-level credit instead.",
-        )
-
-    return None
-
-
-def _reject_tracking_on_income(txn, data):
-    """Reject enabling purchase tracking on an income row.
-
-    Purchase tracking is expense-only.  The popover only renders the
-    ``is_envelope`` checkbox for ad-hoc EXPENSE rows, so this is the crafted-
-    request backstop -- the same layering every other route-tier guard here
-    uses.  Checked against the STORED type because ``TransactionUpdateSchema``
-    carries no ``transaction_type_id``, so a PATCH cannot change it.
-
-    It is a function rather than an inline branch so it joins
-    :func:`_apply_regular_update`'s single pre-mutation gate chain: three guards
-    sharing one error exit, which is what keeps that handler inside pylint's
-    return-count limit as the arc adds refusals to it.
-
-    Args:
-        txn: The Transaction being edited.
-        data: The schema-loaded PATCH payload.
-
-    Returns:
-        A designed 400 response tuple, or ``None`` when the edit may proceed.
-    """
-    if data.get("is_envelope") and txn.is_income:
-        return _error_transaction_response(
-            txn.id, "Purchase tracking is only available for expenses.",
-        )
-    return None
-
-
-def _apply_field_updates(txn, data):
+def _apply_field_updates(txn, data, *, amount_authored, period_changed):
     """Write the submitted fields onto *txn*, refusing what may not be written.
 
     The FIELD half of :func:`_apply_regular_update`, extracted so the handler
-    keeps one exit per concern rather than growing a branch per rule.  Three
-    acts, and the order is load-bearing:
+    keeps one exit per concern rather than growing a branch per rule.  FOUR
+    acts, and the order is load-bearing.  **This enumeration said "three" and
+    listed three until plan step X-au-j**, by which time the body already
+    performed four: an adversarial review found the count stale in the one
+    helper whose whole discipline is that its order matters.  The one it had
+    never named is marked NEW below.
 
     1. the ``setattr`` loop.  ``status_id`` and ``settled_on`` are BOTH excluded
        and routed through the status verb instead: a bare ``setattr`` would
@@ -224,17 +167,35 @@ def _apply_field_updates(txn, data):
        would make this loop a SECOND writer of a column the seam is the single
        door to (finding **N-185**, the re-run of N-183 on the transaction side).
     2. ``is_override``, which sits with the field writes and ABOVE both the
-       refusal below and the status work.  Two separate reasons, and both are
-       load-bearing.  The settle asks the projection for a fresher amount and
-       SKIPS a row the user has overridden
-       (``income_service.live_projected_net``), so setting the flag afterwards
-       would let a salary row's recompute overwrite the estimate the same form
-       just submitted.  And act 3 FLUSHES (see below), so a flag written after
-       it is written after the UPDATE it belongs in -- which for a period move
-       leaves the row inside
-       ``idx_transactions_template_period_scenario``'s partial predicate
-       (``is_override = FALSE``) and trips a unique violation on a move into a
-       period the recurrence engine has already populated.
+       refusal below and the status work.  **It had TWO reasons and has ONE
+       since plan step X-au-d.**  The retired one: a settle asked the
+       projection for a fresher amount and SKIPPED a row the user had
+       overridden (a read-time repair plan step X-au-d deleted), so setting
+       the flag afterwards would have let a salary row's recompute overwrite the
+       estimate the same form just submitted -- there is no recompute and no
+       cache left, because act 2b below makes a typed figure the row's OWN and
+       the amount model reads ownership rather than this flag (finding
+       **N-262**).  The one that stands: act 3 FLUSHES (see below), so a flag
+       written after it is written after the UPDATE it belongs in -- which for
+       a period move leaves the row inside the generation index's partial
+       predicate (``is_override = FALSE``) while its period is already the new
+       one.
+       **Plan step R17 narrowed what that can collide with but did not remove
+       it**: the dated index is keyed
+       ``(template, scenario, occurs_on)``, and a move does not touch
+       ``occurs_on``, so a DATED row no longer collides with whatever the
+       engine put in the target period.  An UNDATED template-linked row
+       (``occurs_on IS NULL``) is still keyed on its paycheck by
+       ``idx_transactions_template_scenario_undated``, so for that row the
+       ordering is exactly as load-bearing as it was.
+    2b. **(shipped at X-au-c2b, restated at X-au-k)** a typed figure is stated
+       through ``amount_ownership.state_own_amount``: a hand-priced row OWNS
+       its figure, so storing it RELEASES the relation that priced it.  This
+       was two acts -- the loop wrote the column and this cleared the source --
+       and their pairing was a convention the loop could break.  It is one act
+       over one attribute now, so the release cannot be forgotten and the loop
+       cannot reach the column at all (the field is in
+       ``_SEAM_OWNED_FIELDS``).
     3. the derived-amount refusal, asked AFTER the loop so ``tracks_purchases``
        reads the RESULTING row: unchecking "Track individual purchases" in the
        same save legitimately gives the row its own amount back.  **It reads a
@@ -259,7 +220,15 @@ def _apply_field_updates(txn, data):
 
     Args:
         txn: The Transaction being edited.
-        data: The schema-loaded PATCH payload.
+        data: The schema-loaded PATCH payload, with the rendered-figure
+            companion already removed by the caller.
+        amount_authored: Whether a HUMAN typed the ``estimated_amount`` this
+            payload carries (ruling **R-JR**).  Decides both whether the row
+            takes ownership of the figure and whether it stops being the rule's.
+        period_changed: Whether this payload MOVES the row to another period.
+            Passed in because the caller computes it before the loop below
+            rewrites ``pay_period_id``, at which point it can no longer be
+            asked.
 
     Returns:
         A designed 400 response tuple, or ``None`` when every field was
@@ -270,21 +239,32 @@ def _apply_field_updates(txn, data):
             continue
         setattr(txn, field, value)
 
-    if "estimated_amount" in data:
-        # A typed figure makes the row's amount its OWN, so the relation that
-        # priced it is CLEARED in the same act (plan step X-au-c2b).
-        # ``ck_transactions_amount_ownership`` pairs the two -- a row states
-        # either a figure or the relation that prices it, never both -- so
-        # writing the column while a relation still claimed the row is an
-        # ``IntegrityError``.  It is a no-op on today's data, because nothing
-        # is declared derived yet, and it is written now because the amount
-        # model's own dispatch already ASSERTS it: "a row a human RE-PRICED
-        # owns its figure because the write door CLEARS its source".  That was
-        # true at one write door of three when an adversarial review counted
-        # them.
-        txn.amount_source_id = None
+    if amount_authored:
+        # A typed figure makes the row's amount its OWN, and storing it IS
+        # releasing the relation that priced it (plan step X-au-k) -- the amount
+        # model's own dispatch asserts exactly that: "a row a human RE-PRICED
+        # owns its figure because the write door CLEARS its source".  The value
+        # is never ``None`` here: ``estimated_amount`` is not ``allow_none`` on
+        # any of the three transaction schemas, so ``_normalize_empty_inputs``
+        # DROPS an empty box rather than loading it as an explicit nothing.
+        #
+        # **Gated on AUTHORSHIP rather than on the field's PRESENCE since plan
+        # step X-au-h** (ruling **R-JR**).  The popover renders this box on
+        # every correctable row and an HTML form posts every input it renders,
+        # so presence was true of a notes-only save -- which took ownership of
+        # a figure nobody chose and left the row no longer tracking its
+        # definition.  Finding **N-248**.
+        state_own_amount(txn, data["estimated_amount"])
 
-    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
+    # **The flag says ONE thing since plan step X-au-h: this row is the OWNER's,
+    # not the rule's.**  Both acts that make it so are stated here, and BOTH
+    # were presence tests before -- the amount's is finding **N-248** above, and
+    # the period's had the identical shape, because the popover renders a
+    # period dropdown on every row and posts it whether or not it was touched.
+    # ``period_changed`` is computed by the caller BEFORE the loop above
+    # rewrites ``pay_period_id``, which is why it is passed in rather than
+    # asked here.
+    if txn.template_id and (amount_authored or period_changed):
         txn.is_override = True
 
     if (
@@ -343,7 +323,7 @@ def _apply_regular_update(txn, txn_id, data):
     #
     # Gate 1, ``_resolve_status_change``: the state-machine transition check,
     # run before any column is mutated so a rejection leaves the row untouched.
-    # Gate 2, the finalised-row edit lock (#26): a Paid/Received/Settled/
+    # Gate 2, the finalised-row edit lock (#26): a Paid/Received/
     # Credit/Cancelled row's money/period/category/due-date fields cannot be
     # rewritten unless this same request reverts it to Projected.
     # Gate 3, purchase tracking is expense-only.
@@ -351,6 +331,11 @@ def _apply_regular_update(txn, txn_id, data):
         _resolve_status_change(txn, data)
         or _finalised_edit_response(txn, data)
         or _reject_tracking_on_income(txn, data)
+        # A payback's figure is not its own to state (N-252); see the gate.
+        or _reject_typed_payback_figure(txn, data)
+        # Gate 5: a generated row's due date is its definition's, and since
+        # plan step X-au-e it is also what prices the row (balance:X-au-e).
+        or _reject_generated_due_date_edit(txn, data)
     )
     if gate_error is not None:
         return gate_error
@@ -366,6 +351,21 @@ def _apply_regular_update(txn, txn_id, data):
     period_changed = (
         "pay_period_id" in data and data["pay_period_id"] != txn.pay_period_id
     )
+
+    # Did a HUMAN type the figure in the Estimated box (ruling **R-JR**, plan
+    # step X-au-h)?  It sits beside the period's question because they are the
+    # two acts that make a row the owner's -- but only ``period_changed`` MUST
+    # precede the setattr loop; this one reads the payload alone.
+    #
+    # **The door used to ask whether the field was PRESENT**, true of every
+    # save that renders an amount box -- so a notes-only edit took ownership of
+    # a figure nobody chose and the row stopped tracking its definition.  That
+    # is finding **N-248**.
+    #
+    # The companion is popped because it is not a column, and
+    # ``_apply_field_updates`` ``setattr``s every key it does not recognise.
+    amount_authored = figure_was_authored(data, "estimated_amount")
+    data.pop(as_rendered_field("estimated_amount"), None)
 
     # Detect a Credit reversion before the setattr loop rewrites
     # status_id.  A Credit row leaving Credit status (the state machine
@@ -440,15 +440,25 @@ def _apply_regular_update(txn, txn_id, data):
         # was the request's FIRST flush sitting outside its own exception net: a
         # concurrent commit surfaced as a 500 instead of the designed 409, and a
         # period move whose ``is_override`` had not yet been written tripped
-        # ``idx_transactions_template_period_scenario`` as an uncaught
-        # ``IntegrityError``.  Found by adversarial review; the comment below
+        # the generation index (then keyed on the paycheck, now
+        # ``idx_transactions_template_scenario_undated`` for an undated row)
+        # as an uncaught ``IntegrityError``.  Found by adversarial review; the comment below
         # claimed the three excepts covered the whole tail, and they covered the
         # tail while the first flush had moved above it.
-        field_error = _apply_field_updates(txn, data)
+        field_error = _apply_field_updates(
+            txn, data,
+            amount_authored=amount_authored, period_changed=period_changed,
+        )
         if field_error is not None:
             return field_error
+        # ``recorded`` is what makes the reading ECHO-AWARE (plan step X-az):
+        # this form prefills the settle-day box, so an untouched Save re-submits
+        # the day the row already carries -- and without the stored pair the
+        # rule would restamp that day's BASIS as the owner's own typing, which
+        # is finding **N-332**'s own laundering arriving through the edit door.
         settle_day = status_seam.settle_day_for_status(
             current_user.id, new_status_id, data.get("settled_on"),
+            recorded_settle_day(txn),
         )
         # **A submitted FIGURE is a third reason to enter the status arm**, and
         # without it the door never saw one (found by two independent
@@ -470,7 +480,7 @@ def _apply_regular_update(txn, txn_id, data):
             or submitted_figure is not None
         ):
             transaction_service.apply_requested_status(
-                txn, new_status_id, settled_on=settle_day,
+                txn, new_status_id, settle_day=settle_day,
                 submitted=submitted_figure,
             )
         elif _POSTING_RELEVANT_FIELDS & data.keys():
@@ -631,65 +641,56 @@ def update_transaction(txn_id):
 @login_required
 @require_owner
 def delete_transaction(txn_id):
-    """Soft-delete a transaction (or hard-delete if it's ad-hoc).
+    """Remove a transaction from the books, soft or hard.
 
-    Shadow transactions cannot be directly deleted -- the user must
-    delete the parent transfer instead.
+    **The HTTP shape only.**  What a delete MEANS -- which matches it
+    withdraws, which payback it takes down, which postings it reverses and
+    whether the row leaves the table at all -- is
+    :func:`transaction_service.delete_transaction`, the verb this route and
+    ``statement_match``'s undo now share (plan step ``bank_import:X-gb``).
+    The sequence was spelled here and again there, and each of its four steps
+    has an ORDER that is load-bearing.
 
-    A source with a live CC payback (transaction-level Credit or
-    entry-level credit) takes the payback down with it in the same
-    commit via ``credit_workflow.delete_payback_on_source_delete`` --
-    otherwise the ``SET NULL`` FK leaves the payback inflating the
-    next period with no offsetting credit row.
+    **This door has a SURFACE since X-gb** -- the delete control on the
+    full-edit action card -- and finding **N-344** is that it did not: the
+    route existed with full teardown logic and a census of every template and
+    script found zero callers, so the 46 envelope shells one YTD statement pass
+    minted could not be removed from the app at all.
 
-    Optimistic locking (commit C-18 / F-010): both the soft-delete
-    UPDATE and the hard-delete DELETE are version-pinned by
-    SQLAlchemy.  A concurrent commit that bumps the row's version
-    raises ``StaleDataError`` which the handler converts to a 409 +
-    conflict cell so the user can retry against fresh state.
+    Responds with ``gridRefresh`` rather than ``balanceChanged`` because the
+    row LEAVES the grid, which an in-place cell swap cannot express -- the same
+    reason ``cancel_transaction`` and ``unmark_credit`` keep it.  The body is
+    empty: there is no cell left to render.
+
+    Refusals (``deletion_refusal``) come back as the designed error fragment
+    the card's other controls use, so a crafted request or a stale card is told
+    why rather than swapping a bare string.
+
+    Optimistic locking (commit C-18 / F-010): the soft-delete UPDATE and the
+    hard-delete DELETE are both version-pinned by SQLAlchemy.  A concurrent
+    commit that bumps the row's version raises ``StaleDataError``, which the
+    handler converts to a 409 + conflict cell so the user can retry against
+    fresh state.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 
-    # --- Transfer detection guard: block direct shadow deletion ---
-    if txn.transfer_id is not None:
-        return "Cannot delete a transfer shadow directly. Delete the parent transfer instead.", 400
-
     try:
-        # Delete the live payback (if any) before the source goes.  Runs for
-        # both branches below: a hard-deleted ad-hoc source would otherwise
-        # leave the payback with its link NULLed, a soft-deleted template row
-        # would leave it linked to an invisible source.  Each payback level
-        # reverses its own postings first (Step 3 reverse-before-delete).
-        credit_workflow.delete_payback_on_source_delete(txn, current_user.id)
-
-        # Posting ledger reconcile (Build-Order Step 3): reverse THIS row's own
-        # postings before it leaves the table, so a settled, posted row's
-        # double-entry nets to zero while journal_entries.transaction_id still
-        # links it (the FK SET-NULLs on the hard delete, leaving the net-zero
-        # pair as history; reversing afterward would strand the original legs).
-        # Idempotent no-op for a Projected (never-posted) row.  Inside the
-        # StaleDataError net with the payback teardown and the delete: these
-        # reconcile flushes autoflush version-pinned rows, so a concurrent
-        # commit surfaces as a 409 conflict cell, not a 500.
-        posting_service.reverse_postings_before_delete(txn)
-
-        if txn.template_id:
-            # Template-linked: soft-delete so the recurrence engine knows.
-            txn.is_deleted = True
-        else:
-            # Ad-hoc: hard delete.
-            db.session.delete(txn)
-
+        outcome = transaction_service.delete_transaction(txn, current_user.id)
         db.session.commit()
+    except ValidationError as exc:
+        return _error_transaction_response(txn_id, str(exc))
     except StaleDataError:
         logger.info(
             "Stale-data conflict on delete_transaction id=%d", txn_id,
         )
         return _stale_transaction_response(txn_id)
-    logger.info("user_id=%d deleted transaction %d", current_user.id, txn_id)
-    return "", 200, {"HX-Trigger": "balanceChanged"}
+    logger.info(
+        "user_id=%d deleted transaction %d (soft=%s, matches_withdrawn=%d)",
+        current_user.id, txn_id, outcome.soft, outcome.withdrawn.matches,
+    )
+    return "", 200, {"HX-Trigger": "gridRefresh"}
 
 
 def _mark_done_regular(txn, txn_id, submitted, target):

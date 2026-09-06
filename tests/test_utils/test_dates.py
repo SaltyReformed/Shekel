@@ -16,10 +16,11 @@ from datetime import date, datetime, time, timezone
 
 from app.utils.dates import (
     DISPLAY_TIMEZONE,
-    attribution_date,
     display_today,
     has_settled_by,
     months_between,
+    pay_period_label,
+    pay_period_range_label,
     to_display_date,
     to_display_tz,
 )
@@ -189,58 +190,6 @@ class TestDisplayToday:
         assert display_today() == date(2026, 6, 12)
 
 
-class TestAttributionDate:
-    """Pin the shared calendar-attribution clamp.
-
-    ``attribution_date`` is the one rule both the calendar's day-cell
-    grouping and the daily balance ramp use, so a flow's cell and the
-    balance line's step land on the same day.  An item lands on its
-    ``due_date`` (fallback: the period ``start_date``), clamped into the
-    period's inclusive span so a period's flows always sum by its
-    ``end_date`` -- the calendar/grid reconciliation invariant.
-    """
-
-    def test_due_date_within_period_is_unchanged(self):
-        """An in-period due_date is the attribution day verbatim."""
-        assert attribution_date(
-            date(2026, 7, 6), date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 6)
-
-    def test_missing_due_date_falls_back_to_period_start(self):
-        """A None due_date attributes to the period start_date."""
-        assert attribution_date(
-            None, date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 1)
-
-    def test_due_date_before_period_clamps_to_start(self):
-        """A due_date before the period start is pulled up to start_date."""
-        # Recurrence engine dated the item Jun 28; its period is Jul 1-14,
-        # so it lands on Jul 1 rather than escaping into June.
-        assert attribution_date(
-            date(2026, 6, 28), date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 1)
-
-    def test_due_date_after_period_clamps_to_end(self):
-        """A due_date after the period end is pulled down to end_date.
-
-        An item in the Jul 1-14 period dated Jul 20 lands on Jul 14 so the
-        period's running-balance sum still closes by its end_date and
-        reconciles with the grid period-end.
-        """
-        assert attribution_date(
-            date(2026, 7, 20), date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 14)
-
-    def test_boundary_dates_are_inclusive(self):
-        """Both period endpoints are valid landing days (inclusive clamp)."""
-        assert attribution_date(
-            date(2026, 7, 1), date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 1)
-        assert attribution_date(
-            date(2026, 7, 14), date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 14)
-
-
 class TestHasSettledBy:
     """Pins the ONE "had this cash moved yet?" cut (plan step X-an, N-187).
 
@@ -291,3 +240,147 @@ class TestHasSettledBy:
         """
         assert has_settled_by(None, date(2026, 5, 9)) is False
         assert has_settled_by(None, date(2999, 12, 31)) is False
+
+
+class TestPayPeriodRangeLabel:
+    """The WIDE period register, and the one place it is now written.
+
+    Plan step **C2-f3a** collapsed three copies of this string --
+    ``ledger_report_service._income_statement._window_label``,
+    ``spending_report_service._window._window_label`` and inline Jinja in
+    ``analytics/_income_statement.html`` -- onto
+    :func:`~app.utils.dates.pay_period_range_label`, and then onto
+    ``spending_analysis.window_label`` one level up when ``duplicate-code``
+    showed the two service functions were the same three-arm dispatch.  Ledger
+    row **P47**'s duplicate half.
+
+    **These were BYTE-EXACT pins of what all three copies produced**, which is
+    what made the collapse provably display-neutral rather than a rendering
+    change smuggled in behind a DRY fix.  **One of them has since moved**: the
+    developer ruled ledger row **P67** on 2026-08-25 and a straddling period
+    now names both years, which is the rendering change the collapse
+    deliberately did not make.
+    """
+
+    def test_it_reproduces_the_register_the_three_copies_produced(self):
+        """``Feb 21 - Mar 06, 2026``: abbreviated month, padded day, end year."""
+        assert pay_period_range_label(
+            date(2026, 2, 21), date(2026, 3, 6),
+        ) == "Feb 21 - Mar 06, 2026"
+
+    def test_a_period_inside_one_month_keeps_the_same_shape(self):
+        """No special case for a period that does not cross a month."""
+        assert pay_period_range_label(
+            date(2026, 3, 13), date(2026, 3, 26),
+        ) == "Mar 13 - Mar 26, 2026"
+
+    def test_a_STRADDLING_period_names_BOTH_years(self):
+        """P67's remedy: the year is carried on both halves across a straddle.
+
+        **This test pinned the DEFECT until 2026-08-25**, deliberately and with
+        its reason stated: C2-f3a collapsed three copies of this register and
+        reproduced their output byte for byte, so that a rendering change was
+        not smuggled in behind a DRY fix.  ``"Dec 26 - Jan 08, 2027"`` reads as
+        a December in 2027 and is a December in 2026.
+
+        The developer ruled ledger row **P67** on 2026-08-25 (option A of four:
+        both years on a straddle, the end year alone otherwise), so the pinned
+        behaviour is no longer the intended one and the pin moves with it.  The
+        rule is the NARROW register's, unchanged -- see
+        :meth:`test_the_narrow_register_already_carries_both_years` -- which is
+        the whole point: two registers differ in WIDTH, not in when a year
+        disambiguates.
+        """
+        assert pay_period_range_label(
+            date(2026, 12, 26), date(2027, 1, 8),
+        ) == "Dec 26, 2026 - Jan 08, 2027"
+
+    def test_a_period_inside_one_year_still_names_only_the_END_year(self):
+        """The non-vacuity control for the straddle rule above.
+
+        A year is carried on both halves ONLY where it disambiguates.  Without
+        this, a change that always printed both years would pass the straddle
+        test while making every other label noisier -- and 25 of a year's 26
+        periods do not straddle.
+        """
+        assert pay_period_range_label(
+            date(2026, 2, 21), date(2026, 3, 6),
+        ) == "Feb 21 - Mar 06, 2026"
+
+    def test_the_narrow_register_already_carries_both_years(self):
+        """:func:`pay_period_label` disambiguates the straddle; this one does not.
+
+        Stated side by side because it is the whole of P67's argument: the
+        rule exists in this module already, applied by the sibling register to
+        the identical input, so the wide one is inconsistent with its own
+        neighbour rather than merely terse.
+        """
+        assert pay_period_label(
+            date(2026, 12, 26), date(2027, 1, 8),
+        ) == "12/26/26 - 01/08/27"
+
+
+class TestPayPeriodLabel:
+    """The NARROW register (``"02/21 - 03/06"``), graded on the FUNCTION.
+
+    These four cases were ``tests/test_models/test_computed_properties.py``'s
+    ``TestPayPeriodLabel``, driven through the ORM accessor
+    ``PayPeriod.label`` -- which pay-calendar plan step **C4-a-5** deleted with
+    the stored ``end_date`` it formatted.  The RULE survives that deletion, so
+    the cases move here rather than going with it, and they get faster and
+    stricter on the way: each built a real ``budget.pay_periods`` row (one
+    database clone apiece) to assert a pure function of two dates, and three of
+    them carried a comment about ``uq_pay_periods_user_index`` that had nothing
+    to do with what they were testing.
+
+    The surviving reader is
+    :attr:`~app.services.pay_calendar.DerivedPeriod.label`, which calls this
+    same function -- ``tests/test_services/test_pay_calendar_value.py`` grades
+    that it does.
+    """
+
+    def test_a_period_inside_one_month(self):
+        """Both halves are ``MM/DD`` and neither carries a year."""
+        assert pay_period_label(
+            date(2026, 3, 1), date(2026, 3, 14),
+        ) == "03/01 - 03/14"
+
+    def test_a_period_crossing_a_MONTH_carries_both_months(self):
+        """The ordinary biweekly shape: the month changes, the year does not."""
+        assert pay_period_label(
+            date(2026, 1, 25), date(2026, 2, 7),
+        ) == "01/25 - 02/07"
+
+    def test_the_seed_schedules_opening_period(self):
+        """The value every fixture-built schedule opens on, pinned.
+
+        ``seed_periods`` starts 2026-01-02 at a 14-day cadence, so this is the
+        label a reader sees first on almost every screen in the suite.
+        """
+        assert pay_period_label(
+            date(2026, 1, 2), date(2026, 1, 15),
+        ) == "01/02 - 01/15"
+
+    def test_a_period_crossing_a_YEAR_carries_a_two_digit_year_on_BOTH(self):
+        """The one case a year disambiguates, and it goes on both halves.
+
+        ``"12/26/26 - 01/08/27"`` says WHICH January; ``"12/26 - 01/08"`` does
+        not.  Carrying it on the end alone would read as a December in 2027 --
+        which is the defect ledger row **P67** found in the WIDE register and
+        this one never had.
+
+        **The same call and the same expected string appear once more in this
+        file**, as ``TestPayPeriodRangeLabel``'s
+        ``test_the_narrow_register_already_carries_both_years`` -- flagged by
+        an adversarial review of ``pay_calendar:C4-a-5``, and kept rather than
+        collapsed.  That one is evidence INSIDE the wide register's class: P67
+        argued the wide register was inconsistent with its own neighbour, and
+        the neighbour's answer has to be visible there to make the argument.
+        This one is the narrow register's own year case, in the class that
+        owns it.  Deleting either leaves a class that does not state its own
+        rule; that is the reason, and it is written down so the next reader
+        does not collapse them.
+        """
+        assert pay_period_label(
+            date(2026, 12, 26), date(2027, 1, 8),
+        ) == "12/26/26 - 01/08/27"

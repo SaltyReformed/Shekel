@@ -9,9 +9,18 @@
    away inside the same card.  Form submits via HTMX PATCH targeting
    the original cell by ID.
 
-   Expected context: txn, statuses.
+   Expected context: txn, period, statuses.
 
-   Finalised rows (is_immutable: Paid / Received / Settled / Credit /
+   ``period`` is the row's own paycheck as a ``DerivedPeriod``, resolved by
+   the route off the ONE calendar it derives (pay-calendar plan step
+   C4-a-5).  The context line below printed ``txn.pay_period.label`` until
+   then -- the ORM row's accessor, which formats the STORED ``end_date`` --
+   while the period ``<select>`` further down printed the DERIVED label for
+   the same paycheck, so a period whose stored end had gone stale was
+   labelled two ways inside one card.  That accessor is deleted with this
+   step; nothing here can reach the stored column any more.
+
+   Finalised rows (is_immutable: Paid / Received / Credit /
    Cancelled) lock the BUDGET DECISIONS -- the estimate, the period, the due
    date: those inputs are disabled so they neither accept nor submit a value
    (matching the route guard #26 -- a disabled input is omitted from the POST,
@@ -39,7 +48,7 @@
      the card cannot land on the wrong period. #}
   <div class="txn-card-meta mb-2">
     {% if txn.category %}{{ txn.category.display_name }} &middot; {% endif
-    %}{{ txn.pay_period.label }}{% if txn.status %} &middot;
+    %}{{ period.label }}{% if txn.status %} &middot;
     {{ txn.status.name }}{% endif %}{% if txn.due_date %} &middot;
     Due {{ txn.due_date.strftime('%-m/%-d') }}{% endif %}
   </div>
@@ -135,14 +144,69 @@
        stale-form backstop.  The default keeps legacy render sites without
        the context permissive. #}
     {% set correctable = amount_correctable if amount_correctable is defined else true %}
+    {# **The ESTIMATE is withdrawn on a CC PAYBACK.**  A payback is worth the
+       card spend of the row it repays, so a figure typed here is not a
+       correction the app can honour -- on an entry-backed payback it is
+       written and then silently overwritten by the next purchase edit on the
+       source (finding N-252, $58.40 live on payback 2590), and on a row-backed
+       one it sticks and quietly stops matching the card spend.
+       ``budget_correctable`` is ``not transaction_service.repays_card_spend``,
+       resolved in the route -- the template displays it, it does not compute
+       it.  The default keeps legacy render sites without the context
+       permissive, exactly as ``amount_correctable`` above does. #}
+    {% set budget_editable = budget_correctable if budget_correctable is defined else true %}
+    {% set from_purchases = budget_from_purchases if budget_from_purchases is defined else true %}
     <div class="row g-1 mb-2">
       <div class="col">
         <label class="form-label mb-0 small">Estimated</label>
+        {% if budget_editable %}
         <input type="number" step="0.01" inputmode="decimal" name="estimated_amount"
                value="{{ budgets[txn.id] }}"
                class="form-control form-control-sm"
                placeholder="Estimated amount"
                {{ 'disabled' if locked else '' }}>
+        {# WHAT WE SHOWED, posted back beside whatever comes out of the box
+           above (ruling R-JR, plan step X-au-h).  The door compares the two to
+           decide whether a HUMAN authored this figure, instead of asking
+           whether the field is merely PRESENT -- which is true of every save
+           that renders an amount box, including a notes-only one, and is
+           finding N-248.
+
+           It renders from ``budgets[txn.id]``, the SAME expression as the
+           visible input, and that is the whole of its correctness: a companion
+           computed a second way is a second spelling of the figure, and the
+           door would then read a difference nobody typed.  The two must move
+           together or not at all.
+
+           NOT disabled when the row is locked, unlike the input above, and the
+           asymmetry is deliberate.  A disabled control is omitted from the
+           POST, so a locked row posts the companion and NOT the figure -- which
+           is harmless, because a payload stating no figure states no
+           authorship and the schema rule only fires when a figure is present.
+           The reverse pairing is the one that must not happen: a figure
+           arriving without its companion is now a 400, so if this input ever
+           carried the ``disabled`` and the amount box stopped carrying it,
+           every locked-row save would be refused. #}
+        <input type="hidden" name="estimated_amount_as_rendered"
+               value="{{ budgets[txn.id] }}">
+        {% else %}
+        <div class="form-control form-control-sm bg-body-secondary">{{ money(budgets[txn.id]) }}</div>
+        {# The repair DIFFERS by payback kind and naming the wrong one is a
+           dead end: a row-backed payback's source has no purchases to send
+           anyone to. ``budget_from_purchases`` is
+           ``transaction_service.repays_tracked_purchases``, resolved in the
+           route. #}
+        <div class="form-text small">
+          {% if from_purchases %}
+          This is what went on the card. Change the purchases it repays, not
+          this figure.
+          {% else %}
+          This is what went on the card. To change it, press <strong>Undo
+          CC</strong> on the row it repays, correct that row, then mark it
+          Credit again.
+          {% endif %}
+        </div>
+        {% endif %}
       </div>
       {# **The ACTUAL: what the bank really took** (developer ruling,
          2026-08-17).  The estimate beside it and this are two DIFFERENT facts
@@ -298,18 +362,41 @@
                placeholder="Notes">
       </div>
 
-      {# Due Date -- always rendered, pre-filled with the stored value, so a
-         user can add, change, or CLEAR a due date.  An empty submit loads as
-         an explicit None (TransactionUpdateSchema strip_empty_strings maps
-         "" to None for nullable fields) and clears the column; an existing
-         due date is never clobbered by a save that leaves the pre-filled
-         value untouched. #}
+      {# Due Date -- an INPUT on an ad-hoc row, TEXT on a generated one.
+
+         **A generated row's due date is its DEFINITION's** (plan step
+         balance:X-au-e, developer 2026-09-03).  ``due_date`` is a member of
+         ``recurrence_engine._amounts.DerivedRowFields``, so generation
+         computes it from the rule and the period and every regeneration
+         rewrites it -- an edit here never survived a later template save, and
+         since X-au-e it is also the date the row's PRICE is resolved on
+         (amount rule 3).  Offering a clearable box over it made the owner a
+         second writer of a derived value, and an empty submit left a row no
+         rule could price: ``routes/grid/page`` prices every row it loads with
+         no handler, so ONE cleared date 500ed the whole grid.  Reproduced on a
+         production clone -- 926 rows priced before the cutover and refused
+         after it.
+
+         Where a bill's due day genuinely moves, it moves on the TEMPLATE's
+         recurrence rule (``due_day_of_month``), which applies it to every
+         instance.  An AD-HOC row keeps the input: it owns its figure, so no
+         rule reads its date and clearing it prices nothing wrongly. #}
       <div class="mb-2">
         <label class="form-label mb-0 small">Due Date</label>
+        {% if txn.template_id is none %}
         <input type="date" name="due_date"
                value="{{ txn.due_date.isoformat() if txn.due_date is not none else '' }}"
                class="form-control form-control-sm"
                {{ 'disabled' if locked else '' }}>
+        {% else %}
+        <div class="form-control form-control-sm bg-body-secondary">
+          {{ txn.due_date.strftime('%b %d, %Y') if txn.due_date is not none else '--' }}
+        </div>
+        <div class="form-text small">
+          Set by this recurring transaction. Change it on the template to move
+          every instance.
+        </div>
+        {% endif %}
       </div>
 
       {# Settled on -- the civil day the money actually moved (ruling R-ED).
@@ -425,5 +512,70 @@
     <span class="spinner-border spinner-border-sm" role="status"></span>
     <span class="small text-muted">Loading entries...</span>
   </div>
+  {% endif %}
+
+  {# ── Delete this row ─────────────────────────────────────────────────
+     Plan step ``bank_import:X-gb``, finding **N-344**: the route
+     ``DELETE /transactions/<id>`` shipped with full teardown logic and a
+     census of every template and script found ZERO callers, so a row the
+     app should never have held could not be removed from the app at all --
+     46 envelope shells one YTD statement pass minted, among them.
+
+     LAST on the card and outside the form, both deliberately.  Last, because
+     the frequent status actions are at the top and a destructive control does
+     not belong beside Mark Paid; outside, because htmx would otherwise send
+     the edit form's every field with the DELETE, and because a button inside
+     a form is one Enter key from being its default submit.
+
+     ``hx-confirm`` rather than ``data-confirm``: this is an htmx request, not
+     a form submit.  The ``htmx:confirm`` handler in app.js routes the question
+     through the project's own destructive-action modal, so this dialog and the
+     statement screen's Undo look the same.
+
+     Refusals are the SERVICE's sentence (``transaction_service.deletion_refusal``,
+     resolved in the route), and ``delete_transaction`` re-asks the same
+     function -- so what this card withholds and what the door refuses cannot
+     drift.  The default keeps legacy render sites without the context
+     permissive, exactly as ``amount_correctable`` above does. #}
+  {% set refusal = delete_refusal if delete_refusal is defined else none %}
+  {% set preview = delete_preview if delete_preview is defined else none %}
+  {% set withdraws = preview.withdrawn if preview else none %}
+  <hr class="my-2">
+  {% if refusal %}
+  <div class="txn-card-meta">
+    <i class="bi bi-shield-lock"></i> {{ refusal }}
+  </div>
+  {% else %}
+  {#- The dialog is built ONCE, here, so the sentence the owner reads and the
+      sentence a test asserts are the same string.  Every figure in it comes
+      from a map the card already renders from (``settled`` for what the row
+      RECORDS, ``budgets`` for what it still plans), so the dialog cannot show
+      a number this card contradicts two inches higher.
+
+      **``&quot;`` and not a literal quote**, the same spelling
+      ``accounts/statements.html`` uses for the same reason.  A ``{% set %}``
+      block is captured as Markup, so ``{{ txn.name }}`` inside it IS escaped
+      -- but a literal ``"`` typed here is template text, and it CLOSES the
+      ``hx-confirm`` attribute: the first draft of this block rendered
+      ``hx-confirm="Delete "`` with the rest of the sentence parsed as three
+      more attributes on the button, so the dialog asked "Delete" and named
+      neither the figure nor the bank lines. -#}
+  {%- set recorded = settled[txn.id] -%}
+  {%- set question -%}
+Delete &quot;{{ txn.name }}&quot;{% if txn.entries %} and the {{ txn.entries | length }} purchase{{ '' if txn.entries | length == 1 else 's' }} filed under it{% endif %}?
+{% if recorded is not none %}Your books record {{ money(recorded) }} as having {{ 'arrived in' if txn.is_income else 'left' }} your account for it.{% else %}Your balance still expects {{ money(budgets[txn.id]) }} to {{ 'arrive' if txn.is_income else 'leave' }} for it.{% endif %}
+{% if preview and preview.paybacks %}Its CC payback{{ '' if preview.paybacks | length == 1 else 's' }} go{{ 'es' if preview.paybacks | length == 1 else '' }} with it: {% for name in preview.paybacks %}{{ name }}{{ ', ' if not loop.last }}{% endfor %}.
+{% endif %}{% if txn.template_id %}This occurrence will not come back, and the recurring transaction behind it keeps generating the others.{% else %}This cannot be undone.{% endif %}
+{% if withdraws and withdraws.frees_a_line %}It also withdraws {{ withdraws.matches }} accepted match{{ '' if withdraws.matches == 1 else 'es' }}, so {{ withdraws.lines | length }} bank line{{ '' if withdraws.lines | length == 1 else 's' }} {{ 'is' if withdraws.lines | length == 1 else 'are' }} unexplained again on your statement screen: {% for line in withdraws.lines %}{{ line.posted_on.strftime('%-m/%-d') }} {{ line.description }} {{ money(line.amount) }}{{ '; ' if not loop.last }}{% endfor %}.{% if withdraws.kept_rows %} {{ withdraws.kept_rows }} row{{ '' if withdraws.kept_rows == 1 else 's' }} {{ 'that match' if withdraws.matches == 1 else 'those matches' }} created stay{{ 's' if withdraws.kept_rows == 1 else '' }} in your books.{% endif %}{% endif %}
+  {%- endset -%}
+  <button type="button" class="btn btn-sm btn-outline-danger w-100"
+          hx-delete="{{ url_for('transactions.delete_transaction', txn_id=txn.id) }}"
+          hx-target="#txn-cell-{{ txn.id }}"
+          hx-swap="innerHTML"
+          hx-disabled-elt="this"
+          hx-confirm="{{ question | trim }}"
+          aria-label="Delete {{ txn.name }}">
+    <i class="bi bi-trash"></i> Delete this row
+  </button>
   {% endif %}
 </div>

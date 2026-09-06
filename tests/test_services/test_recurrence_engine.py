@@ -13,6 +13,10 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.transaction import Transaction
+from app.services._recurrence_common import (
+    TemplateRowSelector,
+    rows_this_pass_may_maintain,
+)
 from app.models.transaction_entry import TransactionEntry
 from app.models.scenario import Scenario
 from app.models.journal_entry import JournalEntry, Posting
@@ -21,19 +25,24 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import TransactionType, Status
 from app import ref_cache
 from app.enums import (
+    AmountSourceEnum,
     BusinessDayShiftEnum,
     RecurrenceUnitEnum,
     SettlementBasisEnum,
     StatusEnum,
+    TxnTypeEnum,
 )
 from app.services import (
     entry_service,
-    pay_period_service,
     pay_period_write,
     recurrence_engine,
     status_seam,
 )
-from app.services.pay_calendar import PayCalendar, calendar_for
+from app.services.pay_calendar import (
+    DerivedPeriod,
+    PayCalendar,
+    calendar_for,
+)
 from app.services.recurrence import (
     RecurrenceResolutionError,
     fires_on_day_of_month,
@@ -43,12 +52,13 @@ from app.services.recurrence import (
 from app.services.recurrence import placed_periods, rule_occurrences
 from app.services.recurrence._months import clamped_day, month_ordinal
 from app.exceptions import (
-    RecurrenceCadenceUnsupported,
     RecurrenceConflict,
     ValidationError,
 )
 from app.services import account_service
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.recurrence_engine._amounts import DerivedRowFields
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     EVERY_N_PERIODS,
@@ -59,12 +69,22 @@ from tests.oracles.recurrence_baseline import (
     ANNUAL,
 )
 from tests._test_helpers import (
-    make_every_period_rule,
+    rhythm_of,
+    all_periods,
+    an_entered_day,
+    derived_span,
+    last_covered_day,
     make_cadence_rule,
-    open_calendar_hole,
+    make_every_period_rule,
+    rebuild_calendar_from_spans,
+    resolved_amount,
     settlement_basis_id,
     settlement_if_settling,
+    state_template_price,
 )
+from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 
 # --- Rule / period objects for the pure pattern-matching tests ---------------
@@ -184,9 +204,14 @@ def build_rule(cadence=EVERY_PERIOD,
     #
     # ``None`` for the one constant that fixes no interval of its own, which
     # is the shape a caller varies.
+    #
+    # **The unsaved OWNER is plan step R-F6's**, and it is what makes
+    # ``rule.user_id`` answerable: a recurrence rule belongs to exactly one
+    # definition, so its owner is where the owner is read from -- there is no
+    # ``user_id`` column any more.  The template is transient like the rule;
+    # neither is added to a session, so these stay pure tests.
     own_interval = 1 if cadence.interval_n is None else cadence.interval_n
-    return RecurrenceRule(
-        user_id=_MATCH_USER_ID,
+    rule = RecurrenceRule(
         interval_n=(
             own_interval if interval_n is _CADENCES_OWN_INTERVAL
             else interval_n
@@ -199,6 +224,8 @@ def build_rule(cadence=EVERY_PERIOD,
         due_day_of_month=due_day_of_month,
         end_date=end_date,
     )
+    TransactionTemplate(user_id=_MATCH_USER_ID).recurrence_rule = rule
+    return rule
 
 
 class FakePeriod:
@@ -243,20 +270,26 @@ class TestRecurrenceGeneration:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The PRICE, through the app's one write door.  Both create doors state
+        # one right after the flush, and since plan step balance:X-au-e a
+        # generated row stores no figure and is priced by this series on its
+        # own due date -- a template without one generates rows
+        # ``_stated_amount`` refuses.
+        state_template_price(template)
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -269,12 +302,14 @@ class TestRecurrenceGeneration:
                 seed_user, EVERY_PERIOD
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == len(seed_periods)
             for txn in created:
-                assert txn.estimated_amount == Decimal("100.00")
+                assert resolved_amount(txn) == Decimal("100.00")
                 assert txn.name == "Test Recurring"
 
             # Verify 1:1 mapping between transactions and periods.
@@ -302,7 +337,9 @@ class TestRecurrenceGeneration:
                 interval_n=2, starts_on=seed_periods[1].start_date,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             # With 10 periods (indices 0-9), offset=1 matches indices 1,3,5,7,9 → 5.
@@ -312,7 +349,7 @@ class TestRecurrenceGeneration:
                     __import__("app.models.pay_period", fromlist=["PayPeriod"]).PayPeriod,
                     txn.pay_period_id,
                 )
-                assert (period.period_index - 1) % 2 == 0
+                assert (derived_span(period).period_index - 1) % 2 == 0
 
     def test_a_rule_less_template_generates_nothing(
         self, app, db, seed_user, seed_periods,
@@ -331,20 +368,23 @@ class TestRecurrenceGeneration:
             template = self._make_template_with_rule(
                 seed_user, EVERY_PERIOD,
             )
-            # Both sides plus the row itself, exactly as
-            # ``_recurrence_form_helpers._clear_recurrence_rule`` does: the
-            # relationship is ``lazy="joined"`` and already loaded, so nulling
-            # only the FK leaves the engine reading the stale object.
-            rule = template.recurrence_rule
+            # ONE statement, exactly as
+            # ``_recurrence_form_helpers._clear_recurrence_rule`` does since
+            # plan step R-F6: dis-associating the rule is what deletes it,
+            # because the relationship carries ``delete-orphan`` and the rule
+            # holds the owning FK.  It was three statements -- null both sides,
+            # then delete the row -- while the FK sat on the template, and an
+            # explicit delete after this one now reports
+            # ``expected to delete 1 row(s); 0 were matched``, because the
+            # dis-association already removed it.
             template.recurrence_rule = None
-            template.recurrence_rule_id = None
-            db.session.flush()
-            db.session.delete(rule)
             db.session.flush()
             assert template.recurrence_rule is None
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 0
@@ -358,14 +398,18 @@ class TestRecurrenceGeneration:
 
             # First generation.
             first_run = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(first_run) == len(seed_periods)
 
             # Second generation -- should create nothing new.
             second_run = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             assert len(second_run) == 0
 
@@ -378,13 +422,15 @@ class TestRecurrenceGeneration:
 
             # Generate entries.
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
             # Override one entry.
             created[0].is_override = True
-            created[0].estimated_amount = Decimal("999.99")
+            state_own_amount(created[0], Decimal("999.99"))
             db.session.flush()
 
             # Regenerate -- the overridden entry should be preserved.
@@ -392,7 +438,9 @@ class TestRecurrenceGeneration:
 
             try:
                 recurrence_engine.regenerate_for_template(
-                    template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                    template, GenerationSchedule.for_period_ids(
+                        BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                    ), seed_user["scenario"].id,
                 )
             except RecurrenceConflict as conflict:
                 assert created[0].id in conflict.overridden
@@ -409,7 +457,9 @@ class TestRecurrenceGeneration:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -425,7 +475,9 @@ class TestRecurrenceGeneration:
 
             # Regenerate -- should not delete the done transaction.
             recurrence_engine.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -478,6 +530,7 @@ def _calendar(periods, cadence_days=_CADENCE_DAYS):
         paydays=[(period.id, period.start_date) for period in periods],
         cadence_days=cadence_days,
         user_id=_MATCH_USER_ID,
+        history_opens_on=None,
     )
 
 
@@ -1015,48 +1068,52 @@ class TestGenerateForTemplate:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
         return template
 
-    def test_a_bill_repeating_inside_one_paycheck_is_refused(
+    def test_a_bill_repeating_inside_one_paycheck_generates_each_occurrence(
         self, app, db, seed_user, seed_periods
     ):
-        """A monthly bill at a 90-day cadence REFUSES, it does not 500.
+        """A monthly bill at a 90-day cadence writes ALL THREE rows.
 
-        **Plan step R4a made this reachable and this is its regression test.**
-        The reverse matcher walked PAYCHECKS, so a monthly rule emitted one row
-        per paycheck and silently dropped the rest -- defect D3.  Forward
-        generation emits all three occurrences that fall inside one 90-day pay
-        period, and ``idx_transactions_template_period_scenario`` is UNIQUE
-        over ``(template, pay_period, scenario)``, so writing them raises an
-        ``IntegrityError`` naming nothing and rolling back whatever transaction
-        it was inside -- ``pay_period_admin.extend_pay_periods`` among them,
-        which would leave the owner unable to extend their schedule at all.
+        **Plan step R4a made the repeat reachable and plan step R17 made it
+        storable, and this is the regression test for both.**  The reverse
+        matcher walked PAYCHECKS, so a monthly rule emitted one row per
+        paycheck and silently dropped the rest -- defect D3.  Forward
+        generation emits every occurrence, and while the unique index was keyed
+        ``(template, pay_period, scenario)`` the pass could not store them:
+        generation REFUSED with ``RecurrenceCadenceUnsupported`` rather than
+        under-budget the paycheck (plan ledger row D19, developer ruling
+        2026-08-08).
 
-        The refusal names the definition, the paycheck and how many times it
-        falls inside it, and writes NOTHING (developer ruling 2026-08-08).
-        Plan step R5 re-keys the index onto the occurrence and the refusal goes
-        with the fix.
+        R17 re-keyed the index onto ``(template, scenario, occurs_on)``,
+        because a generated row's identity is the OCCURRENCE it answers and
+        never the paycheck its money lands in.  Three occurrences inside one
+        90-day paycheck are three distinct keys, so all three now store and the
+        refusal was deleted with the exception and its error handler
+        (developer ruling 2026-08-28).
 
-        Measured against the deleted matcher: ``Monthly First`` returned no
-        repeated period at ANY cadence, so this failure mode is new to R4a --
-        which is why the guard ships in the same commit as the cutover.
+        What this asserts is the money: a monthly bill owed three times inside
+        one long paycheck is BUDGETED three times.  The old behaviour left the
+        owner unable to generate at all; the behaviour before that silently
+        under-budgeted by two installments.
         """
         with app.app_context():
             # A 90-day schedule for this owner alone; ``cadence_days`` is
@@ -1065,9 +1122,9 @@ class TestGenerateForTemplate:
             # strictly after the latest existing end_date.
             long_periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                first_payday=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=4,
-                cadence_days=90,
+                rhythm=rhythm_of(90),
             )
             db.session.flush()
             template = self._make_template_with_rule(
@@ -1075,8 +1132,8 @@ class TestGenerateForTemplate:
             )
 
             # The premise, asserted rather than assumed: without this the test
-            # would pass vacuously if the engine ever stopped duplicating, and
-            # the guard would be a gate over nothing.
+            # would pass vacuously if the engine ever stopped repeating a
+            # paycheck, and would then prove nothing about the re-key.
             matched = _matched_periods(
                 template.recurrence_rule,
                 calendar_for(seed_user["user"].id),
@@ -1086,68 +1143,116 @@ class TestGenerateForTemplate:
                 {period.period_index for period in matched}
             ), (
                 "the engine no longer repeats a period, so this test proves "
-                "nothing about the guard"
+                "nothing about the re-keyed index"
             )
 
-            with pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
-                recurrence_engine.generate_for_template(
-                    template, GenerationSchedule.for_periods(template.user_id, long_periods), seed_user["scenario"].id,
-                )
+            created = recurrence_engine.generate_for_template(
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id),
+                    {p.id for p in long_periods},
+                ), seed_user["scenario"].id,
+            )
+            # The flush is the assertion that matters: under the paycheck-keyed
+            # index these three rows were an IntegrityError.
+            db.session.flush()
 
-            # Named, not generic: the definition, the paycheck, and since plan
-            # step R4b-2 every occurrence DATE -- which is what a user needs to
-            # decide what to change.  The expected dates are DERIVED from the
-            # paycheck's own span rather than typed as literals, so this
-            # asserts the fact the refusal is about (a monthly bill is owed on
-            # every 15th the paycheck covers) instead of three figures that
-            # would still pass if the fixture's start date moved.
+            # The expected dates are DERIVED from the paycheck's own span
+            # rather than typed as literals, so this asserts the fact the
+            # cadence is about (a monthly bill is owed on every 15th the
+            # paycheck covers) instead of three figures that would still pass
+            # if the fixture's start date moved.
             paycheck = long_periods[0]
             expected_dates = tuple(
                 day
                 for day in (
                     date(year, month, 15)
                     for year in range(
-                        paycheck.start_date.year, paycheck.end_date.year + 1,
+                        paycheck.start_date.year, last_covered_day(paycheck).year + 1,
                     )
                     for month in range(1, 13)
                 )
-                if paycheck.start_date <= day <= paycheck.end_date
+                if paycheck.start_date <= day <= last_covered_day(paycheck)
             )
             assert len(expected_dates) == 3, (
                 "a 90-day paycheck must cover the 15th of three months, or this "
-                "fixture no "
-                "longer exercises the repeat"
+                "fixture no longer exercises the repeat"
             )
-            assert excinfo.value.template_name == "Test Recurring"
-            assert excinfo.value.occurrence_dates == expected_dates
-            assert excinfo.value.occurrence_count == 3
-            assert excinfo.value.period_start == paycheck.start_date
-            # The message carries them too -- the card and the log both read
-            # from this exception, so an unnamed date would reach neither.
-            for day in expected_dates:
-                assert day.isoformat() in str(excinfo.value)
-            # And nothing was written -- the refusal runs before the first add.
-            assert db.session.query(Transaction).filter_by(
-                template_id=template.id,
-            ).count() == 0
 
-    def test_a_paycheck_that_already_holds_a_row_is_skipped_not_refused(
+            # Every occurrence answered, each by its own row, all three inside
+            # the ONE paycheck.
+            in_paycheck = [
+                row for row in created if row.pay_period_id == paycheck.id
+            ]
+            assert sorted(
+                row.occurs_on for row in in_paycheck
+            ) == list(expected_dates)
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id, pay_period_id=paycheck.id,
+            ).count() == 3
+
+    def test_a_repeat_is_not_written_twice_by_a_second_pass(
         self, app, db, seed_user, seed_periods
     ):
-        """The refusal runs AFTER the per-period skip, and that is deliberate.
+        """The second pass over a repeated paycheck adds NOTHING.
 
-        A paycheck already holding a row for this template is skipped by
-        ``should_skip_period``, so no second row is attempted and there is
-        nothing to refuse.  Testing before the skip would make an
-        already-populated long-cadence schedule permanently unextendable: every
-        later extend would refuse over periods it was never going to write.
+        The companion to the test above, and the one that would catch an
+        occurrence-keyed predicate that had quietly gone back to asking about
+        the period: with three rows already answering three occurrences inside
+        one paycheck, a re-run must find every one of them answered.  A
+        predicate keyed on the paycheck would also pass this; a predicate that
+        matched rows by POSITION, or one that compared an occurrence against
+        the wrong row's date, would not.
         """
         with app.app_context():
             long_periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                first_payday=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=4,
-                cadence_days=90,
+                rhythm=rhythm_of(90),
+            )
+            db.session.flush()
+            template = self._make_template_with_rule(
+                seed_user, MONTHLY, fires_on_day=15,
+            )
+            window = {p.id for p in long_periods}
+            first = recurrence_engine.generate_for_template(
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), window,
+                ), seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert len(first) > 0
+
+            second = recurrence_engine.generate_for_template(
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), window,
+                ), seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert second == []
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).count() == len(first)
+
+    def test_a_populated_long_cadence_schedule_stays_extendable(
+        self, app, db, seed_user, seed_periods
+    ):
+        """An already-populated repeat paycheck adds nothing on a later pass.
+
+        This asserted an ORDERING while the repeat was refused: the refusal ran
+        after the per-period skip, so an already-populated long-cadence
+        schedule stayed extendable instead of refusing over paychecks the pass
+        was never going to write.  Plan step **R17** deleted the refusal
+        (the re-keyed index stores the repeat), so what is left to grade is the
+        property that ordering existed to protect -- a second pass over a
+        populated repeat writes nothing and raises nothing.
+        """
+        with app.app_context():
+            long_periods = pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
+                num_periods=4,
+                rhythm=rhythm_of(90),
             )
             db.session.flush()
             template = self._make_template_with_rule(
@@ -1160,19 +1265,22 @@ class TestGenerateForTemplate:
                 db.session.add(Transaction(
                     account_id=template.account_id,
                     template_id=template.id,
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
                     status_id=projected_id,
                     name=template.name,
                     transaction_type_id=template.transaction_type_id,
-                    estimated_amount=Decimal("100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
                     is_override=False,
                     is_deleted=False,
                 ))
             db.session.flush()
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, long_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in long_periods},
+                ), seed_user["scenario"].id,
             )
 
             assert created == []
@@ -1187,7 +1295,9 @@ class TestGenerateForTemplate:
             )
             effective_from = seed_periods[3].start_date
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
                 effective_from=effective_from,
             )
 
@@ -1209,7 +1319,9 @@ class TestGenerateForTemplate:
 
             # First generation.
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(created) == 10
@@ -1220,7 +1332,9 @@ class TestGenerateForTemplate:
 
             # Second generation -- should not duplicate the deleted entry.
             second_run = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             assert len(second_run) == 0
 
@@ -1233,16 +1347,18 @@ class TestGenerateForTemplate:
                 seed_user, MONTHLY, fires_on_day=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             # 10 biweekly periods starting Jan 2 span ~5 months.
             # Determine expected unique months from periods.
             unique_months = set()
             for p in seed_periods:
-                for dt in (p.start_date, p.end_date):
+                for dt in (p.start_date, last_covered_day(p)):
                     target = date(dt.year, dt.month, 15)
-                    if p.start_date <= target <= p.end_date:
+                    if p.start_date <= target <= last_covered_day(p):
                         unique_months.add((dt.year, dt.month))
             assert len(created) == len(unique_months)
 
@@ -1333,17 +1449,17 @@ class TestThePlacedPeriodsBound:
         """
         with app.app_context():
             template = self._make_template(seed_user)
-            schedule = GenerationSchedule.for_user(template.user_id)
+            schedule = GenerationSchedule.for_pass(BalanceContext.build(template.user_id))
             straddled = seed_periods[3]
             bound = straddled.start_date + timedelta(days=1)
-            assert bound < straddled.end_date
+            assert bound < last_covered_day(straddled)
 
             plan = recurrence_engine.resolve_generation_plan(
                 template, schedule, seed_user["scenario"].id, bound,
                 block_message="test",
             )
 
-            kept = [row.period.id for row in plan.placements]
+            kept = [row.period.period_id for row in plan.placements]
             assert straddled.id in kept, (
                 "the seam dropped the period its bound falls inside"
             )
@@ -1366,22 +1482,44 @@ class TestThePlacedPeriodsBound:
             ordinal if opening.day <= _MONTHLY_DAY else ordinal + 1,
             _MONTHLY_DAY,
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, MONTHLY, starts_on=first_fifteenth,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]["Car Payment"].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name="Bounded Bill",
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, MONTHLY, starts_on=first_fifteenth,
+        )
         db.session.refresh(template)
         return template
+
+
+def _paycheck_covering(seed_user, day):
+    """Return the ``budget.pay_periods.id`` of the paycheck covering *day*.
+
+    ``txn.pay_period.start_date <= day <= txn.pay_period.end_date`` until plan
+    step ``pay_calendar:C4-c`` dropped ``end_date``.  Containment is the
+    calendar's question -- :meth:`DerivedPeriod.covers` is the one rule
+    (**R-PC31**) -- and reaching it through ``period_containing`` is what keeps
+    a test from open-coding a fourth copy of that comparison.
+
+    Args:
+        seed_user: The seeded owner fixture.
+        day: The civil day to place.
+
+    Returns:
+        The covering period's id.
+    """
+    covering = calendar_for(seed_user["user"].id).period_containing(day)
+    assert covering is not None, f"no paycheck covers {day}"
+    return covering.period_id
 
 
 class TestALegacyScheduleHole:
@@ -1401,22 +1539,21 @@ class TestALegacyScheduleHole:
     **Two writers had to close before the reader could stop looking, and both
     have**: ``balance:X-ad-a`` deleted the registration bootstrap payday, and
     plan step **C3-b** replaced the batch guard with a writer that materialises
-    the derivation.  The first test below is the CONTROL for that closure.  The
-    stored rows can still HOLD a hole -- written before C3-b, or written
-    directly, which is what ``_test_helpers.open_calendar_hole`` does -- so
-    what these tests pin now is what a READER does with one.
+    the derivation.  The first test below is the CONTROL for that closure.
 
-    **What replaces the alert is a query**: ``scripts/integrity_check.py``
-    **BA-07** reports any owner whose stored ``end_date`` is not the day before
-    the next payday, and dies with that column at plan step C4.
-    ``tests/test_scripts/test_integrity_check.py`` grades it.
+    **And since plan step ``pay_calendar:C4-c`` the stored rows cannot hold a
+    hole either.**  ``end_date`` is dropped, so a period's last covered day is
+    the day before the next payday and nothing else; the only shape left is a
+    payday JUMP, which is what the fixture below builds and which the writer
+    accepts.  ``scripts/integrity_check.py`` **BA-07** reported the stored
+    state while it was expressible and went with the column.
 
     **The absorption is not free, and the third test says so.**  An absorbed
     hole leaves an OVER-LONG paycheck, and a monthly bill can fall inside one
-    more than once -- which ``idx_transactions_template_period_scenario``
-    cannot hold, so ``refuse_unstorable_repeats`` refuses the pass.  That is
-    the same refusal a 30-day-or-longer cadence already earns; plan step C5b
-    lifts it.
+    more than once.  The paycheck-keyed index could not hold that pair, so the
+    pass was REFUSED; since plan step **R17** re-keyed onto the occurrence both
+    installments are written, and the third test grades the rows rather than
+    the refusal.
 
     **"Not yet" was never a gap**, and the class still ends with the control
     that says so: under ``PERIOD_STARTING_ON_OR_AFTER`` an occurrence dated
@@ -1427,39 +1564,55 @@ class TestALegacyScheduleHole:
 
     #: Days after the seed schedule's last covered day that the second batch
     #: opens.  Large enough that a whole calendar month (June 2026) falls in
-    #: the hole, so a monthly rule has exactly one occurrence with nowhere to
-    #: live and the assertions below are about that one date.
+    #: the jump, so a monthly rule has exactly one occurrence the preceding
+    #: paycheck has to absorb and the assertions below are about that one date.
     _GAP_DAYS = 43
 
     #: The rule's scheduling day, and therefore the day every occurrence and
     #: every generated ``due_date`` falls on.
     _DAY_OF_MONTH = 15
 
-    def _schedule_with_a_gap(self, seed_user, seed_periods):
-        """Append a second batch, then re-open the hole the writer absorbs.
+    def _schedule_with_a_payday_jump(self, seed_user, seed_periods):
+        """Append a second batch 43 days after the schedule's horizon.
 
-        The append is still the real writer's, so the schedule's SHAPE is one
-        the app produces; the last line puts back the hole plan step C3-b's
-        recompute closes, because that hole is what these tests are about.
-        Doing it in this order rather than hand-inserting every row keeps the
-        fixture one line away from the production path.
+        The whole fixture is the real writer's, which is the point: the shape
+        these tests are about is one the app produces.
+
+        *It re-opened a stored hole on the last line until plan step
+        ``pay_calendar:C4-c``.*  While ``end_date`` was a column, the writer's
+        own recompute closed the hole this appended, so the fixture had to put
+        it back to reach the state a pre-C3-b row could hold.  The column is
+        gone: the days between the horizon and the new payday belong to the
+        preceding paycheck, and there is no second value that could say
+        otherwise.
 
         Returns:
-            ``(later_periods, gap_start, gap_end)`` -- the appended batch and
-            the inclusive span of days no period covers.
+            ``(later_periods, jump_start, jump_end)`` -- the appended batch and
+            the inclusive span of days the preceding paycheck absorbs.
         """
-        last_covered = seed_periods[-1].end_date
+        last_covered = self._horizon(seed_user)
         later_start = last_covered + timedelta(days=self._GAP_DAYS)
         later = pay_period_write.record_paydays(
             user_id=seed_user["user"].id,
             first_payday=later_start,
             num_periods=6,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
-        gap_start, gap_end = open_calendar_hole(
-            db.session, seed_periods[-1], last_covered,
+        return (
+            later,
+            last_covered + timedelta(days=1),
+            later_start - timedelta(days=1),
         )
-        return later, gap_start, gap_end
+
+    @staticmethod
+    def _horizon(seed_user):
+        """Return the owner's last covered day, DERIVED.
+
+        ``seed_periods[-1].end_date`` until plan step ``pay_calendar:C4-c``
+        dropped the column; the horizon is the last payday plus the cadence,
+        and the calendar is what answers it.
+        """
+        return calendar_for(seed_user["user"].id).horizon()
 
     def _days_between(self, first, last, day=None):
         """Every *day* of the month in ``first..last``, inclusive, ascending.
@@ -1496,32 +1649,28 @@ class TestALegacyScheduleHole:
         would satisfy a single-day check.
         """
         with app.app_context():
-            last_covered = seed_periods[-1].end_date
+            last_covered = self._horizon(seed_user)
             later_start = last_covered + timedelta(days=self._GAP_DAYS)
             later = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=later_start,
                 num_periods=6,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             assert later[0].start_date == later_start
 
             # The days the OLD writer would have left behind.
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            calendar = calendar_for(seed_user["user"].id)
             day = last_covered + timedelta(days=1)
             while day < later_start:
-                assert any(
-                    period.start_date <= day <= period.end_date
-                    for period in periods
-                ), f"{day} is covered by no pay period"
+                assert calendar.period_containing(day) is not None, (
+                    f"{day} is covered by no pay period"
+                )
                 day += timedelta(days=1)
-            # And it is the PRECEDING paycheck that absorbed them, stretched to
-            # the day before the new payday rather than left at its old end.
-            # Read off the re-queried list: the fixture's own objects were
-            # built in an earlier app context and do not see the UPDATE.
-            preceding = next(
-                p for p in periods if p.start_date == seed_periods[-1].start_date
-            )
+            # And it is the PRECEDING paycheck that absorbed them, running to
+            # the day before the new payday rather than stopping at its old
+            # horizon.
+            preceding = calendar.period_containing(seed_periods[-1].start_date)
             assert preceding.end_date == later_start - timedelta(days=1)
 
     def test_the_calendar_absorbs_the_hole_into_the_preceding_paycheck(
@@ -1543,13 +1692,13 @@ class TestALegacyScheduleHole:
         """
         absorbed_day = 5
         with app.app_context():
-            _later, gap_start, gap_end = self._schedule_with_a_gap(
+            _later, gap_start, gap_end = self._schedule_with_a_payday_jump(
                 seed_user, seed_periods,
             )
             template = self._make_template_with_rule(
                 seed_user, MONTHLY, fires_on_day=absorbed_day,
             )
-            schedule = GenerationSchedule.for_user(template.user_id)
+            schedule = GenerationSchedule.for_pass(BalanceContext.build(template.user_id))
             plan = recurrence_engine.resolve_generation_plan(
                 template, schedule, seed_user["scenario"].id, None,
                 block_message="test",
@@ -1557,7 +1706,7 @@ class TestALegacyScheduleHole:
 
             absorbing = next(
                 period
-                for period in pay_period_service.get_all_periods(
+                for period in all_periods(
                     seed_user["user"].id,
                 )
                 if period.start_date == seed_periods[-1].start_date
@@ -1574,12 +1723,13 @@ class TestALegacyScheduleHole:
                 f"{gap_start}..{gap_end}, got "
                 f"{[row.occurrence for row in plan.placements]}"
             )
-            assert in_hole[0].period.id == absorbing.id
-            assert absorbing.end_date < in_hole[0].occurrence, (
-                "the STORED end must still precede the occurrence -- that is "
-                "what makes this an absorption by the derivation rather than a "
-                "period that genuinely contains the day"
-            )
+            assert in_hole[0].period.period_id == absorbing.id
+            # What makes this an ABSORPTION rather than an ordinary
+            # containment: the paycheck spans far more than one cadence,
+            # because it ran on to the day before the next payday.
+            assert (
+                in_hole[0].period.end_date - in_hole[0].period.start_date
+            ).days + 1 > 14
 
             # **The COUNT, and it is load-bearing** -- the assertion an
             # adversarial review of plan step C2-b2 caught this test dropping
@@ -1598,66 +1748,128 @@ class TestALegacyScheduleHole:
             # each inside the DERIVED span of the one it was seated in.
             assert all(row.period is not None for row in plan.placements)
             for row in plan.placements:
-                derived = schedule.calendar.period_by_id(row.period.id)
+                derived = row.period
                 assert derived.start_date <= row.occurrence <= derived.end_date
 
     def test_the_regenerate_sweep_and_the_regeneration_share_ONE_period_end(
         self, app, db, seed_user, seed_periods,
     ):
-        """The bound both halves of a regenerate read must be the same column.
+        """The bound both halves of a regenerate read must be the same end.
 
-        ``regenerate_for_template`` DELETES every non-overridden row whose pay
-        period ends on or after ``effective_from`` and then regenerates from
-        the same bound.  The delete half is SQL over ``pay_periods.end_date``
-        -- the STORED column
-        (``_recurrence_common.query_rows_from_effective_date``).  Plan step
-        C2-b2 gave the recurrence engine a calendar whose ends are DERIVED, and
-        an adversarial review caught the regeneration half reading THAT end
-        instead: two independently-sourced answers to "when does this paycheck
-        end", compared against one date.
+        ``regenerate_for_template`` decides which existing rows it may act on
+        and which periods the rule names, and both decisions are bounded by
+        ``effective_from``.  For that to be ONE pass rather than two, both must
+        read the same answer to "when does this paycheck end".
 
-        Where they disagree and the bound falls between them the failure is
-        silent and asymmetric -- rows deleted and never recreated when the
-        derived end is EARLIER (the shrunk-cadence shape, plan ledger row
-        **P28**), a stale amount surviving an edit when it is LATER (the
-        absorbed hole, row **P27**).  ``resolve_generation_plan`` now resolves
-        the ORM row before applying the bound, so both halves read one column.
+        **They read the DERIVED end since pay-calendar plan step C2-f3c, and
+        this test was INVERTED there.**  The row half used to be SQL over
+        ``pay_periods.end_date`` -- the STORED column -- while plan step C2-b2
+        had already given the rule half a calendar whose ends are derived; the
+        fix at the time was to make the RULE half read the stored column too,
+        by resolving the ORM row before applying the bound, and this test
+        asserted the absorbing paycheck was in NEITHER half.  C2-f3c removed
+        the stored column from the seam entirely: the row select is now a
+        period-ID set filtered by the derived end
+        (``_recurrence_common.rows_this_pass_may_maintain``), so the absorbing
+        paycheck is in BOTH halves.
 
-        This is the LATER case, which is the one this fixture can build: the
-        absorbing paycheck's stored end is 2026-05-21 and its derived end
-        2026-07-02, so a bound of 2026-06-01 falls between them.
+        **And that is the correct answer, not merely a consistent one.** The
+        absorbing paycheck's span runs to 2026-07-02, so it is the paycheck the
+        owner's money on 2026-06-01 actually lives in.  A regeneration
+        effective from that date must maintain it.  The old behaviour skipped
+        it because a stored column said the paycheck had ended six weeks
+        earlier -- a column plan step ``pay_calendar:C4-c`` DROPPED, and which
+        no writer had produced since plan step C3-b.
+
+        The bound falls deep INSIDE the absorbing paycheck rather than near a
+        boundary, which is what makes the two memberships below a real
+        question: the paycheck opens 2026-05-08 and runs to 2026-07-02, and
+        the bound is 2026-06-01.
         """
         with app.app_context():
-            self._schedule_with_a_gap(seed_user, seed_periods)
+            self._schedule_with_a_payday_jump(seed_user, seed_periods)
             template = self._make_template_with_rule(
                 seed_user, MONTHLY, fires_on_day=5,
             )
+            scenario_id = seed_user["scenario"].id
+            schedule = GenerationSchedule.for_pass(
+                BalanceContext.build(template.user_id),
+            )
             absorbing = next(
                 period
-                for period in pay_period_service.get_all_periods(
-                    seed_user["user"].id,
-                )
+                for period in all_periods(seed_user["user"].id)
                 if period.start_date == seed_periods[-1].start_date
             )
             bound = date(2026, 6, 1)
 
-            # The premise: the bound really does fall between the two ends.
-            assert absorbing.end_date < bound
-            assert GenerationSchedule.for_user(
-                template.user_id,
-            ).calendar.period_by_id(absorbing.id).end_date >= bound
+            # The premise: the bound really does fall inside the absorbing
+            # paycheck, and past where an un-absorbed one would have ended.
+            absorbing_span = schedule.calendar.period_by_id(absorbing.id)
+            assert absorbing_span.start_date < bound <= absorbing_span.end_date
+            assert bound > absorbing_span.start_date + timedelta(days=13)
+
+            # Give the paycheck a row, so the sweep has something to collect.
+            recurrence_engine.generate_for_template(
+                template, schedule, scenario_id,
+            )
+            db.session.flush()
 
             plan = recurrence_engine.resolve_generation_plan(
-                template, GenerationSchedule.for_user(template.user_id),
-                seed_user["scenario"].id, bound, block_message="test",
+                template, schedule, scenario_id, bound, block_message="test",
+            )
+            swept = rows_this_pass_may_maintain(
+                TemplateRowSelector(
+                    Transaction, Transaction.template_id, template,
+                    scenario_id,
+                ),
+                schedule, bound,
             )
 
-            # The DELETE sweep would not collect this period's rows, because
-            # its STORED end precedes the bound.  The regeneration must not
-            # write into it either.
-            assert absorbing.id not in {
-                row.period.id for row in plan.placements
+            # BOTH halves reach it, because both read the derived end.
+            assert absorbing.id in {
+                row.period.period_id for row in plan.placements
+            }, "the rule half skipped the paycheck its own calendar says is live"
+            assert absorbing.id in {row.pay_period_id for row in swept}, (
+                "the row half skipped the paycheck the rule half named -- the "
+                "two are reading different definitions of this period's end"
+            )
+
+            # **And the two halves apply the SAME comparison, not merely the
+            # same column** (adversarial review of plan step C2-f3c).  The
+            # memberships above are satisfied by a sweep using ``>`` where the
+            # rule uses ``>=``; the difference is invisible unless a bound
+            # falls exactly ON a derived end, which no other case in the suite
+            # arranges -- every ``effective_from`` elsewhere is a period START
+            # or a round date, and a 14-day schedule never makes those equal.
+            # A row the rule NAMES but the fetch does not return is a
+            # duplicate create, or an ``IntegrityError`` on the generation
+            # index.
+            on_the_end = schedule.calendar.period_by_id(absorbing.id).end_date
+            named_there = {
+                row.period.period_id
+                for row in recurrence_engine.resolve_generation_plan(
+                    template, schedule, scenario_id, on_the_end,
+                    block_message="test",
+                ).placements
             }
+            swept_there = {
+                row.pay_period_id for row in rows_this_pass_may_maintain(
+                    TemplateRowSelector(
+                        Transaction, Transaction.template_id, template,
+                        scenario_id,
+                    ),
+                    schedule, on_the_end,
+                )
+            }
+            assert absorbing.id in named_there, (
+                "the premise: a bound ON the derived end must still NAME the "
+                "period, or this case grades an empty set"
+            )
+            assert named_there <= swept_there, (
+                f"the rule half names {sorted(named_there - swept_there)} that "
+                f"the row half does not offer, on a bound that falls exactly "
+                f"on a derived period end -- the two are not one comparison"
+            )
 
     def test_an_absorbed_occurrence_is_DATED_by_its_paycheck_not_its_cadence(
         self, app, db, seed_user, seed_periods,
@@ -1689,7 +1901,7 @@ class TestALegacyScheduleHole:
         """
         absorbed_day = 5
         with app.app_context():
-            _later, gap_start, gap_end = self._schedule_with_a_gap(
+            _later, gap_start, gap_end = self._schedule_with_a_payday_jump(
                 seed_user, seed_periods,
             )
             template = self._make_template_with_rule(
@@ -1697,13 +1909,13 @@ class TestALegacyScheduleHole:
             )
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_user(template.user_id),
+                GenerationSchedule.for_pass(BalanceContext.build(template.user_id)),
                 seed_user["scenario"].id,
             )
 
             absorbing = next(
                 period
-                for period in pay_period_service.get_all_periods(
+                for period in all_periods(
                     seed_user["user"].id,
                 )
                 if period.start_date == seed_periods[-1].start_date
@@ -1728,20 +1940,21 @@ class TestALegacyScheduleHole:
     def test_an_absorbed_hole_can_make_one_paycheck_owe_a_bill_twice(
         self, app, db, seed_user, seed_periods,
     ):
-        """The cost of absorbing, refused rather than written.
+        """The cost of absorbing, now WRITTEN rather than refused.
 
         The hole spans a whole calendar month, so the paycheck that absorbs it
-        covers the 15th twice.  ``idx_transactions_template_period_scenario`` is
-        UNIQUE over ``(template, pay_period, scenario)``, so writing both would
-        raise an ``IntegrityError`` naming nothing and roll back whatever
-        transaction it was inside.  ``refuse_unstorable_repeats`` refuses
-        first, names the definition, the paycheck and both dates, and writes
-        NOTHING -- the same refusal a 30-day-or-longer cadence already earns.
+        covers the 15th twice.  While the unique index was keyed
+        ``(template, pay_period, scenario)`` both rows could not be stored, so
+        ``refuse_unstorable_repeats`` refused the whole pass and wrote nothing.
+        Plan step **R17** re-keyed it onto ``(template, scenario, occurs_on)``
+        -- two occurrences are two keys -- so the absorbing paycheck now
+        carries both installments and the money is budgeted rather than
+        withheld (developer ruling 2026-08-28).
 
         **This is ONE of the ways plan step C2-b2 moves money, not the only
-        one**, and an adversarial review of this step refuted the claim that it
+        one**, and an adversarial review of that step refuted the claim that it
         was.  Wherever a stored column disagrees with the payday derivation the
-        engine now believes the derivation, and there are THREE such columns --
+        engine believes the derivation, and there are THREE such columns --
         the hole this test builds (plan ledger row **P27**), the stored cadence
         against the last stored end (**P28**), and a stored ordinal that is not
         ``0..n-1`` (**P26**).  ``recurrence/_occurrence.py``'s module docstring
@@ -1752,34 +1965,40 @@ class TestALegacyScheduleHole:
         row, so each means data written before plan step C3-b or edited outside
         that module.  Production carries none of the three (61 contiguous
         periods, 0 index mismatches, 0 end mismatches, measured 2026-08-10).
-        Plan step C5b re-keys the index and lifts this particular refusal.
         """
         with app.app_context():
-            _later, gap_start, gap_end = self._schedule_with_a_gap(
+            _later, gap_start, gap_end = self._schedule_with_a_payday_jump(
                 seed_user, seed_periods,
             )
             template = self._make_template_with_rule(
                 seed_user, MONTHLY, fires_on_day=self._DAY_OF_MONTH,
             )
-            schedule = GenerationSchedule.for_user(template.user_id)
+            schedule = GenerationSchedule.for_pass(BalanceContext.build(template.user_id))
 
-            with pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
-                recurrence_engine.generate_for_template(
-                    template, schedule, seed_user["scenario"].id,
-                )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
 
-            # The refusal names BOTH dates: the one the hole used to swallow,
-            # and the one the absorbing paycheck already owed.
+            # The date the hole used to swallow is now ANSWERED by a row of its
+            # own, rather than costing the owner the whole pass.
             in_hole = self._days_between(gap_start, gap_end)
             assert len(in_hole) == 1, (
                 f"the fixture must put exactly one {self._DAY_OF_MONTH}th in "
                 f"the hole {gap_start}..{gap_end}, got {in_hole}"
             )
-            assert in_hole[0] in excinfo.value.occurrence_dates
-            assert len(excinfo.value.occurrence_dates) == 2
-            assert db.session.query(Transaction).filter_by(
-                template_id=template.id,
-            ).count() == 0, "a refused pass must write nothing"
+            assert in_hole[0] in {row.occurs_on for row in created}
+
+            # And the absorbing paycheck holds BOTH -- two rows, two
+            # occurrences, one period, which the old index could not store.
+            absorbing = [
+                row for row in created if row.occurs_on == in_hole[0]
+            ][0].pay_period_id
+            both = [
+                row for row in created if row.pay_period_id == absorbing
+            ]
+            assert len(both) == 2
+            assert len({row.occurs_on for row in both}) == 2
 
     def test_a_contiguous_schedule_past_its_last_payday_places_nothing_there(
         self, app, db, seed_user, seed_periods,
@@ -1807,18 +2026,18 @@ class TestALegacyScheduleHole:
             # still inside the schedule's covered span.
             tail = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                first_payday=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=last_covered_day(seed_periods[-1]) + timedelta(days=1),
                 num_periods=1,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
             last = tail[-1]
-            assert last.start_date.month != last.end_date.month, (
+            assert last.start_date.month != last_covered_day(last).month, (
                 "the control needs a final period straddling a month boundary"
             )
 
             template = self._make_template_with_rule(seed_user, MONTHLY_FIRST)
-            schedule = GenerationSchedule.for_user(template.user_id)
+            schedule = GenerationSchedule.for_pass(BalanceContext.build(template.user_id))
             plan = recurrence_engine.resolve_generation_plan(
                 template, schedule, seed_user["scenario"].id, None,
                 block_message="test",
@@ -1871,24 +2090,26 @@ class TestALegacyScheduleHole:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Gap Bill',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
         return template
+
 
 class TestRegenerateForTemplate:
     """DB integration tests for regenerate_for_template()."""
@@ -1908,20 +2129,21 @@ class TestRegenerateForTemplate:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -1976,7 +2198,7 @@ class TestRegenerateForTemplate:
         )
         if settled_on is not None:
             entry_service.update_entry(
-                entry.id, seed_user["user"].id, settled_on=settled_on,
+                entry.id, seed_user["user"].id, settle_day=None if settled_on is None else an_entered_day(settled_on),
             )
         db.session.flush()
         return entry
@@ -2001,7 +2223,9 @@ class TestRegenerateForTemplate:
             template = self._make_envelope_template(seed_user)
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_periods(template.user_id, seed_periods),
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ),
                 seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2010,12 +2234,17 @@ class TestRegenerateForTemplate:
             txn_id = spent_on.id
             entry_id = self._record_purchase(spent_on, seed_user).id
 
-            template.default_amount = Decimal("200.00")
+            # Through the app's one write door: since plan step
+            # balance:X-au-e the SERIES is what prices the rows, so moving
+            # the scalar alone states a price no row can read.
+            state_template_price(template, Decimal("200.00"))
             db.session.flush()
 
             recurrence_engine.regenerate_for_template(
                 template,
-                GenerationSchedule.for_periods(template.user_id, seed_periods),
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ),
                 seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2027,7 +2256,103 @@ class TestRegenerateForTemplate:
 
             txn = db.session.get(Transaction, txn_id)
             assert txn is not None, "the row the purchase hangs off was destroyed"
-            assert txn.estimated_amount == Decimal("200.00")
+            assert resolved_amount(txn) == Decimal("200.00")
+
+    def test_a_row_the_rule_STOPPED_naming_is_retired_though_the_rule_remains(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The RETIRE branch fires for a LIVE rule, not only a cleared one.
+
+        **The firing control for the sweep's domain** (pay-calendar plan step
+        C2-f3c).  A maintain pass decides what to do with each row it can see,
+        and it can only RETIRE a row whose period the rule no longer names --
+        so the set of rows it looks at has to be strictly WIDER than the set of
+        periods the rule names.  Narrowing the row select to the plan's own
+        periods would make the branch unreachable while every other assertion
+        in this class still passed, which is why the domain is the pass's WRITE
+        WINDOW (``_recurrence_common.rows_this_pass_may_maintain``) and not the
+        plan.
+
+        The neighbouring case covers the CLEARED rule, where the plan is
+        ``None`` and every row is an orphan.  This one keeps a live rule and
+        narrows what it names -- an every-paycheck definition edited down to
+        the first paycheck of each month -- which is the shape a template edit
+        actually produces and the one a plan-shaped domain would silently stop
+        handling.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_pass(
+                BalanceContext.build(template.user_id),
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, scenario_id,
+            )
+            db.session.flush()
+            assert len(created) == 10, "the premise: a row in every paycheck"
+            by_period = {row.pay_period_id: row.id for row in created}
+
+            # The definition narrows: the first paycheck of each month only.
+            # The old cadence is DELETED before the new one is authored -- a
+            # rule carries its definition's FK since recurrence plan step
+            # **R-F6**, and one partial unique index per kind holds a template
+            # to one rule, so replacing means replacing.
+            db.session.delete(template.recurrence_rule)
+            db.session.flush()
+            make_cadence_rule(template, MONTHLY_FIRST)
+            db.session.refresh(template)
+
+            recurrence_engine.regenerate_for_template(
+                template, schedule, scenario_id,
+            )
+            db.session.flush()
+
+            named = {
+                row.period.period_id
+                for row in recurrence_engine.resolve_generation_plan(
+                    template, schedule, scenario_id, None,
+                    block_message="test",
+                ).placements
+            }
+            # The premise, asserted rather than assumed: the edit really did
+            # drop paychecks, so there is something for the branch to retire.
+            assert named, "the narrowed rule must still name some paychecks"
+            assert set(by_period) - named, (
+                "the narrowed rule must stop naming some paycheck, or this "
+                "case grades an empty set"
+            )
+
+            # **Every original row is retired, and that is plan step R17's
+            # semantics rather than a regression.**  The old cadence answered
+            # each paycheck's own PAYDAY (the ``PERIOD`` unit's occurrence);
+            # the narrowed one answers the 1st of each month.  Those are
+            # different occurrences, so no original row is still NAMED and the
+            # pass replaces rather than maintains -- the developer's ruling of
+            # 2026-08-28, which chose replace-and-ask over re-pointing a row at
+            # whatever occurrence happened to be left in its paycheck.
+            for period_id, row_id in by_period.items():
+                assert db.session.get(Transaction, row_id) is None, (
+                    f"period {period_id}'s original row answers an occurrence "
+                    f"the narrowed rule no longer names, so it must retire"
+                )
+
+            # **The firing control this case exists for, unchanged**: a row in
+            # a paycheck the rule NO LONGER names is gone.  That is only
+            # reachable because the sweep's domain is the pass's WRITE WINDOW
+            # (``_recurrence_common.rows_this_pass_may_maintain``) -- a
+            # plan-shaped domain would never have seen those rows, and every
+            # other assertion in this class would still have passed.
+            surviving = (
+                db.session.query(Transaction)
+                .filter_by(template_id=template.id, is_deleted=False)
+                .all()
+            )
+            assert surviving, "the narrowed rule must still write its own rows"
+            assert {row.pay_period_id for row in surviving} <= named, (
+                "a row survived in a paycheck the rule no longer names -- the "
+                "sweep never saw it"
+            )
 
     def test_a_row_the_rule_no_longer_names_is_retained_when_it_holds_a_purchase(
         self, app, db, seed_user, seed_periods
@@ -2041,8 +2366,8 @@ class TestRegenerateForTemplate:
         """
         with app.app_context():
             template = self._make_envelope_template(seed_user)
-            schedule = GenerationSchedule.for_periods(
-                template.user_id, seed_periods,
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2084,8 +2409,8 @@ class TestRegenerateForTemplate:
         """
         with app.app_context():
             template = self._make_envelope_template(seed_user)
-            schedule = GenerationSchedule.for_periods(
-                template.user_id, seed_periods,
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2136,8 +2461,8 @@ class TestRegenerateForTemplate:
         """
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
-            schedule = GenerationSchedule.for_periods(
-                template.user_id, seed_periods,
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2190,7 +2515,9 @@ class TestRegenerateForTemplate:
             )
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_periods(template.user_id, seed_periods),
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ),
                 seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2201,30 +2528,33 @@ class TestRegenerateForTemplate:
             template.name = "Renamed Bill"
             template.category_id = new_category.id
             template.transaction_type_id = income_type.id
-            # 5 -> 7 moves the DUE DATE without moving which paycheck hosts
-            # the occurrence: both days fall inside the same biweekly period,
-            # so the pass maintains the same rows rather than retiring them and
-            # creating others, and the assertion below is about the column.
+            # The DUE DATE moves and the OCCURRENCE does not, which is what
+            # keeps these rows maintained rather than retired.  Since plan step
+            # **R17** a row is named by the occurrence it answers, so moving
+            # ``starts_on`` from the 5th to the 7th would move every occurrence
+            # and retire every row -- correct behaviour (developer ruling
+            # 2026-08-28) but a different test.  ``due_day_of_month`` is the
+            # knob that separates the two: the walk reads the scheduling day
+            # and never this, while ``compute_due_date`` prefers it.  Chosen
+            # ABOVE the scheduling day so it stays in the same calendar month
+            # (below it means "the month after", by that function's contract).
             #
             # RE-AUTHORED rather than assigned, because plan step R7c-b made
-            # the day a property of the first OCCURRENCE: `day_of_month` is a
-            # storage encoding the write door derives, so setting it directly
-            # would leave `starts_on` still naming the 5th and the two columns
-            # stating different cadences.
+            # the day a property of the first OCCURRENCE and the write door
+            # derives the storage encoding from the spec.
             rule = template.recurrence_rule
             reauthor_rule(
                 rule,
-                replace(
-                    recurrence_spec(rule),
-                    starts_on=rule.starts_on.replace(day=7),
-                ),
+                replace(recurrence_spec(rule), due_day_of_month=7),
                 calendar_for(template.user_id),
             )
             db.session.flush()
 
             recurrence_engine.regenerate_for_template(
                 template,
-                GenerationSchedule.for_periods(template.user_id, seed_periods),
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ),
                 seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2262,7 +2592,9 @@ class TestRegenerateForTemplate:
             template = self._make_envelope_template(seed_user)
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_periods(template.user_id, seed_periods),
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ),
                 seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2300,7 +2632,9 @@ class TestRegenerateForTemplate:
             db.session.flush()
             recurrence_engine.regenerate_for_template(
                 template,
-                GenerationSchedule.for_periods(template.user_id, seed_periods),
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ),
                 seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2335,8 +2669,8 @@ class TestRegenerateForTemplate:
         """
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
-            schedule = GenerationSchedule.for_periods(
-                template.user_id, seed_periods,
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2363,20 +2697,20 @@ class TestRegenerateForTemplate:
     def test_no_second_row_is_created_beside_an_overridden_or_deleted_one(
         self, app, db, seed_user, seed_periods
     ):
-        """`occupied` is the maintain path's whole creation rule.
+        """The claim predicate is the maintain path's whole creation rule.
 
-        It replaces ``should_skip_period`` and had no engine-level test:
-        mutating it to ignore soft-deleted rows left this file at 104/104.
-        The database will NOT backstop a mistake here --
-        ``idx_transactions_template_period_scenario`` is PARTIAL
+        ``OccurrenceClaims`` counts EVERY row's claim, whatever state it is in,
+        and this had no engine-level test: mutating it to ignore soft-deleted
+        rows left this file green.  The database will NOT backstop a mistake
+        here -- both generation indexes are PARTIAL
         (``WHERE is_deleted = FALSE AND is_override = FALSE``), so a duplicate
         beside a soft-deleted or overridden row inserts silently and the owner
         sees the same bill twice.
         """
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
-            schedule = GenerationSchedule.for_periods(
-                template.user_id, seed_periods,
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2427,8 +2761,8 @@ class TestRegenerateForTemplate:
         """
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
-            schedule = GenerationSchedule.for_periods(
-                template.user_id, seed_periods,
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2452,15 +2786,15 @@ class TestRegenerateForTemplate:
             # back to Projected in order to edit it.  Retiring it now would
             # delete that figure, which is what retention exists to keep.
             #
-            # The columns satisfy ``ck_transactions_settle_day_needs_basis``: a
+            # The columns satisfy ``ck_transactions_settle_day_needs_a_record``: a
             # record without a day is precisely what that implication admits.
-            priced.settled_on = None
+            record_settle_day(priced, None)
             priced.settled_amount = Decimal("41.10")
             priced.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
             db.session.flush()
 
             template.recurrence_rule = None
-            template.recurrence_rule_id = None
+            template.recurrence_rule = None
             db.session.flush()
 
             with pytest.raises(RecurrenceConflict) as raised:
@@ -2485,8 +2819,8 @@ class TestRegenerateForTemplate:
         """
         with app.app_context():
             template = self._make_envelope_template(seed_user)
-            schedule = GenerationSchedule.for_periods(
-                template.user_id, seed_periods,
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2502,7 +2836,7 @@ class TestRegenerateForTemplate:
             db.session.flush()
 
             template.recurrence_rule = None
-            template.recurrence_rule_id = None
+            template.recurrence_rule = None
             db.session.flush()
 
             with pytest.raises(RecurrenceConflict) as raised:
@@ -2522,13 +2856,13 @@ class TestRegenerateForTemplate:
 
         **The one case where maintaining is not equivalent to the old
         delete-and-recreate**, found by adversarial review: the old sweep
-        deleted the rule's own row, then ``should_skip_period`` saw the
-        override sibling and declined to recreate it, so an unrelated edit
-        silently removed a period's own bill.  Carry-forward produces exactly
-        this shape -- ``carry_forward_service`` moves an unpaid row into the
-        target period with ``is_override = True`` precisely so it sits BESIDE
-        the rule-generated one (``idx_transactions_template_period_scenario``
-        permits the pair).
+        deleted the rule's own row, then the skip predicate saw the override
+        sibling and declined to recreate it, so an unrelated edit silently
+        removed a period's own bill.  Carry-forward produces exactly this shape
+        -- ``carry_forward_service`` moves an unpaid row into the target period
+        with ``is_override = True`` precisely so it sits BESIDE the
+        rule-generated one (both generation indexes exclude override rows, so
+        the pair is permitted).
 
         Measured at 0 live instances on a production clone, so nothing moved
         when this shipped; the new answer is also the correct one, since the
@@ -2536,8 +2870,8 @@ class TestRegenerateForTemplate:
         """
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
-            schedule = GenerationSchedule.for_periods(
-                template.user_id, seed_periods,
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2553,13 +2887,14 @@ class TestRegenerateForTemplate:
             carried = Transaction(
                 account_id=rule_row.account_id,
                 template_id=template.id,
+                user_id=rule_row.user_id,
                 pay_period_id=period_id,
                 scenario_id=seed_user["scenario"].id,
                 status_id=rule_row.status_id,
                 name=template.name,
                 category_id=template.category_id,
                 transaction_type_id=template.transaction_type_id,
-                estimated_amount=Decimal("55.00"),
+                amount_ownership=AmountOwnership.own(Decimal("55.00")),
                 is_override=True,
                 is_deleted=False,
             )
@@ -2567,7 +2902,10 @@ class TestRegenerateForTemplate:
             db.session.flush()
             carried_id = carried.id
 
-            template.default_amount = Decimal("200.00")
+            # Through the app's one write door: since plan step
+            # balance:X-au-e the SERIES is what prices the rows, so moving
+            # the scalar alone states a price no row can read.
+            state_template_price(template, Decimal("200.00"))
             db.session.flush()
 
             with pytest.raises(RecurrenceConflict) as raised:
@@ -2581,7 +2919,7 @@ class TestRegenerateForTemplate:
             assert survivor is not None, (
                 "the rule's own row was destroyed beside its override sibling"
             )
-            assert survivor.estimated_amount == Decimal("200.00")
+            assert resolved_amount(survivor) == Decimal("200.00")
             assert db.session.get(
                 Transaction, carried_id,
             ).estimated_amount == Decimal("55.00")
@@ -2611,20 +2949,27 @@ class TestRegenerateForTemplate:
 
             # Generate initial entries.
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
             old_ids = sorted(txn.id for txn in created)
             assert len(old_ids) == 10
 
             # Change the template amount.
-            template.default_amount = Decimal("200.00")
+            # Through the app's one write door: since plan step
+            # balance:X-au-e the SERIES is what prices the rows, so moving
+            # the scalar alone states a price no row can read.
+            state_template_price(template, Decimal("200.00"))
             db.session.flush()
 
             # Regenerate.  Every period the rule names already holds the rule's
             # own row, so there is nothing to CREATE and the return is empty.
             new_created = recurrence_engine.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
             assert new_created == []
@@ -2636,7 +2981,7 @@ class TestRegenerateForTemplate:
             )
             assert sorted(txn.id for txn in surviving) == old_ids
             for txn in surviving:
-                assert txn.estimated_amount == Decimal("200.00")
+                assert resolved_amount(txn) == Decimal("200.00")
 
     def test_regenerate_raises_conflict_for_deleted_entries(
         self, app, db, seed_user, seed_periods
@@ -2648,7 +2993,9 @@ class TestRegenerateForTemplate:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -2660,7 +3007,9 @@ class TestRegenerateForTemplate:
             # Regenerate -- should raise with deleted list.
             with pytest.raises(RecurrenceConflict) as exc_info:
                 recurrence_engine.regenerate_for_template(
-                    template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                    template, GenerationSchedule.for_period_ids(
+                        BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                    ), seed_user["scenario"].id,
                 )
 
             assert deleted_id in exc_info.value.deleted
@@ -2686,20 +3035,21 @@ class TestResolveConflicts:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"][category_key or "Car Payment"].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -2713,14 +3063,16 @@ class TestResolveConflicts:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
             # Override one entry.
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # Resolve as 'keep'.
@@ -2733,72 +3085,167 @@ class TestResolveConflicts:
             assert txn.is_override is True
             assert txn.estimated_amount == Decimal("999.99")
 
-    def test_resolve_update_clears_flags_and_applies_amount(
+    def test_resolve_update_hands_the_row_back_to_its_definition(
         self, app, db, seed_user, seed_periods
     ):
-        """action='update' clears flags and applies new_amount."""
+        """action='update' clears the flags and writes a DECLARATION, no figure.
+
+        Plan step balance:X-au-e, ruling **R-JD**.  "Use the template's amount"
+        used to write the template's CURRENT ``default_amount`` onto the row;
+        there is no figure to write now, and the act is to stop overriding so
+        the definition's own series prices the row again.
+
+        The assertion is on all THREE columns the act touches, because two of
+        them are what makes it a hand-back rather than a re-price: the flag
+        clears, the figure goes to ``None``, and ``amount_source_id`` names the
+        template.  Asserting the resolved money alone would pass on a row that
+        still owned the very same number.
+        """
         with app.app_context():
             template = self._make_template_with_rule(
                 seed_user, EVERY_PERIOD
             )
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
             # Override one entry.
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
-            # Resolve as 'update' with new amount.
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("200.00"),
             )
             db.session.flush()
 
             db.session.refresh(txn)
             assert txn.is_override is False
             assert txn.is_deleted is False
-            assert txn.estimated_amount == Decimal("200.00")
+            # The hand-back itself: no figure, and the relation that prices it.
+            assert txn.estimated_amount is None
+            assert txn.amount_source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+            # And what it is now WORTH is the definition's stated price, not
+            # the $999.99 the owner had typed.
+            assert resolved_amount(txn) == Decimal("100.00")
 
-    def test_resolve_update_none_amount_clears_flags_only(
+    def test_a_row_whose_TEMPLATE_IS_GONE_is_skipped_not_declared(
         self, app, db, seed_user, seed_periods
     ):
-        """action='update' with new_amount=None clears flags but keeps amount."""
+        """A row cannot be handed back to a definition it no longer names.
+
+        ``fk_transactions_template`` is ON DELETE SET NULL, so a row can
+        outlive its template. Declaring such a row would write exactly the
+        state ledger row **N-440** describes -- ``amount_source_id = template``
+        with no template to read -- which ``_rule_within_definition`` answers
+        TEMPLATE for and ``_stated_amount`` then refuses, in a money path.
+
+        **Unreachable from the route** (the hard delete that orphans a row also
+        404s the Apply POST), so this drives the service entry directly: the
+        guard is defence in depth for a published function, and a guard nothing
+        exercises is a guard nobody has seen work.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, EVERY_PERIOD
+            )
+            created = recurrence_engine.generate_for_template(
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            txn = created[0]
+            txn.is_override = True
+            state_own_amount(txn, Decimal("999.99"))
+            # The orphan state the FK produces.
+            txn.template_id = None
+            db.session.flush()
+
+            recurrence_engine.resolve_conflicts(
+                [txn.id], action="update",
+                user_id=seed_user["user"].id,
+            )
+            db.session.flush()
+            db.session.refresh(txn)
+
+            # Untouched: still the owner's figure, still flagged, never
+            # declared -- the one answer that stays true.
+            assert txn.amount_source_id is None
+            assert txn.estimated_amount == Decimal("999.99")
+            assert txn.is_override is True
+
+    def test_resolve_update_prices_a_past_row_from_ITS_date_not_todays(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A handed-back row takes the price in force on its OWN due date.
+
+        **Finding N-244 as a regression test.**  The old "use" arm wrote the
+        template's CURRENT ``default_amount`` onto whatever row it was given,
+        so resolving an override on a row whose due date preceded a price rise
+        back-dated today's figure onto it -- and cleared ``is_override``, the
+        one flag that would have marked the row as touched.  A $100 history
+        with one row resolved to $120 then read as THREE price changes where
+        one had occurred.
+
+        Nothing writes a figure now, so the row resolves through the series on
+        its own due date and the rise that came after it cannot reach back.
+        The test states the rise AFTER the row's due date and asserts the row
+        is worth the OLD price; on the deleted arm it would be worth the new
+        one.
+        """
         with app.app_context():
             template = self._make_template_with_rule(
                 seed_user, EVERY_PERIOD
             )
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
-            # Override one entry with a custom amount.
             txn = created[0]
+            assert txn.due_date is not None
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
-            # Resolve as 'update' with no new amount.
+            # The series has to ANCHOR before the row, or the rise below
+            # becomes the earliest version and ``amount_as_of`` holds IT flat
+            # backwards -- which is the shape that made a first draft of this
+            # test read $120.00 and call the app wrong.
+            state_template_price(
+                template, Decimal("100.00"),
+                effective_on=txn.due_date - timedelta(days=1),
+            )
+            # The price rises the day AFTER this row's due date.
+            state_template_price(
+                template, Decimal("120.00"),
+                effective_on=txn.due_date + timedelta(days=1),
+            )
+            db.session.flush()
+
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=None,
             )
             db.session.flush()
 
             db.session.refresh(txn)
-            assert txn.is_override is False
-            assert txn.is_deleted is False
-            # Amount unchanged since new_amount was None.
-            assert txn.estimated_amount == Decimal("999.99")
+            assert txn.estimated_amount is None
+            # The price in force on the row's OWN due date, never the newest.
+            assert resolved_amount(txn) == Decimal("100.00")
 
     def test_cross_user_update_blocked(
         self, app, db, seed_user, seed_periods, second_user
@@ -2809,20 +3256,21 @@ class TestResolveConflicts:
                 seed_user, EVERY_PERIOD
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # Attempt resolve as second_user -- should be blocked.
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
                 user_id=second_user["user"].id,
-                new_amount=Decimal("50.00"),
             )
             db.session.flush()
 
@@ -2839,13 +3287,15 @@ class TestResolveConflicts:
                 seed_user, EVERY_PERIOD
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             # 'keep' with wrong user -- no-op by design (keep never modifies).
@@ -2868,25 +3318,31 @@ class TestResolveConflicts:
                 seed_user, EVERY_PERIOD
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
             txn = created[0]
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             recurrence_engine.resolve_conflicts(
                 [txn.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("50.00"),
             )
             db.session.flush()
 
             db.session.refresh(txn)
             assert txn.is_override is False
-            assert txn.estimated_amount == Decimal("50.00")
+            # Handed back to its definition rather than given a figure
+            # (plan step balance:X-au-e, ruling R-JD): no stored amount,
+            # and what it is worth is the DEFINITION's price, never the figure
+            # a caller used to pass in.
+            assert txn.estimated_amount is None
+            assert resolved_amount(txn) == Decimal("100.00")
 
     def test_mixed_ownership_list(
         self, app, db, seed_user, seed_periods, second_user
@@ -2898,12 +3354,14 @@ class TestResolveConflicts:
                 seed_user, EVERY_PERIOD
             )
             created_a = recurrence_engine.generate_for_template(
-                template_a, GenerationSchedule.for_periods(template_a.user_id, seed_periods), seed_user["scenario"].id,
+                template_a, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template_a.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
             txn_a = created_a[0]
             txn_a.is_override = True
-            txn_a.estimated_amount = Decimal("999.99")
+            state_own_amount(txn_a, Decimal("999.99"))
 
             # Create template and transaction for user B (second_user).
             # second_user needs their own periods and template.
@@ -2911,32 +3369,38 @@ class TestResolveConflicts:
             periods_b = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
                 first_payday=seed_periods[0].start_date,
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             template_b = self._make_template_with_rule(
                 second_user, EVERY_PERIOD, category_key="Rent",
             )
             created_b = recurrence_engine.generate_for_template(
-                template_b, GenerationSchedule.for_periods(template_b.user_id, periods_b), second_user["scenario"].id,
+                template_b, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template_b.user_id), {p.id for p in periods_b},
+                ), second_user["scenario"].id,
             )
             db.session.flush()
             txn_b = created_b[0]
             txn_b.is_override = True
-            txn_b.estimated_amount = Decimal("888.88")
+            state_own_amount(txn_b, Decimal("888.88"))
             db.session.flush()
 
             # Resolve as user A -- only txn_a should be modified.
             recurrence_engine.resolve_conflicts(
                 [txn_a.id, txn_b.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("50.00"),
             )
             db.session.flush()
 
             db.session.refresh(txn_a)
             db.session.refresh(txn_b)
             assert txn_a.is_override is False
-            assert txn_a.estimated_amount == Decimal("50.00")
+            # Handed back to its definition rather than given a figure
+            # (plan step balance:X-au-e, ruling R-JD): no stored amount,
+            # and what it is worth is the DEFINITION's price, never the figure
+            # a caller used to pass in.
+            assert txn_a.estimated_amount is None
+            assert resolved_amount(txn_a) == Decimal("100.00")
             assert txn_b.is_override is True
             assert txn_b.estimated_amount == Decimal("888.88")
 
@@ -3053,7 +3517,6 @@ class TestResolveConflictsShadowGuard:
                     [shadow_id],
                     action="update",
                     user_id=seed_user["user"].id,
-                    new_amount=Decimal("9999.99"),
                 )
 
             db.session.rollback()
@@ -3088,7 +3551,6 @@ class TestResolveConflictsShadowGuard:
                 [shadow_id],
                 action="update",
                 user_id=second_user["user"].id,
-                new_amount=Decimal("9999.99"),
             )
             db.session.flush()
 
@@ -3115,21 +3577,24 @@ class TestResolveConflictsShadowGuard:
                 .filter_by(name="Expense")
                 .one()
             )
-            rule = make_every_period_rule(db.session, seed_user["user"].id)
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
                 category_id=seed_user["categories"]["Car Payment"].id,
-                recurrence_rule_id=rule.id,
                 transaction_type_id=expense_type.id,
                 name="Regular Recurring",
                 default_amount=Decimal("100.00"),
             )
             db.session.add(template)
             db.session.flush()
+            state_template_price(template)
+            # The definition first, then the cadence onto it (plan step R-F6).
+            rule = make_every_period_rule(db.session, template)
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
             txn = created[0]
@@ -3137,21 +3602,25 @@ class TestResolveConflictsShadowGuard:
                 "Pre-condition: regular transaction must not be a shadow."
             )
             txn.is_override = True
-            txn.estimated_amount = Decimal("999.99")
+            state_own_amount(txn, Decimal("999.99"))
             db.session.flush()
 
             recurrence_engine.resolve_conflicts(
                 [txn.id],
                 action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("50.00"),
             )
             db.session.flush()
 
             db.session.refresh(txn)
             assert txn.is_override is False
             assert txn.is_deleted is False
-            assert txn.estimated_amount == Decimal("50.00")
+            # Handed back to its definition rather than given a figure
+            # (plan step balance:X-au-e, ruling R-JD): no stored amount,
+            # and what it is worth is the DEFINITION's price, never the figure
+            # a caller used to pass in.
+            assert txn.estimated_amount is None
+            assert resolved_amount(txn) == Decimal("100.00")
 
 
 class TestCrossUserIsolation:
@@ -3172,20 +3641,21 @@ class TestCrossUserIsolation:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -3212,7 +3682,9 @@ class TestCrossUserIsolation:
             # be rejected but currently is not.
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_periods(template.user_id, seed_periods),
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ),
                 second_user["scenario"].id,
             )
 
@@ -3256,20 +3728,21 @@ class TestNegativePaths:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring NP',
             default_amount=default_amount,
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -3291,13 +3764,15 @@ class TestNegativePaths:
                 seed_user, EVERY_PERIOD, default_amount=Decimal("0.00")
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             # Engine generates for all periods regardless of amount.
             assert len(created) == len(seed_periods)
             for txn in created:
-                assert txn.estimated_amount == Decimal("0.00")
+                assert resolved_amount(txn) == Decimal("0.00")
 
     def test_template_with_none_recurrence_rule(
         self, app, db, seed_user, seed_periods
@@ -3319,17 +3794,19 @@ class TestNegativePaths:
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
                 category_id=seed_user["categories"]["Car Payment"].id,
-                recurrence_rule_id=None,
                 transaction_type_id=expense_type.id,
                 name="No Rule Template",
                 default_amount=Decimal("100.00"),
             )
             db.session.add(template)
             db.session.flush()
+            state_template_price(template)
             db.session.refresh(template)
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             assert created == []
@@ -3352,7 +3829,9 @@ class TestNegativePaths:
 
             # Initial generation.
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(created) == len(seed_periods)
@@ -3368,7 +3847,9 @@ class TestNegativePaths:
 
             # Regenerate -- received transaction must survive.
             recurrence_engine.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -3394,7 +3875,9 @@ class TestNegativePaths:
                 seed_user, EVERY_PERIOD
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, []), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), set(),
+                ), seed_user["scenario"].id,
                 effective_from=date(2026, 1, 1),
             )
 
@@ -3416,7 +3899,9 @@ class TestNegativePaths:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(created) == len(seed_periods)
@@ -3432,7 +3917,9 @@ class TestNegativePaths:
 
             # Regenerate.
             recurrence_engine.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -3461,7 +3948,9 @@ class TestNegativePaths:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(created) == len(seed_periods)
@@ -3477,7 +3966,9 @@ class TestNegativePaths:
 
             # Regenerate.
             recurrence_engine.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -3491,136 +3982,125 @@ class TestNegativePaths:
             assert preserved.id == target_id
 
 
-class TestPaycheckAmountFallback:
-    """Tests for _get_transaction_amount exception narrowing (C-01).
+class TestWhatAGeneratedRowsAmountOWNERSHIPIs:
+    """Plan step **balance:X-au-e**: generation states ONE ownership, always.
 
-    Verifies that the recurrence engine only catches specific recoverable
-    exceptions from the paycheck calculator, and lets unexpected errors
-    propagate instead of silently falling back to template.default_amount.
+    **This class was ``TestPaycheckAmountFallback`` and its subject is
+    deleted.**  It graded ``_get_transaction_amount``'s exception narrowing --
+    that a ``ZeroDivisionError`` or an ``InvalidOperation`` out of the paycheck
+    calculator fell back to ``template.default_amount`` while an
+    ``AttributeError`` propagated (C-01).  Generation runs no pricing at all
+    now, so there is no call to raise and no fallback to narrow.
+
+    **Its second subject is deleted too, and this is that rewrite.**  X-au-d
+    replaced the fallback with a FORK -- ``_generated_amount_ownership`` asking
+    ``template_amount_service.owns_its_amount``, ``own`` over the scalar for a
+    definition that states its price and ``derived`` for one whose price is
+    computed -- and X-au-e deletes the fork rather than one of its arms.  There
+    is no producer left to unit-test, so both cases below grade the public act
+    instead: what ``generate_for_template`` actually WRITES.
+
+    **Both cases are kept even though they now assert the same shape**, and
+    that is the point rather than a redundancy: a producer that declared only
+    the salary rows -- which is exactly what shipped at X-au-d -- passes the
+    first and fails the second.  Deleting the second because it stopped
+    distinguishing anything would delete the only case that says the cutover
+    happened.
     """
 
-    @staticmethod
-    def _fake_tax_configs(*args, **kwargs):
-        """Stub the RESOLVING loader to avoid DB hits in unit tests.
+    def _generated_row(self, db, seed_user, seed_periods, template):
+        """Generate from *template* and return the first row it wrote."""
+        make_cadence_rule(template, EVERY_PERIOD)
+        db.session.refresh(template)
+        created = recurrence_engine.generate_for_template(
+            template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            ), seed_user["scenario"].id,
+        )
+        db.session.flush()
+        assert created, "the fixture generated no rows to assert about"
+        return created[0]
 
-        Patched at ``load_tax_configs_for_year`` -- the function
-        ``_get_transaction_amount`` actually calls -- rather than at the
-        exact-year primitive beneath it.  The resolver reads the profile's
-        filing status and state to build its candidate set, which these
-        deliberately minimal fakes do not carry; stubbing the entry point
-        keeps the test hermetic and on the narrowing behaviour it is about.
+    def test_a_salary_linked_definition_gives_its_rows_a_DECLARATION(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A definition an ACTIVE profile names prices its rows by computing.
+
+        So the row names the definition and holds no figure: the state that
+        makes a stale paycheck unrepresentable rather than merely unlikely.
+        Shipped at X-au-d and unchanged by X-au-e.
         """
-        return {
-            "bracket_set": "fake", "state_config": "fake",
-            "fica_config": "fake",
-        }
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- the salary models are not
+            # this module's subject and importing them at the top would put the
+            # paycheck stack on every recurrence test's load path.
+            from app.models.ref import FilingStatus  # pylint: disable=import-outside-toplevel
+            # Pylint: ``import-outside-toplevel`` -- see above.
+            from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
 
-    def test_returns_default_on_zero_division(
-        self, app, db, seed_user, monkeypatch
-    ):
-        """ZeroDivisionError from paycheck calc falls back to default_amount."""
-        monkeypatch.setattr(
-            "app.services.paycheck_calculator.calculate_paycheck",
-            lambda *a, **kw: (_ for _ in ()).throw(
-                ZeroDivisionError("division by zero")),
-        )
-        monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs_for_year",
-            self._fake_tax_configs,
-        )
-        from app.services.recurrence_engine._amounts import _get_transaction_amount
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=next(iter(seed_user["categories"].values())).id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                name="Paycheck",
+                default_amount=Decimal("1500.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+            db.session.add(SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=db.session.query(FilingStatus).first().id,
+                template_id=template.id,
+                name="X-au-d Salary",
+                annual_salary=Decimal("104000.00"),
+                state_code="NC",
+                is_active=True,
+            ))
+            db.session.flush()
 
-        class FakeTemplate:
-            default_amount = Decimal("1500.00")
+            row = self._generated_row(db, seed_user, seed_periods, template)
 
-        class FakeProfile:
-            id = 1
-            user_id = seed_user["user"].id
-            calibration = None
-
-        class FakePeriod:
-            start_date = date(2026, 1, 2)
-
-        result = _get_transaction_amount(
-            FakeTemplate(), FakeProfile(), FakePeriod(), []
-        )
-        assert result == Decimal("1500.00")
-
-    def test_returns_default_on_invalid_operation(
-        self, app, db, seed_user, monkeypatch
-    ):
-        """InvalidOperation from bad Decimal data falls back to default_amount."""
-        from decimal import InvalidOperation
-
-        def _boom(*args, **kwargs):
-            raise InvalidOperation("bad decimal")
-
-        monkeypatch.setattr(
-            "app.services.paycheck_calculator.calculate_paycheck", _boom,
-        )
-        monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs_for_year",
-            self._fake_tax_configs,
-        )
-        from app.services.recurrence_engine._amounts import _get_transaction_amount
-
-        class FakeTemplate:
-            default_amount = Decimal("2000.00")
-
-        class FakeProfile:
-            id = 1
-            user_id = seed_user["user"].id
-            calibration = None
-
-        class FakePeriod:
-            start_date = date(2026, 1, 2)
-
-        result = _get_transaction_amount(
-            FakeTemplate(), FakeProfile(), FakePeriod(), []
-        )
-        assert result == Decimal("2000.00")
-
-    def test_propagates_unexpected_exception(
-        self, app, db, seed_user, monkeypatch
-    ):
-        """Unexpected exceptions (e.g., AttributeError) are NOT caught."""
-        def _boom(*args, **kwargs):
-            raise AttributeError("profile has no attribute 'raises'")
-
-        monkeypatch.setattr(
-            "app.services.paycheck_calculator.calculate_paycheck", _boom,
-        )
-        monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs_for_year",
-            self._fake_tax_configs,
-        )
-        from app.services.recurrence_engine._amounts import _get_transaction_amount
-
-        class FakeTemplate:
-            default_amount = Decimal("1500.00")
-
-        class FakeProfile:
-            id = 1
-            user_id = seed_user["user"].id
-            calibration = None
-
-        class FakePeriod:
-            start_date = date(2026, 1, 2)
-
-        with pytest.raises(AttributeError, match="raises"):
-            _get_transaction_amount(
-                FakeTemplate(), FakeProfile(), FakePeriod(), []
+            assert row.estimated_amount is None
+            assert row.amount_source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
             )
 
-    def test_returns_default_amount_when_no_salary_profile(self, app, db):
-        """When salary_profile is None, returns template.default_amount directly."""
-        from app.services.recurrence_engine._amounts import _get_transaction_amount
+    def test_a_definition_that_STATES_its_price_ALSO_gives_a_DECLARATION(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The partner case, and the one plan step X-au-e inverted.
 
-        class FakeTemplate:
-            default_amount = Decimal("500.00")
+        It asserted ``ownership.figure == Decimal("500.00")`` and
+        ``source_id is None`` -- generation handing an ordinary definition's
+        rows that definition's scalar to OWN.  That is the copy the cutover
+        deleted: the row declares the template and the template's own
+        effective-dated series prices it on the row's due date, which is what
+        the last assertion here reads.
+        """
+        with app.app_context():
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=next(iter(seed_user["categories"].values())).id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                name="Rent",
+                default_amount=Decimal("500.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+            state_template_price(template)
 
-        result = _get_transaction_amount(FakeTemplate(), None, None, [])
-        assert result == Decimal("500.00")
+            row = self._generated_row(db, seed_user, seed_periods, template)
+
+            assert row.estimated_amount is None
+            assert row.amount_source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+            # The figure is not lost, it has one home: the definition's series.
+            assert resolved_amount(row) == Decimal("500.00")
 
 
 class TestEndDate:
@@ -3744,20 +4224,21 @@ class TestEndDateIntegration:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring End Date',
             default_amount=Decimal("50.00"),
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -3773,7 +4254,9 @@ class TestEndDateIntegration:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 5
@@ -3800,12 +4283,16 @@ class TestEndDateIntegration:
 
             # Initial generation.
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             assert len(created) == 3
 
             recurrence_engine.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -3847,55 +4334,81 @@ class TestDueDateGeneration:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Rent'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Template',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
         return template
 
-    def _make_custom_period(self, seed_user, start, end, index=0):
-        """Create a single PayPeriod with the given date range.
+    def _make_custom_periods(self, seed_user, *spans):
+        """Rebuild the owner's calendar so its periods OPEN on these spans.
+
+        **These built ``PayPeriod(...)`` rows by hand until plan step
+        ``pay_calendar:C4-b-1``, and every case in this class passed BECAUSE
+        of that.**  A hand-built row sets ``end_date`` itself, and the owner
+        had no ``budget.pay_schedule`` row, so
+        ``pay_schedule_service.resolve_schedule`` inferred the cadence from
+        that same typed end -- the derivation then handed back the span the
+        author had written, and the case was measuring its own input.  Give
+        the owner the stored cadence a real one has and a typed 28-day
+        February derives 14 days and generates nothing.
+
+        ``rebuild_calendar_from_spans`` builds them through the reset door and
+        the writer instead.  What that changes for a caller: an INTERIOR
+        span's end runs to the day before the next span opens, so a gapped
+        request gets wider interior periods than it asked for (a gap is not
+        expressible in a derived calendar).  Every case here asserts on the
+        occurrence's own DAY, which lands in the same period either way, and
+        the LAST span -- the one end the derivation projects from the cadence
+        -- is exact.
+
+        **What this does NOT remove, and an adversarial review of the step is
+        why it is written down**: the owner's cadence is still the last span's
+        length, so the date a case types still decides it.  What is gone is the
+        CIRCULARITY -- the cadence is now a stored fact the writer persisted,
+        not a value inferred back out of the ``end_date`` the same case typed,
+        and a 28-day payer is an owner production can have.  The coupling
+        survives one level up and is a caller's choice rather than a loop.
 
         Args:
             seed_user: The seed_user fixture dict.
-            start:     Period start_date.
-            end:       Period end_date.
-            index:     Relative period index among this test's custom
-                       periods (default 0).  Stored as ``index + 1`` to
-                       clear ``seed_user``'s bootstrap period (which
-                       occupies ``period_index`` 0), satisfying the
-                       ``uq_pay_periods_user_index`` constraint.  These
-                       tests assert on ``due_date`` (date-derived), never
-                       on the absolute index, so the offset is invisible
-                       to every assertion.
+            *spans: ``(start, end)`` pairs, ascending, at least one.
 
         Returns:
-            The created PayPeriod, flushed with an assigned ID.
+            The owner's periods, payday ascending -- one per span.
         """
-        from app.models.pay_period import PayPeriod
+        return rebuild_calendar_from_spans(seed_user["user"].id, list(spans))
 
-        period = PayPeriod(
-            user_id=seed_user["user"].id,
-            start_date=start,
-            end_date=end,
-            period_index=index + 1,
-        )
-        db.session.add(period)
-        db.session.flush()
-        return period
+    def _make_custom_period(self, seed_user, start, end):
+        """Rebuild the owner's calendar as the ONE period *start*..*end*.
+
+        :meth:`_make_custom_periods` for the single-span cases, where the
+        stated end is exact: it is the last span, so the owner's cadence is
+        its length and the derivation projects precisely it.
+
+        Args:
+            seed_user: The seed_user fixture dict.
+            start: The period's start_date, which is the owner's only payday.
+            end: The period's end_date.
+
+        Returns:
+            The created PayPeriod.
+        """
+        return self._make_custom_periods(seed_user, (start, end))[0]
 
     # -- Basic pattern tests ---------------------------------------------------
 
@@ -3910,13 +4423,17 @@ class TestDueDateGeneration:
                 seed_user, MONTHLY, fires_on_day=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             # Find the transaction assigned to the period containing Jan 15.
             jan_txns = [
                 txn for txn in created
-                if txn.pay_period.start_date <= date(2026, 1, 15) <= txn.pay_period.end_date
+                if txn.pay_period_id == _paycheck_covering(
+                    seed_user, date(2026, 1, 15),
+                )
             ]
             assert len(jan_txns) == 1
             assert jan_txns[0].due_date == date(2026, 1, 15)
@@ -3933,7 +4450,9 @@ class TestDueDateGeneration:
                 seed_user, EVERY_PERIOD,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == len(seed_periods)
@@ -3964,7 +4483,9 @@ class TestDueDateGeneration:
                 seed_user, MONTHLY, fires_on_day=30,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {period.id},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -3984,7 +4505,9 @@ class TestDueDateGeneration:
                 seed_user, MONTHLY, fires_on_day=29,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {period.id},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -4004,7 +4527,9 @@ class TestDueDateGeneration:
                 seed_user, MONTHLY, fires_on_day=31,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {period.id},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -4027,7 +4552,9 @@ class TestDueDateGeneration:
                 fires_on_day=22, due_day_of_month=1,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             # P1 (Jan 16-29) contains Jan 22.
@@ -4054,7 +4581,9 @@ class TestDueDateGeneration:
                 fires_on_day=1, due_day_of_month=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {period.id},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -4076,7 +4605,9 @@ class TestDueDateGeneration:
                 fires_on_day=22, due_day_of_month=1,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {period.id},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -4095,12 +4626,16 @@ class TestDueDateGeneration:
                 fires_on_day=15, due_day_of_month=None,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             jan_txns = [
                 txn for txn in created
-                if txn.pay_period.start_date <= date(2026, 1, 15) <= txn.pay_period.end_date
+                if txn.pay_period_id == _paycheck_covering(
+                    seed_user, date(2026, 1, 15),
+                )
             ]
             assert len(jan_txns) == 1
             assert jan_txns[0].due_date == date(2026, 1, 15)
@@ -4120,12 +4655,16 @@ class TestDueDateGeneration:
                 fires_on_day=15, due_day_of_month=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             jan_txns = [
                 txn for txn in created
-                if txn.pay_period.start_date <= date(2026, 1, 15) <= txn.pay_period.end_date
+                if txn.pay_period_id == _paycheck_covering(
+                    seed_user, date(2026, 1, 15),
+                )
             ]
             assert len(jan_txns) == 1
             assert jan_txns[0].due_date == date(2026, 1, 15)
@@ -4156,14 +4695,16 @@ class TestDueDateGeneration:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 account_id=seed_user["account"].id,
-                recurrence_rule_id=None,
             )
             db.session.add(template)
             db.session.flush()
+            state_template_price(template)
             db.session.refresh(template)
 
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
 
             assert created == []
@@ -4184,17 +4725,16 @@ class TestDueDateGeneration:
                 (date(2026, 7, 1), date(2026, 7, 31)),   # Jul
                 (date(2026, 10, 1), date(2026, 10, 31)), # Oct
             ]
-            periods = [
-                self._make_custom_period(seed_user, s, e, idx)
-                for idx, (s, e) in enumerate(quarters)
-            ]
+            periods = self._make_custom_periods(seed_user, *quarters)
 
             template = self._make_template_with_rule(
                 seed_user, QUARTERLY,
                 fires_in_month=1, fires_on_day=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 4
@@ -4222,7 +4762,9 @@ class TestDueDateGeneration:
                 fires_in_month=10, fires_on_day=1,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {period.id},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -4234,20 +4776,19 @@ class TestDueDateGeneration:
         Two custom periods cover Jan and Jul. fires_on_day=15.
         """
         with app.app_context():
-            periods = [
-                self._make_custom_period(
-                    seed_user, date(2026, 1, 1), date(2026, 1, 31), 0,
-                ),
-                self._make_custom_period(
-                    seed_user, date(2026, 7, 1), date(2026, 7, 31), 1,
-                ),
-            ]
+            periods = self._make_custom_periods(
+                seed_user,
+                (date(2026, 1, 1), date(2026, 1, 31)),
+                (date(2026, 7, 1), date(2026, 7, 31)),
+            )
             template = self._make_template_with_rule(
                 seed_user, SEMI_ANNUAL,
                 fires_in_month=1, fires_on_day=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 2
@@ -4272,7 +4813,9 @@ class TestDueDateGeneration:
                 seed_user, MONTHLY, fires_on_day=1,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {period.id},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -4296,7 +4839,9 @@ class TestDueDateGeneration:
                 fires_on_day=15, due_day_of_month=31,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {period.id},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -4319,7 +4864,9 @@ class TestDueDateGeneration:
                 fires_on_day=31, due_day_of_month=30,
             )
             created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {period.id},
+                ), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -4332,8 +4879,18 @@ class TestDueDateGeneration:
     def test_compute_due_date_is_pure_function(self, app, db):
         """compute_due_date does not touch the database -- it's a pure function.
 
-        Constructs a FakeRule and FakePeriod to verify that compute_due_date
-        can produce correct results without any DB interaction.
+        Constructs a rule and a REAL :class:`DerivedPeriod` to verify that
+        compute_due_date can produce correct results without any DB
+        interaction.
+
+        **The period is the real value and not ``FakePeriod``** since
+        pay-calendar plan step C4-a-3, which measured the double out of
+        contract: this function's documented parameter is a ``DerivedPeriod``,
+        it now asks that value's own ``covers``, and the duck-typed stand-in
+        answered ``AttributeError``.  A ``DerivedPeriod`` is a frozen
+        dataclass over five plain fields, so building one costs the purity
+        claim nothing -- the fake was never buying anything the real type
+        does not give.
         """
         with app.app_context():
             from app import ref_cache
@@ -4341,11 +4898,12 @@ class TestDueDateGeneration:
             rule_monthly = build_rule(
                 cadence=MONTHLY, starts_on=date(2026, 1, 20),
             )
-            period = FakePeriod(
-                id=1,
+            period = DerivedPeriod(
+                period_id=1,
+                period_index=5,
                 start_date=date(2026, 3, 13),
                 end_date=date(2026, 3, 26),
-                period_index=5,
+                end_is_projected=False,
             )
             result = recurrence_engine.compute_due_date(
                 rule_monthly, period,
@@ -4381,11 +4939,12 @@ class TestDueDateGeneration:
         ``occurs_on`` -- is what deletes both the predicate and this case.
         """
         with app.app_context():
-            period = FakePeriod(
-                id=1,
+            period = DerivedPeriod(
+                period_id=1,
+                period_index=5,
                 start_date=date(2026, 3, 13),
                 end_date=date(2026, 3, 26),
-                period_index=5,
+                end_is_projected=False,
             )
             starts_on = date(2026, 1, 20)
 
@@ -4415,3 +4974,722 @@ class TestDueDateGeneration:
             assert weekly_occurrences & {
                 date(2026, 3, 17), date(2026, 3, 24),
             } == {date(2026, 3, 17), date(2026, 3, 24)}
+
+
+class TestARowRecordsItsOccurrence:
+    """``occurs_on`` -- WHICH occurrence a generated row answers.
+
+    Plan step **R17**, the first leaf of **R5**, closing ledger row **D57**:
+    both engines decided "has this already been created" by asking whether a
+    PAY PERIOD held a row, so a row the owner moved to a neighbouring paycheck
+    emptied the period its occurrence named and the next whole-schedule pass
+    wrote a second one -- 8 rows / $1,482.93 from ONE pass on a production
+    clone, seven already ``Paid``.
+
+    The FIRST leaf made the row state its occurrence; the SECOND moved every
+    predicate onto it, re-keyed both unique indexes and deleted the D19
+    refusal.  So these controls now pin both halves: that the value is written,
+    is the CADENCE's date and not the row's ``due_date``, and survives a
+    maintain pass and a move -- AND that the generation decision itself reads
+    it, which is what closes D57.
+    """
+
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
+        """Build a template with an AUTHORED rule.
+
+        The same door ``TestRecurrenceGeneration`` uses; duplicated here rather
+        than shared because the two classes seed different owners and pylint's
+        duplicate-code checker does not read test bodies.
+        """
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]['Car Payment'].id,
+            transaction_type_id=expense_type.id,
+            name='Occurrence Recorder',
+            default_amount=Decimal("100.00"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        state_template_price(template)
+        make_cadence_rule(template, cadence, **rule_kwargs)
+        db.session.flush()
+        db.session.refresh(template)
+        return template
+
+    def test_generate_writes_the_date_the_cadence_names(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Every created row carries its own occurrence, not its period's date.
+
+        The set equality is the load-bearing half: it fails both if a row is
+        written without an occurrence and if two rows are given the same one.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            plan = recurrence_engine.resolve_generation_plan(
+                template, schedule, seed_user["scenario"].id, None,
+                block_message="test",
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            assert created, "the control needs the engine to create something"
+            assert all(row.occurs_on is not None for row in created)
+            assert (
+                sorted(row.occurs_on for row in created)
+                == sorted(p.occurrence for p in plan.placements)
+            )
+
+    def test_the_occurrence_is_not_the_due_date(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A ``Monthly First`` row occurs on the 1st and is DATED on the payday.
+
+        This is the case that refutes reading ``occurs_on`` off ``due_date``:
+        ``compute_due_date`` dates a day-less cadence from its period's start,
+        so the two columns disagree by design.  Measured on production at 30 of
+        780 rows, 27 of them one ``Phone Allowance`` rule.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, MONTHLY_FIRST)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            assert created, "the control needs a Monthly First row"
+            assert all(row.occurs_on.day == 1 for row in created), (
+                "a Monthly First occurrence is the 1st of its month"
+            )
+            assert any(row.occurs_on != row.due_date for row in created), (
+                "the control is measuring nothing if the two columns agree"
+            )
+
+    def test_occurs_on_is_not_a_derived_field(self):
+        """The maintain pass's ``setattr`` loop must not be able to reach it.
+
+        ``_apply_maintain_work`` assigns every member of
+        :class:`DerivedRowFields` onto a maintained row.  ``occurs_on`` says
+        WHICH occurrence the row answers -- what the row IS, not what its
+        template currently says -- so adding it to that tuple would let a
+        regeneration rewrite a row's identity.
+
+        **Asserted structurally rather than by mutation, and plan step R17's
+        second leaf is why.**  The behavioural version set the column to a
+        sentinel date and ran a maintain pass; since a row is now NAMED by its
+        occurrence, a sentinel makes the row an orphan and the pass correctly
+        RETIRES it, so that control could no longer distinguish "the loop did
+        not write it" from "the row is gone".  The membership test asks the
+        question directly and cannot be confounded that way.
+        """
+        assert "occurs_on" not in DerivedRowFields._fields
+
+    def test_a_maintained_row_keeps_its_id_and_its_occurrence(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A row the rule still names survives a template edit intact.
+
+        The behavioural half of the control above: an edit that changes every
+        derived column while leaving the CADENCE alone must maintain the row in
+        place -- same id, same ``occurs_on`` -- rather than replace it.  The id
+        is the assertion that matters, because a replaced row loses the
+        purchases, notes and envelope state plan step R10-a exists to keep.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            before = {row.id: row.occurs_on for row in created}
+            assert before, "no rows to maintain -- the fixture proves nothing"
+
+            # Every derived column moves; the cadence does not.
+            template.name = "Renamed"
+            template.default_amount = template.default_amount + 1
+            db.session.flush()
+
+            recurrence_engine.regenerate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            after = {
+                row.id: row.occurs_on
+                for row in db.session.query(Transaction)
+                .filter_by(template_id=template.id, is_deleted=False).all()
+            }
+            assert after == before, (
+                "a template edit that left the cadence alone replaced rows "
+                "instead of maintaining them"
+            )
+
+    def test_a_row_whose_occurrence_the_rule_dropped_is_retired(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The developer's ruling of 2026-08-28, as a control.
+
+        When a rule EDIT moves the occurrence set out from under an existing
+        row, that row is NOT re-pointed at whatever occurrence is left in its
+        paycheck -- it is retired, and held back as a conflict instead when it
+        carries the owner's own records (the neighbouring retain cases).
+
+        Re-pointing was the alternative, and it is the same invalid inference
+        an adversarial review cut from ``scripts/stamp_occurrences.py``: it is
+        a deduction only if every row answers some occurrence, which a NULL
+        ``occurs_on`` denies.  A wrongly adopted row then SUPPRESSES generation
+        of the real bill, which is a payment vanishing with nothing on screen
+        to show it.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, MONTHLY, fires_on_day=5,
+            )
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert created, "no rows -- the fixture proves nothing"
+            original_ids = [row.id for row in created]
+            original_occurrences = {row.occurs_on for row in created}
+
+            # Move the cadence's DAY: every occurrence moves with it.
+            rule = template.recurrence_rule
+            reauthor_rule(
+                rule,
+                replace(
+                    recurrence_spec(rule),
+                    starts_on=rule.starts_on.replace(day=19),
+                ),
+                calendar_for(template.user_id),
+            )
+            db.session.flush()
+
+            recurrence_engine.regenerate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            # The premise: the edit really did move the occurrence set.
+            surviving = (
+                db.session.query(Transaction)
+                .filter_by(template_id=template.id, is_deleted=False).all()
+            )
+            assert {row.occurs_on for row in surviving} != original_occurrences
+
+            # No original row was re-pointed -- each was retired and replaced.
+            for row_id in original_ids:
+                assert db.session.get(Transaction, row_id) is None
+
+    def test_a_moved_row_is_not_regenerated_in_the_period_it_left(
+        self, app, db, seed_user, seed_periods
+    ):
+        """**Ledger row D57 itself, as a regression control.**
+
+        The defect the whole of plan step R17 exists to close, and until this
+        test nothing in the suite failed if the leaf were reverted wholesale:
+        an adversarial review restored the pre-R17 pay-period question in
+        ``OccurrenceClaims`` and ``_claims_against`` and ran the ten most
+        relevant files -- **537 passed**.  Every other second-pass case
+        re-runs over an UNMOVED schedule, where "this period holds a row" and
+        "this occurrence is answered" are the same set, so none of them can
+        tell the two keyings apart.
+
+        Measured on a production clone before the fix: one whole-schedule pass
+        wrote **8 rows / $1,482.93**, six of them duplicating a due date a
+        ``Paid`` row already covered.
+
+        **The ``is_override = True`` half is load-bearing and asserted
+        separately below.**  ``_claims_against`` deliberately does not filter on
+        it -- a moved row is the owner's, and it still answers its occurrence.
+        An override-filtered fetch would reintroduce D57 exactly, and no other
+        test in the suite would notice.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            first = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert len(first) >= 2, "the fixture needs a neighbour to move into"
+
+            # What the PATCH door does to a template-linked row whose period
+            # moves: the period changes, the row becomes the owner's, and
+            # ``occurs_on`` is untouched.
+            moved, neighbour = first[0], first[1]
+            vacated = moved.pay_period_id
+            answered = moved.occurs_on
+            moved.pay_period_id = neighbour.pay_period_id
+            moved.is_override = True
+            db.session.flush()
+
+            second = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            assert second == [], (
+                f"the pass re-filled period {vacated}, which the moved row "
+                f"left -- that is D57"
+            )
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id, occurs_on=answered,
+            ).count() == 1, (
+                "the occurrence the moved row answers is now answered twice"
+            )
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).count() == len(first)
+
+    def test_an_overridden_row_still_answers_its_occurrence(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The half of the case above that a narrower fetch would drop.
+
+        Stated on its own because it is a one-word change away from being
+        wrong: adding ``is_override = FALSE`` to ``_claims_against``'s filter
+        would look like tightening the query to "the rule's own rows" and would
+        restore D57 in full, since every moved row is an override row.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            row = created[0]
+            row.is_override = True
+            db.session.flush()
+
+            assert recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            ) == [], "an overridden row stopped claiming its occurrence"
+
+    def test_a_maintained_row_is_derived_from_its_OWN_occurrence(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A row selected by occurrence must be derived by occurrence.
+
+        **The crash an adversarial review of this leaf found.**
+        ``classify_maintain_work`` routes a row to ``update`` when its
+        ``occurs_on`` is named; ``_apply_maintain_work`` then read
+        ``derived[row.pay_period_id]``, and ``derived`` holds only the periods
+        the rule NAMES.  A row whose occurrence is named while its period is
+        not raised ``KeyError`` -- a 500 -- and where the landing period
+        happened to be named it silently re-derived the row's amount and due
+        date from the WRONG paycheck.
+
+        The door is live and needs no corrupt data: move a row, edit the
+        template so the chooser reports it, then choose "use the template's
+        amount" -- ``resolve_conflicts`` clears ``is_override`` without
+        relocating the row or touching ``occurs_on``.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, MONTHLY, fires_on_day=5,
+            )
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert created, "no rows -- the fixture proves nothing"
+
+            named_periods = {
+                row.period.period_id
+                for row in recurrence_engine.resolve_generation_plan(
+                    template, schedule, seed_user["scenario"].id, None,
+                    block_message="test",
+                ).placements
+            }
+            unnamed = [
+                period.id for period in seed_periods
+                if period.id not in named_periods
+            ]
+            assert unnamed, (
+                "a monthly rule must leave some biweekly paycheck unnamed, or "
+                "this case cannot be built"
+            )
+
+            # The state the conflict chooser's "use the template's amount"
+            # leaves behind: moved, and no longer the owner's.
+            row = created[0]
+            answered, was_due = row.occurs_on, row.due_date
+            row.pay_period_id = unnamed[0]
+            row.is_override = False
+            db.session.flush()
+
+            # No KeyError, and the row keeps its OWN occurrence's figures.
+            recurrence_engine.regenerate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            db.session.refresh(row)
+            assert row.occurs_on == answered
+            assert row.due_date == was_due, (
+                "the row was re-derived from the paycheck it was moved into "
+                "rather than from the occurrence it answers"
+            )
+
+    def test_a_rule_edit_that_moves_the_occurrence_inside_one_paycheck_retires(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The ruling of 2026-08-28, on the fixture that can actually see it.
+
+        A neighbouring case moves the rule's day far enough to move the
+        PAY PERIOD too, so a period-keyed classifier and an occurrence-keyed
+        one agree and the case discriminates nothing -- an adversarial review
+        measured exactly that by reverting ``classify_maintain_work`` to the
+        period question and watching the whole class stay green.
+
+        Day 5 to day 7 is the fixture that bites: both fall inside the same
+        biweekly paycheck, so the PERIOD is unchanged and only the OCCURRENCE
+        moves.  The ruling says such a row is retired and replaced, never
+        re-pointed at whatever occurrence is left in its paycheck.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(
+                seed_user, MONTHLY, fires_on_day=5,
+            )
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert created, "no rows -- the fixture proves nothing"
+            before = {row.id: (row.pay_period_id, row.occurs_on)
+                      for row in created}
+
+            rule = template.recurrence_rule
+            reauthor_rule(
+                rule,
+                replace(
+                    recurrence_spec(rule),
+                    starts_on=rule.starts_on.replace(day=7),
+                ),
+                calendar_for(template.user_id),
+            )
+            db.session.flush()
+
+            after_periods = {
+                row.period.period_id
+                for row in recurrence_engine.resolve_generation_plan(
+                    template, schedule, seed_user["scenario"].id, None,
+                    block_message="test",
+                ).placements
+            }
+            # The premise that makes this case discriminating: the PERIODS did
+            # not move, so a period-keyed classifier would still call every
+            # original row named.
+            assert after_periods == {p for p, _ in before.values()}, (
+                "the edit moved the pay periods too, so this fixture cannot "
+                "tell a period-keyed classifier from an occurrence-keyed one"
+            )
+
+            recurrence_engine.regenerate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            for row_id in before:
+                assert db.session.get(Transaction, row_id) is None, (
+                    "a row whose occurrence the rule dropped was re-pointed "
+                    "instead of retired"
+                )
+
+    def test_a_row_moved_OUT_OF_THE_WINDOW_still_answers_its_occurrence(
+        self, app, db, seed_user, seed_periods
+    ):
+        """**D57 on the REGENERATE path**, which the generate fix did not close.
+
+        An adversarial review of this leaf measured it at the service seam.
+        ``rows_this_pass_may_maintain`` builds its domain from a PERIOD set --
+        the pass's write window, bounded by ``effective_from`` -- while the
+        plan bounds PLACEMENTS on the placed period's end.  So a row the owner
+        moved to an earlier paycheck drops out of that domain while its
+        occurrence stays named, and the create arm answers the occurrence a
+        second time.  ``rows_claiming`` is period-unscoped precisely because a
+        moved row is not where its occurrence is, and the maintain path was
+        still deciding CREATE from the window-scoped read.
+
+        Both variants are bad: while the moved row is still ``is_override`` it
+        sits outside both partial indexes and the duplicate is SILENT -- D57
+        exactly -- and once the conflict chooser has cleared that flag the
+        second write is an unhandled ``IntegrityError`` that rolls the whole
+        regeneration back.
+
+        The live door is the salary one: ``routes/salary/_helpers`` regenerates
+        with ``effective_from=date.today()`` on every profile save, so an owner
+        who moved a paycheck row back one period reaches this by saving a
+        salary profile.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            template = self._make_template_with_rule(
+                seed_user, MONTHLY, fires_on_day=15,
+            )
+            schedule = GenerationSchedule.for_pass(
+                BalanceContext.build(template.user_id),
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, scenario_id,
+            )
+            db.session.flush()
+            assert len(created) >= 2, "the fixture needs two named paychecks"
+
+            named = sorted(
+                {row.period.period_id: row.period
+                 for row in recurrence_engine.resolve_generation_plan(
+                     template, schedule, scenario_id, None,
+                     block_message="test",
+                 ).placements}.values(),
+                key=lambda period: period.start_date,
+            )
+            unnamed = [
+                period for period in seed_periods
+                if period.id not in {p.period_id for p in named}
+            ]
+            assert unnamed, "a monthly rule must leave a paycheck unnamed"
+
+            # Move the row answering the LAST named occurrence back to the
+            # earliest paycheck, and bound the pass so that paycheck is
+            # outside its window -- the salary door's own shape.
+            latest = max(created, key=lambda row: row.occurs_on)
+            answered = latest.occurs_on
+            latest.pay_period_id = unnamed[0].id
+            latest.is_override = True
+            db.session.flush()
+
+            recurrence_engine.regenerate_for_template(
+                template, schedule, scenario_id,
+                effective_from=named[-1].start_date,
+            )
+            db.session.flush()
+
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id, occurs_on=answered,
+            ).count() == 1, (
+                f"occurrence {answered} is answered twice -- the maintain "
+                f"pass decided CREATE from a window-scoped read and could not "
+                f"see the row that moved out of it"
+            )
+
+    def test_an_undated_row_claims_its_whole_paycheck(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The rule that is worth ``$20,500``, with a control of its own.
+
+        A row whose ``occurs_on`` is NULL answers no occurrence, so the only
+        claim it can make is the pre-R17 one: it holds the paycheck it sits in.
+        Letting it claim NOTHING was measured at the unarchive door on the
+        developer's archived ``Emergency Fund`` template -- **52 rows /
+        $26,000** written where the correct answer is 11 / $5,500, 41 phantom
+        transfers beside rows the owner had deleted.
+
+        **Stated as its own named case because it was resting on a side effect
+        of another test's fixture**, which an adversarial review found: the
+        extendability case happens to build undated rows, so it was the only
+        thing in the suite that would fail if this rule were dropped -- and its
+        name and docstring give a future author no reason to keep the fixture
+        undated.
+
+        Both states are covered, because the measured scenario is the
+        SOFT-DELETED one: the unarchive door restores rows the owner removed
+        and then generates, and those rows are undated because the backfill
+        does not walk an archived template.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert len(created) >= 2
+
+            live, removed = created[0], created[1]
+            live.occurs_on = None
+            removed.occurs_on = None
+            removed.is_deleted = True
+            db.session.flush()
+
+            again = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            assert again == [], (
+                "an undated row stopped holding its paycheck -- a live one, a "
+                "soft-deleted one, or both"
+            )
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).count() == len(created)
+
+    def test_the_predictor_reads_the_claims_of_rows_that_exist(
+        self, app, db, seed_user, seed_periods
+    ):
+        """``can_generate_in_period`` against a POPULATED table.
+
+        The existing agreement case calls the predictor before generation, on a
+        table holding no row for the template -- so step 4, the claims read and
+        the whole of what plan step R17 changed, is a no-op in every assertion
+        it makes.  An adversarial review measured that.
+
+        Both directions R17 added to step 4 are asserted here: a row the owner
+        MOVED out of a period must still block that period's occurrence, and a
+        row that answers an occurrence must block it wherever it sits.  The
+        carry-forward executor acts on this prediction and then calls
+        generation, so a predictor that drifts writes real rows -- which is
+        defect D22 exactly, and cost 32 of 61 periods when the two last
+        disagreed.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, scenario_id,
+            )
+            db.session.flush()
+            assert len(created) >= 2
+
+            # Every period is answered, so the predictor must say NO everywhere.
+            for row in created:
+                assert recurrence_engine.can_generate_in_period(
+                    template, row.pay_period_id, scenario_id, schedule=schedule,
+                ) is False, "the predictor offered a period already answered"
+
+            # Move one row out of its period.  The period it LEFT is still
+            # answered -- by the row that moved -- so the predictor must still
+            # refuse it.  A period-keyed predictor says yes here, and the
+            # carry-forward executor would then write a duplicate.
+            moved, neighbour = created[0], created[1]
+            vacated = moved.pay_period_id
+            moved.pay_period_id = neighbour.pay_period_id
+            moved.is_override = True
+            db.session.flush()
+
+            assert recurrence_engine.can_generate_in_period(
+                template, vacated, scenario_id, schedule=schedule,
+            ) is False, (
+                "the predictor offered the period a moved row left, whose "
+                "occurrence that row still answers -- D57 through the "
+                "prediction door"
+            )
+
+    def test_a_moved_row_keeps_its_occurrence(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Moving a row to another paycheck changes its FUNDING, not its cadence.
+
+        The whole point of the column, and the shape of ledger row **D57**:
+        ``pay_period_id`` is what the owner may move and ``occurs_on`` is what
+        no move touches.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            row, neighbour = created[0], created[1]
+            was = row.occurs_on
+            assert was is not None
+            # What the PATCH door does to a template-linked row whose period
+            # moves (``routes/transactions/mutations``): the period changes and
+            # the row becomes the owner's.
+            row.pay_period_id = neighbour.pay_period_id
+            row.is_override = True
+            db.session.flush()
+            db.session.refresh(row)
+
+            assert row.occurs_on == was
+            assert row.pay_period_id == neighbour.pay_period_id
+
+    def test_maintain_creates_a_missing_row_with_its_occurrence(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The maintain pass's CREATE arm states an occurrence too.
+
+        ``MaintainWork.create_in`` held bare period ids before this step, so
+        the create arm had nothing to write.  Deleting one generated row and
+        re-running the pass is what reaches that arm.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            gap = created[0]
+            gap_period_id, gap_occurrence = gap.pay_period_id, gap.occurs_on
+            db.session.delete(gap)
+            db.session.flush()
+
+            recurrence_engine.regenerate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            refilled = (
+                db.session.query(Transaction)
+                .filter_by(template_id=template.id,
+                           pay_period_id=gap_period_id)
+                .one()
+            )
+            assert refilled.occurs_on == gap_occurrence, (
+                "the maintain create arm wrote no occurrence, or the wrong one"
+            )

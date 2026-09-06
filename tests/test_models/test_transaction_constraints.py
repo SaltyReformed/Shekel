@@ -41,7 +41,11 @@ from app.enums import SettlementBasisEnum
 from app.extensions import db
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
-from tests._test_helpers import settlement_basis_id
+from tests._test_helpers import (
+    settle_day_columns,
+    settlement_basis_id,
+)
+from app.models.amount_ownership import AmountOwnership
 
 
 def _make_txn_kwargs(seed_user, seed_periods_today, status_name="Projected"):
@@ -62,6 +66,7 @@ def _make_txn_kwargs(seed_user, seed_periods_today, status_name="Projected"):
     expense = db.session.query(TransactionType).filter_by(name="Expense").one()
     return {
         "account_id": seed_user["account"].id,
+        "user_id": seed_periods_today[0].user_id,
         "pay_period_id": seed_periods_today[0].id,
         "scenario_id": seed_user["scenario"].id,
         "status_id": status.id,
@@ -86,7 +91,7 @@ class TestTransactionAmountCheckConstraints:
         """
         with app.app_context():
             kwargs = _make_txn_kwargs(seed_user, seed_periods_today)
-            txn = Transaction(**kwargs, estimated_amount=Decimal("-1.00"))
+            txn = Transaction(**kwargs, amount_ownership=AmountOwnership.own(Decimal("-1.00")))
             db.session.add(txn)
             with pytest.raises(IntegrityError) as exc_info:
                 db.session.flush()
@@ -115,8 +120,8 @@ class TestTransactionAmountCheckConstraints:
             )
             txn = Transaction(
                 **kwargs,
-                estimated_amount=Decimal("100.00"),
-                settled_on=seed_periods_today[0].start_date,
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                **settle_day_columns(seed_periods_today[0].start_date),
                 settled_amount=Decimal("-1.00"),
                 settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
@@ -149,8 +154,8 @@ class TestTransactionAmountCheckConstraints:
             )
             txn = Transaction(
                 **kwargs,
-                estimated_amount=Decimal("100.00"),
-                settled_on=seed_periods_today[0].start_date,
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                **settle_day_columns(seed_periods_today[0].start_date),
                 settled_amount=None,
                 settled_basis_id=ref_cache.settlement_basis_id(
                     SettlementBasisEnum.PURCHASES,

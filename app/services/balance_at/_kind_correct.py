@@ -30,6 +30,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
+from app.services.pay_calendar import DerivedPeriod
 from ._context import BalanceContext
 
 from . import _asset_fold
@@ -247,7 +248,7 @@ def balance_at(
     rounded to cents -- today's balance, reported for a date months earlier
     (the real Roth answered ``$28,000.00`` for 2026-01-15 against a
     back-projected ``$22,909.02``).  The fold is TOTAL: it answers a date before
-    every event with ruling R-I's back-projection and a date past the horizon by
+    every event with the account's stored opening equity and a date past the horizon by
     continuing to accrue, so there is no out-of-range state to fall back FROM.
     Finding **N-82** records what the far end costs: past the last pay period
     the ACCRUAL tier keeps running while the CONTRIBUTION tier stops, because a
@@ -289,7 +290,9 @@ def balance_at(
 
 
 def investment_growth_since_anchor(
-    account: Account, ctx: BalanceContext, current_period,
+    account: Account,
+    ctx: BalanceContext,
+    current_period: DerivedPeriod | None,
 ) -> "tuple[Decimal, Decimal] | None":
     """Return ``(growth, contributed)`` since the anchor, or ``None`` (hidden).
 
@@ -331,15 +334,22 @@ def investment_growth_since_anchor(
     Args:
         account: The investment account.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-        current_period: The pay period covering the caller's clock, or
-            ``None``.  Anything carrying an ``end_date``: its one ``app/``
-            caller passes a
-            :class:`~app.services.pay_calendar.DerivedPeriod` since plan step
-            C2-f2c, where it passed an ORM
-            :class:`~app.models.pay_period.PayPeriod` before.  That end is
-            DERIVED now -- the day before the next payday -- which is the same
-            end :func:`~app.services.balance_at.balance_map` keys the headline
-            this chip explains, so the two cannot be read at different days.
+        current_period: The :class:`~app.services.pay_calendar.DerivedPeriod`
+            covering the caller's clock, or ``None``.  Its end is the day
+            before the next payday, which is the same end
+            :func:`~app.services.balance_at.balance_map` keys the headline this
+            chip explains, so the two cannot be read at different days.
+
+            **It was an untyped "anything carrying an ``end_date``" until plan
+            step ``pay_calendar:C4-c``, and that duck type had exactly one
+            inhabitant left.**  Plan step C2-f2c moved the one ``app/`` caller
+            off an ORM :class:`~app.models.pay_period.PayPeriod` and onto the
+            derived value; what kept the parameter open was the ORM row still
+            HAVING an ``end_date`` to be passed by mistake.  C4-c dropped that
+            column, so the second inhabitant stopped existing and the
+            annotation states what was already true.  *An adversarial pass
+            would not have found this: it was a suite failure that named it,
+            because a test was still handing it the row.*
 
     Returns:
         ``(growth, contributed)`` cent-precise ``Decimal``s, or ``None`` when

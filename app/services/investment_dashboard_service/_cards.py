@@ -13,13 +13,17 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, all money is
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctTypeEnum
+from app.enums import AcctTypeEnum, EmployerContributionTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.services import growth_engine
 from app.services.account_projection import is_payroll_deduction_funded
-from app.services.investment_projection import InvestmentInputs
+from app.services.investment_projection import (
+    AccountPayrollFeed,
+    InvestmentInputs,
+)
+from app.services.pay_calendar import DerivedPeriod
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )
@@ -141,8 +145,8 @@ def _compute_suggested_contribution(ctx: _ProjectionContext) -> Decimal:
 
     ``remaining_periods`` is anchored on ``current_period.start_date`` --
     the SAME boundary the subtracted ``ytd_contributions`` uses
-    (:func:`investment_projection._ytd_contributions`: same calendar year,
-    ``<= current_period.start_date``).  So the current
+    (:func:`investment_projection._inputs._ytd_contributions`: same
+    calendar year, ``<= current_period.start_date``).  So the current
     period is counted once -- in YTD (already contributed) -- and the
     remaining limit is spread over the periods STRICTLY AFTER it.
     Anchoring on the clock instead double-counted the current
@@ -192,7 +196,11 @@ def _compute_suggested_contribution(ctx: _ProjectionContext) -> Decimal:
     return round_money(remaining_limit / max(remaining_periods, 1))
 
 
-def _compute_employer_per_period(inputs: InvestmentInputs) -> Decimal:
+def _compute_employer_per_period(
+    inputs: InvestmentInputs,
+    feed: AccountPayrollFeed,
+    current_period: DerivedPeriod | None,
+) -> Decimal:
     """Return the per-period employer contribution at the capped employee rate.
 
     HIGH-07 / F-043 / F-055: feeds the limit-capped contribution to
@@ -200,17 +208,36 @@ def _compute_employer_per_period(inputs: InvestmentInputs) -> Decimal:
     per-period employer card matches the growth chart's employer line
     and the year-end ``year_summary_employer_total`` -- all three
     surfaces read the same capped value.  Returns ``Decimal("0")`` when
-    the account configures no employer match.
+    the account configures no employer match, and when its funding profile is
+    unknown -- the state in which ``inputs.employer_params`` is withheld
+    (developer, 2026-09-04).
+
+    **It is priced at the CURRENT period's gross since plan step
+    salary:R14-b** (ruling **R-SAL2**), where it read one figure frozen into
+    ``employer_params``.  The card answers *what does a paycheck put in*, so
+    the paycheck it means is the one the owner is being paid; with no current
+    period there is no paycheck to mean, and the employee figure beside it is
+    already ``$0.00`` in that state for the same reason.
+
+    Args:
+        inputs: The account's :class:`InvestmentInputs`.
+        feed: The account's :class:`AccountPayrollFeed`, for the gross of the
+            paycheck its funding profile is paid on the current payday.
+        current_period: The period covering the read pass's clock, or ``None``.
+
+    Returns:
+        The employer contribution for the current paycheck.
     """
+    if not inputs.employer_params or current_period is None:
+        return Decimal("0")
     capped_contribution = growth_engine.cap_contribution_at_limit(
         inputs.periodic_contribution,
         inputs.annual_contribution_limit,
         inputs.ytd_contributions,
     )
-    if not inputs.employer_params:
-        return Decimal("0")
     return growth_engine.calculate_employer_contribution(
         inputs.employer_params, capped_contribution,
+        feed.gross_at(current_period.start_date),
     )
 
 
@@ -246,6 +273,49 @@ def _load_transfer_source_accounts(
 def _has_active_recurring_transfer_to(account_id: int, user_id: int) -> bool:
     """Return True iff an active recurring transfer targets *account_id*."""
     return active_recurring_transfer_template(account_id, user_id) is not None
+
+
+def _compute_employer_funding(ctx: _ProjectionContext) -> dict:
+    """Return the funding-job selector's options and the unfunded notice.
+
+    The "and say so" half of the developer's 2026-09-04 ruling (plan step
+    **salary:R14-b**): an employer contribution whose funding salary profile
+    is unknown models NO money, and the page has to say why rather than
+    silently dropping the Employer chip.  Unknown covers a ``NULL``
+    ``budget.investment_params.salary_profile_id``, one naming a profile the
+    owner has ARCHIVED, and one naming a profile that is not theirs -- all
+    three collapse into "the feed priced no gross"
+    (:attr:`~app.services.investment_projection.AccountPayrollFeed.funds_employer`),
+    which is the state this reports.
+
+    The notice fires only where an employer contribution is actually
+    CONFIGURED.  An account with none has nothing unfunded to warn about, and
+    ``ctx.params`` being ``None`` means the account is not parameterised at
+    all -- both are silent.  The predicate reads the params row rather than
+    ``inputs.employer_params``, which is withheld in exactly the state being
+    reported and so cannot distinguish it from "no employer contribution".
+
+    Args:
+        ctx: The account's :class:`_ProjectionContext`.
+
+    Returns:
+        ``{"salary_profiles": [...], "employer_funding_unset": bool}``.
+    """
+    none_id = ref_cache.employer_contribution_type_id(
+        EmployerContributionTypeEnum.NONE,
+    )
+    # No ``is not None`` conjunct on the type id: the column is
+    # ``nullable=False``, so that arm could not fire -- the same rule this
+    # commit applies when it deletes a membership guard in
+    # ``projection_inputs._employee_by_payday``.
+    configured = (
+        ctx.params is not None
+        and ctx.params.employer_contribution_type_id != none_id
+    )
+    return {
+        "salary_profiles": ctx.salary_profiles,
+        "employer_funding_unset": configured and not ctx.feed.funds_employer,
+    }
 
 
 def _compute_contribution_prompt(
@@ -302,9 +372,9 @@ def _compute_contribution_prompt(
     result["is_deduction_path"] = is_deduction_path
 
     if is_deduction_path:
-        if ctx.active_profile is not None:
+        if ctx.salary_profiles:
             result["_salary_profile_action"] = "edit"
-            result["_active_profile_id"] = ctx.active_profile.id
+            result["_active_profile_id"] = ctx.salary_profiles[0].id
         else:
             result["_salary_profile_action"] = "list"
         return result

@@ -34,8 +34,8 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
-from app.models.pay_period import PayPeriod
 from app.services import spending_analysis
+from app.services.pay_calendar import PayCalendar
 from app.services.scenario_resolver import require_baseline_scenario
 
 from ._attribution import (
@@ -51,7 +51,7 @@ _ZERO_MONEY = Decimal("0.00")
 
 
 def compute_income_statement(
-    user_id: int, window: StatementWindow,
+    user_id: int, calendar: PayCalendar, window: StatementWindow,
 ) -> IncomeStatementReport:
     """Return the confirmed-ledger income statement for a user over a window.
 
@@ -63,8 +63,29 @@ def compute_income_statement(
     yields an empty statement (zero totals) -- the deferred multi-scenario case
     is R8's.
 
+    **The window's PERIOD comes from the caller's calendar** (plan step
+    C2-f3a), which is a REQUIRED parameter for the reason the contribution
+    tier's is (ruling **R-PC19**, "How the CONTRIBUTION tier learns its
+    periods"): the route that calls this already derives one for its own
+    ``<select>``, so resolving a second here made the heading and the option
+    the reader picked it from two reads of one table on one render.
+
+    **And it closed a hole the route had to guard.**  This was
+    ``db.session.get(PayPeriod, window.period_id)`` -- UNSCOPED, so a foreign
+    ``period_id`` resolved another owner's row and its dates were rendered into
+    the heading.  Nothing here refused it; the only thing standing in the way
+    was ``analytics._validate_owned_or_abort`` at the route boundary, whose
+    comment says so in as many words.  A calendar carries ONE owner's periods,
+    so a foreign id now answers ``None`` by construction and the label is
+    empty.  The route guard STAYS -- it is what emits the
+    ``access_denied_cross_user`` audit event, and a silent empty label is not
+    a refusal -- but the leak no longer depends on it being there.
+
     Args:
         user_id: The owner whose statement to compute.
+        calendar: That owner's
+            :class:`~app.services.pay_calendar.PayCalendar`, derived once by
+            the caller.  Read only to label a ``"pay_period"`` window.
         window: The :class:`StatementWindow` selector (a ``"pay_period"`` window
             filters the period directly; a ``"month"`` / ``"year"`` window
             filters the display-timezone attribution core by calendar date).
@@ -84,10 +105,12 @@ def compute_income_statement(
         window.window_type, window.period_id, window.month, window.year,
     )
     period = (
-        db.session.get(PayPeriod, window.period_id)
+        calendar.period_by_id(window.period_id)
         if window.window_type == "pay_period" else None
     )
-    window_label = _window_label(window, period)
+    window_label = spending_analysis.window_label(
+        window.window_type, window.month, window.year, period,
+    )
     class_ids = statement_class_ids()
 
     # Raises for a user with no baseline (see the balance sheet's twin for the
@@ -111,33 +134,6 @@ def compute_income_statement(
             class_ids,
         )
     return _income_statement_from_nets(nets, chart, class_ids, window_label)
-
-
-def _window_label(window: StatementWindow, period: PayPeriod | None) -> str:
-    """Return the human label for a window (matches the variance convention).
-
-    Args:
-        window: The window to label.
-        period: The resolved :class:`~app.models.pay_period.PayPeriod` for a
-            ``"pay_period"`` window (``None`` for calendar windows, or when the
-            period id resolves no row).
-
-    Returns:
-        ``"Feb 21 - Mar 06, 2026"`` (pay period), ``"January 2026"`` (month),
-        ``"2026"`` (year), or ``""`` when a pay-period window's period is
-        missing.
-    """
-    if window.window_type == "pay_period":
-        if period is None:
-            return ""
-        return (
-            f"{period.start_date.strftime('%b %d')} - "
-            f"{period.end_date.strftime('%b %d')}, {period.end_date.year}"
-        )
-    if window.window_type == "month":
-        month_name = date(window.year, window.month, 1).strftime("%B")
-        return f"{month_name} {window.year}"
-    return str(window.year)
 
 
 def _statement_class_set(class_ids: StatementClassIds) -> tuple[int, ...]:

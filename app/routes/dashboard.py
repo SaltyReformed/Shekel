@@ -23,8 +23,9 @@ from dataclasses import dataclass
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from app.extensions import db
-from app.services import dashboard_service, pay_period_admin
+from app.db_transaction import write_transaction
+from app.routes._period_population import populate_new_periods
+from app.services import dashboard_service, pay_period_rolling
 from app.services.balance_at import BalanceContext
 from app.services.savings_dashboard_service import DebtSummary
 from app.utils.auth_helpers import require_owner
@@ -207,7 +208,11 @@ def page():
     load-bearing**: ``top_up_rolling_window`` can CREATE pay periods and
     commit them, and the pass memoizes the calendar it derives from those very
     rows.  Building it first would serve this render a schedule one paycheck
-    short of the one the database now holds.
+    short of the one the database now holds.  **Plan step X-i3 made that
+    ordering structural rather than stated**: the top-up runs inside
+    :func:`app.db_transaction.write_transaction`, so this render's own
+    transaction is read-only and could not hold the append even if the call
+    moved.
 
     ``has_account`` and the pulse region read ONE account resolution
     (:func:`~app.services.dashboard_service.resolve_section`); the route
@@ -217,11 +222,22 @@ def page():
     here: the pulse chart series to a JSON string and the debt track's
     principal-paid fraction to a percent.
     """
-    # Continuous rolling window: top up on dashboard entry (a future-
-    # period consumer).  A no-op (one count, no lock) when rolling is
-    # disabled; commits only when periods were actually created.
-    if pay_period_admin.top_up_rolling_window(current_user.id):
-        db.session.commit()
+    # Continuous rolling window: top up on dashboard entry (a future-period
+    # consumer).  A no-op (one count, no lock) when rolling is disabled.
+    #
+    # **In its own COMMAND transaction** (plan step X-i3), for the reason
+    # ``grid.index`` states at its own call: this render is a query and its
+    # transaction is one read-only snapshot, so the append is committed here
+    # and the pass below snapshots a database that already holds it.
+    #
+    # The top-up APPENDS and this fills what it appended (ruling **R-R38**):
+    # the door leaves the new paydays empty, and the pass their recurring rows
+    # are resolved in is opened here, after they exist.  It opens NOTHING when
+    # nothing was appended, which is every render but the rare short-window
+    # one -- so the render below still holds this page's ONE read pass.
+    with write_transaction():
+        appended = pay_period_rolling.top_up_rolling_window(current_user.id)
+        populate_new_periods(current_user.id, appended)
 
     balance_ctx = BalanceContext.build(current_user.id)
     section = dashboard_service.resolve_section(balance_ctx)

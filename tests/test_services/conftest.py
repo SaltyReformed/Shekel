@@ -5,7 +5,7 @@ Module-level autouse fixture that freezes ``date.today()`` inside
 ``pay_period_service`` to a value within the seed_periods range.
 Service tests use ``seed_periods`` (calendar-anchored 2026-01-02 to
 2026-05-21) and many have hardcoded calendar literals; freezing today
-inside that window keeps ``get_current_period()`` deterministic
+inside that window keeps "which paycheck contains today" deterministic
 regardless of wall-clock date, without disturbing calendar-anchored
 assertions.
 
@@ -17,7 +17,9 @@ from datetime import date
 
 import pytest
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import (
+    freeze_today,
+)
 
 
 @pytest.fixture(autouse=True)

@@ -39,8 +39,9 @@ from flask_login import current_user
 
 from app.exceptions import RecurrenceConflict
 from app.extensions import db
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.pay_calendar import FiledRow, PayCalendar
 from app.utils.digit_strings import parse_row_id
 
 
@@ -66,8 +67,11 @@ class ConflictChoice:
         row_id: The Transaction / Transfer id the decision applies to.
         due_date: The instance's due date (``None`` if unset), used to
             order and label the row chronologically.
-        period_label: The owning pay period's ``label`` (e.g.
-            ``"02/21 - 03/06"``).
+        period_label: The owning pay period's DERIVED label (e.g.
+            ``"02/21 - 03/06"``) -- ``DerivedPeriod.label``, off the pass's own
+            calendar, since pay-calendar plan step C4-a-5.  It was
+            ``row.pay_period.label``, the ORM accessor that formats the STORED
+            ``end_date``, which no other screen in the application reads.
         your_amount: The instance's current (hand-edited) amount -- the
             "Keep" side of the toggle.
         is_deleted_conflict: ``True`` when the conflict is a soft-deleted
@@ -118,13 +122,21 @@ def parse_conflict_decisions(form) -> dict[int, str] | None:
     return decisions
 
 
-def flash_retained_notice(conflict) -> None:
+def flash_retained_notice(retained) -> None:
     """Tell the owner which rows the pass left alone, and why.
 
-    ``RecurrenceConflict.retained`` names the rows a regeneration declined to
-    touch because the owner has records against them -- purchases, a note, or a
-    hand-entered actual -- and applying the definition change would have
-    destroyed or re-attributed those (plan step R10-a, finding **N-292**).
+    *retained* names the rows a pass declined to touch because the owner has
+    records against them -- purchases, a note, or a settled figure -- and
+    applying the definition change would have destroyed or re-attributed those
+    (plan steps R10-a and R10-b, finding **N-292**).
+
+    **It takes the IDS, not the exception.**  It read ``conflict.retained`` off
+    a :class:`~app.exceptions.RecurrenceConflict` until plan step R10-b, whose
+    third caller has no exception to hand it: the rule-less propagation RETURNS
+    its retained ids rather than raising, because nothing there is a conflict
+    the caller must catch.  Constructing an exception purely to carry a list
+    past a function that reads one attribute of it is a data carrier wearing a
+    control-flow type, which an adversarial review of that step named.
 
     **It is a notice, not a prompt, and that asymmetry is deliberate.**  The
     other two conflict kinds ask a question because either answer is a
@@ -136,11 +148,11 @@ def flash_retained_notice(conflict) -> None:
     destructive action nobody asked for.
 
     Args:
-        conflict: The caught :class:`~app.exceptions.RecurrenceConflict`.
+        retained: The row ids the pass left untouched.  Empty flashes nothing.
     """
-    if not conflict.retained:
+    if not retained:
         return
-    count = len(conflict.retained)
+    count = len(retained)
     noun = "instance" if count == 1 else "instances"
     flash(
         f"{count} upcoming {noun} kept the value it already had, because you "
@@ -151,10 +163,12 @@ def flash_retained_notice(conflict) -> None:
     )
 
 
-def _build_conflict_choices(conflict, model, resolve_amount) -> list[ConflictChoice]:
+def _build_conflict_choices(
+    conflict, kind: "RecurrenceConflictKind", calendar: PayCalendar,
+) -> list[ConflictChoice]:
     """Load the conflicted rows and shape them for the chooser.
 
-    ``conflict.overridden`` / ``conflict.deleted`` are ids of ``model`` (a
+    ``conflict.overridden`` / ``conflict.deleted`` are ids of ``kind.model`` (a
     Transaction or Transfer).
     Rows are returned chronologically (undated last) so the chooser reads
     top-to-bottom in time order.  A vanished id (deleted between the raise
@@ -171,6 +185,46 @@ def _build_conflict_choices(conflict, model, resolve_amount) -> list[ConflictCho
     transfer), which is why ``amount_attr`` is gone: the column NAME was only
     ever a way to spell "ask this kind what it is worth", and the amount model
     answers that question per kind already.
+
+    **The period LABEL comes off the CALENDAR** (pay-calendar plan step
+    C4-a-5).  It was ``row.pay_period.label`` -- the ORM accessor, which formats
+    the STORED ``end_date`` while every other screen formats the derived one,
+    so on a period whose stored end has gone stale (findings **P12** / **P28**)
+    this page and the grid named one paycheck two ways.  ``PayPeriod.label`` is
+    deleted with this step, so the wrong source is unreachable rather than
+    merely unused.
+
+    **``require_period`` cannot refuse here, and it is the right twin anyway.**
+    ``overridden_ids`` and ``deleted_ids`` are appended in ONE place --
+    ``_recurrence_common.classify_maintain_work``'s ``for row in existing``
+    loop -- and BOTH engines build ``existing`` through
+    ``_recurrence_common.rows_this_pass_may_maintain``
+    (``recurrence_engine._maintain:167``, ``transfer_recurrence:455``), which
+    filters ``pay_period_id`` to ``[p.period_id for p in
+    schedule.calendar.saved()]``.  *calendar* below is that same calendar off
+    the same read pass, so a conflicted row naming a period it does not hold is
+    unconstructible: the precondition is carried by the QUERY, which is what
+    ``require_period``'s own docstring says makes a total form honest.  The
+    raising twin is still what this call site owes -- the id is read off a
+    STORED row -- and it is what a future caller assembling the id set some
+    other way would run into.
+
+    **It also takes the KIND rather than two of its fields**, which is one
+    fewer pairing for a caller to get wrong: the model a row is loaded from and
+    the rule that prices it are per-kind facts that
+    :class:`RecurrenceConflictKind` already bundles.
+
+    Args:
+        conflict: The raised :class:`~app.exceptions.RecurrenceConflict`.
+        kind: The per-kind config (:class:`RecurrenceConflictKind`); its
+            ``model`` and ``resolve_amount`` are read here.
+        calendar: The pass's :class:`~app.services.pay_calendar.PayCalendar` --
+            the one ``kind.regenerate_fn`` resolved against, never a second
+            derivation.
+
+    Returns:
+        One :class:`ConflictChoice` per surviving conflicted row, oldest due
+        date first with undated rows last.
     """
     choices = []
     for ids, is_deleted_conflict in (
@@ -178,15 +232,15 @@ def _build_conflict_choices(conflict, model, resolve_amount) -> list[ConflictCho
         (conflict.deleted, True),
     ):
         for row_id in ids:
-            row = db.session.get(model, row_id)
+            row = db.session.get(kind.model, row_id)
             if row is None:
                 continue
-            period = row.pay_period
+            period = calendar.require_period(FiledRow.for_row(row))
             choices.append(ConflictChoice(
                 row_id=row_id,
                 due_date=row.due_date,
-                period_label=period.label if period else "",
-                your_amount=resolve_amount(row),
+                period_label=period.label,
+                your_amount=kind.resolve_amount(row),
                 is_deleted_conflict=is_deleted_conflict,
             ))
     choices.sort(key=lambda choice: (choice.due_date is None, choice.due_date or date.min))
@@ -217,10 +271,22 @@ class RecurrenceConflictKind:
             Both engines' functions are stored here rather than called by
             name, so their shared signature moves in one commit or not at
             all.
-        resolve_fn: The kind's ``resolve_conflicts(ids, action, user_id,
-            new_amount=...)`` callable.
+        resolve_fn: The kind's ``resolve_conflicts(ids, action, user_id)``
+            callable, taking ``new_amount=`` as well when
+            *use_states_a_figure* is set.
         update_endpoint: The kind's update-route endpoint, resolved with the
             template id for the chooser's Apply action.
+        use_states_a_figure: Whether this kind's "use" side hands the row a
+            FIGURE.  ``True`` for transfers, whose generated rows still store
+            their amount; ``False`` for transactions since plan step X-au-e,
+            where "use" hands the row back to its definition and the
+            definition's series prices it (ruling **R-JD**).  It drives two
+            things that must not drift apart: whether ``new_amount`` is passed
+            to ``resolve_fn``, and whether the chooser page offers a figure to
+            move to.  **It is a per-kind fact with a known death date** -- plan
+            step X-au-f empties ``transfers.amount`` for a generated transfer,
+            after which both kinds answer ``False`` and this field, its branch
+            below and the chooser's figure arm all go together.
     """
 
     model: Any
@@ -228,6 +294,7 @@ class RecurrenceConflictKind:
     regenerate_fn: Any
     resolve_fn: Any
     update_endpoint: str
+    use_states_a_figure: bool
 
 
 @dataclass(frozen=True)
@@ -235,38 +302,58 @@ class ConflictChooserContext:
     """Everything the recurrence-conflict chooser page renders from.
 
     Bundled because :func:`render_recurrence_conflict_chooser` is a public
-    route helper whose inputs are one cohesive concept: the pending edit,
-    its kind, and where Apply / Cancel go.
+    route helper whose inputs are one cohesive concept: the pending edit, the
+    rows it collided with, and where Apply / Cancel go.
+
+    **It carries the CHOICES rather than the conflict and the kind it used to**
+    (pay-calendar plan step C4-a-5).  Those two fields were on it for one
+    reason -- ``render_recurrence_conflict_chooser`` turned them into a
+    ``list[ConflictChoice]`` -- so the class named "everything the page renders
+    from" carried two values the page renders nothing from, and building the
+    rows was work hidden inside a function called ``render_``.  What forced the
+    question was this step adding an EIGHTH field for the pay calendar and
+    tripping ``too-many-instance-attributes`` at 8/7; the honest answer to that
+    gate was not a smaller field but the TWO that should never have been here,
+    and with them the calendar goes too -- the caller that HOLDS the read pass
+    now builds the rows, which is where the pass's calendar already is.
 
     Attributes:
-        conflict: The caught :class:`RecurrenceConflict` (the conflicted
-            row ids).
-        kind: The row model / amount / resolver bundle
-            (:class:`RecurrenceConflictKind`).
+        choices: The conflicted rows, already shaped and ordered
+            (:func:`_build_conflict_choices`).
         template_name: The edited template's new name (framing sentence).
-        new_amount: The template's new amount (the "Use" figure).
+        new_amount: The template's new amount.  It is the framing sentence's
+            figure for BOTH kinds -- the definition's price did change -- and
+            the "Use" side's figure only where *use_states_a_figure* is set.
         effective_from: The edit's effective date (framing sentence).
         action_url: Where Apply posts (the same update endpoint).
         cancel_url: Where Cancel returns (the list), abandoning the edit.
+        use_states_a_figure: Whether "use" moves the row to *new_amount*
+            (transfers) or hands it back to its definition to be priced from
+            the series on its own due date (transactions, since plan step
+            X-au-e -- ruling **R-JD**).  The page says different and
+            incompatible things in three places depending on which, and
+            saying the transfer's sentence about a transaction row would
+            promise a figure no writer writes.  Both kinds answer ``False``
+            after plan step X-au-f.
     """
 
-    conflict: RecurrenceConflict
-    kind: RecurrenceConflictKind
+    choices: "list[ConflictChoice]"
     template_name: str
     new_amount: Decimal
     effective_from: date
     action_url: str
     cancel_url: str
+    use_states_a_figure: bool
 
 
 def render_recurrence_conflict_chooser(ctx: ConflictChooserContext, form) -> str:
     """Render the full-page conflict chooser for a pending template edit.
 
-    Loads the conflicted instances into chooser rows and echoes the
-    submitted edit ``form`` as hidden inputs (minus the CSRF token, which
-    the chooser re-issues) so Apply re-runs the identical edit before
-    resolving.  Renders and returns HTML only -- no mutation and no commit
-    happen here; the caller rolls back the pending edit after this returns.
+    Echoes the submitted edit ``form`` as hidden inputs (minus the CSRF token,
+    which the chooser re-issues) so Apply re-runs the identical edit before
+    resolving.  Renders and returns HTML only -- no query, no mutation and no
+    commit happen here; the caller loads the rows (:func:`_build_conflict_choices`)
+    and rolls the pending edit back after this returns.
 
     Args:
         ctx: The pending-edit conflict context (see
@@ -280,11 +367,10 @@ def render_recurrence_conflict_chooser(ctx: ConflictChooserContext, form) -> str
     echo.pop("csrf_token", None)
     return render_template(
         "recurrence_conflict_chooser.html",
-        choices=_build_conflict_choices(
-            ctx.conflict, ctx.kind.model, ctx.kind.resolve_amount,
-        ),
+        choices=ctx.choices,
         template_name=ctx.template_name,
         new_amount=ctx.new_amount,
+        use_states_a_figure=ctx.use_states_a_figure,
         effective_from=ctx.effective_from,
         echo=echo,
         action_url=ctx.action_url,
@@ -309,20 +395,29 @@ def apply_conflict_decisions(
     Only ids genuinely in the raised conflict set (``conflict.overridden``
     + ``conflict.deleted``) are acted on; a submitted id outside that set
     is ignored, so the chooser can never mutate an arbitrary owned row.
-    "use" ids are realigned to ``new_amount`` (clearing the override /
-    soft-delete) through ``kind.resolve_fn(..., "update", ...)``; "keep"
-    ids are recorded through ``kind.resolve_fn(..., "keep", ...)`` for the
-    audit trail (the regeneration already left them untouched).
-    ``kind.resolve_fn`` ownership-checks every id and, on the transaction
-    side, refuses transfer shadows.
+    "use" ids have their override / soft-delete cleared through
+    ``kind.resolve_fn(..., "update", ...)``; "keep" ids are recorded through
+    ``kind.resolve_fn(..., "keep", ...)`` for the audit trail (the
+    regeneration already left them untouched).  ``kind.resolve_fn``
+    ownership-checks every id and, on the transaction side, refuses transfer
+    shadows.
+
+    **Whether "use" also states a FIGURE is the KIND's answer** (plan step
+    X-au-e, ruling **R-JD**).  A transfer's generated row still stores its
+    amount, so its resolver takes ``new_amount``; a transaction's does not
+    store one and its resolver has no such parameter to pass -- handing it one
+    would be a dead argument on the one kind that has already cut over.  Both
+    kinds answer ``False`` after plan step X-au-f and the branch goes with the
+    field.
 
     Args:
-        kind: The row model / amount / resolver bundle; only
-            ``kind.resolve_fn`` is used here.
+        kind: The row model / amount / resolver bundle; ``kind.resolve_fn``
+            and ``kind.use_states_a_figure`` are read here.
         conflict: The caught :class:`RecurrenceConflict` (the id allow-list).
         decisions: The ``{row_id: "keep" | "use"}`` map from
             :func:`parse_conflict_decisions`.
-        new_amount: The template's new amount applied to "use" ids.
+        new_amount: The template's new amount, applied to "use" ids by a kind
+            whose "use" states a figure and ignored by one whose does not.
         user_id: The requesting user's id (passed through for the ownership
             checks inside ``kind.resolve_fn``).
     """
@@ -335,7 +430,10 @@ def apply_conflict_decisions(
         rid for rid, choice in decisions.items()
         if choice == _DECISION_KEEP and rid in allowed
     ]
-    kind.resolve_fn(use_ids, "update", user_id, new_amount=new_amount)
+    if kind.use_states_a_figure:
+        kind.resolve_fn(use_ids, "update", user_id, new_amount=new_amount)
+    else:
+        kind.resolve_fn(use_ids, "update", user_id)
     kind.resolve_fn(keep_ids, "keep", user_id)
 
 
@@ -398,7 +496,11 @@ def regenerate_or_conflict_chooser(
 
       * Apply (chooser decisions present): resolve each conflicted instance
         per the user's keep/use choice, then return ``None`` so the caller
-        commits the edit together with the resolutions.
+        commits the edit together with the resolutions.  What "use" DOES is
+        the kind's (``use_states_a_figure``): a transfer row moves to the new
+        figure, a transaction row is handed back to its definition and priced
+        from the series on its own due date (plan step X-au-e, ruling
+        **R-JD**).
       * First submit of an amount-changing edit (``amount_drives_instances``,
         the template STILL recurs, and ``default_amount`` differs from
         ``before.amount``): render the chooser, ROLL BACK the pending edit
@@ -422,9 +524,11 @@ def regenerate_or_conflict_chooser(
     the untouched projected rows from ``effective_from`` forward and generates
     nothing, because there is no rule left to generate from.  Settled rows are
     immutable and overridden ones raise as conflicts exactly as they do for
-    any other edit (``_recurrence_common.partition_regeneration_rows``), so
-    clearing a recurrence destroys neither history nor a deliberate
-    per-instance change.
+    any other edit (``_recurrence_common.classify_maintain_work``), and since
+    plan steps R10-a and R10-b a row carrying the owner's own records is
+    RETAINED rather than removed -- so clearing a recurrence destroys neither
+    history, nor a deliberate per-instance change, nor anything the owner
+    recorded against a row.
 
     A template that neither has nor had a rule is still skipped, and the
     distinction is load-bearing: a RULE-LESS transfer template's single
@@ -474,16 +578,22 @@ def regenerate_or_conflict_chooser(
         rule, no conflict, a non-amount edit, an edit that cleared the
         recurrence, or a conflict already resolved from Apply).
     """
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario is None:
+    # ONE read pass for the edit: it pins the owner, the day and the baseline
+    # scenario, and its calendar is the one derivation the regeneration
+    # resolves against (plan step R7d-c-1).  It replaces a
+    # ``get_baseline_scenario`` beside a ``calendar_for`` -- two spellings of
+    # what one pass holds, and the pair every construction site of a
+    # ``GenerationSchedule`` was carrying.
+    ctx = BalanceContext.build(current_user.id)
+    if ctx.scenario is None:
         return None
     if template.recurrence_rule is None and not before.had_recurrence_rule:
         return None
-    schedule = GenerationSchedule.for_user(current_user.id)
+    schedule = GenerationSchedule.for_pass(ctx)
     decisions = parse_conflict_decisions(request.form)
     try:
         kind.regenerate_fn(
-            template, schedule, scenario.id, effective_from=effective_from,
+            template, schedule, ctx.scenario_id, effective_from=effective_from,
         )
     except RecurrenceConflict as conflict:
         if decisions is not None:
@@ -512,10 +622,18 @@ def regenerate_or_conflict_chooser(
         ):
             chooser = render_recurrence_conflict_chooser(
                 ConflictChooserContext(
-                    conflict=conflict,
-                    kind=kind,
+                    # Built HERE, before the rollback below, because this is
+                    # where the read pass is: the rows are dated off
+                    # ``ctx.calendar()`` -- the SAME calendar
+                    # ``kind.regenerate_fn`` just resolved against, never a
+                    # second derivation of it (the shape of ledger row
+                    # **P68**, closed by C2-f3c; **P69** is its open sibling).
+                    choices=_build_conflict_choices(
+                        conflict, kind, ctx.calendar(),
+                    ),
                     template_name=template.name,
                     new_amount=template.default_amount,
+                    use_states_a_figure=kind.use_states_a_figure,
                     effective_from=effective_from,
                     action_url=url_for(
                         kind.update_endpoint, template_id=template.id,
@@ -530,7 +648,7 @@ def regenerate_or_conflict_chooser(
             # describe a pass that no longer happened.  The notice fires on the
             # two paths that reach the caller's commit, below.
             return chooser
-        flash_retained_notice(conflict)
+        flash_retained_notice(conflict.retained)
     return None
 
 

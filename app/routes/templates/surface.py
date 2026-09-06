@@ -14,7 +14,6 @@ route boundary rather than inside it.
 """
 
 import logging
-from datetime import date
 
 from flask import redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -27,7 +26,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.user import UserSettings
 from app.routes.templates._bp import templates_bp
 from app.services import recurring_view
-from app.services.pay_calendar import calendar_for
+from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)
@@ -76,7 +75,7 @@ def _load_active_transfer_templates(user_id):
     )
 
 
-def _load_archived_rows(user_id, calendar):
+def _load_archived_rows(user_id, ctx):
     """Shape the Archived drawer's rows for both template kinds.
 
     Returns ``(archived_transactions, archived_transfers)`` as
@@ -89,10 +88,11 @@ def _load_archived_rows(user_id, calendar):
 
     Args:
         user_id: The owner.
-        calendar: The owner's pay-period schedule, built once by the caller and
-            shared with the active-section producer -- the cadence phrase is
-            measured against it, and building a second copy for the drawer
-            would be a second resolution point in one request.
+        ctx: The read pass, built once by the caller and shared with the
+            active-section producer -- the cadence phrase is measured against
+            its calendar and a loan payment's stop is folded in its scenario,
+            and building a second pass for the drawer would be a second
+            resolution point in one request.
     """
     archived_transactions = (
         db.session.query(TransactionTemplate)
@@ -113,12 +113,12 @@ def _load_archived_rows(user_id, calendar):
         .all()
     )
     return (
-        recurring_view.build_archived_rows(archived_transactions, calendar),
-        recurring_view.build_archived_rows(archived_transfers, calendar),
+        recurring_view.build_archived_rows(archived_transactions, ctx),
+        recurring_view.build_archived_rows(archived_transfers, ctx),
     )
 
 
-def _load_recurring_view(user_id, calendar):
+def _load_recurring_view(user_id, ctx):
     """Build the unified Recurring display model for a user.
 
     Shared by the full-page ``list_templates`` render and the
@@ -128,9 +128,11 @@ def _load_recurring_view(user_id, calendar):
 
     Args:
         user_id: The owner.
-        calendar: The owner's pay-period schedule, taken as an argument rather
-            than built here so the full-page render shares ONE with the
-            Archived drawer.
+        ctx: The read pass, taken as an argument rather than built here so the
+            full-page render shares ONE with the Archived drawer.  The route
+            builds it (plan step R7d-d; a producer below the route takes the
+            pass and never builds one), and its default ``as_of`` is the
+            ``date.today()`` this surface has always measured "now" at.
     """
     income_templates, expense_templates = _load_active_transaction_templates(
         user_id,
@@ -140,8 +142,7 @@ def _load_recurring_view(user_id, calendar):
         income_templates=income_templates,
         expense_templates=expense_templates,
         transfer_templates=transfer_templates,
-        calendar=calendar,
-        as_of=date.today(),
+        ctx=ctx,
     )
 
 
@@ -161,12 +162,13 @@ def list_templates():
     toggle shows first, read from the user's stored preference.
     """
     user_id = current_user.id
-    # ONE schedule for the whole page: the active sections measure every
-    # cadence and next date against it, and so does the Archived drawer.
-    calendar = calendar_for(user_id)
-    view = _load_recurring_view(user_id, calendar)
+    # ONE read pass for the whole page: the active sections measure every
+    # cadence and next date against its schedule and fold every loan payment's
+    # stop in its scenario, and so does the Archived drawer.
+    ctx = BalanceContext.build(user_id)
+    view = _load_recurring_view(user_id, ctx)
     archived_transactions, archived_transfers = _load_archived_rows(
-        user_id, calendar,
+        user_id, ctx,
     )
 
     settings = current_user.settings
@@ -220,7 +222,7 @@ def set_unit_preference():
         # The toggle re-renders the body only; the Archived drawer is not part
         # of the swapped fragment, so this path needs no rows for it.
         view = _load_recurring_view(
-            current_user.id, calendar_for(current_user.id),
+            current_user.id, BalanceContext.build(current_user.id),
         )
         return render_template(
             "templates/_recurring_body.html",

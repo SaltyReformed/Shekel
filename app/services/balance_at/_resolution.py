@@ -62,7 +62,8 @@ from app.services.loan_loaders import (
 )
 from app.services.loan_payment_service import LoanContext, load_loan_context
 from app.services.recurring_transfer_query import (
-    loan_standing_extra_for_account,
+    StandingPayment,
+    standing_payment,
 )
 
 from ._confirmed_view import confirmed_view
@@ -105,21 +106,34 @@ class ResolvedLoan:
             payment, the rate, and the life-of-loan interest.  No balance and no
             payoff -- the ``balance_at`` seam derives both from the fold (plan
             steps C8d / D2a).
-        extra_principal: The loan's standing monthly overpayment
-            (:func:`~app.services.recurring_transfer_query.loan_standing_extra_for_account`),
-            loaded ONCE here and threaded into :func:`resolve_loan_bundle`'s resolve so
-            ``state``'s schedule / payoff already fold it.  Surfaced on the bundle
-            so the seam's forward PLAN
-            (:func:`app.services.balance_at._plan.loan_plan`) folds the SAME extra
-            past the materialized-shadow horizon without re-reading it (finding
-            N-15).  ``Decimal("0.00")`` when the loan has no recurring payment.
+        standing: What the loan's own recurring payment says one installment
+            costs (:func:`~app.services.recurring_transfer_query.standing_payment`),
+            loaded ONCE here.  ``None`` when the loan has no recurring payment
+            at all, which is a THIRD state and not a zeroed value -- see that
+            function.  Two consumers need it and each used to read a different
+            slice: its ``extra_principal`` is threaded into
+            :func:`resolve_loan_bundle`'s resolve, so ``state``'s schedule,
+            payoff and interest are the COMMITTED plan-aware trajectory every
+            summary surface shows (step 8,
+            ``docs/design/escrow_line_identity_refactor.md`` Sec. 16), and the
+            seam's forward PLAN
+            (:func:`app.services.balance_at._plan.loan_plan`) prices every
+            installment past the materialized-shadow horizon from the WHOLE
+            value -- the extra (finding N-15) and, since plan step **R7d-a**,
+            the base and the mode with it.
+
+            **It replaced a bare ``extra_principal`` field**, which was one
+            slice of this row read through its own narrow accessor.  The plan
+            needed the other two the moment it had to price an installment no
+            row covers, and taking them from a second read would have let one
+            pass hold two answers about one definition.
     """
 
     params: LoanParams
     anchor_facts: list
     context: LoanContext
     state: loan_resolver.LoanState
-    extra_principal: Decimal
+    standing: StandingPayment | None
 
 
 def resolved_loan(
@@ -168,7 +182,7 @@ def resolved_loan(
         not a configured loan.
     """
     return _memoize_once(
-        ctx.loans, account.id, lambda: resolve_loan_bundle(account, ctx),
+        ctx, ctx.loans, account, lambda: resolve_loan_bundle(account, ctx),
     )
 
 
@@ -252,14 +266,16 @@ def resolve_loan_bundle(
       composer falls back to that replay, the pre-switch behaviour.  The loan's
       displayed BALANCE is not derived here at all (plan step D2a): the seam folds
       it from the same recorded events.
-    * **The loan's standing overpayment**, loaded ONCE here and threaded BOTH
-      into the resolve (so ``state``'s schedule, payoff, and interest are the
-      COMMITTED plan-aware trajectory every summary surface shows, matching the
-      loan detail page -- step 8, ``docs/design/escrow_line_identity_refactor.md``
-      Sec. 16) and onto :attr:`ResolvedLoan.extra_principal` (so the seam's
-      forward plan folds the SAME figure past the materialized-shadow horizon
-      without a second read -- finding N-15).  ``0.00`` for a loan with no
-      recurring payment, so the injection is a safe no-op there.
+    * **The loan's STANDING PAYMENT**, loaded ONCE here and threaded BOTH into
+      the resolve -- its ``extra_principal``, so ``state``'s schedule, payoff,
+      and interest are the COMMITTED plan-aware trajectory every summary surface
+      shows, matching the loan detail page (step 8,
+      ``docs/design/escrow_line_identity_refactor.md`` Sec. 16) -- and WHOLE
+      onto :attr:`ResolvedLoan.standing`, so the seam's forward plan prices
+      every installment past the materialized-shadow horizon from the same
+      definition without a second read (finding N-15, and plan step **R7d-a**
+      for the base and the mode).  ``None`` for a loan with no recurring
+      payment, and the injected extra is then ``0.00`` -- a safe no-op.
 
     Returning the loaded ``context`` alongside the ``state`` is what removes the
     last reason for a consumer to re-load: the loan tile previously called
@@ -290,16 +306,32 @@ def resolve_loan_bundle(
     if params is None:
         return None
     anchor_facts = load_loan_anchor_facts(params)
-    # ``scenario_id_or_none``, deliberately: a loan's payment feed is the ONE
-    # scenario-scoped input to its resolution, and its params, anchors and rate
-    # history are contract facts.  With no baseline the feed is empty and the
-    # CONTRACT terms still resolve -- plan step C8e's rule, and what keeps
-    # escrow and rate editing working for a user whose baseline is missing.
-    # Every other reader takes the raising ``scenario_id`` (ruling R-BX).
+    # ``amounts_or_none``, deliberately, and it is the same nullability this
+    # line has always spelled: a loan's payment feed is the ONE scenario-scoped
+    # input to its resolution, and its params, anchors and rate history are
+    # contract facts.  With no baseline the feed is empty and the CONTRACT terms
+    # still resolve -- plan step C8e's rule, and what keeps escrow and rate
+    # editing working for a user whose baseline is missing.  Every other reader
+    # takes the raising ``amounts`` / ``scenario_id`` (ruling R-BX).
+    #
+    # It was ``ctx.scenario_id_or_none`` until plan step X-au-g-2c, which routed
+    # ``get_payment_history`` through the amount model: the loader now takes the
+    # BASIS that prices the feed rather than an id that only scopes it, so the
+    # feed and its figures cannot come from two different scenarios.  Passing
+    # the pass's own basis is also what keeps this read to ONE pricing pass --
+    # ``ctx.amounts()`` is memoized, so a render resolving several loans runs
+    # the paycheck engine once (findings N-268, N-269).
     context = load_loan_context(
-        account.id, ctx.scenario_id_or_none, params,
+        account.id, ctx.amounts_or_none(), params,
     )
-    extra_principal = loan_standing_extra_for_account(account.id)
+    standing = standing_payment(account.id, account.user_id)
+    # The resolver takes the EXTRA alone -- it prices the contractual schedule
+    # and an overpayment is the only part of the definition that moves it.  The
+    # base and the mode go on the bundle for the forward plan, which prices
+    # installments the schedule does not (plan step R7d-a).
+    extra_principal = (
+        Decimal("0.00") if standing is None else standing.extra_principal
+    )
     state = loan_resolver.resolve_loan(
         loan_resolver.LoanInputs(
             params, anchor_facts, context.payments, context.rate_changes,
@@ -313,7 +345,7 @@ def resolve_loan_bundle(
         anchor_facts=anchor_facts,
         context=context,
         state=state,
-        extra_principal=extra_principal,
+        standing=standing,
     )
 
 

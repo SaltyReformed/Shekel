@@ -104,8 +104,8 @@ class TestTheOrderIsStatedOnlyInStepsMd:
         first, second = idents
         stage_arc(
             "recurrence",
-            "## Rulings",
-            f"## Rulings\n\nBuild {first}, then {second}.\n",
+            "## The rulings",
+            f"## The rulings\n\nBuild {first}, then {second}.\n",
         )
         assert duplication.order_restatement_violations()
 
@@ -120,8 +120,8 @@ class TestTheOrderIsStatedOnlyInStepsMd:
         """
         stage_arc(
             "recurrence",
-            "## Rulings",
-            "## Rulings\n\nR6 reads a column R5 creates, so it cannot ship "
+            "## The rulings",
+            "## The rulings\n\nR6 reads a column R5 creates, so it cannot ship "
             "first.\n",
         )
         assert not duplication.order_restatement_violations()
@@ -140,8 +140,8 @@ class TestTheOrderIsStatedOnlyInStepsMd:
         """The recurrence plan lists step ids in a fence beside file counts."""
         stage_arc(
             "recurrence",
-            "## Rulings",
-            "## Rulings\n\n```text\nR5 -> R6 -> R9 : 3 files\n```\n",
+            "## The rulings",
+            "## The rulings\n\n```text\nR5 -> R6 -> R9 : 3 files\n```\n",
         )
         assert not duplication.order_restatement_violations()
 
@@ -227,15 +227,19 @@ class TestALiveDocumentDoesNotDeclareItsOwnSectionsDead:
         assert "rule 16" in problems[0] and "rule 15" in problems[0]
 
     def test_a_superseded_ruling_is_not_a_dead_section(self, stage_arc):
-        """The rulings tables record superseded rulings by design.
+        """The rulings registry records superseded rulings by design.
 
-        Four live rulings read this way.  An arm keying on the bare word would
-        report every one of them, which is a gate nobody keeps.
+        Four rulings read this way -- ``R-R3``'s subtype superseded by
+        ``R-R13`` is one, and since ``balance:X-ao-2a`` it is a row in
+        ``rulings.md`` rather than a row in this document.  An arm keying on
+        the bare word would report every one of them, which is a gate nobody
+        keeps, and the specimen is planted in an arc document because that is
+        where ``retired_section_violations`` reads.
         """
         stage_arc(
             "recurrence",
-            "## Rulings",
-            "## Rulings\n\nR-R3's subtype is SUPERSEDED by R-R13.\n",
+            "## The rulings",
+            "## The rulings\n\nR-R3's subtype is SUPERSEDED by R-R13.\n",
         )
         assert not duplication.retired_section_violations()
 
@@ -247,8 +251,8 @@ class TestALiveDocumentDoesNotDeclareItsOwnSectionsDead:
         """
         stage_arc(
             "recurrence",
-            "## Rulings",
-            "## Rulings\n\nThat claim is SUPERSEDED; see section 0 for the "
+            "## The rulings",
+            "## The rulings\n\nThat claim is SUPERSEDED; see section 0 for the "
             "measurement.\n",
         )
         assert not duplication.retired_section_violations()

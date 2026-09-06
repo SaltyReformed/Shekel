@@ -21,7 +21,6 @@ from app.extensions import db
 from app.services import status_seam
 from app.models.account import Account
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, TransactionType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -30,7 +29,11 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services.row_valuation import settled_figure
-from tests._test_helpers import settlement_if_settling
+from tests._test_helpers import (
+    open_owner_calendar,
+    settlement_if_settling,
+)
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -90,9 +93,10 @@ def _make_txn(seed_user, period, template, *, name=None, amount=None):
 
     txn = Transaction(
         name=name or template.name,
-        estimated_amount=amount or template.default_amount,
+        amount_ownership=AmountOwnership.own(amount or template.default_amount),
         transaction_type_id=expense_type.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        user_id=period.user_id,
         pay_period_id=period.id,
         account_id=seed_user["account"].id,
         category_id=category.id,
@@ -172,8 +176,8 @@ class TestRouteAccess:
     ):
         """Companion with no owner periods gets 200 (empty state).
 
-        When pay_period_service.get_current_period returns None,
-        the route should gracefully render the empty state.
+        When no period contains the owner's day, the route should
+        gracefully render the empty state.
         Note: seed_periods_today is not included, so the owner has no periods.
         """
         comp = _login_companion(app)
@@ -220,13 +224,8 @@ class TestPeriodNavigation:
         settings = UserSettings(user_id=second_user.id)
         db.session.add(settings)
 
-        other_period = PayPeriod(
-            user_id=second_user.id,
-            start_date=date(2026, 1, 2),
-            end_date=date(2026, 1, 15),
-            period_index=0,
-        )
-        db.session.add(other_period)
+        # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+        other_period = open_owner_calendar(second_user.id, date(2026, 1, 2))[0]
         db.session.commit()
 
         comp = _login_companion(app)
@@ -454,7 +453,14 @@ class TestEntryIntegration:
         comp = _login_companion(app)
         resp = comp.patch(
             f"/transactions/{txn.id}/entries/{entry.id}",
-            data={"amount": "45.00", "description": "Kroger Updated"},
+            data={
+                "amount": "45.00",
+                # The edit form emits the direction beside the amount since
+                # plan step ``bank_import:X-gj-2b-3``, and the route refuses
+                # one without the other rather than guessing a sign.
+                "direction": "charge",
+                "description": "Kroger Updated",
+            },
         )
         assert resp.status_code == 200
 

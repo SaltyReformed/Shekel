@@ -32,8 +32,8 @@ from app.extensions import db
 from app.services import balance_at
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at._plan import loan_plan
-from app.services.loan_ledger import split_payment_cash
 from app.services.balance_at import BalanceContext
+from tests.oracles.loan_monthly_composition import charge_then_allocate
 from tests._test_helpers import (
     clear_loan_ledger,
     create_loan_with_trueup,
@@ -68,7 +68,7 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
     A test-side parallel of the producer's projected half (step C6c): it seeds from
     the SAME ``projection_seed`` the balance folds, walks the loan's
     :func:`~app.services.balance_at._plan.loan_plan` records in due order, and sums
-    each payment's interest (``split_payment_cash``, the ONE split) by its EFFECTIVE
+    each payment's interest (the RETIRED one-payment-a-month composition) by its EFFECTIVE
     year, dropping any due-month slot in *exclude_slots* (the settled-slot merge) --
     WITHOUT calling ``plan_interest_in_year``.  So the producer's WIRING (the right
     seed, the right plan, the right year key, the merge, the two halves summed) is
@@ -78,16 +78,29 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
     seed = net_worth_kernel.generate_debt_schedules(
         [loan], ctx,
     )[loan.id].projection_seed
+    plan = loan_plan(loan, ctx)
+    # The CHARGE standing against each accrual period, keyed by the period it
+    # opens.  Since plan step R16-a a month's interest and escrow are charged
+    # once per period rather than once per payment, and this oracle folds
+    # through the RETIRED one-payment-per-month composition
+    # (``tests.oracles.loan_monthly_composition``, deleted from ``app/`` at plan
+    # step X-au-g-2c-3b-2) because every plan it grades puts one payment in each
+    # period.
+    charged = {
+        (charge.on_date.year, charge.on_date.month): charge
+        for charge in plan.charges
+    }
     balance = seed
     total = ZERO
     for payment in sorted(
-        loan_plan(loan, ctx), key=lambda p: (p.due_date, p.effective_date),
+        plan.payments, key=lambda p: (p.due_date, p.effective_date),
     ):
-        parts = split_payment_cash(
-            payment.cash, balance, payment.annual_rate, payment.escrow,
+        slot = (payment.due_date.year, payment.due_date.month)
+        charge = charged[slot]
+        parts = charge_then_allocate(
+            payment.cash, balance, charge.period.annual_rate, charge.escrow,
         )
         balance = parts.balance_after
-        slot = (payment.due_date.year, payment.due_date.month)
         if payment.effective_date.year == year and slot not in exclude_slots:
             total += parts.interest
     return total
@@ -254,7 +267,7 @@ class TestLoanInterestInYearMerge:
             # vacuously empty plan.
             plan_slots = {
                 (payment.due_date.year, payment.due_date.month)
-                for payment in loan_plan(loan, ctx)
+                for payment in loan_plan(loan, ctx).payments
             }
             assert (2026, 4) not in plan_slots      # P3's slot, de-duped
             assert (2026, 3) in plan_slots          # its uncovered neighbours ARE
@@ -322,7 +335,7 @@ class TestLoanInterestInYearMerge:
             march = (2026, 3)
             plan_slots = {
                 (payment.due_date.year, payment.due_date.month)
-                for payment in loan_plan(loan, ctx)
+                for payment in loan_plan(loan, ctx).payments
             }
             assert march not in plan_slots
 

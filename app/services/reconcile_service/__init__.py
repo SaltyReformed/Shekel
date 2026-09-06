@@ -64,7 +64,21 @@ what a tick means for it.
 
 So the package is one module per arm, plus the value types they all publish
 (:mod:`._offers`) and the assembly that turns their offers into the panel's
-blocks (:mod:`._assemble`).  Each arm owns its own SCOPE, and that per-arm
+blocks (:mod:`._assemble`).
+
+**One value names WHICH statement is being reconciled, and both halves take
+it** (:class:`~._rows.Statement`, published at pay-calendar plan step C4-a-2).
+It is the owner's pay CALENDAR -- which answers both whose rows these are and
+which span each is budgeted in -- the account whose balance was asserted, and
+the governing assertion.  It lives in :mod:`._rows` because the shared scope is
+what reads it, and it is exported because the ROUTE builds it: this package
+holds no read pass, so the calendar is resolved at the HTTP boundary and
+threaded, which is the layer rule ``pay_calendar:C11`` states.  Before that
+step the three facts travelled as loose arguments, each arm rebuilt the value,
+and the write half held a fourth copy inside
+:class:`._offers.ReconcileSubmission`.
+
+Each arm owns its own SCOPE, and that per-arm
 reading is load-bearing: the scope shared between an arm's reader and its
 writer is what stops a forged id settling something the panel never offered,
 and one scope over three arms could not state it.
@@ -100,6 +114,7 @@ from app.services.reconcile_service._offers import (
     Section,
 )
 from app.services.reconcile_service._purchases import record_settled_days
+from app.services.reconcile_service._rows import Statement
 
 __all__ = [
     "OfferKind",
@@ -109,6 +124,7 @@ __all__ = [
     "OutstandingTransaction",
     "ReconcileSubmission",
     "Section",
+    "Statement",
     "outstanding_set",
     "record_reconciliation",
     "record_settled_days",

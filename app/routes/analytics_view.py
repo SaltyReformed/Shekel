@@ -235,7 +235,27 @@ def _size_lens_rows(breakdown):
     """
     if not breakdown:
         return []
-    max_amount = max(group.amount for group in breakdown)
+    # **The largest RENDERED row, groups and items alike** (plan step
+    # ``bank_import:X-gj-2b-3``, found by adversarial financial review).  It
+    # was `max(group.amount ...)`, which bounded every bar at 100% only
+    # because an item's amount could not exceed its group's: every category
+    # total was non-negative, so `item <= group <= max`.  Ruling
+    # **bank_import:R-II** ended that -- a group of `Groceries +600.00` and
+    # `Restaurants -500.00` sums to `+100.00` while holding a `+600.00` item --
+    # and against a `300.00` maximum that item rendered a bar of **200.0**,
+    # off its own track and clamped only by `progress_bar.js`, which is the
+    # tier :func:`_bar_pct` says in as many words a money-shaped decision may
+    # not be left to.
+    #
+    # Taking the maximum over what is actually DRAWN restores the docstring's
+    # stated contract -- the largest row is full width and every other is
+    # proportional to it -- by construction rather than by a clamp, and it is
+    # the SAME figure on any window holding no refund, since an item cannot
+    # then exceed its own group.
+    max_amount = max(
+        [group.amount for group in breakdown]
+        + [item.amount for group in breakdown for item in group.items],
+    )
     rows = []
     for group in breakdown:
         singleton = len(group.items) == 1
@@ -334,15 +354,32 @@ def _bar_pct(amount, max_amount):
     value): the largest row renders a full-width bar and every other bar is
     proportional to it.
 
+    **A NEGATIVE amount draws no bar, and it is this function that says so**
+    (ruling **bank_import:R-II**, plan step ``bank_import:X-gj-2b``).  A
+    category whose refunds exceeded its purchases has a negative total since
+    that step relaxed ``ck_transaction_entries_positive_amount`` to
+    ``amount <> 0``; before it, ``_totals_by_category`` took an ``abs()`` and
+    this argument was non-negative by construction, which is what this
+    docstring used to assert.  A bar answers *how much of the budget did this
+    consume*, and the answer for such a row is NONE -- it gave money back.
+
+    **Floored HERE rather than left to ``progress_bar.js``.**  That clamp is a
+    defence against a malformed server value and says so in as many words; a
+    figure this function can produce for an ordinary refunded category is not
+    malformed, and leaving it to the browser would put a money-shaped decision
+    in the one tier no test in this project drives.
+
     Args:
-        amount: The row's ``Decimal`` amount (non-negative).
+        amount: The row's ``Decimal`` amount, SIGNED.
         max_amount: The largest row's ``Decimal`` amount.
 
     Returns:
-        The width percentage as a float rounded to 2 decimals (0.0 when the
-        maximum is not positive -- an all-zero ledger has no bars to size).
+        The width percentage as a float rounded to 2 decimals.  ``0.0`` when
+        the maximum is not positive -- an all-zero ledger, or a window whose
+        every category was refund-dominated, has no bars to size -- and
+        ``0.0`` for any row that is not itself positive.
     """
-    if max_amount <= 0:
+    if max_amount <= 0 or amount <= 0:
         return 0.0
     return round(float(amount) / float(max_amount) * 100, 2)
 
@@ -405,10 +442,19 @@ def serialize_spending_chart(report):
 def _history_note(series):
     """Return the chart's settled-history note, or ``None``.
 
-    The note explains a leading run of empty bars: when the first point
-    with settled spend is not the first bar, every earlier bar is empty
-    (totals are non-negative), so the chart states where history begins
-    rather than reading as missing data.
+    The note explains a leading run of EMPTY bars: when the first point that
+    moved any money is not the first bar, every earlier bar is empty, so the
+    chart states where history begins rather than reading as missing data.
+
+    **The test is "moved money", not "spent a positive amount"** (plan step
+    ``bank_import:X-gj-2b-3``).  It read ``total > 0`` on the stated premise
+    that totals are non-negative, which ruling **bank_import:R-II** ended: a
+    month whose refunds exceeded its purchases has a negative total and DRAWS
+    A BAR, so a leading negative month got the caption *settled history begins*
+    a month later than the chart's own first bar -- the note contradicting the
+    picture beside it.  A window with periods but no settled spend is
+    ``Decimal("0")`` and is genuinely an empty bar, which is why zero is still
+    not history and ``None`` (a window before the user's periods) still is not.
 
     Args:
         series: The report's
@@ -416,10 +462,10 @@ def _history_note(series):
 
     Returns:
         ``"settled history begins Mar 2026"`` styled text, or ``None`` when
-        the first bar already has spend or no bar has any.
+        the first bar already moved money or no bar moved any.
     """
     for index, point in enumerate(series):
-        if point.total is not None and point.total > 0:
+        if point.total is not None and point.total != 0:
             if index == 0 or point.window is None:
                 return None
             window = point.window

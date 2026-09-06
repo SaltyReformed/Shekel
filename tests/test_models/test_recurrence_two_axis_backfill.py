@@ -42,6 +42,7 @@ import pytest
 import sqlalchemy as sa
 
 from app.extensions import db
+from tests._test_helpers import bare_expense_template
 # The guards, IMPORTED rather than loaded from a revision by filename.
 from migrations.versions import (  # noqa: E501  pylint: disable=line-too-long
     b6d41f0a9c27_the_two_axis_columns_become_authoritative as _R7CB,
@@ -69,15 +70,21 @@ def _ref_id(table: str, name: str) -> int:
     ).scalar_one()
 
 
-def _plant_rule(user_id, starts_on, nominal_day=None):
+def _plant_rule(seed_user, starts_on, nominal_day=None):
     """Insert one storable rule by raw SQL and return its id.
 
     Raw SQL rather than the write door, deliberately: every row these guards
     exist to find is one the door REFUSES, so authoring it would exercise the
     door and prove nothing about the guard.
 
+    **The owning definition is built through the ORM, since plan step R-F6**:
+    the rule carries a template's FK now under
+    ``ck_recurrence_rules_one_owner``, and a raw INSERT with no owner would be
+    refused by that constraint rather than reaching the guard these cases
+    grade.  The definition is ordinary; only the RULE is planted by hand.
+
     Args:
-        user_id: The owner.
+        seed_user: The ``seed_user`` fixture dict, whose user owns the rule.
         starts_on: The rule's first occurrence, as an ISO date string.
         nominal_day: The nominal day to plant, or ``None``.
 
@@ -86,12 +93,12 @@ def _plant_rule(user_id, starts_on, nominal_day=None):
     """
     return db.session.execute(sa.text(
         "INSERT INTO budget.recurrence_rules "
-        "(user_id, interval_n, unit_id, placement_id, shift_id, "
+        "(transaction_template_id, interval_n, unit_id, placement_id, shift_id, "
         " starts_on, nominal_day) "
-        "VALUES (:uid, 1, :unit, :placement, :shift, "
+        "VALUES (:owner, 1, :unit, :placement, :shift, "
         "        CAST(:starts_on AS date), :nominal_day) RETURNING id"
     ), {
-        "uid": user_id,
+        "owner": bare_expense_template(db.session, seed_user).id,
         "unit": _ref_id("recurrence_units", "month"),
         "placement": _ref_id("period_placements", "containing_date"),
         "shift": _ref_id("business_day_shifts", "none"),
@@ -101,7 +108,7 @@ def _plant_rule(user_id, starts_on, nominal_day=None):
 
 
 @pytest.mark.usefixtures("app")
-def test_the_nominal_day_guard_names_the_rule_before_the_ddl_runs(db, bare_user):  # pylint: disable=redefined-outer-name
+def test_the_nominal_day_guard_names_the_rule_before_the_ddl_runs(db, seed_user):
     """``refuse_inconsistent_nominal_days`` finds the row and says which.
 
     The state is unreachable through the application -- every write door
@@ -115,7 +122,8 @@ def test_the_nominal_day_guard_names_the_rule_before_the_ddl_runs(db, bare_user)
 
     Args:
         db: The session fixture.
-        bare_user: The owner.
+        seed_user: The owner fixture, whose account and category the rule's
+            owning definition is built on.
     """
     db.session.execute(sa.text(
         "ALTER TABLE budget.recurrence_rules "
@@ -123,7 +131,7 @@ def test_the_nominal_day_guard_names_the_rule_before_the_ddl_runs(db, bare_user)
     ))
     # April 15 was never clamped by anything, so a nominal day beside it names
     # a day the rule does not fire on -- the pair the completed CHECK closed.
-    rule_id = _plant_rule(bare_user["user"].id, "2026-04-15", nominal_day=30)
+    rule_id = _plant_rule(seed_user, "2026-04-15", nominal_day=30)
     db.session.flush()
 
     with pytest.raises(RuntimeError) as caught:
@@ -138,7 +146,7 @@ def test_the_nominal_day_guard_names_the_rule_before_the_ddl_runs(db, bare_user)
 
 
 @pytest.mark.usefixtures("app")
-def test_the_nominal_day_guard_admits_a_real_clamp(db, bare_user):  # pylint: disable=redefined-outer-name
+def test_the_nominal_day_guard_admits_a_real_clamp(db, seed_user):
     """The control: the guard grades the pair, not the presence of a day.
 
     April has no 31st, so ``(2026-04-30, 31)`` is precisely the state
@@ -148,9 +156,10 @@ def test_the_nominal_day_guard_admits_a_real_clamp(db, bare_user):  # pylint: di
 
     Args:
         db: The session fixture.
-        bare_user: The owner.
+        seed_user: The owner fixture, whose account and category the rule's
+            owning definition is built on.
     """
-    _plant_rule(bare_user["user"].id, "2026-04-30", nominal_day=31)
+    _plant_rule(seed_user, "2026-04-30", nominal_day=31)
     db.session.flush()
 
     # Must not raise; the assertion is the absence of the refusal.
@@ -159,7 +168,7 @@ def test_the_nominal_day_guard_admits_a_real_clamp(db, bare_user):  # pylint: di
 
 
 @pytest.mark.usefixtures("app")
-def test_the_calendar_window_guard_names_the_rule_before_the_ddl_runs(db, bare_user):  # pylint: disable=redefined-outer-name
+def test_the_calendar_window_guard_names_the_rule_before_the_ddl_runs(db, seed_user):
     """``refuse_out_of_range_starts`` finds a date past the app's calendar.
 
     ``ck_recurrence_rules_starts_on_range`` backs a MEASURED 500: past the
@@ -170,13 +179,14 @@ def test_the_calendar_window_guard_names_the_rule_before_the_ddl_runs(db, bare_u
 
     Args:
         db: The session fixture.
-        bare_user: The owner.
+        seed_user: The owner fixture, whose account and category the rule's
+            owning definition is built on.
     """
     db.session.execute(sa.text(
         "ALTER TABLE budget.recurrence_rules "
         "DROP CONSTRAINT ck_recurrence_rules_starts_on_range"
     ))
-    rule_id = _plant_rule(bare_user["user"].id, "9999-12-31")
+    rule_id = _plant_rule(seed_user, "9999-12-31")
     db.session.flush()
 
     with pytest.raises(RuntimeError) as caught:
@@ -191,7 +201,7 @@ def test_the_calendar_window_guard_names_the_rule_before_the_ddl_runs(db, bare_u
 
 
 @pytest.mark.usefixtures("app")
-def test_the_calendar_window_guard_admits_a_date_inside_it(db, bare_user):  # pylint: disable=redefined-outer-name
+def test_the_calendar_window_guard_admits_a_date_inside_it(db, seed_user):
     """The control: a date the application's calendar reaches passes.
 
     Without it the case above would pass against a guard whose query matched
@@ -199,9 +209,10 @@ def test_the_calendar_window_guard_admits_a_date_inside_it(db, bare_user):  # py
 
     Args:
         db: The session fixture.
-        bare_user: The owner.
+        seed_user: The owner fixture, whose account and category the rule's
+            owning definition is built on.
     """
-    _plant_rule(bare_user["user"].id, "2026-01-15")
+    _plant_rule(seed_user, "2026-01-15")
     db.session.flush()
 
     # Must not raise; the assertion is the absence of the refusal.

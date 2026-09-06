@@ -69,6 +69,47 @@ class AnchorUpdateSchema(BaseSchema):
     observed_on = fields.Date()
 
 
+class OpeningRestatementSchema(BaseSchema):
+    """Validates POST data for restating what an account's books opened with.
+
+    Plan step **X-f3c-2b-2a**.  Two fields that are ONE fact -- "these books
+    opened on day D holding $E" -- and the sibling of
+    :class:`AnchorUpdateSchema` above rather than a variant of it: an opening
+    is not an assertion, and the whole of plan step X-f3c-2a is that conflating
+    the two gave the app two definitions of the same quantity.
+
+    **BOTH fields are required, where the assertion's day is optional**, and
+    the difference is what each act means.  A true-up with a blank date box
+    means *the balance I am reading right now*, which is a sensible default a
+    user takes a hundred times.  A restatement means *the figure on file is
+    wrong and here is the right one*; there is no day it defaults to, because
+    the day on file is exactly one of the two things being corrected.  The form
+    PRE-FILLS the standing values so the owner edits rather than retypes, and a
+    submission that changes neither is answered as idempotent success by ruling
+    **R-EQ** rather than refused here.
+
+    **The BOUNDS are not here**, for the reason :class:`AnchorUpdateSchema`
+    gives for its own: they compare against the DISPLAY timezone's today and
+    against the account's recorded movements, and a schema owns neither clock
+    nor query.  :mod:`app.services.opening_service` refuses both, so every
+    entrance to that door shares one rule.
+
+    ``opening_equity`` carries no sign validator, deliberately and for the same
+    reason the column carries no CHECK: the figure is LEDGER-NATIVE, positive
+    for an asset's opening capital and negative for a liability's (the Van
+    Loan's derived opening is ``-$531.94``), and ruling **R-J** forbids this
+    tier branching on account class.
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
+
+    opened_on = fields.Date(required=True)
+    opening_equity = fields.Decimal(required=True, places=2, as_string=True)
+
+
 class AccountCreateSchema(BaseSchema):
     """Validates POST data for creating an account."""
 

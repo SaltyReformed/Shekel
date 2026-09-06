@@ -21,17 +21,26 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.user import User, UserSettings
-from app.services import pay_period_service, pay_period_write
+from app.services import pay_period_write
 from app.services.auth_service import hash_password
 from app.services import account_service
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
-    make_every_period_rule,
+    rhythm_of,
+    an_asserted_day,
+    an_entered_day,
     append_balance_assertion,
     freeze_today,
+    make_every_period_rule,
     settle_instant_on,
 )
+from app.services.settle_day import (
+    record_settle_day,
+    recorded_settle_day,
+)
+from app.services.statement_match._candidates import purchase_candidate
+from app.models.amount_ownership import AmountOwnership
 
 # The three days the derived reconciled indicator turns on.  FIXED rather
 # than today-relative: the indicator compares two STORED days, so nothing
@@ -49,7 +58,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
     Entry tests use hardcoded purchase dates such as
     date(2026, 1, 5) and date(2026, 4, 12) that must fall inside the
     calendar-anchored seed_periods range.  Freezing today inside the
-    seeded range keeps get_current_period() deterministic without
+    seeded range keeps "which paycheck contains today" deterministic without
     disturbing those calendar values.
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
@@ -105,14 +114,11 @@ def _create_visible_tracked_txn(seed_user, seed_periods):
         name="Projected",
     ).one()
 
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     category = seed_user["categories"]["Groceries"]
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=category.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name="Weekly Groceries",
         default_amount=Decimal("500.00"),
@@ -121,9 +127,12 @@ def _create_visible_tracked_txn(seed_user, seed_periods):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     txn = Transaction(
         template_id=template.id,
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -131,7 +140,7 @@ def _create_visible_tracked_txn(seed_user, seed_periods):
         name="Weekly Groceries",
         category_id=category.id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("500.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -180,19 +189,12 @@ def _create_other_user_txn():
     db.session.flush()
 
 
-    # Bootstrap pay period (E-19, Commit 3): the
-    # account_service factory requires the user to have at
-    # least one pay period to anchor against.
-    from datetime import date as _date, timedelta as _td
-    from app.models.pay_period import PayPeriod as _PayPeriod
-    _bootstrap = _PayPeriod(
-        user_id=other_user.id,
-        start_date=_date(2024, 1, 5),
-        end_date=_date(2024, 1, 5) + _td(days=13),
-        period_index=0,
-    )
-    db.session.add(_bootstrap)
-    db.session.flush()
+    # The account_service factory requires the user to have at least one pay
+    # period to anchor against.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    from datetime import date as _date
+    from tests._test_helpers import open_owner_calendar as _open_calendar
+    _bootstrap = _open_calendar(other_user.id, _date(2024, 1, 5))[0]
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
@@ -229,7 +231,7 @@ def _create_other_user_txn():
         user_id=other_user.id,
         first_payday=date(2026, 1, 2),
         num_periods=3,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
 
@@ -239,6 +241,7 @@ def _create_other_user_txn():
     ).one()
 
     txn = Transaction(
+        user_id=periods[0].user_id,
         pay_period_id=periods[0].id,
         scenario_id=scenario.id,
         account_id=account.id,
@@ -246,7 +249,7 @@ def _create_other_user_txn():
         name="Other Groceries",
         category_id=category.id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("300.00"),
+        amount_ownership=AmountOwnership.own(Decimal("300.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -554,6 +557,7 @@ class TestCreateEntry:
 
             # Ad-hoc transaction (no template, not entry-capable).
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -561,7 +565,7 @@ class TestCreateEntry:
                 name="Phone Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("80.00"),
+                amount_ownership=AmountOwnership.own(Decimal("80.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -734,6 +738,207 @@ class TestAFutureEntryDateIsRefusedAtTheRoute:
 
 # ---- Update entry (PATCH) -----------------------------------------------
 
+class TestASignIsPICKEDAndNeverTyped:
+    """A typed minus cannot book a refund, on EITHER purchase form.
+
+    Developer ruling 2026-09-01, plan step ``bank_import:X-gj-2b-3``, after an
+    adversarial design review measured what the previous shape cost.
+
+    Ruling **bank_import:R-II** moved positivity off the table onto the
+    hand-entry door, and the branch that did it then deleted the bound from the
+    EDIT door as well -- because the inline form resubmits its amount box even
+    when the owner only changed a date, so a stored refund could not be
+    re-described while the box refused a negative.  That defect was real; the
+    remedy was aimed at the wrong tier.
+
+    **What it cost.**  ``EntryUpdateSchema`` is reached ONLY by the human PATCH
+    route, so both doors carrying this rule are doors a person types at -- and
+    one of them had no bound at all.  A typed ``-45.00`` where ``45.00`` was
+    meant booked a REFUND in silence and moved the projection by twice the
+    figure, while the identical keystroke on the ADD form was a 422.
+
+    Both forms take a MAGNITUDE now and state the direction beside it, so a
+    minus is not refused -- it is unrepresentable.  Every case here posts what
+    the template actually emits.
+    """
+
+    def test_a_typed_MINUS_is_refused_on_the_EDIT_form(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The keystroke that silently booked a refund.
+
+        Asserts the STORED figure as well as the status: a 422 that had already
+        written the row would be the worse failure, and only the second
+        assertion can see it.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"amount": "-45.00", "direction": "charge"},
+            )
+
+            assert resp.status_code == 422
+            db.session.refresh(entry)
+            assert entry.amount == Decimal("50.00"), (
+                "the refused edit must not have written anything"
+            )
+
+    def test_a_typed_MINUS_is_refused_on_the_ADD_form(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The control the edit form was measured against, unchanged."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/entries",
+                data={
+                    "amount": "-45.00", "direction": "charge",
+                    "description": "Kroger", "purchased_on": "2026-01-05",
+                },
+            )
+
+            assert resp.status_code == 422
+            assert db.session.query(TransactionEntry).count() == 0
+
+    def test_PICKING_refund_is_what_stores_a_negative(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The deliberate act, which must still work -- on the ADD form.
+
+        Without this the two refusals above are satisfied by a door that
+        cannot record a refund at all, which is the state ruling **R-II**
+        exists to end.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/entries",
+                data={
+                    "amount": "45.00", "direction": "refund",
+                    "description": "Amazon refund",
+                    "purchased_on": "2026-01-05",
+                },
+            )
+
+            assert resp.status_code == 200
+            [entry] = db.session.query(TransactionEntry).all()
+            assert entry.amount == Decimal("-45.00")
+
+    def test_FLIPPING_the_control_flips_a_stored_purchase(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """*This was actually a refund* is a real edit, and it is the control.
+
+        The magnitude is unchanged and only the direction moves, which is what
+        the form posts when the owner changes the select and nothing else.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"amount": "50.00", "direction": "refund"},
+            )
+
+            assert resp.status_code == 200
+            db.session.refresh(entry)
+            assert entry.amount == Decimal("-50.00")
+
+    def test_an_AMOUNT_without_its_DIRECTION_is_refused(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The pair travels together, and a half-submission is not guessed.
+
+        No browser can produce this -- the form renders both controls and
+        submits every control it holds -- so it is a stale or hand-made
+        payload.  Guessing a sign either way writes money the owner did not
+        state, which is the same choice ``_reject_incomplete_new_envelope``
+        makes about a new envelope stated by halves.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"amount": "75.00"},
+            )
+
+            assert resp.status_code == 422
+            db.session.refresh(entry)
+            assert entry.amount == Decimal("50.00")
+
+    def test_an_edit_touching_NEITHER_still_works(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The other half of "both or neither", and the case that keeps the
+        refusal from being a blanket one.
+
+        A settled parent renders no amount box and no direction control, so a
+        date-only save sends neither -- and must still be accepted.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"description": "Kroger Market"},
+            )
+
+            assert resp.status_code == 200
+            db.session.refresh(entry)
+            assert entry.description == "Kroger Market"
+            assert entry.amount == Decimal("50.00")
+
+    def test_BOTH_forms_render_the_direction_control(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The control has to EXIST, or every case above grades a payload
+        no screen can produce.
+
+        Reads the rendered entry list rather than asserting on the template
+        source: what a browser is handed is the subject.  The EDIT form renders
+        only for the entry being edited (``?editing=<id>``), so the list is
+        asked for in both states rather than once.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            listing = auth_client.get(
+                f"/transactions/{txn.id}/entries",
+            ).data.decode()
+            editing = auth_client.get(
+                f"/transactions/{txn.id}/entries?editing={entry.id}",
+            ).data.decode()
+
+            assert listing.count('name="direction"') == 1, (
+                "the ADD form states the direction"
+            )
+            assert editing.count('name="direction"') == 2, (
+                "the EDIT form states it too, beside the add form"
+            )
+            assert '<option value="refund"' in editing
+            # The stored sign PRESELECTS the control, and the box shows the
+            # magnitude -- so opening a refund and saving it unchanged writes
+            # the same figure back rather than flipping it.
+            assert 'value="50.00"' in editing
+
+
 class TestUpdateEntry:
     """Tests for PATCH /transactions/<txn_id>/entries/<entry_id>."""
 
@@ -748,7 +953,7 @@ class TestUpdateEntry:
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 200
 
@@ -821,16 +1026,25 @@ class TestUpdateEntry:
         self, app, auth_client, seed_user, seed_periods,
         seed_entry_template,
     ):
-        """PATCH with amount=0 returns 422 validation error."""
+        """PATCH with amount=0 returns 422 validation error.
+
+        **It posts the DIRECTION too, and without it this case stopped
+        grading zero** (plan step ``bank_import:X-gj-2b-3``).  The amount and
+        the direction are one answer, so an amount alone is refused by the
+        PAIRING rule before the magnitude bound is ever reached -- the 422
+        would still arrive and would say nothing about zero.
+        """
         with app.app_context():
             txn = seed_entry_template["transaction"]
             entry = _add_entry(txn, seed_user, "50.00", "Kroger")
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
-                data={"amount": "0"},
+                data={"amount": "0", "direction": "charge"},
             )
             assert resp.status_code == 422
+            db.session.refresh(entry)
+            assert entry.amount == Decimal("50.00")
 
     def test_hx_trigger_balance_changed(
         self, app, auth_client, seed_user, seed_periods,
@@ -843,7 +1057,7 @@ class TestUpdateEntry:
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 200
             assert resp.headers.get("HX-Trigger") == "balanceChanged"
@@ -857,7 +1071,7 @@ class TestUpdateEntry:
             txn = seed_entry_template["transaction"]
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/999999",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 404
 
@@ -995,9 +1209,9 @@ class TestTheDerivedPostedIndicator:
                 txn, seed_user, "50.00", "Kroger",
                 purchased_on=_PURCHASED_ON,
             )
-            entry.settled_on = _PURCHASED_ON
+            record_settle_day(entry, an_entered_day(_PURCHASED_ON))
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
             )
             db.session.commit()
@@ -1024,7 +1238,7 @@ class TestTheDerivedPostedIndicator:
                 purchased_on=_PURCHASED_ON,
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
             )
             db.session.commit()
@@ -1059,9 +1273,9 @@ class TestTheDerivedPostedIndicator:
                 txn, seed_user, "50.00", "Kroger",
                 purchased_on=_PURCHASED_ON,
             )
-            entry.settled_on = _POSTED_AFTER_THE_STATEMENT
+            record_settle_day(entry, an_entered_day(_POSTED_AFTER_THE_STATEMENT))
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
             )
             db.session.commit()
@@ -1089,7 +1303,7 @@ class TestTheDerivedPostedIndicator:
                 purchased_on=_PURCHASED_ON, is_credit=True,
             )
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
             )
             db.session.commit()
@@ -1158,9 +1372,9 @@ class TestTheSettledOnEditPath:
                 txn, seed_user, "50.00", "Kroger",
                 purchased_on=_PURCHASED_ON,
             )
-            entry.settled_on = _PURCHASED_ON
+            record_settle_day(entry, an_entered_day(_PURCHASED_ON))
             statement = append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, seed_user["account"],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
             )
             entry.reconciled_by_id = statement.id
@@ -1231,7 +1445,7 @@ class TestTheSettledOnEditPath:
                 txn, seed_user, "50.00", "Kroger",
                 purchased_on=date(2026, 1, 5),
             )
-            entry.settled_on = date(2026, 1, 7)
+            record_settle_day(entry, an_entered_day(date(2026, 1, 7)))
             db.session.commit()
 
             resp = auth_client.patch(
@@ -1414,7 +1628,16 @@ class TestEntryMutationSurfaces:
 
         The envelope budget is $500 (seed_entry_template) and the new
         entry is $50, so the re-rendered cell's progress display must
-        read ``50 / 500`` (entry total / estimated, ``{:,.0f}``).
+        read ``$50 / $500`` (entry total / estimated).
+
+        **It read ``50 / 500`` until plan step ``bank_import:X-gj-2b-3``**
+        (developer ruling 2026-09-01).  The cell formatted these two figures
+        with a raw ``"{:,.0f}".format`` rather than the ``money`` macro gate
+        B7 makes the one currency formatter; the raw spelling could not show a
+        sign while every purchase was positive, and ruling
+        **bank_import:R-II** made a refund a NEGATIVE purchase.  The macro is
+        what the mobile card beside it has always used for the same two
+        numbers.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -1433,7 +1656,7 @@ class TestEntryMutationSurfaces:
             # OOB fragment: the grid cell wrapper rides along...
             assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
             # ...carrying the refreshed spent/budget progress display.
-            assert "50 / 500" in html
+            assert "$50 / $500" in html
 
     def test_update_carries_oob_cell(
         self, app, auth_client, seed_user, seed_periods,
@@ -1442,7 +1665,9 @@ class TestEntryMutationSurfaces:
         """A popover-surface amount update returns the OOB cell.
 
         $50 entry updated to $75 against the $500 budget -> the cell
-        progress must read ``75 / 500``.
+        progress must read ``$75 / $500`` -- through the ``money`` macro since
+        plan step ``bank_import:X-gj-2b-3``, for the reason
+        :meth:`test_create_carries_oob_cell_with_updated_progress` states.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -1450,12 +1675,12 @@ class TestEntryMutationSurfaces:
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 200
             html = resp.data.decode()
             assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
-            assert "75 / 500" in html
+            assert "$75 / $500" in html
 
     def test_delete_carries_oob_cell(
         self, app, auth_client, seed_user, seed_periods,
@@ -1660,6 +1885,7 @@ class TestEntryTransactionMismatch:
 
         txn2 = Transaction(
             template_id=seed_entry_template["template"].id,
+            user_id=seed_periods[1].user_id,
             pay_period_id=seed_periods[1].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -1667,7 +1893,7 @@ class TestEntryTransactionMismatch:
             name="Weekly Groceries",
             category_id=seed_entry_template["category"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
         )
         db.session.add(txn2)
         db.session.commit()
@@ -1689,7 +1915,7 @@ class TestEntryTransactionMismatch:
             # Try to PATCH via txn1's URL.
             resp = auth_client.patch(
                 f"/transactions/{txn1.id}/entries/{entry.id}",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 404
 
@@ -1736,13 +1962,10 @@ class TestEntryTransactionMismatch:
                 Status,
             ).filter_by(name="Projected").one()
 
-            rule2 = make_every_period_rule(db.session, seed_user["user"].id)
-
             template_hidden = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
                 category_id=seed_entry_template["category"].id,
-                recurrence_rule_id=rule2.id,
                 transaction_type_id=expense_type.id,
                 name="Secret Groceries",
                 default_amount=Decimal("300.00"),
@@ -1751,9 +1974,12 @@ class TestEntryTransactionMismatch:
             )
             db.session.add(template_hidden)
             db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            rule2 = make_every_period_rule(db.session, template_hidden)
 
             txn_hidden = Transaction(
                 template_id=template_hidden.id,
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -1761,7 +1987,7 @@ class TestEntryTransactionMismatch:
                 name="Secret Groceries",
                 category_id=seed_entry_template["category"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
             db.session.add(txn_hidden)
             db.session.commit()
@@ -1773,7 +1999,7 @@ class TestEntryTransactionMismatch:
             comp = _login_companion(app)
             resp = comp.patch(
                 f"/transactions/{txn_visible.id}/entries/{entry.id}",
-                data={"amount": "75.00"},
+                data={"amount": "75.00", "direction": "charge"},
             )
             assert resp.status_code == 404
 
@@ -1836,7 +2062,7 @@ class TestCompanionAccess:
             comp = _login_companion(app)
             resp = comp.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
-                data={"amount": "60.00"},
+                data={"amount": "60.00", "direction": "charge"},
             )
             assert resp.status_code == 200
 
@@ -1953,6 +2179,7 @@ class TestPopoverIntegration:
             ).one()
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -1960,7 +2187,7 @@ class TestPopoverIntegration:
                 name="Phone Bill",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("80.00"),
+                amount_ownership=AmountOwnership.own(Decimal("80.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -1968,3 +2195,122 @@ class TestPopoverIntegration:
             resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
             assert resp.status_code == 200
             assert b"Purchases" not in resp.data
+
+
+class TestAnUntouchedSaveDoesNotLaunderTheDaysBASIS:
+    """Plan step **X-az**: the ECHO rule, at the door it was measured on.
+
+    **This is the defect two independent adversarial reviews found in X-az's
+    first build, and it is a REGRESSION they measured rather than reasoned.**
+    The purchase popover renders the Posted date input on every entry, prefilled
+    with the stored day and OUTSIDE the settled-parent guard -- so on a closed
+    envelope it is the only editable control there is.  An owner who opens the
+    row and saves re-submits the day it already carried.
+
+    Wrapping that submission as ``entered`` unconditionally rewrote the
+    reconcile panel's ``asserted`` UPPER BOUND as the owner's own typing, with
+    the day unchanged -- so nothing released the clearing link and nothing
+    signalled it -- and ``CandidateRow.expected_window`` then collapsed the
+    purchase from the span ``(purchased_on, settled_on)`` to a POINT at the
+    assertion day, out of reach of its own bank line.  An unexplained line is
+    what the merchant policy offers to RECORD, which is the duplicate mechanism
+    finding **N-332** prices at 50 purchases and `$3,590.00`.
+
+    Measured on production 2026-08-22: **59 of 66 linked purchases,
+    `$4,173.07`**, one innocuous save each.
+    """
+
+    _MADE_ON = date(2026, 1, 5)
+    _ASSERTED_FOR = date(2026, 2, 20)
+
+    def _ticked_purchase(self, txn, seed_user):
+        """Return a purchase in the state the reconcile panel's tick leaves.
+
+        An ``asserted`` day -- the day a BALANCE was asserted for, which is an
+        upper bound -- plus the link naming that assertion.
+        """
+        entry = _add_entry(
+            txn, seed_user, "18.64", "Food Lion",
+            purchased_on=self._MADE_ON,
+        )
+        anchor = append_balance_assertion(
+            db.session, seed_user["account"],
+            Decimal("1000.00"), settle_instant_on(self._ASSERTED_FOR),
+        )
+        record_settle_day(entry, an_asserted_day(self._ASSERTED_FOR))
+        entry.reconciled_by_id = anchor.id
+        db.session.commit()
+        return entry
+
+    def test_re_submitting_the_stored_day_keeps_the_asserted_basis(
+        self, app, db, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The defect itself, through the real PATCH the popover sends."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = self._ticked_purchase(txn, seed_user)
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"settled_on": self._ASSERTED_FOR.isoformat()},
+            )
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            saved = db.session.get(TransactionEntry, entry.id)
+            assert recorded_settle_day(saved) == an_asserted_day(
+                self._ASSERTED_FOR,
+            ), "an untouched save laundered a BOUND into the owner's own day"
+
+    def test_the_window_the_matcher_bounds_by_still_spans(
+        self, app, db, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """What the basis is FOR, asserted at the reader rather than the column.
+
+        The span is the whole cost of the defect: collapse it and the purchase
+        is unreachable from the bank line that explains it.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = self._ticked_purchase(txn, seed_user)
+
+            auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"settled_on": self._ASSERTED_FOR.isoformat()},
+            )
+
+            db.session.expire_all()
+            saved = db.session.get(TransactionEntry, entry.id)
+            assert purchase_candidate(saved).expected_window == (
+                self._MADE_ON, self._ASSERTED_FOR,
+            )
+
+    def test_a_day_the_owner_really_MOVED_is_their_own(
+        self, app, db, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The firing half: a genuine correction still records ``entered``.
+
+        Without it the rule is satisfied by one that never restates the basis,
+        which would report a day the owner typed as one a balance bounded --
+        the same laundering in the other direction.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = self._ticked_purchase(txn, seed_user)
+            corrected = self._ASSERTED_FOR - timedelta(days=3)
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"settled_on": corrected.isoformat()},
+            )
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            saved = db.session.get(TransactionEntry, entry.id)
+            assert recorded_settle_day(saved) == an_entered_day(corrected)
+            # A day that MOVED still releases the observation, which is the
+            # rule the echo test above must not have weakened.
+            assert saved.reconciled_by_id is None

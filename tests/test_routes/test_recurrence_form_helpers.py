@@ -40,7 +40,7 @@ from app.routes._commit_helpers import (
 )
 from app.routes._recurrence_form_helpers import (
     RecurrenceFormContext,
-    build_recurrence_rule_from_form,
+    recurrence_spec_from_form,
     resolve_recurrence_rule_for_update,
     update_recurrence_rule_from_form,
 )
@@ -50,13 +50,25 @@ from app.services.recurrence import (
     NEVER_ENDS,
     EndsOnDate,
     RecurrenceResolutionError,
+    RecurrenceSpec,
+    build_transient_rule,
     recurrence_spec,
     resolve,
 )
 from app.routes._recurrence_form_render import (
     create_form_default_starts_on,
 )
-from tests._test_helpers import transient_cadence_rule, validated_cadence
+from tests._test_helpers import (
+    create_loan_account,
+    derived_span,
+    freeze_today,
+    insert_trueup_event,
+    loan_params_for,
+    make_loan_payment_template,
+    transient_cadence_rule,
+    validated_cadence,
+)
+from app.services import loan_recurrence_sync
 from tests.oracles.recurrence_baseline import (
     EVERY_N_PERIODS,
     MONTHLY,
@@ -65,7 +77,7 @@ from tests.oracles.recurrence_baseline import (
 
 
 class TestBuildRecurrenceRuleFromForm:
-    """Helper :func:`build_recurrence_rule_from_form` contract tests."""
+    """Helper :func:`recurrence_spec_from_form` contract tests."""
 
     def test_no_pattern_returns_none_and_pops_all_keys(
         self, app, auth_client, seed_user,  # pylint: disable=unused-argument
@@ -98,7 +110,7 @@ class TestBuildRecurrenceRuleFromForm:
                 "starts_on": None,
                 "name": "Should survive",  # non-recurrence key
             }
-            result = build_recurrence_rule_from_form(
+            result = recurrence_spec_from_form(
                 data,
                 user_id=seed_user["user"].id,
                 ctx=RecurrenceFormContext(
@@ -127,7 +139,7 @@ class TestBuildRecurrenceRuleFromForm:
                 "due_day_of_month": 5,  # would never appear in real
                                         # transfer payload
             }
-            result = build_recurrence_rule_from_form(
+            result = recurrence_spec_from_form(
                 data,
                 user_id=seed_user["user"].id,
                 ctx=RecurrenceFormContext(
@@ -157,14 +169,11 @@ class TestBuildRecurrenceRuleFromForm:
         arithmetic and the assertion are unchanged.
         """
         with app.test_request_context():
-            period_unit_id = ref_cache.recurrence_unit_id(
-                RecurrenceUnitEnum.PERIOD,
-            )
             # Find a period with a known period_index for the
             # arithmetic.  seed_periods_today seeds an indexed range
             # around today; pick one with a non-zero index.
             chosen = next(
-                (p for p in seed_periods_today if p.period_index == 1),
+                (p for p in seed_periods_today if derived_span(p).period_index == 1),
                 None,
             )
             assert chosen is not None, "fixture missing period_index=1"
@@ -177,7 +186,7 @@ class TestBuildRecurrenceRuleFromForm:
                 "end_date": None,
             }
             data["starts_on"] = chosen.start_date
-            result = build_recurrence_rule_from_form(
+            result = recurrence_spec_from_form(
                 data,
                 user_id=seed_user["user"].id,
                 ctx=RecurrenceFormContext(
@@ -186,12 +195,12 @@ class TestBuildRecurrenceRuleFromForm:
                     include_due_day_of_month=True,
                 ),
             )
-            assert isinstance(result, RecurrenceRule)
+            assert isinstance(result, RecurrenceSpec)
             # 1 % 4 = 1.  Read through the resolver since plan step
             # R7c-c dropped the column -- see ``_phase_of``.
-            assert _phase_of(result) == 1
+            assert _phase_of_spec(result) == 1
             assert result.interval_n == 4
-            assert result.unit_id == period_unit_id
+            assert result.unit is RecurrenceUnitEnum.PERIOD
             # Every recurrence key should have been popped from data.
             assert data == {}
             # Roll back so the test does not pollute the session.
@@ -230,7 +239,7 @@ class TestBuildRecurrenceRuleFromForm:
                 # which states one whenever it states a cadence -- the schema
                 # requires the pair on a create (plan step R7c-b).
             }
-            result = build_recurrence_rule_from_form(
+            result = recurrence_spec_from_form(
                 data,
                 user_id=seed_user["user"].id,
                 ctx=RecurrenceFormContext(
@@ -240,7 +249,7 @@ class TestBuildRecurrenceRuleFromForm:
                 ),
             )
 
-            assert isinstance(result, RecurrenceRule)
+            assert isinstance(result, RecurrenceSpec)
             assert not isinstance(result, Response)
             assert result.starts_on == create_form_default_starts_on()
             assert data == {}
@@ -261,11 +270,8 @@ class TestBuildRecurrenceRuleFromForm:
         about the affordance.
         """
         with app.test_request_context():
-            month_unit_id = ref_cache.recurrence_unit_id(
-                RecurrenceUnitEnum.MONTH,
-            )
             own_period = next(
-                (p for p in seed_periods_today if p.period_index == 1),
+                (p for p in seed_periods_today if derived_span(p).period_index == 1),
                 None,
             )
             assert own_period is not None, "fixture missing period_index=1"
@@ -275,7 +281,7 @@ class TestBuildRecurrenceRuleFromForm:
                 "end_date": None,
                 "starts_on": own_period.start_date,
             }
-            result = build_recurrence_rule_from_form(
+            result = recurrence_spec_from_form(
                 data,
                 user_id=seed_user["user"].id,
                 ctx=RecurrenceFormContext(
@@ -284,11 +290,11 @@ class TestBuildRecurrenceRuleFromForm:
                     include_due_day_of_month=True,
                 ),
             )
-            assert isinstance(result, RecurrenceRule)
+            assert isinstance(result, RecurrenceSpec)
             assert result.starts_on == own_period.start_date
             # The phase is PERIOD-unit only, whatever the bound's index.
-            assert _phase_of(result) == 0
-            assert result.unit_id == month_unit_id
+            assert _phase_of_spec(result) == 0
+            assert result.unit is RecurrenceUnitEnum.MONTH
             db.session.rollback()
 
     def test_include_due_day_of_month_true_consumes_key(
@@ -308,7 +314,7 @@ class TestBuildRecurrenceRuleFromForm:
                 **validated_cadence(unit=RecurrenceUnitEnum.PERIOD),
                 "due_day_of_month": 15,
             }
-            result = build_recurrence_rule_from_form(
+            result = recurrence_spec_from_form(
                 data,
                 user_id=seed_user["user"].id,
                 ctx=RecurrenceFormContext(
@@ -317,7 +323,7 @@ class TestBuildRecurrenceRuleFromForm:
                     include_due_day_of_month=True,
                 ),
             )
-            assert isinstance(result, RecurrenceRule)
+            assert isinstance(result, RecurrenceSpec)
             assert result.due_day_of_month == 15
             assert "due_day_of_month" not in data
             db.session.rollback()
@@ -457,7 +463,6 @@ class TestAnEditCannotRePhaseARule:
             template = SimpleNamespace(
                 recurrence_rule=rule,
                 user_id=seed_user["user"].id,
-                recurrence_rule_id=None,
             )
             data = {
                 **validated_cadence(
@@ -514,22 +519,30 @@ class TestUpdateKeepsTheStatedStartsPhase:
         the derivation safe to run on every write.
         """
         with app.test_request_context():
-            rule = build_recurrence_rule_from_form(
-                {
-                    **validated_cadence(
-                        unit=RecurrenceUnitEnum.PERIOD, interval_n=3,
+            # The helper READS the submission and ``build_transient_rule``
+            # writes it (plan step R-F6): the two halves used to be one call,
+            # and they split because a rule cannot be written before the
+            # definition owning it.  Transient here -- what this case grades is
+            # the phase, which is a property of the resolution.
+            rule = build_transient_rule(
+                recurrence_spec_from_form(
+                    {
+                        **validated_cadence(
+                            unit=RecurrenceUnitEnum.PERIOD, interval_n=3,
+                        ),
+                        "due_day_of_month": None,
+                        "starts_on": seed_periods[2].start_date,
+                    },
+                    user_id=seed_user["user"].id,
+                    ctx=RecurrenceFormContext(
+                        end_bound=None,
+                        redirect=RedirectTarget(
+                            "templates.edit_template", {"template_id": 1},
+                        ),
+                        include_due_day_of_month=True,
                     ),
-                    "due_day_of_month": None,
-                    "starts_on": seed_periods[2].start_date,
-                },
-                user_id=seed_user["user"].id,
-                ctx=RecurrenceFormContext(
-                    end_bound=None,
-                    redirect=RedirectTarget(
-                        "templates.edit_template", {"template_id": 1},
-                    ),
-                    include_due_day_of_month=True,
                 ),
+                calendar_for(seed_user["user"].id),
             )
             assert _phase_of(rule) == 2
 
@@ -682,6 +695,23 @@ def _phase_of(rule):
     return resolve(
         recurrence_spec(rule), calendar_for(rule.user_id),
     ).offset_periods
+
+
+def _phase_of_spec(spec):
+    """Return the cycle phase *spec* resolves to.
+
+    :func:`_phase_of`'s sibling for the cases that read what the FORM
+    authored rather than what a row stored -- which is what
+    ``recurrence_spec_from_form`` answers since plan step R-F6 split reading a
+    submission from writing it.  Same producer, same question, one hop earlier.
+
+    Args:
+        spec: The :class:`~app.services.recurrence.RecurrenceSpec` to resolve.
+
+    Returns:
+        int: Its ``offset_periods`` phase.
+    """
+    return resolve(spec, calendar_for(spec.user_id)).offset_periods
 
 
 class TestTheColumnSaysWhatTheCadenceSays:
@@ -923,11 +953,15 @@ class TestAnUpdateMayNotInvertTheWindow:
     """
 
     @staticmethod
-    def _template_with(rule):
+    def _template_with(rule, user_id):
         """Return the minimal stand-in the refusal reads of a template.
 
         Args:
-            rule: The :class:`RecurrenceRule` it owns.
+            rule: The :class:`RecurrenceRule` it owns.  TRANSIENT here, which
+                is why the owner is stated separately: a rule reports its
+                ``user_id`` through the definition owning it since plan step
+                R-F6, and an unsaved rule has no owner to report.
+            user_id: The owner the stand-in claims.
 
         Returns:
             A ``SimpleNamespace`` carrying the three attributes the refusal
@@ -936,9 +970,8 @@ class TestAnUpdateMayNotInvertTheWindow:
         """
         return SimpleNamespace(
             recurrence_rule=rule,
-            recurrence_rule_id=rule.id,
             to_account_id=None,
-            user_id=rule.user_id,
+            user_id=user_id,
         )
 
     @staticmethod
@@ -970,17 +1003,93 @@ class TestAnUpdateMayNotInvertTheWindow:
         Returns:
             The flushed :class:`RecurrenceRule`.
         """
-        return build_recurrence_rule_from_form(
-            {
-                **validated_cadence(
-                    unit=RecurrenceUnitEnum.MONTH, starts_on=starts_on,
-                ),
-                "due_day_of_month": None,
-                "starts_on": starts_on,
-            },
-            user_id=seed_user["user"].id,
-            ctx=self._ctx(end_bound),
+        return build_transient_rule(
+            recurrence_spec_from_form(
+                {
+                    **validated_cadence(
+                        unit=RecurrenceUnitEnum.MONTH, starts_on=starts_on,
+                    ),
+                    "due_day_of_month": None,
+                    "starts_on": starts_on,
+                },
+                user_id=seed_user["user"].id,
+                ctx=self._ctx(end_bound),
+            ),
+            calendar_for(seed_user["user"].id),
         )
+
+    def test_a_definition_whose_window_the_APP_derives_is_NOT_refused(
+        self, app, auth_client, seed_user, db, seed_periods, monkeypatch,  # pylint: disable=unused-argument
+    ):
+        """A DERIVED inverted window is the app's answer, not the owner's mistake.
+
+        The same ruling that held ``ck_recurrence_rules_valid_window`` back,
+        applied to the door that reads the identical stored pair: refusing on
+        it would make this door the constraint the ruling declined to add.
+
+        **It became reachable at plan step ``recurrence:R7d-h``.**  A retired
+        loan's closing bound used to be the read pass's own now, which drifted
+        past ``starts_on`` and healed itself; it is now the day the loan
+        actually closed.  This loan originates 2026-06-20 with a
+        ``payment_day`` of 15 -- first installment 2026-07-15 -- and is cleared
+        the day after origination, so the sync writes the permanently inverted
+        pair ``[2026-07-15, 2026-06-21]`` through its own production door.
+
+        Without the skip the owner cannot re-save the cadence of their own
+        loan payment: the refusal fires on any submission that states a
+        ``recurrence_unit`` and leaves both bound keys to the stored pair,
+        which is every edit the "Repeats" controls make.  The form locks
+        "Starts on" and the "Ends" control for a loan payment but NOT that
+        select, so the edit is offered, refused with "ends before it starts",
+        and there is no control that could correct it.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 7, 1))
+            loan = create_loan_account(
+                seed_user, db.session, name="Cleared Early",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 6, 20), payment_day=15,
+            )
+            insert_trueup_event(
+                loan_params_for(db.session, loan.id), Decimal("0.00"),
+            )
+            tpl = make_loan_payment_template(
+                db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=15,
+            )
+            loan_recurrence_sync.bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+            db.session.commit()
+
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            db.session.commit()
+
+            rule = tpl.recurrence_rule
+            db.session.refresh(rule)
+            assert rule.end_date is not None and rule.end_date < rule.starts_on, (
+                "precondition: the sync must have written an INVERTED pair, "
+                f"got starts_on={rule.starts_on} end_date={rule.end_date}"
+            )
+            assert loan_recurrence_sync.owns_validity_window(tpl), (
+                "precondition: the app must own this definition's window"
+            )
+
+            with app.test_request_context():
+                refusal = resolve_recurrence_rule_for_update(
+                    tpl,
+                    {
+                        **validated_cadence(
+                            unit=RecurrenceUnitEnum.MONTH,
+                            states_a_start=False,
+                        ),
+                        "due_day_of_month": None,
+                    },
+                    ctx=self._ctx(None),
+                )
+
+            assert refusal is None, (
+                "an ordinary cadence edit was refused because the APP's own "
+                "derived window is inverted -- the owner has no control that "
+                "could fix it"
+            )
 
     def test_clearing_the_start_while_setting_an_earlier_end_is_refused(
         self, app, auth_client, seed_user, db, seed_periods,  # pylint: disable=unused-argument
@@ -996,7 +1105,7 @@ class TestAnUpdateMayNotInvertTheWindow:
             rule = self._monthly_rule(seed_user, date(2026, 6, 1))
 
             refusal = resolve_recurrence_rule_for_update(
-                self._template_with(rule),
+                self._template_with(rule, seed_user["user"].id),
                 {
                     **validated_cadence(
                         unit=RecurrenceUnitEnum.MONTH, states_a_start=False,
@@ -1026,7 +1135,7 @@ class TestAnUpdateMayNotInvertTheWindow:
             )
 
             refusal = resolve_recurrence_rule_for_update(
-                self._template_with(rule),
+                self._template_with(rule, seed_user["user"].id),
                 {
                     **validated_cadence(
                         unit=RecurrenceUnitEnum.MONTH,
@@ -1056,7 +1165,7 @@ class TestAnUpdateMayNotInvertTheWindow:
             rule = self._monthly_rule(seed_user, date(2026, 6, 1))
 
             outcome = resolve_recurrence_rule_for_update(
-                self._template_with(rule),
+                self._template_with(rule, seed_user["user"].id),
                 {
                     **validated_cadence(
                         unit=RecurrenceUnitEnum.MONTH,
@@ -1087,7 +1196,7 @@ class TestAnUpdateMayNotInvertTheWindow:
             )
 
             outcome = resolve_recurrence_rule_for_update(
-                self._template_with(rule),
+                self._template_with(rule, seed_user["user"].id),
                 {"default_amount": Decimal("10.00")},
                 ctx=self._ctx(None),
             )
@@ -1124,25 +1233,28 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
         ``loan_cadence_start`` for a day-less loan payment.
         """
         with app.test_request_context():
-            rule = build_recurrence_rule_from_form(
-                {
-                    **validated_cadence(
-                        unit=RecurrenceUnitEnum.MONTH,
-                        starts_on=date(2026, 4, 30),
-                        nominal_day=31,
+            rule = build_transient_rule(
+                recurrence_spec_from_form(
+                    {
+                        **validated_cadence(
+                            unit=RecurrenceUnitEnum.MONTH,
+                            starts_on=date(2026, 4, 30),
+                            nominal_day=31,
+                        ),
+                        "due_day_of_month": None,
+                        "starts_on": date(2026, 4, 30),
+                        "nominal_day": 31,
+                    },
+                    user_id=seed_user["user"].id,
+                    ctx=RecurrenceFormContext(
+                        end_bound=None,
+                        redirect=RedirectTarget(
+                            "templates.edit_template", {"template_id": 1},
+                        ),
+                        include_due_day_of_month=True,
                     ),
-                    "due_day_of_month": None,
-                    "starts_on": date(2026, 4, 30),
-                    "nominal_day": 31,
-                },
-                user_id=seed_user["user"].id,
-                ctx=RecurrenceFormContext(
-                    end_bound=None,
-                    redirect=RedirectTarget(
-                        "templates.edit_template", {"template_id": 1},
-                    ),
-                    include_due_day_of_month=True,
                 ),
+                calendar_for(seed_user["user"].id),
             )
             assert rule.nominal_day == 31
 
@@ -1179,25 +1291,28 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
         decaying to the 30th forever.
         """
         with app.test_request_context():
-            rule = build_recurrence_rule_from_form(
-                {
-                    **validated_cadence(
-                        unit=RecurrenceUnitEnum.MONTH,
-                        starts_on=date(2026, 4, 30),
-                        nominal_day=31,
+            rule = build_transient_rule(
+                recurrence_spec_from_form(
+                    {
+                        **validated_cadence(
+                            unit=RecurrenceUnitEnum.MONTH,
+                            starts_on=date(2026, 4, 30),
+                            nominal_day=31,
+                        ),
+                        "due_day_of_month": None,
+                        "starts_on": date(2026, 4, 30),
+                        "nominal_day": 31,
+                    },
+                    user_id=seed_user["user"].id,
+                    ctx=RecurrenceFormContext(
+                        end_bound=None,
+                        redirect=RedirectTarget(
+                            "templates.edit_template", {"template_id": 1},
+                        ),
+                        include_due_day_of_month=True,
                     ),
-                    "due_day_of_month": None,
-                    "starts_on": date(2026, 4, 30),
-                    "nominal_day": 31,
-                },
-                user_id=seed_user["user"].id,
-                ctx=RecurrenceFormContext(
-                    end_bound=None,
-                    redirect=RedirectTarget(
-                        "templates.edit_template", {"template_id": 1},
-                    ),
-                    include_due_day_of_month=True,
                 ),
+                calendar_for(seed_user["user"].id),
             )
 
             assert recurrence_spec(rule).nominal_day == 31
@@ -1214,25 +1329,28 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
         the 30th for good.
         """
         with app.test_request_context():
-            rule = build_recurrence_rule_from_form(
-                {
-                    **validated_cadence(
-                        unit=RecurrenceUnitEnum.MONTH,
-                        starts_on=date(2026, 4, 30),
-                        nominal_day=31,
+            rule = build_transient_rule(
+                recurrence_spec_from_form(
+                    {
+                        **validated_cadence(
+                            unit=RecurrenceUnitEnum.MONTH,
+                            starts_on=date(2026, 4, 30),
+                            nominal_day=31,
+                        ),
+                        "due_day_of_month": None,
+                        "starts_on": date(2026, 4, 30),
+                        "nominal_day": 31,
+                    },
+                    user_id=seed_user["user"].id,
+                    ctx=RecurrenceFormContext(
+                        end_bound=None,
+                        redirect=RedirectTarget(
+                            "templates.edit_template", {"template_id": 1},
+                        ),
+                        include_due_day_of_month=True,
                     ),
-                    "due_day_of_month": None,
-                    "starts_on": date(2026, 4, 30),
-                    "nominal_day": 31,
-                },
-                user_id=seed_user["user"].id,
-                ctx=RecurrenceFormContext(
-                    end_bound=None,
-                    redirect=RedirectTarget(
-                        "templates.edit_template", {"template_id": 1},
-                    ),
-                    include_due_day_of_month=True,
                 ),
+                calendar_for(seed_user["user"].id),
             )
 
             update_recurrence_rule_from_form(

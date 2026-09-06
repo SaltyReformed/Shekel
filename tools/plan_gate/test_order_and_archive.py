@@ -10,12 +10,15 @@ grading, which is the denormalization these registries exist to remove.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 import _archive as archive
 import _order as order
 import _registry as registry
-from _staging import row_of, with_cell
+from _classes import decomposition_leaf_keys
+from _staging import row_of, stage_a_live_container, with_cell
 
 
 class TestTheOrderIsATotalOrderTheGraphAllows:
@@ -78,11 +81,21 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
         ), problems
 
     def test_the_control_fires_on_an_unparseable_order_cell(self, stage):
-        """A row a reader cannot place in the sequence."""
-        line = row_of("steps", "| balance | X-am |")
+        """A row a reader cannot place in the sequence.
+
+        **Its specimen was ``balance:X-am`` and that step SHIPPED**, which
+        broke this control: a shipped row has no rank to make unparseable.
+        **A control may not derive its specimen from a live row**, and this one
+        does: re-pointing it at another live row only re-arms it for whoever
+        ships THAT one.  The standing fix is a control that builds its own
+        specimen, as ``pay_calendar:C2-f3e`` did for its own.
+        """
+        line = row_of("steps", "| balance | X-aj2 |")
         stage("steps", line, with_cell(line, 4, "soon"))
         problems = order.rank_violations()
-        assert any("balance:X-am" in p and "'soon'" in p for p in problems), problems
+        assert any(
+            "balance:X-aj2" in p and "'soon'" in p for p in problems
+        ), problems
 
     def test_two_unrelated_steps_may_not_share_one_rank(self, stage):
         """A rank repeats only where two names are ONE commit.
@@ -166,10 +179,10 @@ class TestTheStartsCellIsDerivedAndReconciled:
         """
         line = row_of("steps", "| credit_card | CC0a |")
         stage("steps", line, with_cell(
-            line, 6, "after #1 / balance:X-f4 / balance:X-am",
+            line, 6, "after #1 / balance:X-f4 / balance:X-aj2",
         ))
         latest = max(
-            order.rank_map()[key] for key in ("balance:X-f4", "balance:X-am")
+            order.rank_map()[key] for key in ("balance:X-f4", "balance:X-aj2")
         )
         problems = order.starts_violations()
         assert any(
@@ -219,6 +232,63 @@ class TestTheStartsCellIsDerivedAndReconciled:
         problems = order.starts_violations()
         assert any("balance:X-i" in p and f"#{ticks}" in p for p in problems), problems
 
+    def test_the_control_fires_on_a_container_whose_leaves_have_all_shipped(self, stage):
+        """A container ticks with its last leaf, and when that leaf ships so does it.
+
+        **This arm was BLIND until 2026-09-03** (finding N-472): a container whose
+        leaves have all shipped has no ranked leaf to derive a tick rank from, so
+        its ``ticks with #N`` was graded against nothing -- `balance:X-au-c` read
+        ``ticks with #7`` when measured and ``#6`` on dev a day later, with its
+        only leaf shipped, and staging ``#999`` there returned 0 violations.
+        The subject is DERIVED: a SHIPPED declared parent
+        whose leaves are all still in the index and all shipped is staged back to
+        ``container``, which is exactly the stale state, so the control does not
+        depend on the corpus holding one.
+        """
+        rows = registry.step_rows()
+        by_key = {row.key: row for row in rows}
+        leaves = {row.key: decomposition_leaf_keys(row, rows) for row in rows}
+        subject = next(
+            row for row in rows
+            if row.shipped and not row.is_container
+            and leaves[row.key]
+            and all(
+                by_key[key].shipped for key in leaves[row.key] if key in by_key
+            )
+        )
+        line = row_of("steps", f"| {subject.arc} | {subject.ident} |")
+        staged = with_cell(with_cell(with_cell(line, 4, "container"), 5, "--"), 6, "ticks with #1")
+        stage("steps", line, staged)
+        problems = order.starts_violations()
+        assert any(
+            subject.key in p and "have all SHIPPED" in p for p in problems
+        ), problems
+
+    def test_the_arm_stays_silent_for_a_parent_whose_leaves_left_the_index(self, stage):
+        """Rule 13: a parent holding no leaves is silence, not a failure.
+
+        Rule 5 archives completed spans, so a shipped parent may have NO leaf
+        left in the index, and the arm cannot tell that row from a plain leaf
+        that never had any -- both derive an EMPTY leaf set, and the guard on
+        that set is what is under test.  The subject is therefore any shipped
+        row with no leaf in the index, staged back to ``container``; it keeps a
+        stated rank so the ``stated is None`` arm, which grades a container
+        reading ``--``, stays out of the measurement.
+        """
+        rows = registry.step_rows()
+        subject = next(
+            row for row in rows
+            if row.shipped and not row.is_container
+            and not decomposition_leaf_keys(row, rows)
+        )
+        line = row_of("steps", f"| {subject.arc} | {subject.ident} |")
+        staged = with_cell(with_cell(with_cell(line, 4, "container"), 5, "--"), 6, "ticks with #1")
+        stage("steps", line, staged)
+        problems = order.starts_violations()
+        assert not any(
+            subject.key in p and "have all SHIPPED" in p for p in problems
+        ), problems
+
     def test_the_control_fires_on_a_container_whose_leaves_are_a_siblings(self, stage):
         """A container's leaves may be filed under an identity SIBLING's name.
 
@@ -231,30 +301,36 @@ class TestTheStartsCellIsDerivedAndReconciled:
         one identity class stating TWO tick ranks and every gate stayed green
         over it, which is the equally damning and accurate version.
         """
-        line = row_of("steps", "| balance | X-l |")
-        stage("steps", line, with_cell(line, 6, "ticks with #1"))
-        ticks = order.rank_map()["balance:X-l"]
+        members = stage_a_live_container(stage)
+        parent = members[0]
+        ticks = order.rank_map()[parent]
+        arc, ident = parent.split(":", 1)
+        line = row_of("steps", f"| {arc} | {ident} |")
+        stage("steps", line, with_cell(line, 6, f"ticks with #{ticks + 1}"))
         problems = order.starts_violations()
         assert any(
-            "balance:X-l" in p and f"#{ticks}" in p for p in problems
+            parent in p and f"#{ticks}" in p for p in problems
         ), problems
 
     def test_the_control_fires_on_a_one_way_alias_cell(self, stage):
         """Class membership is UNDIRECTED, or a blanked cell re-opens the hole.
 
-        `balance:X-l` carries no arc-local leaf, so its tick rank comes entirely
-        from the class.  Read the class off the parent's own `also` cell alone
+        The class's declared parent carries no arc-local leaf, so its tick rank
+        comes entirely from the class.  Read the class off the parent's own `also` cell alone
         and blanking that cell restores the exact blindness the sibling control
         above grades -- a stale tick rank with every arm green.  Measured on a
         staged copy 2026-08-11: 1 problem with the class intact, 0 without.
         """
-        ticks = order.rank_map()["balance:X-l"]
-        line = row_of("steps", "| balance | X-l |")
-        staged = with_cell(with_cell(line, 6, f"ticks with #{ticks - 1}"), 2, "--")
+        members = stage_a_live_container(stage)
+        parent = members[0]
+        ticks = order.rank_map()[parent]
+        arc, ident = parent.split(":", 1)
+        line = row_of("steps", f"| {arc} | {ident} |")
+        staged = with_cell(with_cell(line, 6, f"ticks with #{ticks + 1}"), 2, "--")
         stage("steps", line, staged)
         problems = order.starts_violations()
         assert any(
-            "balance:X-l" in p and f"#{ticks}" in p for p in problems
+            parent in p and f"#{ticks}" in p for p in problems
         ), problems
 
     def test_the_ready_count_matches_the_table(self):
@@ -289,10 +365,12 @@ class TestTheStartsCellIsDerivedAndReconciled:
 
     def test_the_control_fires_on_an_unparseable_head(self, stage):
         """Every other spelling of readiness used to read as legal."""
-        line = row_of("steps", "| balance | X-am |")
+        line = row_of("steps", "| balance | X-aj2 |")
         stage("steps", line, with_cell(line, 6, "whenever"))
         problems = order.starts_violations()
-        assert any("balance:X-am" in p and "'whenever'" in p for p in problems), problems
+        assert any(
+            "balance:X-aj2" in p and "'whenever'" in p for p in problems
+        ), problems
 
 
 class TestEveryStepSaysWhatItIsInOneSentence:
@@ -413,7 +491,19 @@ class TestAnArchivedDocumentSaysSoOnItsFirstLine:
 # which is what the rest of this module grades.
 
 class TestEveryRegistryIsUnderItsCap:
-    """conventions.md rule 4, on the five documents it did not used to reach."""
+    """conventions.md rule 4, on the documents it did not used to reach.
+
+    **``ledger.md`` and ``steps.md`` both LEFT this class on 2026-08-25, by
+    developer ruling**, and :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED` and
+    :class:`TestTheIndexIsBOUNDEDRatherThanCAPPED` are what replaced them.  The
+    argument is one argument, made twice: a line cap on a registry holding ONE
+    LINE PER THING is a cap on how many of that thing the project may have --
+    defects measured for the ledger, leaves DECOMPOSED for the index.  The
+    ledger's was raised three times and the fourth time it bound a finding was
+    written into a code docstring to get around it; the index's bound on
+    ``recurrence:R7d``'s seven-leaf split with no shipped row free to archive.
+    The arms both kept are a per-ROW cap and a runaway backstop.
+    """
 
     @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
     def test_the_registry_is_within_its_line_cap(self, name):
@@ -437,11 +527,16 @@ class TestEveryRegistryIsUnderItsCap:
         """A cap nobody has seen fail is a number, not a gate.
 
         EVERY registry is staged, not just the one being pushed over: the arm
-        walks all five, so a directory holding one file raises
+        walks them all, so a directory holding one file raises
         ``FileNotFoundError`` and the control fails for a reason that has
         nothing to do with the cap.
+
+        The subject was ``ledger.md`` until 2026-08-25, when its line cap was
+        dropped, and ``steps.md`` for the few hours between that ruling and the
+        one that dropped this file's too.  It is ``conventions.md`` now, which
+        is a registry the arm still holds.
         """
-        over = "ledger.md"
+        over = "conventions.md"
         for name, cap in registry.REGISTRY_CAPS.items():
             padding = cap + 1 if name == over else 1
             (tmp_path / name).write_text("filler\n" * padding)
@@ -449,3 +544,230 @@ class TestEveryRegistryIsUnderItsCap:
         problems = registry.registry_line_cap_violations()
         assert len(problems) == 1, problems
         assert problems[0].startswith(over) and "rule 4" in problems[0]
+
+
+class TestTheLedgerIsBOUNDEDRatherThanCAPPED:
+    """What replaced ``ledger.md``'s line cap (developer ruling 2026-08-25).
+
+    Three arms, and the split between them is the ruling: a row may not become
+    a specification (graded elsewhere, ``LEDGER_ROW_CAP``); a table larger than
+    any real backlog is an accident (graded here); and the backlog itself is
+    REPORTED rather than gated, because refusing to record a measured defect is
+    what the dropped cap did.
+    """
+
+    def test_the_ledger_carries_no_line_cap(self):
+        """The ruling, asserted -- a re-added cap must be a decision, not a merge."""
+        assert "ledger.md" not in registry.REGISTRY_CAPS, (
+            "ledger.md's line cap was dropped 2026-08-25; putting it back is a "
+            "developer ruling, not something a merge does quietly"
+        )
+
+    def test_the_real_ledger_is_under_the_runaway_backstop(self):
+        """The live file, so the backstop is a fact rather than a constant."""
+        assert registry.ledger_runaway_violation() is None
+
+    def test_the_backstop_fires_on_a_table_that_could_only_be_an_accident(
+        self, monkeypatch,
+    ):
+        """A backstop nobody has seen fail is a number, not a gate."""
+        monkeypatch.setattr(registry, "LEDGER_RUNAWAY_ROWS", 1)
+        violation = registry.ledger_runaway_violation()
+        assert violation is not None
+        assert "runaway backstop" in violation
+
+    def test_the_backlog_is_reported_per_arc_and_sums_to_the_table(self):
+        """The signal the cap was standing in for, and it must be complete.
+
+        Summing it against the row count is what stops the report drifting
+        into a partial view of the pile it exists to keep visible.
+        """
+        by_arc = registry.open_findings_by_arc()
+
+        assert by_arc, "a ledger with rows reports a backlog"
+        assert sum(count for _, count in by_arc) == len(registry.ledger_rows())
+        assert by_arc == sorted(by_arc, key=lambda pair: (-pair[1], pair[0]))
+
+
+class TestTheLedgerStatesItsBACKLOG:
+    """The by-arc split, which is what the dropped line cap was standing in for.
+
+    Developer ruling 2026-08-25: ``ledger.md`` carries no line cap, and the
+    forcing function moved onto the number instead of the file.  A gate may not
+    refuse to record a defect somebody has measured -- it did, twice in three
+    days, and the second time a finding went into a code docstring to get round
+    it.  What is graded now is that the pile is stated TRUTHFULLY where every
+    reader of the file meets it.
+    """
+
+    def test_the_stated_split_matches_the_table(self):
+        """The live file."""
+        assert registry.stated_arc_counts_violation() is None
+
+    @staticmethod
+    def _live_split():
+        """Return the by-arc sentence's ``[(arc, count)]``, read off the file.
+
+        **DERIVED, because a control that NAMES a volatile value is a second
+        copy of it.**  These three planted their defect with the arc and the
+        number written out -- ``"By arc: balance 156"`` -- so the control went
+        stale on any tree whose ledger differed by one finding, which is every
+        concurrent branch that opens or closes one.  Measured 2026-08-25: the
+        `recurrence:R7d-a` gate run against the `bank_import:X-gc` branch's
+        plan documents failed three of these and NOTHING else, purely on the
+        anchors.  Two branches editing an anchor also collide where the same
+        control derived from the file cannot.  Same move
+        `pay_calendar:C2-f3e` made for a sibling control, closing row D42.
+
+        Uses the parser's own whitespace collapse so a formatter's line wrap
+        does not change what the control anchors on -- the very property the
+        third test below grades.
+        """
+        text = registry.LEDGER.read_text()
+        sentence = " ".join(text.split("By arc:", 1)[-1].split(".", 1)[0].split())
+        pairs = [(arc, int(n)) for arc, n in re.findall(r"([a-z_]+) (\d+)", sentence)]
+        assert len(pairs) >= 2, "ledger.md states no by-arc split to plant in"
+        return pairs
+
+    def test_the_control_fires_on_a_stale_split(self, stage):
+        """A number nobody grades is a number that goes stale.
+
+        Staged on the REAL file, so the control exercises the same parser on
+        the same shape the live document uses.
+        """
+        arc, count = self._live_split()[0]
+        stage("ledger", f"By arc: {arc} {count}", f"By arc: {arc} {count - 1}")
+
+        violation = registry.stated_arc_counts_violation()
+
+        assert violation is not None
+        assert str(count) in violation and str(count - 1) in violation
+
+    def test_the_control_fires_when_the_split_is_deleted(self, stage):
+        """Deleting the sentence must fail loudly, not read as agreement."""
+        arc, count = self._live_split()[0]
+        stage(
+            "ledger", f"By arc: {arc} {count}", f"By nothing at all: {arc} {count}",
+        )
+
+        assert registry.stated_arc_counts_violation() is not None
+
+    def test_a_line_wrap_inside_the_sentence_is_not_a_disagreement(self, stage):
+        """The formatter re-wraps this prose, and it once split an arc's count.
+
+        ``rumdl`` normalises paragraphs to 100 characters, and one such wrap
+        landed between ``bank_import`` and its number -- which the first parser
+        read as that arc having gone missing, on a sentence that was true.  A
+        gate whose answer depends on where a formatter broke a line is a gate
+        that fails for the wrong reason.
+
+        Planted at the first arc boundary that is still on ONE line, derived,
+        because naming the arc would re-introduce the staleness
+        :meth:`_live_split` exists to remove -- and because the sentence is
+        ALREADY wrapped somewhere by the time it is 100 characters long. On
+        2026-08-25 that live wrap sat between ``bank_import`` and its number,
+        which is the exact defect this grades, so a control that planted its
+        own wrap at the last boundary could not find an anchor at all.
+        """
+        text = registry.LEDGER.read_text()
+        pairs = self._live_split()
+        planted = False
+        for (arc, count), (nxt, _) in zip(pairs, pairs[1:]):
+            anchor = f"{arc} {count}, {nxt}"
+            if anchor not in text:
+                continue
+            stage("ledger", anchor, f"{arc} {count},\n{nxt}")
+            planted = True
+            break
+        assert planted, (
+            "no arc boundary in the by-arc sentence sits on one line, so this "
+            "control planted nothing -- a check that can pass by producing "
+            "nothing is not a check"
+        )
+
+        assert registry.stated_arc_counts_violation() is None
+
+
+class TestTheIndexIsBOUNDEDRatherThanCAPPED:
+    """What replaced ``steps.md``'s line cap (developer ruling 2026-08-25).
+
+    The same three-way split :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED`
+    records, one registry over: a ROW may not become a specification (graded by
+    rule 14's description cap); a table larger than any real plan is an accident
+    (graded here); and what the file's LENGTH was ever a proxy for -- can a cold
+    reader find the next step -- is graded directly by rule 3's counts and rule
+    14's dense ranks, which do not care how long the table is.
+    """
+
+    def test_the_index_carries_no_line_cap(self):
+        """The ruling, asserted -- a re-added cap must be a decision, not a merge."""
+        assert "steps.md" not in registry.REGISTRY_CAPS, (
+            "steps.md's line cap was dropped 2026-08-25; putting it back is a "
+            "developer ruling, not something a merge does quietly"
+        )
+
+    def test_the_real_index_is_under_the_runaway_backstop(self):
+        """The live file, so the backstop is a fact rather than a constant."""
+        assert registry.steps_runaway_violation() is None
+
+    def test_the_backstop_fires_on_a_table_that_could_only_be_an_accident(
+        self, monkeypatch,
+    ):
+        """A backstop nobody has seen fail is a number, not a gate."""
+        monkeypatch.setattr(registry, "STEPS_RUNAWAY_ROWS", 1)
+        violation = registry.steps_runaway_violation()
+        assert violation is not None
+        assert "runaway backstop" in violation
+
+
+class TestTheOrderTableIsSorted:
+    """conventions.md rule 14: the table is SORTED, and holds only positions.
+
+    **The arm whose absence let the live document drift.** Every other order
+    arm grades the ``order`` COLUMN and none reads where a row physically
+    SITS, so the column stayed perfect while the file stopped being sorted --
+    `#16` above `#15`, three recurrence rows at `#81`-`#83` wedged between
+    `#15` and `#17`, and three SHIPPED rows inside the order table. The gate
+    passed 200/200 the whole time.
+    """
+
+    def test_the_live_order_table_is_sorted(self):
+        """The live table reads in rank order and holds nothing else."""
+        assert not order.row_order_violations()
+
+    def test_the_live_corpus_has_enough_rows_to_grade(self):
+        """A rule with no subject is untested by the clean case above.
+
+        Two premises: several ranked rows exist, so "ascending" can fail; and
+        unranked rows exist somewhere in the file, so "contiguous" is a real
+        constraint rather than one nothing could violate.
+        """
+        rows = registry.step_rows()
+        assert sum(1 for row in rows if row.rank is not None) >= 50
+        assert any(row.rank is None for row in rows), (
+            "no unranked row anywhere -- the contiguity arm grades nothing"
+        )
+
+    def test_the_control_fires_when_a_row_sits_below_a_higher_rank(self, stage):
+        """The defect: a sorted-looking table whose first row is not next."""
+        line = row_of("steps", "| balance | X-f4 |")
+        stage("steps", line, with_cell(line, 4, "#90"))
+        problems = order.row_order_violations()
+        assert any(
+            "balance:X-f4" in p and "sits BELOW" in p for p in problems
+        ), problems
+
+    def test_the_control_fires_on_an_unranked_row_inside_the_order(self, stage):
+        """A SHIPPED row left in the order table is not a position.
+
+        This is the live defect the arm was written for: three of them sat in
+        the order table -- ``bank_import:X-f6a-4``, ``balance:X-au-c3`` and
+        ``recurrence:R-F17`` -- while every column-grading arm passed.
+        """
+        line = row_of("steps", "| balance | X-f4 |")
+        stage("steps", line, with_cell(line, 4, "SHIPPED"))
+        problems = order.row_order_violations()
+        assert any(
+            "balance:X-f4" in p and "INSIDE the order table" in p
+            for p in problems
+        ), problems

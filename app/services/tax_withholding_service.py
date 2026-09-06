@@ -40,25 +40,27 @@ Period-partition rule (the load-bearing edge behaviour):
 * A checkpoint whose ``as_of_date`` falls in a DIFFERENT year is ignored
   (``latest_checkpoint`` scopes to the requested year).
 
-Full-year engine context (how the remainder is computed):
+Year-cumulative engine context (how the remainder is computed):
 
-The partition above decides WHICH paydays are modeled; the projection
-itself runs ``project_salary`` over the ENTIRE year's period list and then
-sums only the remainder periods' breakdowns.  The paycheck engine derives
-its year-cumulative state from the period list it is handed: cumulative
-wages drive the Social Security wage-base cap and the Medicare surtax
-threshold, and the month grouping drives 3rd-paycheck detection and
-monthly-capped deductions (which feed pre-tax and therefore federal
-withholding).  Projecting over only the remainder would restart all of
-that at zero mid-year -- a high earner who already crossed the SS cap in
-the measured half would be re-charged SS across the remainder.  Full-list
-projection matches how the year-end summary projects the same year.
+The partition above decides WHICH paydays are modeled, and since plan step
+**balance:X-bh-1** the projection prices exactly those.  It ran
+``project_salary`` over the ENTIRE year's period list and filtered the
+remainder's breakdowns back out, because the engine derived its
+year-cumulative state from the period list it was handed: cumulative wages
+drive the Social Security wage-base cap and the Medicare surtax threshold,
+and the month grouping drives 3rd-paycheck detection and monthly-capped
+deductions (which feed pre-tax and therefore federal withholding).
+Projecting over only the remainder would have restarted all of that at zero
+mid-year -- a high earner who already crossed the SS cap in the measured half
+would have been re-charged SS across the remainder.  **That state now comes
+off the owner's pay CALENDAR**, which no caller can narrow, so the same
+figures come out of a projection that prices only what it sums.
 
 Residual approximation, stated honestly: the remainder's cumulative
-context comes from the MODELED elapsed periods (the engine replays the
+context comes from the MODELED elapsed paychecks (the engine replays the
 year from the profile), not from the checkpoint's measured ``ytd_gross``.
 When the stub's actual gross differs from the modeled gross, the
-cap-crossing period can shift by that difference.  Exact when the two
+cap-crossing paycheck can shift by that difference.  Exact when the two
 coincide, and strictly better than restarting the year at zero.
 """
 
@@ -69,6 +71,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import paycheck_calculator
+from app.services.payroll_basis import PayrollBasis
 from app.services.tax_config_service import load_tax_configs_for_year
 
 ZERO = Decimal("0")
@@ -225,8 +228,42 @@ def save_checkpoint(
     return checkpoint
 
 
+def year_paydays(calendar, year: int) -> tuple:
+    """Return the owner's SAVED periods whose payday falls in *year*.
+
+    **The single "which paychecks does this tax year hold" rule.**  It lived
+    in ``tax_report_service`` and was passed IN here beside the calendar it
+    was derived from until plan step **balance:X-bh-1**, so three arguments --
+    ``periods``, ``year`` and ``calendar`` -- encoded one fact with nothing
+    reconciling them.  An adversarial review of that step named it as the same
+    shape the step had just deleted from the paycheck engine one layer down,
+    and worse for being newly LOUD: ``_month_ordinal`` now refuses a paycheck
+    its calendar cannot place, so a mismatched pair became a 500 on
+    ``/analytics/taxes`` where it had been a wrong number.
+
+    It is HERE rather than in ``tax_report_service`` because that module
+    already imports this one, so the dependency stays one-way.
+
+    Args:
+        calendar: The owner's
+            :class:`~app.services.pay_calendar.PayCalendar`.
+        year: The calendar/tax year to scope paydays to.
+
+    Returns:
+        The year's :class:`~app.services.pay_calendar.DerivedPeriod` values as
+        a tuple, possibly empty.  A tuple rather than a
+        :class:`~app.services.pay_calendar.PeriodWindow`: a year slice is a
+        FILTER of the calendar, and the window type is produced only by the
+        calendar's own view methods.
+    """
+    return tuple(
+        period for period in calendar.saved()
+        if period.start_date.year == year
+    )
+
+
 def compute_withholding_to_date(
-    user_id: int, profile, year: int, periods: list,
+    user_id: int, profile, year: int, calendar,
 ) -> WithholdingToDate:
     """Compute withholding-to-date = measured checkpoint + modeled remainder.
 
@@ -235,11 +272,7 @@ def compute_withholding_to_date(
     does not cover (``start_date > checkpoint.as_of_date``) through
     ``paycheck_calculator.project_salary``, which applies the profile's
     active calibration automatically.  With no checkpoint the measured side
-    is zero and the whole ``periods`` list is modeled.  The projection runs
-    over the FULL year's period list so the engine's year-cumulative state
-    (SS wage-base cap, Medicare surtax, monthly deduction caps) is intact;
-    only the remainder periods' breakdowns are summed (see the module
-    docstring's "Full-year engine context").
+    is zero and the whole ``periods`` list is modeled.
 
     The projection uses the same per-year tax configs SSOT
     (:func:`load_tax_configs_for_year`) and the same ``project_salary``
@@ -248,14 +281,25 @@ def compute_withholding_to_date(
 
     Args:
         user_id: The owning user's id (tax configs are per-user).
-        profile: The :class:`~app.models.salary_profile.SalaryProfile`,
-            with its ``raises``, ``deductions``, and ``calibration``
-            relationships available (read by ``project_salary``).
-        year: The tax year; every period in *periods* is expected to fall
-            in it (the caller loads the year's periods).
-        periods: The tax year's :class:`~app.services.pay_calendar.DerivedPeriod`
-            list.  PASSED IN (this module performs no pay-period query);
-            an empty list yields an all-zero modeled remainder.
+        profile: The :class:`~app.models.salary_profile.SalaryProfile`, with
+            its ``raises``, ``deductions``, and ``calibration`` relationships
+            available (read by ``project_salary``).
+        year: The tax year.  The paydays it covers are derived here from
+            *calendar* through :func:`year_paydays`, rather than passed in
+            beside it -- see that function for what the third argument cost.
+        calendar: The owner's
+            :class:`~app.services.pay_calendar.PayCalendar` -- the paycheck
+            count the engine divides the annual salary by and the payday set
+            its year-cumulative state is counted over.  It was a bare
+            :class:`~app.services.pay_calendar.PayCadence` until plan step
+            **balance:X-bh-1**, taken beside the profile so this function
+            could decide whether a projection was needed BEFORE anything
+            asked for a cadence an owner may never have stated.  A calendar
+            can always be built, so that ordering is no longer load-bearing:
+            :attr:`~app.services.payroll_basis.PayrollBasis.periods_per_year`
+            resolves the cadence on read, and an owner with no cadence has no
+            payday, so they reach the all-zero remainder below without one
+            ever being asked for.
 
     Returns:
         The populated :class:`WithholdingToDate` (totals + measured /
@@ -263,7 +307,14 @@ def compute_withholding_to_date(
     """
     checkpoint = latest_checkpoint(profile.id, year)
     measured = _measured_components(checkpoint)
-    projected = _project_remainder(user_id, profile, year, periods, checkpoint)
+    remainder = _remainder_periods(year_paydays(calendar, year), checkpoint)
+    projected = (
+        _project_remainder(
+            user_id, PayrollBasis(profile, calendar), year, remainder,
+        )
+        if remainder
+        else _ZERO_COMPONENTS
+    )
 
     total = WithholdingComponents(
         gross=measured.gross + projected.gross,
@@ -308,67 +359,85 @@ def _measured_components(
     )
 
 
+def _remainder_periods(
+    periods: list, checkpoint: YtdTaxCheckpoint | None,
+) -> tuple:
+    """Return the periods a checkpoint does NOT cover.
+
+    The module's partition rule, and its own function since plan step
+    **R-F16**: a period is MODELLED when its payday ``start_date`` is STRICTLY
+    after the checkpoint date, and every period is modelled when there is no
+    checkpoint.  Split out of :func:`_project_remainder` so the caller can ask
+    "is there anything to project?" before doing any of the work.
+
+    **It returns the PERIODS rather than their ids** since plan step
+    **balance:X-bh-1**.  The ids existed to filter breakdowns back out of a
+    FULL-year projection, which the engine no longer needs: its year-cumulative
+    state comes off the owner's calendar rather than off the list it is handed,
+    so the remainder can simply be projected.
+
+    Args:
+        periods: The tax year's pay periods (may be empty).
+        checkpoint: The measured checkpoint, or ``None``.
+
+    Returns:
+        The periods to model, in the order given.  Empty when the checkpoint
+        covers the whole list, and when the list itself is empty.
+    """
+    return tuple(
+        p for p in periods
+        if checkpoint is None or p.start_date > checkpoint.as_of_date
+    )
+
+
 def _project_remainder(
     user_id: int,
-    profile,
+    basis,
     year: int,
-    periods: list,
-    checkpoint: YtdTaxCheckpoint | None,
+    remainder: tuple,
 ) -> WithholdingComponents:
-    """Project the year with full context and sum the remainder's withholding.
+    """Price the remainder's paychecks and sum their withholding.
 
-    Partitions *periods* by the module's rule (a period is modeled when its
-    payday ``start_date`` is STRICTLY after the checkpoint date; every
-    period when *checkpoint* is ``None``), then delegates to
-    ``paycheck_calculator.project_salary`` over the FULL *periods* list --
-    NOT just the remainder -- so the engine's year-cumulative state is
-    intact: cumulative wages for the SS wage-base cap and the Medicare
-    surtax threshold, and month grouping for 3rd-paycheck detection and
-    monthly-capped deductions (see the module docstring's "Full-year
-    engine context").  Only the remainder periods' breakdowns are summed.
+    **It projects ONLY the remainder since plan step balance:X-bh-1**, and the
+    reason it used to project the whole year is gone rather than waived.  The
+    engine derived its year-cumulative state from the period list it was
+    handed -- cumulative wages for the SS wage-base cap and the Medicare surtax
+    threshold, and month grouping for 3rd-paycheck detection and
+    monthly-capped deductions -- so pricing only the remainder would have
+    restarted all of it at zero mid-year, and a high earner who had already
+    crossed the SS cap in the measured half would have been re-charged SS
+    across the remainder.  That state now comes off ``basis.calendar``, which
+    the measured half does not narrow, so the full-year projection and its
+    filter-back-out bought nothing but the work.  The figures are unchanged:
+    every breakdown the filter kept is the breakdown this prices.
 
-    The filter keys on ``PaycheckBreakdown.period.period_id``:
-    ``project_salary`` returns exactly one breakdown per passed period,
-    each stamped with its own period's id via :class:`PeriodInfo`, so the
-    breakdown-to-period pairing is the engine's own contract rather than
-    positional zip order.
-
-    An empty remainder short-circuits to all zeros before any projection
-    (nothing to model, and ``project_salary`` is not free on a 26-period
-    year).
+    **The caller decides whether to call this at all**, on
+    :func:`_remainder_periods`: an empty remainder means nothing to model, and
+    ``project_salary`` is not free on a 26-period year.
 
     Args:
         user_id: The owning user's id (per-user tax configs).
-        profile: The salary profile to project (calibration-aware via
-            ``profile.calibration``).
+        basis: The :class:`~app.services.payroll_basis.PayrollBasis` to
+            project -- the salary profile bound to its owner's pay calendar,
+            calibration-aware via ``basis.profile.calibration``.
         year: The tax year whose configs to load.
-        periods: The tax year's FULL pay-period list (may be empty).
-        checkpoint: The measured checkpoint, or ``None`` (fully modeled).
+        remainder: The non-empty tuple of periods to price, from
+            :func:`_remainder_periods`.
 
     Returns:
         The summed modeled remainder as a :class:`WithholdingComponents`.
     """
-    remainder_ids = {
-        p.period_id for p in periods
-        if checkpoint is None or p.start_date > checkpoint.as_of_date
-    }
-    if not remainder_ids:
-        return _ZERO_COMPONENTS
-
-    tax_configs = load_tax_configs_for_year(user_id, profile, year)
+    tax_configs = load_tax_configs_for_year(user_id, basis.profile, year)
     breakdowns = paycheck_calculator.project_salary(
-        profile, periods, tax_configs,
-        calibration=profile.calibration,
+        basis, remainder, tax_configs,
+        calibration=basis.profile.calibration,
     )
-    remainder = [
-        bd for bd in breakdowns if bd.period.period_id in remainder_ids
-    ]
     return WithholdingComponents(
-        gross=sum((bd.earnings.gross_biweekly for bd in remainder), ZERO),
-        federal=sum((bd.taxes.federal for bd in remainder), ZERO),
-        state=sum((bd.taxes.state for bd in remainder), ZERO),
+        gross=sum((bd.earnings.gross_biweekly for bd in breakdowns), ZERO),
+        federal=sum((bd.taxes.federal for bd in breakdowns), ZERO),
+        state=sum((bd.taxes.state for bd in breakdowns), ZERO),
         social_security=sum(
-            (bd.taxes.social_security for bd in remainder), ZERO,
+            (bd.taxes.social_security for bd in breakdowns), ZERO,
         ),
-        medicare=sum((bd.taxes.medicare for bd in remainder), ZERO),
+        medicare=sum((bd.taxes.medicare for bd in breakdowns), ZERO),
     )

@@ -72,7 +72,9 @@ _ZERO_MONEY = Decimal("0.00")
 
 # Contract-order tie tags: a PAYMENT sorts before an ANCHOR on a shared date, so a
 # payment due exactly on an anchor's date is subsumed by that anchor's reset -- the
-# SAME tie-break the walk applies (``loan_ledger.merge_anchor_and_payment_events``).
+# SAME tie-break the walk applies (``loan_ledger.replay_loan_events``, which
+# orders charge -> payment -> reset within a date).  Charges are absent here: a
+# confirmed row reads the split its payment already carries, never re-accrues.
 _TAG_PAYMENT = 0
 _TAG_ANCHOR = 1
 

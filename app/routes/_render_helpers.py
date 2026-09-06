@@ -21,10 +21,11 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.cash_ledger import (
     amount_basis,
-    display_amounts_by_id,
+    amounts_by_id,
     recorded_amounts_by_id,
 )
 from app.services.entry_service import build_entry_sums_dict
+from app.services.grid_view_service import due_captions_by_id
 from app.services.transaction_service import retained_settle_amounts_by_id
 from app.services.transfer_service import load_transfer_rows
 
@@ -59,7 +60,7 @@ class RenderAmounts:
 
     Attributes:
         budgets: ``{transaction_id: what the row's amount IS}`` --
-            :func:`~app.services.cash_ledger.display_amounts_by_id`.
+            :func:`~app.services.cash_ledger.amounts_by_id`.
         settled: ``{transaction_id: what its money DID}``, ``None`` per row that
             has not settled or records nothing --
             :func:`~app.services.cash_ledger.recorded_amounts_by_id`.  The
@@ -87,7 +88,7 @@ def fragment_amounts(txn: Transaction) -> RenderAmounts:
     cell would render an empty string where a figure belongs.
 
     **It answers by the same rule the pages do** --
-    :func:`~app.services.cash_ledger.display_amounts_by_id`, the resolved amount
+    :func:`~app.services.cash_ledger.amounts_by_id`, the resolved amount
     superseded by a live recompute.  An adversarial review found that rule
     written twice and differently: the grid merged the seam's override map over
     its resolved one while every fragment published the resolved map ALONE under
@@ -116,9 +117,24 @@ def fragment_amounts(txn: Transaction) -> RenderAmounts:
         A :class:`RenderAmounts` whose three maps hold one entry each, keyed
         for the templates and the entry builders, which all index a map.
     """
+    # **A SETTLED salary row now costs a projection here, and it did not
+    # before** (plan step balance:X-au-d, named by that step's adversarial
+    # review rather than found later).  Such a row used to resolve through
+    # amount rule 1 -- a column read -- and the read-time repair returned early
+    # on ``is_projected``; it DECLARES its definition now, so rendering one
+    # fragment runs ``paycheck_calculator.project_salary`` over the owner's
+    # whole pay-period set.  Measured on the 2026-09-02 production clone: 8
+    # statements, and one basis, for one row.
+    #
+    # It is not threaded from a read pass because a FRAGMENT has none: this is
+    # the one-row render path, reached by an HTMX swap that loaded nothing else.
+    # A pass-shaped caller (the grid, the fold, the reconcile panel) already
+    # builds one basis for everything it loaded, which is what findings N-228 /
+    # N-268 / N-309 are about; this is the shape those findings do not cover
+    # and the cost is one derivation rather than one per row.
     basis = amount_basis(txn.account.user_id, txn.scenario_id)
     return RenderAmounts(
-        budgets=display_amounts_by_id([txn], basis),
+        budgets=amounts_by_id([txn], basis),
         settled=recorded_amounts_by_id([txn]),
         retained=retained_settle_amounts_by_id([txn]),
     )
@@ -217,8 +233,49 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
     """Render the transaction cell template with its amount and entry context.
 
     Wraps render_template so every HTMX cell response includes the three
-    amount maps the display reads (:class:`RenderAmounts`) and the
-    ``entry_sums`` dict the progress indicator on tracked transactions needs.
+    amount maps the display reads (:class:`RenderAmounts`), the ``entry_sums``
+    dict the progress indicator on tracked transactions needs, and the PAYDAY
+    the due-date caption is compared against.
+
+    **The caption is DECIDED by the route and drawn by the template**
+    (pay-calendar plan step C4-a-1).  The partial computed it itself, as
+    ``t.due_date != t.pay_period.start_date`` -- a lazy relationship load
+    issued from inside the render, once per distinct paycheck on a page
+    drawing N cells, and a template cannot be given a query budget.  Both
+    surfaces that draw this cell now call the same producer
+    (:func:`~app.services.grid_view_service.due_captions_by_id`), so a row
+    cannot caption one way on the grid and another in the fragment the same
+    click swaps in -- the rule :class:`RenderAmounts` above states for the
+    three amount maps, applied to the fourth thing a cell draws.
+
+    **The payday it needs is now this function's OWN load, and the count did
+    not change** (plan step ``pay_calendar:C13-b``).  This paragraph used to
+    say the read cost nothing here because every caller had already proved
+    ownership through ``txn.pay_period.user_id``
+    (``transactions/_helpers._get_owned_transaction`` and its siblings), so
+    the relationship was loaded before this ran.  Those doors read
+    ``txn.user_id`` now and hydrate nothing, so the reason is gone -- and the
+    load is not: it MOVED here, as a lazy load, and that is the honest
+    statement rather than either "still free" or "one statement worse".
+
+    **Re-measured 2026-09-03 on ``GET /transactions/<id>/cell``, both
+    spellings of the ownership door, same request:** 12 statements and 1
+    ``PayPeriod`` hydration EITHER SIDE.  The only difference is WHERE the
+    ``budget.pay_periods`` SELECT sits in the sequence -- fifth (the ownership
+    walk) before, sixth (this due caption) after.  The 2026-08-27 measurement
+    this paragraph quoted said 12 as well, so the number is unchanged and its
+    reason is not.
+
+    Deriving the owner's calendar here instead was built and rejected on the
+    2026-08-27 measurement -- it ADDED two statements on top of the load the
+    ownership check had already paid for, and bought only a re-check of an
+    ownership fact the route had just established.  **The arithmetic behind
+    that rejection has shifted and the conclusion has not**: it is now one
+    lazy load against a two-query derivation, so the derivation is still the
+    more expensive of the two.  ``start_date`` is the one column
+    ``budget.pay_periods`` actually stores, carried through
+    :func:`~app.services.pay_calendar.derive_periods` untouched, so it is the
+    same date the grid's derived window publishes.
 
     Args:
         txn: The Transaction object to render.
@@ -237,5 +294,8 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
         settled=amounts.settled,
         retained=amounts.retained,
         entry_sums=build_entry_sums_dict([txn], amounts.budgets),
+        due_captions=due_captions_by_id(
+            [txn], {txn.pay_period_id: txn.pay_period.start_date},
+        ),
         **extra,
     )

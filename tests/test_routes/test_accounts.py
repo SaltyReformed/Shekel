@@ -22,19 +22,30 @@ from app.enums import (
     SettlementBasisEnum,
     StatusEnum,
 )
+from app.exceptions import RequiredRecordMissing
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    rhythm_of,
+    all_periods,
+    an_entered_day,
     append_balance_assertion,
     create_account_of_type,
     create_loan_account,
     create_transfer,
+    current_pay_period,
+    derived_span,
+    open_books_before_the_first_assertion,
+    open_owner_calendar,
+    settle_day_columns,
     settle_instant_on,
     settlement_basis_id,
     settlement_if_settling,
 )
 from app.models.interest_params import InterestParams
+from app.models.pay_period import PayPeriod
+from app.models.pay_schedule import PaySchedule
 from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
 from app.models.ref import AccountType, Status, TransactionType
@@ -50,6 +61,8 @@ from app.services import (
 )
 from app.services.auth_service import hash_password
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
 
 
 #: The out-of-band swap that carries the balance acknowledgement into
@@ -86,18 +99,11 @@ def _create_other_user_account():
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3): the factory needs at
-    # least one period to anchor against.  Dated far before any
-    # test's typical 2026 range so it does not collide with periods
+    # The factory needs at least one period to anchor against.  Dated far
+    # before any test's typical 2026 range so it does not collide with periods
     # generated later by the test body.
-    bootstrap = PayPeriod(
-        user_id=other_user.id,
-        start_date=date(2024, 1, 5),
-        end_date=date(2024, 1, 18),
-        period_index=0,
-    )
-    db.session.add(bootstrap)
-    db.session.flush()
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    bootstrap = open_owner_calendar(other_user.id, date(2024, 1, 5))[0]
 
     checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
     account = account_service.create_account(
@@ -1159,9 +1165,9 @@ class TestTrueUp:
             # pass as an ordinary true-up.  ``seed_user``'s bootstrap period is
             # HARDCODED to 2026-01-05..2026-01-18 (``conftest``), not derived
             # from the user's creation date as an earlier version of this
-            # comment said, so ``get_current_period`` is ``None`` on every day
-            # after 2026-01-18 and this is not date-fragile.
-            assert pay_period_service.get_current_period(
+            # comment said, so no period contains any day after 2026-01-18
+            # and this is not date-fragile.
+            assert current_pay_period(
                 seed_user["user"].id,
             ) is None, (
                 "this test grades the no-current-period door; the fixture now "
@@ -1790,6 +1796,7 @@ class TestTheReconcileRoute:
 
         txn = Transaction(
             template_id=template.id,
+            user_id=seed_periods_today[0].user_id,
             pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=account.id,
@@ -1797,7 +1804,7 @@ class TestTheReconcileRoute:
             name=name,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -1810,7 +1817,7 @@ class TestTheReconcileRoute:
                 description="Test purchase",
                 purchased_on=purchased_on,
                 is_credit=is_credit,
-                settled_on=settled_on,
+                **settle_day_columns(settled_on),
             ))
         db.session.commit()
         return txn
@@ -2388,7 +2395,7 @@ class TestTheReconcileRoute:
         The parent is settled through ``status_seam.apply_status_change``
         rather than by assigning ``status_id``.  A raw assignment builds a
         settled row carrying no settle day and no record -- one no door in the
-        app can create, and one ``ck_transactions_settle_day_needs_basis`` and
+        app can create, and one ``ck_transactions_settle_day_needs_a_record`` and
         ``row_valuation.settled_figure`` between them exist to keep out of the
         database and out of a balance.
         """
@@ -2553,7 +2560,7 @@ class TestTheReconcileRoute:
                 [("64.20", purchased_on, False, None)],
             )
             append_balance_assertion(
-                db.session, account, seed_periods_today[0],
+                db.session, account,
                 Decimal("1000.00"), settle_instant_on(asserted_on),
             )
             db.session.commit()
@@ -3158,6 +3165,7 @@ class TestTheReconcileRoutesUngradedBranches:
         db.session.flush()
         txn = Transaction(
             template_id=template.id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -3165,7 +3173,7 @@ class TestTheReconcileRoutesUngradedBranches:
             name=name,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal(amount),
+            amount_ownership=AmountOwnership.own(Decimal(amount)),
         )
         db.session.add(txn)
         db.session.flush()
@@ -3195,7 +3203,7 @@ class TestTheReconcileRoutesUngradedBranches:
             lands_id, already_id = lands.id, already.id
             # The second entry is settled behind the panel's back -- the second
             # device.  The form still posts both ids.
-            db.session.get(type(already), already_id).settled_on = past
+            record_settle_day(db.session.get(type(already), already_id), an_entered_day(past))
             db.session.commit()
 
             response = auth_client.post(
@@ -3225,9 +3233,12 @@ class TestTheReconcileRoutesUngradedBranches:
             )
             self._true_up(auth_client, seed_user["account"].id, "4537.66")
             entry_id = self._entries_of(txn.id)[0].id
-            db.session.get(
-                type(self._entries_of(txn.id)[0]), entry_id,
-            ).settled_on = past
+            record_settle_day(
+                db.session.get(
+                    type(self._entries_of(txn.id)[0]), entry_id,
+                ),
+                an_entered_day(past),
+            )
             db.session.commit()
 
             response = auth_client.post(
@@ -3484,6 +3495,12 @@ class TestTheTransferArmThroughItsROUTE:
             ),
         )
         db.session.flush()
+        # **Its BOOKS open before the transfer below** (plan step X-f3c-2b,
+        # ruling **R-HG**).  ``create_account`` opens them on the assertion's
+        # own day, which is today, while this transfer is dated into the PAST
+        # on purpose -- so its far leg would land inside the $100.00 declared,
+        # and the route would answer 400 rather than the tick it is grading.
+        open_books_before_the_first_assertion(db.session, savings)
         transfer = create_transfer(
             seed_user, db.session, seed_user["account"], savings, period,
             amount=Decimal(amount),
@@ -4803,7 +4820,19 @@ class TestInterestDispatch:
     def test_has_interest_true_but_no_params_row(
         self, app, auth_client, seed_user, db, seed_periods_today,
     ):
-        """Cash detail auto-creates interest params if the row is missing."""
+        """Cash detail REFUSES a missing params row; it does not manufacture one.
+
+        **This test asserted the opposite until plan step balance:X-i3**, which
+        deleted the auto-create branch on the developer's ruling.  The old
+        behaviour was a render repairing data: it wrote inside a read, which
+        costs the page the one snapshot every figure on it is computed against,
+        and it hid the door that should have written the row (the type-change
+        gap the sibling test below now covers).
+
+        A zero-rate row manufactured here renders on screen exactly like a rate
+        the owner configured, so the refusal is the honest answer and the
+        message names the repair.
+        """
         with app.app_context():
             hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
             acct = account_service.create_account(
@@ -4817,18 +4846,121 @@ class TestInterestDispatch:
             db.session.add(acct)
             db.session.commit()
 
-            # No InterestParams row exists yet.
+            # No InterestParams row exists yet.  ``account_service`` builds the
+            # Account; the params row is the ACCOUNT ROUTE's, which is why this
+            # state is reachable from the service and not from a browser.
             assert db.session.query(InterestParams).filter_by(
                 account_id=acct.id,
             ).first() is None
 
-            resp = auth_client.get(f"/accounts/{acct.id}/details")
-            assert resp.status_code == 200
+            with pytest.raises(RequiredRecordMissing, match="interest_params"):
+                auth_client.get(f"/accounts/{acct.id}/details")
 
-            # Auto-created by the cash-detail route's safety fallback.
+            # And it manufactured NOTHING on the way out.
             assert db.session.query(InterestParams).filter_by(
                 account_id=acct.id,
-            ).first() is not None
+            ).first() is None
+
+    def test_editing_the_TYPE_into_an_interest_kind_seeds_every_account_on_it(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The THIRD door, and the one the step's own first draft missed.
+
+        Plan step balance:X-i3.  ``POST /accounts/types/<id>`` may flip
+        ``has_interest`` on an owner's OWN custom type, which changes the
+        projection kind of every account already on it -- with no
+        ``account_type_id`` change for the account-update door to see and no
+        account row touched at all.  Deleting the detail page's auto-create
+        without holding the rule here would have turned a legitimate settings
+        edit into a 500 on the account's own page.
+
+        Asserted through the RENDER, not just the row: the page is what the
+        deleted repair existed to keep working.
+        """
+        with app.app_context():
+            plain_type = AccountType(
+                user_id=seed_user["user"].id,
+                name="My Cash Pot",
+                category_id=db.session.query(AccountType).filter_by(
+                    name="Checking",
+                ).one().category_id,
+            )
+            db.session.add(plain_type)
+            db.session.flush()
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=plain_type.id,
+                    name="Cash Pot",
+                    anchor_balance=Decimal("100.00"),
+                ),
+            )
+            db.session.add(acct)
+            db.session.commit()
+            assert db.session.query(InterestParams).filter_by(
+                account_id=acct.id,
+            ).first() is None, "a plain custom type starts with no params row"
+
+            resp = auth_client.post(f"/accounts/types/{plain_type.id}", data={
+                "name": plain_type.name,
+                "category_id": plain_type.category_id,
+                "has_interest": "true",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            db.session.expire_all()
+            # The precondition, asserted rather than assumed: a schema refusal
+            # here flashes and redirects, which ``follow_redirects`` would also
+            # render as a 200.
+            assert db.session.get(AccountType, plain_type.id).has_interest
+
+            params = db.session.query(InterestParams).filter_by(
+                account_id=acct.id,
+            ).one()
+            assert params.apy == Decimal("0")
+            assert auth_client.get(
+                f"/accounts/{acct.id}/details",
+            ).status_code == 200
+
+    def test_reclassing_into_an_interest_type_seeds_its_params_row(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The gap the deleted auto-create was covering, closed at its door.
+
+        Plan step balance:X-i3.  The seeder had exactly ONE caller -- account
+        CREATION -- so an account re-classed into a parameterised kind carried
+        no params row, and two detail pages each repaired it on a GET.
+        ``update_account`` now seeds through the shared
+        ``_type_params.ensure_type_params``, so the invariant holds at the door
+        that establishes the kind.
+
+        The FIRING half matters: without the seeding line this test fails at
+        the render below, which is the state the auto-create used to hide.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
+            assert db.session.query(InterestParams).filter_by(
+                account_id=checking.id,
+            ).first() is None, "a Checking account starts with no params row"
+
+            resp = auth_client.post(f"/accounts/{checking.id}", data={
+                "name": checking.name,
+                "account_type_id": hsa_type.id,
+                "version_id": checking.version_id,
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            params = db.session.query(InterestParams).filter_by(
+                account_id=checking.id,
+            ).one()
+            # The explicit zero sentinel the create door uses (E-12 / HIGH-06):
+            # a missing rate is never projected as a server-default one.
+            assert params.apy == Decimal("0")
+
+            # And the page the missing row used to repair now renders.
+            assert auth_client.get(
+                f"/accounts/{checking.id}/details",
+            ).status_code == 200
 
 
 # ── Investment Dispatch (Metadata-Driven) ────────────────────────
@@ -5114,7 +5246,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -5140,7 +5272,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=27, cadence_days=14,
+                num_periods=27, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -5152,6 +5284,7 @@ class TestCheckingDetail:
             # Create income and expense in all post-anchor periods.
             for p in periods[1:]:
                 db.session.add(Transaction(
+                    user_id=p.user_id,
                     pay_period_id=p.id,
                     scenario_id=scenario.id,
                     account_id=acct.id,
@@ -5159,9 +5292,10 @@ class TestCheckingDetail:
                     name="Paycheck",
                     category_id=category.id,
                     transaction_type_id=income_type.id,
-                    estimated_amount=Decimal("2000.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 ))
                 db.session.add(Transaction(
+                    user_id=p.user_id,
                     pay_period_id=p.id,
                     scenario_id=scenario.id,
                     account_id=acct.id,
@@ -5169,7 +5303,7 @@ class TestCheckingDetail:
                     name="Expenses",
                     category_id=category.id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("1500.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1500.00")),
                 ))
             db.session.commit()
 
@@ -5206,7 +5340,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=27, cadence_days=14,
+                num_periods=27, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -5217,6 +5351,7 @@ class TestCheckingDetail:
 
             for p in periods[1:]:
                 db.session.add(Transaction(
+                    user_id=p.user_id,
                     pay_period_id=p.id,
                     scenario_id=scenario.id,
                     account_id=acct.id,
@@ -5224,9 +5359,10 @@ class TestCheckingDetail:
                     name="Paycheck",
                     category_id=category.id,
                     transaction_type_id=income_type.id,
-                    estimated_amount=Decimal("2000.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 ))
                 db.session.add(Transaction(
+                    user_id=p.user_id,
                     pay_period_id=p.id,
                     scenario_id=scenario.id,
                     account_id=acct.id,
@@ -5234,7 +5370,7 @@ class TestCheckingDetail:
                     name="Bills",
                     category_id=category.id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("1500.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1500.00")),
                 ))
             db.session.commit()
 
@@ -5291,7 +5427,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=27, cadence_days=14,
+                num_periods=27, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -5310,7 +5446,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -5339,7 +5475,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -5349,6 +5485,7 @@ class TestCheckingDetail:
 
             # Create a credit expense in the first post-anchor period.
             db.session.add(Transaction(
+                user_id=periods[1].user_id,
                 pay_period_id=periods[1].id,
                 scenario_id=scenario.id,
                 account_id=acct.id,
@@ -5356,7 +5493,7 @@ class TestCheckingDetail:
                 name="Credit Card Groceries",
                 category_id=category.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
             ))
             db.session.commit()
 
@@ -5393,7 +5530,7 @@ class TestCheckingDetail:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -5480,6 +5617,7 @@ def _make_projected_envelope_expense(
 
     txn = Transaction(
         template_id=template.id,
+        user_id=pay_period.user_id,
         pay_period_id=pay_period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=account_id,
@@ -5487,11 +5625,18 @@ def _make_projected_envelope_expense(
         name=name,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
     )
     db_session.add(txn)
     db_session.flush()
     return txn
+
+
+#: The civil day :func:`_add_cleared_debit_entry` buys and settles on.  Named
+#: because an account's BOOKS have to precede it (ruling **R-HG**, plan step
+#: X-f3c-2b) and two literals that must agree are two a caller can split -- it
+#: was spelled twice inside the helper below and nowhere else.
+_CLEARED_PURCHASE_DAY = date(2026, 1, 15)
 
 
 def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
@@ -5510,9 +5655,9 @@ def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
         user_id=user_id,
         amount=amount,
         description="Cleared purchase",
-        purchased_on=date(2026, 1, 15),
+        purchased_on=_CLEARED_PURCHASE_DAY,
         is_credit=False,
-        settled_on=date(2026, 1, 15),
+        **settle_day_columns(_CLEARED_PURCHASE_DAY),
     ))
     db_session.flush()
 
@@ -5565,7 +5710,7 @@ class TestCheckingDetailCanonicalProducer:
         from app.services.balance_at import BalanceContext  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None
@@ -5691,7 +5836,7 @@ class TestCheckingDetailCanonicalProducer:
         non-entries-aware projection ($114.29 and $700.00).
         """
         with app.app_context():
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None
@@ -5715,6 +5860,13 @@ class TestCheckingDetailCanonicalProducer:
                 ),
             )
             db.session.flush()
+            # Its books open before the cleared entries below, which are
+            # dated earlier than the owner's calendar starts -- so the bound
+            # has to be named rather than derived (plan step X-f3c-2b, ruling
+            # **R-HG**).
+            open_books_before_the_first_assertion(
+                db.session, account_b, also_before=_CLEARED_PURCHASE_DAY,
+            )
 
             txn_a = _make_projected_envelope_expense(
                 db.session,
@@ -5796,7 +5948,7 @@ class TestCheckingDetailCanonicalProducer:
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
 
             checking_type = db.session.query(AccountType).filter_by(
@@ -5937,7 +6089,7 @@ class TestCheckingDashboardLink:
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             db.session.commit()
 
@@ -5966,7 +6118,7 @@ class TestCheckingDashboardLink:
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
 
             # Create a savings account.
@@ -6050,7 +6202,7 @@ class TestCashDetailContext:
     so the assertions are template-presentation independent.
     """
 
-    def _checking_with_income(self, seed_user, num_periods=27):
+    def _checking_with_income(self, seed_user, num_periods=27, cadence_days=14):
         """Create a checking account with +$500/period net income.
 
         Anchor $5,000 at ``periods[0]`` (today), then a $2,000 income and a
@@ -6058,11 +6210,17 @@ class TestCashDetailContext:
         ``test_checking_detail_projection_values_are_correct`` so the
         balances are the hand-computed 5000 + n*500.  Returns
         ``(account, periods)``.
+
+        ``cadence_days`` defaults to the biweekly rhythm every case here used
+        before recurrence plan step **R-F17**; the horizon cases pass another
+        one, because at 14 days the derived offsets and the hardcoded 6 / 13 /
+        26 they replaced are the same numbers and no case could tell them
+        apart.
         """
         periods = pay_period_write.record_paydays(
             user_id=seed_user["user"].id,
             first_payday=display_today(),
-            num_periods=num_periods, cadence_days=14,
+            num_periods=num_periods, rhythm=rhythm_of(cadence_days),
         )
         checking_type = db.session.query(AccountType).filter_by(
             name="Checking",
@@ -6088,16 +6246,18 @@ class TestCashDetailContext:
         category = seed_user["categories"]["Salary"]
         for period in periods[1:]:
             db.session.add(Transaction(
+                user_id=period.user_id,
                 pay_period_id=period.id, scenario_id=seed_user["scenario"].id,
                 account_id=acct.id, status_id=projected.id, name="Paycheck",
                 category_id=category.id, transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             ))
             db.session.add(Transaction(
+                user_id=period.user_id,
                 pay_period_id=period.id, scenario_id=seed_user["scenario"].id,
                 account_id=acct.id, status_id=projected.id, name="Bills",
                 category_id=category.id, transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
             ))
         db.session.commit()
         return acct, periods
@@ -6127,6 +6287,247 @@ class TestCashDetailContext:
                 ("6 months", Decimal("11500.00"), Decimal("6500.00")),
                 ("1 year", Decimal("18000.00"), Decimal("13000.00")),
             ]
+
+    def test_the_horizons_follow_the_owners_cadence(
+        self, app, auth_client, seed_user,
+    ):
+        """A WEEKLY owner reads 13 / 26 / 52 periods out, not 6 / 13 / 26.
+
+        Recurrence plan step **R-F17**, ledger row **F-17**.  Identical
+        account shape to ``test_horizons_carry_decimal_deltas`` above --
+        $5,000 anchored at the current period, +$500 net per period after it
+        -- so the two cases differ in the owner's cadence and in nothing else,
+        and the dollars are the same arithmetic:
+
+          3 months  -> period 13: 5000 + 13*500 = 11500.00, delta  6500.00
+          6 months  -> period 26: 5000 + 26*500 = 18000.00, delta 13000.00
+          1 year    -> period 52: 5000 + 52*500 = 31000.00, delta 26000.00
+
+        Before the derivation this owner's "1 year" chip read period 26 --
+        $18,000.00, their SIX-month balance, under a label saying a year.
+        """
+        with app.app_context():
+            acct, _periods = self._checking_with_income(
+                seed_user, num_periods=53, cadence_days=7,
+            )
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+
+            assert context["current_balance"] == Decimal("5000.00")
+            assert [
+                (h["label"], h["value"], h["delta"])
+                for h in context["horizons"]
+            ] == [
+                ("3 months", Decimal("11500.00"), Decimal("6500.00")),
+                ("6 months", Decimal("18000.00"), Decimal("13000.00")),
+                ("1 year", Decimal("31000.00"), Decimal("26000.00")),
+            ]
+
+    def test_a_horizon_no_paycheck_reaches_is_not_shown_at_all(
+        self, app, auth_client, seed_user,
+    ):
+        """An owner paid every 300 days is shown "1 year" and nothing shorter.
+
+        Ruling **R-R31**: no paycheck arrives inside three months, and the pay
+        period is the finest forward resolution this page has -- so there is
+        no column to value and the chip is absent rather than repeating the
+        hero's own figure under a label naming a shorter span.  The "1 year"
+        chip survives, one period out: $5,000 + $500 = $5,500.
+        """
+        with app.app_context():
+            acct, _periods = self._checking_with_income(
+                seed_user, num_periods=3, cadence_days=300,
+            )
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+
+            assert [
+                (h["label"], h["value"], h["delta"])
+                for h in context["horizons"]
+            ] == [("1 year", Decimal("5500.00"), Decimal("500.00"))]
+
+    def test_an_owner_with_no_paydays_gets_the_page_and_no_chips(
+        self, app, auth_client, seed_user, db,
+    ):
+        """No PAYDAYS: 200 with empty chips, not a 500.
+
+        **The state that makes the no-current-period return load-bearing**, and
+        it is measured rather than assumed: an account no longer carries an
+        anchor PERIOD (rulings R-EH / R-EO deleted both columns), so an owner
+        can hold accounts and no pay periods.
+
+        Recurrence plan step **R-F17** made both forward figures on this page
+        functions of the owner's cadence.  ``_build_horizons`` reads it past
+        its own ``None`` return and the interest chip reads it inside its
+        conditional expression, which is what keeps this case answering.
+
+        **The owner keeps their ``budget.pay_schedule`` row since plan step
+        ``pay_calendar:C4-d``** (ruling **R-PC45**), and the split is the step.
+        This case deleted the row too, so the ORDERING of the cadence read was
+        what stood between it and a 500 --
+        :attr:`app.services.pay_calendar.PayCalendar.cadence` refused a
+        calendar carrying none.  That property is total now and that owner has
+        no calendar at all: they are refused at ``calendar_for`` and get
+        ``errors/no_pay_calendar.html``, which is
+        :meth:`test_an_owner_with_no_schedule_row_gets_the_repair_page` below.
+        What is left here is the state the chips' guards are actually for --
+        paydays gone, rhythm stated -- and those guards are unchanged, because
+        ``_interest_next_year`` dereferences ``current_period.period_index``
+        and a lapsed schedule reaches it too.
+
+        **The two conjuncts of the interest chip's guard are covered by
+        SEPARATE cases, and a first draft covered only one.**  That draft
+        asserted both on the seeded Checking account, where ``is_interest and
+        current_period is not None`` short-circuits on the FIRST conjunct -- so
+        ``interest_next_year is None`` was satisfied by the account kind alone
+        and the second conjunct was never exercised.  An adversarial review
+        proved it by deleting that conjunct: all 268 cases in this file still
+        passed.
+
+        **What THIS case grades, stated narrowly because an adversarial review
+        of plan step ``pay_calendar:C4-d`` measured the wider claim false.**  It
+        used to be the half where reading the cadence would RAISE, and it was
+        that raise the assertions rode on.  With the schedule row kept, both
+        assertions are over-determined: deleting ``or current_period is None``
+        from ``_build_horizons`` leaves this green (a zero-period owner has an
+        empty window anyway), and ``interest_next_year is None`` is satisfied
+        by ``is_interest`` being False on the seeded Checking account.  What
+        survives is worth keeping and is ALL it claims: an owner with a
+        schedule row and no paydays gets a 200 with empty forward figures
+        rather than a 500.  The CURRENT-PERIOD conjunct is graded by the
+        lapsed-schedule case below, on an interest account, where it is not
+        short-circuited.
+        """
+        with app.app_context():
+            uid = seed_user["user"].id
+            # The paydays go and the ``budget.pay_schedule`` row STAYS: the
+            # state is CONSTRUCTED here rather than inherited from a fixture
+            # that happened to supply it, which is the stronger form -- the
+            # assertion that used to stand here could only report that the
+            # fixture had changed.  ``seed_user``'s opening payday comes from
+            # ``pay_period_write.record_paydays``, which upserts the schedule
+            # row in the same call (plan step ``pay_calendar:C4-b-1``), so
+            # deleting the periods alone leaves exactly the owner this case
+            # wants: a stated rhythm and nothing recorded under it.
+            db.session.query(PayPeriod).filter_by(user_id=uid).delete()
+            db.session.commit()
+
+            context = _capture_cash_detail_context(
+                app, auth_client, seed_user["account"].id,
+            )
+
+            assert context["current_period"] is None
+            assert context["horizons"] == []
+            assert context["interest_next_year"] is None
+
+    def test_an_owner_with_no_schedule_row_gets_the_repair_page(
+        self, app, auth_client, seed_user, db,
+    ):
+        """The other half of "no paydays", and it is the repair page now.
+
+        **This case is the ANSWER that plan step ``pay_calendar:C4-d`` (ruling
+        R-PC45) moved**, split out of the one above rather than deleted with
+        it.  An owner with no ``budget.pay_schedule`` row -- the companion's
+        shape, production's user 2 -- used to reach this page and render it
+        with three blank chips, because ``calendar_for`` handed them an empty
+        calendar carrying no cadence and each per-period feature guarded
+        separately.  They are refused at ``calendar_for`` now and get
+        ``errors/no_pay_calendar.html``, which is the one answer the
+        application gives that state and which carries the repair link.
+
+        Still a 200 rather than a 500: the ``PayCalendarError`` handler renders
+        the page.  ``@require_owner`` 404s a companion before any of this, so
+        no live page changes.
+        """
+        with app.app_context():
+            uid = seed_user["user"].id
+            # Periods FIRST: ``fk_pay_periods_schedule`` is ON DELETE RESTRICT
+            # since plan step ``pay_calendar:C4-b-2``, so the parent cannot go
+            # under live children.
+            db.session.query(PayPeriod).filter_by(user_id=uid).delete()
+            db.session.query(PaySchedule).filter_by(user_id=uid).delete()
+            db.session.commit()
+
+        # The SAME url ``_capture_cash_detail_context`` drives, because this
+        # case is about that page's answer: a hand-written path is how a route
+        # test comes to grade a 405 or a 404 from the url map and read it as
+        # the refusal under test.
+        response = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/details",
+        )
+
+        assert response.status_code == 200
+        assert b"Pay Calendar Unavailable" in response.data
+        assert b"/pay-periods/generate" in response.data
+
+        # **The link is FOLLOWED, because offering a repair and being a repair
+        # are different claims** -- and an adversarial review of plan step
+        # ``pay_calendar:C4-d`` measured them apart.  ``generate_form``
+        # redirects into the pay-periods settings section, which read
+        # ``calendar_for`` unconditionally, so the recovery page's own repair
+        # answered the recovery page again: a loop, for the one owner the page
+        # is written for.  Asserting the link's PRESENCE cannot see that.
+        repair = auth_client.get("/pay-periods/generate", follow_redirects=True)
+
+        assert repair.status_code == 200
+        assert b"Pay Calendar Unavailable" not in repair.data
+        assert b'name="cadence_days"' in repair.data
+
+    def test_an_interest_account_on_a_lapsed_schedule_still_renders(
+        self, app, auth_client, seed_user, db,
+    ):
+        """No paycheck covers TODAY, on an account that DOES show the chip.
+
+        The other half of the interest chip's guard, and the ordinary one: the
+        owner has paydays -- so their cadence is perfectly readable -- but the
+        schedule has lapsed and none of them covers the read pass's day.
+        ``_interest_next_year`` dereferences ``current_period.period_index``,
+        so without the ``current_period is not None`` conjunct this is an
+        ``AttributeError`` and a 500 on an interest-bearing account whose owner
+        simply has not extended their calendar.
+
+        ``seed_user``'s only period is its 2024 bootstrap, and the HYSA is
+        anchored INTO it -- ``AccountSpec.observed_on`` takes a past day by
+        design, which is what lets an account exist on a schedule that no
+        longer reaches today.
+        """
+        with app.app_context():
+            uid = seed_user["user"].id
+            bootstrap = (
+                db.session.query(PayPeriod).filter_by(user_id=uid)
+                .order_by(PayPeriod.start_date).first()
+            )
+            assert bootstrap.start_date < display_today(), (
+                "this case needs a schedule that no longer reaches today"
+            )
+            hysa_type = db.session.query(AccountType).filter_by(
+                name="HYSA",
+            ).one()
+            hysa = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=uid,
+                    account_type_id=hysa_type.id,
+                    name="Lapsed HYSA",
+                    anchor_balance=Decimal("2500.00"),
+                    observed_on=bootstrap.start_date,
+                ),
+            )
+            db.session.add(hysa)
+            db.session.flush()
+            db.session.add(InterestParams(
+                account_id=hysa.id, apy=Decimal("0.04000"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
+            db.session.commit()
+
+            context = _capture_cash_detail_context(app, auth_client, hysa.id)
+
+            # is_interest is TRUE, so the guard's first conjunct passes and the
+            # SECOND is what keeps the page at 200.
+            assert context["is_interest"] is True
+            assert context["current_period"] is None
+            assert context["interest_next_year"] is None
+            assert context["horizons"] == []
 
     def test_chart_json_structure_and_current_index(
         self, app, auth_client, seed_user,
@@ -6160,12 +6561,12 @@ class TestCashDetailContext:
             assert 0 <= chart["current_index"] < n
             # The current period's position in the user's FULL period list --
             # one past the bootstrap period the chart now also draws.
-            all_periods = pay_period_service.get_all_periods(
+            owner_periods = all_periods(
                 seed_user["user"].id,
             )
-            assert n == len(all_periods)
+            assert n == len(owner_periods)
             assert chart["current_index"] == [
-                p.id for p in all_periods
+                p.id for p in owner_periods
             ].index(_periods[0].id) == 1
             # Every period before the anchor holds the opening flat (R-I), so
             # the series opens on the hero figure either way.
@@ -6241,7 +6642,7 @@ class TestCashDetailContext:
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=30, cadence_days=14,
+                num_periods=30, rhythm=rhythm_of(14),
             )
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
             acct = account_service.create_account(
@@ -6284,7 +6685,7 @@ class TestCashDetailContext:
             periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=33, cadence_days=14,
+                num_periods=33, rhythm=rhythm_of(14),
             )
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
             acct = account_service.create_account(
@@ -6308,17 +6709,17 @@ class TestCashDetailContext:
             params = db.session.query(InterestParams).filter_by(
                 account_id=acct.id,
             ).one()
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             # pylint: disable=import-outside-toplevel
             from app.services.balance_at import BalanceContext
             ibp = net_worth_kernel.interest_by_period_for_account(
                 acct, BalanceContext.build(seed_user["user"].id),
             )
-            lo = current.period_index + 1
-            hi = current.period_index + 26  # 26 biweekly periods = 1 year.
+            lo = derived_span(current).period_index + 1
+            hi = derived_span(current).period_index + 26  # 26 biweekly periods = 1 year.
             window_total = sum(
                 (ibp.get(p.id, Decimal("0.00")) for p in periods
-                 if lo <= p.period_index <= hi),
+                 if lo <= derived_span(p).period_index <= hi),
                 Decimal("0.00"),
             )
             grand_total = sum(
@@ -6331,6 +6732,82 @@ class TestCashDetailContext:
             # Non-vacuity: periods beyond the window accrue interest that the
             # route must NOT include, so the window sum is strictly smaller.
             assert window_total < grand_total
+
+    def test_interest_window_is_the_owners_year_not_twenty_six_periods(
+        self, app, auth_client, seed_user, db,
+    ):
+        """A WEEKLY owner's "next 12 mo" chip sums 52 periods, not 26.
+
+        Recurrence plan step **R-F17**, ledger row **F-17**.  The window was a
+        hardcoded ``_ONE_YEAR_PERIODS = 26`` whose own comment asserted it
+        matched the "1 year" balance chip beside it; at this cadence 26
+        periods is SIX months, so the chip summed half the interest it named
+        and the two chips disagreed about what a year is.
+
+        Sixty periods are generated so the tail beyond the window still
+        accrues -- the route's figure must equal the independently summed
+        ``[current + 1, current + 52]`` and be STRICTLY LESS than the sum over
+        every period, which is what proves the window bites rather than
+        happening to cover everything.
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.services.balance_at import _kernel as net_worth_kernel  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import BalanceContext  # pylint: disable=import-outside-toplevel
+        with app.app_context():
+            periods = pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=display_today(),
+                num_periods=60, rhythm=rhythm_of(7),
+            )
+            hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=hysa_type.id,
+                    name="Weekly HYSA",
+                    anchor_balance=Decimal("10000.00"),
+                ),
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.05000"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
+            db.session.commit()
+
+            current = current_pay_period(seed_user["user"].id)
+            ibp = net_worth_kernel.interest_by_period_for_account(
+                acct, BalanceContext.build(seed_user["user"].id),
+            )
+            current_index = derived_span(current).period_index
+            lo = current_index + 1
+            hi = current_index + 52  # 52 WEEKLY periods = 1 year.
+            window_total = sum(
+                (ibp.get(p.id, Decimal("0.00")) for p in periods
+                 if lo <= derived_span(p).period_index <= hi),
+                Decimal("0.00"),
+            )
+            grand_total = sum(
+                (ibp.get(p.id, Decimal("0.00")) for p in periods),
+                Decimal("0.00"),
+            )
+            half_year_total = sum(
+                (ibp.get(p.id, Decimal("0.00")) for p in periods
+                 if lo <= derived_span(p).period_index <= current_index + 26),
+                Decimal("0.00"),
+            )
+
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+
+            assert context["interest_next_year"] == window_total
+            assert window_total < grand_total
+            # The number the hardcoded 26 would have produced, shown to be a
+            # DIFFERENT figure rather than merely a different expression.
+            assert half_year_total < window_total
 
     def test_plain_account_interest_next_year_is_none(
         self, app, auth_client, seed_user,
@@ -7334,7 +7811,7 @@ class TestCashDetailClickToEditHero:
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
-                num_periods=10, cadence_days=14,
+                num_periods=10, rhythm=rhythm_of(14),
             )
             checking_type = db.session.query(AccountType).filter_by(
                 name="Checking",
@@ -8725,7 +9202,7 @@ class TestAnchorDifference:
     ):
         """Negative, zero and positive each get their own caption.
 
-        The sign's MEANING is decided in the route (``_difference_verdict``) and
+        The sign's MEANING is decided in the route (``difference_verdict``) and
         the partial only maps it to copy -- but nothing asserted the mapping, so
         a wrong caption was invisible to the suite.  All three branches, one
         case, because the value of this control is that it covers the set.
@@ -8764,7 +9241,7 @@ class TestAnchorDifference:
 
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
@@ -9021,14 +9498,24 @@ class TestTheBalanceHistoryCard:
                 f"/accounts/{acct_id}/balance-history",
             ).data.decode()
 
-            assert html.count("<tr>") == 1 + 15, (
+            # One header, fifteen assertions, and the OPENING pinned in the
+            # ``<tfoot>`` beneath them (plan step X-f3c-2b): the books opening
+            # is not an assertion, so it is rendered as its own row rather
+            # than badged onto whichever assertion shares its day -- a day
+            # that no longer exists once the books are moved back to reach the
+            # account's earliest record.
+            assert html.count("<tr>") == 1 + 15 + 1, (
                 "every assertion is in the DOM -- the disclosure hides rows, "
                 "it does not drop them"
             )
             assert "Show all 15" in html
             assert "12 of 15 recorded" in html
             # The rows past the cap are behind the collapse rather than gone.
-            hidden = html.split('class="collapse"', 1)[1]
+            # Bounded at the collapsed ``<tbody>``'s own close: the OPENING
+            # row sits in the table's ``<tfoot>``, AFTER it, and is pinned
+            # visible whether the disclosure is open or not (plan step
+            # X-f3c-2b) -- so an unbounded slice would count it as hidden.
+            hidden = html.split('class="collapse"', 1)[1].split("</tbody>", 1)[0]
             assert hidden.count("<tr>") == 3
 
     def test_the_rows_shown_are_the_most_recently_RECORDED(
@@ -9085,9 +9572,22 @@ class TestTheBalanceHistoryCard:
     ):
         """The non-vacuity control for the caption above.
 
-        A same-day true-up leaves the two clocks equal, so the caption must be
-        absent -- one that fired on every row would stop distinguishing
-        anything.
+        A same-day true-up records one civil day under both names, so the
+        caption must be absent -- one that fired on every row would stop
+        distinguishing anything.
+
+        **It said "leaves the two CLOCKS equal" until finding N-299**, and that
+        was the defect in one sentence: the entered day was PostgreSQL's and
+        the observed day the application's, so a same-day true-up left them
+        equal only where the two clocks agreed.  Under the calendar sweep they
+        do not, and this control was red on every matrix date from 2026-08-10.
+
+        **Scoped to the row under test, for the reason its sibling above gives**
+        (plan step X-f3c-2c).  The account's ORIGINATION row is genuinely
+        back-dated now -- ``build_seed_user`` asserts the opening balance for
+        the owner's 2024 bootstrap day and the write records today -- so a bare
+        ``"entered" not in html`` would fail on a caption that is telling the
+        truth about a different row.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
@@ -9100,7 +9600,76 @@ class TestTheBalanceHistoryCard:
             ).data.decode()
 
             assert "$1,500.00" in html
-            assert "entered" not in html
+            row = html.split("$1,500.00", 1)[0].rsplit("<tr>", 1)[1]
+            assert "entered" not in row
+
+    def test_the_entered_day_is_stored_not_read_back_off_created_at(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """The caption's day is the app's, and moving ``created_at`` cannot move it.
+
+        **The regression control for finding N-299**, and it is what makes the
+        two sweep tests above non-vacuous on an ordinary clock: they only
+        distinguish a stored day from a derived one on a calendar position
+        where the Python and PostgreSQL clocks disagree, which is exactly the
+        position the sweep runs at and the ordinary suite never reaches.
+
+        This reaches it directly instead.  A row is WRITTEN whose two clocks
+        already disagree -- one civil day under both stored names, and a
+        recording instant three days later -- which is the state the midnight
+        race produces in production, where ``display_today()`` answers one
+        civil day and PostgreSQL's ``now()`` the next.  The caption must stay
+        ABSENT: the day the card compares is stored, not read back off the
+        instant.  A revert to the derived property fails here with an
+        ``entered`` caption naming the instant's day.
+
+        **The divergence is INSERTED rather than edited in** (plan step
+        X-f3c-2c).  It used to record a same-day true-up through the real door
+        and then move that row's ``created_at`` three days;
+        ``budget.account_anchor_history`` is append-only, and the production
+        state this case is about is an INSERT whose two clocks land apart,
+        never an UPDATE that pulls them apart afterwards.  The door is still
+        exercised, one line up, for the claim that it records the
+        APPLICATION's day.
+
+        ``created_at`` keeps its own job either way: it orders assertions that
+        share an ``observed_on``.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+            self._assert_balance(
+                auth_client, acct_id, "1400.00", observed_on=today,
+            )
+            written = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=acct_id)
+                .order_by(AccountAnchorHistory.id.desc())
+                .first()
+            )
+            assert written.recorded_on == today, (
+                "the write door must record the APPLICATION's civil day"
+            )
+
+            db.session.add(AccountAnchorHistory(
+                account_id=acct_id,
+                anchor_balance=Decimal("1500.00"),
+                observed_on=today,
+                recorded_on=today,
+                created_at=written.created_at + timedelta(days=3),
+            ))
+            db.session.commit()
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+
+            assert "$1,500.00" in html
+            row = html.split("$1,500.00", 1)[0].rsplit("<tr>", 1)[1]
+            assert "entered" not in row, (
+                "the entered day is a stored fact; deriving it from "
+                "created_at is what made the caption compare two clocks"
+            )
 
     def test_a_modelled_account_shows_no_reconciliation_columns(
         self, app, auth_client, seed_user, db, seed_periods_today,
@@ -9162,15 +9731,31 @@ class TestTheBalanceHistoryCard:
             assert "Ledger" in html
             assert "Correction" in html
 
-    def test_the_opening_row_publishes_no_difference(
+    def test_the_opening_is_its_own_row_and_the_assertions_publish_their_pair(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The opening is badged and its reconciliation cells are withheld.
+        """The books are a row of their own; the ASSERTIONS carry the pair.
 
-        Its "ledger" is the sum of rows dated before the account existed
-        (open finding **N-37**) and its gap is opening EQUITY, the figure plan
-        step X-f5 books -- not a correction, so the card refuses to caption it
-        as one.
+        **Two changes, one after the other, and the second is this step's.**
+        The card withheld both reconciliation cells on the opening until plan
+        step X-f3c-2a, because the opening's "ledger" was the records summed
+        from a zero seed and the gap between it and the asserted balance was
+        opening EQUITY rather than a correction -- rendering it would have told
+        the owner their records were off by that equity on the day the account
+        opened, which is false.
+
+        Ruling **R-HG** (plan step X-f3c-2b) then separated the two records
+        outright: an opening equity is the CLOSING balance for
+        ``opened_on``, so an account whose books were moved back to reach its
+        earliest record carries NO assertion on that day and there is nothing
+        to hang an "Opening" badge on.  The books are rendered as their own
+        ``<tfoot>`` row, and its Ledger / Correction cells are empty BY
+        CONSTRUCTION -- nothing precedes an opening for a correction to be
+        measured against, which is the opposite of the suppression above.
+
+        So the dashes are EXPECTED here, and exactly two of them; the seeded
+        account's own declaration agrees with the books it opened, so its
+        assertion row publishes a ``$0.00`` correction -- a figure, not a dash.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
@@ -9180,9 +9765,11 @@ class TestTheBalanceHistoryCard:
             ).data.decode()
 
             assert "Opening" in html
-            # The lone row is the opening, so every reconciliation cell on the
-            # page is the withheld dash.
+            # The two empty-by-construction cells, and NO others: an assertion
+            # row that withheld its pair would push this past two.
             assert html.count(">--<") == 2
+            # And the correction the assertion publishes is a real figure.
+            assert "$0.00" in html
 
     def test_a_companion_cannot_reach_the_card(
         self, app, companion_client, seed_user, seed_periods_today,

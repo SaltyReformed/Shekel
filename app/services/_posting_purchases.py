@@ -125,8 +125,17 @@ def _purchase_target(entry, txn: Transaction, owner_id: int) -> dict[int, Decima
 
     The purchase analog of :func:`_settled_target`:
     ``{cash_ledger_id: -amount, category_ledger_id: +amount}``, summing to zero
-    by construction.  A purchase is always an EXPENSE and its whole amount
-    leaves the account, so there is no sign branch and no credit term.
+    by construction.  There is no sign branch and no credit term.
+
+    **The absence of a sign branch is what makes a REFUND work, and it was not
+    designed for one** (ruling **bank_import:R-II**).  A purchase's whole amount
+    leaves the account, so the expression was written for an expense -- and
+    because it is arithmetic rather than a case analysis, a NEGATIVE purchase
+    passes through it correctly: at ``-28.29`` it emits
+    ``{cash: +28.29, category: -28.29}``, money coming back and a
+    contra-expense, which is exactly what a merchant credit is.  Measured
+    end-to-end on a production clone before the constraint moved, against a
+    ``+28.29`` control that produced the mirror image.
 
     **The counter leg is the ENVELOPE's own category** (ruling **R-FM**,
     developer 2026-08-15).  A purchase carries no category of its own, and the
@@ -151,8 +160,9 @@ def _purchase_target(entry, txn: Transaction, owner_id: int) -> dict[int, Decima
             ``entry.transaction`` so the caller that already holds it -- every
             caller does -- pays no lazy load, and so the category booked here is
             provably the one the parent's own leg books.
-        owner_id: The owning user's id (``txn.pay_period.user_id``), the
-            category account's owner.
+        owner_id: The owning user's id (``txn.user_id``, and
+            ``txn.pay_period.user_id`` until plan step
+            ``pay_calendar:C13-b``), the category account's owner.
 
     Returns:
         ``{cash_ledger_id: -amount, category_ledger_id: +amount}``.
@@ -195,7 +205,7 @@ def emit_purchase_deltas(
         posted: Whether the ledger should hold a cash leg for it
             (:func:`purchase_posts`; ``False`` also means "reverse it", which
             is what the teardown doors pass).
-        owner_id: ``txn.pay_period.user_id``.
+        owner_id: ``txn.user_id``.
 
     Returns:
         The emitted delta entries; ``[]`` when the ledger is already at target.

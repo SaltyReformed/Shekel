@@ -2,7 +2,8 @@
 Shekel Budget App -- Settings Route Tests
 
 Tests for user settings page:
-  - Rendering settings (with existing and auto-created settings)
+  - Rendering settings, and REFUSING a missing row rather than
+    auto-creating one (plan step balance:X-i3)
   - Updating all three fields
   - Validation errors for each field
   - Partial updates (blank fields skipped)
@@ -10,6 +11,9 @@ Tests for user settings page:
 
 from decimal import Decimal
 
+import pytest
+
+from app.exceptions import RequiredRecordMissing
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType
@@ -28,8 +32,23 @@ class TestSettingsShow:
             assert b'name="grid_default_periods"' in resp.data
             assert b'name="default_inflation_rate"' in resp.data
 
-    def test_settings_auto_creates_if_missing(self, app, auth_client, seed_user):
-        """GET /settings auto-creates UserSettings when missing."""
+    def test_settings_REFUSES_a_missing_row_rather_than_creating_one(
+        self, app, auth_client, seed_user,
+    ):
+        """The render does not repair the owner's settings row.
+
+        **This test asserted the auto-create until plan step balance:X-i3**,
+        which deleted that branch on the developer's ruling -- the third
+        instance of one shape, after the two on the account detail pages.
+        ``render_settings_dashboard`` serves a GET and several POST re-renders,
+        so a render that writes cost the GET its snapshot and could not be
+        declared with a ``write_transaction`` block either.
+
+        Every door that creates a user writes the row, so the state below is
+        reachable only by deleting it out from under the application, which is
+        what this test does.  The two POST handlers that create-if-missing keep
+        that behaviour: a write door may author what it writes.
+        """
         with app.app_context():
             # Delete existing settings created by seed_user.
             db.session.query(UserSettings).filter_by(
@@ -37,14 +56,41 @@ class TestSettingsShow:
             ).delete()
             db.session.commit()
 
-            resp = auth_client.get("/settings")
-            assert resp.status_code == 200
+            with pytest.raises(RequiredRecordMissing, match="auth.user_settings"):
+                auth_client.get("/settings")
 
-            # Settings should now exist.
+            # And it manufactured NOTHING on the way out.
+            assert db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).first() is None
+
+    def test_the_settings_POST_still_creates_a_missing_row(
+        self, app, auth_client, seed_user,
+    ):
+        """The other half: a WRITE door may author what it writes.
+
+        Pairs with the test above so the deletion cannot be read as "a missing
+        settings row is now unrecoverable".  It is the recovery path the
+        refusal's own message names.
+        """
+        with app.app_context():
+            db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).delete()
+            db.session.commit()
+
+            # NOT the column default (6): posting the default would pass
+            # whether the door wrote the submitted value or merely created a
+            # bare row and dropped the form on the floor.
+            resp = auth_client.post("/settings", data={
+                "grid_default_periods": "9",
+            }, follow_redirects=False)
+            assert resp.status_code == 302
+
             settings = db.session.query(UserSettings).filter_by(
                 user_id=seed_user["user"].id,
             ).one()
-            assert settings.grid_default_periods == 6  # Default value.
+            assert settings.grid_default_periods == 9
 
 
 class TestSettingsUpdate:

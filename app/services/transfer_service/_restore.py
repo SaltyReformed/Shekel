@@ -121,15 +121,19 @@ def restore_transfer(transfer_id, user_id):
     for shadow in shadows:
         shadow.is_deleted = False
 
-        # Invariant 3: shadow amount must match transfer amount.
-        if shadow.estimated_amount != xfer.amount:
-            logger.warning(
-                "Correcting shadow %d estimated_amount drift: %s -> %s "
-                "(transfer %d amount).",
-                shadow.id, shadow.estimated_amount, xfer.amount,
-                transfer_id,
-            )
-            shadow.estimated_amount = xfer.amount
+        # Invariant 3 has NO repair here, and its absence is the invariant
+        # becoming structural (plan step X-au-g-2c-2, ruling **R-FI**).  This
+        # block logged and rewrote a shadow whose ``estimated_amount`` had
+        # drifted from ``xfer.amount`` -- a second maintainer of a copied
+        # value, which is the shape this arc exists to delete.  A shadow stores
+        # no figure at all now: it DECLARES ``PARENT_TRANSFER`` and reads its
+        # parent through the amount model, so there is nothing left that can
+        # drift.  The one shape that legitimately differs -- a pair whose
+        # figure a human authored -- is written to all three rows in one act
+        # (``_update._apply_amount``), so it is equal by construction too.
+        # Measured before the copy was deleted: 0 of 350 production shadows
+        # differed from their parent (2026-09-01, stamp ``a4c6f1d92b73``), so
+        # this repair had nothing to repair on the live data either.
 
         # Invariant 4 is repaired for the PAIR after this loop, not per shadow
         # -- see the call to

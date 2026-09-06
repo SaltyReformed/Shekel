@@ -4,10 +4,11 @@ Shekel Budget App -- The pay calendar: one derivation of "which paycheck".
 A pay period is not three stored facts.  It is ONE fact -- the payday -- and
 two values derived from the owner's payday set:  the period's ordinal is its
 position in that set, and its last covered day is the day before the next
-payday.  ``budget.pay_periods`` stores all three today, which is why a gap, an
-overlap and an index out of date order are all EXPRESSIBLE states that five
-separate runtime fences have to police.  This package holds the derivation, so
-that after plan step C4 none of those states has a subject.
+payday.  ``budget.pay_periods`` stored all three until plan step **C4-c**,
+which is why a gap, an overlap and an index out of date order were EXPRESSIBLE
+states that five separate runtime fences had to police.  This package holds the
+derivation, and since that step dropped both columns none of those states has a
+subject -- nor does any of the five fences, all of which went with it.
 
 The plan of record is ``docs/plans/implementation_plan_pay_calendar.md``.
 **What it says about this package, quoted rather than paraphrased:** nothing.
@@ -33,7 +34,9 @@ C3    the writer materialises paydays from this derivation instead of
       helper is open.
 C4    ``end_date`` and ``period_index`` are dropped from the table, and the
       readers named in the plan's section 3 take their bounds from a
-      calendar instead of from ``txn.pay_period``.
+      calendar instead of from ``txn.pay_period``.  This row is DONE, not
+      intended: the readers moved across the ``C4-a`` leaves and the columns
+      went at ``C4-c``.
 ===== ====================================================================
 
 **Why a package rather than a module** (developer ruling, 2026-08-08): the
@@ -48,16 +51,22 @@ Boundary discipline (``CLAUDE.md``), stated PER MODULE because plan step C2-b1
 made one of them impure and a claim about "the package" would then be false of
 part of it:
 
-* :mod:`._derive`, :mod:`._searches`, :mod:`._window`, :mod:`._calendar` and
-  :mod:`._cadence` -- no Flask symbol, no database session, no clock.  Every
-  answer is a pure function of values a caller supplies, and that is
-  load-bearing rather than tidy: it is what lets C1's harness drive the
-  derivation over production's real 61 paydays and over a generated sweep with
-  no database, so the two runs exercise the same code.  The pure half is a
-  one-way chain -- ``_derive`` -> ``_searches`` -> ``_window`` -> ``_calendar``,
-  split that way at plan step C2-c when the calendar module passed the
-  1,000-line ceiling -- so a search, a view over a calendar and the calendar
-  itself cannot answer one question differently.
+* :mod:`._derive`, :mod:`._searches`, :mod:`._window`, :mod:`._views`,
+  :mod:`._calendar`, :mod:`._walks`, :mod:`._rhythm` and :mod:`._cadence` --
+  no Flask symbol, no database
+  session, no clock.  Every answer is a pure function of values a caller
+  supplies, and that is load-bearing rather than tidy: it is what lets C1's
+  harness drive the derivation over production's real 61 paydays and over a
+  generated sweep with no database, so the two runs exercise the same code.
+  The pure half is a one-way chain -- ``_derive`` -> ``_searches`` ->
+  ``_window`` -> ``_views`` -> ``_calendar`` -> (``_walks``, ``_rhythm``) --
+  split at plan step C2-c and
+  again at C2-f3b, each time when the calendar module reached pylint's
+  1,000-line ceiling, so a search, a producer of a view, a view over a calendar and the
+  calendar itself cannot answer one question differently.  The last two take a
+  whole calendar rather than a period tuple, which is what puts them after it:
+  see :mod:`._walks` for the argument, and ledger row **P77** for the ceiling
+  that keeps both of them out of the class itself.
 * :mod:`._loader` -- holds the session, and ONLY the session.  It reads an
   owner's paydays and cadence and hands them to the pure half; it computes
   nothing.  One module is the whole impure surface, which is what makes the
@@ -87,16 +96,22 @@ from ._derive import (
     PayCalendarError,
     derive_periods,
 )
-from ._loader import cadence_for, calendar_for
+from ._loader import cadence_for, calendar_at_schedule, calendar_for
+from ._rhythm import (
+    paydays_in_month_through,
+    paydays_in_year_before,
+    saved_paydays_in_month_through,
+)
 from ._searches import (
+    FiledRow,
     containing_period,
-    earliest_start_in_month,
     earliest_started_period,
     final_covered_day,
     latest_started_period,
     opening_payday,
     period_by_id,
 )
+from ._walks import paychecks_from
 from ._window import PeriodWindow
 
 __all__ = [
@@ -104,18 +119,23 @@ __all__ = [
     "MAX_CADENCE_DAYS",
     "MIN_CADENCE_DAYS",
     "DerivedPeriod",
+    "FiledRow",
     "PayCadence",
     "PayCalendar",
     "PayCalendarError",
     "PeriodWindow",
     "cadence_for",
+    "calendar_at_schedule",
     "calendar_for",
     "containing_period",
     "derive_periods",
-    "earliest_start_in_month",
     "earliest_started_period",
     "final_covered_day",
     "latest_started_period",
     "opening_payday",
+    "paychecks_from",
+    "paydays_in_month_through",
+    "paydays_in_year_before",
     "period_by_id",
+    "saved_paydays_in_month_through",
 ]

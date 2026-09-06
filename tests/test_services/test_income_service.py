@@ -4,8 +4,9 @@ Shekel Budget App -- Income Service Tests (C17 / F-20 / MED-06 / F-032).
 Pins the raise-aware paycheck-engine producer contract:
 
 - The helper returns ``Decimal("0")`` when no active SalaryProfile exists.
-- The helper returns ``annual_salary / pay_periods_per_year`` byte-identical
-  to the engine for a no-raise profile.
+- The helper returns ``annual_salary`` over the owner's PAYCHECK COUNT --
+  derived from their cadence since plan step R-F16 -- byte-identical to the
+  engine for a no-raise profile.
 - The helper APPLIES applicable ``SalaryRaise`` rows so the post-raise
   per-period gross is returned -- the F-032 worked example: $104,000
   base with a 3% raise effective in the as-of period yields $4,120.00
@@ -27,6 +28,8 @@ Test fixture math (hand-computed):
 from datetime import date
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import AmountSourceEnum
 from app.extensions import db
 from app.models.ref import FilingStatus, RaiseType, Status, TaxType, TransactionType
 from app.models.salary_profile import SalaryProfile
@@ -35,10 +38,10 @@ from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services.pay_calendar import calendar_for
+from app.services.projection_inputs import load_payroll_feeds
 from app.services import (
     balance_at,
     income_service,
-    pay_period_service,
     paycheck_calculator,
     savings_dashboard_service,
 )
@@ -47,7 +50,13 @@ from app.services.tax_config_service import (
     load_tax_configs_for_year,
 )
 from app.services.balance_at import BalanceContext
-from tests._test_helpers import freeze_today, make_investment_account
+from tests._test_helpers import (
+    all_periods,
+    freeze_today,
+    make_investment_account,
+    payroll_basis,
+)
+from app.models.amount_ownership import AmountOwnership
 
 
 # Hand-computed expected values (see module docstring for derivation).
@@ -73,7 +82,6 @@ def _create_profile(
         name="Test Salary",
         annual_salary=Decimal(annual_salary),
         state_code="NC",
-        pay_periods_per_year=26,
         is_active=True,
     )
     db.session.add(profile)
@@ -129,8 +137,19 @@ def _make_salary_template(seed_user, profile, *, name="Paycheck"):
 def _make_txn(
     seed_user, period, *, template=None, type_name="Income",
     status_name="Projected", is_override=False, estimated_amount="1.00",
+    derived=False,
 ):
-    """Create a single Transaction in ``period`` for the producer tests."""
+    """Create a single Transaction in ``period`` for the producer tests.
+
+    ``derived=True`` builds the row plan step **X-au-d** puts every
+    non-overridden salary row in: it DECLARES its definition
+    (:attr:`~app.enums.AmountSourceEnum.TEMPLATE`) and stores no figure at all,
+    so amount rule 2 prices it from the profile.  The default is the OWN shape
+    -- an ad-hoc row, or one a human re-priced -- where *estimated_amount* IS
+    the answer.  The two are one attribute on the model
+    (``ck_transactions_amount_ownership`` pairs them), which is why this is a
+    switch rather than two independent arguments.
+    """
     txn_type = (
         db.session.query(TransactionType).filter_by(name=type_name).one()
     )
@@ -139,13 +158,19 @@ def _make_txn(
     txn = Transaction(
         account_id=seed_user["account"].id,
         template_id=template.id if template is not None else None,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status.id,
         name="producer-test txn",
         category_id=category.id,
         transaction_type_id=txn_type.id,
-        estimated_amount=Decimal(estimated_amount),
+        amount_ownership=(
+            AmountOwnership.derived(
+                ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+            )
+            if derived else AmountOwnership.own(Decimal(estimated_amount))
+        ),
         is_override=is_override,
     )
     db.session.add(txn)
@@ -153,43 +178,60 @@ def _make_txn(
     return txn
 
 
-def _live_net_map(user_id, scenario_id, rows):
-    """The salary override map, as the read-time repair produces it per row.
+def _net_map(user_id, scenario_id, rows):
+    """What the salary derivation answers for each of *rows*, where it answers.
 
-    Plan step X-au-c2b split ``live_projected_net`` into an owner-scoped
-    DERIVATION (:func:`income_service.salary_pricing`) and a per-row lookup, so
-    the map these tests grade is now something a caller builds rather than
-    something the producer returns.  Assembled here so every assertion below
-    keeps its original shape and figures.
+    Plan step X-au-c2b split the producer into an owner-scoped DERIVATION
+    (:func:`income_service.salary_pricing`) and a per-row lookup
+    (:func:`income_service.salary_net_for`), so the map these tests grade is
+    something a caller builds rather than something the producer returns.
+
+    **It was ``_live_net_map`` and asked the READ-TIME REPAIR until plan step
+    X-au-d**, which deleted that repair: a salary row is DECLARED derived and
+    stores no figure, so there is nothing for a repair to supersede and
+    ``salary_net_for`` is the one producer.  The difference is not cosmetic --
+    the repair filtered to Projected non-overridden rows and the PRICING rule
+    filters on neither (finding **N-262**), which is what the class below now
+    grades.
     """
     pricing = income_service.salary_pricing(user_id, scenario_id)
     answers = {}
     for txn in rows:
-        net = income_service.live_projected_net(txn, pricing)
+        net = income_service.salary_net_for(txn, pricing)
         if net is not None:
             answers[txn.id] = net
     return answers
 
 
-class TestLiveProjectedNet:
-    """Unit tests for ``income_service.live_projected_net`` (Workstream B).
+class TestSalaryNetFor:
+    """Unit tests for ``income_service.salary_net_for`` -- amount rule 2's body.
 
-    Locks the two properties the live-recompute relies on: the producer
-    (a) recomputes the net LIVE from the salary profile, ignoring the
-    stored ``estimated_amount`` (so a stale cache cannot leak through),
-    and (b) filters to exactly the Projected, non-overridden,
-    salary-linked income rows.
+    Locks the two properties the amount model relies on: the producer
+    (a) answers what the salary PROFILE pays for the row's own period, and
+    (b) answers for a row it can PRICE, which is a question about the
+    definition and never about whether the row still counts.
+
+    **Half (b) is the inversion plan step X-au-d completed.**  This class
+    graded a read-time repair, whose candidate set was "Projected,
+    non-overridden, salary-linked income" -- so a Cancelled or hand-priced
+    paycheck was refused for reasons that have nothing to do with what a
+    paycheck is worth.  Pricing asks the definition; whether a row still counts
+    is finding **N-262**'s separate question, answered above this rule by
+    ``row_valuation.fixed_contribution``, and WHO owns the figure is answered
+    by the row's declaration rather than by ``is_override``.
     """
 
     def test_recomputes_live_ignoring_stored_amount(
         self, app, db, seed_user, seed_periods,
     ):
-        """A Projected salary-linked income row maps to the LIVE net.
+        """A salary-linked income row maps to what its PROFILE pays.
 
-        The transaction's stored ``estimated_amount`` is deliberately set
-        to $1.00 (a stale/wrong value).  The producer must return the
-        live net for the transaction's period -- proving it recomputes
-        from the profile and never trusts the cached column.
+        The row is built OWNING a deliberately wrong ``$1.00`` so the two
+        answers stay distinguishable at this tier: a producer reading the
+        column would answer ``$1.00`` and the profile answers ``$4,000.00``.
+        The DECLARED shape -- where the column is empty and the distinction is
+        structural rather than measured -- is graded one tier up, by
+        ``test_amount_source`` over the rule this producer is the body of.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -198,14 +240,14 @@ class TestLiveProjectedNet:
             template = _make_salary_template(seed_user, profile)
             db.session.commit()
 
-            period = pay_period_service.get_all_periods(user_id)[5]
+            period = all_periods(user_id)[5]
             txn = _make_txn(
                 seed_user, period, template=template,
                 estimated_amount="1.00",
             )
             db.session.commit()
 
-            overrides = _live_net_map(user_id, scenario_id, [txn])
+            overrides = _net_map(user_id, scenario_id, [txn])
 
             # $104,000 profile, no raise, no tax configs seeded -> net =
             # gross = 104000 / 26 = $4,000.00 (hand-computed; the sibling
@@ -215,17 +257,25 @@ class TestLiveProjectedNet:
             assert overrides == {txn.id: expected_net}
             assert overrides[txn.id] != Decimal("1.00")
 
-    def test_filters_to_projected_nonoverride_salary_income(
+    def test_prices_by_the_DEFINITION_and_never_by_the_rows_status(
         self, app, db, seed_user, seed_periods,
     ):
-        """Only Projected, non-overridden, salary-linked income is overridden.
+        """What a paycheck is WORTH does not depend on whether it still counts.
 
-        Builds five rows and asserts the override dict contains exactly
-        the one Projected non-override income row linked to the salary
-        profile -- Received income (historical), an overridden row (user
-        value respected), non-salary income (template has no profile),
-        and an expense are all omitted, so a caller's fallback to the
-        stored amount applies to them.
+        **This case asserted the opposite until plan step X-au-d**, and the
+        inversion is the step.  It graded a read-time repair whose candidate
+        set was "Projected, non-overridden, salary-linked income", so it
+        asserted that a RECEIVED paycheck and an OVERRIDDEN one were omitted.
+        Those two omissions were the repair's status gate, not a pricing rule
+        (finding **N-262**): a Received paycheck is worth exactly what the
+        profile paid for its period, and whether the app should USE that figure
+        is a different question answered above this producer.
+
+        Five rows, and the split is now by DEFINITION rather than by status:
+        the three on the salary template are all priced -- Projected, Received
+        and overridden alike -- while non-salary income (a template no profile
+        names) and an expense are not, because no salary profile states what
+        they are worth.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -247,7 +297,7 @@ class TestLiveProjectedNet:
             db.session.add(other_template)
             db.session.commit()
 
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             # Distinct periods avoid the (template, period, scenario)
             # non-override unique index.
             wanted = _make_txn(seed_user, periods[5], template=template)
@@ -266,23 +316,31 @@ class TestLiveProjectedNet:
             )
             db.session.commit()
 
-            overrides = _live_net_map(
+            priced = _net_map(
                 user_id, scenario_id,
                 [wanted, received, overridden, non_salary, expense],
             )
 
-            assert set(overrides) == {wanted.id}, (
-                "Only the Projected, non-override, salary-linked income "
-                f"row should be overridden; got ids {sorted(overrides)}"
+            assert set(priced) == {wanted.id, received.id, overridden.id}, (
+                "every row on the salary template is PRICED by the profile "
+                "whatever its status or override flag, and no other row is; "
+                f"got ids {sorted(priced)}"
+            )
+            assert priced[received.id] == priced[wanted.id], (
+                "a Received paycheck is worth what the profile paid for its "
+                "period; refusing it here would be the repair's status gate "
+                "re-added inside a pricing rule (finding N-262)"
             )
 
-    def test_empty_when_no_candidates(self, app, db, seed_user, seed_periods):
-        """No salary-linked Projected income -> empty dict (fast no-op)."""
+    def test_empty_when_no_salary_definition_prices_the_row(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A row no salary profile's template names has no answer here."""
         with app.app_context():
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
             # Empty transaction list.
-            assert _live_net_map(user_id, scenario_id, []) == {}
+            assert _net_map(user_id, scenario_id, []) == {}
 
             # An income row whose template has no SalaryProfile -> omitted.
             income_type = (
@@ -300,11 +358,11 @@ class TestLiveProjectedNet:
             db.session.add(unlinked)
             db.session.commit()
             txn = _make_txn(
-                seed_user, pay_period_service.get_all_periods(user_id)[3],
+                seed_user, all_periods(user_id)[3],
                 template=unlinked,
             )
             db.session.commit()
-            assert _live_net_map(user_id, scenario_id, [txn]) == {}
+            assert _net_map(user_id, scenario_id, [txn]) == {}
 
 
 
@@ -321,30 +379,32 @@ def _derived(user_id):
 
 
 class TestLiveIncomeThroughBalanceResolver:
-    """Workstream B integration: balance surfaces recompute projected salary
-    income live, so a stale stored ``estimated_amount`` never reaches a
-    balance or subtotal.  This is the drift-without-regeneration lock -- the
-    exact failure mode (a code change staling the grid) that motivated the
-    income resolver.
+    """Balance surfaces price a projected salary row from its PROFILE.
+
+    The drift-without-regeneration lock -- the exact failure mode (a profile,
+    calibration or code change staling the grid) that motivated the income
+    resolver.  **Plan step X-au-d changed what makes it hold**: the row no
+    longer stores a figure a repair has to supersede, it DECLARES the
+    definition that prices it, so there is one answer rather than a preferred
+    one.  The class stays because the surfaces still have to reach that answer.
     """
 
-    def test_stale_stored_income_overridden_by_live_net(
+    def test_a_declared_salary_row_reaches_the_grid_and_the_BALANCE(
         self, app, db, seed_user, seed_periods,
     ):
-        """A projected salary income row with a stale $1.00 stored amount
-        contributes its LIVE net to the grid's income row AND to the
-        rendered BALANCE -- never the stale stored value.
+        """A declared salary income row contributes its profile's net to both.
 
-        $104,000 profile, no deductions, no tax configs seeded -> net =
-        gross = 104000/26 = $4,000.00.  The transaction is stored at $1.00
-        (simulating a cache invalidated by a profile/code change with no
-        regeneration); both surfaces must show $4,000.00.
+        $104,000 profile, no deductions, no tax configs seeded -> net = gross =
+        104000/26 = $4,000.00.  The row stores NOTHING, so a surface that read
+        the column would contribute ``None`` rather than a stale figure -- the
+        substitution this cutover makes unrepresentable instead of unlikely.
 
         The income row was read through ``cash_ledger.period_subtotal`` until
         plan step X-c2b3 deleted it; it is now the shipped
         ``GridColumn.income``, which is what the grid footer renders.  The
-        $4,000.00 is unchanged because the live override map is the same rule on
-        both bases -- which is the property this test exists to pin.
+        $4,000.00 is unchanged across both that step and this one, because the
+        rule is the same on both bases -- which is the property this test
+        exists to pin.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -355,42 +415,43 @@ class TestLiveIncomeThroughBalanceResolver:
             template = _make_salary_template(seed_user, profile)
             db.session.commit()
 
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             period = periods[5]
-            _make_txn(
-                seed_user, period, template=template,
-                estimated_amount="1.00",
+            row = _make_txn(
+                seed_user, period, template=template, derived=True,
             )
             db.session.commit()
+            assert row.estimated_amount is None
 
             tax_configs = load_tax_configs_for_year(
                 user_id, profile, period.start_date.year,
             )
             breakdowns = paycheck_calculator.project_salary(
-                profile, _derived(user_id), tax_configs,
+                payroll_basis(profile, _derived(user_id)), _derived(user_id),
+                tax_configs,
                 calibration=profile.calibration,
             )
             expected_net = {
                 bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
             }[period.id]
-            # Sanity: the live net genuinely differs from the stale stored.
+            # Sanity: the profile's answer is the hand-computed figure, and
+            # it is not something the row could have been read off.
             assert expected_net == Decimal("4000.00")
-            assert expected_net != Decimal("1.00")
 
             # The grid's income row reflects the live net.
             column = balance_at.grid_balance_view(
                 account, bctx,
             ).columns[period.id]
             assert column.income == expected_net, (
-                f"GridColumn.income should be live {expected_net}, "
-                f"got {column.income} (stale stored was 1.00)"
+                f"GridColumn.income should be the profile's {expected_net}, "
+                f"got {column.income} (the row stores no figure at all)"
             )
 
-            # The BALANCE moves by the live net too, not just the rendered
-            # income row -- the property that makes the override a basis rather
-            # than a display value.  Re-pointed off the deleted anchor-forward
-            # walk onto the cash view at plan step X-g4b; the delta is
-            # unchanged because both read one ``live_amount_overrides`` map.
+            # The BALANCE moves by that net too, not just the rendered income
+            # row -- the property that makes the derivation a basis rather than
+            # a display value.  Re-pointed off the deleted anchor-forward walk
+            # onto the cash view at plan step X-g4b; the delta is unchanged
+            # because both fold one amount model.
             result = balance_at.cash_balance_map(
                 account, bctx,
             )
@@ -404,13 +465,17 @@ class TestLiveIncomeThroughBalanceResolver:
     def test_overridden_income_row_keeps_user_value(
         self, app, db, seed_user, seed_periods,
     ):
-        """A user-overridden salary income row is NOT recomputed.
+        """A salary income row that OWNS its figure is not recomputed.
 
-        ``is_override=True`` means the user deliberately set the amount;
-        the resolver must respect it (the producer excludes it), so the grid's
-        income row reflects the stored $1234.56, not the live net.  Read through
-        ``GridColumn.income`` since plan step X-c2b3 deleted
-        ``cash_ledger.period_subtotal``.
+        The non-vacuity partner for the case above, and the one whose REASON
+        changed at plan step X-au-d.  It used to hold because a read-time
+        repair excluded ``is_override`` rows; it holds now because the row
+        DECLARES no definition -- ``amount_ownership`` is what decides, so the
+        figure a human typed is answered by amount rule 1 and no salary
+        producer is consulted at all (finding **N-262**).  The flag is set here
+        because that is what the edit doors do beside taking ownership, not
+        because pricing reads it.  Read through ``GridColumn.income`` since
+        plan step X-c2b3 deleted ``cash_ledger.period_subtotal``.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -421,7 +486,7 @@ class TestLiveIncomeThroughBalanceResolver:
             template = _make_salary_template(seed_user, profile)
             db.session.commit()
 
-            period = pay_period_service.get_all_periods(user_id)[5]
+            period = all_periods(user_id)[5]
             _make_txn(
                 seed_user, period, template=template, is_override=True,
                 estimated_amount="1234.56",
@@ -432,224 +497,227 @@ class TestLiveIncomeThroughBalanceResolver:
                 account, bctx,
             ).columns[period.id]
             assert column.income == Decimal("1234.56"), (
-                "An overridden income row must keep the user's amount, "
+                "a row that OWNS its figure must keep the user's amount, "
                 f"got {column.income}"
             )
 
 
-class TestGetCurrentGrossBiweekly:
-    """Direct unit tests for ``income_service.get_current_gross_biweekly``."""
+class TestThePerPeriodGrossIsTheENGINES:
+    """What replaced ``income_service.get_current_gross_biweekly``.
 
-    def test_c17_1_raise_applied_yields_engine_per_period_gross(
+    That helper was the canonical raise-aware gross producer (C17 / F-20 /
+    MED-06 / F-032) and plan step **salary:R14-b** DELETED it, because its
+    shape was the defect: one figure, read at ONE moment, standing in for a
+    series every raise moves.  Its consumers read
+    :class:`~app.services.investment_projection.AccountPayrollFeed` now, priced
+    per payday by :func:`app.services.projection_inputs.load_payroll_feeds`.
+
+    **The property C17 was written to protect is graded here, and it is
+    STRONGER than it was.**  The old cases asked one question at one clock and
+    got one answer; these read the same feed at two paydays and see the raise
+    land between them, which is what the helper structurally could not show.
+    Two of the six old cases have no successor and say so below.
+    """
+
+    @staticmethod
+    def _feed_for(user_id, profile, account_id):
+        """Price *account_id*'s feed off *profile* as the funding job."""
+        from app.models.investment_params import InvestmentParams
+        params = db.session.query(InvestmentParams).filter_by(
+            account_id=account_id,
+        ).one()
+        params.salary_profile_id = profile.id
+        db.session.flush()
+        return load_payroll_feeds(
+            user_id, calendar_for(user_id), [account_id],
+            {account_id: params},
+        )[account_id]
+
+    def test_the_raise_lands_ON_ITS_PAYDAY_and_not_before(
         self, app, db, seed_user, seed_periods,
     ):
-        """C17-1: applicable raise -> raise-aware engine gross_biweekly.
+        """C17-1 and the effective-month case, in ONE feed.
 
-        Hand arithmetic: ``104000 * 1.03 / 26 = 4120.00``.  Pre-Commit-17
-        the off-engine sites returned ``104000 / 26 = 4000.00`` because
-        the raise was silently dropped.  The helper invokes the paycheck
-        engine for the as-of period, which folds the raise into the
-        post-raise annual salary before dividing.
+        Hand arithmetic: ``104000 / 26 = 4000.00`` before the March 2026
+        raise and ``104000 * 1.03 / 26 = 4120.00`` from it.  Pre-Commit-17
+        the off-engine sites returned $4,000.00 forever because the raise was
+        silently dropped; the helper C17 replaced them with fixed that at ONE
+        clock, and the feed fixes it at every payday -- the January and the
+        March paycheck are both in this one value, which is the whole of
+        finding **D45**'s remedy.
         """
         with app.app_context():
-            profile = _create_profile(
-                seed_user["user"].id, seed_user["scenario"].id,
-            )
+            user_id = seed_user["user"].id
+            profile = _create_profile(user_id, seed_user["scenario"].id)
             _add_one_time_raise(profile)
-            db.session.commit()
-
-            result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
-            )
-
-            assert result == _RAISE_APPLIED_GROSS
-
-    def test_c17_2_no_raise_yields_byte_identical_pre_fix_value(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """C17-2: no raises -> engine value equals the pre-fix value.
-
-        With zero raises, the post-raise annual salary equals the base
-        annual salary, so the engine's ``104000 / 26`` matches the
-        pre-fix ``104000 / 26 = 4000.00`` exactly.  Locks the "no
-        regression for non-raised users" property.
-        """
-        with app.app_context():
-            _create_profile(
-                seed_user["user"].id, seed_user["scenario"].id,
+            account = make_investment_account(
+                seed_user, db.session, seed_periods[0], Decimal("10000.00"),
             )
             db.session.commit()
 
-            result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
-            )
+            feed = self._feed_for(user_id, profile, account.id)
+            calendar = calendar_for(user_id)
+            before = calendar.period_containing(_AS_OF_BEFORE_RAISE)
+            after = calendar.period_containing(_AS_OF_AFTER_RAISE)
 
-            assert result == _NO_RAISE_GROSS
+            assert feed.gross_at(before.start_date) == _NO_RAISE_GROSS
+            assert feed.gross_at(after.start_date) == _RAISE_APPLIED_GROSS
 
-    def test_c17_3_no_active_profile_returns_zero(
+    def test_no_raise_yields_the_byte_identical_pre_fix_value(
         self, app, db, seed_user, seed_periods,
     ):
-        """C17-3: missing active profile -> ``Decimal("0")``.
+        """C17-2: no raises -> the engine value equals the pre-fix value.
 
-        Preserves the pre-fix fallback contract -- every off-engine
-        site defaulted ``salary_gross_biweekly = Decimal("0")`` when
-        the user had no active profile.  The helper matches.
+        With zero raises the post-raise annual salary equals the base, so the
+        engine's ``104000 / 26`` matches the pre-fix ``104000 / 26 = 4000.00``
+        exactly.  Locks the "no regression for non-raised users" property that
+        every C17 site was measured against.
         """
         with app.app_context():
-            # No SalaryProfile inserted -- seed_user does not create one.
-            result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
-            )
-
-            assert result == Decimal("0")
-
-    def test_raise_does_not_apply_before_effective_month(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A raise effective March must NOT apply to a January period.
-
-        Locks the engine's per-period semantic: the raise factor enters
-        the gross only for periods whose start_date is on or after the
-        effective month.  Without this, the helper would over-state
-        income for pre-raise periods.
-        """
-        with app.app_context():
-            profile = _create_profile(
-                seed_user["user"].id, seed_user["scenario"].id,
-            )
-            _add_one_time_raise(profile)
-            db.session.commit()
-
-            result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id), as_of=_AS_OF_BEFORE_RAISE,
-            )
-
-            assert result == _NO_RAISE_GROSS
-
-    def test_scenario_id_filter_scopes_lookup(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """``scenario_id`` keyword restricts the SalaryProfile lookup.
-
-        The year-end consumer passes ``scenario_id=scenario.id`` so the
-        per-scenario profile resolution stays consistent with how
-        year-end aggregates the rest of its inputs.  A profile in a
-        different scenario must NOT be returned.
-        """
-        with app.app_context():
-            # Insert profile in seed_user's baseline scenario.
-            _create_profile(
-                seed_user["user"].id, seed_user["scenario"].id,
+            user_id = seed_user["user"].id
+            profile = _create_profile(user_id, seed_user["scenario"].id)
+            account = make_investment_account(
+                seed_user, db.session, seed_periods[0], Decimal("10000.00"),
             )
             db.session.commit()
 
-            # Lookup with a different (non-existent) scenario_id returns
-            # zero -- no profile matches the filter.
-            result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id),
-                scenario_id=seed_user["scenario"].id + 9999,
-                as_of=_AS_OF_AFTER_RAISE,
-            )
-            assert result == Decimal("0")
+            feed = self._feed_for(user_id, profile, account.id)
+            calendar = calendar_for(user_id)
+            after = calendar.period_containing(_AS_OF_AFTER_RAISE)
+            assert feed.gross_at(after.start_date) == _NO_RAISE_GROSS
 
-            # Same call with the correct scenario_id resolves the profile.
-            result_match = income_service.get_current_gross_biweekly(
-                seed_user["user"].id,
-                calendar_for(seed_user["user"].id),
-                scenario_id=seed_user["scenario"].id,
-                as_of=_AS_OF_AFTER_RAISE,
+    def test_no_funding_job_REFUSES_rather_than_answering_zero(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """C17-3 INVERTED, and the inversion is the ruling.
+
+        The deleted helper answered ``Decimal("0")`` for an owner with no
+        active profile -- and, worse, for one whose calendar simply did not
+        cover the clock, which silently deleted a whole contribution plan at
+        onboarding and after a horizon lapse.  That zero is why
+        ``recurrence:R-F16`` had to REVERT a fix.
+
+        The feed refuses instead: no funding job means no gross, so no
+        employer money is modelled and the surface says which (developer,
+        2026-09-04).  ``None`` rather than ``$0.00`` because a zero is a basis
+        a percentage can be taken of.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = make_investment_account(
+                seed_user, db.session, seed_periods[0], Decimal("10000.00"),
             )
-            assert result_match == _NO_RAISE_GROSS
+            db.session.commit()
+
+            from app.models.investment_params import InvestmentParams
+            params = db.session.query(InvestmentParams).filter_by(
+                account_id=account.id,
+            ).one()
+            feed = load_payroll_feeds(
+                user_id, calendar_for(user_id), [account.id],
+                {account.id: params},
+            )[account.id]
+
+            assert feed.funds_employer is False
+            assert feed.gross_at(seed_periods[0].start_date) is None
+
+    # **``test_scenario_id_filter_scopes_lookup`` has no successor, and that
+    # is the point rather than a gap.**  It pinned the deleted helper's
+    # ``scenario_id`` keyword, which existed because the helper SEARCHED for a
+    # profile -- an unordered ``.first()`` across the owner's active ones,
+    # optionally narrowed to a scenario.  Nothing searches now: the employee
+    # half is priced inside the deduction's OWN profile and the employer half
+    # off the profile ``budget.investment_params.salary_profile_id`` NAMES
+    # (**R-SAL5**).  A filter that narrows a search cannot be tested when
+    # there is no search, and the 39% swing that filter was mitigating is not
+    # a state the model can reach.  ``TestLoadPayrollFeeds
+    # .test_ANOTHER_OWNERS_profile_prices_nothing`` grades what DID survive:
+    # that the read is owner-scoped.
 
 
 class TestConsumerIntegration:
     """C17-4: every downstream consumer reads the same engine value."""
 
-    def test_c17_4_savings_year_end_investment_agree_on_raised_gross(
+    def test_the_seam_and_the_engine_agree_on_a_raised_paycheck(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """C17-4: four consumers route through the engine-derived value.
+        """C17-4: the seam's feed IS the engine's own breakdown.
 
-        Sets up one raise-applicable scenario and calls each consumer's
-        private helper (or the producer that fans the value out).  All
-        four must report the same engine-derived per-period gross.  The
-        fixture uses ``seed_periods_today`` so ``date.today()`` falls
-        in a period whose ``period_month >= effective_month`` -- the
-        raise effective Jan 2026 applies to every 2026 period.
+        The original case called four consumers' private helpers and asserted
+        they agreed on one scalar.  Three of the four read that scalar through
+        ``income_service.get_current_gross_biweekly``, which plan step
+        **salary:R14-b** deleted, so what is left to grade is the one
+        agreement that can still fail: the gross the balance seam hands its
+        contribution tier is the gross the paycheck engine put on that
+        paycheck -- read back through :func:`income_service.project_profile`,
+        the ONE spelling of a profile's projection, rather than re-derived
+        here.
 
         Hand arithmetic: ``104000 * 1.03 / 26 = 4120.00``.
         """
         with app.app_context():
-            scenario = seed_user["scenario"]
-            bctx = BalanceContext.build(seed_user["user"].id)
             user_id = seed_user["user"].id
-            profile = _create_profile(user_id, scenario.id)
+            profile = _create_profile(user_id, seed_user["scenario"].id)
             _add_one_time_raise(
                 profile, effective_month=1, effective_year=2026,
             )
-            db.session.commit()
-
-            # Producer: the canonical helper itself.
-            canonical = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-            assert canonical == _RAISE_APPLIED_GROSS
-
-            # Savings consumer: after the Level-1 balance-seam reroute the
-            # savings package no longer loads the gross itself -- each
-            # investment tile delegates its projection to the ``balance_at``
-            # seam, which loads the engine gross in
-            # ``_contribution_inputs_for_account`` (fetched ONLY when the account has
-            # investment params, the seam's investment-only scoping).  So the
-            # savings consumer's gross now routes seam -> income_service; lock
-            # it at the seam's own loading point.  A real INVESTMENT account is
-            # required or the seam skips the gross fetch by design (returning
-            # ZERO), which is asserted below as the scoping control.
             inv = make_investment_account(
                 seed_user, db.session, seed_periods_today[0],
                 Decimal("10000.00"),
             )
-            seam_inputs = balance_at._contribution_inputs_for_account(
-                inv, BalanceContext.build(user_id),
-            )
-            assert seam_inputs.salary_gross_biweekly == canonical
+            db.session.commit()
+
+            from app.models.investment_params import InvestmentParams
+            params = db.session.query(InvestmentParams).filter_by(
+                account_id=inv.id,
+            ).one()
+            params.salary_profile_id = profile.id
+            db.session.commit()
+
+            bctx = BalanceContext.build(user_id)
+            seam_feed = balance_at._contribution_inputs_for_account(
+                inv, bctx,
+            ).feed
+            calendar = calendar_for(user_id)
+            # Keyed on the BREAKDOWN's own period ID rather than zipped
+            # against the calendar: the loader under test keys the same way,
+            # and an equality whose two sides share one SPELLING can agree
+            # while both are wrong.  The hand figure below is what keeps this
+            # honest even so.
+            payday_by_id = {
+                period.period_id: period.start_date
+                for period in calendar.saved()
+            }
+            engine = {
+                payday_by_id[breakdown.period.period_id]:
+                    breakdown.earnings.gross_biweekly
+                for breakdown in income_service.project_profile(
+                    profile, calendar,
+                )
+            }
+            payday = calendar.period_containing(bctx.as_of).start_date
+
+            assert engine[payday] == _RAISE_APPLIED_GROSS
+            assert seam_feed.gross_at(payday) == engine[payday]
 
             # The scoping control: a non-investment account in the same user's
-            # set gets NO gross, so the assertion above is pinning the
-            # investment-only fetch rather than a value every account carries.
+            # set gets NO feed, so the assertion above pins the
+            # investment-only pricing rather than a value every account
+            # carries.
             checking_inputs = balance_at._contribution_inputs_for_account(
                 seed_user["account"], BalanceContext.build(user_id),
             )
-            assert checking_inputs.salary_gross_biweekly == Decimal("0")
             assert checking_inputs.investment_params is None
-
-            # Investment consumer: Commit 17 introduced a thin
-            # ``_salary_gross_biweekly`` wrapper around
-            # ``income_service.get_current_gross_biweekly``; Commit 18
-            # (F-22) removed the wrapper and routed
-            # ``_projection_inputs_for_account`` through the canonical
-            # helper directly.  Asserting the producer alone still
-            # locks the producer/consumer agreement because the
-            # investment dashboard now has no intermediate site that
-            # could drift.
-            investment_val = income_service.get_current_gross_biweekly(
-                user_id, calendar_for(user_id),
-            )
-            assert investment_val == canonical
+            assert checking_inputs.feed.funds_employer is False
 
 
 class TestLiveProjectedNetUsesPerYearTaxConfigs:
-    """DH-#30: live_projected_net resolves tax configs PER period year.
+    """DH-#30: the salary derivation resolves tax configs PER period year.
 
     The recurrence engine GENERATES the stored grid amount using each
     period's OWN tax year; the live recompute must resolve the same way or
     the stored cache and the live value silently disagree -- the exact
-    reconciliation contract live_projected_net advertises.  Pre-fix it
+    reconciliation contract amount rule 2 advertises.  Pre-fix it
     loaded a single current-year config set and applied it across the whole
     ~2-year horizon, so a future-year period was recomputed against the
     wrong year's tax.
@@ -692,7 +760,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             ])
             db.session.commit()
 
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             period_2027 = next(
                 (p for p in periods if p.start_date.year == 2027), None,
             )
@@ -710,7 +778,8 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             net_2027_rate = {
                 bd.period.period_id: bd.earnings.net_pay
                 for bd in paycheck_calculator.project_salary(
-                    profile, _derived(user_id),
+                    payroll_basis(profile, _derived(user_id)),
+                    _derived(user_id),
                     load_tax_configs(user_id, profile, tax_year=2027),
                     calibration=profile.calibration,
                 )
@@ -718,7 +787,8 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             net_2026_rate = {
                 bd.period.period_id: bd.earnings.net_pay
                 for bd in paycheck_calculator.project_salary(
-                    profile, _derived(user_id),
+                    payroll_basis(profile, _derived(user_id)),
+                    _derived(user_id),
                     load_tax_configs(user_id, profile, tax_year=2026),
                     calibration=profile.calibration,
                 )
@@ -727,7 +797,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             # pass vacuously.
             assert net_2027_rate != net_2026_rate
 
-            overrides = _live_net_map(user_id, scenario_id, [txn])
+            overrides = _net_map(user_id, scenario_id, [txn])
             assert overrides[txn.id] == net_2027_rate
             assert overrides[txn.id] != net_2026_rate
 
@@ -795,7 +865,7 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             template = _make_salary_template(seed_user, profile)
             self._seed_2026_only(user_id, profile)
 
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             period_2027 = next(
                 (p for p in periods if p.start_date.year == 2027), None,
             )
@@ -807,10 +877,10 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             db.session.commit()
 
             freeze_today(monkeypatch, date(2026, 6, 1))
-            priced_in_2026 = _live_net_map(user_id, scenario_id, [txn])[txn.id]
+            priced_in_2026 = _net_map(user_id, scenario_id, [txn])[txn.id]
 
             freeze_today(monkeypatch, date(2027, 6, 1))
-            priced_in_2027 = _live_net_map(user_id, scenario_id, [txn])[txn.id]
+            priced_in_2027 = _net_map(user_id, scenario_id, [txn])[txn.id]
 
             assert priced_in_2027 == priced_in_2026
 
@@ -840,7 +910,7 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             _make_salary_template(seed_user, profile)
             self._seed_2026_only(user_id, profile)
 
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             period_2027 = next(
                 p for p in periods if p.start_date.year == 2027
             )
@@ -849,12 +919,13 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             derived_2027 = next(
                 p for p in derived if p.start_date.year == 2027
             )
+            basis = payroll_basis(profile, derived)
             resolved = paycheck_calculator.calculate_paycheck(
-                profile, derived_2027, derived,
+                basis, derived_2027,
                 load_tax_configs_for_year(user_id, profile, 2027),
             )
             unresolved = paycheck_calculator.calculate_paycheck(
-                profile, derived_2027, derived,
+                basis, derived_2027,
                 load_tax_configs(user_id, profile, 2027),
             )
 

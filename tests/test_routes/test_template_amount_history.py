@@ -88,17 +88,17 @@ def _transfer_template(seed_user, savings_acct, amount="250.00"):
     """Create a recurring transfer template with an Every-Period rule."""
     # Authored through the write door (plan step R7c-b): the two-axis columns
     # are NOT NULL, so a rule naming only a pattern cannot be stored.
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=savings_acct.id,
-        recurrence_rule_id=rule.id,
         name="Money Market Contribution",
         default_amount=Decimal(amount),
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
     tas.set_amount(template, Decimal(amount), effective_on=date(2020, 4, 9))
     db.session.commit()
     return template
@@ -175,7 +175,7 @@ class TestEligibilityCanBeGAINED:
         """The paycheck stops pricing the rows, so the column becomes the price.
 
         With no ACTIVE profile the recurrence engine falls back to
-        ``default_amount`` (``recurrence_engine._get_transaction_amount``), so
+        ``default_amount`` (``recurrence_engine._generated_amount_ownership``), so
         the template starts owning its amount at exactly that moment.  Found by
         adversarial review: before this, archiving the profile left an eligible
         template holding ZERO versions -- 58 rows on production's one salary
@@ -328,8 +328,37 @@ class TestTheConflictChooserRoundTrip:
     better of a change leaves a version behind, or one who confirms it gets two.
     """
 
+    @staticmethod
+    def _series(template):
+        """The template's price series as ``[(date, amount), ...]``."""
+        return [
+            (v.effective_date, v.amount) for v in tas.amount_versions(template)
+        ]
+
     def _template_with_conflict(self, seed_user):
-        """A recurring template whose latest upcoming instance is hand-edited."""
+        """A recurring template whose latest upcoming instance is hand-edited.
+
+        Returns the template, the overridden row, and the series as the
+        FIXTURE left it.  **Both cases below assert a DELTA against that
+        third value rather than a hard-coded list**, and the reason is worth
+        stating: `_create_template` opens the price series the way the real
+        create door does -- ``set_amount`` at the owner's today, which plan
+        step balance:X-au-e made load-bearing because a template with no
+        series generates rows nothing can price.  An absolute expectation
+        therefore encodes the clock, and CI runs at ``Pacific/Kiritimati``.
+        The claim these cases make is about what the EDIT adds and removes,
+        which is exactly what a delta says.
+
+        **The edit's date is FUTURE for the same reason, and a fixed
+        ``2026-06-01`` was silently wrong once the opening version moved to
+        today.**  ``default_amount`` means the NEWEST stated price, so a
+        statement dated before an existing version does not move the scalar --
+        and the chooser is gated on the scalar having moved
+        (``regenerate_or_conflict_chooser``).  With a back-dated edit the first
+        case stopped rendering the chooser at all and returned 302: it was
+        still asserting something true, about a path that no longer reached the
+        code the class exists to grade.
+        """
         from tests.test_routes.test_templates import (
             _create_template, _future_override_txn,
         )
@@ -341,19 +370,20 @@ class TestTheConflictChooserRoundTrip:
         )
         db.session.commit()
         txn = _future_override_txn(seed_user, template, amount="1500.00")
-        return template, txn
+        return template, txn, self._series(template)
 
     def test_the_chooser_leaves_no_price_behind(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """The first submit renders the chooser and records nothing."""
         with app.app_context():
-            template, _txn = self._template_with_conflict(seed_user)
+            template, _txn, before = self._template_with_conflict(seed_user)
             tid = template.id
 
+            rise = display_today() + timedelta(days=30)
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "effective_from": "2026-06-01",
+                "effective_from": rise.isoformat(),
             })
             assert resp.status_code == 200
             assert b"hand-edited" in resp.data
@@ -361,21 +391,23 @@ class TestTheConflictChooserRoundTrip:
             db.session.expire_all()
             template = db.session.get(TransactionTemplate, tid)
             assert template.default_amount == Decimal("1200.00")
-            assert [
-                (v.effective_date, v.amount) for v in tas.amount_versions(template)
-            ] == [(date(2026, 1, 1), Decimal("1200.00"))]
+            # Nothing recorded and nothing withdrawn: the rollback took the
+            # whole pending edit, price included.
+            assert self._series(template) == before
+            assert (rise, Decimal("1400.00")) not in before
 
     def test_apply_records_the_price_exactly_once(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Apply re-runs the same edit, so the price lands once at its date."""
         with app.app_context():
-            template, txn = self._template_with_conflict(seed_user)
+            template, txn, before = self._template_with_conflict(seed_user)
             tid, txn_id = template.id, txn.id
 
+            rise = display_today() + timedelta(days=30)
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "effective_from": "2026-06-01",
+                "effective_from": rise.isoformat(),
                 "conflict_apply": "1",
                 f"conflict_decision_{txn_id}": "keep",
             }, follow_redirects=True)
@@ -383,11 +415,13 @@ class TestTheConflictChooserRoundTrip:
 
             db.session.expire_all()
             template = db.session.get(TransactionTemplate, tid)
-            assert [
-                (v.effective_date, v.amount) for v in tas.amount_versions(template)
-            ] == [
-                (date(2026, 1, 1), Decimal("1200.00")),
-                (date(2026, 6, 1), Decimal("1400.00")),
+            # Exactly one version added, at the date the edit stated.  A
+            # second pass recording it twice shows up as a longer list; a
+            # pass recording it at the wrong date shows up in the pair.
+            # The rise is dated after every existing version, so appending is
+            # the sorted order rather than an accident of it.
+            assert self._series(template) == before + [
+                (rise, Decimal("1400.00")),
             ]
 
 
@@ -613,10 +647,14 @@ class TestWithdrawAmountVersion:
     def test_withdrawing_an_interior_entry(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The June entry goes and June falls back on the April price.
+        """An interior entry that MOVES a price is refused through the route.
 
-        Interior, so the newest price the series states is unchanged and
-        nothing generation writes moves.
+        **This case asserted the removal until plan step balance:X-au-e**, on
+        the stated ground that "the newest price the series states is unchanged
+        and nothing generation writes moves". The first half is still true and
+        the second is not: generation writes no figure now, so what June's
+        window prices is read from this series live, and withdrawing the June
+        entry re-prices it.
         """
         with app.app_context():
             template = _template_with_history(seed_user, [
@@ -632,12 +670,68 @@ class TestWithdrawAmountVersion:
                 follow_redirects=True,
             )
             assert resp.status_code == 200
+            assert b"could not be removed" in resp.data
+
+            db.session.expire_all()
+            template = db.session.get(TransactionTemplate, tid)
+            assert len(tas.amount_versions(template)) == 3
+            assert tas.amount_as_of(template, date(2020, 7, 1)) == Decimal("178.32")
+
+    def test_withdrawing_a_REDUNDANT_interior_entry_still_works(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The DOCUMENTED repair path, driven end to end.
+
+        The other half of the rule at the ROUTE tier, and the case that shows
+        the refusal above did not swallow the feature: an entry mis-dated to
+        June is repaired by stating the same amount at the date it should have
+        had, which APPENDS, and the June entry is then withdrawable because
+        its new predecessor states the same figure -- the series answers
+        identically without it.
+
+        **A first draft of this case seeded ``[Apr 178.00, Jun 178.00, Sep
+        165.30]`` directly and found only two versions**: ``set_amount``
+        refuses to write a restatement that changes no answer, so a redundant
+        entry cannot be created through the write door at all. Building the
+        shape the repair actually produces is what makes this a test of the
+        repair rather than of a state the app cannot reach.
+        """
+        with app.app_context():
+            template = _template_with_history(seed_user, [
+                (date(2020, 4, 1), "178.00"),
+                (date(2020, 6, 1), "178.32"),
+                (date(2020, 9, 1), "165.30"),
+            ])
+            # The repair: the June rise actually happened in May.
+            tas.set_amount(
+                template, Decimal("178.32"), effective_on=date(2020, 5, 1),
+            )
+            db.session.commit()
+            assert len(tas.amount_versions(template)) == 4
+            tid = template.id
+            # BY DATE, not by index: the repair above inserted a version
+            # ahead of it, and an index would silently select the new May
+            # entry -- whose predecessor states a different amount, so the
+            # case would assert the refusal while claiming to test the repair.
+            june_id = next(
+                v.id for v in tas.amount_versions(template)
+                if v.effective_date == date(2020, 6, 1)
+            )
+
+            resp = auth_client.post(
+                f"/templates/{tid}/amount-versions/{june_id}/delete",
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
             assert b"Amount history entry removed" in resp.data
 
             db.session.expire_all()
             template = db.session.get(TransactionTemplate, tid)
-            assert len(tas.amount_versions(template)) == 2
-            assert tas.amount_as_of(template, date(2020, 7, 1)) == Decimal("178.00")
+            assert len(tas.amount_versions(template)) == 3
+            # Every date answers what it did before the withdrawal, which is
+            # the whole licence for allowing it.
+            assert tas.amount_as_of(template, date(2020, 7, 1)) == Decimal("178.32")
+            assert tas.amount_as_of(template, date(2020, 4, 15)) == Decimal("178.00")
             assert template.default_amount == Decimal("165.30")
 
     def test_withdrawing_the_earliest_is_refused_with_the_repair(
@@ -765,8 +859,14 @@ class TestWithdrawAmountVersion:
             )
             db.session.commit()
             tid = template.id
-            # The MIDDLE entry: removing it leaves $300.00 the newest price, so
-            # nothing generation writes moves.
+            # The MIDDLE entry, restated at the SAME figure its predecessor
+            # states: since plan step balance:X-au-e a withdrawal is legal only
+            # when the series answers identically without it, and this route
+            # shares that one rule with the transaction side.
+            tas.set_amount(
+                template, Decimal("500.00"), effective_on=date(2020, 5, 21),
+            )
+            db.session.commit()
             middle_id = tas.amount_versions(template)[1].id
 
             resp = auth_client.post(

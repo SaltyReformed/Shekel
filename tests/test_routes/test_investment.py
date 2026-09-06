@@ -14,20 +14,15 @@ from app.enums import (
     DeductionTimingEnum,
     EmployerContributionTypeEnum,
 )
-from app.extensions import db
-from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
-from app.models.user import UserSettings
 from app.services import (
     account_service,
     balance_at,
     growth_engine,
     investment_dashboard_service,
-    pay_period_service,
 )
 from app.services.balance_at import BalanceContext
 from app.services.investment_dashboard_service import (
@@ -38,10 +33,16 @@ from app.services.investment_dashboard_service._context import (
     _load_projection_context,
     _projection_ytd,
 )
-from app.services.investment_projection import InvestmentInputs
+from app.services.investment_projection import (
+    AccountPayrollFeed,
+    InvestmentInputs,
+)
 from app.utils.money import round_money
 from tests._test_helpers import (
-    restamp_opening_assertion,
+    current_pay_period,
+    last_covered_day,
+    reassert_balance_on,
+    settle_day_columns,
     settle_instant_on,
 )
 from app.services.investment_dashboard_service import _cards as investment_cards
@@ -52,8 +53,10 @@ from app.services.investment_dashboard_service._context import (
 from app.services.pay_calendar import PayCalendar
 from tests._test_helpers import (
     make_investment_account,
+    open_books_before_the_first_assertion,
     read_pass_over_paydays,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _cards_context(*, limit, ytd, paydays, current_index, as_of, cadence=14,
@@ -114,11 +117,11 @@ def _cards_context(*, limit, ytd, paydays, current_index, as_of, cadence=14,
             annual_contribution_limit=limit,
             ytd_contributions=ytd,
             ytd_contributions_seed=ytd,
-            gross_biweekly=Decimal("0"),
         ),
-        contributions=[],
+        shadow_contributions=[],
+        feed=AccountPayrollFeed.absent(),
         deductions=[],
-        active_profile=None,
+        salary_profiles=[],
         balance_ctx=balance_ctx,
         anchor_as_of=None,
         planned_retirement_date=retirement_date,
@@ -128,7 +131,14 @@ def _cards_context(*, limit, ytd, paydays, current_index, as_of, cadence=14,
 
 def _create_investment_account(seed_user, db_session, type_name="401(k)",
                                 name="My 401k", balance="50000.00"):
-    """Helper to create an investment/retirement account."""
+    """Helper to create an investment/retirement account.
+
+    COMMITS rather than flushes (plan step balance:X-i3).  A request cannot see
+    an uncommitted row -- it holds its own transaction -- so a fixture that
+    only flushed and then issued one was asking the route to read a state no
+    browser could produce.  The sibling ``_create_investment_params`` below has
+    always committed; this one differed for no stated reason.
+    """
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
         account_service.AccountSpec(
@@ -139,7 +149,11 @@ def _create_investment_account(seed_user, db_session, type_name="401(k)",
         ),
     )
     db_session.add(account)
-    db_session.flush()
+    # Its BOOKS open before anything this fixture dates (plan step X-f3c-2b,
+    # ruling **R-HG**): ``create_account`` opens them on the day it asserts --
+    # the owner's today -- and this suite settles on or before it.
+    open_books_before_the_first_assertion(db_session, account)
+    db_session.commit()
     return account
 
 
@@ -175,6 +189,10 @@ def _create_other_investment(second_user, db_session):
         ),
     )
     db_session.add(account)
+    # Its BOOKS open before anything this fixture dates (plan step X-f3c-2b,
+    # ruling **R-HG**): ``create_account`` opens them on the day it asserts --
+    # the owner's today -- and this suite settles on or before it.
+    open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account
 
@@ -203,7 +221,7 @@ class TestInvestmentDashboard:
         _create_investment_params(db.session, acct.id)
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-        )[pay_period_service.get_current_period(seed_user["user"].id).id]
+        )[current_pay_period(seed_user["user"].id).id]
         assert headline > Decimal("50000.00")
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
@@ -240,7 +258,7 @@ class TestInvestmentDashboard:
         )
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-        )[pay_period_service.get_current_period(seed_user["user"].id).id]
+        )[current_pay_period(seed_user["user"].id).id]
         assert headline > Decimal("25000.00")  # ruling R-Y: the anchor accrues
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
@@ -358,8 +376,7 @@ class TestInvestmentDashboard:
         The chip is still hidden where it should be: no investment params, or no
         current period (the two arms ruling R-AC kept).
         """
-        from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         inv = make_investment_account(
             seed_user, db.session, current, Decimal("10000.00"),
             name="Fresh 401k",
@@ -541,7 +558,7 @@ class TestContributionLimitZeroCap:
 
         deep-quality-hunt #59: the YTD subtracted from the limit is summed
         over periods whose payday is ``<= current_period.start_date``
-        (``investment_projection._ytd_contributions``), so the
+        (``investment_projection._inputs._ytd_contributions``), so the
         per-period suggestion must spread the remainder over the periods
         STRICTLY AFTER the current period -- else the current period is
         double-counted (in YTD *and* in the remaining spread) on the single
@@ -691,94 +708,6 @@ class TestTheDefaultHorizonComesOffTheReadPass:
         ) == investment_cards._FALLBACK_HORIZON_YEARS
 
 
-class TestTheCutoverReadsTheDERIVEDPeriodEnd:
-    """The ONE axis on which this cutover can move a number.
-
-    Plan step C2-f2c swaps ``pay_period_service``'s ORM rows for the read
-    pass's own :class:`~app.services.pay_calendar.PayCalendar`, and the claim
-    that no figure moves rests on a PRECONDITION rather than on an identity:
-    the stored ``end_date`` / ``period_index`` columns equal what
-    :func:`~app.services.pay_calendar.derive_periods` computes from the
-    paydays.  ``pay_period_write`` has materialised that on every write since
-    plan step C3-b, and the production clone the cutover was verified against
-    carries ZERO mismatches -- which is exactly why a byte-identical harness
-    run cannot grade this: **the database it ran on cannot express the
-    disagreement.**  Neither can any fixture, since every one of them builds
-    its periods through that same writer.
-
-    So the disagreement is planted here by hand, and the assertion is which
-    column the code follows.  An adversarial review of this step found the
-    harness CLAIMING this axis was covered by hand-computed cases when it was
-    covered by nothing (2026-08-15).
-
-    It is not a reachable production state today; it is the state plan step
-    **C4** makes unreachable by DROPPING the column, and until then the only
-    door to it is ``resolve_cadence``'s legacy fallback (finding **P8**).  What
-    this case pins is the direction: this package reads the derivation.
-    """
-
-    def test_the_horizon_follows_the_DERIVED_end_not_the_stored_column(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A stored end five years out must not stretch the slider.
-
-        ``seed_periods`` runs ten biweekly periods from 2026-01-02, so the last
-        payday is 2026-05-08 and its DERIVED end is 2026-05-21 -- the cadence
-        projected past the final payday.  The stored column is then rewritten
-        to 2031-12-31, which is legal (``ck_pay_periods_date_order`` only wants
-        ``start < end``) and which no write door would produce.
-
-        The owner keeps their ``pay_schedule`` row, so
-        ``pay_schedule_service.resolve_cadence`` never reaches the legacy
-        fallback that would INFER a cadence from the length just corrupted --
-        without that the plant would move the derivation too and the case would
-        grade nothing.
-        """
-        with app.app_context():
-            user_id = seed_user["user"].id
-            last = seed_periods[-1]
-            assert last.start_date == date(2026, 5, 8), (
-                "this case hand-computes off the fixture's dates"
-            )
-            acct = _create_investment_account(
-                seed_user, db.session, name="Derived-end 401k",
-                balance="10000.00",
-            )
-            _create_investment_params(db.session, acct.id)
-            settings = db.session.query(UserSettings).filter_by(
-                user_id=user_id,
-            ).one_or_none()
-            if settings is not None:
-                settings.planned_retirement_date = None
-            db.session.commit()
-
-            # The plant, and the control that it took.
-            db.session.query(PayPeriod).filter_by(id=last.id).update(
-                {"end_date": date(2031, 12, 31)},
-            )
-            db.session.commit()
-            assert db.session.get(PayPeriod, last.id).end_date == (
-                date(2031, 12, 31)
-            )
-
-            ctx = _load_projection_context(
-                user_id, acct, _load_investment_params(acct.id),
-            )
-            derived_end = ctx.balance_ctx.reported_periods()[-1].end_date
-            assert derived_end == date(2026, 5, 21), (
-                "the derivation must be untouched by the stored column"
-            )
-
-            horizon = investment_cards._compute_default_horizon(ctx)
-            as_of = ctx.balance_ctx.as_of
-            # Reading the DERIVED end: (2026 - as_of.year) + 1, floored at 1.
-            assert horizon == max(1, (2026 - as_of.year) + 1)
-            # Reading the STORED column would answer this instead, and the two
-            # differ by five years -- so the assertion above is a real choice
-            # rather than a coincidence of the fixture's dates.
-            assert horizon != (2031 - as_of.year) + 1
-
-
 class TestTheChartMarkersAskTheWindowWhereTheDateFALLS:
     """``_build_chart_markers``: ledger row **P48**, and its first tests.
 
@@ -805,6 +734,7 @@ class TestTheChartMarkersAskTheWindowWhereTheDateFALLS:
                 for index in range(10)
             ],
             14, user_id=1,
+            history_opens_on=None,
         )
         return calendar.window(first_index=first_index, count=count)
 
@@ -1269,8 +1199,21 @@ class TestGrowthChartFragment:
 # ── Tests: Contribution-Aware Dashboard ───────────────────────
 
 
-def _create_salary_profile(db_session, user_id, scenario_id):
-    """Create an active salary profile for the test user."""
+def _create_salary_profile(db_session, user_id, scenario_id, funds=None):
+    """Create an active salary profile for the test user.
+
+    Args:
+        db_session: The session to add on.
+        user_id: The owner.
+        scenario_id: The scenario the profile belongs to.
+        funds: An account id whose employer contribution this job FUNDS
+            (**R-SAL5**), or ``None``.  Since plan step **salary:R14-b** an
+            employer contribution is priced off the profile
+            ``budget.investment_params.salary_profile_id`` names, and an
+            account naming none models no employer money at all (developer,
+            2026-09-04) -- so a case asserting an employer figure has to say
+            which job pays it, exactly as the owner does at the form.
+    """
     filing = db_session.query(FilingStatus).filter_by(name="single").one()
     profile = SalaryProfile(
         user_id=user_id,
@@ -1283,6 +1226,11 @@ def _create_salary_profile(db_session, user_id, scenario_id):
     )
     db_session.add(profile)
     db_session.flush()
+    if funds is not None:
+        db_session.query(InvestmentParams).filter_by(
+            account_id=funds,
+        ).one().salary_profile_id = profile.id
+        db_session.flush()
     return profile
 
 
@@ -1300,9 +1248,181 @@ def _create_deduction(db_session, profile_id, account_id, amount="500.00"):
         is_active=True,
     )
     db_session.add(ded)
+    params = (
+        db_session.query(InvestmentParams)
+        .filter_by(account_id=account_id).one_or_none()
+    )
+    if params is not None:
+        params.salary_profile_id = profile_id
     db_session.flush()
     return ded
 
+
+class TestTheFundingJobIsNamedOrTheMoneyIsNotMODELLED:
+    """Ruling **R-SAL5** and the developer's 2026-09-04 ruling, at the surface.
+
+    An employer contribution is a percentage OF a gross, so it has to know
+    which job's paycheck to take it from.  Where no deduction names the
+    account there was no link to any profile at all, and the basis fell to
+    ``income_service.get_current_gross_biweekly``'s unordered ``.first()``
+    across the owner's active profiles -- a measured 39% swing on a two-job
+    owner, flipping between renders with no data change.  Plan step
+    **salary:R14-a** added ``budget.investment_params.salary_profile_id``;
+    this step is its reader, and the developer ruled what a NULL means:
+    **no employer money is modelled, and the page says so.**
+
+    Both halves are graded here, because "models nothing" alone is what a
+    silent regression looks like: an owner whose Employer chip simply vanished
+    would have no way to tell a ruling from a bug.
+    """
+
+    @staticmethod
+    def _account_with_an_employer_contribution(seed_user, db_session):
+        """A 401(k) paying a 5% flat employer contribution, funding job UNSET.
+
+        The real Empower shape (ledger row **D45**): no deduction names it, so
+        nothing else can imply which job funds it.
+        """
+        acct = _create_investment_account(
+            seed_user, db_session, name="Employer Only 401k",
+        )
+        _create_investment_params(
+            db_session, acct.id,
+            employer_contribution_type_id=ref_cache.employer_contribution_type_id(
+                EmployerContributionTypeEnum.FLAT_PERCENTAGE),
+            employer_flat_percentage=Decimal("0.05"),
+        )
+        return acct
+
+    def test_an_unset_funding_job_models_nothing_AND_says_why(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """No funding job: the notice renders and the figure is withheld.
+
+        The owner has an active salary profile, so a gross EXISTS -- what is
+        missing is the statement that THIS account's employer contribution is
+        taken from it.  That distinction is the whole ruling: the app could
+        guess, and guessing is what it measured at a 39% swing.
+        """
+        acct = self._account_with_an_employer_contribution(seed_user, db.session)
+        _create_salary_profile(
+            db.session, seed_user["user"].id, seed_user["scenario"].id,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        assert "No employer money is modelled" in html
+        assert "funding job not set" in html
+        # The CONFIGURATION still renders: the owner set a 5% contribution and
+        # the app saying so is how they recognise the notice as being about
+        # their own setup rather than a missing one.
+        assert "Employer contributes" in html
+        assert "5.00%" in html
+        # And the selector offers the job they could name.
+        assert 'name="salary_profile_id"' in html
+        assert "Day Job" in html
+
+    def test_naming_the_funding_job_models_the_money(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The same account with the job named: a real figure, no notice.
+
+        The pair is what makes the case above non-vacuous -- without it,
+        "the notice renders" is equally true of a page that always renders it.
+        """
+        acct = self._account_with_an_employer_contribution(seed_user, db.session)
+        _create_salary_profile(
+            db.session, seed_user["user"].id, seed_user["scenario"].id,
+            funds=acct.id,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/investment")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        assert "No employer money is modelled" not in html
+        assert "funding job not set" not in html
+        # $100,000 / 26 = $3,846.15 a paycheck; 5% of it is $192.31.
+        assert "$192.31" in html
+
+    def test_the_write_door_REFUSES_another_owners_profile(
+        self, auth_client, seed_user, second_user, db, seed_periods_today,
+    ):
+        """A forged ``salary_profile_id`` is a 404, not a priced stranger's salary.
+
+        The form's dropdown lists only the requester's own profiles, so a
+        foreign id in the submission is an IDOR -- and the read it would feed
+        prices this owner's employer contribution off another owner's salary
+        and raise history.  The mirror-image door
+        (``paycheck_deductions.target_account_id``) was closed at
+        ``salary:R14-a`` as ledger row **N-534**; this is the same guard on
+        the same rule, and both call ``auth_helpers.require_owned_fk``.
+        """
+        acct = self._account_with_an_employer_contribution(seed_user, db.session)
+        stranger = _create_salary_profile(
+            db.session, second_user["user"].id, second_user["scenario"].id,
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/investment/params",
+            data={
+                "assumed_annual_return": "7",
+                "employer_contribution_type_id": str(
+                    ref_cache.employer_contribution_type_id(
+                        EmployerContributionTypeEnum.FLAT_PERCENTAGE),
+                ),
+                "employer_flat_percentage": "5",
+                "salary_profile_id": str(stranger.id),
+            },
+        )
+        assert resp.status_code == 404
+        params = (
+            db.session.query(InvestmentParams)
+            .filter_by(account_id=acct.id).one()
+        )
+        assert params.salary_profile_id is None
+
+    def test_the_CREATE_branch_refuses_it_too(
+        self, auth_client, seed_user, second_user, db, seed_periods_today,
+    ):
+        """The other arm of the same door, which the case above cannot reach.
+
+        ``update_params`` has two branches and the guard is on both, but the
+        case above seeds an ``InvestmentParams`` row first and so only
+        exercises the UPDATE arm -- an adversarial review measured the CREATE
+        arm ungraded.  Here the account has no params row, so the POST takes
+        the create path, and the forged profile must be refused before any
+        row is written.
+        """
+        acct = _create_investment_account(seed_user, db.session)
+        stranger = _create_salary_profile(
+            db.session, second_user["user"].id, second_user["scenario"].id,
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/investment/params",
+            data={
+                "assumed_annual_return": "7",
+                "employer_contribution_type_id": str(
+                    ref_cache.employer_contribution_type_id(
+                        EmployerContributionTypeEnum.FLAT_PERCENTAGE),
+                ),
+                "employer_flat_percentage": "5",
+                "salary_profile_id": str(stranger.id),
+            },
+        )
+        assert resp.status_code == 404
+        # And nothing was created: the guard runs before the INSERT.
+        assert (
+            db.session.query(InvestmentParams)
+            .filter_by(account_id=acct.id).one_or_none()
+        ) is None
 
 class TestContributionAwareDashboard:
     """Tests for the contribution timeline integration (5.2-2).
@@ -1375,18 +1495,18 @@ def _create_transfer_template(db_session, user_id, from_id, to_id,
 
     # Authored through the write door (plan step R7c-b): the two-axis columns
     # are NOT NULL, so a rule naming only a pattern cannot be stored.
-    rule = make_every_period_rule(db_session, user_id)
     tpl = TransferTemplate(
         user_id=user_id,
         from_account_id=from_id,
         to_account_id=to_id,
-        recurrence_rule_id=rule.id,
         name=f"Contribution {from_id}->{to_id}",
         default_amount=Decimal("200.00"),
         is_active=is_active,
     )
     db_session.add(tpl)
     db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db_session, tpl)
     return tpl
 
 
@@ -1528,7 +1648,6 @@ class TestContributionPrompt:
         self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST with valid source creates RecurrenceRule + TransferTemplate."""
-        from app.models.recurrence_rule import RecurrenceRule as RR
         from app.models.transfer_template import TransferTemplate as TT
 
         acct = _create_investment_account(
@@ -1562,10 +1681,11 @@ class TestContributionPrompt:
         assert tpl.is_active is True
         assert tpl.from_account_id == checking.id
         assert tpl.default_amount == Decimal("269.23")
-        assert tpl.recurrence_rule_id is not None
+        assert tpl.recurrence_rule is not None
 
-        rule = db.session.get(RR, tpl.recurrence_rule_id)
-        assert rule is not None
+        # Reached through the OWNING relationship (plan step R-F6); a
+        # second fetch by id would re-assert what the line above says.
+        assert tpl.recurrence_rule.transfer_template_id == tpl.id
 
     def test_create_transfer_generates_shadows(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1992,10 +2112,12 @@ class TestWhatIfContributionCalculator:
             employer_match_percentage=Decimal("1.0000"),
             employer_match_cap_percentage=Decimal("0.0600"),
         )
-        # Salary profile provides gross_biweekly for employer match calc.
+        # The salary profile provides the gross the employer match is a
+        # percentage OF, and names itself as the account's funding job
+        # (R-SAL5) -- there is no deduction here to imply the link.
         _create_salary_profile(
             db.session, seed_user["user"].id,
-            seed_user["scenario"].id,
+            seed_user["scenario"].id, funds=acct.id,
         )
         db.session.commit()
 
@@ -2249,6 +2371,7 @@ def _add_envelope_expense_with_cleared_entries_inv(
 
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=scenario.id,
         account_id=account.id,
@@ -2256,7 +2379,7 @@ def _add_envelope_expense_with_cleared_entries_inv(
         name="Investment-side expense",
         category_id=category_id,
         transaction_type_id=expense_type_id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
     )
     db_session.add(txn)
     db_session.flush()
@@ -2269,7 +2392,7 @@ def _add_envelope_expense_with_cleared_entries_inv(
             description="Cleared purchase",
             purchased_on=date(2026, 5, 15),
             is_credit=False,
-            settled_on=date(2026, 5, 15),
+            **settle_day_columns(date(2026, 5, 15)),
         ))
     db_session.flush()
     return txn
@@ -2314,12 +2437,11 @@ class TestInvestmentEntryAwareRouting:
         canonical producer's value so the contract is locked beyond
         the rendered string.
         """
-        from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             user = seed_user["user"]
             scenario = seed_user["scenario"]
-            current_period = pay_period_service.get_current_period(user.id)
+            current_period = current_pay_period(user.id)
             assert current_period is not None
 
             # ``account_service.create_account`` (via the helper) anchors
@@ -2345,6 +2467,12 @@ class TestInvestmentEntryAwareRouting:
                     Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
                 ),
             )
+            # The purchases above are dated by their builder, BEFORE this
+            # calendar's first period, so the books move again now that the
+            # rows exist (plan step X-f3c-2b, ruling **R-HG**).  The helper
+            # bounds on the earliest settled row as well as on the assertion,
+            # which is why calling it a second time is the whole repair.
+            open_books_before_the_first_assertion(db.session, acct)
             db.session.commit()
 
             # The entries-aware CASH BASIS the modelled balance is computed
@@ -2404,8 +2532,7 @@ class TestInvestmentEntryAwareRouting:
         with app.app_context():
             user = seed_user["user"]
             scenario = seed_user["scenario"]
-            from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
-            current_period = pay_period_service.get_current_period(user.id)
+            current_period = current_pay_period(user.id)
             assert current_period is not None
 
             # ``account_service.create_account`` (via the helper) anchors
@@ -2431,6 +2558,12 @@ class TestInvestmentEntryAwareRouting:
                     Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
                 ),
             )
+            # The purchases above are dated by their builder, BEFORE this
+            # calendar's first period, so the books move again now that the
+            # rows exist (plan step X-f3c-2b, ruling **R-HG**).  The helper
+            # bounds on the earliest settled row as well as on the assertion,
+            # which is why calling it a second time is the whole repair.
+            open_books_before_the_first_assertion(db.session, acct)
             db.session.commit()
 
             resp = auth_client.get(
@@ -2448,7 +2581,7 @@ class TestInvestmentEntryAwareRouting:
             # compounded over exactly one period.  With no contributions and no
             # employer match there is nothing else in the row.
             bctx = BalanceContext.build(user.id)
-            seed = balance_at.balance_at(acct, bctx, current_period.end_date)
+            seed = balance_at.balance_at(acct, bctx, last_covered_day(current_period))
             # The span is the axis's OWN first period -- the owner's next
             # paycheck, read off the same door the chart resolves its axis
             # through (plan step C2-e).  It used to be the CURRENT period's
@@ -2456,8 +2589,8 @@ class TestInvestmentEntryAwareRouting:
             # was hardcoded to the same 14 days.
             # 7.0% is ``_create_investment_params``' default assumed return.
             axis_head = bctx.calendar().projection_axis(
-                current_period.end_date + timedelta(days=1),
-                current_period.end_date + timedelta(days=365),
+                last_covered_day(current_period) + timedelta(days=1),
+                last_covered_day(current_period) + timedelta(days=365),
             )[0]
             rate = growth_engine.span_return_rate(
                 Decimal("0.07000"), axis_head.start_date, axis_head.end_date,
@@ -2703,7 +2836,6 @@ class TestTheProjectionAppliesEachContributionOnce:
         the first projected point at 12,000 -- which this test forbids.  The
         headline tile (11,000) is unchanged by the basis change.
         """
-        from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
         from app.services.investment_dashboard_service import (  # pylint: disable=import-outside-toplevel
             compute_dashboard_data,
         )
@@ -2717,7 +2849,7 @@ class TestTheProjectionAppliesEachContributionOnce:
             assumed_annual_return=Decimal("0.00000"),
             annual_contribution_limit=Decimal("100000.00"),
         )
-        current_period = pay_period_service.get_current_period(
+        current_period = current_pay_period(
             seed_user["user"].id,
         )
         assert current_period is not None
@@ -2818,7 +2950,6 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
             annual_contribution_limit=Decimal("23500.00"),
             ytd_contributions=Decimal(through),
             ytd_contributions_seed=Decimal(seed),
-            gross_biweekly=Decimal("3846.15"),
         )
 
     def test_the_chart_always_seeds_the_through_current_total(self):
@@ -2873,7 +3004,9 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
         answers ZERO before either bound is consulted.
         """
         # pylint: disable=import-outside-toplevel
-        from app.services.investment_projection import _ytd_contributions
+        from app.services.investment_projection._inputs import (
+            _ytd_contributions,
+        )
         assert _ytd_contributions([], None, inclusive=True) == Decimal("0")
         assert _ytd_contributions([], None, inclusive=False) == Decimal("0")
 
@@ -2890,7 +3023,7 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
             name="Limit 401k", balance="10000.00",
         )
         _create_investment_params(db.session, acct.id)
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         _make_projected_shadow_income(
             seed_user, acct, current, Decimal("1000.00"), db.session,
         )
@@ -2904,7 +3037,7 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
         assert ctx.inputs.ytd_contributions_seed == Decimal("0.00")
         assert ctx.projection_ytd == Decimal("1000.00")
         # ...because the window opens past the current period (ruling R-AF).
-        assert ctx.projection_start > current.end_date
+        assert ctx.projection_start > last_covered_day(current)
 
 
 class TestTheProjectionMeetsItsSeedOnALapsedSchedule:
@@ -2919,8 +3052,8 @@ class TestTheProjectionMeetsItsSeedOnALapsedSchedule:
 
     **So the state this grades is an owner whose generated schedule has run
     out**, which nothing forces them to fix and which the balance arc's X-ad-b
-    and X-x steps exist because of.  ``get_current_period`` answers ``None``
-    there, the old window opened at today, and the axis would have opened on the
+    and X-x steps exist because of.  No period CONTAINS today there, the old
+    window opened at today, and the axis would have opened on the
     last payday up to a cadence earlier -- the engine re-growing days
     ``balance_at`` had already grown.  An adversarial code review of this step
     measured it at **$57.24** on a $102,686.18 balance, compounded over the
@@ -2938,7 +3071,7 @@ class TestTheProjectionMeetsItsSeedOnALapsedSchedule:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            assert pay_period_service.get_current_period(user_id) is None, (
+            assert current_pay_period(user_id) is None, (
                 "this test needs a LAPSED schedule; the fixture changed"
             )
             acct = _create_investment_account(
@@ -3048,7 +3181,7 @@ class TestTheProjectionContinuesTheHistory:
         _create_investment_params(db.session, acct.id)
         # Anchor a full period back, so the history line has grown by the time
         # it reaches the current period's end.
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, acct,
             settle_instant_on(seed_periods_today[0].start_date),
         )
@@ -3063,8 +3196,8 @@ class TestTheProjectionContinuesTheHistory:
         assert Decimal(history[-1]) > Decimal("50000.00")
 
         bctx = BalanceContext.build(seed_user["user"].id)
-        current = pay_period_service.get_current_period(seed_user["user"].id)
-        seed = balance_at.balance_at(acct, bctx, current.end_date)
+        current = current_pay_period(seed_user["user"].id)
+        seed = balance_at.balance_at(acct, bctx, last_covered_day(current))
         # The seed IS the history line's last point (ruling R-AE) ...
         assert Decimal(history[-1]) == seed
         # ... and the first projected point is that seed compounded over ONE
@@ -3072,8 +3205,8 @@ class TestTheProjectionContinuesTheHistory:
         # the same door the chart resolves its axis through (plan step C2-e).
         # 7.0% is ``_create_investment_params``' default assumed return.
         axis_head = bctx.calendar().projection_axis(
-            current.end_date + timedelta(days=1),
-            current.end_date + timedelta(days=365),
+            last_covered_day(current) + timedelta(days=1),
+            last_covered_day(current) + timedelta(days=365),
         )[0]
         rate = growth_engine.span_return_rate(
             Decimal("0.07000"), axis_head.start_date, axis_head.end_date,
@@ -3123,7 +3256,7 @@ class TestInvestmentBalanceHeroTrueUp:
         # the anchor period's own accrual (ruling R-Y).
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-        )[pay_period_service.get_current_period(seed_user["user"].id).id]
+        )[current_pay_period(seed_user["user"].id).id]
         assert headline > Decimal("50000.00")
         assert f"{headline:,.2f}" in html
         assert "investment-balance-hero" in html

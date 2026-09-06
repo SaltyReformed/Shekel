@@ -25,6 +25,10 @@ from app.exceptions import NotFoundError, ValidationError
 from app.services import credit_workflow, entry_service, transaction_service
 from app.services.row_valuation import settled_figure
 from app.services.entry_credit_workflow import sync_entry_payback
+from tests._test_helpers import (
+    an_entered_day,
+)
+from app.models.amount_ownership import AmountOwnership
 
 
 class TestSyncEntryPayback:
@@ -242,6 +246,7 @@ class TestSyncEntryPayback:
             # Transaction in the last period -- no period follows it.
             txn = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[-1].user_id,
                 pay_period_id=seed_periods[-1].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -249,7 +254,7 @@ class TestSyncEntryPayback:
                 name="Last Period Expense",
                 category_id=seed_entry_template["category"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -356,8 +361,10 @@ class TestSyncEntryPayback:
         """sync_entry_payback raises NotFoundError when owner_id doesn't match.
 
         Defense-in-depth: even if the caller already checked ownership,
-        sync verifies via pay_period.user_id to prevent payback creation
-        under the wrong user.
+        sync verifies the row's own ``user_id`` column to prevent payback
+        creation under the wrong user.  It walked ``pay_period.user_id`` until
+        plan step ``pay_calendar:C13-b``; the two are held equal by
+        ``fk_transactions_owner_period``.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -367,6 +374,139 @@ class TestSyncEntryPayback:
 
             with pytest.raises(NotFoundError):
                 sync_entry_payback(txn.id, other_user.id)
+
+
+class TestACardRefundNeverDestroysThePayback:
+    """Finding **N-411**: the else-arm answered a NEGATIVE total by DELETING.
+
+    ``sync_entry_payback`` branched ``if total_credit > 0`` with an else-arm
+    commented ``# total_credit == 0``.  While
+    ``ck_transaction_entries_positive_amount`` was ``amount > 0`` those two arms
+    really were total over the reachable states, so the comment was true.  Ruling
+    **bank_import:R-II** relaxed the CHECK to ``amount <> 0``, at which point
+    "everything not ``> 0``" silently included a negative -- and a card refund
+    larger than the row's card charges took the DELETE path.
+
+    **Measured before the fix, on a clone of the developer's own data**: an
+    envelope carrying 4 card charges totalling ``$493.03`` lost its payback
+    outright, leaving those charges with nothing booking them anywhere.
+
+    The two tests below are the two directions, and they are deliberately a
+    PAIR: one asserts the destructive arm is refused, the other asserts the
+    legitimate delete still happens.  A fix that simply stopped deleting would
+    pass the first alone.
+    """
+
+    def _envelope_with_a_card_charge(self, db, seed_user, seed_entry_template):
+        """Return a Projected envelope carrying one $100 card purchase.
+
+        Built through ``entry_service`` rather than by hand, so the payback is
+        created by the same door the refund will later re-enter.
+        """
+        txn = seed_entry_template["transaction"]
+        entry_service.create_entry(
+            transaction_id=txn.id,
+            user_id=seed_user["user"].id,
+            details=entry_service.EntryDetails(
+                amount=Decimal("100.00"),
+                description="Card purchase",
+                purchased_on=date(2026, 1, 5),
+                is_credit=True,
+            ),
+        )
+        db.session.commit()
+        return txn
+
+    def test_a_refund_exceeding_the_card_charges_is_REFUSED(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """A card that would owe the OWNER is refused, and nothing is deleted.
+
+        **The survival check is taken BEFORE the rollback, and that ordering is
+        the whole assertion.**  An earlier version queried after
+        ``db.session.rollback()`` and claimed to grade survival; adversarial
+        review measured that FALSE -- the rollback undoes a flushed DELETE, so a
+        mutant that deleted the payback and THEN raised passed it.  Reading the
+        session's ``deleted`` set while the failed unit of work is still open is
+        what distinguishes *refused before acting* from *acted then refused*.
+        """
+        with app.app_context():
+            txn = self._envelope_with_a_card_charge(
+                db, seed_user, seed_entry_template,
+            )
+            payback = credit_workflow.get_active_payback(txn.id)
+            assert payback is not None
+            payback_id = payback.id
+            assert payback.estimated_amount == Decimal("100.00")
+
+            with pytest.raises(ValidationError, match="owes YOU"):
+                entry_service.create_entry(
+                    transaction_id=txn.id,
+                    user_id=seed_user["user"].id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("-150.00"),
+                        description="Card refund",
+                        purchased_on=date(2026, 1, 6),
+                        is_credit=True,
+                    ),
+                )
+
+            # **A RAW COUNT inside the still-open transaction**, and each word
+            # of that is load-bearing.  Taken BEFORE the rollback, because the
+            # rollback undoes a flushed DELETE and is what made the original
+            # version of this assertion vacuous.  Raw SQL rather than
+            # ``db.session.get``, because the identity map answers a deleted
+            # row from memory.  And a COUNT rather than ``db.session.deleted``,
+            # because that collection holds only deletes not yet FLUSHED -- a
+            # mutant that deletes AND flushes before raising empties it, which
+            # is the second vacuous assertion this case was written with.
+            # Verified by driving exactly that mutant.
+            assert db.session.execute(
+                db.text(
+                    "SELECT count(*) FROM budget.transactions "
+                    "WHERE id = :i AND NOT is_deleted"
+                ),
+                {"i": payback_id},
+            ).scalar() == 1, (
+                "the payback was deleted before the refusal -- N-411 has "
+                "regressed"
+            )
+
+            db.session.rollback()
+            survived = db.session.get(Transaction, payback_id)
+            assert survived is not None
+            assert survived.estimated_amount == Decimal("100.00")
+            assert not survived.is_deleted
+
+    def test_a_refund_that_exactly_CANCELS_the_charges_still_deletes(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The legitimate delete is untouched: nothing owed, no payback.
+
+        The other direction of the pair.  ``total_credit == 0`` means the card
+        is owed nothing, which is the state the else-arm was always FOR -- and
+        it is now reachable a second way, by refunds cancelling charges rather
+        than by no card purchases remaining.  Both mean the same thing.
+        """
+        with app.app_context():
+            txn = self._envelope_with_a_card_charge(
+                db, seed_user, seed_entry_template,
+            )
+            assert credit_workflow.get_active_payback(txn.id) is not None
+
+            entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("-100.00"),
+                    description="Card refund",
+                    purchased_on=date(2026, 1, 6),
+                    is_credit=True,
+                ),
+            )
+            db.session.commit()
+
+            assert credit_workflow.get_active_payback(txn.id) is None
 
 
 class TestPaybackCorrectness:
@@ -491,6 +631,7 @@ class TestPaybackCorrectness:
 
             txn2 = Transaction(
                 template_id=template.id,
+                user_id=seed_periods[2].user_id,
                 pay_period_id=seed_periods[2].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -498,7 +639,7 @@ class TestPaybackCorrectness:
                 name="Weekly Groceries",
                 category_id=seed_entry_template["category"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
             db.session.add(txn2)
             db.session.flush()
@@ -925,6 +1066,7 @@ class TestLegacyCreditGuard:
             )
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -932,7 +1074,7 @@ class TestLegacyCreditGuard:
                 name="Non-Tracked Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -959,6 +1101,7 @@ class TestLegacyCreditGuard:
             )
 
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -966,7 +1109,7 @@ class TestLegacyCreditGuard:
                 name="Legacy Expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -1482,3 +1625,165 @@ class TestASettledPaybackCannotBeReDerived:
                 "left the account, erased with no refusal"
             )
             assert settled_figure(reloaded) == Decimal("100.00")
+
+
+class TestASettledPaybackWithDRIFTStillAdmitsUnrelatedEdits:
+    """Finding **N-323**: the guard's POLICY is right, its PREDICATE was wider.
+
+    The refusal exists because a settled payback records what MOVED, so a later
+    card purchase cannot be re-derived underneath it -- that stays.  What was
+    wrong is the question it asked: it compared the recorded figure against the
+    credit sum NOW and refused whenever they differed AT ALL, so a payback
+    already carrying drift refused every subsequent edit on its envelope,
+    including edits that cannot touch the credit sum.
+
+    **Measured on the developer's production clone**: envelope 2275's payback
+    2457 recorded ``$50.80`` against ``$49.52`` of credit entries, and envelope
+    2276's payback 2590 recorded ``$123.18`` against ``$181.58`` -- ``$59.68``
+    of drift no screen reports.  Six debit purchases sit under those two
+    envelopes, and **5 of 124 statement proposals worth `$706.35` could not be
+    accepted at all**, because accepting one stamps a debit purchase's bank
+    posting day and that ran into a guard about credit.
+    """
+
+    def _drifted(self, txn, user):
+        """Return a payback that RECORDED less than its envelope's card spend.
+
+        **Built through a real door rather than by writing the column**, so the
+        state under test is one the app can actually reach: the reconcile
+        panel offers a payback as CORRECTABLE (``is_correctable`` is ``not
+        settles_from_entries``, and a payback holds no entries of its own), so
+        a tick may book a figure of the user's rather than the plan.  Settling
+        ``$100.00`` against ``$150.00`` of credit purchases is exactly the
+        shape production carries -- payback 2590 recorded ``$123.18`` against
+        ``$181.58`` -- and it leaves ``$50.00`` of drift that no screen reports.
+
+        Returns:
+            ``(payback, entry)`` -- the drifted payback and its credit purchase.
+        """
+        entry = entry_service.create_entry(
+            transaction_id=txn.id, user_id=user.id,
+            details=entry_service.EntryDetails(
+                amount=Decimal("150.00"), description="Card buy",
+                purchased_on=date(2026, 1, 5), is_credit=True,
+            ),
+        )
+        payback = sync_entry_payback(txn.id, user.id)
+        db.session.flush()
+        transaction_service.settle_transaction(
+            payback, submitted=Decimal("100.00"),
+        )
+        db.session.flush()
+        # The drift itself, asserted so the cases below cannot silently grade
+        # a payback whose record and card spend agree -- against which the
+        # old predicate and the new one are the same guard.
+        assert settled_figure(payback) == Decimal("100.00")
+        # Queried rather than read off ``txn.entries``: ``sync_entry_payback``
+        # expires that collection, so the relationship is stale here and a
+        # stale read would assert 0 and pass for the wrong reason.
+        assert db.session.query(
+            db.func.coalesce(db.func.sum(TransactionEntry.amount), 0),
+        ).filter(
+            TransactionEntry.transaction_id == txn.id,
+            TransactionEntry.is_credit.is_(True),
+        ).scalar() == Decimal("150.00")
+        return payback, entry
+
+    def test_a_debit_purchases_posting_day_can_still_be_stamped(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The case N-323 measured, worth `$706.35` of blocked acceptances.
+
+        Stamping ``settled_on`` on a DEBIT purchase changes no credit entry, so
+        the credit sum is identical before and after -- and the guard has
+        nothing to say about it.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            payback, _ = self._drifted(txn, user)
+
+            debit = entry_service.create_entry(
+                transaction_id=txn.id, user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("25.00"), description="Cash buy",
+                    purchased_on=date(2026, 1, 9), is_credit=False,
+                ),
+            )
+            # Drift, created after the settle exactly as production's was.
+            entry_service.update_entry(
+                debit.id, user.id, amount=Decimal("30.00"),
+            )
+            db.session.flush()
+
+            # THE ACT: record the day the bank took that debit purchase.
+            entry_service.update_entry(
+                debit.id, user.id, settle_day=an_entered_day(date(2026, 1, 11)),
+            )
+            db.session.flush()
+
+            assert db.session.get(
+                TransactionEntry, debit.id,
+            ).settled_on == date(2026, 1, 11)
+            # And the settled payback is untouched: its record is its record.
+            assert settled_figure(payback) == Decimal("100.00")
+
+    def test_a_write_that_DOES_move_the_credit_total_is_still_refused(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The policy half, unchanged -- narrowing is not deleting.
+
+        Without this the case above would pass for a guard that had simply been
+        removed, which is the outcome a first draft of X-au-i actually reached
+        before a test named for the policy caught it.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            payback, _ = self._drifted(txn, user)
+
+            with pytest.raises(ValidationError) as exc:
+                entry_service.create_entry(
+                    transaction_id=txn.id, user_id=user.id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"), description="Second card buy",
+                        purchased_on=date(2026, 1, 9), is_credit=True,
+                    ),
+                )
+
+            assert "has settled at" in str(exc.value)
+            assert settled_figure(payback) == Decimal("100.00")
+
+    def test_a_DEBIT_amount_edit_cannot_move_the_credit_total_either(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The case a field-NAME predicate still gets wrong.
+
+        A first narrowing asked "was ``amount`` or ``is_credit`` submitted",
+        reusing the constant that names what re-costs a ROW.  That still
+        refuses this edit: ``amount`` was submitted, but on a DEBIT purchase,
+        which is not in the credit sum at all.  The shipped predicate compares
+        the entry's own CONTRIBUTION to that sum before and after, so it
+        answers every combination rather than the two that were remembered.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            payback, _ = self._drifted(txn, user)
+
+            debit = entry_service.create_entry(
+                transaction_id=txn.id, user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("25.00"), description="Cash buy",
+                    purchased_on=date(2026, 1, 9), is_credit=False,
+                ),
+            )
+            entry_service.update_entry(
+                debit.id, user.id, amount=Decimal("40.00"),
+            )
+            db.session.flush()
+
+            assert db.session.get(
+                TransactionEntry, debit.id,
+            ).amount == Decimal("40.00")
+            assert settled_figure(payback) == Decimal("100.00")

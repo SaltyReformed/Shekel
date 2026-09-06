@@ -42,10 +42,31 @@ pylint-flask-sqlalchemy==0.2.0
 # Versions match the host toolchain; pinning guards against rule/dictionary
 # drift newly flagging unchanged files between releases. rumdl is the
 # Markdown lint + format gate (living docs only; see .rumdl.toml excludes).
+#
+# rumdl 0.2.14 -> 0.2.58 on 2026-08-25, to CLOSE a mismatch rather than to take
+# a feature.  The `rumdl` pre-commit hook is `language: system` and unpinned, so
+# it runs whatever is first on PATH; the host carries the Arch package at
+# 0.2.58 while this file pinned 0.2.14, and 0.2.58's new MD013 reflow arm
+# reported `Found 35 issues in 18/44 files`, exit 1, on a CLEAN dev tree.  Every
+# Markdown commit from a shell without the venv first on PATH therefore failed
+# for a reason belonging to neither the author nor CI.  The 35 are fixed in the
+# same commit as this bump, so the gate is green at the version the host
+# actually runs.  0.2.58 also FIXES a destructive `rumdl fmt` bug 0.2.14 had:
+# 0.2.14 rewrote fenced code blocks as indented ones (measured, same file, 6
+# fences -> 0), which is why the in-repo procedure said never to run it blind.
+#
+# THE TWO VERSIONS' CANONICAL FORMS ARE MUTUALLY INCOMPATIBLE, so this bump is
+# not optional for anyone.  Measured: 0.2.14 reports `Found 34 issues in 17/44
+# files`, exit 1, against the tree 0.2.58 formatted -- each version rejects the
+# other's output.  **After pulling this, run `pip install -r requirements-dev.txt`**
+# or a stale venv still holding 0.2.14 fails every Markdown commit, which is the
+# mirror image of the bug this closes.  It is also what makes CI's version
+# OBSERVABLE rather than assumed: `polyglot-lint` passing on this tree could
+# only happen at 0.2.58.
 yamllint==1.38.0
 zizmor==1.25.2
 djlint==1.39.2
-rumdl==0.2.14
+rumdl==0.2.58
 
 # Pre-commit framework: runs the local hooks in .pre-commit-config.yaml
 # (pylint app/ + the custom checkers) before each commit, mirroring the CI

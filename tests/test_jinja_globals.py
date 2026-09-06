@@ -15,7 +15,8 @@ import re
 
 from app import ref_cache
 from app.enums import (
-    CalcMethodEnum, DeductionTimingEnum, GoalModeEnum, IncomeUnitEnum,
+    BusinessDayShiftEnum, CalcMethodEnum, DeductionTimingEnum, GoalModeEnum,
+    IncomeUnitEnum,
 )
 from app.jinja_globals import _REF_ID_GLOBALS, register_ref_id_globals
 
@@ -142,7 +143,11 @@ def test_register_ref_id_globals_is_idempotent(app):
         #     with no template reader (which is what caught these five) or a
         #     template naming one nothing registers, which Jinja would evaluate
         #     as a silent ``False`` rather than raise.
-        assert len(registered_keys) == 41, (
+        # 41 until plan step **balance:X-am**, which deleted ``STATUS_SETTLED``
+        # along with the status it named.  That global had ZERO template readers
+        # for its whole life and the arm below could not see it: the
+        # registered-vs-read check is scoped to ``REC_*``.
+        assert len(registered_keys) == 40, (
             "the ID-derived globals changed count -- update this number "
             "deliberately, and check the template that reads the new or "
             "removed constant"
@@ -188,3 +193,87 @@ def test_goal_form_renders_with_fixed_mode_id_constant(auth_client, app):
     html = resp.data.decode()
     # The id must be embedded as an integer literal in the attribute.
     assert f'data-fixed-mode-id="{expected_fixed_id}"' in html
+
+
+class TestThePaydayShiftGlobals:
+    """The four schedule forms' shared wording and option list.
+
+    Plan step ``pay_calendar:C14-b``, ruling **R-PC56**.  These four globals
+    sit OUTSIDE ``_REF_ID_GLOBALS`` on purpose -- that table maps one name to
+    one id, and ``PAYDAY_SHIFT_OPTIONS`` is an ordered list while
+    ``PAYDAY_SHIFT_LABEL`` / ``PAYDAY_SHIFT_HELP`` are module constants with no
+    ref-cache precondition at all.  The cost of staying out of it is that the
+    idempotence test above, which derives its key set from that table so a
+    constant cannot hide unverified, does not cover them.  This class is what
+    pays that cost, and an adversarial review of 2026-09-05 is why it exists.
+    """
+
+    def test_the_options_are_the_three_modelled_conventions_as_ids(self, app):
+        """Every option is a ``ref`` id, and all three members are offered.
+
+        Ids rather than names, because that is what a ``<select>`` posts and
+        what ``BusinessDayShiftField`` deserializes; a global carrying member
+        names would render a form whose every submission the schema refuses.
+        """
+        with app.app_context():
+            options = app.jinja_env.globals["PAYDAY_SHIFT_OPTIONS"]
+            expected = {
+                ref_cache.business_day_shift_id(member): member
+                for member in BusinessDayShiftEnum
+            }
+
+            assert [value for value, _label in options] == list(expected)
+            assert all(isinstance(value, int) for value, _label in options)
+            assert len(options) == len(BusinessDayShiftEnum) == 3
+
+    def test_none_is_offered_FIRST_and_is_what_SHIFT_NONE_names(self, app):
+        """The OFF answer leads, and the fallback global agrees with it.
+
+        Order is asserted rather than left to a dict: ``none`` is what every
+        form preselects for an owner who has stated nothing (**R-PC56**), and a
+        list that led with ``prior`` would put "pay early" under the cursor of
+        every owner who never answered -- which is the defaulting that ruling
+        refused, arriving through the option order instead of the default.
+        """
+        with app.app_context():
+            options = app.jinja_env.globals["PAYDAY_SHIFT_OPTIONS"]
+            none_id = ref_cache.business_day_shift_id(
+                BusinessDayShiftEnum.NONE,
+            )
+
+            assert options[0][0] == none_id
+            assert app.jinja_env.globals["SHIFT_NONE"] == none_id
+
+    def test_no_label_describes_an_option_as_usual_or_recommended(self, app):
+        """**R-PC56** refused stating as fact what no owner was asked.
+
+        That ruling rejected defaulting the convention to ``prior`` on the
+        reasoning that real payroll usually pays early, because it states as
+        fact what no owner was asked -- the error ``balance:R-IF`` was written
+        to correct.  A label or help text saying the same thing would
+        reintroduce the claim one layer up, where no ruling is watching.
+        """
+        with app.app_context():
+            wording = " ".join(
+                label for _value, label in
+                app.jinja_env.globals["PAYDAY_SHIFT_OPTIONS"]
+            ) + " " + app.jinja_env.globals["PAYDAY_SHIFT_HELP"]
+
+            lowered = wording.lower()
+            for steer in ("usual", "recommend", "most ", "typical", "default"):
+                assert steer not in lowered, (
+                    f"the payday-convention wording steers the owner with "
+                    f"{steer!r}, which R-PC56 refused"
+                )
+
+    def test_the_wording_globals_are_registered_and_non_empty(self, app):
+        """The question and its help text exist for every form to read.
+
+        Registered unconditionally beside the pay-calendar bounds rather than
+        with the options, because neither needs ``ref_cache``.  Asserted
+        because four templates now render them and a missing global is an
+        empty label rather than an error.
+        """
+        with app.app_context():
+            assert app.jinja_env.globals["PAYDAY_SHIFT_LABEL"].strip()
+            assert app.jinja_env.globals["PAYDAY_SHIFT_HELP"].strip()

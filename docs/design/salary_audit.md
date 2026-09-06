@@ -226,9 +226,10 @@ prev/next period stepping (HTMX fragment swap, grid-style) defaulting to the cur
 third-paycheck markers, ~2 years out.
 
 **Actually produces:** exactly that, correctly (raise steps, third-paycheck rows with only the 26x
-deduction, year rollover of tax configs per DH-#30). Period labels link into per-period breakdowns
--- the one good cross-link in the section. Row highlighting (yellow raise rows, blue third-paycheck
-rows) predates the token palette and reads as legacy Bootstrap (`table-warning` / `table-info`).
+deduction, year rollover of tax configs per DH-#30). Period labels link into per-period
+breakdowns -- the one good cross-link in the section. Row highlighting (yellow raise rows, blue
+third-paycheck rows) predates the token palette and reads as legacy Bootstrap (`table-warning` /
+`table-info`).
 
 **Divergence:** reachable only via edit form or list icon; no summary framing (e.g. next raise date,
 next third paycheck, annual net) -- the user must scan 50+ rows for the events that matter; no

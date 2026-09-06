@@ -511,6 +511,25 @@ function closeFullEdit() {
  * Click-outside handler -- closes the popover when clicking anywhere else.
  */
 function handleClickOutside(event) {
+    // A MODAL is app chrome, not "outside".  The shared confirmation dialog
+    // (_confirm_modal.html) lives at a fixed place in base.html, so a click on
+    // its Confirm button, its Cancel, or its backdrop is a click outside this
+    // popover by containment -- and closing the card there destroys the very
+    // element the confirmed request targets.  Measured while wiring the grid's
+    // Delete control (plan step bank_import:X-gb): the entries list's own
+    // delete posts into #entry-list-<id>, which lives INSIDE the card, so
+    // confirming it removed the purchase and swapped the response into
+    // nothing.  Before that step an hx-confirm drew the BROWSER's dialog,
+    // which produces no document click at all, so the card survived and this
+    // guard was not needed.
+    // ``closest`` is an Element method; the line this guard precedes used
+    // ``contains``, which tolerates any node, so a text-node target must not
+    // throw its way past it.
+    var target = event.target;
+    if (target && target.closest && target.closest('.modal, .modal-backdrop')) {
+        return;
+    }
+
     const popover = document.getElementById('txn-popover');
     if (popover && !popover.contains(event.target)) {
         closeFullEdit();
@@ -616,6 +635,11 @@ document.addEventListener('keydown', function(e) {
 
     // Escape -- cancel quick edit/create or close full edit popover.
     if (e.key === 'Escape') {
+        // A modal on top owns Escape: Bootstrap dismisses it, and the card
+        // underneath must survive so the act the dialog was asking about can
+        // still be taken.  Same test the keyboard-help handler in app.js uses.
+        if (document.querySelector('.modal.show')) return;
+
         // Close full edit/create popover if open.
         if (activePopover) {
             e.preventDefault();

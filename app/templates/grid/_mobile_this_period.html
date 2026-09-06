@@ -35,7 +35,7 @@
                             jump-to <select> (each option's `value`
                             is `p.period_index - current_period.period_index`,
                             mirroring the desktop selector convention
-                            at `grid/grid.html:24-49`).
+                            at `the desktop range selector in grid/grid.html`).
      all_periods *       -- the owner's whole saved `PeriodWindow`, in payday
                             order; the option list for the jump-to <select>.
      start_offset *      -- int; offset of `periods[0]` relative to
@@ -155,7 +155,7 @@
        one tap instead of N taps on `[<]` / `[>]`. Method=GET so the
        hidden `periods=1` + `offset=<chosen>` land in the same URL
        shape as the arrow links and the desktop selector at
-       `grid/grid.html:24-49`. CSRF is not required for GET per
+       `the desktop range selector in grid/grid.html`. CSRF is not required for GET per
        CLAUDE.md "HTMX Patterns / State-changing actions must use
        POST" (this is read-only navigation, no state change).
        Submission is wired in `app/static/js/mobile_grid.js` via a

@@ -50,11 +50,23 @@
 {# A CLOSED row's purchases are closed to RE-PRICING, and this flag is what
    stops the controls below offering acts the service refuses (plan step
    X-au-c3).  ``entry_service._doors._reject_settled_parent`` is field-aware: on
-   a settled parent it refuses every cost-bearing field -- amount, description,
-   purchase date, credit flag -- and every add and delete, and it ADMITS
-   ``settled_on``, the day the bank took the purchase.  So the add form and the
-   delete button are withdrawn here and the edit form narrows to that one field,
-   rather than rendering three controls that all 400.
+   a settled parent it refuses the COST-BEARING fields -- ``amount`` and
+   ``is_credit`` -- plus every delete.  So the add form and the delete button
+   are withdrawn here and the edit form narrows, rather than rendering controls
+   that all 400.
+
+   **THIS TEMPLATE IS NOW NARROWER THAN THE SERVICE** (plan step
+   ``bank_import:X-f6a-3b``, 2026-08-19), and deliberately so for one commit.
+   The service also admits ``purchased_on`` and ``description`` on a settled
+   row -- neither is read by any valuation, and refusing ``purchased_on`` was
+   what made 13 of 15 of ruling **R-FW**'s purchase-date corrections fail -- and
+   it admits an ADD carrying the bank's posting day on a ``purchases``-basis
+   close (``_reject_settled_addition``).  This template still gates all of that
+   on ``status.is_settled``, so the correction is reachable from the statement
+   review screen and NOT from here.  Widening these controls is a UI change with
+   its own surface (the lock notice below, the popover's save path, what a
+   companion may do) and is finding **N-321**; what must not stand meanwhile is
+   a comment describing a rule the code does not have.
 
    Read off ``status.is_settled``, the semantic boolean column, never a status
    NAME (the project-wide ref rule; ``_transaction_full_edit.html`` asks the
@@ -94,9 +106,35 @@
       <input type="hidden" name="version_id" value="{{ entry.version_id }}">
       {% if not purchases_closed %}
       <div class="d-flex gap-1 align-items-end mb-1">
-        <input type="number" step="0.01" inputmode="decimal" name="amount" min="0.01"
-               value="{{ entry.amount }}"
+        {# **THE BOUND IS BACK, because the box now holds a MAGNITUDE**
+           (developer ruling **bank_import:R-IK**, 2026-09-01, plan step bank_import:X-gj-2b-3).
+           It carried no `min` from ruling R-II until that ruling: a refund is
+           a NEGATIVE purchase, and `min="0.01"` made the browser refuse the
+           whole form, so a stored refund could not be re-described or re-dated
+           either.  That was real -- and the cost of removing the bound was
+           that a typed `-45.00` where `45.00` was meant booked a refund in
+           silence, moved the projection by twice the figure, and said nothing
+           on any screen, while the same keystroke on the ADD form was a 422.
+
+           The sign is the SELECT beside this box now, and
+           `entry_service.purchase_amount` composes the two.  `|abs` is display
+           only -- the value the owner reads is what the purchase cost, and
+           which way it went is the control's to say. #}
+        <input type="number" step="0.01" inputmode="decimal" name="amount"
+               min="0.01" value="{{ entry.amount|abs }}"
                class="form-control form-control-sm mw-px-80">
+        {# THE DIRECTION, as a control rather than a sign the owner types
+           (developer ruling **bank_import:R-IK**, 2026-09-01, plan step bank_import:X-gj-2b-3).
+           `entry_service.purchase_amount` composes the stored figure from this
+           and the magnitude beside it, so a minus is not refused -- it cannot be
+           written.  Defaults to Charge, which is what a purchase form is for;
+           an omitted control must never silently mean the money-moving answer. #}
+        <select name="direction" aria-label="Charge or refund"
+                class="form-select form-select-sm mw-px-110">
+          <option value="charge"{% if entry.amount >= 0 %} selected{% endif %}>Charge</option>
+          <option value="refund"{% if entry.amount < 0 %} selected{% endif %}>Refund</option>
+        </select>
+
         <input type="text" name="description"
                value="{{ entry.description }}"
                class="form-control form-control-sm">
@@ -259,7 +297,8 @@
   {# Add entry form -- withdrawn once the row has CLOSED.  A new purchase grows
      what the row cost after its money moved, and a carry-forward has already
      rolled the envelope's leftover into a later period, so the same dollars
-     would be counted twice; ``_reject_settled_parent`` refuses it.  The notice
+     would be counted twice; ``_reject_settled_parent`` refuses a re-price or a
+     delete and ``_reject_settled_addition`` refuses an undated add.  The notice
      names the way through, which is the act that refusal's message names. #}
   {% if purchases_closed %}
   <div class="txn-card-meta mt-2">
@@ -276,6 +315,17 @@
     <div class="d-flex gap-1 align-items-end flex-wrap">
       <input type="number" step="0.01" inputmode="decimal" name="amount" min="0.01"
              class="form-control form-control-sm mw-px-80" placeholder="$" required>
+      {# THE DIRECTION, as a control rather than a sign the owner types
+         (developer ruling **bank_import:R-IK**, 2026-09-01, plan step bank_import:X-gj-2b-3).
+         `entry_service.purchase_amount` composes the stored figure from this
+         and the magnitude beside it, so a minus is not refused -- it cannot be
+         written.  Defaults to Charge, which is what a purchase form is for;
+         an omitted control must never silently mean the money-moving answer. #}
+      <select name="direction" aria-label="Charge or refund"
+              class="form-select form-select-sm mw-px-110">
+        <option value="charge" selected>Charge</option>
+        <option value="refund">Refund</option>
+      </select>
       <input type="text" name="description"
              class="form-control form-control-sm" placeholder="Store" required>
       {# The purchase date is VISIBLE (ruling R-DH (e), plan step S1-c).  It was

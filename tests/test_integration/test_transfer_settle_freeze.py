@@ -62,9 +62,17 @@ from app.services import (
     transfer_service,
     transfer_recurrence,
 )
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.utils.dates import attribution_date, display_today
-from tests._test_helpers import create_transfer, settlement_basis_id
+from app.services.pay_calendar import FiledRow, calendar_for
+from app.utils.dates import display_today
+from tests._test_helpers import (
+    amount_basis_for,
+    an_entered_day,
+    create_transfer,
+    open_books_before_the_first_assertion,
+    settlement_basis_id,
+)
 from tests.test_integration.test_loan_transfer_live_amount import (
     _build_derived_loan_transfer,
 )
@@ -89,7 +97,9 @@ def _derived_loan_transfer(seed_user, seed_periods):
     )
     transfer_recurrence.generate_for_template(
         template,
-        GenerationSchedule.for_periods(template.user_id, seed_periods),
+        GenerationSchedule.for_period_ids(
+            BalanceContext.build(template.user_id), {p.id for p in seed_periods},
+        ),
         scenario_id,
     )
     db.session.commit()
@@ -131,6 +141,10 @@ def _plain_transfer(
         ),
     )
     db.session.flush()
+    # Its BOOKS open before anything this fixture dates (plan step
+    # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day it
+    # asserts -- the owner's today -- and this suite settles on or before it.
+    open_books_before_the_first_assertion(db.session, savings)
     return create_transfer(
         seed_user, db.session, seed_user["account"], savings,
         seed_periods[0], amount=Decimal(amount),
@@ -178,11 +192,16 @@ class TestTheSettleFreezeIsTheSERVICEs:
                 # Where the freeze lands today (N-241 is the open question
                 # about which column that should be; X-au-c owns it).
                 assert shadow.settled_amount == _LIVE_PITI
-                # The stored estimate is UNTOUCHED, which is what keeps the
-                # freeze idempotent: ``_manual_shadow_amount`` reads this
-                # column as its base, so a settle that wrote it would make a
-                # later settle derive from its own output.
-                assert shadow.estimated_amount == _STALE
+                # The shadow's PLAN column is empty, and that is what keeps
+                # the freeze idempotent (plan step X-au-g-2c-2).  It held the
+                # stale ``$1.00`` and had to be left untouched, because the
+                # deleted ``_manual_shadow_amount`` read it as its base -- a
+                # settle that wrote it would have made a later settle derive
+                # from its own output.  A derived shadow has no such column,
+                # so the cycle has nowhere to close; the stale figure it used
+                # to hold is on the PARENT, which a settle never writes.
+                assert shadow.estimated_amount is None
+                assert shadow.transfer.amount == _STALE
 
     def test_a_typed_figure_BEATS_the_freeze(
         self, app, db, seed_user, seed_periods,
@@ -279,6 +298,14 @@ class TestTheSettleFreezeIsTheSERVICEs:
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
                 amount=Decimal("1325.00"),
+                # The caller states that a HUMAN typed this figure (ruling
+                # R-JR, plan step X-au-h).  The route says it by comparing the
+                # submitted amount against the one it rendered; a service
+                # caller says it here.  ``is_override`` no longer carries the
+                # fact -- it means only "this row is the owner's, not the
+                # rule's" -- so the retype this case is named for has to be
+                # stated rather than inferred from the flag.
+                amount_authored=True,
                 is_override=True,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
             )
@@ -341,7 +368,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
         with app.app_context():
             xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
 
-            offered = transfer_service.settle_amount(shadow)
+            offered = transfer_service.settle_amount(shadow, amount_basis_for(shadow))
             assert offered == _LIVE_PITI
 
             transfer_service.update_transfer(
@@ -417,8 +444,16 @@ class TestEveryDoorReachesTheSameFigure:
         ``is_override`` on the mere PRESENCE of the field, which tells the
         settle "the operator owns this amount" and suppresses the derivation.
         Measured before the fix: `$1.00` of cash booked against a `$1,000.00`
-        interest + `$300.00` escrow split.  The route now tests whether the
-        amount actually MOVED, which is what its own comment always claimed.
+        interest + `$300.00` escrow split.
+
+        **Since plan step X-au-h the route asks whether a HUMAN AUTHORED the
+        figure, not whether it MOVED** (ruling R-JR): the form posts the figure
+        it rendered, and an echo is one that comes back equal to it.  The
+        payload below carries that companion, which is what makes this an echo
+        rather than a retype -- and the door drops an unauthored figure rather
+        than forwarding it, so the service never sees one.  The paragraph that
+        described the old moved-against-the-stored-column test is gone with the
+        comparison it named.
         """
         with app.app_context():
             xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
@@ -434,6 +469,13 @@ class TestEveryDoorReachesTheSameFigure:
             f"/transfers/instance/{xfer_id}",
             data={
                 "amount": rendered_amount,
+                # What the box was RENDERED with (ruling R-JR, plan step
+                # X-au-h).  Equal to the figure above, which is what makes this
+                # an ECHO rather than a retype -- and the echo is the whole
+                # subject of this case.  Omitting it would land the save on the
+                # fail-closed arm, raise the flag, suppress the freeze, and
+                # reproduce the very defect the case exists to prevent.
+                "amount_as_rendered": rendered_amount,
                 "pay_period_id": period_id,
                 "due_date": due.isoformat() if due else "",
                 "status_id": ref_cache.status_id(StatusEnum.DONE),
@@ -504,10 +546,10 @@ class TestEveryDoorReachesTheSameFigure:
             # LANDING day, not its period's start: a loan payment carries a
             # due date, so the two differ and a statement asserted before the
             # landing day would (correctly) offer nothing.
-            period = shadow.pay_period
-            observed = attribution_date(
-                shadow.due_date, period.start_date, period.end_date,
+            period = calendar_for(seed_user["user"].id).require_period(
+                FiledRow.for_row(shadow),
             )
+            observed = period.attribution_day(shadow.due_date)
 
         response = auth_client.patch(
             f"/accounts/{account_id}/true-up",
@@ -613,7 +655,7 @@ class TestTheNamedVerbItself:
             first_day = display_today() - timedelta(days=3)
 
             transfer_service.settle_transfer(
-                xfer.id, owner, settled_on=first_day,
+                xfer.id, owner, settle_day=an_entered_day(first_day),
             )
             db.session.commit()
             db.session.expire_all()
@@ -623,7 +665,7 @@ class TestTheNamedVerbItself:
             assert transfer_service.settle_transfer(
                 xfer.id, owner,
                 submitted=Decimal("999.99"),
-                settled_on=display_today(),
+                settle_day=an_entered_day(display_today()),
             ) is False
             db.session.commit()
 
@@ -664,6 +706,92 @@ class TestTheNamedVerbItself:
         ]
         assert len(frozen) == 1, "the freeze reports itself exactly once"
         assert frozen[0].frozen_amount == str(_LIVE_PITI)
+
+    def test_a_manual_payment_with_NO_extra_reports_no_freeze(
+        self, app, db, seed_user, seed_periods, caplog,
+    ):
+        """The event means a derivation DECIDED something, not "a loan settled".
+
+        A MANUAL payment with no standing extra books exactly what its transfer
+        states, so nothing was derived over the operator's head and there is
+        nothing to record.  The deleted ``LoanPricing.live_cash`` answered
+        ``None`` for this shape -- its candidate map admitted only derive-mode
+        payments and manual ones carrying an extra -- so the old
+        ``frozen is not None`` predicate emitted nothing here.
+
+        **A first replacement asked the amount model for the RULE**
+        (``AmountRule.LOAN_PAYMENT``), which is true of ANY transfer whose
+        template carries a settings row, so the event began firing on settles
+        where no derivation decided anything -- wider than what it replaced, and
+        contradicting the sentence the code writes about itself.  An adversarial
+        review of this step found it.  The predicate compares the BOOKED figure
+        against the transfer's own, which reproduces the old extension exactly.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer.template.settings.derive_from_loan = False
+            xfer.template.settings.extra_principal = Decimal("0.00")
+            db.session.commit()
+
+            with caplog.at_level(logging.INFO):
+                transfer_service.settle_transfer(xfer.id, seed_user["user"].id)
+                db.session.commit()
+
+            # It books the transfer's own figure, so nothing was derived over
+            # anybody's head.  Both halves asserted: a case that only checked
+            # the log would pass on a settle that booked the wrong number.
+            for shadow in _shadows(xfer.id):
+                assert shadow.settled_amount == _STALE
+
+        assert not [
+            record for record in caplog.records
+            if getattr(record, "event", None) == "transfer_amount_frozen"
+        ]
+
+    def test_a_re_settle_honouring_a_RETAINED_correction_reports_no_freeze(
+        self, app, db, seed_user, seed_periods, caplog,
+    ):
+        """A retained human figure is not a freeze, and must not be logged as one.
+
+        Settle with a correction, revert -- which RELEASES the assertion and
+        KEEPS what moved (plan step X-au-c3) -- then settle again with nobody
+        typing anything.  The second settle HONOURS the retained ``$1,512.44``,
+        so no derivation decided the figure.
+
+        **The guard did not test ``held`` until this step**, so that second
+        settle logged ``transfer_amount_frozen`` carrying the DERIVATION's
+        ``$1,499.10`` as though it were the booked figure -- two numbers apart,
+        in a record whose whole purpose is to say which was booked.  The fix
+        shipped with no test until this case; the ``frozen_amount`` assertion in
+        its sibling above cannot see it, because that path never retains.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            user_id = seed_user["user"].id
+            corrected = Decimal("1512.44")
+
+            transfer_service.settle_transfer(
+                xfer.id, user_id, submitted=corrected,
+            )
+            db.session.commit()
+            transfer_service.update_transfer(
+                xfer.id, user_id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+
+            with caplog.at_level(logging.INFO):
+                transfer_service.settle_transfer(xfer.id, user_id)
+                db.session.commit()
+
+            db.session.expire_all()
+            for shadow in _shadows(xfer.id):
+                assert settled_figure(shadow) == corrected
+
+        assert not [
+            record for record in caplog.records
+            if getattr(record, "event", None) == "transfer_amount_frozen"
+        ], "a retained correction is not a freeze"
 
     def test_a_settle_carrying_a_CORRECTION_is_not_reported_as_a_freeze(
         self, app, db, seed_user, seed_periods, caplog,
@@ -740,7 +868,7 @@ class TestATransfersOfferIsWhatItsReSettleBOOKS:
             assert expense.settled_on is None
 
             # THE CLAIM: what the panel would offer is what a tick will book.
-            offered = transfer_service.settle_amount(expense)
+            offered = transfer_service.settle_amount(expense, amount_basis_for(expense))
             assert offered == Decimal("95.50"), (
                 f"the panel would offer {offered} for a transfer whose "
                 "re-settle books its retained correction"

@@ -358,7 +358,7 @@ DATABASE_URL=postgresql://shekel_user:shekel_pass@localhost:5432/shekel \
 | `BACKUP_LOCAL_DIR` | `/var/backups/shekel` | backup.sh, retention.sh | Local backup storage directory |
 | `BACKUP_NAS_DIR` | `/mnt/nas/backups/shekel` | backup.sh, retention.sh | NAS backup storage directory |
 | `BACKUP_ENCRYPTION_PASSPHRASE` | *(none)* | backup.sh, restore.sh, verify.sh | GPG encryption passphrase (optional) |
-| `DB_CONTAINER` | `shekel-prod-db` | all scripts | PostgreSQL Docker container name |
+| `DB_CONTAINER` | `shekel-prod-db` | backup.sh, restore.sh, verify_backup.sh | PostgreSQL Docker container name. No other script reads this name: `deploy/shekel-deploy.sh` reads `SHEKEL_DB_CONTAINER` and `scripts/test.sh` reads `TEST_DB_CONTAINER`. Pointing it at a non-production container is still the documented purpose of the override -- what it can no longer do is reach the deploy pipeline or the test runner |
 | `APP_CONTAINER` | `shekel-prod-app` | restore.sh, verify.sh | Application Docker container name |
 | `PGUSER` | `shekel_user` | all scripts | PostgreSQL user |
 | `PGDATABASE` | `shekel` | all scripts | PostgreSQL database name |

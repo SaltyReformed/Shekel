@@ -1,0 +1,186 @@
+{% from "_money_macros.html" import money %}
+
+{# WHAT THE LAST PRESS DID, on whichever surface pressed it.
+
+   Extracted at plan step bank_import:X-gf-3b (ruling bank_import:R-HC), when
+   the hand-build match form moved to a surface of its own.  That form applies
+   through the SAME door as a reviewed pass -- ``apply_reviewed``, carrying one
+   item rather than many -- so it answers with the same BatchOutcome, and a
+   second copy of this receipt would be a second place for the counts, the
+   itemisation and the refusal wording to drift from the act they describe.
+   The blocks below are the review body's own, moved rather than rewritten.
+
+   THE COUNTS DEGRADE HONESTLY on a surface that cannot produce them.  Every
+   line is guarded by its own count, so a workbench pass -- one match, no
+   creations and no incomes -- renders neither the purchase line nor the
+   deposit line, because both are zero.  Nothing here knows which surface it is
+   on, and that is the point: what did not happen prints nothing.
+
+   ERROR AND OUTCOME TOGETHER, because they answer one question at two grains
+   and only one of them is ever set: ``error`` means the submission never
+   reached the door at all, and ``outcome`` means it did and every item has its
+   own verdict.
+
+   Context: outcome (BatchOutcome or None), error (a sentence or None). #}
+
+{% if error %}
+<div class="alert alert-danger d-flex gap-2 align-items-start" role="alert">
+  <i class="bi bi-x-octagon mt-1"></i>
+  <div>{{ error }}</div>
+</div>
+{% endif %}
+
+{% if outcome %}
+<div class="card mb-3 border-{% if outcome.refused_count %}warning{% else %}success{% endif %}">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-clipboard-check"></i> What that pass did</span>
+    <span class="badge text-bg-secondary">
+      {{ outcome.applied_count }} applied{% if outcome.refused_count %}, {{ outcome.refused_count }} refused{% endif %}
+    </span>
+  </div>
+  <div class="card-body">
+    {% if outcome.moved_nothing %}
+    <p class="mb-0 text-body-secondary">
+      Nothing moved. Everything that was applied confirmed a day you already
+      had.
+    </p>
+    {% else %}
+    <ul class="mb-0 small">
+      {% if outcome.settled_count %}
+      <li>{{ outcome.settled_count }} row(s) marked as having happened.</li>
+      {% endif %}
+      {% if outcome.corrected_count %}
+      <li>{{ outcome.corrected_count }} row(s) moved onto the bank's day.</li>
+      {% endif %}
+      {% if outcome.redated_count %}
+      <li>{{ outcome.redated_count }} purchase date(s) corrected.</li>
+      {% endif %}
+      {# The AMOUNT (plan step bank_import:X-f6d-1).  It is the only line
+         here that says what money was SPENT rather than when it moved, and
+         without it a repricing on a row that already carried the bank's day
+         reported through EVERY day count as unchanged -- so this panel said
+         "Nothing moved." about a request that had just rewritten what a
+         payment cost.  Found by adversarial design review 2026-08-22. #}
+      {% if outcome.repriced_count %}
+      <li>{{ outcome.repriced_count }} row(s) corrected to the bank's amount.</li>
+      {% endif %}
+      {# ONE LINE PER DIRECTION, and the counts partition what the create
+         door recorded (``recorded_count`` / ``refunded_count``).  A single
+         count carried both until plan step ``bank_import:X-gj-2b-3``, and
+         this sentence -- *recorded as a purchase your records did not have* --
+         was false of every refund in it, which is the defect the comment
+         further down records the DEPOSIT line being split out for.  Ruling
+         **bank_import:R-II** is what put refunds through this door. #}
+      {% if outcome.recorded_count %}
+      {# ONE LINE in the source, the rule its siblings follow: Jinja keeps the
+         newlines it is given, so a sentence wrapped here is one no test can
+         assert as a sentence -- and this is a MONEY receipt. #}
+      <li>{{ outcome.recorded_count }} bank line(s) recorded as a purchase your records did not have.</li>
+      {% endif %}
+      {% if outcome.refunded_count %}
+      <li>{{ outcome.refunded_count }} bank line(s) recorded as a refund against a budget line, lowering what it has cost.</li>
+      {% endif %}
+      {# THE ENVELOPES, on their own line rather than as a clause on the charge
+         one.  A refund can mint an envelope too -- a rule naming *a new
+         envelope* for the merchant does it -- so the clause reported an
+         envelope this pass created under a count that need not contain the
+         line it holds. #}
+      {% if outcome.envelopes_created %}
+      <li>{{ outcome.envelopes_created }} budget line(s) created to hold them.</li>
+      {% endif %}
+      {# The DIFFERENCE (plan step bank_import:X-f6d-4, ruling R-FN).  Every
+         other line here says what happened to a row the owner already had;
+         this one names rows this pass CREATED, holding money the bank showed
+         and the records did not.  Both numbers, because they answer
+         different questions and the total nets: the count is how many rows
+         are now waiting for a category, the total is how much money reached
+         the Uncategorized bucket. #}
+      {# THE DEPOSIT LINE (ruling bank_import:R-GW).  The comment ABOVE belongs to the
+         residual block further down, which this one was inserted in front
+         of; both are read together and neither describes the other.  Its own sentence beside the
+         recorded-as-a-purchase one above, and never folded into it: that
+         line reads "recorded as a purchase your records did not have",
+         which is FALSE of money coming in.  A count whose caption is false of
+         half its members is this arc's recurring defect; every instance is
+         named at ``BatchOutcome.deposited_count`` rather than tallied here. #}
+      {% if outcome.deposited_count %}
+      {# ONE LINE in the source on purpose, the rule its siblings above
+         follow: Jinja keeps the newlines and the indentation it is given,
+         so a sentence wrapped here is a sentence no test can assert as a
+         sentence -- and this one is a MONEY receipt. #}
+      <li>{{ outcome.deposited_count }} bank line(s) recorded as money that arrived and your records did not hold. They have no category yet.</li>
+      {% endif %}
+      {# THE SKIP LINE (ruling bank_import:R-JG, plan step
+         bank_import:X-gj-4b). Its own line beside every count above it, and
+         it reports no money movement at all, as does the repeat below it;
+         what this one says is what the owner has stopped being asked about.
+         Folding it into any of them would put it under a caption that is
+         false of it.
+         The closes-no-difference clause is the one a receipt for this act
+         cannot leave out -- see the SKIP pane, which says the same thing
+         where the verb is pressed. #}
+      {% if outcome.skipped_count %}
+      {# ONE LINE in the source, the rule its siblings follow: Jinja keeps the
+         newlines it is given, so a sentence wrapped here is one no test can
+         assert as a sentence. #}
+      <li>{{ outcome.skipped_count }} bank line(s) recorded as explained by nothing. They have left the list to explain; this closed no difference between your books and your bank.</li>
+      {% endif %}
+      {# A REPEAT wrote nothing, and says so rather than being folded into
+         the count above -- that count answers how many decisions were
+         RECORDED. Reachable from a stale or duplicated tab and from
+         two submits of one page, though never from a single press.
+         Without this line such a pass rendered "Nothing moved. Everything
+         that was applied confirmed a day you already had" over an act that
+         confirmed no day. #}
+      {% if outcome.already_skipped_count %}
+      <li>{{ outcome.already_skipped_count }} bank line(s) were already recorded as explained by nothing, so nothing was written for them.</li>
+      {% endif %}
+      {% if outcome.residual_count %}
+      <li>
+        {{ outcome.residual_count }} difference(s) totalling
+        {{ money(outcome.residual_total) }} recorded as rows with no
+        category. Give them one whenever you know what they were.
+      </li>
+      {% endif %}
+    </ul>
+    {% endif %}
+    {% if outcome.applied %}
+    {# THE ITEMISATION, and it is folded rather than dropped.  The counts
+       above say how much moved; only these say WHERE -- which envelope took
+       a purchase, which day a row moved onto.  A pass can apply 195 items on
+       the developer's own statement, so the headline is the summary and the
+       record is one click away, rather than the record being cut to fit. #}
+    <details class="mt-2">
+      <summary class="small text-body-secondary">
+        What each of the {{ outcome.applied_count }} applied did
+      </summary>
+      <ul class="mt-2 mb-0 small">
+        {% for item in outcome.applied %}
+        {# The SUMMARY alone: it names the figure and the day, which is how
+           the owner recognises the act.  A bank line's id is opaque -- neither
+           surface that renders this receipt shows one anywhere the owner can
+           see -- so a "Line 4711:" prefix pointed at nothing. #}
+        <li class="mb-1">{{ item.summary }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </div>
+  {% if outcome.refused %}
+  {# EVERY refusal, quoted in the service's own words (developer ruling,
+     2026-08-19).  Not summarised and not capped: each sentence names its own
+     figures, and the payroll gap that motivated the ruling is only
+     actionable because it states the difference to the cent. #}
+  <div class="card-body border-top">
+    <p class="fw-semibold mb-2">
+      These were not applied, and nothing was changed for them:
+    </p>
+    <ul class="mb-0 small">
+      {% for item in outcome.refused %}
+      <li class="mb-1">{{ item.reason }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+{% endif %}

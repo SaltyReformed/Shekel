@@ -11,22 +11,36 @@ future-period setup is deterministic.  See
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 
-from app.enums import StatusEnum
+from app.enums import BusinessDayShiftEnum, StatusEnum
+from app.utils.dates import display_today
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.services import (
     pay_period_admin,
-    pay_period_service,
     pay_period_write,
     pay_schedule_service,
 )
-from tests._test_helpers import add_txn, freeze_today
+from app.routes import settings as settings_routes
+from app.models.transaction import Transaction
+from app.models.transfer import Transfer
+from tests._test_helpers import (
+    shift_form_value,
+    rhythm_of,
+    add_txn,
+    all_periods,
+    create_savings_account,
+    freeze_today,
+    make_expense_template,
+    make_transfer_template,
+    resolved_amount,
+)
 from app.services import cash_ledger
+from app.services.pay_calendar import calendar_for
 
 
 FROZEN_TODAY = date(2026, 6, 15)
@@ -44,7 +58,7 @@ def _future_periods(db_session, seed_user, count=6):
         user_id=seed_user["user"].id,
         first_payday=date(2026, 7, 3),
         num_periods=count,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db_session.commit()
     return periods
@@ -55,11 +69,6 @@ def _period_count(db_session, user_id):
     return db_session.query(PayPeriod).filter_by(user_id=user_id).count()
 
 
-def _indices(user_id):
-    """The user's current period indices."""
-    return {p.period_index for p in pay_period_service.get_all_periods(user_id)}
-
-
 def _starts(user_id):
     """The user's current period paydays.
 
@@ -67,19 +76,17 @@ def _starts(user_id):
     now defined on the payday rather than on the ordinal, and the payday is the
     column that survives plan step C4.
     """
-    return {p.start_date for p in pay_period_service.get_all_periods(user_id)}
+    return {p.start_date for p in all_periods(user_id)}
 
 
-def _future_count(db_session, user_id):
-    """Current-and-future periods (``end_date >= FROZEN_TODAY``)."""
-    return (
-        db_session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == user_id,
-            PayPeriod.end_date >= FROZEN_TODAY,
-        )
-        .count()
-    )
+def _future_count(user_id):
+    """How many paychecks have not ENDED before ``FROZEN_TODAY``.
+
+    The rolling target's own question, asked of the derived calendar.  It
+    counted ``PayPeriod.end_date >= FROZEN_TODAY`` in SQL until plan step
+    ``pay_calendar:C4-c`` dropped that column.
+    """
+    return len(calendar_for(user_id).current_and_future(FROZEN_TODAY).periods)
 
 
 class TestExtendRoute:
@@ -174,6 +181,64 @@ class TestTruncateRoute:
             )
             assert _period_count(db.session, seed_user["user"].id) == before
 
+    def test_the_regenerate_confirm_panel_round_trips_every_param(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The panel's hidden inputs are re-POSTable, ``shift`` included.
+
+        **Plan step ``pay_calendar:C14-b`` made this reachable to get wrong.**
+        The regenerate schema REQUIRES ``shift``, and the confirm banner
+        re-posts the params dict the 422 handed it as hidden inputs -- so a
+        params dict that omitted the field, or that echoed the enum MEMBER
+        rather than the wire id a browser sends, would refuse every
+        discard-confirm with "shift: Missing data for required field" while
+        every other test stayed green.  The route converts the member back to
+        its id for exactly this reason and nothing graded that conversion:
+        the truncate twin above round-trips params that were all wire-native
+        strings already.
+
+        The values are parsed back out of the 422 body rather than passed by
+        hand, for that test's reason -- passing them by hand tests the service
+        twice and the round trip never.
+        """
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=6)
+            add_txn(db.session, seed_user, all_periods(
+                seed_user["user"].id,
+            )[-1], "Cash", "50.00")
+            db.session.commit()
+            start = (display_today() + timedelta(days=28)).isoformat()
+
+            confirm = auth_client.post("/pay-periods/regenerate", data={
+                "new_start_date": start,
+                "num_periods": "3",
+                "cadence_days": "14",
+                "shift": shift_form_value(BusinessDayShiftEnum.PRIOR),
+            })
+            assert confirm.status_code == 422
+
+            echoed = dict(re.findall(
+                rb'<input type="hidden" name="([a-z_]+)" value="([^"]*)"',
+                confirm.data,
+            ))
+            assert b"shift" in echoed, (
+                "the confirm panel dropped the shift the owner chose, so the "
+                "re-post cannot satisfy the regenerate schema"
+            )
+            assert echoed[b"shift"] == shift_form_value(
+                BusinessDayShiftEnum.PRIOR,
+            ).encode(), "the panel echoed something a browser would not post"
+
+            resp = auth_client.post("/pay-periods/regenerate", data={
+                key.decode(): value.decode() for key, value in echoed.items()
+            } | {"confirm_discard": "true"})
+
+            assert resp.status_code == 302
+            db.session.expire_all()
+            assert pay_schedule_service.resolve_shift(
+                seed_user["user"].id,
+            ) is BusinessDayShiftEnum.PRIOR
+
     def test_confirm_discard_proceeds(self, app, db, auth_client, seed_user):
         """Re-posting what the confirm PANEL rendered completes the truncate.
 
@@ -257,11 +322,12 @@ class TestRegenerateRoute:
                     "new_start_date": "2026-08-01",
                     "num_periods": "3",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                 },
             )
             assert resp.status_code == 302
             # Bootstrap (index 0) survives; the 6 future periods become 3.
-            assert len(pay_period_service.get_all_periods(
+            assert len(all_periods(
                 seed_user["user"].id,
             )) == 4
 
@@ -278,6 +344,7 @@ class TestGenerateRoute:
                     "start_date": "2027-01-01",
                     "num_periods": "4",
                     "cadence_days": "10",
+                    "shift": shift_form_value(),
                 },
             )
             assert resp.status_code == 302
@@ -295,7 +362,7 @@ class TestScheduleRoute:
         """A valid post enables rolling and stores the target on the row."""
         with app.app_context():
             # A schedule row must exist first (generation captures cadence).
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
             db.session.commit()
             resp = auth_client.post(
                 "/pay-periods/schedule",
@@ -315,7 +382,7 @@ class TestScheduleRoute:
     ):
         """target_periods = 0 fails validation; the row stays unchanged."""
         with app.app_context():
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
             db.session.commit()
             resp = auth_client.post(
                 "/pay-periods/schedule",
@@ -330,18 +397,27 @@ class TestScheduleRoute:
             schedule = pay_schedule_service.get_schedule(seed_user["user"].id)
             assert schedule.rolling_enabled is False
 
-    def test_no_schedule_row_flashes_error(self, app, auth_client, seed_user):
+    def test_no_schedule_row_flashes_error(
+        self, app, bare_auth_client, bare_user,
+    ):
         """Configuring rolling before generating a schedule is refused.
 
-        seed_user has a bootstrap period but no pay_schedule row, so the
-        service guard raises ValidationError and the route flashes it;
-        nothing is created.
+        **The owner is ``bare_user``, and which fixture holds this state is
+        the point** (plan step ``pay_calendar:C4-b-1``).  It read
+        ``seed_user``, which carried a bootstrap pay period and NO
+        ``budget.pay_schedule`` row -- a pairing no application door can
+        produce, because ``record_paydays`` writes the schedule row in the
+        same call that records a payday.  ``bare_user`` has neither, which is
+        the real state this guard exists for: somebody who has never generated
+        a schedule.  The rolling window keeps periods generated ahead and
+        needs a cadence to grow at, so the service refuses and the route
+        flashes it; nothing is created.
         """
         with app.app_context():
             assert pay_schedule_service.get_schedule(
-                seed_user["user"].id,
+                bare_user["user"].id,
             ) is None
-            resp = auth_client.post(
+            resp = bare_auth_client.post(
                 "/pay-periods/schedule",
                 data={
                     "rolling_enabled": "true",
@@ -352,7 +428,7 @@ class TestScheduleRoute:
             assert resp.status_code == 200
             assert b"Generate a pay-period schedule" in resp.data
             assert pay_schedule_service.get_schedule(
-                seed_user["user"].id,
+                bare_user["user"].id,
             ) is None
 
     def test_companion_cannot_set_schedule(self, app, companion_client):
@@ -366,6 +442,195 @@ class TestScheduleRoute:
                 },
             )
             assert resp.status_code == 404
+
+
+class TestHistoryRoute:
+    """POST /pay-periods/history (when the owner's paychecks started).
+
+    Plan step **balance:X-bh-2**, ruling **balance:R-IA**.  The SECOND door
+    onto ``budget.pay_schedule.history_opens_on``, and the only one an
+    existing owner has: registration asks the question once, and every owner
+    who signed up before the column existed holds ``NULL`` with no sign-up
+    form left to revisit.
+    """
+
+    def test_it_saves_the_day_and_redirects(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The ordinary save, and the CONTROL for the refusals below.
+
+        **Re-read on a FRESH session, which is the whole difference between
+        this asserting a COMMIT and asserting a flush.**  An adversarial review
+        of plan step balance:X-bh-2 deleted this route's ``db.session.commit()``
+        and 817 cases stayed green: the test wraps its post in
+        ``with app.app_context()``, Flask reuses an already-pushed app context
+        rather than pushing the request's own, so ``teardown_appcontext`` never
+        fires, Flask-SQLAlchemy's ``session.remove()`` never runs, and the
+        request's FLUSH is still visible to a query in the same session.  In
+        production the answer would be discarded at teardown while the page
+        still flashed "Saved when your paychecks started."
+
+        ``db.session.remove()`` discards anything uncommitted, so what the
+        assertion below reads came off the database.  This is the project's
+        own recorded lesson -- a staged mutation check cannot tell a rollback
+        from a flush -- in a new instance.
+        """
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+            db.session.commit()
+
+            resp = auth_client.post(
+                "/pay-periods/history",
+                data={"history_opens_on": "2023-06-03"},
+            )
+
+            assert resp.status_code == 302
+            assert "pay-periods" in resp.headers["Location"]
+            db.session.remove()
+            assert pay_schedule_service.get_schedule(
+                seed_user["user"].id,
+            ).history_opens_on == date(2023, 6, 3)
+
+    def test_an_empty_box_CLEARS_a_stored_day(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A cleared control is a real answer, not a missing one.
+
+        An HTML form submits every control it renders, so the untouched field
+        arrives as ``""`` -- and it has to become ``NULL`` rather than "leave
+        it alone", because clearing it is how an owner says "I have been paid
+        this way longer than the app needs to know".  A door that read the
+        empty box as no-change would make the field unclearable from the UI.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(14))
+            pay_schedule_service.set_history_opening(user_id, date(2023, 6, 3))
+            db.session.commit()
+
+            resp = auth_client.post(
+                "/pay-periods/history", data={"history_opens_on": ""},
+            )
+
+            assert resp.status_code == 302
+            # Fresh session: the CLEAR has to be committed too, and a flushed
+            # NULL is indistinguishable from a committed one in the session
+            # the request left behind.  See the case above.
+            db.session.remove()
+            assert pay_schedule_service.get_schedule(
+                user_id,
+            ).history_opens_on is None
+
+    def test_a_day_outside_the_apps_calendar_flashes_and_stores_nothing(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The schema bound as a rendered message, never an IntegrityError 500.
+
+        An ``<input type="date">`` accepts a five-digit year, so this arrives
+        from an ordinary browser rather than from a crafted post.
+        """
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+            db.session.commit()
+
+            resp = auth_client.post(
+                "/pay-periods/history",
+                data={"history_opens_on": "9999-01-01"},
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert pay_schedule_service.get_schedule(
+                seed_user["user"].id,
+            ).history_opens_on is None
+
+    def test_a_day_after_the_first_payday_flashes_the_services_message(
+        self, app, db, auth_client, seed_user,
+    ):
+        """Paychecks cannot have begun after the first one the app holds.
+
+        The service's own sentence reaches the page, so the owner is told
+        which day it conflicts with rather than being sent to look.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id,
+                first_payday=date(2026, 7, 3),
+                num_periods=3,
+                rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+            opening = min(p.start_date for p in all_periods(user_id))
+
+            resp = auth_client.post(
+                "/pay-periods/history",
+                data={
+                    "history_opens_on": (
+                        opening + timedelta(days=1)
+                    ).isoformat(),
+                },
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert opening.isoformat().encode() in resp.data
+            assert pay_schedule_service.get_schedule(
+                user_id,
+            ).history_opens_on is None
+
+    def test_no_schedule_row_flashes_error(
+        self, app, bare_auth_client, bare_user,
+    ):
+        """A floor bounds a rhythm, and a row-less owner has no cadence.
+
+        ``bare_user`` rather than ``seed_user`` for the reason
+        ``TestScheduleRoute``'s sibling case gives: an owner holding a payday
+        and no ``budget.pay_schedule`` row is a pairing no door can produce,
+        and this guard is about somebody who has never generated a schedule.
+        """
+        with app.app_context():
+            assert pay_schedule_service.get_schedule(
+                bare_user["user"].id,
+            ) is None
+
+            resp = bare_auth_client.post(
+                "/pay-periods/history",
+                data={"history_opens_on": "2023-06-03"},
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"Generate a pay-period schedule" in resp.data
+            assert pay_schedule_service.get_schedule(
+                bare_user["user"].id,
+            ) is None
+
+    def test_companion_cannot_set_the_history_opening(
+        self, app, companion_client,
+    ):
+        """A companion is not the owner -- the route 404s (IDOR)."""
+        with app.app_context():
+            resp = companion_client.post(
+                "/pay-periods/history",
+                data={"history_opens_on": "2023-06-03"},
+            )
+
+            assert resp.status_code == 404
+
+    def test_the_route_EXISTS_for_a_signed_in_owner(self, app, auth_client):
+        """Pairs with the 404 above, which a moved route would leave passing.
+
+        A 404 from the URL map and a 404 from ``require_owner`` are
+        indistinguishable, so the ownership case alone would go on passing if
+        this endpoint were renamed or removed.
+        """
+        with app.app_context():
+            resp = auth_client.post(
+                "/pay-periods/history", data={"history_opens_on": ""},
+            )
+
+            assert resp.status_code != 404
 
 
 class TestResetRoute:
@@ -388,14 +653,17 @@ class TestResetRoute:
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                     "confirm": "true",
                 },
             )
             assert resp.status_code == 302
             assert "pay-periods" in resp.headers["Location"]
             db.session.expire_all()
-            periods = pay_period_service.get_all_periods(user_id)
-            assert {p.period_index for p in periods} == {0, 1, 2, 3}
+            assert {p.start_date for p in all_periods(user_id)} == {
+                date(2026, 6, 5), date(2026, 6, 19),
+                date(2026, 7, 3), date(2026, 7, 17),
+            }
             account = db.session.get(Account, account_id)
             assert cash_ledger.resolve_anchor(account).balance == Decimal("1000.00")
 
@@ -404,19 +672,20 @@ class TestResetRoute:
         with app.app_context():
             user_id = seed_user["user"].id
             _future_periods(db.session, seed_user, count=4)
-            before = _indices(user_id)
+            before = _starts(user_id)
             resp = auth_client.post(
                 "/pay-periods/reset",
                 data={
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                 },
                 follow_redirects=True,
             )
             assert resp.status_code == 200
             assert b"Confirm the reset" in resp.data
-            assert _indices(user_id) == before
+            assert _starts(user_id) == before
 
     def test_settled_blocks_reset(self, app, db, auth_client, seed_user):
         """A settled transaction makes the service refuse; nothing changes."""
@@ -428,20 +697,21 @@ class TestResetRoute:
                 status_enum=StatusEnum.RECEIVED, is_income=True,
             )
             db.session.commit()
-            before = _indices(user_id)
+            before = _starts(user_id)
             resp = auth_client.post(
                 "/pay-periods/reset",
                 data={
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                     "confirm": "true",
                 },
                 follow_redirects=True,
             )
             assert resp.status_code == 200
             assert b"settled transaction" in resp.data
-            assert _indices(user_id) == before
+            assert _starts(user_id) == before
 
     def test_schema_rejection_changes_nothing(
         self, app, db, auth_client, seed_user,
@@ -450,17 +720,18 @@ class TestResetRoute:
         with app.app_context():
             user_id = seed_user["user"].id
             _future_periods(db.session, seed_user, count=4)
-            before = _indices(user_id)
+            before = _starts(user_id)
             resp = auth_client.post(
                 "/pay-periods/reset",
                 data={
-                    "num_periods": "4", "cadence_days": "14", "confirm": "true",
+                    "num_periods": "4", "cadence_days": "14",
+                    "shift": shift_form_value(), "confirm": "true",
                 },
                 follow_redirects=True,
             )
             assert resp.status_code == 200
             assert b"correct the form" in resp.data
-            assert _indices(user_id) == before
+            assert _starts(user_id) == before
 
     def test_companion_cannot_reset(self, app, companion_client):
         """A companion is not the owner -- the reset route 404s (IDOR)."""
@@ -471,6 +742,7 @@ class TestResetRoute:
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
                     "cadence_days": "14",
+                    "shift": shift_form_value(),
                     "confirm": "true",
                 },
             )
@@ -484,14 +756,14 @@ class TestRollingTriggerHooks:
         """Current + one future period, rolling on at ``target`` (a deficit).
 
         idx 1 spans the frozen today (06-08..06-21) so a current period
-        exists; idx 2 is the next future period.  ``end_date >= today``
+        exists; idx 2 is the next future period.  A period not yet ended
         counts both, so the window starts at 2 and is short of ``target``.
         """
         pay_period_write.record_paydays(
             user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
-            num_periods=2, cadence_days=14,
+            num_periods=2, rhythm=rhythm_of(14),
         )
-        pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+        pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
         pay_schedule_service.set_rolling(
             seed_user["user"].id, enabled=True, target_periods=target,
         )
@@ -503,7 +775,7 @@ class TestRollingTriggerHooks:
             self._setup_rolling_with_deficit(db.session, seed_user, target=5)
             resp = auth_client.get("/grid")
             assert resp.status_code == 200
-            assert _future_count(db.session, seed_user["user"].id) == 5
+            assert _future_count(seed_user["user"].id) == 5
 
     def test_dashboard_load_tops_up_window(
         self, app, db, auth_client, seed_user,
@@ -513,7 +785,7 @@ class TestRollingTriggerHooks:
             self._setup_rolling_with_deficit(db.session, seed_user, target=5)
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
-            assert _future_count(db.session, seed_user["user"].id) == 5
+            assert _future_count(seed_user["user"].id) == 5
 
     def test_grid_load_disabled_creates_nothing(
         self, app, db, auth_client, seed_user,
@@ -522,9 +794,9 @@ class TestRollingTriggerHooks:
         with app.app_context():
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
-                num_periods=2, cadence_days=14,
+                num_periods=2, rhythm=rhythm_of(14),
             )
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
             db.session.commit()
             before = _period_count(db.session, seed_user["user"].id)
             resp = auth_client.get("/grid")
@@ -558,6 +830,10 @@ class TestOwnerOnlyAndUi:
             # The rolling-window controls render too.
             assert b"Continuous rolling window" in resp.data
             assert b'name="rolling_target_periods"' in resp.data
+            # And the pay-history card (plan step balance:X-bh-2), which is
+            # the only door an already-registered owner has onto that column.
+            assert b"When your paychecks started" in resp.data
+            assert b'name="history_opens_on"' in resp.data
 
     def test_the_truncate_select_offers_ids_not_ordinals(
         self, app, db, auth_client, seed_user,
@@ -576,17 +852,60 @@ class TestOwnerOnlyAndUi:
         shared sequence), so an ordinal render cannot coincidentally pass.
         """
         with app.app_context():
-            periods = _future_periods(db.session, seed_user, count=3)
+            _future_periods(db.session, seed_user, count=3)
             user_id = seed_user["user"].id
-            all_periods = pay_period_service.get_all_periods(user_id)
-            assert [p.id for p in periods] != [p.period_index for p in periods]
+            owner_periods = all_periods(user_id)
+            # The ids are NOT the ordinals: the bootstrap period is created
+            # first and ids come from a shared sequence, so an ordinal render
+            # cannot coincidentally pass.
+            assert [period.id for period in owner_periods] != list(
+                range(len(owner_periods)),
+            )
 
             resp = auth_client.get("/settings?section=pay-periods")
 
             assert resp.status_code == 200
             assert b'name="keep_through_period_id"' in resp.data
-            for period in all_periods:
+            for period in owner_periods:
                 assert f'<option value="{period.id}">'.encode() in resp.data
+
+    def test_the_history_card_is_prefilled_from_the_schedule_row(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A stored opening comes back in the control, not as a blank box.
+
+        Plan step **balance:X-bh-2**.  A form that renders empty over a stored
+        value teaches the owner they have not answered, and the next Save
+        CLEARS it -- the field's empty box is a real answer, so an unprefilled
+        control is a silent write rather than a cosmetic bug.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _future_periods(db.session, seed_user, count=3)
+            pay_schedule_service.set_history_opening(user_id, date(2023, 6, 3))
+            db.session.commit()
+
+            resp = auth_client.get("/settings?section=pay-periods")
+
+            assert resp.status_code == 200
+            assert b'value="2023-06-03"' in resp.data
+
+    def test_the_history_card_renders_empty_when_nothing_is_stored(
+        self, app, db, auth_client, seed_user,
+    ):
+        """THE CONTROL: the prefill is read, not a literal in the template."""
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=3)
+            pay_schedule_service.set_history_opening(
+                seed_user["user"].id, None,
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/settings?section=pay-periods")
+
+            assert resp.status_code == 200
+            assert b'id="history_opens_on"' in resp.data
+            assert b'value="2023-06-03"' not in resp.data
 
     def test_rolling_controls_prefilled_from_schedule(
         self, app, db, auth_client, seed_user,
@@ -594,7 +913,7 @@ class TestOwnerOnlyAndUi:
         """The rolling controls reflect the saved schedule (checked + target)."""
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
             pay_schedule_service.set_rolling(
                 seed_user["user"].id, enabled=True, target_periods=40,
             )
@@ -632,3 +951,339 @@ class TestOwnerOnlyAndUi:
             assert resp.status_code == 200
             assert b"Reset is unavailable" in resp.data
             assert b'name="confirm"' not in resp.data
+
+
+class TestTheManageListIsTheDerivation:
+    """The rendered period list answers from the paydays, not the columns.
+
+    Plan step **C2-f3b**.  This page is where a user reviews the schedule
+    BEFORE pressing a destructive button on it, and the button's service decides
+    against the derivation -- so the list beside it has to describe the same
+    periods or the confirmation is about a different schedule from the one that
+    changes.  Both halves of a rendered row are graded: the LABEL, which the ORM
+    accessor built from the stored ``end_date`` and now derives, and the lock
+    BADGE, whose
+    "Past" chip was decided on the process clock.
+
+    *The label half no longer has TWO sources to choose between -- plan step
+    ``pay_calendar:C4-c`` deleted the stored column -- so it grades the two
+    DERIVATION rules against each other instead.*
+    """
+
+    def test_the_label_ends_a_period_at_the_NEXT_PAYDAY(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A period's label ends the day before its successor's payday.
+
+        **The schedule is deliberately OFF-CADENCE, and that is the whole
+        control.**  Paydays 2026-07-03 and 2026-07-24 at a stored cadence of
+        14: the first paycheck runs to 07-23, because that is the day before
+        the next payday, while ``start + cadence - 1`` would say 07-16.  Both
+        strings are asserted, so a render that took the projection rule for
+        every period -- the pre-normalization defect -- fails on the negative
+        half, and one that dropped the label entirely fails on the positive.
+
+        *This case doctored a stored ``end_date`` down to 07-05 and asserted
+        the label ignored it, until plan step ``pay_calendar:C4-c`` dropped the
+        column.  There is no second value to ignore now, so the discriminator
+        moved to the two DERIVATION rules -- which is the sharper question the
+        doctored fixture was standing in for.*
+        """
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=seed_user["user"].id, first_payday=date(2026, 7, 3),
+                num_periods=1, rhythm=rhythm_of(14),
+            )
+            pay_period_write.record_paydays(
+                user_id=seed_user["user"].id, first_payday=date(2026, 7, 24),
+                num_periods=1, rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/settings?section=pay-periods")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "07/03 - 07/23" in html
+            assert "07/03 - 07/16" not in html
+
+    def test_the_past_badge_follows_the_owners_civil_day(
+        self, app, db, auth_client, seed_user, monkeypatch,
+    ):
+        """"Past" is decided on ``display_today``, ruled 2026-08-19.
+
+        The clocks are pinned APART: the process clock stays on this module's
+        2026-06-15 and the display clock reads 2026-07-17.  TWO "Past" chips must
+        render -- an exact count, so a badge map that marked everything
+        historical fails here too.
+
+        **Both chips are the display clock's, and an adversarial review of this
+        step corrected a comment that said otherwise.**  ``_future_periods``
+        records paydays through the writer, which re-materialises the whole
+        calendar, so the 2024 bootstrap ends the day before the first generated
+        payday -- 2026-07-02, not its seeded 2024-01-18.  On the process clock
+        it has NOT ended either, which is why the mutation this case exists to
+        kill reports ``0 == 2`` rather than ``1 == 2``.
+        """
+        monkeypatch.setattr(
+            settings_routes, "display_today", lambda: date(2026, 7, 17),
+        )
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=3)
+            resp = auth_client.get("/settings?section=pay-periods")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The bootstrap (derived end 2026-07-02) and the first generated
+            # period (2026-07-16); neither has ended on the process clock.
+            assert html.count(">Past<") == 2
+
+
+class TestEveryDoorThatCreatesAPeriodPopulatesIt:
+    """Every HTTP door that creates a pay period fills it with its templates.
+
+    **This class is what makes ruling R-R38 safe.**  Until plan step R7d-c-1
+    the recurring rows were generated INSIDE ``extend_pay_periods`` /
+    ``regenerate_pay_periods`` / ``reset_pay_periods``, so no caller could get
+    them wrong.  They are now a second call the ROUTE makes -- the read pass
+    the recurrence resolves in may only be opened at the HTTP boundary, and
+    only after the paydays exist -- and a route that made the first call and
+    not the second would ship paydays with no rent, no paycheck and no
+    recurring transfer in them, with every period-count assertion in this file
+    still green.
+
+    So the coverage is stated where the composition now lives: one case per
+    door, each asserting the ROWS rather than the count, each driven through
+    the real HTTP request the browser makes.  ``test_pay_period_extend`` and
+    its siblings grade the two halves separately; this grades that the doors
+    call both.
+
+    SIX doors create a pay period through HTTP: extend, regenerate, reset and
+    generate directly, and the rolling top-up through ``GET /grid`` and
+    ``GET /dashboard``. The sixth, ``POST /pay-periods/generate``, populated
+    NOTHING until this step -- ledger row **D58**, pre-existing and found by
+    censusing the writers R-R38 split. It reads as a first-time-only door and
+    is not: ``record_paydays``' forward-only rule accepts any payday past the
+    owner's last, so on an owner who already had a schedule it appended
+    periods and skipped every template, measured through this same HTTP door
+    at 3 appended periods holding 0 template rows.
+
+    The seventh writer, ``auth_service.register_user``, has no HTTP door of
+    its own here and is correct as it stands: no template can exist at
+    registration, and the baseline scenario is created after that call, so a
+    repopulation would return 0 on ``ctx.scenario is None``.
+    """
+
+    _AMOUNT = Decimal("1200.00")
+
+    def _rows_in(self, db_session, period):
+        """The template-linked transactions sitting in *period*."""
+        return (
+            db_session.query(Transaction)
+            .filter_by(pay_period_id=period.id)
+            .filter(Transaction.template_id.isnot(None))
+            .all()
+        )
+
+    def _assert_each_period_holds_the_rent(self, db_session, periods):
+        """Every period in *periods* holds exactly one row at the template's amount."""
+        assert periods, "no period was created, so nothing is graded"
+        for period in periods:
+            rows = self._rows_in(db_session, period)
+            assert len(rows) == 1, (
+                f"pay period {period.id} (payday {period.start_date}) holds "
+                f"{len(rows)} template rows, not 1 -- the door created the "
+                f"period and its caller did not populate it"
+            )
+            assert resolved_amount(rows[0]) == self._AMOUNT
+
+    def test_the_extend_route_populates_what_it_appends(
+        self, app, db, auth_client, seed_user,
+    ):
+        """POST /pay-periods/extend leaves no empty paycheck behind.
+
+        **The one case of the five that seeds BOTH engines**, because the
+        producer runs two loops and a caller that ran only the transaction one
+        would leave every other case here green -- "a new period never silently
+        misses a recurring transfer" is that producer's own stated invariant.
+        """
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=3)
+            make_expense_template(db.session, seed_user, amount="1200.00")
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
+            )
+            make_transfer_template(db.session, seed_user, savings)
+            db.session.commit()
+            before = {p.id for p in all_periods(seed_user["user"].id)}
+
+            resp = auth_client.post(
+                "/pay-periods/extend", data={"num_periods": "2"},
+            )
+            assert resp.status_code == 302
+
+            db.session.expire_all()
+            appended = [
+                p for p in all_periods(seed_user["user"].id)
+                if p.id not in before
+            ]
+            assert len(appended) == 2
+            self._assert_each_period_holds_the_rent(db.session, appended)
+            for period in appended:
+                transfers = (
+                    db.session.query(Transfer)
+                    .filter_by(pay_period_id=period.id)
+                    .all()
+                )
+                assert len(transfers) == 1, (
+                    f"pay period {period.id} holds {len(transfers)} recurring "
+                    f"transfers, not 1 -- the route ran the transaction engine "
+                    f"and not the transfer one"
+                )
+                assert len(transfers[0].shadow_transactions) == 2
+
+    def test_the_regenerate_route_populates_the_tail_it_rebuilds(
+        self, app, db, auth_client, seed_user,
+    ):
+        """POST /pay-periods/regenerate fills the tail it just rebuilt."""
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=6)
+            make_expense_template(db.session, seed_user, amount="1200.00")
+            db.session.commit()
+            before = {p.id for p in all_periods(seed_user["user"].id)}
+
+            resp = auth_client.post(
+                "/pay-periods/regenerate",
+                data={
+                    "new_start_date": "2026-08-01",
+                    "num_periods": "3",
+                    "cadence_days": "14",
+                    "shift": shift_form_value(),
+                },
+            )
+            assert resp.status_code == 302
+
+            db.session.expire_all()
+            rebuilt = [
+                p for p in all_periods(seed_user["user"].id)
+                if p.id not in before
+            ]
+            assert len(rebuilt) == 3
+            self._assert_each_period_holds_the_rent(db.session, rebuilt)
+
+    def test_the_reset_route_populates_the_schedule_it_rebuilds(
+        self, app, db, auth_client, seed_user,
+    ):
+        """POST /pay-periods/reset fills every period of the new schedule.
+
+        The reset is the door whose populate moved FURTHEST at R-R38: it used
+        to run between the rebuild and the two posting re-syncs and now runs
+        after both, so this case is also what grades that reordering through
+        the real door.
+        """
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=4)
+            make_expense_template(db.session, seed_user, amount="1200.00")
+            db.session.commit()
+
+            resp = auth_client.post(
+                "/pay-periods/reset",
+                data={
+                    "new_start_date": "2026-06-05",
+                    "num_periods": "4",
+                    "cadence_days": "14",
+                    "shift": shift_form_value(),
+                    "confirm": "true",
+                },
+            )
+            assert resp.status_code == 302
+
+            db.session.expire_all()
+            periods = all_periods(seed_user["user"].id)
+            assert len(periods) == 4
+            self._assert_each_period_holds_the_rent(db.session, periods)
+
+    def test_the_generate_route_populates_what_it_appends(
+        self, app, db, auth_client, seed_user,
+    ):
+        """POST /pay-periods/generate fills the periods it records.
+
+        **Ledger row D58, and the fixture is the shape that made it a defect
+        rather than a no-op**: the owner ALREADY has a schedule and an active
+        template, which is the state ``record_paydays``' forward-only rule
+        admits and which this door used to append into without generating a
+        row. A brand-new owner cannot exercise it -- nothing to generate.
+        """
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=3)
+            make_expense_template(db.session, seed_user, amount="1200.00")
+            db.session.commit()
+            before = {p.id for p in all_periods(seed_user["user"].id)}
+            latest = max(p.start_date for p in all_periods(seed_user["user"].id))
+
+            resp = auth_client.post(
+                "/pay-periods/generate",
+                data={
+                    "start_date": (latest + timedelta(days=14)).isoformat(),
+                    "num_periods": "3",
+                    "cadence_days": "14",
+                    "shift": shift_form_value(),
+                },
+            )
+            assert resp.status_code == 302
+
+            db.session.expire_all()
+            appended = [
+                p for p in all_periods(seed_user["user"].id)
+                if p.id not in before
+            ]
+            assert len(appended) == 3, (
+                f"the door appended {len(appended)} periods, not 3; the "
+                f"forward-only rule must have refused, and then this case "
+                f"grades nothing"
+            )
+            self._assert_each_period_holds_the_rent(db.session, appended)
+
+    def _rolling_deficit(self, db_session, seed_user, target=5):
+        """A rolling owner short of *target*, holding an every-period template."""
+        pay_period_write.record_paydays(
+            user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
+            num_periods=2, rhythm=rhythm_of(14),
+        )
+        make_expense_template(db_session, seed_user, amount="1200.00")
+        pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+        pay_schedule_service.set_rolling(
+            seed_user["user"].id, enabled=True, target_periods=target,
+        )
+        db_session.commit()
+        return {p.id for p in all_periods(seed_user["user"].id)}
+
+    def test_the_grid_render_populates_what_the_top_up_appends(
+        self, app, db, auth_client, seed_user,
+    ):
+        """GET /grid fills the paydays its rolling top-up just appended."""
+        with app.app_context():
+            before = self._rolling_deficit(db.session, seed_user)
+            resp = auth_client.get("/grid")
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            appended = [
+                p for p in all_periods(seed_user["user"].id)
+                if p.id not in before
+            ]
+            self._assert_each_period_holds_the_rent(db.session, appended)
+
+    def test_the_dashboard_render_populates_what_the_top_up_appends(
+        self, app, db, auth_client, seed_user,
+    ):
+        """GET /dashboard fills the paydays its rolling top-up just appended."""
+        with app.app_context():
+            before = self._rolling_deficit(db.session, seed_user)
+            resp = auth_client.get("/dashboard")
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            appended = [
+                p for p in all_periods(seed_user["user"].id)
+                if p.id not in before
+            ]
+            self._assert_each_period_holds_the_rent(db.session, appended)

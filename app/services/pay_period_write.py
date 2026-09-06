@@ -12,9 +12,9 @@ its orchestration and its two gates.
 That split is C3-a's, one level up.  C3-a moved the read-only lock classifier
 into :mod:`app.services.pay_period_locks` because a read-predicate and four
 destructive writers are two concerns; the same argument separates *deciding*
-that a schedule should change from *changing* it.  The invariant below has one
-home, so plan steps C4 (drop the derived columns), C6 (a payday inserted
-mid-schedule) and C7 each inherit it by reading one file.
+that a schedule should change from *changing* it.  The rule below has one home,
+so plan steps C6 (a payday inserted mid-schedule) and C7 each inherit it by
+reading one file.
 
 *No pylint checker enforces the boundary, deliberately.* Finding
 ``balance:N-147`` already records that two custom checkers police their rule
@@ -26,34 +26,33 @@ in this module -- which one ``grep`` answers and
 as it must: several suites exist to hand this writer a state no door can
 produce.)
 
-The invariant, and it is the whole point
-========================================
+The rule, and it is the whole point
+===================================
 
-``budget.pay_periods`` stores three values per row and only ``start_date`` is a
-fact.  ``end_date`` and ``period_index`` are a CACHE of one function of the
-owner's payday set (``pay_calendar.derive_periods``).  **A cache refreshed only
-at its edge is not a cache, it is a second source of truth**, so:
+**A row here is ONE FACT -- the payday -- so this module writes one column and
+computes nothing** (plan step C4-c).  A period's ordinal is its position in the
+owner's payday order and its last covered day is the day before the next
+payday; both are answered by ``pay_calendar.derive_periods`` on every read, and
+neither is stored.  So, of ``budget.pay_periods``:
 
-    after any write here, every one of the owner's stored rows equals
-    ``derive_periods`` over their COMPLETE payday set and stored cadence.
+    recording a payday INSERTS one row and touches no other; retiring one
+    DELETES it and touches no other.  This module issues no ``UPDATE`` against
+    that table at all, which ``TestAWriteTouchesNoRowItDidNotName`` grades as a
+    statement census rather than as a claim.
 
-That is what makes plan step C4's ``DROP COLUMN`` provably unable to change a
-number, and it is why :func:`_write_derivation` walks the whole calendar rather
-than patching the row next to the batch.  It is also less code than the
-alternative: there is no concept of "the preceding period" for C6's
-mid-schedule insert to invalidate later.
+(The cadence rule below writes ``budget.pay_schedule``, which is a different
+table and a different fact.)
 
-**It writes nothing on a healthy schedule.**  Stored and derived agree except
-where a hole exists, and production has none (61 paydays, 0 index mismatches, 0
-end mismatches, 0 gaps -- re-measured 2026-08-10, and re-driven through all
-three door shapes on a clone by ``tests/manual/verify_pay_period_writer.py``).
-SQLAlchemy emits no ``UPDATE`` at all for a reassignment that changes nothing
-(measured on the pinned 2.0.49 while plan step C3-b was written, against the
-schedule-rebuild re-pointer plan step R7b-4 has since deleted), so the recompute costs one
-derivation and no statements.  Where it DOES move a value it is repairing a
-hole and says so at WARNING; where the disagreement runs the OTHER way -- an
-overlap, which no writer here can produce -- it refuses instead of guessing
-(:func:`_write_derivation`).
+Until C4-c the table carried both derived values as columns, and this module
+had to hold them equal to the derivation -- re-materialising the owner's WHOLE
+calendar on every write, logging a repair at WARNING where a stored value had
+drifted, and refusing outright where the drift ran the other way
+(``PayPeriodOverlapStored``).  All of that was the cost of the second source of
+truth, and it went with the columns: there is nothing left for a write to
+invalidate, which is also what leaves C6's mid-schedule insert nothing to
+repair.  **The DROP was provably free**: on production, 63 paydays with 0 index
+mismatches, 0 end mismatches, 0 gaps and 0 overlaps against the derivation
+(measured 2026-09-01).
 
 The one refusal, and why the second was DELETED
 ==============================================
@@ -115,10 +114,10 @@ paydays, or the owner's first" -- silently discards a REQUIRED form input: a
 regenerate at ``num_periods=1, cadence_days=30`` would build a 14-day paycheck
 and say nothing.
 
-The derivation and ``budget.pay_schedule`` therefore take the SAME value, so
-"the horizon the app projects" and "the end stored on the last row" are one
-number by construction -- ledger row **P28** measured them coming apart, and
-there is no longer a second value to disagree with.  The extend door has no
+**Ledger row P28 -- "the horizon the app projects" disagreeing with "the end
+stored on the last row" -- has no subject at all since C4-c**: there is one
+value, read from ``budget.pay_schedule`` by the derivation, and no column left
+for it to come apart from.  The extend door has no
 cadence input at all any more (finding **P29**, and finding **P30**'s objection
 to answering it with a write): it continues an existing schedule, so the
 question does not arise there, and the parameter, its Marshmallow field and the
@@ -133,15 +132,13 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from app.exceptions import PayPeriodOverlapStored, ValidationError
+from app.exceptions import ValidationError
 from app.extensions import db
-from app.models.pay_period import MIN_MATERIALISABLE_CADENCE_DAYS, PayPeriod
+from app.models.pay_period import PayPeriod
 from app.services import pay_schedule_service
-from app.services.pay_calendar import DerivedPeriod, derive_periods
 from app.utils.log_events import (
     BUSINESS,
     EVT_PAY_PERIODS_GENERATED,
-    EVT_PAY_PERIODS_REMATERIALISED,
     log_event,
 )
 
@@ -157,7 +154,7 @@ logger = logging.getLogger(__name__)
 #: registration it used to surface several statements later as
 #: ``create_account`` complaining that the owner had no pay periods.
 #:
-#: Read by :func:`reject_unmaterialisable_batch` and by the Marshmallow fields
+#: Read by :func:`reject_out_of_range_batch_size` and by the Marshmallow fields
 #: in ``app.schemas.validation.pay_periods``, which import them from here: the
 #: bound belongs to the writer, and a schema that stated its own copy is how
 #: four form fields came to hold four literals.
@@ -165,44 +162,42 @@ PERIOD_BATCH_MIN = 1
 PERIOD_BATCH_MAX = 260
 
 
-def reject_unmaterialisable_batch(num_periods: int, cadence_days: int) -> None:
-    """Refuse a batch this writer cannot turn into ``budget.pay_periods`` rows.
+def reject_out_of_range_batch_size(num_periods: int) -> None:
+    """Refuse a batch size outside what one call may create.
 
-    **The writer's OWN preconditions, stated once and asked before anything is
-    written** (plan step X-ad-a).  Both were held by each caller's Marshmallow
+    **The writer's OWN precondition, stated once and asked before anything is
+    written** (plan step X-ad-a).  It was held by each caller's Marshmallow
     field until registration became a fifth caller, and a bound held by
-    remembering is a bound the next door does without.
+    remembering is a bound the next door does without: ``num_periods`` was
+    refused by no service at all, so a non-form caller could ask for zero
+    periods (which then failed several statements later, in ``create_account``,
+    under a message about accounts) or for a hundred thousand (383 years of
+    fortnights in one transaction).
 
-    * **The cadence floor is about the REPRESENTATION, not the schedule.**  A
-      one-day pay cycle is legal and pay-calendar step C4 legalises it; what
-      cannot hold one is a STORED ``end_date``, because
-      ``ck_pay_periods_date_order`` requires ``start_date < end_date`` and a
-      one-day period's derived end is its own start.  At a cadence of 1 the
-      INSERT died as an unhandled ``CheckViolation`` 500 -- measured on both the
-      settings form and the registration form.  See
-      :data:`~app.models.pay_period.MIN_MATERIALISABLE_CADENCE_DAYS`, which C4
-      deletes with the column.
-    * **The batch size is a work bound.**  ``num_periods`` was refused by no
-      service at all, so a non-form caller could ask for zero periods (which
-      then fails several statements later, in ``create_account``, under a
-      message about accounts) or for a hundred thousand (383 years of
-      fortnights in one transaction).
+    **It used to carry a cadence FLOOR beside this, and plan step C4-c deleted
+    it with its subject.**  That floor refused a cadence of 1 because a STORED
+    ``end_date`` cannot express a one-day period -- ``ck_pay_periods_date_order``
+    required ``start_date < end_date`` and the writer stored
+    ``start_date + (cadence_days - 1)`` -- so the INSERT died as an unhandled
+    ``CheckViolation`` 500 on both the settings form and the registration form.
+    Nothing is stored now, two paydays a day apart simply define a one-day
+    period, and pay-calendar findings **P9** and **P33** close with the column.
 
-    The upper cadence bound is NOT asked here: it belongs to
-    ``budget.pay_schedule``'s CHECK and is asked by that column's one writer,
+    The CADENCE bound that remains is ``budget.pay_schedule``'s CHECK, asked by
+    that column's own writer,
     :func:`~app.services.pay_schedule_service.reject_out_of_range_cadence`.
     Two bounds, two owners, because they answer different questions -- what may
-    be STORED as a schedule, and what this writer can MATERIALISE from it.
+    be STORED as a schedule, and how much of one this writer will materialise
+    in a single call.
 
     Args:
         num_periods: How many periods the batch would create.
-        cadence_days: Days between the paydays it would create.
 
     Raises:
-        ValidationError: Either value is outside what this writer can produce.
-            Each message names the offending value and the bound it broke.
+        ValidationError: *num_periods* is outside
+            :data:`PERIOD_BATCH_MIN` .. :data:`PERIOD_BATCH_MAX`.  The message
+            names the offending value and both bounds.
     """
-    _reject_unmaterialisable_cadence(cadence_days)
     if not PERIOD_BATCH_MIN <= num_periods <= PERIOD_BATCH_MAX:
         raise ValidationError(
             f"Number of pay periods must be between {PERIOD_BATCH_MIN} and "
@@ -210,70 +205,54 @@ def reject_unmaterialisable_batch(num_periods: int, cadence_days: int) -> None:
         )
 
 
-def _reject_unmaterialisable_cadence(cadence_days: int) -> None:
-    """Refuse a cadence no stored ``end_date`` can express.
-
-    Split out of :func:`reject_unmaterialisable_batch` because it is asked
-    TWICE per write and about two different values: once about the cadence a
-    caller SUBMITTED, and once about the cadence the recompute will actually
-    project the horizon with, which since the cadence rule is the value
-    ``budget.pay_schedule`` holds rather than the argument.  Those coincide at
-    every door today; they would not for a legacy owner whose stored cadence
-    predates the form floor, and the difference between a rendered form error
-    and a ``CheckViolation`` 500 is the whole reason the check exists.
-
-    Args:
-        cadence_days: Days between paydays -- submitted or stored.
-
-    Raises:
-        ValidationError: *cadence_days* is below
-            :data:`~app.models.pay_period.MIN_MATERIALISABLE_CADENCE_DAYS`.
-    """
-    if cadence_days < MIN_MATERIALISABLE_CADENCE_DAYS:
-        raise ValidationError(
-            f"Days between paydays must be at least "
-            f"{MIN_MATERIALISABLE_CADENCE_DAYS}; got {cadence_days}.  A pay "
-            "period records the day before the next payday as its end, so a "
-            "shorter cycle has no room to record one."
-        )
-
-
 def record_paydays(
     user_id: int,
     first_payday: date,
     num_periods: int,
-    cadence_days: int,
-    retiring: "list[PayPeriod] | None" = None,
+    rhythm: pay_schedule_service.Rhythm,
+    retiring_ids: "set[int] | None" = None,
 ) -> "list[PayPeriod]":
-    """Record a batch of paydays and re-materialise the owner's whole calendar.
+    """Record a batch of paydays.
 
     **The one door that adds to ``budget.pay_periods``.**  It records paydays
     (``first_payday``, then every ``cadence_days`` after it, ``num_periods``
-    times), persists the cadence when the batch actually recorded something,
-    and then rewrites EVERY one of the owner's rows from
-    ``pay_calendar.derive_periods``.  A payday already on the table is skipped
-    rather than duplicated, so re-running with the same start and a larger
-    count legitimately extends the schedule.
+    times) and persists the cadence when the batch actually recorded something.
+    A payday already on the table is skipped rather than duplicated, so
+    re-running with the same start and a larger count legitimately extends the
+    schedule.
 
-    **``retiring`` is what makes regenerate and reset ONE operation**, and an
-    adversarial review of this step is why it exists.  Those two doors replace a
-    span: they drop periods and record others, and applying the halves through
-    two separate calls derived, refused against and MATERIALISED an interval
-    that existed for one statement -- the schedule minus its tail, before the
-    rebuild that is the whole point of the door.  Handing both halves to one
-    call means every refusal, and the derivation itself, see the state the
-    operation actually leaves behind.  The rule that measured this (the
-    coverage rule, deleted 2026-08-11) is gone; the reason it is ONE call is
-    not, because :func:`_write_derivation` would otherwise re-materialise the
-    whole calendar twice per rebuild and log the intermediate shape as a repair.
+    **``retiring_ids`` is what makes regenerate and reset ONE operation**, and
+    an adversarial review of plan step C3-b is why it exists.  Those two doors
+    replace a span: they drop periods and record others, and applying the halves
+    through two separate calls judged each refusal against an interval that
+    existed for one statement -- the schedule minus its tail, before the rebuild
+    that is the whole point of the door.  Handing both halves to one call means
+    every refusal sees the payday set the operation actually leaves behind.
+    *Its second reason went with the derived columns at plan step C4-c: two
+    calls also re-materialised the whole calendar twice per rebuild and logged
+    the intermediate shape as a repair.  A write touches one row now, so only
+    the refusals argue for the composition -- and they still do.*
+
+    **It takes IDS, not rows, since plan step C2-f3b.**  It was a
+    ``list[PayPeriod]`` that this function read one thing off -- ``.id`` -- so
+    every caller had to hold ORM rows for a set of integers, which is what kept
+    ``pay_period_admin`` querying ``budget.pay_periods`` for values it decides
+    nothing with.  That module now decides in
+    :class:`~app.services.pay_calendar.DerivedPeriod` values and the table read
+    lives HERE, in the one module that writes it (:func:`_owner_paydays`),
+    which is where a read whose only purpose is to feed a write belongs.  It
+    also makes the OWNER scoping structural rather than a property of the
+    callers: an id naming another owner's period is not in
+    :func:`_owner_paydays`' answer, so it retires nothing and is not counted.
 
     It replaced ``pay_period_service.generate_pay_periods`` at plan step C3-b,
-    and the difference is what the step is about: that function AUTHORED
+    and the difference is what the step was about: that function AUTHORED
     ``end_date = start_date + cadence_days - 1`` and
     ``period_index = max_index + 1`` on the new rows and left every existing
     row alone, which is how a schedule came to hold days no paycheck covered.
-    This one computes nothing: the derivation is the single definition and this
-    writes what it says.
+    C3-b held those columns equal to the derivation on every write; plan step
+    C4-c dropped them, so this one records the payday and there is nothing
+    else to get right.
 
     It also absorbed ``establish_schedule``, and that collapse is the cadence
     rule working.  "Create the periods" and "record the cadence they run at"
@@ -288,14 +267,23 @@ def record_paydays(
             a period boundary computed from one.
         num_periods: How many paydays the batch covers, including any that
             already exist.
-        cadence_days: Days between the batch's paydays.  Persisted as the
-            owner's forecast cadence when the batch records at least one new
-            payday; ignored otherwise.
-        retiring: Periods to DELETE as part of the same operation, for the two
-            doors that replace a span rather than extend one.  The caller has
-            already run whatever gates decide they may go; this only carries
-            them out, so that the refusals below see the operation's final
-            payday set.  Defaults to retiring nothing.
+        rhythm: How often this owner is paid and what payroll does when a
+            payday lands on a closed day
+            (:class:`~app.services.pay_schedule_service.Rhythm`).  The batch's
+            paydays are spaced by its cadence, and the whole pair is persisted
+            in one statement when the batch records at least one new payday;
+            ignored otherwise.  It arrives as a PAIR rather than two arguments
+            because the two carry a joint rule -- plan step **C14-b**, rulings
+            **R-PC54** and **R-PC56**.  Four of this door's five callers are
+            forms that state a rhythm; the fifth continues the stored one
+            (``pay_schedule_service.resolve_shift``).
+        retiring_ids: ``budget.pay_periods.id`` values to DELETE as part of the
+            same operation, for the two doors that replace a span rather than
+            extend one.  The caller has already run whatever gates decide they
+            may go; this only carries them out, so that the refusals below see
+            the operation's final payday set.  Any id that is not one of
+            *user_id*'s own periods is silently inert -- it names no row this
+            function can reach.  Defaults to retiring nothing.
 
     Returns:
         The newly created :class:`~app.models.pay_period.PayPeriod` objects,
@@ -304,28 +292,44 @@ def record_paydays(
         can see, which is what lets the cadence stay untouched.
 
     Raises:
-        ValidationError: *first_payday* is not a plain ``date``; the batch size
-            or cadence is one this writer cannot materialise
-            (:func:`reject_unmaterialisable_batch`); or the batch's earliest new
-            payday falls before the forward-only floor
-            (:func:`_reject_backward_payday`).
-        ValidationError: Raised by
-            :func:`~app.services.pay_schedule_service.upsert_schedule` when
-            *cadence_days* falls outside ``ck_pay_schedule_cadence_range``.
-            Nothing is written first: the upsert runs before any row is added.
+        ValidationError: *first_payday* is not a plain ``date``; *num_periods*
+            is outside :data:`PERIOD_BATCH_MIN` .. :data:`PERIOD_BATCH_MAX`
+            (:func:`reject_out_of_range_batch_size`); *rhythm*'s cadence
+            falls outside ``ck_pay_schedule_cadence_range``
+            (:func:`~app.services.pay_schedule_service.reject_out_of_range_cadence`);
+            *rhythm* pairs a displacing convention with a cadence too short
+            to carry it
+            (:func:`~app.services.pay_schedule_service.reject_shift_on_short_cadence`);
+            or the batch's earliest new payday falls before the forward-only
+            floor (:func:`_reject_backward_payday`).  **Every one of them is
+            asked before a statement is issued**, which is what lets
+            :func:`_apply` promise that a refused batch deletes nothing and
+            leaves the stored rhythm alone.
     """
+    # The door's four preconditions, together and ahead of every statement --
+    # including ahead of the arithmetic below, which turns *cadence_days* into
+    # dates.  The cadence bound and the cadence-convention pairing are asked
+    # through the column's own owner rather than restated here: two copies of a
+    # rule are two chances for the schema tier, the service tier and the
+    # database to disagree.
     _reject_undatable_payday(first_payday)
-    reject_unmaterialisable_batch(num_periods, cadence_days)
+    reject_out_of_range_batch_size(num_periods)
+    pay_schedule_service.reject_out_of_range_cadence(rhythm.cadence_days)
+    pay_schedule_service.reject_shift_on_short_cadence(rhythm)
 
-    current = _owner_periods(user_id)
-    retiring_ids = {period.id for period in retiring or ()}
-    keep = [period for period in current if period.id not in retiring_ids]
-    by_payday = {period.start_date: period for period in keep}
+    current = _owner_paydays(user_id)
+    doomed = retiring_ids or frozenset()
+    retiring = [period_id for period_id, _payday in current if period_id in doomed]
+    surviving_paydays = {
+        payday for period_id, payday in current if period_id not in doomed
+    }
 
     new_paydays = [
         payday
-        for payday in _requested_paydays(first_payday, num_periods, cadence_days)
-        if payday not in by_payday
+        for payday in _requested_paydays(
+            first_payday, num_periods, rhythm.cadence_days,
+        )
+        if payday not in surviving_paydays
     ]
     # The floor reads the cadence the owner's LAST SURVIVING PAYCHECK currently
     # runs at, which is the one stored BEFORE this batch -- the question it asks
@@ -334,16 +338,16 @@ def record_paydays(
     # fortnight and then continues at a week, which is what "correct my cadence
     # going forward" means and what it cannot mean retroactively.
     _reject_backward_payday(
-        by_payday, new_paydays, pay_schedule_service.resolve_cadence(user_id),
+        surviving_paydays, new_paydays,
+        pay_schedule_service.resolve_cadence(user_id),
     )
 
     created = _apply(
         _PaydayChange(
             user_id=user_id,
-            current=current,
-            keep=keep,
+            retiring=retiring,
             recording=new_paydays,
-            cadence_days=cadence_days,
+            rhythm=rhythm,
         ),
     )
     log_event(
@@ -351,17 +355,16 @@ def record_paydays(
         "Pay periods generated",
         user_id=user_id,
         count=len(created),
-        retired=len(retiring_ids),
+        retired=len(retiring),
         start_date=first_payday.isoformat(),
-        cadence_days=cadence_days,
+        cadence_days=rhythm.cadence_days,
+        shift=rhythm.shift.value,
     )
     return created
 
 
-def retire_paydays(
-    user_id: int, periods: "list[PayPeriod]", doomed: "list[PayPeriod]",
-) -> int:
-    """Delete *doomed* and re-materialise what survives.
+def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
+    """Delete the pay periods *doomed_ids* names.
 
     **The one door that removes from ``budget.pay_periods``.**  Truncate,
     regenerate's rebuild step and reset's whole-schedule wipe all reach the
@@ -369,14 +372,16 @@ def retire_paydays(
     stay with ``pay_period_admin``, because deciding is a different concern
     from doing (``pay_period_locks``' own split, one level up).
 
-    **The survivors are re-materialised, and without that plan step C1's
-    equality claim is false.**  A delete re-derives nothing today, so paydays
-    ``[Jan 2, Jan 16, Feb 11]`` truncated through Jan 16 leave the January
-    paycheck a stored end of Feb 10 where the derivation says Jan 29 -- the
-    period's successor is gone, so its end falls back to the cadence
-    projection.  An on-cadence fixture cannot see it (``lead(start) - 1`` and
-    ``start + cadence - 1`` coincide there), which is why the step owed it
-    explicitly.
+    **The survivors are untouched, and since plan step C4-c that is a property
+    of the SCHEMA rather than of this function.**  While the two derived
+    columns were stored a delete moved values on rows it did not name: paydays
+    ``[Jan 2, Jan 16, Feb 11]`` truncated through Jan 16 left the January
+    paycheck a stored end of Feb 10 where the derivation said Jan 29, because
+    its successor was gone and its end fell back to the cadence projection.  So
+    this function re-materialised what survived, and an on-cadence fixture
+    could not see the bug it was fixing (``lead(start) - 1`` and
+    ``start + cadence - 1`` coincide there).  Both ends are derived on every
+    read now; a delete removes rows and changes no value anywhere.
 
     One bulk ``DELETE`` so PostgreSQL performs the whole cascade in one pass:
     transactions and transfers (and both shadows, preserving the transfer
@@ -390,44 +395,53 @@ def retire_paydays(
     ``account_anchor_history.pay_period_id``, so a schedule operation can no
     longer destroy the record of what the bank said.
 
-    ``expire_all`` runs AFTER the re-materialisation, not before it: the
-    survivors' loaded attributes are untouched by the ``DELETE``, so writing
-    the derivation onto them costs no reload, where expiring first would make
-    the dirty-check re-``SELECT`` one row at a time.
+    **It takes IDS and reads the rows itself, since plan step C2-f3b**, for the
+    reason :func:`record_paydays` gives at length: a read whose only purpose is
+    to feed a write belongs in the module that writes, and the caller that used
+    to supply the rows -- ``pay_period_admin`` -- now decides in
+    :class:`~app.services.pay_calendar.DerivedPeriod` values and holds none.
+    Because the delete set is ``current`` less ``keep``, an id from another
+    owner (or a stale one) retires nothing rather than being deleted or counted.
+
+    **What the re-read does and does NOT guarantee**, corrected by an
+    adversarial review of plan step C2-f3b.  Under every door that takes
+    ``user_write_lock.lock_user_writes`` it cannot see FEWER rows than the gate
+    did, which is the direction that matters: no period the caller refused to
+    delete can be missing here.  It is not the SAME set, and a first draft said
+    it was: ``POST /pay-periods/generate`` and ``auth_service.register_user``
+    both reach :func:`record_paydays` without taking that lock (finding
+    **P71**), so a concurrent generate can commit a payday between the gate's
+    read and this one and this read sees a SUPERSET.  A row this read gained is
+    simply one it does not name, so it survives -- where the caller-supplied
+    snapshot it replaced left it in neither ``current`` nor ``keep`` and gave
+    the newly-last survivor a cadence-projected end that could run past it.
 
     Args:
         user_id: The owning user's id.
-        periods: ALL the owner's periods, read by the caller under its advisory
-            lock -- the snapshot the delete and the re-materialisation are both
-            evaluated against, so the two cannot see different sets.
-        doomed: The subset to delete.  Empty is a legal, idempotent no-op.
+        doomed_ids: The ``budget.pay_periods.id`` values to delete.  Empty is a
+            legal, idempotent no-op, and so is a set naming nothing of this
+            owner's.
 
     Returns:
-        The number of pay periods deleted.
-
-    Raises:
-        PayPeriodOverlapStored: A surviving row's stored end runs past its
-            successor's payday -- a state no writer here can produce, so
-            reaching it means the rows were edited outside this module
-            (:func:`_write_derivation`).  This one raises AFTER the ``DELETE``
-            has been issued, unlike the refusals in :func:`record_paydays`, and
-            no route catches it: it is deliberately a 500, and nothing durable
-            follows because this module never commits and the failed request's
-            session is discarded without one.
+        The number of pay periods actually deleted -- the size of the
+        intersection of *doomed_ids* with this owner's periods, never the size
+        of the argument.
     """
-    doomed_ids = {period.id for period in doomed}
-    if not doomed_ids:
+    retiring = [
+        period_id for period_id, _payday in _owner_paydays(user_id)
+        if period_id in doomed_ids
+    ]
+    if not retiring:
         return 0
     _apply(
         _PaydayChange(
             user_id=user_id,
-            current=periods,
-            keep=[p for p in periods if p.id not in doomed_ids],
+            retiring=retiring,
             recording=[],
-            cadence_days=None,
+            rhythm=None,
         ),
     )
-    return len(doomed_ids)
+    return len(retiring)
 
 
 @dataclass(frozen=True)
@@ -437,189 +451,154 @@ class _PaydayChange:
     **Every door that writes composes into this, and an adversarial review of
     plan step C3-b is why it exists.**  ``retire_paydays`` and
     ``record_paydays`` used to apply their halves separately, so regenerate --
-    which retires a tail and records a new one -- derived, judged and
-    MATERIALISED an interval that existed for one statement and was then widened
-    again by the rebuild that is the whole point of the door.
+    which retires a tail and records a new one -- judged its refusals against an
+    interval that existed for one statement and was then widened again by the
+    rebuild that is the whole point of the door.
 
-    A claim about the final state has to be evaluated against the final state.
-    So the two halves arrive together, the derivation is taken ONCE over
-    ``keep + recording``, and every refusal is asked of that one answer.  The
-    rule whose false refusals measured this is gone (the coverage rule, deleted
-    2026-08-11); the composition is not, and the remaining reason is
-    :func:`_write_derivation`.  Applied separately it runs twice per rebuild,
-    and the first pass shortens the newly-last survivor to a cadence projection
-    -- a genuine rewrite, logged at WARNING as a schedule that "disagreed with
-    the owner's paydays" -- which the second pass immediately undoes.  One call,
-    one derivation, no phantom repair in the log.
+    A claim about the final state has to be evaluated against the final state,
+    so the two halves arrive together and every refusal is asked of the payday
+    set the operation actually leaves behind.  *The rule whose false refusals
+    measured this is gone (the coverage rule, deleted 2026-08-11), and its
+    second reason went at plan step C4-c: while the derived columns were stored,
+    two calls also re-materialised the calendar twice per rebuild and the first
+    pass logged a phantom repair the second undid.  What is left is the
+    refusals, and they are enough.*
 
     Attributes:
         user_id: The owning user.
-        current: Every row the owner has NOW, read by the caller under its
-            advisory lock.  Two things are read off it and both need the BEFORE
-            set: which ids are being retired, and which payday was previously
-            last (the one row :func:`_write_derivation` exempts from the overlap
-            refusal, because its end was a projection).
-        keep: The subset that survives -- ``current`` less whatever is being
-            retired.  Whatever is not in it is deleted.
+        retiring: The ``budget.pay_periods.id`` values to DELETE.  Already
+            intersected with what the owner actually holds by the caller's
+            :func:`_owner_paydays` read, so the OWNER scoping is structural
+            rather than a property of the two callers.
         recording: The paydays to create, already filtered of any that exist.
-        cadence_days: The cadence to persist, iff *recording* is non-empty.
-            ``None`` when nothing is recorded, where the stored value stands.
+        rhythm: The cadence and payday convention to persist, iff *recording*
+            is non-empty.  ``None`` when nothing is recorded, where the stored
+            pair stands.  One value rather than two nullable columns because
+            the two carry a joint rule and a row written through two
+            statements passes through a state neither statement means (see
+            :func:`~app.services.pay_schedule_service.upsert_schedule`).
     """
 
     user_id: int
-    current: "list[PayPeriod]"
-    keep: "list[PayPeriod]"
+    retiring: "list[int]"
     recording: "list[date]"
-    cadence_days: "int | None"
+    rhythm: "pay_schedule_service.Rhythm | None"
 
 
 def _apply(change: _PaydayChange) -> "list[PayPeriod]":
-    """Carry out one payday change: refuse, delete, persist, materialise.
+    """Carry out one payday change: delete, persist the cadence, insert.
 
-    **Every refusal a route RENDERS happens before the ``DELETE``**, which is
-    what lets truncate keep promising it deletes nothing on a refusal and what
-    makes the module docstring's "a refusal leaves nothing behind" true of this
-    module rather than of its callers.  Step 1 carries all of them.  The one
-    exception is :class:`PayPeriodOverlapStored`, raised from step 4: no route
-    catches it, deliberately -- it means the rows were edited outside this
-    module, and it is a 500 rather than a message.  The order is forced:
+    **Every refusal a route RENDERS has already happened**, in
+    :func:`record_paydays`, which is what lets truncate keep promising it
+    deletes nothing on a refusal and what makes the module docstring's "a
+    refusal leaves nothing behind" true of this module rather than of its
+    callers.  Nothing here refuses anything: the cadence bound is asked at the
+    door, ahead of the arithmetic that turns it into dates, and
+    ``upsert_schedule`` re-asks it as the column's own writer.  The order that
+    remains is forced only by the unique key:
 
-    1. Bound the cadence, then derive the calendar the operation would leave
-       behind.  The cadence is the one this change PERSISTS when it records a
-       payday, and the stored one otherwise -- read before the upsert rather
-       than after it, because ``upsert_schedule`` stores the argument verbatim,
-       so the two are the same value and only one of them is durable.  Both
-       cadence refusals and ``derive_periods``' own live here, ahead of every
-       statement.
-    2. DELETE what is retired -- one bulk statement, scoped by OWNER as well as
+    1. DELETE what is retired -- one bulk statement, scoped by OWNER as well as
        by id, so the scoping is structural rather than a property of the two
-       callers that happen to pass owner-scoped lists.
-    3. Persist the cadence (the rule: only a batch that RECORDS a payday).
-    4. Write the derivation onto every surviving and new row.
+       callers that happen to pass owner-scoped lists.  It runs FIRST so a
+       payday being retired and re-recorded in the same operation -- which is
+       what regenerate and reset do -- cannot collide on
+       ``uq_pay_periods_user_start``.
+    2. Persist the rhythm -- the cadence and the payday convention, in one
+       statement (the rule: only a batch that RECORDS a payday).
+    3. INSERT one row per recorded payday.
 
-    ``expire_all`` runs LAST, and only when something was deleted: the
-    survivors' loaded attributes are untouched by the ``DELETE``, so writing the
-    derivation onto them costs no reload, where expiring first would make the
-    dirty check re-``SELECT`` one row at a time.
+    ``expire_all`` runs LAST, and only when something was deleted: the bulk
+    ``DELETE`` runs with ``synchronize_session=False``, so any row the wider
+    request already loaded would otherwise stay in the identity map naming a
+    row that is gone.
 
     Args:
         change: The whole change (:class:`_PaydayChange`).
 
     Returns:
-        The newly created rows, flushed, in the derivation's order.
+        The newly created rows, flushed, ``start_date`` ascending.
 
     Raises:
-        ValidationError: The cadence the horizon would project at is one no
-            stored ``end_date`` can express, or ``upsert_schedule`` refuses it.
-        PayPeriodOverlapStored: A surviving row's stored end runs past its
-            successor's payday, which no writer here can produce.
+        ValidationError: ``upsert_schedule`` refuses the cadence.  Unreachable
+            from :func:`record_paydays`, which asks the same bound through the
+            same function before any statement is issued; kept because
+            ``upsert_schedule`` is the column's one writer and owns the refusal.
     """
-    by_payday = {period.start_date: period for period in change.keep}
-    horizon_cadence = (
-        change.cadence_days if change.recording
-        else _horizon_cadence(change.user_id)
-    )
-    if change.recording:
-        # The STORAGE bound, asked here rather than left to ``upsert_schedule``
-        # at step 4.  Moving the upsert last is what makes a refused batch leave
-        # the cadence alone, and it also moved this check BEHIND the derivation
-        # -- where an out-of-range value raised ``PayCalendarError``, a 500,
-        # instead of the 422 the form renders.  A caller's own test caught it.
-        # Asking the column's owner up front keeps the refusal where a form can
-        # read it and still keeps the write last.
-        pay_schedule_service.reject_out_of_range_cadence(change.cadence_days)
-    if horizon_cadence is not None:
-        _reject_unmaterialisable_cadence(horizon_cadence)
-
-    derived = derive_periods(
-        [(period.id, period.start_date) for period in change.keep]
-        + [(None, payday) for payday in change.recording],
-        horizon_cadence,
-    )
-    keep_ids = {period.id for period in change.keep}
-    retiring_ids = [
-        period.id for period in change.current if period.id not in keep_ids
-    ]
-    if retiring_ids:
+    if change.retiring:
         db.session.query(PayPeriod).filter(
             PayPeriod.user_id == change.user_id,
-            PayPeriod.id.in_(retiring_ids),
+            PayPeriod.id.in_(change.retiring),
         ).delete(synchronize_session=False)
     if change.recording:
-        pay_schedule_service.upsert_schedule(
-            change.user_id, change.cadence_days,
-        )
-    created = _write_derivation(
-        change.user_id, derived, by_payday,
-        projected_before=max(
-            (period.start_date for period in change.current), default=None,
-        ),
-    )
-    if retiring_ids:
+        pay_schedule_service.upsert_schedule(change.user_id, change.rhythm)
+    created = _create_periods(change.user_id, change.recording)
+    if change.retiring:
         db.session.expire_all()
     return created
 
 
-def _owner_periods(user_id: int) -> "list[PayPeriod]":
-    """Return every one of *user_id*'s pay periods, payday ascending.
+def owner_period_ids(user_id: int) -> "set[int]":
+    """Return every ``budget.pay_periods.id`` *user_id* holds.
 
-    Ordered by ``start_date`` rather than by ``period_index``, and that is the
-    normalization rather than a preference: the payday is the fact and the
-    ordinal is one of the two values this module is about to recompute, so
-    reading in ordinal order would sort by the answer.  Plan step C4 drops the
-    column this query would otherwise have named.
+    **The door for a caller that means "the whole schedule"** -- today
+    ``pay_period_admin.reset_pay_periods``, which retires every period and
+    rebuilds from a corrected start.  It lives HERE, beside the write it feeds,
+    for :func:`record_paydays`' reason: a read whose only purpose is to name
+    rows for a write belongs in the module that owns the table.
+
+    **It is deliberately not a calendar read** (adversarial review of plan step
+    C2-f3b).  A first cut spelled this ``calendar_for(user_id).saved()``, which
+    made the door that REPAIRS a broken schedule depend on the schedule being
+    derivable: an owner with no ``budget.pay_schedule`` row whose last period
+    spans more than a year resolved a cadence outside 1..365, and
+    ``derive_periods`` refuses it -- so reset, which used to succeed there
+    (it retires everything and records a fresh batch), became an unhandled 500.
+    *That particular owner is unstorable since plan
+    step C4-b-2 (ledger rows **P8** / **P35**), so the example no longer
+    reproduces; the RULE it was an example of is what this door is built on and
+    is not weakened by losing it.*  The identity of a row is not a derived value
+    and must not be reached through one -- a repair door that asks the
+    derivation for the ids it is about to fix can only repair schedules that
+    were not broken.
 
     Args:
         user_id: The owning user's id.
 
     Returns:
-        The owner's :class:`~app.models.pay_period.PayPeriod` rows, ``start_date``
-        ascending.  Empty for an owner who has never generated a schedule.
+        The ids, empty for an owner who has never generated a schedule.
     """
-    return (
-        db.session.query(PayPeriod)
+    return {period_id for period_id, _payday in _owner_paydays(user_id)}
+
+
+def _owner_paydays(user_id: int) -> "list[tuple[int, date]]":
+    """Return every one of *user_id*'s pay periods as ``(id, payday)``, ascending.
+
+    Two columns rather than the ORM row, because two columns are the whole of
+    what a write needs to know about what is already there: which rows a delete
+    set actually names, and which paydays a batch would duplicate.  Hydrating a
+    row to read an id and a date would put every other column of the table in
+    the session for no reader -- the shape ``pay_calendar._loader`` already
+    takes for the same reason.
+
+    Ordered by ``start_date``, and that is the normalization rather than a
+    preference: the payday is the fact, and until plan step C4-c the ordinal was
+    a stored column this module had to recompute, so reading in ordinal order
+    would have sorted by the answer.  There is no ordinal to sort by now.
+
+    Args:
+        user_id: The owning user's id.
+
+    Returns:
+        ``(budget.pay_periods.id, start_date)`` per period, payday ascending.
+        Empty for an owner who has never generated a schedule.
+    """
+    return [
+        (row.id, row.start_date)
+        for row in db.session.query(PayPeriod.id, PayPeriod.start_date)
         .filter(PayPeriod.user_id == user_id)
         .order_by(PayPeriod.start_date)
         .all()
-    )
-
-
-def _horizon_cadence(user_id: int) -> "int | None":
-    """Return the cadence the owner's horizon is projected at, refusing a bad one.
-
-    The STORED cadence, never the one a caller submitted, because the last
-    period's derived end and every projection past it read
-    ``budget.pay_schedule`` -- so taking the argument here is exactly how
-    finding **P28** measured the two coming apart.  Under the cadence rule the
-    two are equal at every door that records a payday; this function is what
-    makes that a property of the code rather than of the callers.
-
-    Args:
-        user_id: The owning user's id.
-
-    Returns:
-        The days between paydays the horizon projects at, or ``None`` for an
-        owner with neither a schedule row nor a period to infer one from.
-        ``None`` is legal ONLY beside an empty payday set, which is the rule
-        ``derive_periods`` states and enforces; no caller here can reach it
-        with paydays, because a batch that records one upserts the row first
-        and a batch that records none is asked about an owner who already has
-        periods.  Returned rather than refused so that rule has one home.
-
-    Raises:
-        ValidationError: The stored cadence is below
-            :data:`~app.models.pay_period.MIN_MATERIALISABLE_CADENCE_DAYS`, so
-            the last period's derived end would land on its own payday and
-            ``ck_pay_periods_date_order`` would refuse the write as a 500.
-            Unreachable from any current door -- all four bound the cadence at
-            the writer's floor before storing it -- and asked anyway, because
-            the value is read from the database rather than from the argument
-            those doors checked.
-    """
-    cadence_days = pay_schedule_service.resolve_cadence(user_id)
-    if cadence_days is not None:
-        _reject_unmaterialisable_cadence(cadence_days)
-    return cadence_days
+    ]
 
 
 def _reject_undatable_payday(payday: date) -> None:
@@ -668,7 +647,7 @@ def _requested_paydays(
 
 
 def _reject_backward_payday(
-    existing_by_payday: "dict[date, PayPeriod]",
+    surviving_paydays: "set[date]",
     new_paydays: "list[date]",
     cadence_days: "int | None",
 ) -> None:
@@ -676,16 +655,17 @@ def _reject_backward_payday(
 
     **The forward-only rule, keyed on the PAYDAY** (ruling **R-PC1** as split
     2026-08-10).  It replaces ``pay_period_service._reject_overlapping_batch``,
-    which bounded a batch on ``max(end_date)`` -- a derived column plan step C4
-    drops, and one that made the guard do a second job nothing credited it
-    with.
+    which bounded a batch on ``max(end_date)`` -- a derived column plan step
+    C4-c dropped, and one that made the guard do a second job nothing credited
+    it with.
 
     That second job is this function's ONLY job: **keeping plan step C6 closed.**
     Under the derivation a gap and an overlap are not expressible -- consecutive
     paydays define adjacent intervals -- so there is nothing left here to refuse
     except a payday landing INSIDE an existing paycheck, which splits it.  C6
     owns that, behind two questions ledger row **P10** records as unruled: what
-    happens to a row ``attribution_date`` would now clamp into the wrong half,
+    happens to a row ``DerivedPeriod.attribution_day`` would now clamp into the
+    wrong half,
     and whether the split-off payday is repopulated (a monthly billed twice) or
     left empty (income understated for the whole horizon).  **When C6 answers
     them, this function is what it deletes.**
@@ -707,13 +687,14 @@ def _reject_backward_payday(
 
     **It refuses exactly what the guard it replaces refused**, then, and the
     change is which values it reads: the latest PAYDAY and the stored CADENCE,
-    both of which survive plan step C4, rather than the ``end_date`` column C4
-    drops.  On any schedule this app can write those two spellings select the
-    same set, because the last period's end IS ``payday + cadence - 1``.
+    both of which survived plan step C4-c, rather than the ``end_date`` column
+    that step dropped.  On any schedule this app can write those two spellings
+    select the same set, because the last period's end IS
+    ``payday + cadence - 1``.
 
     Args:
-        existing_by_payday: The owner's periods keyed by payday, empty for a
-            first-time schedule.
+        surviving_paydays: The paydays the owner keeps once this operation's
+            retirements are applied, empty for a first-time schedule.
         new_paydays: The paydays this batch would create -- already filtered of
             any that exist, so a re-run naming existing days is bounded on what
             it would actually add.
@@ -724,9 +705,9 @@ def _reject_backward_payday(
     Raises:
         ValidationError: The earliest new payday falls before the floor.
     """
-    if not existing_by_payday or not new_paydays:
+    if not surviving_paydays or not new_paydays:
         return
-    latest_payday = max(existing_by_payday)
+    latest_payday = max(surviving_paydays)
     floor = latest_payday + timedelta(days=cadence_days)
     earliest_new = min(new_paydays)
     if earliest_new < floor:
@@ -741,118 +722,39 @@ def _reject_backward_payday(
         )
 
 
-def _write_derivation(
-    user_id: int,
-    derived: "tuple[DerivedPeriod, ...]",
-    existing_by_payday: "dict[date, PayPeriod]",
-    projected_before: "date | None" = None,
+def _create_periods(
+    user_id: int, paydays: "list[date]",
 ) -> "list[PayPeriod]":
-    """Write the derivation onto every row, creating the ones that are missing.
+    """Insert one pay period per payday.
 
-    **The whole calendar, every time**, which is the ruling this step turns on
-    (developer, 2026-08-10).  The two stored columns are a cache of one
-    function, and a cache refreshed only next to the batch is a second source of
-    truth: an interior hole -- a period whose stored end falls short of the next
-    payday -- would then never be repaired by any forward append, so plan step
-    C4's ``DROP COLUMN`` would silently move that owner's figures.
-
-    **It is also the cheaper implementation, not merely the correct one.**
-    Assigning a value identical to an instance's committed state emits no
-    statement at all: SQLAlchemy compares each attribute before building the
-    ``UPDATE`` (measured on the pinned 2.0.49 -- 0 statements for the
-    identical-reassign shape, 1 for a control that changes a value).  On a
-    healthy schedule every comparison matches, so the pass costs one derivation
-    and no SQL.  Production is such a schedule: 61 paydays, 0 index mismatches,
-    0 end mismatches, re-verified 2026-08-10.
-
-    **A move is logged at WARNING and that is deliberate.**  Every row it
-    rewrites is a row whose stored coverage disagreed with the owner's own
-    paydays, which is a state the model says cannot exist -- so each event names
-    a schedule that had been quietly wrong, including under settled money.  A
-    silent repair would leave no trace that the shape of a settled paycheck
-    changed.
-
-    **It repairs a HOLE and REFUSES an OVERLAP, and that asymmetry is the whole
-    disposition of a disagreeing row** (found by an adversarial review of this
-    step, which asked what "the derived value is correct" means on a period
-    holding settled money).  A non-last period's derived end is its successor's
-    payday minus a day.  A stored end BELOW that is a hole: days the owner's own
-    paydays cover and the column does not, so writing the derivation LENGTHENS
-    the period and can only pull a row's money back into a column it belongs
-    in.  A stored end ABOVE it is an OVERLAP -- two periods covering one day --
-    which no writer in this app's history could produce and which
-    ``uq_pay_periods_user_start`` plus the forward-only rule keep out.  Reaching
-    it means the rows were edited outside this module, and "repairing" it would
-    SHORTEN a period, possibly a settled one, on the strength of an assumption
-    about which of two contradictory values is right.  There is no safe silent
-    answer to that, so it fails loud.  Production carries neither state (61
-    paydays, 0 disagreements of either sign, measured 2026-08-10).
-
-    **No existing row's ORDINAL moves, and that follows from the forward-only
-    floor rather than from luck.**  A payday can only be appended after every
-    existing one, and a delete takes a payday-ordered suffix, so a surviving row
-    keeps its position in payday order.  That is what keeps
-    ``uq_pay_periods_user_index`` from seeing a transient collision as the
-    per-row ``UPDATE``\\ s go out.  Plan step C6 is the step that lifts the
-    floor, and it is sequenced after C4, which drops the column and the
-    constraint with it.
+    **The whole of what a write to this table does since plan step C4-c**, and
+    the shrinkage is the normalization rather than a tidy-up.  While
+    ``end_date`` and ``period_index`` were stored, this function was
+    ``_write_derivation``: it re-materialised the owner's ENTIRE calendar on
+    every write, because two derived values cached beside the fact they derive
+    from are a second source of truth and a cache refreshed only next to the
+    batch leaves an interior hole no forward append ever repairs.  It logged a
+    rewrite at WARNING where a stored end had fallen short of the next payday,
+    and refused outright (``PayPeriodOverlapStored``) where it ran past it,
+    because shortening a period that may hold settled money is not a decision
+    code may take silently.  Every one of those behaviours existed to hold a
+    cache honest.  There is no cache.
 
     Args:
         user_id: The owning user's id -- stamped on the rows this creates.
-        derived: The calendar to write, ``start_date`` ascending.
-        existing_by_payday: The owner's current rows keyed by payday.  A derived
-            period whose payday is absent is created.
-        projected_before: The payday that was LAST before this write, whose
-            stored end was therefore a cadence PROJECTION rather than a fact.
-            It is exempt from the overlap refusal: appending after it, or
-            shortening the cadence it projected at, legitimately pulls that one
-            end back, and refusing it would refuse the ordinary append.  Every
-            other row's end was dictated by its successor's payday, so a stored
-            value above the derivation there is a genuine contradiction.
+        paydays: The paydays to record, ``start_date`` ascending and already
+            filtered of any the owner holds.  A repeat would be refused by
+            ``uq_pay_periods_user_start``, which is the key that makes "one
+            period per owner per opening day" a property of the table rather
+            than of this function.
 
     Returns:
-        The newly created rows, flushed so their ids are assigned, in the
-        derivation's order.
+        The newly created rows, flushed so their ids are assigned, in the order
+        given.
     """
-    created = []
-    for period in derived:
-        row = existing_by_payday.get(period.start_date)
-        if row is None:
-            row = PayPeriod(
-                user_id=user_id,
-                start_date=period.start_date,
-                end_date=period.end_date,
-                period_index=period.period_index,
-            )
-            db.session.add(row)
-            created.append(row)
-            continue
-        if (
-            row.end_date == period.end_date
-            and row.period_index == period.period_index
-        ):
-            continue
-        if (
-            not period.end_is_projected
-            and period.start_date != projected_before
-            and row.end_date > period.end_date
-        ):
-            raise PayPeriodOverlapStored(
-                row.id, period.start_date, row.end_date, period.end_date,
-            )
-        log_event(
-            logger, logging.WARNING, EVT_PAY_PERIODS_REMATERIALISED, BUSINESS,
-            "A stored pay period disagreed with the owner's paydays and was "
-            "rewritten to match them",
-            user_id=user_id,
-            pay_period_id=row.id,
-            payday=period.start_date.isoformat(),
-            stored_end=row.end_date.isoformat(),
-            derived_end=period.end_date.isoformat(),
-            stored_index=row.period_index,
-            derived_index=period.period_index,
-        )
-        row.end_date = period.end_date
-        row.period_index = period.period_index
+    created = [
+        PayPeriod(user_id=user_id, start_date=payday) for payday in paydays
+    ]
+    db.session.add_all(created)
     db.session.flush()
     return created

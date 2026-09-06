@@ -10,15 +10,20 @@ Tests the resolve_grid_account() fallback chain:
 """
 
 from decimal import Decimal
+from types import SimpleNamespace
 
+from app import ref_cache
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType
 from app.models.user import UserSettings
 from app.services.account_resolver import (
+    is_cash_flow_account,
     list_grid_accounts,
     resolve_analytics_account,
     resolve_grid_account,
+    serves_cash_detail,
 )
 from app.services import account_service
 
@@ -142,8 +147,7 @@ class TestResolveGridAccount:
             from app.models.user import User
             from werkzeug.security import generate_password_hash
 
-            from datetime import date as _date, timedelta as _td  # pylint: disable=import-outside-toplevel
-            from app.models.pay_period import PayPeriod as _PayPeriod  # pylint: disable=import-outside-toplevel
+            from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
             other_user = User(
                 email="other@test.local",
@@ -152,15 +156,13 @@ class TestResolveGridAccount:
             db.session.add(other_user)
             db.session.flush()
 
-            # Bootstrap pay period for the second user so the factory
-            # has somewhere to anchor against.
-            db.session.add(_PayPeriod(
-                user_id=other_user.id,
-                start_date=_date(2024, 1, 5),
-                end_date=_date(2024, 1, 5) + _td(days=13),
-                period_index=0,
-            ))
-            db.session.flush()
+            # The second user's calendar, so the factory has somewhere to
+            # anchor against.
+            # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                open_owner_calendar as _open_calendar,
+            )
+            _open_calendar(other_user.id, _date(2024, 1, 5))
 
             checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
             other_acct = account_service.create_account(
@@ -437,3 +439,66 @@ class TestAnalyticsKindGate:
             result = resolve_analytics_account(seed_user["user"].id, None)
             assert result is not None
             assert result.id == seed_user["account"].id
+
+
+class TestServesCashDetail:
+    """The kind rule the CASH DETAIL page enforces, shared with the grid.
+
+    ``routes.accounts._cash_page.cash_detail_wrong_type`` inverts this, and
+    the grid's bank statement door asks it before rendering a link into that
+    page.  **The pair is not the same question**: ``is_cash_flow_account``
+    refuses loans alone, so an owner with no checking account can have a
+    Property or an IRA resolved as their grid account -- and the statements
+    page 404s exactly those.  The divergence test below is what stops the two
+    being quietly collapsed into one.
+    """
+
+    def test_a_checking_account_is_served(self, app, db, seed_user):
+        """The ordinary case: the seeded grid account."""
+        with app.app_context():
+            assert serves_cash_detail(seed_user["account"]) is True
+
+    def test_a_loan_is_refused(self, app, db, seed_user):
+        """Amortizing kinds keep their own screens (ruling D4 / step A1)."""
+        with app.app_context():
+            assert serves_cash_detail(_create_mortgage_account(seed_user)) is False
+
+    def test_an_account_with_no_type_row_is_served(self, app, db, seed_user):
+        """The degenerate branch, matching ``classify_account``'s None-is-PLAIN.
+
+        A partially loaded account must not make the door disappear; the
+        alternative is a header control that blinks out on a lazy-load edge.
+        A stand-in rather than a persisted row, matching
+        ``test_account_category._account_in``: the predicate reads one
+        relationship and nothing else, so a real row would add setup that
+        grades nothing.
+        """
+        with app.app_context():
+            assert serves_cash_detail(
+                SimpleNamespace(account_type=None),
+            ) is True
+
+    def test_it_is_STRICTER_than_the_cash_flow_gate(self, app, db, seed_user):
+        """FIRING CONTROL: the two predicates genuinely differ.
+
+        A Roth IRA passes ``is_cash_flow_account`` -- it is not amortizing --
+        so ``resolve_grid_account`` will hand it to the grid for an owner
+        with no checking account.  The statements page refuses it.  Gate the
+        grid's door on the wrong one of these two and it renders a link onto
+        a 404.  If this ever fails because both answer alike, the door's gate
+        needs rechecking, not this assertion.
+        """
+        with app.app_context():
+            ira = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=ref_cache.acct_type_id(
+                        AcctTypeEnum.ROTH_IRA,
+                    ),
+                    name="Roth",
+                    anchor_balance=Decimal("0.00"),
+                ),
+            )
+
+            assert is_cash_flow_account(ira) is True
+            assert serves_cash_detail(ira) is False

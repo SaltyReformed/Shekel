@@ -2,7 +2,18 @@
 
 ``populate_periods_from_active_templates`` fills newly-created (empty)
 periods with each active template's recurring transactions AND transfers;
-``extend_pay_periods`` tail-appends periods and repopulates them.
+``extend_pay_periods`` tail-appends the periods and LEAVES THEM EMPTY.
+
+**The two are one operation the ROUTE composes, and that is ruling R-R38**
+(plan step R7d-c-1).  The door used to do both in one call -- a write and then
+a read-dependent write -- so no caller could get between them to open the read
+pass the generation resolves in, and the populate had to open its own.  A test
+here therefore grades ONE of two contracts and says which: the door's own (what
+it appends, what cadence it continues, what it refuses) calls
+``extend_pay_periods`` alone, and any assertion about recurring ROWS runs
+``_extend_and_populate``, which is what the route runs.  ``POST
+/pay-periods/extend`` itself is graded in
+``tests/test_routes/test_pay_period_admin.py``.
 
 Because a pay period is the spine of every financial number, the extend
 happy-path test asserts all four disciplines: structural invariants
@@ -19,26 +30,29 @@ from decimal import Decimal
 import pytest
 
 from app.exceptions import ValidationError
-from app.models.pay_schedule import PaySchedule
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
+from app.routes._period_population import populate_new_periods
 from app.services import (
     pay_period_admin,
-    pay_period_service,
     pay_period_write,
     pay_schedule_service,
-    period_population,
 )
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    rhythm_of,
     assert_pay_period_invariants,
     create_savings_account,
-    seam_cash_balance_at,
+    derived_span,
+    last_covered_day,
     make_expense_template,
     make_transfer_template,
+    populate_in_a_fresh_pass,
+    resolved_amount,
+    seam_cash_balance_at,
 )
 
 
@@ -48,15 +62,35 @@ def _future_periods(db_session, seed_user, count=4, start=date(2026, 7, 3)):
         user_id=seed_user["user"].id,
         first_payday=start,
         num_periods=count,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db_session.commit()
     return periods
 
 
+def _extend_andpopulate_in_a_fresh_pass(user_id, num_periods):
+    """Run BOTH halves of an extend, exactly as the route does.
+
+    ``extend_pay_periods`` records the paydays; ``populate_new_periods`` opens
+    the generate pass afterwards and fills them.  Ruling **R-R38**: the pass
+    may only be opened above the service layer, and it must be opened AFTER
+    the write, so the two are separate calls in that order.
+
+    Args:
+        user_id: The owning user's id.
+        num_periods: How many periods to append.
+
+    Returns:
+        The newly created periods, now populated.
+    """
+    new_periods = pay_period_admin.extend_pay_periods(user_id, num_periods)
+    populate_new_periods(user_id, new_periods)
+    return new_periods
+
+
 def _period_length(period):
     """Inclusive day-span of a period == its cadence."""
-    return (period.end_date - period.start_date).days + 1
+    return (last_covered_day(period) - period.start_date).days + 1
 
 
 class TestPopulateFromActiveTemplates:
@@ -67,8 +101,8 @@ class TestPopulateFromActiveTemplates:
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=3)
             make_expense_template(db.session, seed_user)
-            created = period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, periods,
+            created = populate_in_a_fresh_pass(
+                seed_user["user"].id, {p.id for p in periods},
             )
             db.session.commit()
 
@@ -80,7 +114,7 @@ class TestPopulateFromActiveTemplates:
                     .all()
                 )
                 assert len(txns) == 1
-                assert txns[0].estimated_amount == Decimal("1200.00")
+                assert resolved_amount(txns[0]) == Decimal("1200.00")
 
     def test_includes_transfer_templates(self, app, db, seed_user):
         """Active transfer templates generate transfers with both shadows.
@@ -95,8 +129,8 @@ class TestPopulateFromActiveTemplates:
                 seed_user, db.session, "Savings", Decimal("500.00"),
             )
             make_transfer_template(db.session, seed_user, savings)
-            created = period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, periods,
+            created = populate_in_a_fresh_pass(
+                seed_user["user"].id, {p.id for p in periods},
             )
             db.session.commit()
 
@@ -116,8 +150,8 @@ class TestPopulateFromActiveTemplates:
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=3)
             make_expense_template(db.session, seed_user, is_active=False)
-            created = period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, periods,
+            created = populate_in_a_fresh_pass(
+                seed_user["user"].id, {p.id for p in periods},
             )
             db.session.commit()
             assert created == 0
@@ -125,18 +159,18 @@ class TestPopulateFromActiveTemplates:
     def test_idempotent_second_run_creates_nothing(self, app, db, seed_user):
         """Re-running over already-populated periods creates nothing.
 
-        ``should_skip_period`` skips any period that already holds a
+        ``OccurrenceClaims`` skips any occurrence already answered by a
         template-linked row, so a retried extend / top-up is safe.
         """
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=3)
             make_expense_template(db.session, seed_user)
-            first = period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, periods,
+            first = populate_in_a_fresh_pass(
+                seed_user["user"].id, {p.id for p in periods},
             )
             db.session.commit()
-            second = period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, periods,
+            second = populate_in_a_fresh_pass(
+                seed_user["user"].id, {p.id for p in periods},
             )
             db.session.commit()
             assert first == 3
@@ -145,21 +179,19 @@ class TestPopulateFromActiveTemplates:
     def test_no_baseline_scenario_returns_zero(self, app, bare_periods):
         """A user with no baseline scenario is a no-op (returns 0)."""
         with app.app_context():
-            created = period_population.populate_periods_from_active_templates(
-                bare_periods[0].user_id, bare_periods,
+            created = populate_in_a_fresh_pass(
+                bare_periods[0].user_id, {p.id for p in bare_periods},
             )
             assert created == 0
 
     def test_empty_period_list_returns_zero(self, app, seed_user):
         """An empty period list short-circuits to 0."""
         with app.app_context():
-            assert period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, [],
-            ) == 0
+            assert populate_in_a_fresh_pass(seed_user["user"].id, set()) == 0
 
 
 class TestExtendPayPeriods:
-    """``extend_pay_periods`` tail-appends and repopulates."""
+    """``extend_pay_periods`` tail-appends; the ROUTE repopulates."""
 
     def test_appends_contiguously_after_last_period(self, app, db, seed_user):
         """New periods continue the index sequence and start the next day."""
@@ -171,10 +203,10 @@ class TestExtendPayPeriods:
             )
             db.session.commit()
 
-            assert [p.period_index for p in new_periods] == [
-                last.period_index + 1, last.period_index + 2,
+            assert [derived_span(p).period_index for p in new_periods] == [
+                derived_span(last).period_index + 1, derived_span(last).period_index + 2,
             ]
-            assert new_periods[0].start_date == last.end_date + timedelta(days=1)
+            assert new_periods[0].start_date == last_covered_day(last) + timedelta(days=1)
             assert_pay_period_invariants(db.session, seed_user["user"].id)
 
     def test_this_door_takes_no_cadence_at_all(self, app, db, seed_user):
@@ -215,7 +247,7 @@ class TestExtendPayPeriods:
         with app.app_context():
             _future_periods(db.session, seed_user, count=2)
             pay_schedule_service.upsert_schedule(
-                seed_user["user"].id, cadence_days=7,
+                seed_user["user"].id, rhythm=rhythm_of(7),
             )
             db.session.commit()
             new_periods = pay_period_admin.extend_pay_periods(
@@ -224,37 +256,52 @@ class TestExtendPayPeriods:
             db.session.commit()
             assert _period_length(new_periods[0]) == 7
 
-    def test_infers_cadence_for_legacy_user(self, app, db, seed_user):
-        """With no schedule row, cadence is inferred from the last period.
+    # ``test_infers_cadence_for_legacy_user`` stood here until plan step
+    # **C4-b-2**.  It deleted the owner's ``budget.pay_schedule`` row, left
+    # their 14-day periods standing, and asserted the extend path still
+    # produced 14 -- from ``resolve_cadence``'s inference off the last
+    # period's stored length.  That state is what ``fk_pay_periods_schedule``
+    # now forbids (ledger rows **P8** and **P35**), so the case was deleted
+    # with its subject rather than reworded.  What extend actually does with
+    # the cadence is unchanged and covered by
+    # ``test_stored_schedule_cadence_used_when_unspecified`` directly above,
+    # which is the only source there is now.
 
-        **The row is deleted here, and until plan step C3-b it did not exist
-        to delete.**  The cadence rule makes every batch that records a payday
-        store one, so the state finding **P8** is about -- paydays with no
-        cadence beside them -- can no longer be produced by any door and has to
-        be constructed on purpose.  That is the finding narrowing, and this is
-        what the extend path does with the legacy data that still carries it.
+    def test_the_door_leaves_the_new_periods_EMPTY(self, app, db, seed_user):
+        """The door RECORDS and stops; nothing recurring is generated.
+
+        The other half of ruling **R-R38**, and the reason it is asserted
+        rather than assumed: the door used to generate too, and a caller that
+        re-couples the two here would make ``populate_new_periods`` a
+        no-op-looking second run whose absence at a NEW call site nothing
+        would catch.  The very next case runs both halves over the same
+        fixture and finds the rows, so this one cannot pass by the template
+        being unable to generate at all.
         """
-        with app.app_context():
-            _future_periods(db.session, seed_user, count=2)  # 14-day periods
-            db.session.query(PaySchedule).filter_by(
-                user_id=seed_user["user"].id,
-            ).delete(synchronize_session=False)
-            db.session.commit()
-            assert pay_schedule_service.get_schedule(
-                seed_user["user"].id,
-            ) is None
-            new_periods = pay_period_admin.extend_pay_periods(
-                seed_user["user"].id, num_periods=1,
-            )
-            db.session.commit()
-            assert _period_length(new_periods[0]) == 14
-
-    def test_new_periods_get_recurring_rows(self, app, db, seed_user):
-        """Extended periods are repopulated with active templates' rows."""
         with app.app_context():
             _future_periods(db.session, seed_user, count=2)
             make_expense_template(db.session, seed_user)
             new_periods = pay_period_admin.extend_pay_periods(
+                seed_user["user"].id, num_periods=2,
+            )
+            db.session.commit()
+            for period in new_periods:
+                assert (
+                    db.session.query(Transaction)
+                    .filter_by(pay_period_id=period.id)
+                    .count()
+                ) == 0, (
+                    "extend_pay_periods generated a recurring row; since "
+                    "R-R38 the read pass that resolves one may only be opened "
+                    "above this layer, so the door must record and return"
+                )
+
+    def test_new_periods_get_recurring_rows(self, app, db, seed_user):
+        """Extend + populate fills the new periods from the active templates."""
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=2)
+            make_expense_template(db.session, seed_user)
+            new_periods = _extend_andpopulate_in_a_fresh_pass(
                 seed_user["user"].id, num_periods=2,
             )
             db.session.commit()
@@ -265,7 +312,7 @@ class TestExtendPayPeriods:
                     .all()
                 )
                 assert len(txns) == 1
-                assert txns[0].estimated_amount == Decimal("1200.00")
+                assert resolved_amount(txns[0]) == Decimal("1200.00")
             assert_pay_period_invariants(db.session, seed_user["user"].id)
 
     def test_archived_template_leaves_new_periods_empty(self, app, db, seed_user):
@@ -273,7 +320,7 @@ class TestExtendPayPeriods:
         with app.app_context():
             _future_periods(db.session, seed_user, count=2)
             make_expense_template(db.session, seed_user, is_active=False)
-            new_periods = pay_period_admin.extend_pay_periods(
+            new_periods = _extend_andpopulate_in_a_fresh_pass(
                 seed_user["user"].id, num_periods=2,
             )
             db.session.commit()
@@ -284,12 +331,20 @@ class TestExtendPayPeriods:
                     .count()
                 ) == 0
 
-    def test_empty_schedule_raises(self, app, bare_user):
-        """Extending a user with no periods raises ValidationError."""
+    def test_empty_schedule_raises(self, app, bare_user_with_cadence):
+        """Extending a user with no periods raises ValidationError.
+
+        ``bare_user_with_cadence`` since plan step ``pay_calendar:C4-d``: an
+        owner with no ``budget.pay_schedule`` row is refused by
+        ``calendar_for`` before this door reaches its own empty branch, so a
+        bare owner would grade that refusal instead of this message.  The
+        refusal itself is graded at
+        ``test_pay_period_admin.TestAnOwnerWithNoPaydaysReachesEveryDoor``.
+        """
         with app.app_context():
             with pytest.raises(ValidationError, match="Generate your first"):
                 pay_period_admin.extend_pay_periods(
-                    bare_user["user"].id, num_periods=2,
+                    bare_user_with_cadence["user"].id, num_periods=2,
                 )
 
     def test_balances_correct_after_extend(self, app, db, seed_user):
@@ -308,33 +363,29 @@ class TestExtendPayPeriods:
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=4)  # idx 1..4
             make_expense_template(db.session, seed_user, amount="1200.00")
-            period_population.populate_periods_from_active_templates(
-                user_id, periods,
-            )
+            populate_in_a_fresh_pass(user_id, {p.id for p in periods})
             db.session.commit()
 
             # Pre-extend: 1000 - N*1200 at index N's end.
             assert seam_cash_balance_at(
-                account, scen, periods[3].end_date,  # index 4
+                account, scen, last_covered_day(periods[3]),  # index 4
             ) == Decimal("-3800.00")  # 1000 - 4*1200
             retained = seam_cash_balance_at(
-                account, scen, periods[1].end_date,  # index 2
+                account, scen, last_covered_day(periods[1]),  # index 2
             )
             assert retained == Decimal("-1400.00")  # 1000 - 2*1200
 
             # Extend by 2 -> indices 5, 6, each repopulated with the expense.
-            new_periods = pay_period_admin.extend_pay_periods(
-                user_id, num_periods=2,
-            )
+            new_periods = _extend_andpopulate_in_a_fresh_pass(user_id, num_periods=2)
             db.session.commit()
 
             # New window: the projection continues. Index 6 -> 1000 - 6*1200.
             assert seam_cash_balance_at(
-                account, scen, new_periods[-1].end_date,  # index 6
+                account, scen, last_covered_day(new_periods[-1]),  # index 6
             ) == Decimal("-6200.00")  # 1000 - 6*1200
             # Retained window is untouched by the append.
             assert seam_cash_balance_at(
-                account, scen, periods[1].end_date,
+                account, scen, last_covered_day(periods[1]),
             ) == retained
 
             # Discipline 1: structure sound.

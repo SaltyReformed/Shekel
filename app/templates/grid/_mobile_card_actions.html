@@ -20,7 +20,8 @@
 
      - **Mark Paid** -- a ``<form hx-post>`` that posts to
        ``transactions.mark_done``.  Suppressed when the transaction is
-       already Done / Settled (no point offering an action that the
+       already settled, Credit or Cancelled -- the guard below is
+       `status_id == STATUS_PROJECTED` (no point offering an action that the
        state machine rejects).  CSRF travels through the
        ``htmx:configRequest`` handler in ``app/static/js/app.js`` which
        injects ``X-CSRFToken`` on every HTMX request -- matching the

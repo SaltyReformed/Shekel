@@ -29,6 +29,7 @@ from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
     create_transfer,
+    shadow_amount,
 )
 
 # The suite's frozen today is 2026-03-20.  This loan closes 2026-03-01 -- in the
@@ -263,7 +264,7 @@ class TestTheEditPathIsGuardedToo:
             assert xfer.amount == Decimal("1200.00")
             for shadow in xfer.shadow_transactions:
                 assert shadow.due_date == date(2026, 5, 1)
-                assert shadow.estimated_amount == Decimal("1200.00")
+                assert shadow_amount(shadow) == Decimal("1200.00")
             assert sorted(s.id for s in xfer.shadow_transactions) == shadow_ids
 
             # ...and the same holds once the session is re-read from the DB.

@@ -41,15 +41,17 @@ what it says.
   moved date.
 
 **BYTE-IDENTITY IS THE GATE HERE.**  Every replacement in this leaf is claimed
-EQUAL to the query it replaces on any schedule whose stored columns match the
-derivation, and ``pay_period_write`` has materialised that derivation on every
-write since plan step C3-b.  A moved line is therefore either a stored/derived
-disagreement on this database -- itself the finding -- or a defect.  Print
-``derived_vs_stored`` below before reading the diff: it says whether this
-database can express a disagreement at all.  Measured on the dev clone
-2026-08-18: one owner, 62 paydays at cadence 14, **0 end mismatches and 0 index
-mismatches**, so byte-identity is the honest expectation and any diff is a
-defect.
+EQUAL to the query it replaces, so a moved line is a defect.
+
+*Until plan step ``pay_calendar:C4-c`` that sentence needed a qualifier and a
+probe.*  The claim held only on a schedule whose STORED ``end_date`` and
+``period_index`` matched what the paydays derive, so a moved line could be a
+stored/derived disagreement on this database rather than a defect, and
+``_derived_vs_stored`` was printed beside the dump to say which -- measured on
+the dev clone 2026-08-18 at 0 end mismatches and 0 index mismatches over 62
+paydays.  C4-c dropped both columns.  There is one answer now, the qualifier
+has no subject, and the probe is deleted rather than left reporting a constant
+zero.
 
 **It COMPILES AND RUNS ON BOTH SIDES**, which is what
 ``docs/plans/lessons.md`` asks of a before/after harness and what the three
@@ -131,7 +133,6 @@ from decimal import Decimal
 
 from app import create_app
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.user import User
 from app.services.balance_at import BalanceContext
 
@@ -256,62 +257,13 @@ def _guard(label, thunk):
         }
 
 
-def _derived_vs_stored(user_id):
-    """Count where this owner's stored period columns disagree with the paydays.
-
-    The premise the byte-identity gate rests on, asserted rather than assumed
-    (``docs/plans/lessons.md``): if every stored ``end_date`` and
-    ``period_index`` equals what the owner's paydays derive, then the retired
-    readers and the calendar answer the same period for every day, and any
-    moved line below is a defect.  A non-zero count here is itself the finding
-    and the diff must be read against it.
-
-    **It asks the CALENDAR rather than the neighbouring row**, and the first
-    draft did not (C2-f2e's two adversarial reviews, 2026-08-18).  It compared
-    each stored end to the NEXT period's payday with
-    ``zip(rows, rows[1:])`` -- which never examines the LAST period's end, and
-    that is the one end ``derive_periods`` computes from ``cadence_days``
-    rather than from a payday (``DerivedPeriod.end_is_projected`` is ``True``
-    for exactly one period per calendar). It is also the end
-    ``compute_balance_section`` values the hero at for an owner in their final
-    stored period, so it was the one disagreement that could move a DOLLAR
-    figure, and the check was blind to it while its own docstring claimed to
-    say "whether this database can express a disagreement at all".
-
-    Args:
-        user_id: The owner to count for.
-
-    Returns:
-        A dict with ``periods``, ``end_mismatch`` and ``index_mismatch``.
-    """
-    # Pylint: ``import-outside-toplevel`` -- deferred to keep this module
-    # importable on a tree where the package has moved, the same reason
-    # :func:`_producers` gives for its own.
-    from app.services.pay_calendar import calendar_for  # pylint: disable=import-outside-toplevel
-
-    rows = (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=user_id)
-        .order_by(PayPeriod.start_date)
-        .all()
-    )
-    if not rows:
-        return {"periods": 0, "end_mismatch": 0, "index_mismatch": 0}
-
-    derived = {p.period_id: p for p in calendar_for(user_id).saved()}
-    end_mismatch = sum(
-        1 for row in rows
-        if row.id in derived and derived[row.id].end_date != row.end_date
-    )
-    index_mismatch = sum(
-        1 for row in rows
-        if row.id in derived and derived[row.id].period_index != row.period_index
-    )
-    return {
-        "periods": len(rows),
-        "end_mismatch": end_mismatch,
-        "index_mismatch": index_mismatch,
-    }
+# **``_derived_vs_stored`` was deleted at plan step ``pay_calendar:C4-c``.**
+# It counted, per owner, where the stored ``end_date`` and ``period_index``
+# disagreed with what the paydays derive -- the premise this file's
+# byte-identity gate rested on, because a moved line was either such a
+# disagreement or a defect, and the gate could not tell them apart without
+# it.  C4-c dropped both columns, so there is one answer and the question
+# has no second side: a moved line here is now a defect, full stop.
 
 
 def main(out_path):
@@ -327,10 +279,6 @@ def main(out_path):
         dump = {
             str(user.id): {
                 "email": user.email,
-                "derived_vs_stored": _guard(
-                    "derived_vs_stored",
-                    lambda uid=user.id: _derived_vs_stored(uid),
-                ),
                 **{
                     name: _guard(
                         f"{name} for user {user.id}",

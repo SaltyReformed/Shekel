@@ -468,8 +468,12 @@
 <div class="mb-3 d-none" id="field-start-period">
   <label class="form-label" for="start_period_id">Pay period</label>
   <select id="start_period_id" name="start_period_id" class="form-select" aria-describedby="start-period-help">
+    {# DerivedPeriod values off the form's one calendar derivation (plan step
+       C2-f3a): the derived type spells budget.pay_periods.id as period_id,
+       and saved() yields no projected period, so every value here is a row a
+       foreign key can point at. #}
     {% for p in periods %}
-    <option value="{{ p.id }}" {{ 'selected' if current_period and p.id == current_period.id else '' }}>
+    <option value="{{ p.period_id }}" {{ 'selected' if current_period and p.period_id == current_period.period_id else '' }}>
       {{ p.label }}
     </option>
     {% endfor %}

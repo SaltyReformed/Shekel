@@ -17,9 +17,11 @@
    current_balance, current_period, anchor_as_of, horizons (list of
    {label, value, delta} -- deltas computed in the route with Decimal),
    interest_next_year, params, compounding_frequencies, chart_json,
-   has_chart, the reconcile panel's keys, and ``history`` (the balance
-   assertion log -- one nested name rather than splatted keys, because the
-   reconcile panel already publishes ``account`` and ``panel_id``). #}
+   has_chart, the reconcile panel's keys, ``history`` (the balance
+   assertion log) and ``books_difference`` (what the books cannot explain) -- the
+   last two each under one nested name rather than splatted keys, because the
+   reconcile panel already publishes ``account`` and ``panel_id`` and splatting
+   a second builder's keys over it would re-root that panel's POST target. #}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
@@ -28,12 +30,19 @@
     <span class="acctd-type-tag">{{ account.account_type.name if account.account_type else '--' }}</span>
   </div>
   <div class="d-flex align-items-center gap-2">
-    {# The only way in to what the BANK said (plan step bank_import:X-f6a-1).
+    {# One of two ways in to what the BANK said (plan step bank_import:X-f6a-1).
        A plain link, not a form: the page it opens only READS, and the import
-       that writes is that page's own POST. #}
+       that writes is that page's own POST.
+
+       It was the ONLY way in until the grid grew its own door, and being the
+       only one three levels down is why the developer went looking for this
+       feature and did not find it.  Both doors now NAME THE ACTION rather
+       than the filing cabinet: "Bank statements" described where the page
+       files things, so landing on it still did not read as "import the CSV
+       I just downloaded". #}
     <a class="btn btn-sm btn-outline-secondary"
        href="{{ url_for('accounts.statements', account_id=account.id) }}">
-      <i class="bi bi-bank"></i> Bank statements
+      <i class="bi bi-bank"></i> Import statements
     </a>
     {{ back_link(url_for('savings.dashboard'), 'Accounts') }}
   </div>
@@ -80,6 +89,34 @@
        hx-swap="innerHTML">
     {% include "accounts/_reconcile_panel.html" %}
   </div>
+</div>
+
+{# ── Outstanding difference, below the reconcile panel ──────────────────
+   What this account's books cannot explain (plan step balance:X-f3c-3): the
+   balance the owner last declared, beside what its opening equity plus its
+   recorded postings produce for that same day, beside whether an imported
+   statement has checked the days between them.
+
+   IT SITS BETWEEN THE TASK AND THE RECORD, and the order is the page's own
+   argument: the band above is the answer, the reconcile panel is the task,
+   this is what is LEFT when the task is done, and the history below is the
+   record.  Plan step X-f3c-4 hangs the act that accepts this figure on this
+   card, which is why it is not a row inside the history card -- that card is a
+   record and carries no write door.
+
+   It self-refreshes on ``balanceChanged`` because BOTH of its sides move on
+   that event: a true-up appends the assertion the difference is measured
+   against, and the reconcile panel's own POST records the settle days that
+   decide what the books produce.
+
+   RENDERS NOTHING for an account whose balance carries a modelled tier -- the
+   partial decides, on the producer's own ``None`` -- so the region is an empty
+   div on an HYSA rather than a card with nothing to say. #}
+<div id="{{ books_difference.panel_id }}"
+     hx-get="{{ url_for('accounts.outstanding_difference', account_id=account.id) }}"
+     hx-trigger="balanceChanged from:body"
+     hx-swap="innerHTML">
+  {% include "accounts/_outstanding_difference.html" %}
 </div>
 
 {# ── Balance history, below the reconcile panel ─────────────────────────

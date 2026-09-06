@@ -1,0 +1,168 @@
+{% from "_money_macros.html" import money %}
+
+{# WHAT THE TICKED LINES AND ROWS COME TO, and what Apply would do about it.
+
+   Plan step bank_import:X-f6d-4, ruling R-FN.  A difference is a transaction
+   the owner ACCEPTS, so they have to see the figure first -- and a group they
+   assembled from two checkbox lists is one nothing has computed yet.
+
+   THE SERVER COMPUTES IT.  Ticking a box fires this fragment through htmx,
+   carrying the very body Apply would send, and `_preview.preview_hand_build`
+   answers it by running the accept door's own reads and refusals without the
+   writes.  So the figure on screen and the figure the door checks are one
+   derivation, not two that agree by reading.
+
+   A first version of this step summed the two sides in JavaScript.  Three
+   things were wrong with that, all of them gone here: the project's coding
+   rule says JS never computes monetary values; the schema quantized the
+   posted figure with ROUND_HALF_EVEN, which app/utils/money.py forbids, so a
+   sub-cent figure was repaired into agreement; and one total ended up spelled
+   four ways on one card.  It renders through the `money` macro now, which is
+   the app's ONE currency formatter.
+
+   WITH JAVASCRIPT OFF this never re-renders, so the consent box stays disabled
+   and submits nothing -- which leaves exactly the behaviour that shipped
+   before this step: the door refuses the group and names both sums.  The label
+   below says so, because that wording is only ever read in that world.
+
+   THE TRIGGER IS NOT HERE, and that is a fix rather than a layout choice.  It
+   sat on this div as `hx-trigger="change from:#hand-build-form"` until a
+   browser probe drove it: the consent box is inside the form, so TICKING IT
+   fired a re-render, and the swap replaced it with a fresh unchecked one.  The
+   owner could never keep it ticked, and Apply submitted no consent at all --
+   the whole ruled act dead in a browser with every server test green.  The
+   attributes live on the wrapper around the two tick lists instead
+   (`_statement_workbench_body.html`), which the swap never replaces and the
+   consent box is not inside.
+
+   ITS FIELD IS `residual` AND NOT `match-hand-residual` since plan step
+   bank_import:X-gf-3b (ruling bank_import:R-HC): the form moved to a surface
+   of its own, so it carries no ordering index for a field name to be
+   qualified by.  The panel is rendered by
+   `statement_workbench.statement_match_totals`, which reads the same body the
+   apply door does through the same `hand_match_payload` -- so the figure on
+   screen and the figure the door compares against are one derivation.
+
+   Context: totals (HandTotals). #}
+
+<div id="hand-totals" class="card mb-3">
+  <div class="card-body py-2">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+      <div class="small text-body-secondary">
+        Your bank shows
+        <span class="fw-semibold text-body">{{ money(totals.bank) }}</span>
+        &middot; the rows you ticked come to
+        <span class="fw-semibold text-body">{{ money(totals.app) }}</span>
+        &middot; difference
+        <span class="fw-semibold text-body">{{ money(totals.difference) }}</span>
+      </div>
+      <button type="submit" class="btn btn-outline-primary flex-shrink-0">
+        Match the ticked lines and rows
+      </button>
+    </div>
+
+    {% if totals.refusal %}
+    {# The DOOR's own sentence, before the press rather than after it.  A group
+       naming a transfer shadow or a row worth whatever its purchases are is
+       one Apply will not record, and this arm is the difference between
+       learning that here and learning it from a receipt. #}
+    <div class="alert alert-warning d-flex gap-2 align-items-start mt-2 mb-0 py-2"
+         role="alert">
+      <i class="bi bi-exclamation-triangle mt-1"></i>
+      <div class="small">{{ totals.refusal }}</div>
+    </div>
+    {% endif %}
+
+    {# THE FIGURE ALWAYS TRAVELS; ONLY THE CONTROL DIFFERS.  Since plan step
+       bank_import:X-gj-1b the accept door exempts no shape: a match states the
+       difference it was reviewed against and the door refuses when its own
+       arithmetic disagrees.  `needs_consent` decides which of three controls
+       says so -- asked of the SERVICE, because "is there something here to
+       agree to" is a money question and a template comparing `remedy` for it
+       would be a second statement of the rule `DifferenceLanding` owns.
+
+       Three states, and the middle one is what the ruling added:
+         * a difference to permit  -- the tick box, carrying the figure;
+         * sides that AGREE       -- a hidden field, because 0.00 is what the
+           door will check and there is nothing to permit;
+         * no act yet, or one already refused -- the box DISABLED and
+           carrying nothing, which is the shape that shipped and is what says
+           an act will be asked for once both sides are ticked.
+       The value is the SERVER's own string in every arm: the door re-derives
+       the difference, so this is a precondition rather than a payload, which
+       is the distinction MatchSubmission draws for every figure it carries. #}
+    {% if totals.needs_consent %}
+    <div class="form-check mt-2 mb-0">
+      <input class="form-check-input" type="checkbox"
+             id="hand-residual" name="residual" value="{{ totals.consent }}">
+      <label class="form-check-label small" for="hand-residual">
+        {% if totals.remedy == 'records' %}
+        Record the {{ money(totals.difference) }} difference as a row with no
+        category that you can categorise later.
+        {% elif totals.remedy == 'corrects' %}
+        {# THE SUMS AND NOT THE ROW'S OWN FIGURES, which is the opposite of
+           what the Reconcile pane's twin states since plan step
+           bank_import:X-gj-3a -- and on THIS surface the two are the same two
+           numbers, provably. `hand_match_payload` emits no `difference_on`, so
+           this form can never attribute a group's difference to a member: it
+           reaches 'corrects' only with ONE row, where the match's bank total
+           IS that row's new figure and its app total IS the old one.
+
+           IT WAS LEFT ALONE DELIBERATELY (plan step bank_import:X-gj-3a). An
+           adversarial review recommended switching it for symmetry, and the
+           switch is byte-identical today -- but the sentence is pinned by
+           `test_statement_workbench.TestTheHandBuildForm`, and CLAUDE.md rule
+           5 does not admit editing a test for a cosmetic change the developer
+           did not ask for. The TRAP is real and belongs to whoever owns this
+           surface: the moment this form could attribute, `totals.bank` would
+           name the whole deposit as what gets written to one member of it.
+           `X-gi` retires this page, which is the likeliest moment. #}
+        Write your bank's {{ money(totals.bank) }} to the row you ticked, in
+        place of the {{ money(totals.app) }} your records hold.
+        {% endif %}
+      </label>
+    </div>
+    {% elif totals.consent is not none %}
+    {# NOTHING TO PERMIT, so no box -- but the figure still travels, so that
+       "a match states the difference it was reviewed against" holds with no
+       exception and the absence of this field means exactly one thing.  At
+       zero it is INERT and that is said rather than dressed up: the door's
+       gate returns early on a zero difference whether it is told 0.00 or told
+       nothing, and a row that moved under the page is already refused, by
+       name, before this figure is read (`_resolve._reject_moved_since_review`
+       runs first).  What it buys is one rule instead of two. #}
+    <input type="hidden" name="residual" value="{{ totals.consent }}">
+    <p class="small text-body-secondary mt-2 mb-0">
+      These add up. Nothing is left over.
+    </p>
+    {% else %}
+    <div class="form-check mt-2 mb-0">
+      <input class="form-check-input" type="checkbox"
+             id="hand-residual" name="residual" value="" disabled>
+      <label class="form-check-label small" for="hand-residual">
+        {% if totals.remedy == 'refused' %}
+        There is nothing to accept while the sentence above stands.
+        {% else %}
+        {# Also the JAVASCRIPT-OFF wording, because this is what the server
+           renders into the page and nothing ever replaces it there.  It says
+           what the door does, which is the only thing true in that world --
+           and plan step bank_import:X-gj-1b changed what that is.  It used to
+           promise that one line against one row "may disagree: your bank's
+           figure is written to that row", which WAS true with no script,
+           because the consent gate exempted exactly that shape.  It exempts
+           none now, so a disagreeing group cannot be accepted from a page
+           that never told the owner the figure.  Saying so is the point: the
+           sentence that stayed would have sent a scriptless owner to press
+           Apply against a refusal, pointing at a box they cannot tick. #}
+        Tick lines on the left and rows on the right. If they come to the
+        <strong>same total</strong>, Apply records the match. If they
+        <strong>disagree</strong>, this page has to show you the difference
+        and you have to agree to it before anything is written -- and working
+        it out needs JavaScript. Without it nothing is changed, and the
+        difference is named at the top of this page.
+        {% endif %}
+      </label>
+    </div>
+    {% endif %}
+  </div>
+</div>

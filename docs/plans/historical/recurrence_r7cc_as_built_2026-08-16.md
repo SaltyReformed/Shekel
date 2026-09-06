@@ -231,3 +231,30 @@ and the phase, which fell back to the `offset_periods` COLUMN -- and the write d
 that column with the value the FK would have derived. Re-deriving the FK would NOT be neutral: a
 rule that always had a `start_date` and never had a start period (every loan payment) would newly
 acquire one and re-phase. Exercised in both directions on a production clone.
+
+## The pattern mapping this migration derived from (archived 2026-08-25)
+
+Moved out of the live arc document under `conventions.md` rule 5 when `R7d`'s decomposition needed the room. It is the derivation `d9f5c1a48b73` ran: how each of the eight closed pattern names became a `(interval, unit, placement, starts_on)`. The columns it maps FROM no longer exist -- `R7c-c` dropped them and `R9` dropped `ref.recurrence_patterns` with its enum -- so nothing live can depend on it, which is what made it archivable.
+
+### Pattern mapping (migration derivation)
+
+| today | (interval, unit) | placement | starts_on |
+|---|---|---|---|
+| Every Period | (1, PERIOD) | CONTAINING | start_period.start_date, else first generated row's period start |
+| Every N Periods | (N, PERIOD) | CONTAINING | the period whose `period_index % N == offset_periods` |
+| Monthly | (1, MONTH) | CONTAINING | first date with `day = day_of_month` on/after the rule's effective start |
+| Monthly First | (1, MONTH) | **STARTING_ON_OR_AFTER** | the 1st of the first month whose OWN first paycheck clears the effective start (R-R6) |
+| Quarterly | (3, MONTH) | CONTAINING | (month_of_year, day_of_month) |
+| Semi-Annual | (6, MONTH) | CONTAINING | (month_of_year, day_of_month) |
+| Annual | (1, YEAR) | CONTAINING | (month_of_year, day_of_month) |
+| Once | rule DELETED, FK nulled | -- | -- |
+| *impossible today* | **(2, MONTH)** every other month | | |
+| *impossible today* | **(2, YEAR)** every two years | | |
+| *impossible today* | **(1, WEEK)** / **(2, WEEK)** weekly / biweekly by date | | |
+
+Equivalence is provable for the calendar family: old quarterly fires in months
+`{moy, moy+3, moy+6, moy+9}` forever, new fires at `anchor + 3k` months, and
+`anchor.month === moy (mod 3)` by construction -- identical sets. Same for semi-annual (mod 6) and
+annual (mod 12). Month-end **clamping is preserved** (`recurrence_engine.py:546`), so the live
+`Walmart+ Membership` rule (day 31, March) stays 31 March.
+

@@ -30,6 +30,7 @@ from cryptography.fernet import InvalidToken
 from marshmallow import ValidationError as MarshmallowValidationError
 
 from app import ref_cache
+from app.db_transaction import write_transaction
 from app.enums import RoleEnum
 from app.extensions import db, limiter
 from app.models.user import MfaConfig, User
@@ -264,6 +265,15 @@ def mfa_setup():
     If MFA is already enabled the user is redirected back to security
     settings.  If the encryption key is missing the user is redirected
     with a flash explaining the operator-side prerequisite.
+
+    **A GET that WRITES, and it says so** (plan step balance:X-i3).  Every
+    other request method declares itself; this route is the one place where a
+    safe method genuinely records something, because the pending secret must
+    be persisted before the QR that encodes it can be shown.  It therefore
+    holds its write inside :func:`app.db_transaction.write_transaction` rather
+    than being exempted from the rule -- the block is a command, the rest of
+    the request is a query, and the row it stages cannot be created outside
+    the block because the surrounding transaction is read-only.
     """
     mfa_config = (
         db.session.query(MfaConfig)
@@ -289,15 +299,18 @@ def mfa_setup():
         )
         return redirect(url_for("settings.show", section="security"))
 
-    if mfa_config is None:
-        mfa_config = MfaConfig(user_id=current_user.id)
-        db.session.add(mfa_config)
+    # The row is CONSTRUCTED inside the block, not before it: opening the
+    # command rolls the query's snapshot back, and a pending instance staged
+    # ahead of that would be expunged with it.
+    with write_transaction():
+        if mfa_config is None:
+            mfa_config = MfaConfig(user_id=current_user.id)
+            db.session.add(mfa_config)
 
-    mfa_config.pending_secret_encrypted = encrypted_pending
-    mfa_config.pending_secret_expires_at = (
-        datetime.now(timezone.utc) + MFA_SETUP_PENDING_TTL
-    )
-    db.session.commit()
+        mfa_config.pending_secret_encrypted = encrypted_pending
+        mfa_config.pending_secret_expires_at = (
+            datetime.now(timezone.utc) + MFA_SETUP_PENDING_TTL
+        )
 
     qr_data_uri = mfa_service.generate_qr_code_data_uri(
         mfa_service.get_totp_uri(secret, current_user.email)

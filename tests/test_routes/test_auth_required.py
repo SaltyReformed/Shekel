@@ -105,6 +105,10 @@ PROTECTED_ENDPOINTS = [
     ("POST", "/accounts/types/99999/delete"),
     # accounts.true_up
     ("PATCH", "/accounts/99999/true-up"),
+    # accounts.statement_merchants (plan step bank_import:X-gk)
+    ("GET", "/accounts/99999/statements/merchants"),
+    # accounts.answer_for_merchant
+    ("POST", "/accounts/99999/statements/merchants"),
     # accounts.anchor_form
     ("GET", "/accounts/99999/anchor-form"),
     # accounts.anchor_display

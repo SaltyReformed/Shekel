@@ -5,7 +5,7 @@ The routing layer's half of "what does a submitted digit string mean"
 (plan step X-ae, finding N-140).  :mod:`app.utils.digit_strings` answers it for
 form fields and owns the rule; this applies that rule to the PATH, so a row id
 has the same single spelling in a URL as in a form body.  (The query string is
-NOT yet covered -- 42 ``type=int`` sites, finding N-142.)
+NOT yet covered -- 34 ``type=int`` sites, finding N-142.)
 
 **Werkzeug's stock ``<int:>`` is lax in both of the ways this arc has already
 paid for**, and both were measured against this application:

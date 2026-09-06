@@ -56,7 +56,7 @@ from contextlib import contextmanager
 # one instrument this project has for diagnosing test performance was dead for
 # three weeks and nothing reported it (``tests/`` is outside the pylint scope
 # that would have flagged the reimport).
-from datetime import date, datetime, time as dt_time, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta
 from decimal import Decimal
 from urllib.parse import urlparse, urlunparse
 
@@ -329,6 +329,32 @@ def _profile_write_row(nodeid, timings):
 _profile_session_init()
 
 
+#: What separates a world SNAPSHOT's name from the worker database it was
+#: frozen from (plan step balance:X-be-2).  One constant because three places
+#: depend on the split: the name is built with it, the orphan sweep recovers a
+#: snapshot's OWNER with it, and the length guard measures across it.
+_SNAPSHOT_INFIX = "__world_"
+
+
+def _like_escape(value):
+    """Quote a literal for a ``LIKE`` pattern under ``ESCAPE '\\'``.
+
+    ``_`` and ``%`` are wildcards, and every database name this module builds
+    is full of underscores -- so a pattern interpolating one UNESCAPED matches
+    names it was never meant to.  ``shekel_test_gw1_%`` matching
+    ``shekel_test_gw11`` is that bug, and it predates the snapshots.
+
+    Args:
+        value: The literal text to appear in the pattern.
+
+    Returns:
+        The text with ``\\``, ``_`` and ``%`` escaped.
+    """
+    return (
+        value.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
+    )
+
+
 def _bootstrap_worker_database():
     """Create a per-pytest-worker database cloned from the test template.
 
@@ -424,26 +450,68 @@ def _bootstrap_worker_database():
             # legacy PID-suffix names from pre-Phase-3b runs, then
             # exclude any DB with live connections (a concurrent
             # pytest invocation against the same cluster).
+            # ``_`` is a SINGLE-CHARACTER WILDCARD in ``LIKE`` and both halves
+            # of these names are full of them, so the separator is ESCAPED.
+            # Unescaped, ``shekel_test_gw1_%`` matches ``shekel_test_gw11`` --
+            # worker gw1 sweeping gw10's and gw11's databases, which is a real
+            # drop whenever the victim sits between tests with its engine
+            # disposed, and pytest-xdist restarts a crashed worker (up to
+            # ``numprocesses * 4``), so a restart re-runs this sweep mid-session
+            # rather than only at startup.  Verified on the cluster:
+            # ``'shekel_test_gw11' LIKE 'shekel_test_gw1\_%'`` is false and
+            # ``'shekel_test_gw1__world_x' LIKE 'shekel_test_gw1\_%'`` is true.
+            #
+            # The second pattern collects WORLD SNAPSHOTS left by a run at any
+            # ``-n``: a killed ``-n 0`` run leaves ``{prefix}_main__world_*``
+            # that no later ``-n 12`` run would otherwise ever name, because
+            # the first pattern only ever sweeps the ids the CURRENT
+            # invocation happens to use.
             cur.execute(
                 "SELECT datname FROM pg_database "
-                "WHERE datname = %s OR datname LIKE %s",
-                (db_name, f"{db_name}_%"),
+                r"WHERE datname = %s OR datname LIKE %s ESCAPE '\' "
+                r"   OR datname LIKE %s ESCAPE '\'",
+                (
+                    db_name,
+                    f"{_like_escape(db_name)}\\_%",
+                    f"{_like_escape(_TEST_DATABASE_PREFIX)}\\_%"
+                    f"{_like_escape(_SNAPSHOT_INFIX)}%",
+                ),
             )
             candidate_orphans = [row[0] for row in cur.fetchall()]
             if candidate_orphans:
+                # **A snapshot's own connections say NOTHING about whether it
+                # is in use, and that is what makes the filter below a
+                # different question for it.**  Nothing ever connects to a
+                # snapshot: it is written by ``CREATE DATABASE ... TEMPLATE``
+                # and read only AS a template, by an admin-DSN connection to
+                # another database.  So it never appears in
+                # ``pg_stat_activity``, the filter can never spare it, and
+                # before this predicate a second invocation dropped a LIVE
+                # run's snapshot -- reproduced twice by review, once as 158
+                # setup errors reading ``template database ... does not
+                # exist`` a hundred tests after the intruder had gone.
+                #
+                # A snapshot is alive exactly when its OWNER is, so it
+                # inherits the owner's answer.  The owner is the whole name
+                # left of ``__world_``, and the same rule covers the family
+                # case the sweep's own docstring argues for: while a
+                # concurrent run holds ``{db_name}``, none of its children are
+                # collected either, and that run's ``CREATE DATABASE`` still
+                # fails loudly on itself as it always did.
                 cur.execute(
                     "SELECT DISTINCT datname FROM pg_stat_activity "
-                    "WHERE datname = ANY(%s)",
-                    (candidate_orphans,),
+                    "WHERE datname IS NOT NULL",
                 )
                 active = {row[0] for row in cur.fetchall()}
                 for orphan in candidate_orphans:
-                    if orphan not in active:
-                        cur.execute(
-                            sql.SQL(
-                                "DROP DATABASE IF EXISTS {} WITH (FORCE)"
-                            ).format(sql.Identifier(orphan))
-                        )
+                    owner = orphan.split(_SNAPSHOT_INFIX)[0]
+                    if orphan in active or owner in active:
+                        continue
+                    cur.execute(
+                        sql.SQL(
+                            "DROP DATABASE IF EXISTS {} WITH (FORCE)"
+                        ).format(sql.Identifier(orphan))
+                    )
 
             # Template existence -- fail fast with a recovery hint.
             cur.execute(
@@ -557,7 +625,7 @@ def _drop_worker_database(db_name, admin_url):
         admin_conn.close()
 
 
-def _clone_worker_database(db_name, admin_url):
+def _clone_worker_database(db_name, admin_url, template=None):
     """Re-create the per-worker test DB by cloning ``shekel_test_template``.
 
     Phase 3b helper.  Called once per test by the ``db`` fixture
@@ -612,6 +680,13 @@ def _clone_worker_database(db_name, admin_url):
     Args:
         db_name: Name of the per-worker DB to create.
         admin_url: Admin DSN (must NOT point at ``db_name`` itself).
+        template: The database to clone FROM.  Defaults to the empty
+            ``shekel_test_template``, which is what every test that has not
+            declared a seeded start state gets.  A test carrying the
+            ``seeded_start_state`` marker passes that world's snapshot instead
+            (plan step balance:X-be-2) -- the ISOLATION is identical either
+            way, a private database per test; only the content it starts with
+            differs.
     """
     admin_conn = psycopg2.connect(admin_url)
     try:
@@ -622,7 +697,7 @@ def _clone_worker_database(db_name, admin_url):
                     "CREATE DATABASE {} TEMPLATE {} STRATEGY WAL_LOG"
                 ).format(
                     sql.Identifier(db_name),
-                    sql.Identifier(_TEST_TEMPLATE_DATABASE),
+                    sql.Identifier(template or _TEST_TEMPLATE_DATABASE),
                 )
             )
     finally:
@@ -644,25 +719,474 @@ from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
     AccountType, FilingStatus, Status, TransactionType,
 )
-from app.services import account_service, pay_period_write
+from app.services import (
+    account_service,
+    pay_period_write,
+    pay_schedule_service,
+)
 from app.services.auth_service import hash_password
+from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    rhythm_of,
+    amount_basis_for_scenario,
     bind_db_clock_rewriter,
     create_loan_account,
     insert_trueup_event,
     make_appreciating_account,
     make_every_period_rule,
     make_investment_account,
+    open_books_before_the_first_assertion,
+    open_owner_calendar,
     posted_loan_balance_at,
-    restamp_opening_assertion,
+    rebuild_calendar,
+    settle_day_columns,
 )
+from app.models.amount_ownership import AmountOwnership
+
+
+# ---------------------------------------------------------------------------
+# Named seeded start states (plan step balance:X-be-2)
+# ---------------------------------------------------------------------------
+# **A test says what world it starts in; it does not build one.**
+#
+# The suite has always been able to express two start states: EMPTY -- the
+# ``shekel_test_template`` clone every test gets -- and "build it yourself",
+# a function-scoped fixture writing rows.  Nothing could say *start from a
+# prepared world*, so a module whose every test needs the same world built it
+# once per test.
+#
+# **The measurement, stated once and in full here** -- the other two files
+# that cite it give the headline and point at this paragraph, because three
+# copies of one number is how two of them come to disagree.  Measured on the
+# ``url_map`` sweep serially, 2026-08-30 (local dates; the figures it
+# supersedes are 2026-08-29): 236 cases at 302 ms of setup for 22 ms of
+# requests, the world byte-identical every time.  Setup was 93% of the file --
+# but 93% is NOT the removable share, and reading it as one over-claims by
+# about 2x.  That setup splits: ~180 ms the module's own seven-account
+# fixture, ~50 ms ``seed_user``, ~30 ms the pay calendar, ~40 ms the per-test
+# clone, ~10 ms the login.  A world removes the first three.  **The clone
+# stays, because the clone is the isolation.**  End to end the file went
+# 82.26 s -> 18.73 s, a 77% cut, which takes it from 6.8x the suite's ordinary
+# per-test cost to about 1.0x -- it stops being special, which is the whole of
+# what was wanted.
+#
+# **It is not a suite-level speedup and was not measured as one.**  Full suite
+# before 11,770 tests in 278.25 s, after 11,781 in 281.64 s: unchanged, since
+# this file is ~2% of the suite's work and the expected saving sits inside a
+# run-to-run variance measured at 18 s.
+#
+# What this seam separates is ISOLATION from CONTENT.  The per-test drop and
+# re-clone is what keeps tests independent and it does not change here: every
+# test still gets its own database and may write to it freely.  What changes is
+# only which database it is cloned FROM.  A world is built once per worker into
+# a snapshot database, and the marker names it:
+#
+#     @pytest.mark.seeded_start_state("baseline_less_owner")
+#     class TestSomething:
+#         ...
+#
+# **Why a snapshot database rather than a wider fixture scope.**  A
+# module- or class-scoped fixture cannot hold this state: every test on an
+# xdist worker shares ONE database, so the next test from any OTHER module
+# re-clones it mid-module.  Observed under ``-n 12`` on 2026-08-29 with gw0,
+# gw10 and gw11 each running two modules interleaved -- measured, not inferred
+# from the scheduler's documentation.  ``xdist_group`` pins a group to one
+# worker and does not keep other tests off that worker, so it is not the fix
+# either.  A snapshot is a different database, so nothing else re-clones it.
+#
+# **Why it is never persisted between runs.**  A world holds rows dated from
+# ``display_today()``, so a snapshot kept across midnight -- or across a
+# builder edit -- would be a start state no code describes.  It is built at
+# first use and dropped in ``pytest_sessionfinish``; the name carries the
+# worker DB as its prefix so the bootstrap's existing orphan sweep collects one
+# a SIGKILL left behind.  This is finding **N-385**'s shape (a stored artifact
+# whose stamp says current while its content is not), and the answer there is
+# the same: do not stamp it harder, do not keep it.
+#
+# **A world is built inside the ``db`` fixture, so it CANNOT see an autouse
+# fixture defined in a SUBDIRECTORY conftest, and that is a real limit rather
+# than an oversight.**  ``db`` names the two autouse fixtures in THIS file that
+# a builder needs, which orders them ahead of it; it cannot name a fixture
+# defined below it in the tree, and those sort after ``db`` unconditionally.
+# The live example: ``tests/test_services/conftest.py`` freezes
+# ``pay_period_service.date.today()`` to a fixed day for every test under it.
+# A world declared there would be BUILT on the real clock and then READ by
+# tests that see the frozen one.  No world is declared under such a conftest
+# today.  Before adding one, check what its directory's conftest does to the
+# environment -- the build will not have had it.
+#
+# **A test that declares a world may not ALSO request a fixture that seeds the
+# same rows.**  ``seed_user`` inside a test whose world already holds that owner
+# inserts a second one and PostgreSQL refuses it on the unique email -- loudly,
+# at the fixture, which is why this is a note rather than a guard: the failure
+# names the collision itself, and a guard would have to enumerate which fixtures
+# write what, which is the census this seam exists to stop anyone keeping.  A
+# test needing a DIFFERENT owner declares no world (see
+# ``TestTheHandlerIsInertForAHealthyOwner`` in the no-baseline sweep) or gets
+# its own.
+#
+# **What a builder may return.**  Plain data only -- ids and scalars.  The
+# dict is computed once, at build time, and handed to every test that asks for
+# the world; an ORM object in it would be bound to a session that closed with
+# the build, and a caller would get a detached row rather than an error.  Row
+# ids are safe because ``CREATE DATABASE ... TEMPLATE`` preserves them, which
+# is the same property the per-test clone already depends on for ``ref.*``.
+_SEEDED_STATE_BUILDERS = {}
+
+# Worlds built in THIS process, ``name -> (snapshot database, ids dict)``.
+# Per worker rather than per session because each worker is its own process
+# with its own database; two workers running tests from the same module each
+# build the world once.
+_SEEDED_STATE_SNAPSHOTS = {}
+
+# PostgreSQL truncates an identifier at 63 bytes, so two long world names could
+# silently name ONE snapshot and each would then serve the other's tests.  The
+# refusal is at REGISTRATION -- a name is a constant, so this fires at import
+# for every run, not on the unlucky one that happened to use both worlds.
+_MAX_IDENTIFIER_BYTES = 63
+
+# **The guard measures the LONGEST name the scheme can produce, not this
+# process's.**  Measuring the running worker's name makes the check
+# environment-dependent in both directions: a name that fits under a short
+# ``TEST_DB_PREFIX`` like ``xgf3b`` can be refused in CI under the default
+# ``shekel_test`` with a two-digit worker id, which is an import error that
+# only appears on another machine -- and on the xdist CONTROLLER, which
+# imports test modules but runs no test, ``_WORKER_DB_NAME`` is ``None`` and
+# the probe would measure the string ``"None"``.  The bound below is the
+# default prefix or the configured one, whichever is longer, plus the widest
+# worker id xdist can hand out.
+_WIDEST_WORKER_ID = "gw999"
+_WIDEST_WORKER_DB = (
+    f"{max(_TEST_DATABASE_PREFIX, 'shekel_test', key=len)}_{_WIDEST_WORKER_ID}"
+)
+
+
+def register_seeded_state(name, builder):
+    """Register a named world tests may declare as their start state.
+
+    Called at import time by the module that defines the world, so a test
+    carrying the marker has always registered it by the time it runs.
+
+    Args:
+        name: The name tests pass to ``@pytest.mark.seeded_start_state``.
+        builder: ``builder(db) -> dict`` -- writes the world through
+            ``db.session`` and returns plain data (ids, scalars) describing it.
+            It must COMMIT nothing it does not want in the snapshot and must
+            not depend on the wall clock beyond ``display_today()``.
+
+    Raises:
+        ValueError: The name is already registered to a different builder, or
+            it is long enough that its snapshot identifier would be truncated.
+    """
+    existing = _SEEDED_STATE_BUILDERS.get(name)
+    if existing is not None and existing is not builder:
+        raise ValueError(
+            f"seeded start state {name!r} is already registered to "
+            f"{existing.__module__}.{existing.__qualname__}. Two worlds under "
+            f"one name would share one snapshot database and each would serve "
+            f"the other's tests."
+        )
+    widest = f"{_WIDEST_WORKER_DB}{_SNAPSHOT_INFIX}{name}"
+    if len(widest.encode()) > _MAX_IDENTIFIER_BYTES:
+        raise ValueError(
+            f"seeded start state {name!r} needs a snapshot database named up "
+            f"to {widest!r}, which is {len(widest.encode())} bytes -- "
+            f"PostgreSQL truncates at {_MAX_IDENTIFIER_BYTES} and two "
+            f"truncated names would collide. Shorten the world's name."
+        )
+    _SEEDED_STATE_BUILDERS[name] = builder
+
+
+def _seeded_snapshot_name(name):
+    """The snapshot database a world is built into on THIS worker.
+
+    Prefixed with the worker database's own name, which is what lets the
+    orphan sweep in :func:`_bootstrap_worker_database` recover a snapshot's
+    OWNER and answer "is this in use?" by asking about the owner instead.  A
+    snapshot can never answer that for itself: nothing ever connects to one.
+
+    Args:
+        name: The world's registered name.
+
+    Returns:
+        The snapshot database name.
+    """
+    return f"{_WORKER_DB_NAME}{_SNAPSHOT_INFIX}{name}"
+
+
+#: What a builder may put in the dict it returns.  Not a style preference:
+#: the dict is computed ONCE and handed to every declaring test, so anything
+#: with interior state would be shared across tests that each believe they
+#: hold their own copy, and an ORM object in it would be bound to a session
+#: that closed with the build.
+_PLAIN_DATA_TYPES = (int, str, float, bool, Decimal, date, datetime, type(None))
+
+
+def _plain_data_or_raise(name, ids):
+    """Refuse a builder's return value unless it is a flat dict of scalars.
+
+    **Enforced rather than documented**, because the failure it prevents is
+    silent: :func:`seeded_state_for` hands out ``dict(ids)``, a SHALLOW copy,
+    so a nested list or dict would be one object shared by every test that
+    declared the world -- and a test mutating it would be editing what every
+    later test sees, with nothing to point at.
+
+    Args:
+        name: The world's registered name, for the message.
+        ids: Whatever the builder returned.
+
+    Returns:
+        *ids*, unchanged, when it is a flat mapping of scalars.
+
+    Raises:
+        RuntimeError: It is not.
+    """
+    if not isinstance(ids, dict):
+        raise RuntimeError(
+            f"the builder for seeded start state {name!r} returned "
+            f"{type(ids).__name__}, not a dict. A world describes itself with "
+            f"plain data its declaring tests read by key."
+        )
+    nested = sorted(
+        key for key, value in ids.items()
+        if not isinstance(value, _PLAIN_DATA_TYPES)
+    )
+    if nested:
+        raise RuntimeError(
+            f"the builder for seeded start state {name!r} returned "
+            f"non-scalar values under {nested}. The dict is built once and "
+            f"shallow-copied to every declaring test, so anything with "
+            f"interior state would be shared between tests that each believe "
+            f"they hold their own. Return ids, not rows."
+        )
+    return ids
+
+
+def _refuse_a_build_the_environment_is_not_ready_for(name):
+    """Refuse to build a world before the fixtures it needs have run.
+
+    A builder is ordinary application code, so it needs the environment an
+    ordinary fixture gets.  The ``db`` fixture NAMES the autouse fixtures that
+    supply it, which orders them first -- and that enumeration is what this
+    checks, because the first build ran without it and ``hash_password``
+    refused the suite's own seed password with a message about a data breach,
+    naming nothing about ordering.
+
+    **It is a diagnostic, not a guarantee**: it can only name the two the
+    ``db`` fixture already enumerates, and it cannot see an autouse fixture in
+    a SUBDIRECTORY conftest -- those sort after ``db`` and no dependency in
+    this file can reach them.  See the block comment above.
+
+    Args:
+        name: The world's registered name, for the message.
+
+    Raises:
+        RuntimeError: The environment is not the one a fixture would see.
+    """
+    missing = []
+    if os.environ.get("HIBP_CHECK_ENABLED") != "false":
+        missing.append("disable_hibp_check")
+    if not os.environ.get("TOTP_ENCRYPTION_KEY"):
+        missing.append("set_totp_key")
+    if missing:
+        raise RuntimeError(
+            f"the world {name!r} is being built before {' and '.join(missing)} "
+            f"has run, so its builder would see an environment no ordinary "
+            f"fixture sees. The `db` fixture must DEPEND on every autouse "
+            f"fixture a builder needs -- pytest orders fixtures defined in one "
+            f"module by name, so coexisting with them is not enough."
+        )
+
+
+def _build_seeded_snapshot(name, app):
+    """Build a world once and freeze it into a snapshot database.
+
+    Runs on the first test that asks for *name* on this worker.  **It makes
+    the database blank itself, below, and that drop-and-clone is load-bearing
+    rather than redundant**: the caller resolves the clone source BEFORE its
+    own drop, so the worker database standing here still holds the previous
+    test's rows.  Deleting those two lines would freeze whatever that test
+    wrote into the world, and every declaring test on this worker would then
+    start from it -- silently, differently per worker, since which test ran
+    before depends on scheduling.  (An earlier draft of this docstring claimed
+    the ``db`` fixture had already blanked it.  It had not.)
+
+    The result is frozen with ``CREATE DATABASE ... TEMPLATE``, which is
+    refused while any session holds the source -- hence the dispose before it.
+
+    ``system.audit_log`` is truncated after the build for the reason
+    ``scripts/build_test_template.py`` truncates it after seeding the template:
+    the rows a SEED writes are not a test's to assert on, and a world that
+    shipped them would silently change the meaning of every ``audit_log`` count
+    in a test that adopts it.
+
+    Args:
+        name: The world's registered name.
+        app: The application whose context the builder writes through.
+
+    Returns:
+        ``(snapshot_database_name, ids)``.
+
+    Raises:
+        KeyError: No builder is registered under *name*.
+        RuntimeError: The environment a builder needs is not in place yet, or
+            the builder returned something other than plain data.
+    """
+    try:
+        builder = _SEEDED_STATE_BUILDERS[name]
+    except KeyError:
+        raise KeyError(
+            f"no seeded start state named {name!r} is registered. The module "
+            f"defining the world must call register_seeded_state({name!r}, ...) "
+            f"at import time; known worlds: {sorted(_SEEDED_STATE_BUILDERS)}"
+        ) from None
+
+    _refuse_a_build_the_environment_is_not_ready_for(name)
+    snapshot = _seeded_snapshot_name(name)
+    # See the docstring: this is what makes the database blank, and it is not
+    # redundant with the caller's own drop.
+    _drop_worker_database(_WORKER_DB_NAME, _WORKER_ADMIN_URL)
+    _clone_worker_database(_WORKER_DB_NAME, _WORKER_ADMIN_URL)
+    with app.app_context():
+        # ``try``/``finally`` so a builder that RAISES still releases this
+        # nested context's session.  Flask-SQLAlchemy scopes a session to the
+        # app context, so the one opened here is not the ``db`` fixture's; a
+        # raise that popped the context without removing it would leave a
+        # session holding an aborted transaction, and the connection it holds
+        # is exactly what the freeze below is refused for.
+        try:
+            _refresh_ref_cache_and_jinja_globals(app)
+            ids = _plain_data_or_raise(name, builder(_db))
+            # The seed's own audit rows are not a test's to see -- same
+            # contract, and same reason, as the template builder's post-seed
+            # TRUNCATE.
+            _db.session.execute(_db.text("TRUNCATE system.audit_log"))
+            _db.session.commit()
+        finally:
+            # ``CREATE DATABASE ... TEMPLATE src`` is refused while any session
+            # holds ``src``; releasing the engine here is what makes the freeze
+            # below legal, exactly as it is for the per-test DROP.
+            _db.session.remove()
+            _db.engine.dispose()
+
+    _drop_worker_database(snapshot, _WORKER_ADMIN_URL)
+    admin_conn = psycopg2.connect(_WORKER_ADMIN_URL)
+    try:
+        admin_conn.autocommit = True
+        with admin_conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "CREATE DATABASE {} TEMPLATE {} STRATEGY WAL_LOG"
+                ).format(
+                    sql.Identifier(snapshot),
+                    sql.Identifier(_WORKER_DB_NAME),
+                )
+            )
+    finally:
+        admin_conn.close()
+    return snapshot, ids
+
+
+def declared_seeded_state(request):
+    """The world *request*'s test DECLARED, or ``None``.  Builds nothing.
+
+    Split from :func:`seeded_state_for` because that one BUILDS on a miss, and
+    building drops and re-clones the worker database -- which is correct while
+    the ``db`` fixture is setting a test up, and destroys the database out from
+    under the test anywhere else.  Every reader that only wants to know what
+    was declared calls this instead, so the destructive path has exactly one
+    caller.
+
+    Args:
+        request: The test's pytest request.
+
+    Returns:
+        The declared world's name, or ``None`` when the test declared none.
+
+    Raises:
+        ValueError: The marker is present but names no world.
+    """
+    marker = request.node.get_closest_marker("seeded_start_state")
+    if marker is None:
+        return None
+    if not marker.args:
+        # A marker written without its argument is an ordinary typo, and
+        # ``marker.args[0]`` would report it as an IndexError raised inside
+        # this file -- naming neither the test nor the thing it forgot.
+        raise ValueError(
+            f"{request.node.nodeid} carries @pytest.mark.seeded_start_state "
+            f"with no world named. Pass one: "
+            f"@pytest.mark.seeded_start_state(\"<name>\"); known worlds: "
+            f"{sorted(_SEEDED_STATE_BUILDERS)}"
+        )
+    return marker.args[0]
+
+
+def seeded_state_for(request, app):
+    """The world *request*'s test declared, BUILDING it if this worker has none.
+
+    **Call this only while a test's database is being replaced anyway.**  On a
+    miss it drops and re-clones the worker database (see
+    :func:`_build_seeded_snapshot`), which is why the ``db`` fixture is its
+    only caller; anywhere else that would destroy the running test's database.
+    :func:`declared_seeded_state` is the non-destructive question.
+
+    Args:
+        request: The test's pytest request, carrying the
+            ``seeded_start_state`` marker.
+        app: The application whose context a first build writes through.
+
+    Returns:
+        ``(clone_source_database, ids)`` -- the database the test's own copy is
+        cloned from, and the plain-data description of the world in it.  Both
+        are ``(_TEST_TEMPLATE_DATABASE, None)`` for an unmarked test, which is
+        every test that has not adopted this seam.
+    """
+    name = declared_seeded_state(request)
+    if name is None:
+        return _TEST_TEMPLATE_DATABASE, None
+    if name not in _SEEDED_STATE_SNAPSHOTS:
+        _SEEDED_STATE_SNAPSHOTS[name] = _build_seeded_snapshot(name, app)
+    snapshot, ids = _SEEDED_STATE_SNAPSHOTS[name]
+    # A copy per test: the dict is built once and shared, and a test that
+    # mutated it would be editing every later test's view of the world.
+    # ``_plain_data_or_raise`` is what makes a SHALLOW copy sufficient.
+    return snapshot, dict(ids)
+
+
+def seeded_state_ids(name):
+    """The ids of a world already built on this worker.
+
+    Args:
+        name: The world's registered name.
+
+    Returns:
+        A per-test copy of the builder's dict.
+
+    Raises:
+        KeyError: The world has not been built in this process.
+    """
+    _snapshot, ids = _SEEDED_STATE_SNAPSHOTS[name]
+    return dict(ids)
+
+
+def _drop_seeded_snapshots():
+    """Drop every world this worker built.  Called from session finish.
+
+    A world's rows are dated from ``display_today()``, so a snapshot that
+    outlived its session would be a start state no code describes.
+    """
+    if not _SEEDED_STATE_SNAPSHOTS:
+        return
+    for snapshot, _ids in _SEEDED_STATE_SNAPSHOTS.values():
+        _drop_worker_database(snapshot, _WORKER_ADMIN_URL)
+    _SEEDED_STATE_SNAPSHOTS.clear()
 
 
 # --- App & DB Fixtures ---------------------------------------------------
@@ -818,8 +1342,26 @@ def setup_database(app):
 
 
 @pytest.fixture(autouse=True)
-def db(app, setup_database, request):
+def db(app, setup_database, request, set_totp_key, disable_hibp_check):  # pylint: disable=unused-argument
     """Provide a freshly-cloned database for each test.
+
+    **It DEPENDS on the two environment fixtures rather than merely coexisting
+    with them** (plan step balance:X-be-2).  All three are autouse and
+    function-scoped, so every test got them either way -- but pytest builds
+    the fixture list from ``dir(module)``, which is ALPHABETICAL, and
+    ``"db" < "disable_hibp_check" < "set_totp_key"``.  That is the whole of
+    why this one used to run first: not scope, and nothing about what it does.
+    Harmless while it issued nothing but DDL; it can now run a seeded start
+    state's builder, which is ordinary application code, and the first attempt
+    built its owner with the HIBP check still live -- ``hash_password``
+    refused the suite's own seed password with a message about a data breach.
+
+    **So the dependency edge is the only thing pinning this order**, and
+    renaming any of the three would otherwise silently re-sort them.  The
+    edge is what makes the ordering a stated requirement rather than an
+    alphabetical accident, and ``_refuse_a_build_the_environment_is_not_ready_for``
+    is what says so out loud if the next builder needs a fixture nobody added
+    here.
 
     Drops the per-worker DB and re-clones it from
     ``shekel_test_template`` via
@@ -839,6 +1381,17 @@ def db(app, setup_database, request):
       * In-process ``ref_cache`` and Jinja globals re-seated to
         match the cloned DB's row IDs (which equal the template's
         IDs because ``CREATE DATABASE TEMPLATE`` preserves them).
+
+    **A test that declares a SEEDED START STATE gets the first, third and
+    fourth of those and not the second** (plan step balance:X-be-2): its
+    database is cloned from that world's snapshot, so it starts holding the
+    rows the world's builder wrote.  ``system.audit_log`` is still empty --
+    the build truncates it, for the reason the template builder does -- and
+    the ref data and cached ids are still the template's, because the snapshot
+    is itself a clone of the template.  **What does NOT change is the
+    isolation**: the drop and re-clone below run for every test either way, so
+    a test still cannot see another's writes.  Only the database it is cloned
+    FROM differs.
 
     Mechanism, in order:
 
@@ -915,11 +1468,22 @@ def db(app, setup_database, request):
         _db.session.remove()
         _db.engine.dispose()
 
+        # WHICH database this test is cloned from -- the empty template, or
+        # the snapshot of a world it declared (plan step balance:X-be-2).
+        # Resolved BEFORE the drop because building a world for the first time
+        # on this worker needs a blank worker database of its own, and it takes
+        # the one it is standing in; resolving after the clone would throw that
+        # clone away.  The engine is already released above, which is what lets
+        # the build freeze the worker database into a snapshot.
+        clone_source, _ = seeded_state_for(request, app)
+
         with _profile_step(timings, "setup_drop_db"):
             _drop_worker_database(_WORKER_DB_NAME, _WORKER_ADMIN_URL)
 
         with _profile_step(timings, "setup_clone_template"):
-            _clone_worker_database(_WORKER_DB_NAME, _WORKER_ADMIN_URL)
+            _clone_worker_database(
+                _WORKER_DB_NAME, _WORKER_ADMIN_URL, clone_source,
+            )
 
         with _profile_step(timings, "setup_refresh_ref_cache"):
             # Re-seat the in-process ref_cache and Jinja globals
@@ -958,6 +1522,53 @@ def db(app, setup_database, request):
                 _db.session.remove()
                 _db.engine.dispose()
             _profile_write_row(nodeid, timings)
+
+
+@pytest.fixture()
+def owner_client(client):
+    """A client logged in as the seeded owner a WORLD already contains.
+
+    The counterpart of ``auth_client`` for a test that declares a seeded start
+    state: the owner is already in that world, so seeding a second one would
+    collide on the unique email.  Both fixtures log in through the same
+    :func:`log_in_seed_user`, so neither can drift into posting credentials
+    the other does not write.
+
+    Used on an ordinary test that declares no world, the login simply fails
+    its assertion -- loud and immediate, naming the missing owner.
+
+    Returns:
+        The logged-in test client.
+    """
+    return log_in_seed_user(client)
+
+
+@pytest.fixture()
+def seeded_world(request, app, db):  # pylint: disable=unused-argument
+    """The world this test declared, as the plain data its builder returned.
+
+    Depends on ``db`` so it can only be read after this test's own copy of the
+    world exists; the lookup itself is the cached one the ``db`` fixture
+    already performed, so asking twice costs nothing.
+
+    Returns:
+        A per-test copy of the builder's dict -- ids and scalars.
+
+    Raises:
+        LookupError: The test asked for a world without declaring one.  Not a
+            defaulted empty dict: a test reading ids out of a world it never
+            asked for would get ``KeyError`` on a name that IS registered, and
+            the marker it is missing would be nowhere in that traceback.
+    """
+    name = declared_seeded_state(request)
+    if name is None:
+        raise LookupError(
+            f"{request.node.nodeid} asked for `seeded_world` without "
+            f"declaring one. Add @pytest.mark.seeded_start_state(\"<name>\") "
+            f"to the test or its class; known worlds: "
+            f"{sorted(_SEEDED_STATE_BUILDERS)}"
+        )
+    return seeded_state_ids(name)
 
 
 @pytest.fixture()
@@ -1019,6 +1630,41 @@ def bare_auth_client(app, db, client, bare_user):  # pylint: disable=unused-argu
 
 
 @pytest.fixture()
+def bare_user_with_cadence(db, bare_user):
+    """``bare_user`` plus the cadence row every payday-holding owner has.
+
+    **For the cases that must hand-build a CORRUPT pay period** -- a duplicate
+    ``period_index``, an index out of calendar order, a gap, an overlapping
+    span.  Those shapes exist to prove a checker or a migration pre-flight
+    catches them, and no application door can produce any of them, so
+    ``_test_helpers.open_owner_calendar`` is not the answer there the way plan
+    step ``pay_calendar:C4-b-1`` made it the answer for ordinary owners.
+
+    What such a case still needs is the half of the owner that is NOT corrupt:
+    since plan step ``pay_calendar:C4-b-2``, ``fk_pay_periods_schedule``
+    refuses a pay period whose owner holds no ``budget.pay_schedule`` row, so
+    ``bare_user`` alone can no longer carry one.  This fixture is that rule
+    stated ONCE rather than an ``upsert_schedule`` line copied into each case
+    -- four of them today, and the fifth would be the one that copies it
+    wrongly.
+
+    The cadence is 14 and no case should assert on it: these owners' periods
+    are written by hand and are deliberately inconsistent with any cadence.
+    It exists to satisfy the key, not to describe the rows.
+
+    Returns:
+        ``bare_user``'s own dict, unchanged -- the schedule row is a side
+        effect on the database, not a new key, so a case can swap this fixture
+        in for ``bare_user`` without touching anything else it reads.
+    """
+    pay_schedule_service.upsert_schedule(
+        bare_user["user"].id, rhythm=rhythm_of(14),
+    )
+    db.session.commit()
+    return bare_user
+
+
+@pytest.fixture()
 def bare_periods(app, db, bare_user):
     """Generate 10 pay periods for ``bare_user`` starting 2026-01-02.
 
@@ -1031,28 +1677,97 @@ def bare_periods(app, db, bare_user):
     Returns:
         List of PayPeriod objects.
     """
-    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
     periods = pay_period_write.record_paydays(
         user_id=bare_user["user"].id,
         first_payday=date(2026, 1, 2),
         num_periods=10,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.commit()
     return periods
 
 
-@pytest.fixture()
-def seed_user(app, db):
-    """Create and return a test user with settings, account, and scenario.
+#: The seeded owner's credentials, in ONE place: :func:`build_seed_user`
+#: writes them and :func:`log_in_seed_user` posts them, and a fixture that
+#: seeded one email while the login form posted another would fail as a 401
+#: naming neither.
+SEED_USER_EMAIL = "test@shekel.local"
+SEED_USER_PASSWORD = "testpass"
+
+#: The day the seeded owner's BOOTSTRAP pay period starts, which is also the
+#: day their Checking account's origination assertion is dated for and one day
+#: after the day its books open.
+#:
+#: **Named because it is now a fixture CONTRACT rather than an implementation
+#: detail** (plan step X-f3c-2c).  ``budget.account_anchor_history`` is
+#: append-only, so no fixture can re-home that assertion onto whatever calendar
+#: a periods fixture builds: the seeded account asserts here and only here
+#: until a test says otherwise.  A case that turns on which day was last
+#: asserted therefore either states its own (see
+#: ``_test_helpers.reassert_balance_on``) or names this one.  *This named
+#: ``_drop_seed_user_bootstrap`` as what could no longer re-home it; plan step
+#: ``pay_calendar:C4-b-1`` deleted that function for the door it was
+#: re-implementing, and the property is the append-only table's rather than any
+#: one caller's.*
+SEED_USER_BOOTSTRAP_START = date(2024, 1, 5)
+
+#: The cadence the seeded owner's schedule runs at, in days.
+#:
+#: Named beside the opening payday because plan step ``pay_calendar:C4-b-1``
+#: made it a STORED fact rather than an inferred one: the bootstrap batch goes
+#: through ``pay_period_write.record_paydays``, which upserts the owner's
+#: ``budget.pay_schedule`` row at whatever this says (the cadence rule, plan
+#: step C3-b).  It was the literal ``13`` in a ``timedelta`` before that -- a
+#: period LENGTH standing in for the cadence it derives from -- and the two
+#: differ by one, which is exactly the off-by-one a fixture computing a derived
+#: column by hand is free to make.
+SEED_USER_CADENCE_DAYS = 14
+
+
+def log_in_seed_user(client):
+    """Log *client* in as the seeded owner through the real login form.
+
+    Split out of ``auth_client`` because a test starting from a seeded start
+    state already HAS the owner and must not seed a second one, but still
+    needs the same session cookie the form issues -- so the two share this
+    rather than posting their own copy of the credentials.
+
+    Args:
+        client: A Flask test client.
 
     Returns:
-        dict with keys: user, settings, account, scenario, categories.
+        The same client, now carrying a logged-in session.
+    """
+    resp = client.post("/login", data={
+        "email": SEED_USER_EMAIL,
+        "password": SEED_USER_PASSWORD,
+    })
+    assert resp.status_code == 302, (
+        f"login as {SEED_USER_EMAIL} failed with status {resp.status_code}"
+    )
+    return client
+
+
+def build_seed_user(db):
+    """Create and return a test user with settings, account, and scenario.
+
+    The ``seed_user`` fixture is a one-line call to this, and so is any seeded
+    start state that needs the same owner (plan step balance:X-be-2).  It is a
+    function rather than only a fixture so those two describe the SAME user
+    instead of two definitions that drift -- a world built from a copy of this
+    would be a second answer to "what does a seeded owner look like".
+
+    Args:
+        db: The Flask-SQLAlchemy extension to write through.
+
+    Returns:
+        dict with keys: user, settings, account, scenario, categories,
+        bootstrap_period.  ORM objects, live in the caller's session.
     """
     user = User(
-        email="test@shekel.local",
-        password_hash=hash_password("testpass"),
+        email=SEED_USER_EMAIL,
+        password_hash=hash_password(SEED_USER_PASSWORD),
         display_name="Test User",
     )
     db.session.add(user)
@@ -1061,22 +1776,34 @@ def seed_user(app, db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3): every account row has
-    # non-NULL anchor columns post-migration cfb15e782f86, so this
-    # fixture needs at least one period in place before the Checking
-    # account can be created.  Date is an arbitrary Friday well
-    # before any test's typical 2026 range, so the bootstrap stays
-    # out of the way of date-anchored assertions.  The period is
-    # exposed as ``seed_user["bootstrap_period"]`` so tests that
+    # The owner's OPENING pay period, written by the door that owns the
+    # table (plan step pay_calendar:C4-b-1).  ``create_account`` refuses an
+    # owner with no pay period, so one has to exist before the Checking
+    # account below; what changed is WHO writes it.  This was a hand-built
+    # ``PayPeriod(...)`` -- three columns set by the fixture, two of them
+    # (``end_date``, ``period_index``) values the writer DERIVES -- and no
+    # ``budget.pay_schedule`` row beside it, which is a state
+    # ``pay_period_write.record_paydays`` cannot produce and
+    # ``auth_service.register_user`` therefore never produces either.  The
+    # seeded owner was consequently the one shape production does not have:
+    # paydays with no recorded cadence, pay-calendar finding **P8**, which
+    # ``pay_schedule_service.resolve_schedule`` had to carry an inferring
+    # fallback for.  Going through the writer makes the seeded owner's
+    # calendar the same object production's is.
+    #
+    # The row it writes is byte-identical to the one this replaced --
+    # ``end_date`` is ``start + cadence - 1`` and ``period_index`` is 0 for a
+    # single-payday batch -- so nothing dated against it moves.  What is NEW
+    # is the ``budget.pay_schedule`` row the same call upserts (the cadence
+    # rule, plan step C3-b).
+    #
+    # The day is an arbitrary Friday well before any test's typical 2026
+    # range, so it stays out of the way of date-anchored assertions.  The
+    # period is exposed as ``seed_user["bootstrap_period"]`` so tests that
     # create additional accounts inline can anchor them to it.
-    bootstrap_period = PayPeriod(
-        user_id=user.id,
-        start_date=date(2024, 1, 5),
-        end_date=date(2024, 1, 18),
-        period_index=0,
-    )
-    db.session.add(bootstrap_period)
-    db.session.flush()
+    bootstrap_period = open_owner_calendar(
+        user.id, SEED_USER_BOOTSTRAP_START, cadence_days=SEED_USER_CADENCE_DAYS,
+    )[0]
 
     # Baseline scenario BEFORE the account, matching production
     # registration order (Build-Order Step 5): ``create_account`` posts the
@@ -1128,6 +1855,24 @@ def seed_user(app, db):
             observed_on=bootstrap_period.start_date,
         ),
     )
+    # **The BOOKS open the day before that assertion** (plan step X-f3c-2b,
+    # ruling **R-HG**).  The paragraph above moved the ORIGINATION off the wall
+    # clock so it would not share a civil day with the settles; the books
+    # themselves need the same separation for a stronger reason.  An opening
+    # equity is the CLOSING balance for its own day, so a movement dated on it
+    # is inside the figure and is refused outright -- where an assertion merely
+    # absorbs one.  Fixtures settling on ``bootstrap_period.start_date`` are
+    # ordinary here, and the opening is the only one of the two that forbids
+    # them.
+    #
+    # Restated rather than supplied, because ``create_account``'s day bound
+    # (``resolve_observation_day``) floors ``observed_on`` at the calendar's own
+    # first day and would refuse the day before it.  That floor is a rule about
+    # ASSERTIONS (ruling R-ER); an opening is not one, which is why production's
+    # own repair (migration ``d3b6f1c8a274``) writes the row directly too.  It
+    # moves no figure: the origination assertion still clears whatever settled
+    # on its own day, so every correction is what it was.
+    open_books_before_the_first_assertion(db.session, account)
 
     # Create default categories.
     categories = []
@@ -1159,162 +1904,97 @@ def seed_user(app, db):
     }
 
 
-def _pin_opening_to(db, account, anchor_period):
-    """Pin ``account``'s OPENING assertion to *anchor_period*'s first day.
-
-    The cross-page fixtures keep the ``seed_user`` bootstrap period and then
-    append their own anchor override, so unlike the ``seed_periods*`` fixtures
-    they never reach :func:`_drop_seed_user_bootstrap`'s re-stamp.  Without
-    this the opening keeps ``create_account``'s WALL-CLOCK instant, which falls
-    INSIDE the fixture's anchor month and therefore AFTER the override the
-    fixture writes at that month's start -- so the cash walk replays the
-    $1,000.00 origination LAST and it silently supersedes the balance the
-    fixture just asserted.  (The shipping producers never saw it: they read the
-    newest row and ignored its date.)
-
-    Args:
-        db: The SQLAlchemy ``db`` fixture.
-        account: The account whose opening to pin.
-        anchor_period: The period the fixture is about to anchor against.
-    """
-    # Day one of the anchor period IN THE USER'S ZONE -- the same meaning, and
-    # the same reason, as ``override_anchor``'s default (ruling R-DH (b)).  The
-    # two must agree: pinning one to Eastern midnight and leaving the other on
-    # UTC midnight puts the opening and the override in DIFFERENT periods.
-    restamp_opening_assertion(
-        db.session, account,
-        datetime.combine(
-            anchor_period.start_date, dt_time.min, tzinfo=DISPLAY_TIMEZONE,
-        ).astimezone(timezone.utc),
-    )
-
-
-def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
-    """Replace ``seed_user``'s bootstrap pay period with the supplied new
-    anchor and renumber the user's remaining periods to start at 0.
-
-    The ``seed_user`` fixture provisions a ``period_index=0`` bootstrap
-    so the account factory has something to anchor against (E-19 /
-    Commit 3 makes that anchor NOT NULL).  Periods fixtures
-    (``seed_periods``, ``seed_periods_today``, etc.) generate the
-    user's "real" pay-period set after the bootstrap; those rows
-    therefore take indices 1..N.  Without cleanup, every existing
-    test that counts user pay periods or asserts ``periods[0].period_index == 0``
-    drifts by 1.
-
-    This helper restores the pre-Commit-3 expectation in one place:
-    (1) repoints the account's anchor (and any matching
-    AccountAnchorHistory row) at the supplied ``new_anchor_period``,
-    (2) deletes the bootstrap (CASCADE removes the bootstrap's
-    history row and any transactions in it -- there should be none
-    at fixture-setup time), (3) renumbers the surviving periods to
-    start at 0.
-
-    Args:
-        db: the SQLAlchemy ``db`` fixture.
-        seed_user: dict returned by the ``seed_user`` fixture.
-        account: the account whose anchor must be repointed.
-        new_anchor_period: the period to anchor the account against
-            after the bootstrap is removed.
+@pytest.fixture()
+def seed_user(app, db):  # pylint: disable=unused-argument
+    """Create and return a test user with settings, account, and scenario.
 
     Returns:
-        None.  The mutation is committed before returning so
-        subsequent fixture/test code sees the cleaned state.
+        dict with keys: user, settings, account, scenario, categories.
     """
-    bootstrap = seed_user.get("bootstrap_period")
-    if bootstrap is None:
-        return
-    # Re-fetch by id -- the cached object might be stale across the
-    # nested commits below.
-    bootstrap_id = bootstrap.id
-    # Step 1: repoint the account anchor.
-    # Restamp any assertion the factory wrote against the bootstrap period.
-    # It no longer has to SURVIVE anything -- ruling R-EO deleted
-    # ``AccountAnchorHistory.pay_period_id`` and its CASCADE FK, so a period
-    # delete cannot take an assertion with it -- but its INSTANT and its
-    # business DAY still have to move onto the new anchor period, for the
-    # reason below.
-    from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
-    # The row's INSTANT moves with its period, not just its FK.  The account
-    # factory stamps the opening with the WALL CLOCK, while the suites freeze
-    # today inside their own seeded range -- so an unrestamped opening sorts
-    # AFTER every controlled assertion a test writes, which silently inverts
-    # which row the cash fold treats as the opening (ruling R-I books the
-    # FIRST assertion into its seed and keeps every later one as a reset).
-    # Pinning it to the new anchor period's first day is the production shape:
-    # an account opened on day one of the period it is anchored to.
-    db.session.query(AccountAnchorHistory).filter_by(
-        account_id=account.id,
-    ).update({
-        # The BUSINESS day moves with the period and the instant.  Leaving it
-        # behind is the "two clocks on one row" shape ``seed_user`` states it
-        # is eliminating, recreated one layer down: the row would assert a
-        # 2026 period from a 2024 day, and its posted correction would carry a
-        # 2024 ``purchased_on`` inside a 2026 ``pay_period_id``.
-        "observed_on": new_anchor_period.start_date,
-        # Eastern midnight, converted for storage -- NOT midnight UTC, which
-        # is the previous EVENING in the display zone and would file the
-        # opening one day before its own period (finding N-132).
-        "created_at": datetime.combine(
-            new_anchor_period.start_date, dt_time.min, tzinfo=DISPLAY_TIMEZONE,
-        ).astimezone(timezone.utc),
-    })
-    db.session.flush()
-    # Step 2: delete the bootstrap row.
-    db.session.query(PayPeriod).filter_by(id=bootstrap_id).delete()
-    db.session.flush()
-    # Step 3: renumber remaining periods to start at 0.
-    db.session.execute(_db.text(
-        "UPDATE budget.pay_periods "
-        "SET period_index = period_index - 1 "
-        "WHERE user_id = :u"
-    ), {"u": seed_user["user"].id})
-    # Step 4: re-post the anchor corrections the bootstrap delete disposed
-    # (Build-Order Step 5).  The seeded Checking's $1000 opening entry was
-    # attributed to the bootstrap period (journal_entries.pay_period_id is
-    # ON DELETE CASCADE), so step 2 took it with the period; the history
-    # rows survived via the step-1 repoint, so the per-user resync
-    # re-derives the openings onto the new anchor period -- the same
-    # re-derivation the production pay-period reset performs.
-    from app.services import account_posting_service  # pylint: disable=import-outside-toplevel
-    account_posting_service.resync_user_account_anchor_postings(
-        seed_user["user"].id,
+    return build_seed_user(db)
+
+
+def _reset_seed_calendar(owner, first_payday, num_periods, cadence_days):
+    """Rebuild *owner*'s WHOLE pay-period schedule through the production door.
+
+    **Plan step ``pay_calendar:C4-b-1``.**  This replaces
+    ``_drop_seed_user_bootstrap``, 135 lines that carried out a schedule reset
+    by hand: it re-stated the account's opening, deleted the opening pay period
+    with a bare ``query.delete()``, renumbered every survivor with raw SQL
+    (``SET period_index = period_index - 1``), and then re-posted the anchor
+    corrections that delete had disposed.
+
+    **The application already has a door that does that job**:
+    ``pay_period_admin.reset_pay_periods``, the settings-page correction that
+    wipes every period, rebuilds the schedule from a new opening payday and
+    re-syncs the loan genesis postings and the account anchor corrections onto
+    what it built.  It is not "exactly" the hand-rolled sequence -- it does
+    strictly MORE, and the extra is one of the three differences below.  Each
+    difference was a defect in the hand-rolled version:
+
+    * it renumbered ``period_index`` ITSELF -- a fixture computing by hand the
+      derived column this arc exists to delete, in raw SQL the ORM cannot see;
+    * it never re-synced LOAN genesis postings, so a world holding a loan would
+      have been rebuilt with that loan's opening entries missing;
+    * it recorded the new batch BESIDE the surviving opening period and deleted
+      that period afterwards, so the new periods were written at indices 1..N
+      and pulled back to 0..N-1.  The door retires and records in ONE
+      ``record_paydays`` call, so they are 0..N-1 when they are written.
+
+    **It refutes ledger row N-392's diagnosis**, which says the seeded account
+    reaches its resting state "through a DELETE of the pay period it was opened
+    against, which no production path performs".  ``reset_pay_periods`` deletes
+    every pay period the owner has, the account's own opening period included,
+    and it is reachable from ``POST /pay-periods/reset``.  What was true is
+    narrower: no production path performed the hand-rolled SEQUENCE.
+
+    **The re-statement of the account's opening is deliberately NOT carried
+    over, and that is measured rather than argued.**  The deleted helper moved
+    the books to ``min(governing.opened_on, new_anchor.start_date - 1 day)`` --
+    backward only.  Every owner this file builds opens its books the day before
+    :data:`SEED_USER_BOOTSTRAP_START`, and every calendar this function is
+    asked for starts later than that, so the ``min`` always chose the day
+    already stored: the call could not move a day in any world this file
+    builds.  ``TestTheResetDoesNotMoveTheBooks`` in
+    ``tests/test_arch/test_the_seeded_calendar_comes_from_the_writer.py`` holds
+    that as a property rather than leaving it as this paragraph's claim.
+
+    Args:
+        owner: The owner dict a seed fixture returned; ``owner["user"]`` is
+            whose schedule is rebuilt.
+        first_payday: The opening payday of the rebuilt schedule.
+        num_periods: How many periods to build from it.
+        cadence_days: Days between them, persisted as the owner's cadence by
+            the writer (the cadence rule, plan step C3-b).
+
+    Returns:
+        The owner's periods, PAYDAY ascending -- which is ``period_index``
+        ascending by construction, and is the spelling that survives the column
+        drop at plan step ``pay_calendar:C4-c``.
+    """
+    # The books bound the opening payday; :func:`rebuild_calendar` refuses one
+    # at or before them, which is the door every caller reaches rather than
+    # this wrapper alone (ruling ``balance:R-HG``).
+    return rebuild_calendar(
+        owner["user"].id, first_payday, num_periods, cadence_days,
     )
-    db.session.commit()
-    # Refresh the in-memory period rows the caller will use.
-    db.session.expire_all()
 
 
 @pytest.fixture()
 def seed_periods(app, db, seed_user):
-    """Generate 10 pay periods starting from 2026-01-02.
+    """Rebuild the seeded owner's schedule as 10 pay periods from 2026-01-02.
 
-    Also sets the anchor period to the first period and removes the
-    ``seed_user`` bootstrap (see ``_drop_seed_user_bootstrap`` for
-    the rationale) so the returned periods occupy indices 0..9 as
-    pre-Commit-3 tests expect.
+    The owner opens with one period at :data:`SEED_USER_BOOTSTRAP_START`, and
+    this RESETS that schedule to the one the test wants through
+    :func:`_reset_seed_calendar` -- so the returned periods occupy indices
+    0..9 because the writer derived them, not because anything renumbered
+    them afterwards.
 
     Returns:
-        List of PayPeriod objects.
+        List of PayPeriod objects, payday ascending.
     """
-    from app.services import pay_period_service
-
-    periods = pay_period_write.record_paydays(
-        user_id=seed_user["user"].id,
-        first_payday=date(2026, 1, 2),
-        num_periods=10,
-        cadence_days=14,
-    )
-    db.session.flush()
-
-    account = seed_user["account"]
-    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
-    # Reload periods so callers see the renumbered period_index values.
-    return (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=seed_user["user"].id)
-        .order_by(PayPeriod.period_index)
-        .all()
+    return _reset_seed_calendar(
+        seed_user, date(2026, 1, 2), 10, SEED_USER_CADENCE_DAYS,
     )
 
 
@@ -1324,21 +2004,59 @@ def _today_relative_start_date():
     Period 4 is the middle of a 10-period window, leaving 4 historical
     periods and 5 future periods.  The start is aligned to the most
     recent Monday so period boundaries fall on weekdays consistently.
-    Used by ``seed_periods_today``-style fixtures so that
-    ``pay_period_service.get_current_period`` always returns a real
-    period regardless of the wall-clock date.
+    Used by ``seed_periods_today``-style fixtures so that "which paycheck
+    contains today" -- ``PayCalendar.period_containing``, and
+    ``pay_period_service.get_current_period`` before pay-calendar plan step
+    C2-f3a deleted it -- always answers a real period regardless of the
+    wall-clock date.
     """
     today = display_today()
     return today - timedelta(days=today.weekday() + 4 * 14)
 
 
-@pytest.fixture()
-def seed_periods_today(app, db, seed_user):
+def build_periods_today(db, seed_user):
     """Generate 10 biweekly pay periods so today falls in period 4.
 
-    Use this fixture when the test exercises a code path that calls
-    ``pay_period_service.get_current_period()`` (directly or via a
-    route handler).  Use the regular ``seed_periods`` fixture when the
+    The ``seed_periods_today`` fixture is a one-line call to this, and so is
+    any seeded start state needing the same calendar (plan step
+    balance:X-be-2), for the reason :func:`build_seed_user` is a function.
+
+    **It reads ``display_today()``, so a caller that freezes it freezes this.**
+    A world built from this is therefore built once per SESSION and dropped at
+    its end -- see the seeded-start-state block comment above; one kept across
+    midnight would place today in a period this no longer builds.
+
+    Args:
+        db: The Flask-SQLAlchemy extension.  **Unread since plan step
+            ``pay_calendar:C4-b-1``** -- the write goes through
+            :func:`_reset_seed_calendar`, which reaches the session itself --
+            and kept because it is how the two external callers
+            (``test_no_baseline_policy``, the seeded-state builders) declare
+            that the ``db`` fixture must be active before this runs.
+            **This is the shape ledger row ``balance:N-393`` records as a
+            defect** -- an argument its body never reads -- and the reason it
+            is kept anyway is the one thing that row's subject does not have: a
+            pytest fixture parameter is a DEPENDENCY DECLARATION, so removing
+            it would not tidy a signature, it would let a caller run this
+            before the database fixture had built a session.  Named rather
+            than left for the next reviewer to re-derive.
+        seed_user: The owner dict :func:`build_seed_user` returned.
+
+    Returns:
+        List of PayPeriod objects, payday ascending.
+    """
+    return _reset_seed_calendar(
+        seed_user, _today_relative_start_date(), 10, SEED_USER_CADENCE_DAYS,
+    )
+
+
+@pytest.fixture()
+def seed_periods_today(app, db, seed_user):  # pylint: disable=unused-argument
+    """Generate 10 biweekly pay periods so today falls in period 4.
+
+    Use this fixture when the test exercises a code path that asks which
+    paycheck contains today (``PayCalendar.period_containing``, directly or
+    via a route handler).  Use the regular ``seed_periods`` fixture when the
     test asserts on specific calendar dates (due_date filters,
     year-end summaries for tax_year=2026, loan origination alignment).
 
@@ -1348,40 +2066,72 @@ def seed_periods_today(app, db, seed_user):
     Returns:
         List of PayPeriod objects, ordered by period_index.
     """
-    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
-
-    periods = pay_period_write.record_paydays(
-        user_id=seed_user["user"].id,
-        first_payday=_today_relative_start_date(),
-        num_periods=10,
-        cadence_days=14,
-    )
-    db.session.flush()
-
-    account = seed_user["account"]
-    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
-    return (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=seed_user["user"].id)
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
+    return build_periods_today(db, seed_user)
 
 
 @pytest.fixture()
-def auth_client(app, db, client, seed_user):
+def seed_schedule_at_cadence(app, db, seed_user):
+    """Return a factory that seeds the owner a schedule at a CHOSEN cadence.
+
+    The parameterised sibling of :func:`seed_periods_today`, which is fixed at
+    14 days.  Every other periods fixture in this file is biweekly, so until
+    recurrence plan step **R-F17** no test could tell a derivation from the
+    hardcoded 26 that stood for "a year" -- which is exactly why ledger row
+    **F-17** shipped uncovered.  A test that asserts on a cadence-derived
+    window uses this; one that only needs "today is in a paycheck" keeps the
+    cheaper fixture.
+
+    Like :func:`seed_periods_today` it RESETS the seeded owner's schedule
+    through :func:`_reset_seed_calendar`, so ``period_index`` runs from 0
+    because the writer derived it, and it places today in period
+    *periods_before* -- **for a cadence of 7 days or more**.  The first payday
+    is aligned back to the most recent Monday first, so at a shorter cadence
+    that up-to-six-day alignment is itself worth a period or more and today
+    lands later than *periods_before*.  No caller passes below 7; the bound is
+    stated rather than left as a claim that happens to hold.
+
+    Args:
+        app: The Flask app fixture (for the application context the writer
+            needs).
+        db: The SQLAlchemy ``db`` fixture.
+        seed_user: The owner these periods belong to.
+
+    Returns:
+        ``_seed(cadence_days, num_periods=40, periods_before=4)`` -> the
+        owner's periods, payday ascending.  40 is wide enough that a full year
+        of paychecks fits at cadences of 14 days or longer; a weekly case asks
+        for more.
+
+        **``periods_before`` used to be bounded by the writer's forward-only
+        rule and no longer is** (plan step ``pay_calendar:C4-b-1``).  While this
+        fixture APPENDED beside the seeded owner's opening payday,
+        ``pay_period_write._reject_backward_payday`` refused a first payday
+        earlier than one full cycle after it -- so four periods of history at a
+        300-day cadence started three years before that payday and was refused.
+        Going through the reset door retires every existing period in the same
+        ``record_paydays`` call that records the new ones, and that refusal
+        returns early on an empty surviving set, so a long-cadence case is free
+        to ask for as much history as it wants.  The default still matches
+        :func:`seed_periods_today`.
+    """
+    def _seed(cadence_days, num_periods=40, periods_before=4):
+        today = display_today()
+        first_payday = today - timedelta(
+            days=today.weekday() + periods_before * cadence_days,
+        )
+        return _reset_seed_calendar(
+            seed_user, first_payday, num_periods, cadence_days,
+        )
+    return _seed
+
+
+@pytest.fixture()
+def auth_client(app, db, client, seed_user):  # pylint: disable=unused-argument
     """Provide an authenticated test client.
 
     Logs in via the login form to get a proper session.
     """
-    resp = client.post("/login", data={
-        "email": "test@shekel.local",
-        "password": "testpass",
-    })
-    assert resp.status_code == 302, (
-        f"auth_client login failed with status {resp.status_code}"
-    )
-    return client
+    return log_in_seed_user(client)
 
 
 def _build_cross_page_calendar_periods(db, user):
@@ -1395,24 +2145,40 @@ def _build_cross_page_calendar_periods(db, user):
     full ordered period list and the anchor period (the calendar month
     containing today).
 
-    Monthly (not biweekly) periods are deliberate: the anchor period's
-    ``end_date`` IS a calendar month-end, so the C9-3 boundary invariant of
-    the seam's :func:`app.services.balance_at.cash_balance_at` makes the
-    calendar surface's projected month-end balance equal the anchor-period
-    balance for the same data.  The anchor being the month containing today also
-    lets ``pay_period_service.get_current_period`` land on it with no
-    date-mock plumbing.
+    Monthly (not biweekly) periods are deliberate: the anchor period's last
+    covered day IS a calendar month-end -- each payday is the 1st, so each
+    period runs to the day before the next 1st -- and the C9-3 boundary
+    invariant of the seam's
+    :func:`app.services.balance_at.cash_balance_at` then makes the calendar
+    surface's projected month-end balance equal the anchor-period balance for
+    the same data.  The anchor being the month containing today also
+    lets ``PayCalendar.period_containing`` land on it with no date-mock
+    plumbing.
 
-    The ``seed_user`` bootstrap pay period is left in place rather than
-    deleted via ``_drop_seed_user_bootstrap``: deleting it cascades the
-    ``AccountAnchorHistory.pay_period_id`` ondelete=CASCADE and forces an
-    autoflush UPDATE on the account anchor mid-flush, which races the
-    just-flushed new pay periods on stricter autoflush orderings (observed:
-    ``ForeignKeyViolation`` on ``current_anchor_period_id``).  Keeping the
-    bootstrap is benign for the lock: it is a 2024 pre-anchor period every
-    surface skips (the resolver only emits balances from the anchor period
-    forward, and grid / dashboard / savings / accounts all key off
-    ``get_current_period``, which matches today's month, not the bootstrap).
+    **This is the one calendar in this file the application cannot write, and
+    that is why it is still built by hand** (ledger row **P76**, plan step
+    ``pay_calendar:C4-b-1``).  ``pay_period_write.record_paydays`` spaces a
+    batch at ONE cadence; calendar months are 28 to 31 days apart, so no door
+    produces this schedule and no owner can have one.  Every other periods
+    fixture here goes through :func:`_reset_seed_calendar`.
+
+    **What plan step ``pay_calendar:C4-c`` changed here is that these rows no
+    longer CLAIM to be monthly, they simply are.**  The fixture typed an
+    ``end_date`` and a ``period_index`` onto each row -- values no writer would
+    have produced -- and the derivation now answers both from the paydays it
+    writes: twelve 1sts a year derive twelve calendar months, because a period
+    ends the day before the next payday.  Only the LAST period's end reads the
+    stored cadence, which is what row **P78** is still about.
+
+    The seeded owner's opening pay period is left in place beneath these.  *The reason recorded here was that deleting it would
+    cascade ``AccountAnchorHistory.pay_period_id`` and race an autoflush; that
+    column no longer exists -- ruling ``balance:R-EO`` deleted it and its
+    CASCADE FK -- so the stated hazard has had no subject for some time.* What
+    is true is that keeping it is benign for the lock: it is a 2024 pre-anchor
+    period every surface skips (the resolver only emits balances from the
+    anchor period forward, and grid / dashboard / savings / accounts all key
+    off the period CONTAINING today, which is today's month rather than the
+    opening one).
 
     Args:
         db: The SQLAlchemy ``db`` fixture.
@@ -1420,49 +2186,64 @@ def _build_cross_page_calendar_periods(db, user):
             the periods).
 
     Returns:
-        ``(all_periods, anchor_period)`` -- the user's full period list
-        ordered by ``period_index`` (bootstrap at 0 plus the 36 monthly
-        periods) and the anchor period containing today.
+        ``(all_periods, anchor_period)`` -- the user's full period list in
+        payday order (the bootstrap plus the 36 monthly periods) and the
+        anchor period containing today.
     """
     today = date.today()
     first_year = today.year - 1
-    period_index = 1
     created = []
     for year in range(first_year, first_year + 3):
         for month in range(1, 13):
-            start = date(year, month, 1)
-            # last day of month: subtract one from the first of next month
-            # (December rolls to next year).
-            if month == 12:
-                next_first = date(year + 1, 1, 1)
-            else:
-                next_first = date(year, month + 1, 1)
-            end = next_first - timedelta(days=1)
-            period = PayPeriod(
-                user_id=user.id,
-                start_date=start,
-                end_date=end,
-                period_index=period_index,
-            )
+            # ONE payday per month, on the 1st.  Each period then runs to the
+            # day before the next 1st, which is the calendar month -- the
+            # derivation gives this fixture its months rather than the fixture
+            # typing them onto a column (plan step ``pay_calendar:C4-c``).
+            period = PayPeriod(user_id=user.id, start_date=date(year, month, 1))
             db.session.add(period)
             created.append(period)
-            period_index += 1
     db.session.commit()
 
-    # The anchor period is the calendar month containing today.  The
-    # created list runs chronologically from January of ``first_year``, so
-    # today's month sits at index ``12 + (today.month - 1)``.
-    anchor_period = created[12 + (today.month - 1)]
-    assert anchor_period.start_date <= today <= anchor_period.end_date, (
-        f"anchor_period {anchor_period.start_date}..{anchor_period.end_date} "
-        f"does not contain today={today}; fixture invariant broken"
-    )
+    # **The owner's STORED cadence is set to match these rows, and an
+    # adversarial review of plan step ``pay_calendar:C4-b-1`` is why.**  Before
+    # that step the seeded owner had no ``budget.pay_schedule`` row, so
+    # ``pay_schedule_service.resolve_schedule`` INFERRED the cadence from the
+    # highest-indexed period's stored span -- December of ``first_year + 2``,
+    # which is 31 days.  The step gives every owner a real row, at the seeded
+    # 14, and that silently halved ``PayCalendar.cadence`` for these eight
+    # fixtures: the savings horizons and the emergency-fund coverage derive
+    # their period counts from it, so they would have read twice as far out on
+    # a calendar whose periods are months.  Nothing asserted on it, which is
+    # what makes writing it down the fix rather than a green run.
+    #
+    # 31 is what the inference answered, so this restores the figure rather
+    # than choosing a new one.  It is still a stored fact disagreeing with
+    # paydays that are 28 to 31 days apart -- that is row **P78**, and the real
+    # remedy is a door that can express a monthly schedule at all.  Since plan
+    # step ``pay_calendar:C4-c`` it decides exactly ONE thing: the LAST
+    # period's projected end.  Every other end is the day before the next
+    # payday, which is what makes these rows a real calendar-monthly schedule
+    # rather than a stored claim to be one.
+    pay_schedule_service.upsert_schedule(user.id, rhythm_of(31))
 
     all_periods = (
         db.session.query(PayPeriod)
         .filter_by(user_id=user.id)
-        .order_by(PayPeriod.period_index)
+        .order_by(PayPeriod.start_date)
         .all()
+    )
+
+    # The anchor period is the calendar month containing today, and the
+    # containment is ASSERTED through the calendar rather than off the row:
+    # plan step ``pay_calendar:C4-c`` dropped ``end_date``, and this fixture's
+    # whole point is that its DERIVED spans are the calendar months.  The
+    # created list runs chronologically from January of ``first_year``, so
+    # today's month sits at index ``12 + (today.month - 1)``.
+    anchor_period = created[12 + (today.month - 1)]
+    anchor_span = calendar_for(user.id).period_by_id(anchor_period.id)
+    assert anchor_span is not None and anchor_span.covers(today), (
+        f"anchor_period {anchor_span} does not contain today={today}; "
+        f"fixture invariant broken"
     )
     return all_periods, anchor_period
 
@@ -1474,10 +2255,10 @@ def _neutralize_seed_checking(db, seed_user, anchor_period):
     the AGGREGATE surfaces (year-end net worth, the savings net-worth
     trend) reflect ONLY that account.  ``seed_user`` always provisions one
     Checking account at a $1,000 anchor, so this neutralises it: it appends
-    a $0 ``AccountAnchorHistory`` row at *anchor_period* (latest-wins by
-    ``created_at``, so ``resolve_anchor`` returns $0) and re-points the
-    account's anchor cache to the same period and balance.  A $0 asset
-    anchored at the current period contributes 0 to every net-worth sum
+    a $0 ``AccountAnchorHistory`` row dated on *anchor_period*'s first day, and
+    that day is later than the origination assertion's, so ``resolve_anchor``
+    -- which orders on ``(observed_on, created_at, id)`` -- returns $0.  A $0
+    asset anchored at the current period contributes 0 to every net-worth sum
     from the current period forward and gates the trend at the current
     period, so the per-kind account's value stands alone.
 
@@ -1501,7 +2282,7 @@ def _neutralize_seed_checking(db, seed_user, anchor_period):
     from tests._test_helpers import override_anchor
 
     account = db.session.get(Account, seed_user["account"].id)
-    _pin_opening_to(db, account, anchor_period)
+    open_books_before_the_first_assertion(db.session, account)
     override_anchor(
         db.session, account, anchor_period, Decimal("0.00"),
     )
@@ -1532,11 +2313,12 @@ def seed_cross_page_account(app, db, seed_user):
         Without that alignment a mid-period month-end would silently make
         the calendar surface look like a divergence even when the
         underlying math agrees, defeating the cross-page lock.
-      * The anchor period is the calendar month containing
-        ``date.today()`` (so the dashboard's ``get_current_period`` and
-        the grid's ``get_periods_in_range(current_period.period_index,
-        ...)`` both naturally land on the anchor period without any
-        date-mock plumbing).
+      * The anchor period is the calendar month containing today (so the
+        dashboard's containment lookup and the grid's window both naturally
+        land on the anchor period without any date-mock plumbing).  Those
+        two named ``get_current_period`` and ``get_periods_in_range`` until
+        pay-calendar plan steps C2-f2b and C2-f3a deleted them; the
+        alignment is what matters and it is unchanged.
       * The account anchor is overridden -- via a fresh
         ``AccountAnchorHistory`` row + cache-column update, latest-wins
         per E-19 -- to the case's ``anchor_balance``.  ``seed_user``'s
@@ -1616,7 +2398,7 @@ def seed_cross_page_account(app, db, seed_user):
         # instance whose attribute assignments are guaranteed to
         # mark the row dirty for the next flush.
         account = db.session.get(Account, seed_user["account"].id)
-        _pin_opening_to(db, account, anchor_period)
+        open_books_before_the_first_assertion(db.session, account)
         override_anchor(
             db.session, account, anchor_period, anchor_balance,
         )
@@ -1646,6 +2428,7 @@ def seed_cross_page_account(app, db, seed_user):
 
         txn = Transaction(
             template_id=template.id,
+            user_id=anchor_period.user_id,
             pay_period_id=anchor_period.id,
             scenario_id=scenario.id,
             account_id=account.id,
@@ -1653,7 +2436,7 @@ def seed_cross_page_account(app, db, seed_user):
             name="PT-01 envelope expense",
             category_id=groceries_cat.id,
             transaction_type_id=expense_type.id,
-            estimated_amount=expense_amount,
+            amount_ownership=AmountOwnership.own(expense_amount),
         )
         db.session.add(txn)
         db.session.flush()
@@ -1673,7 +2456,7 @@ def seed_cross_page_account(app, db, seed_user):
                 # The assertion ``override_anchor`` wrote is observed on this
                 # same day, so a purchase settled on it is INSIDE that balance
                 # -- the state the retired ``settled_on=anchor_period.start_date`` flag named.
-                settled_on=(
+                **settle_day_columns(
                     anchor_period.start_date if is_settled else None
                 ),
                 is_credit=is_credit,
@@ -1843,7 +2626,9 @@ def _unseeded_replay_balance(loan_id, scenario_id, as_of):
     from app.utils.money import round_money
 
     params = loan_loaders.load_loan_params(loan_id)
-    ctx = loan_payment_service.load_loan_context(loan_id, scenario_id, params)
+    ctx = loan_payment_service.load_loan_context(
+        loan_id, amount_basis_for_scenario(scenario_id), params,
+    )
     inputs = loan_resolver.LoanInputs(
         params, loan_loaders.load_loan_anchor_facts(params),
         ctx.payments, ctx.rate_changes,
@@ -2174,16 +2959,12 @@ def second_user(app, db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3); see ``seed_user`` for
-    # the rationale.
-    bootstrap_period = PayPeriod(
-        user_id=user.id,
-        start_date=date(2024, 1, 5),
-        end_date=date(2024, 1, 18),
-        period_index=0,
-    )
-    db.session.add(bootstrap_period)
-    db.session.flush()
+    # The owner's opening pay period and the schedule row beside it, from the
+    # writer that owns both; see ``_test_helpers.open_owner_calendar`` for
+    # the argument.
+    bootstrap_period = open_owner_calendar(
+        user.id, SEED_USER_BOOTSTRAP_START, cadence_days=SEED_USER_CADENCE_DAYS,
+    )[0]
 
     checking_type = (
         db.session.query(AccountType).filter_by(name="Checking").one()
@@ -2199,6 +2980,9 @@ def second_user(app, db):
             observed_on=bootstrap_period.start_date,
         ),
     )
+    # The BOOKS open the day before that assertion -- see ``seed_user`` above
+    # for the argument (plan step X-f3c-2b, ruling **R-HG**).
+    open_books_before_the_first_assertion(db.session, account)
 
     scenario = Scenario(
         user_id=user.id,
@@ -2236,31 +3020,16 @@ def second_user(app, db):
 
 @pytest.fixture()
 def seed_periods_52(app, db, seed_user):
-    """Generate 52 pay periods (2-year projection) starting from 2026-01-02.
+    """Rebuild the seeded owner's schedule as 52 pay periods from 2026-01-02.
 
-    Sets anchor to the first period.  Use for FIN tests that require
-    production-scale data volumes.
+    :func:`seed_periods` at a two-year horizon, for the FIN cases that need
+    production-scale data volumes.  Same door, same derivation.
 
     Returns:
-        List of PayPeriod objects.
+        List of PayPeriod objects, payday ascending.
     """
-    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
-
-    periods = pay_period_write.record_paydays(
-        user_id=seed_user["user"].id,
-        first_payday=date(2026, 1, 2),
-        num_periods=52,
-        cadence_days=14,
-    )
-    db.session.flush()
-
-    account = seed_user["account"]
-    _drop_seed_user_bootstrap(db, seed_user, account, periods[0])
-    return (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=seed_user["user"].id)
-        .order_by(PayPeriod.period_index)
-        .all()
+    return _reset_seed_calendar(
+        seed_user, date(2026, 1, 2), 52, SEED_USER_CADENCE_DAYS,
     )
 
 
@@ -2288,16 +3057,12 @@ def seed_second_user(app, db):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3); see ``seed_user`` for
-    # the rationale.
-    bootstrap_period = PayPeriod(
-        user_id=user.id,
-        start_date=date(2024, 1, 5),
-        end_date=date(2024, 1, 18),
-        period_index=0,
-    )
-    db.session.add(bootstrap_period)
-    db.session.flush()
+    # The owner's opening pay period and the schedule row beside it, from the
+    # writer that owns both; see ``_test_helpers.open_owner_calendar`` for
+    # the argument.
+    bootstrap_period = open_owner_calendar(
+        user.id, SEED_USER_BOOTSTRAP_START, cadence_days=SEED_USER_CADENCE_DAYS,
+    )[0]
 
     # Baseline scenario BEFORE the account, mirroring ``seed_user`` (and
     # production registration): ``create_account`` posts the opening anchor
@@ -2325,6 +3090,9 @@ def seed_second_user(app, db):
             observed_on=bootstrap_period.start_date,
         ),
     )
+    # The BOOKS open the day before that assertion -- see ``seed_user`` above
+    # for the argument (plan step X-f3c-2b, ruling **R-HG**).
+    open_books_before_the_first_assertion(db.session, account)
 
     categories = []
     for group, item in [
@@ -2357,30 +3125,17 @@ def seed_second_user(app, db):
 
 @pytest.fixture()
 def seed_second_periods(app, db, seed_second_user):
-    """Generate 10 pay periods for the second user starting 2026-01-02.
+    """Rebuild the SECOND owner's schedule as 10 pay periods from 2026-01-02.
 
-    Sets the anchor period to the first period.
+    :func:`seed_periods` for the isolation fixtures' other owner, through the
+    same door and against the same dates, so a cross-user case compares two
+    calendars built the one way.
 
     Returns:
-        List of PayPeriod objects.
+        List of PayPeriod objects, payday ascending.
     """
-    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
-
-    periods = pay_period_write.record_paydays(
-        user_id=seed_second_user["user"].id,
-        first_payday=date(2026, 1, 2),
-        num_periods=10,
-        cadence_days=14,
-    )
-    db.session.flush()
-
-    account = seed_second_user["account"]
-    _drop_seed_user_bootstrap(db, seed_second_user, account, periods[0])
-    return (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=seed_second_user["user"].id)
-        .order_by(PayPeriod.period_index)
-        .all()
+    return _reset_seed_calendar(
+        seed_second_user, date(2026, 1, 2), 10, SEED_USER_CADENCE_DAYS,
     )
 
 
@@ -2438,22 +3193,22 @@ def _build_full_user_data(db, seed_user, periods):
     )
 
     # a) Recurrence rule + transaction template + transaction.
-    rule = make_every_period_rule(db.session, user.id)
-
     template = TransactionTemplate(
         user_id=user.id,
         account_id=account.id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name="Rent Payment",
         default_amount=Decimal("1200.00"),
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     txn = Transaction(
         template_id=template.id,
+        user_id=periods[0].user_id,
         pay_period_id=periods[0].id,
         scenario_id=scenario.id,
         account_id=account.id,
@@ -2461,7 +3216,7 @@ def _build_full_user_data(db, seed_user, periods):
         name="Rent Payment",
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("1200.00"),
+        amount_ownership=AmountOwnership.own(Decimal("1200.00")),
     )
     db.session.add(txn)
 
@@ -2484,6 +3239,14 @@ def _build_full_user_data(db, seed_user, periods):
             anchor_balance=Decimal("500.00"),
         ),
     )
+    # **Its books open the day BEFORE its origination assertion** (plan step
+    # X-f3c-2b).  The factory defaults ``observed_on`` to ``display_today()``
+    # and the settle door defaults a settle day to the SAME ``display_today()``
+    # -- so every fixture meaning "this account existed, then money moved on
+    # it" landed the movement on the very day the books open, which ruling
+    # R-HG makes unrecordable (the opening equity IS that day's closing
+    # balance).  The same repair production took, and it moves no figure.
+    open_books_before_the_first_assertion(db.session, savings_account)
 
     transfer_tpl = TransferTemplate(
         user_id=user.id,
@@ -2530,7 +3293,7 @@ def seed_full_user_data(app, db, seed_user, seed_periods):
 
     Uses the calendar-anchored ``seed_periods`` fixture, so transactions
     fall in calendar 2026.  Use ``seed_full_user_data_today`` instead
-    when the test exercises a route that calls ``get_current_period``.
+    when the test exercises a route that asks which paycheck contains today.
 
     Returns:
         dict merging seed_user keys plus: periods, template, transaction,
@@ -2546,8 +3309,8 @@ def seed_full_user_data_today(app, db, seed_user, seed_periods_today):
 
     Identical payload to ``seed_full_user_data`` except the periods
     are anchored so today falls in period 4.  Use when the test
-    exercises a route that internally calls
-    ``pay_period_service.get_current_period`` (e.g. /dashboard).
+    exercises a route that internally asks which paycheck contains today
+    (e.g. /dashboard).
 
     Returns:
         dict merging seed_user keys plus: periods, template, transaction,
@@ -2589,22 +3352,22 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
     )
 
     # a) Recurrence rule + transaction template + transaction.
-    rule = make_every_period_rule(db.session, user.id)
-
     template = TransactionTemplate(
         user_id=user.id,
         account_id=account.id,
         category_id=seed_second_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name="Second User Rent",
         default_amount=Decimal("900.00"),
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     txn = Transaction(
         template_id=template.id,
+        user_id=periods[0].user_id,
         pay_period_id=periods[0].id,
         scenario_id=scenario.id,
         account_id=account.id,
@@ -2612,7 +3375,7 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
         name="Second User Rent",
         category_id=seed_second_user["categories"]["Rent"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("900.00"),
+        amount_ownership=AmountOwnership.own(Decimal("900.00")),
     )
     db.session.add(txn)
 
@@ -2635,6 +3398,14 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
             anchor_balance=Decimal("300.00"),
         ),
     )
+    # **Its books open the day BEFORE its origination assertion** (plan step
+    # X-f3c-2b).  The factory defaults ``observed_on`` to ``display_today()``
+    # and the settle door defaults a settle day to the SAME ``display_today()``
+    # -- so every fixture meaning "this account existed, then money moved on
+    # it" landed the movement on the very day the books open, which ruling
+    # R-HG makes unrecordable (the opening equity IS that day's closing
+    # balance).  The same repair production took, and it moves no figure.
+    open_books_before_the_first_assertion(db.session, savings_account)
 
     transfer_tpl = TransferTemplate(
         user_id=user.id,
@@ -2692,15 +3463,12 @@ def seed_entry_template(app, db, seed_user, seed_periods):
         db.session.query(Status).filter_by(name="Projected").one()
     )
 
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     category = seed_user["categories"]["Groceries"]
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=category.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name="Weekly Groceries",
         default_amount=Decimal("500.00"),
@@ -2708,9 +3476,12 @@ def seed_entry_template(app, db, seed_user, seed_periods):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     txn = Transaction(
         template_id=template.id,
+        user_id=seed_periods[0].user_id,
         pay_period_id=seed_periods[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -2718,7 +3489,7 @@ def seed_entry_template(app, db, seed_user, seed_periods):
         name="Weekly Groceries",
         category_id=category.id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("500.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -3016,17 +3787,25 @@ def pytest_sessionfinish(session, exitstatus):  # pylint: disable=unused-argumen
     """
     if _BOOTSTRAP_RESULT is not None:
         db_name, admin_url = _BOOTSTRAP_RESULT
-        admin_conn = psycopg2.connect(admin_url)
+        # ``try``/``finally`` so the NEW cleanup can never strand the old one.
+        # Worlds go first -- a snapshot is a database of its own, and one left
+        # behind would be a start state dated from a session that has ended --
+        # but a snapshot drop that raised must not take the worker database's
+        # drop with it, which is the cleanup this suite has always relied on.
         try:
-            admin_conn.autocommit = True
-            with admin_conn.cursor() as cur:
-                cur.execute(
-                    sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
-                        sql.Identifier(db_name)
-                    )
-                )
+            _drop_seeded_snapshots()
         finally:
-            admin_conn.close()
+            admin_conn = psycopg2.connect(admin_url)
+            try:
+                admin_conn.autocommit = True
+                with admin_conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL(
+                            "DROP DATABASE IF EXISTS {} WITH (FORCE)"
+                        ).format(sql.Identifier(db_name))
+                    )
+            finally:
+                admin_conn.close()
 
     # Only the xdist controller / single-process run aggregates and
     # prints.  Workers (PYTEST_XDIST_WORKER set) are write-only: they

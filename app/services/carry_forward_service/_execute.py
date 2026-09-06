@@ -14,8 +14,10 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.services import posting_service, transfer_service
+from app.services.amount_ownership import state_own_amount
 from app.services.cash_ledger import resolve_transaction_amount
 from app.services.row_valuation import purchases_total
 from app.utils.balance_predicates import is_projected_clause
@@ -30,12 +32,12 @@ from ._context import (
 logger = logging.getLogger(__name__)
 
 
-def carry_forward_unpaid(source_period_id, target_period_id, user_id,
-                         scenario_id):
+def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
+                         *, balance_ctx):
     """Carry forward all projected items from source to target period.
 
     Steps:
-      1. Verify both periods belong to *user_id*.
+      1. Verify both periods are in the owner's pay calendar.
       2. Find every non-deleted, projected transaction in the source
          period that belongs to the specified scenario.
       3. Partition into shadow / envelope / discrete buckets.
@@ -54,19 +56,23 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
         source_period_id: The pay_period.id to carry forward FROM.
         target_period_id: The pay_period.id to carry forward TO.
             Typically the user's current period.
-        user_id: The ID of the user who owns both periods.
-            Defense-in-depth: ownership is verified even if the
-            caller already checked at the route level.
         scenario_id: The scenario to carry forward within.  Prevents
             cross-scenario data corruption when multiple scenarios
             exist for the same user.
+        balance_ctx: The request's
+            :class:`~app.services.balance_at.BalanceContext`, opened once by
+            the route and threaded down (pay-calendar plan step C2-f3c; plan
+            step R7d-c-1 moved it from the calendar to the pass that derives
+            one).  It names the owner, so no ``user_id`` rides beside it, and
+            a period id that is not in its calendar is not this owner's --
+            which is how both periods are ownership-checked.
 
     Returns:
         int -- the number of carried items (1 per source row processed).
 
     Raises:
-        NotFoundError: If either period does not exist or does not
-            belong to *user_id*.
+        NotFoundError: If either period is not in *balance_ctx*'s calendar --
+            it does not exist, or it is not this owner's.
         ValidationError: On two conditions, either of which fails the WHOLE
             batch -- the caller must rollback the session before issuing any
             follow-up writes.  (a) The envelope branch's ``AMBIGUOUS`` guard: a
@@ -84,8 +90,9 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
             carry-forward's batch semantics, not to the guard.
     """
     ctx = _build_carry_forward_context(
-        source_period_id, target_period_id, user_id, scenario_id,
+        source_period_id, target_period_id, scenario_id, balance_ctx,
     )
+    user_id = ctx.user_id
 
     if (not ctx.shadow_txns
             and not ctx.envelope_txns
@@ -100,9 +107,10 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
     # block so a partially-mutated row (is_override flipped, pay_period
     # not yet flipped, etc.) cannot trigger an autoflush mid-iteration
     # via a downstream lazy-load query.  An autoflush at the wrong
-    # moment violates the partial unique index
-    # idx_transactions_template_period_scenario, even though the
-    # FINAL state is index-safe.  See the original 33cd21e fix and
+    # moment violates the partial unique generation index (plan step R17
+    # split it in two: idx_transactions_template_scenario_occurrence for a
+    # row that answers an occurrence, ..._undated for one that does not),
+    # even though the FINAL state is index-safe.  See the original 33cd21e fix and
     # docs/carry-forward-aftermath-implementation-plan.md Phase 4.
     with db.session.no_autoflush:
         # ── Discrete branch ────────────────────────────────────────
@@ -125,11 +133,10 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
         #
         # Two passes are required because template-linked rows must
         # flip ``is_override = TRUE`` as part of the same SQL UPDATE
-        # to keep the row index-safe (the partial unique index
-        # ``idx_transactions_template_period_scenario`` excludes
-        # override rows, so flipping the flag and the period together
-        # avoids any transient state that could collide with the
-        # rule-generated row already in the target period).  Ad-hoc
+        # to keep the row index-safe (both partial unique generation
+        # indexes exclude override rows, so flipping the flag and the
+        # period together avoids any transient state that could collide
+        # with the rule-generated row already in the target period).  Ad-hoc
         # rows (``template_id IS NULL``) sit outside that index in
         # every state and only need the period flip.
         #
@@ -227,8 +234,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
     # no_autoflush block and its flush -- NOT inside settle_from_entries (which
     # runs inside that block) -- so _emit_balanced_entry's flush lands on the
     # batch's index-safe final state, never mid-loop where a partially-mutated
-    # (template, period, scenario) row could violate
-    # idx_transactions_template_period_scenario.  The reconcile is idempotent and
+    # partially-mutated row could violate a generation index.  The reconcile is idempotent and
     # a no-op for the common empty-envelope rollover (effect 0); a
     # partially-spent source posts its debit-only checking outflow.  Only
     # envelope sources need a reconcile here: carry-forward moves only Projected
@@ -282,7 +288,7 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
          settled source row's settlement record and on its entries.
       3. If ``leftover > 0``, resolve the destination row via
          ``_resolve_or_create_target_row``, which (a) bumps the single
-         mutable (Projected) row for ``(template_id, target_period.id,
+         mutable (Projected) row for ``(template_id, target period,
          scenario_id)`` when one exists, (b) lets
          ``recurrence_engine.generate_for_template`` create the canonical
          when the destination is empty and the template is active there,
@@ -290,11 +296,11 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
          when neither applies (an inactive template, or a destination
          whose only row is finalised or soft-deleted).
          Then bump the resolved row: its own resolved amount plus the
-         leftover is written to ``estimated_amount``, its ``amount_source_id``
-         is CLEARED (a topped-up row states its own figure from then on --
-         ``ck_transactions_amount_ownership`` pairs the two, so writing one
-         without the other is an ``IntegrityError``), and ``is_override``
-         flips ``True``.  The flip blocks future
+         leftover becomes the row's OWNERSHIP through
+         ``amount_ownership.state_own_amount`` -- one act over one attribute
+         since plan step X-au-k, where it was a figure write and a separate
+         source clear whose PAIRING the CHECK had to catch -- and
+         ``is_override`` flips ``True``.  The flip blocks future
          recurrence-engine passes from regenerating the row (verified by
          the ``is_override`` skip clause in
          ``app/services/recurrence_engine.py``).  A freshly created row
@@ -320,7 +326,8 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
         source_txn: A Projected, non-deleted, envelope-tracked
             transaction in the source period.  Partitioning in
             ``carry_forward_unpaid`` guarantees the preconditions.
-        target_period: The PayPeriod object for the target period.
+        target_period: The target
+            :class:`~app.services.pay_calendar.DerivedPeriod`.
         schedule: The request's
             :class:`~app.services.generation_schedule.GenerationSchedule`
             (``ctx.schedule``), passed through to the target-row resolution.
@@ -359,6 +366,18 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
     # The source's BUDGET, resolved rather than read off the column (plan step
     # X-au-c2b): ruling E-21 fixes an envelope's base on its own amount
     # unconditionally, and a derived row stores none.
+    # **The floor is against an OVERSPENT envelope and never against a
+    # refunded one** (developer ruling **bank_import:R-IK**, 2026-09-01, plan step
+    # ``bank_import:X-gj-2b-3``).  Ruling **bank_import:R-II** made a merchant
+    # credit a NEGATIVE purchase, so ``entries_sum`` can be negative and this
+    # leftover can EXCEED the budget: an envelope budgeting `$100.00` holding
+    # one `-$50.00` refund rolls `$150.00` forward and settles at `-$50.00`,
+    # which the two together conserve -- `$100.00` of plan across the two
+    # periods.  That is the ruled NET basis and it is what
+    # ``entry_service.compute_remaining`` answers for the same row on screen;
+    # capping it at the budget was put to the developer with those numbers and
+    # refused, because it would make the rollover disagree with the figure the
+    # owner reads beside it.
     leftover = max(
         Decimal("0"),
         resolve_transaction_amount(source_txn, basis) - entries_sum,
@@ -375,19 +394,19 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
             source_txn, target_period, basis, recurrence_engine,
             schedule,
         )
-        # Resolve BEFORE writing, and clear the source in the same act: a
-        # topped-up row states its own figure from then on, which is what
-        # ``ck_transactions_amount_ownership`` pairs with a non-NULL amount
-        # (plan step X-au-c1).  Writing the column while a relation still
-        # claimed the row would be an ``IntegrityError``, and reading the
-        # column instead of resolving it would meet a ``None`` on a derived
-        # target.  It is a no-op on today's data -- nothing is declared -- and
-        # the reason it is written now is that the read above is incoherent
-        # without it.
-        target_row.estimated_amount = (
-            resolve_transaction_amount(target_row, basis) + leftover
+        # Resolve BEFORE writing: a topped-up row states its own figure from
+        # then on, and reading the column instead of resolving it would meet a
+        # ``None`` on a derived target.
+        #
+        # **Releasing the relation is no longer a second statement** (plan step
+        # X-au-k).  This read "write the column, then clear the source", two
+        # lines whose ORDER did not matter but whose PAIRING did, and a caller
+        # that wrote the first without the second was an ``IntegrityError`` at
+        # flush.  ``state_own_amount`` assigns one attribute holding one of two
+        # shapes, so the release IS the write.
+        state_own_amount(
+            target_row, resolve_transaction_amount(target_row, basis) + leftover,
         )
-        target_row.amount_source_id = None
         target_row.is_override = True
 
     transaction_service.settle_from_entries(source_txn)
@@ -410,10 +429,12 @@ def _resolve_or_create_target_row(source_txn, target_period,
         (inactive template, or a destination whose only row is finalised
         or soft-deleted); create a fresh override row.
       * ``AMBIGUOUS`` -- more than one mutable row for the same
-        ``(template, period, scenario)``.  This is corrupt pre-existing
-        state (the partial unique index prevents two non-override
-        canonicals), so refuse rather than guess which open row to
-        credit.  The route catches the ``ValidationError`` and rolls the
+        ``(template, period, scenario)`` that ``_leftover_recipient``
+        cannot choose between: they answer the same occurrence, or one
+        answers none.  Since plan step R17 a paycheck may legitimately hold
+        several rows of one template (a cadence that names it more than
+        once), and those are TOP_UP on the earliest occurrence rather than
+        a refusal.  The route catches the ``ValidationError`` and rolls the
         whole batch back.
 
     The returned row is the caller's to bump (its resolved amount plus the
@@ -422,7 +443,8 @@ def _resolve_or_create_target_row(source_txn, target_period,
 
     Args:
         source_txn: The envelope source row being carried forward.
-        target_period: The destination PayPeriod.
+        target_period: The destination
+            :class:`~app.services.pay_calendar.DerivedPeriod`.
         basis: The request's amount basis; its ``scenario_id`` is the scenario
             the rollover stays within.
         recurrence_engine: The recurrence-engine module (passed in to
@@ -448,7 +470,7 @@ def _resolve_or_create_target_row(source_txn, target_period,
         raise ValidationError(
             f"Carry forward refused for source transaction "
             f"{source_txn.id} ('{source_txn.name}'): target period "
-            f"{target_period.id} has more than one open row for "
+            f"{target_period.period_id} has more than one open row for "
             f"template {source_txn.template_id}.  Resolve the duplicate "
             f"rows manually before retrying."
         )
@@ -467,7 +489,8 @@ def _resolve_or_create_target_row(source_txn, target_period,
             source_txn.template, schedule, basis.scenario_id,
         )
         generated = next(
-            (t for t in created if t.pay_period_id == target_period.id),
+            (t for t in created
+             if t.pay_period_id == target_period.period_id),
             None,
         )
         if generated is not None:
@@ -493,10 +516,10 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
 
     The row copies its identity (account, template, name, category, type)
     from *source_txn* and is flagged ``is_override = True`` so (a) it is
-    excluded from the partial unique index
-    ``idx_transactions_template_period_scenario`` and never collides with
-    a canonical or soft-deleted sibling, and (b) the recurrence engine
-    skips it on later passes (``should_skip_period``).  ``due_date`` is
+    excluded from both partial unique generation indexes and never
+    collides with a canonical or soft-deleted sibling, and (b) the recurrence engine
+    skips it on later passes (``_recurrence_common.OccurrenceClaims`` -- an
+    undated row claims its whole paycheck).  ``due_date`` is
     left ``None``: the leftover is a manually-carried amount with no
     scheduled date, and -- unlike the GENERATE path -- there is no
     recurrence rule to derive one from, so copying the source's
@@ -509,22 +532,27 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
 
     Args:
         source_txn: The envelope source row whose identity is copied.
-        target_period: The destination PayPeriod.
+        target_period: The destination
+            :class:`~app.services.pay_calendar.DerivedPeriod`.
         scenario_id: Scenario the new row belongs to.
 
     Returns:
         The newly added (unflushed) Transaction.
     """
     row = Transaction(
+        # A carried-forward row is the SOURCE row's, moved (plan step
+        # ``pay_calendar:C13-a``): the owner travels with the identity this
+        # constructor copies, exactly as the account and template do.
+        user_id=source_txn.user_id,
         account_id=source_txn.account_id,
         template_id=source_txn.template_id,
-        pay_period_id=target_period.id,
+        pay_period_id=target_period.period_id,
         scenario_id=scenario_id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name=source_txn.name,
         category_id=source_txn.category_id,
         transaction_type_id=source_txn.transaction_type_id,
-        estimated_amount=Decimal("0"),
+        amount_ownership=AmountOwnership.own(Decimal("0")),
         due_date=None,
         is_override=True,
         is_deleted=False,

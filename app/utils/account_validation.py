@@ -30,9 +30,10 @@ The helpers fall into two groups:
   the affected account(s) carry ledger postings -- see
   ``_crosses_posting_boundary`` for why exactly those two boundaries.
 
-The six Marshmallow schema singletons (``_anchor_schema``,
+The Marshmallow schema singletons (``_anchor_schema``,
 ``_create_schema``, ``_update_schema``, ``_type_create_schema``,
-``_type_update_schema``, ``_interest_params_schema``) are also kept
+``_type_update_schema``, ``_interest_params_schema``,
+``_opening_schema``) are also kept
 here so every sub-domain module in the accounts package imports the
 same instance -- preserving the pre-split behaviour where each
 schema was constructed exactly once at module load.
@@ -55,6 +56,7 @@ from app.schemas.validation import (
     AccountTypeUpdateSchema,
     AccountUpdateSchema,
     AnchorUpdateSchema,
+    OpeningRestatementSchema,
     AppreciationParamsUpdateSchema,
     InterestParamsUpdateSchema,
 )
@@ -73,6 +75,7 @@ _update_schema = AccountUpdateSchema()
 _type_create_schema = AccountTypeCreateSchema()
 _type_update_schema = AccountTypeUpdateSchema()
 _interest_params_schema = InterestParamsUpdateSchema()
+_opening_schema = OpeningRestatementSchema()
 
 
 #: THE answer to "this collateral submission does not name an account you

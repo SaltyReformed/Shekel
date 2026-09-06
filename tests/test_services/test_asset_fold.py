@@ -42,8 +42,7 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.account import AccountAnchorHistory
-from app.models.pay_period import PayPeriod
+from app.models.interest_params import InterestParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app import ref_cache
 from app.enums import (
@@ -51,7 +50,7 @@ from app.enums import (
     CompoundingFrequencyEnum,
     DeductionTimingEnum,
 )
-from app.services import growth_engine, pay_period_service
+from app.services import growth_engine
 from app.services.balance_at import (
     _asset_contributions,
     _asset_fold,
@@ -59,24 +58,30 @@ from app.services.balance_at import (
     _cash_periods,
 )
 from app.services.balance_at._asset_contributions import ContributionInputs
+from app.services.investment_projection import AccountPayrollFeed
+from app.services.pay_calendar import calendar_for
 from app.services.balance_at._context import BalanceContext
 from app.services.cash_ledger import ReconciledThrough
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.services.projection_inputs import (
-    load_active_deductions_for_accounts,
+    load_payroll_feeds,
     load_investment_params_for_accounts,
 )
 from tests._test_helpers import (
+    account_never_asserted,
     append_balance_assertion,
     create_hysa_account,
     create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    derived_span,
+    last_covered_day,
     make_appreciating_account,
     make_investment_account,
     make_salary_profile,
     period_window,
-    restamp_opening_assertion,
+    reassert_balance_on,
+    restate_account_opening,
     settle_instant_on,
 )
 
@@ -100,41 +105,78 @@ def _ctx(seed_user, as_of=_LATE_AS_OF):
     return BalanceContext.build(seed_user["user"].id, as_of=as_of)
 
 
-def _inputs(params=None, deductions=(), gross=_ZERO):
+def _inputs(params=None, feed=None):
     """Bundle a case's contribution feed the way the seam's callers do."""
     return ContributionInputs(
         investment_params=params,
-        deductions=list(deductions),
-        salary_gross_biweekly=gross,
+        feed=AccountPayrollFeed.absent() if feed is None else feed,
     )
 
 
-def _fold(account, ctx, dates, *, params=None, deductions=(), gross=_ZERO):
+def _fold(account, ctx, dates, *, params=None, feed=None):
     """Fold *account* at each of *dates*, returning ``{date: Decimal}``."""
     return _asset_fold.fold_asset_balances(
-        account, ctx, list(dates), _inputs(params, deductions, gross),
+        account, ctx, list(dates), _inputs(params, feed),
     )
 
 
-def _view(account, ctx, periods, *, params=None, deductions=(), gross=_ZERO):
+def _view(account, ctx, periods, *, params=None, feed=None):
     """Return *account*'s modelled per-period columns."""
     return _asset_fold.asset_period_view(
-        account, ctx, _inputs(params, deductions, gross),
+        account, ctx, _inputs(params, feed),
     )
 
 
-def _growth(account, ctx, as_of, *, params=None, deductions=(), gross=_ZERO):
+def _growth(account, ctx, as_of, *, params=None, feed=None):
     """Return *account*'s ``(accrual, contribution)`` through *as_of*."""
     return _asset_fold.asset_growth_at(
-        account, ctx, as_of, _inputs(params, deductions, gross),
+        account, ctx, as_of, _inputs(params, feed),
     )
 
 
-def _deductions_for(seed_user, account):
-    """Return the account's active deductions through the shared loader."""
-    return load_active_deductions_for_accounts(
-        seed_user["user"].id, [account.id],
-    ).get(account.id, [])
+def _feed_for(seed_user, account, params=None):
+    """Return the account's payroll feed, PRICED as the seam's loader prices it.
+
+    ``ContributionInputs`` holds an
+    :class:`~app.services.investment_projection.AccountPayrollFeed` since plan
+    step **salary:R14-b** (ruling **R-SAL2**), and it is built by the real
+    loader here rather than by hand: what a deduction takes from a paycheck is
+    the paycheck ENGINE's answer, so a hand-built feed would grade this file's
+    arithmetic instead of the engine's.  It replaced an ``adapt_deductions``
+    call that flattened the ORM rows into a shape whose per-period figure this
+    tier then re-derived, raise-blind (finding **D45**).
+
+    ``params`` is passed through so the EMPLOYER half is priced too: the gross
+    an employer percentage is taken of comes off the profile
+    ``investment_params.salary_profile_id`` names (**R-SAL5**), so a case that
+    wants employer money needs the link its own ``_salaried_deduction`` wrote.
+    """
+    user_id = seed_user["user"].id
+    return load_payroll_feeds(
+        user_id, calendar_for(user_id), [account.id],
+        {} if params is None else {account.id: params},
+    )[account.id]
+
+
+def _flat_feed(periods, amount, gross=None):
+    """A feed paying *amount* on every one of *periods*' paydays.
+
+    For the cases that drive :func:`_asset_contributions._dated_events`
+    directly over periods no owner has -- the calendar-year limit rules, which
+    need a schedule spanning New Year.  The engine cannot price a paycheck for
+    a calendar nobody holds, and these cases are about the LIMIT walk rather
+    than about what a paycheck pays, so the feed is stated rather than priced.
+    """
+    return AccountPayrollFeed(
+        employee_by_payday={
+            period.start_date: Decimal(amount) for period in periods
+        },
+        gross_by_payday=(
+            {} if gross is None
+            else {period.start_date: Decimal(gross) for period in periods}
+        ),
+        is_payroll_linked=True,
+    )
 
 
 def _params_for(account):
@@ -142,7 +184,8 @@ def _params_for(account):
     return load_investment_params_for_accounts([account])[account.id]
 
 
-def _401k(seed_user, period, balance, *, opened_on, **kwargs):
+def _401k(seed_user, period, balance, *, opened_on, books_open_on=None,
+          **kwargs):
     """Build a 7%-return 401(k) whose OPENING assertion is on a CHOSEN day.
 
     ``make_investment_account`` now pins its own opening to the anchor period's
@@ -151,13 +194,31 @@ def _401k(seed_user, period, balance, *, opened_on, **kwargs):
     whole subject is WHERE an accrual window opens, and several cases need that
     day to be somewhere other than the period's start (mid-period, or on a later
     period's payday).
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        period: The anchor period to build against.
+        balance: The declared balance.
+        opened_on: The civil day the opening ASSERTION is dated.
+        books_open_on: The civil day the account's BOOKS open, when a case
+            records money moving before the assertion.  ``None`` leaves them
+            where ``reassert_balance_on`` puts them, one day before
+            *opened_on* -- which is right until a case needs the span between
+            the two (plan step X-f3c-2b, ruling **R-HG**: nothing may be dated
+            on or before the books).
+        **kwargs: Passed through to ``make_investment_account``.
+
+    Returns:
+        The created 401(k) account.
     """
     account = make_investment_account(
         seed_user, db.session, period, balance, **kwargs,
     )
-    restamp_opening_assertion(
+    reassert_balance_on(
         db.session, account, settle_instant_on(opened_on),
     )
+    if books_open_on is not None:
+        restate_account_opening(db.session, account, books_open_on)
     db.session.commit()
     return account
 
@@ -169,6 +230,16 @@ def _salaried_deduction(seed_user, account, amount):
     now build the same feed, and the modelled tier is only LIVE when one exists
     -- a fixture without it cannot tell a partition from a union (finding N-69,
     which is how the first version of the R-R pin was found vacuous).
+
+    **It also records which job FUNDS the account** (plan step
+    **salary:R14-b**, ruling **R-SAL5**), which is what
+    ``salary:R14-a``'s backfill wrote for exactly this shape: an account with a
+    deduction naming it is funded by that deduction's own profile.  Without
+    the link the employer half models nothing at all (the developer's
+    2026-09-04 ruling), so a case asserting an employer figure would assert
+    ``$0.00`` and pass for the wrong reason.  The profile pays
+    ``$94,425.24 / 26 = $3,631.74`` a paycheck, which is the gross those cases
+    size a percentage off.
     """
     profile = make_salary_profile(
         seed_user, db.session, annual_salary=Decimal("94425.24"),
@@ -186,6 +257,9 @@ def _salaried_deduction(seed_user, account, amount):
         is_active=True,
     )
     db.session.add(deduction)
+    params = load_investment_params_for_accounts([account]).get(account.id)
+    if params is not None:
+        params.salary_profile_id = profile.id
     db.session.commit()
     return deduction
 
@@ -249,7 +323,7 @@ class TestTheAccrualWindow:
             seed_user, db.session, seed_periods[0], Decimal("10000.00"),
             apy=Decimal("0.05000"),
         )
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, account, _instant(2026, 1, 9),
         )
         db.session.commit()
@@ -305,20 +379,27 @@ class TestTheAccrualWindow:
             seed_user, db.session, seed_periods[0], Decimal("100000.00"),
             Decimal("0.03000"),
         )
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, account, settle_instant_on(date(2026, 1, 2)),
         )
         db.session.commit()
-        ctx = _ctx(seed_user)
-        assert _view(account, ctx, seed_periods[:1])[
+        assert _view(account, _ctx(seed_user), seed_periods[:1])[
             seed_periods[0].id
         ].accrual == Decimal("113.44")
 
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, account, _instant(2026, 1, 9),
         )
         db.session.commit()
-        assert _view(account, ctx, seed_periods[:1])[
+        # A FRESH read pass, because the assertion above is a WRITE and a pass
+        # is a memo whose lifetime is the one read it was built for -- the rule
+        # ``BalanceContext``'s own docstring states, and the shape every write
+        # path in ``app/`` already takes.  Reusing the first pass here read the
+        # pre-write fold from plan step X-i4 on, which is the memo working:
+        # until then the cash fold was the one account-keyed derivation a pass
+        # did NOT hold, so this was the only kind of test that could reuse one
+        # across a commit and still see the new data.
+        assert _view(account, _ctx(seed_user), seed_periods[:1])[
             seed_periods[0].id
         ].accrual == Decimal("56.70")
 
@@ -338,7 +419,7 @@ class TestTheAccrualWindow:
             apy=Decimal("0.05000"),
         )
         append_balance_assertion(
-            db.session, account, seed_periods[3], "10500.00",
+            db.session, account, "10500.00",
             _instant(2026, 2, 13),
         )
         db.session.commit()
@@ -371,12 +452,22 @@ class TestTheAccrualWindow:
         and the same production-unreachable state -- migration ``cfb15e782f86``
         plus the account factory guarantee every account an opening row.
         """
-        account = create_hysa_account(
-            seed_user, db.session, seed_periods[0], Decimal("10000.00"),
+        # **Built rather than emptied** (plan step X-f3c-2c): an assertion is
+        # append-only at the database tier, so the state is reachable only by
+        # an account the assertion factory never touched.  It carries its
+        # ``InterestParams`` so it still classifies INTEREST, which is what
+        # puts the modelled fold in front of it.
+        account = account_never_asserted(
+            seed_user, db.session, name="Silent HYSA", type_name="HYSA",
+            opening_equity=Decimal("10000.00"),
         )
-        db.session.query(AccountAnchorHistory).filter_by(
+        db.session.add(InterestParams(
             account_id=account.id,
-        ).delete()
+            apy=Decimal("0.05000"),
+            compounding_frequency_id=ref_cache.compounding_frequency_id(
+                CompoundingFrequencyEnum.DAILY,
+            ),
+        ))
         db.session.commit()
 
         with pytest.raises(RuntimeError, match="zero AccountAnchorHistory"):
@@ -422,7 +513,7 @@ class TestAnAssertionAlwaysWins:
         ):
             period = seed_periods[index]
             append_balance_assertion(
-                db.session, account, period, balance,
+                db.session, account, balance,
                 settle_instant_on(period.start_date),
             )
         db.session.commit()
@@ -447,16 +538,35 @@ class TestAnAssertionAlwaysWins:
 
         A $50,000 401(k) asserted 2026-02-13 with a $5,000.00 contribution
         already recorded on 2026-01-20.  Hand-computed: the records at or before
-        the assertion sum to +$5,000.00, so the seed is
-        ``50000.00 - 5000.00 = 45000.00`` and the fold reads $45,000.00 before
-        01-20 and $50,000.00 from it.  No ACCRUAL exists there at all -- the
-        region is before the LATEST assertion -- which is ruling R-S: the
-        reverse growth projection leaves the balance path rather than becoming a
-        direction.
+        the assertion sum to +$5,000.00.  The books were DECLARED at
+        $50,000.00 (``create_account`` records the balance its owner typed), so
+        the fold reads $50,000.00 before 01-20, $55,000.00 from it, and
+        $50,000.00 from the assertion's own day, which resets it.  No ACCRUAL
+        exists in that region at all -- it is before the LATEST assertion --
+        which is ruling R-S: the reverse growth projection leaves the balance
+        path rather than becoming a direction.
+
+        **The contribution sits BETWEEN the books and the assertion, and that
+        is what changed at plan step X-f3c-2b** (finding **N-378**).  It used
+        to be dated before the books OPENED, which made the $55,000.00 a
+        genuine double count -- money already inside the declared $50,000.00,
+        counted a second time from its own day.  Ruling **R-HG** deletes that
+        state rather than the reading: books opening 2026-01-19 hold a
+        01-20 contribution honestly, and the assertion's reset on 02-13 is then
+        a real ``-$5,000.00`` correction rather than the healing of an error.
+        **Every figure below is unchanged by that move**, which is the evidence
+        the state was repaired and the fold was not.
+
+        *This read $45,000.00 / $50,000.00 until X-f3c-2a, when the seed
+        stopped being the first assertion back-computed over its own records
+        (ruling R-I) and became the stored ``budget.account_openings`` figure.
+        The old answer hid the contradiction by choosing a level that made it
+        cancel; nothing recorded $45,000.00 either.*
         """
         account = _401k(
             seed_user, seed_periods[3], Decimal("50000.00"),
             opened_on=date(2026, 2, 13),
+            books_open_on=date(2026, 1, 19),
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[1], Decimal("5000.00"),
@@ -471,9 +581,9 @@ class TestAnAssertionAlwaysWins:
             [date(2026, 1, 19), date(2026, 1, 20), date(2026, 2, 12)],
             params=_params_for(account),
         )
-        assert folded[date(2026, 1, 19)] == Decimal("45000.00")
-        assert folded[date(2026, 1, 20)] == Decimal("50000.00")
-        assert folded[date(2026, 2, 12)] == Decimal("50000.00")
+        assert folded[date(2026, 1, 19)] == Decimal("50000.00")
+        assert folded[date(2026, 1, 20)] == Decimal("55000.00")
+        assert folded[date(2026, 2, 12)] == Decimal("55000.00")
 
 
 class TestTheDailyGrain:
@@ -764,6 +874,15 @@ class TestTheContributionTier:
         The opening is asserted on period 0's first day, so period 0's own
         payday (01-02) is NOT strictly after it and contributes nothing (ruling
         R-Z); period 1's payday (01-16) is, and contributes $181.59.
+
+        **The account NAMES the job that funds it** (ruling **R-SAL5**, plan
+        step **salary:R14-b**), which is what makes this shape modellable at
+        all: no deduction names the account, so before that column there was
+        no link to any profile and the gross fell to an owner-level
+        ``.first()``.  Without the link the ruling of 2026-09-04 models no
+        employer money, and this case would assert ``$0.00`` twice and pass
+        for the wrong reason -- which is why the link is written here rather
+        than the gross being stated.
         """
         account = _401k(
             seed_user, seed_periods[0], Decimal("20000.00"),
@@ -772,12 +891,17 @@ class TestTheContributionTier:
         )
         params = _params_for(account)
         params.employer_flat_percentage = Decimal("0.0500")
+        profile = make_salary_profile(
+            seed_user, db.session, annual_salary=Decimal("94425.24"),
+        )
+        db.session.flush()
+        params.salary_profile_id = profile.id
         db.session.commit()
         ctx = _ctx(seed_user)
 
         columns = _view(
             account, ctx, seed_periods[:2], params=params,
-            gross=Decimal("3631.74"),
+            feed=_feed_for(seed_user, account, params),
         )
         assert columns[seed_periods[0].id].contribution == Decimal("0.00")
         assert columns[seed_periods[1].id].contribution == Decimal("181.59")
@@ -808,17 +932,17 @@ class TestTheContributionTier:
         _salaried_deduction(seed_user, account, "500.00")
         ctx = _ctx(seed_user)
 
-        deductions = _deductions_for(seed_user, account)
         params = _params_for(account)
+        feed = _feed_for(seed_user, account, params)
         columns = _view(
             account, ctx, seed_periods[:2], params=params,
-            deductions=deductions,
+            feed=feed,
         )
         assert columns[seed_periods[1].id].contribution == Decimal("500.00")
 
         folded = _fold(
             account, ctx, [date(2026, 1, 15), date(2026, 1, 16)],
-            params=params, deductions=deductions,
+            params=params, feed=feed,
         )
         assert folded[date(2026, 1, 15)] == Decimal("20051.97")
         assert folded[date(2026, 1, 16)] == Decimal("20555.78")
@@ -845,10 +969,11 @@ class TestTheContributionTier:
         _salaried_deduction(seed_user, account, "500.00")
         ctx = _ctx(seed_user)
 
-        deductions = _deductions_for(seed_user, account)
+        params = _params_for(account)
+        feed = _feed_for(seed_user, account, params)
         columns = _view(
             account, ctx, seed_periods[:3], params=_params_for(account),
-            deductions=deductions,
+            feed=feed,
         )
         assert columns[seed_periods[1].id].contribution == Decimal("0.00")
         assert columns[seed_periods[2].id].contribution == Decimal("500.00")
@@ -885,17 +1010,17 @@ class TestTheContributionTier:
         db.session.commit()
         ctx = _ctx(seed_user)
         params = _params_for(account)
-        deductions = _deductions_for(seed_user, account)
+        feed = _feed_for(seed_user, account, params)
 
         folded = _fold(
             account, ctx, [date(2026, 1, 19), date(2026, 1, 20)],
-            params=params, deductions=deductions,
+            params=params, feed=feed,
         )
         step = folded[date(2026, 1, 20)] - folded[date(2026, 1, 19)]
         assert Decimal("500.00") < step < Decimal("505.00")
         assert _view(
             account, ctx, seed_periods[:2],
-            params=params, deductions=deductions,
+            params=params, feed=feed,
         )[seed_periods[1].id].contribution == Decimal("100.00")
 
     def test_the_employer_match_sizes_off_the_resolved_employee_total(
@@ -930,10 +1055,11 @@ class TestTheContributionTier:
         db.session.commit()
         ctx = _ctx(seed_user)
 
-        deductions = _deductions_for(seed_user, account)
+        params = _params_for(account)
+        feed = _feed_for(seed_user, account, params)
         columns = _view(
             account, ctx, seed_periods[:2], params=_params_for(account),
-            deductions=deductions, gross=Decimal("3631.74"),
+            feed=feed,
         )
         assert columns[seed_periods[1].id].contribution == Decimal("308.95")
 
@@ -992,15 +1118,15 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         Hand-computed: the cap is ``max(limit - ytd, 0)`` applied per period,
         which is the growth engine's own ``cap_contribution_at_limit``.
         """
+        periods = self._periods(date(2026, 1, 2), 4)
         plan = _asset_contributions._ContributionPlan(
-            per_period=Decimal("500.00"),
+            feed=_flat_feed(periods, "500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
             recorded_by_period={},
         )
         events = _asset_contributions._dated_events(
-            plan, self._periods(date(2026, 1, 2), 4),
-            ReconciledThrough(date(2026, 1, 1)),
+            plan, periods, ReconciledThrough(date(2026, 1, 1)),
         )
         assert [amount for _day, amount in events] == [
             Decimal("500.00"), Decimal("500.00"), Decimal("200.00"),
@@ -1036,7 +1162,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         """
         periods = self._periods(date(2026, 1, 2), 4)
         plan = _asset_contributions._ContributionPlan(
-            per_period=Decimal("500.00"),
+            feed=_flat_feed(periods, "500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
             recorded_by_period={},
@@ -1066,75 +1192,22 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         # reachable through ``contribution_events``.
         assert list(PeriodWindow(periods=tuple(reversed(periods)))) == periods
 
-    def test_the_door_walks_the_PAYDAY_whatever_the_stored_ordinal_says(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """The stored ordinal cannot reach this feed at all any more.
-
-        The stored ``period_index`` is REVERSED underneath the schedule with a
-        direct UPDATE -- a state ``pay_period_write`` rematerialises away and
-        ``uq_pay_periods_user_index`` still permits -- and the feed is then
-        read again through a FRESH read pass, so the calendar is re-derived
-        against the mutated rows rather than replayed out of the first pass's
-        memo.  The events must be unchanged, because a contribution belongs to
-        the payday it lands on and to nothing else.
-
-        **Two controls, because the assertion is worth exactly what they are
-        worth.**  ``pay_period_service.get_all_periods`` really does hand the
-        rows back newest-first after the UPDATE (so the scramble took, and the
-        column this feed used to inherit its order from really is corrupt);
-        and the window the door is handed is in PAYDAY order regardless (so
-        the order is the derivation's, not a leftover sort).  Before plan step
-        C2-f2a the first control was what the door had to defend against with
-        a sort of its own; now the ordinal is not on the path.
-
-        Without the derivation this fails: the test above measures the walk
-        answering differently for the same plan in a different order.
-        """
-        account = _401k(
-            seed_user, seed_periods[0], Decimal("20000.00"),
-            opened_on=seed_periods[0].start_date,
-        )
-        _salaried_deduction(seed_user, account, Decimal("500.00"))
-        db.session.commit()
-        inputs = _inputs(
-            _params_for(account), _deductions_for(seed_user, account),
-            Decimal("3631.74"),
-        )
-        boundary = ReconciledThrough(seed_periods[0].start_date)
-        before = _asset_contributions.contribution_events(
-            account, _ctx(seed_user).amounts(), inputs, boundary,
-            _ctx(seed_user).reported_periods(),
-        )
-
-        for offset, period in enumerate(reversed(seed_periods)):
-            db.session.query(PayPeriod).filter_by(id=period.id).update(
-                {"period_index": 1000 + offset},
-            )
-        db.session.commit()
-        scrambled = pay_period_service.get_all_periods(seed_user["user"].id)
-        # Control 1: the stored column really is corrupt now -- the reader the
-        # feed used to take its order from hands them back newest-first.
-        assert [period.id for period in scrambled] == [
-            period.id for period in reversed(seed_periods)
-        ]
-
-        window = _ctx(seed_user).reported_periods()
-        # Control 2: the DERIVED window is in payday order anyway, because its
-        # ordinal is the position in payday order rather than the column.
-        assert [period.period_id for period in window] == [
-            period.id for period in seed_periods
-        ]
-
-        after = _asset_contributions.contribution_events(
-            account, _ctx(seed_user).amounts(), inputs, boundary, window,
-        )
-
-        assert after == before
-        assert [day for day, _amount in after] == sorted(
-            day for day, _amount in after
-        )
-        assert after  # not vacuous: the account does contribute
+    # **``test_the_door_walks_the_PAYDAY_whatever_the_stored_ordinal_says``
+    # was deleted at plan step ``pay_calendar:C4-c``, and it is worth saying
+    # what it did rather than leaving a gap.**  It REVERSED
+    # ``budget.pay_periods.period_index`` underneath a live schedule with a
+    # direct UPDATE -- a state ``uq_pay_periods_user_index`` permitted --
+    # re-read the contribution feed through a fresh read pass, and asserted
+    # the events were unchanged, with two controls: that a read ordered by
+    # the stored column really did hand the rows back newest-first, and
+    # that the derived window was in payday order regardless.
+    #
+    # The column is dropped, so the scramble is not constructible and
+    # neither control has a subject: an ordinal IS the position in payday
+    # order now.  What the case was protecting -- that the walk's answer
+    # depends on the order it is given -- is measured by
+    # ``test_the_walk_is_ORDER_SENSITIVE_which_is_what_the_window_settles``
+    # above, which needs no corrupt column to show it.
 
     def test_a_recorded_contribution_consumes_the_same_limit(self):
         """$900 recorded in period 0 leaves $300 of that year's $1,200 limit.
@@ -1149,7 +1222,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         """
         periods = self._periods(date(2026, 1, 2), 3)
         plan = _asset_contributions._ContributionPlan(
-            per_period=Decimal("500.00"),
+            feed=_flat_feed(periods, "500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
             recorded_by_period={periods[0].period_id: Decimal("900.00")},
@@ -1166,14 +1239,15 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         paydays fall in 2026 and exhaust a $600 limit ($500 then $100); the
         2027 paydays start a fresh $600 and pay $500 again.
         """
+        periods = self._periods(date(2026, 12, 4), 4)
         events = _asset_contributions._dated_events(
             _asset_contributions._ContributionPlan(
-                per_period=Decimal("500.00"),
+                feed=_flat_feed(periods, "500.00"),
                 employer_params=None,
                 annual_limit=Decimal("600.00"),
                 recorded_by_period={},
             ),
-            self._periods(date(2026, 12, 4), 4),
+            periods,
             ReconciledThrough(date(2026, 12, 3)),
         )
         assert [(day.isoformat(), amount) for day, amount in events] == [
@@ -1208,8 +1282,8 @@ class TestAnAccountThatModelsNothingIsItsCashFold:
             column.balance
             for column in _view(account, ctx, seed_periods).values()
         ] == list(
-            _cash_fold.cash_period_balances(
-                account, ctx.amounts(), ctx.as_of,
+            _cash_fold.period_balances(
+                _cash_fold.assembled_fold(account, ctx),
                 period_window(seed_periods),
             ).values()
         )
@@ -1262,6 +1336,14 @@ class TestThePerPeriodIdentity:
         )
         params = _params_for(account)
         params.employer_flat_percentage = Decimal("0.0500")
+        # The job that funds the employer contribution (R-SAL5): without it
+        # the 2026-09-04 ruling models no employer money and this shape would
+        # be missing the contribution it is here to mix in.
+        profile = make_salary_profile(
+            seed_user, db.session, annual_salary=Decimal("94425.24"),
+        )
+        db.session.flush()
+        params.salary_profile_id = profile.id
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], account,
             seed_periods[2], amount=Decimal("750.00"),
@@ -1270,17 +1352,16 @@ class TestThePerPeriodIdentity:
         db.session.commit()
         ctx = _ctx(seed_user, as_of=date(2026, 3, 1))
 
-        columns = _view(
-            account, ctx, seed_periods, params=params,
-            gross=Decimal("3631.74"),
-        )
-        cash = _cash_periods.cash_period_view(
-            account, ctx.amounts(), ctx.as_of, period_window(seed_periods),
+        feed = _feed_for(seed_user, account, params)
+        columns = _view(account, ctx, seed_periods, params=params, feed=feed)
+        cash = _cash_periods.period_view_of(
+            _cash_fold.assembled_fold(account, ctx),
+            period_window(seed_periods),
         )
         openings = _fold(
             account, ctx,
             [period.start_date - timedelta(days=1) for period in seed_periods],
-            params=params, gross=Decimal("3631.74"),
+            params=params, feed=feed,
         )
         for period in seed_periods:
             column, cash_column = columns[period.id], cash.columns[period.id]
@@ -1290,7 +1371,7 @@ class TestThePerPeriodIdentity:
                 cash_column.net
                 + cash_column.period_timing + cash_column.book_vs_bank
                 + column.accrual + column.contribution
-            ), f"identity broke on period {period.period_index}"
+            ), f"identity broke on period {derived_span(period).period_index}"
 
 
 # ``TestTheSeedFiltersTheModelledReturn`` stood here until plan step X-g2b.
@@ -1335,17 +1416,17 @@ class TestTheGrowthDecomposition:
         _salaried_deduction(seed_user, account, "500.00")
         ctx = _ctx(seed_user)
         params = _params_for(account)
-        deductions = _deductions_for(seed_user, account)
+        feed = _feed_for(seed_user, account, params)
 
         accrual, contribution = _growth(
             account, ctx, date(2026, 1, 16),
-            params=params, deductions=deductions,
+            params=params, feed=feed,
         )
         assert accrual == Decimal("55.78")
         assert contribution == Decimal("500.00")
         assert Decimal("20000.00") + accrual + contribution == _fold(
             account, ctx, [date(2026, 1, 16)],
-            params=params, deductions=deductions,
+            params=params, feed=feed,
         )[date(2026, 1, 16)]
 
     def test_the_anchor_periods_own_days_are_reported_not_hidden(
@@ -1382,7 +1463,7 @@ class TestTheGrowthDecomposition:
         ctx = _ctx(seed_user)
 
         assert _growth(
-            seed_user["account"], ctx, seed_periods[-1].end_date,
+            seed_user["account"], ctx, last_covered_day(seed_periods[-1]),
         ) == (Decimal("0.00"), Decimal("0.00"))
 
 
@@ -1430,7 +1511,7 @@ class TestTheContributionTierIsDecidedByTheKind:
         columns = _view(
             house, ctx, seed_periods[:2],
             params=_params_for(investment),
-            deductions=_deductions_for(seed_user, investment),
+            feed=_feed_for(seed_user, investment),
         )
         assert columns[seed_periods[0].id].accrual == Decimal("113.44")
         assert columns[seed_periods[0].id].contribution == Decimal("0.00")

@@ -21,7 +21,7 @@ from app.enums import StatementSourceEnum
 from app.exceptions import StatementParseError
 
 from . import _secu_csv
-from ._line import StatementLine
+from ._line import ParsedStatement
 
 #: Which parser reads which source.  A ``dict`` keyed by the ENUM MEMBER rather
 #: than by the ref-table id, because this mapping is about code and a ref id is
@@ -49,7 +49,7 @@ def supported_sources() -> "list[StatementSourceEnum]":
 
 def parse_statement(
     source: StatementSourceEnum, payload: bytes,
-) -> "tuple[str, list[StatementLine]]":
+) -> ParsedStatement:
     """Return what *payload* says, read by *source*'s adapter.
 
     Args:
@@ -61,8 +61,12 @@ def parse_statement(
         payload: The uploaded file's raw bytes.
 
     Returns:
-        ``(external_account_id, lines)`` -- what the file calls its own
-        account, and its lines in CHRONOLOGICAL order.
+        The :class:`~._line.ParsedStatement` -- what the file calls its own
+        account, its lines in CHRONOLOGICAL order, and the per-FILE facts it
+        states about itself.  **One value rather than a widening tuple**: a
+        source states more than two things (SECU opens with a ``Balance as of``
+        header), and every reader was positional at the moment that stopped
+        being obvious.
 
     Raises:
         StatementParseError: When *source* has no parser, or when its parser

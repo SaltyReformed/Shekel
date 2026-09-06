@@ -27,14 +27,18 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, TxnTypeEnum
+from app.enums import AmountSourceEnum, SettlementBasisEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.account import Account
+from app.models.amount_ownership import AmountOwnership
 from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import posting_service
+from app.services.amount_ownership import declare_derived
 from app.services import status_seam
+from app.services.settle_day import SettleDay
 from app.services.status_seam import reject_settle_day_without_settled_status
 from app.services.transfer_service._loan_posting import (
     _reject_payment_before_origination,
@@ -59,6 +63,58 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
+def shadow_names(
+    from_account: Account, to_account: Account
+) -> "tuple[str, str]":
+    """Return the ``(expense, income)`` shadow display names for two endpoints.
+
+    **A shadow's name is DERIVED from the pair's endpoints, and this is the one
+    place it is COMPOSED** -- here, beside the constructor that first applies
+    it, and called again by
+    :mod:`app.services.transfer_service._endpoints`, which re-derives both names
+    when a transfer moves between accounts.  Until plan step R10-b there was no
+    second writer, because there was no way to move a transfer's endpoints at
+    all: the recurrence engine applied a definition's account change by DELETING
+    every generated row and building replacements, which re-ran this rule by
+    re-running the create.
+
+    **One reader PARSES the format back out, and it does not go through here**
+    (adversarial review of R10-b).  ``grid_view_service._short_display_name``
+    strips ``"Transfer to "`` / ``"Transfer from "`` by literal prefix and
+    length, so the grid's row label silently mis-renders if this format ever
+    moves -- and R10-b raises that stake rather than lowering it, by making a
+    shadow's name MUTABLE after creation.  Reported rather than fixed here: the
+    coupling is display-only, the fix is a shared prefix constant that arm reads,
+    and it is not this step's to change.
+
+    Leaving a moved pair's names alone would show "Transfer to Fidelity Money
+    Market" on a row whose money now arrives at Emergency Fund -- a label that
+    contradicts its own row, which is the class of defect the recurrence arc
+    keeps finding one table at a time.
+
+    The PARENT's name is deliberately not derived here.  A transfer's own
+    ``name`` is the caller's: :func:`create_transfer` defaults it from the
+    endpoints only when the caller states none, and every template-linked
+    transfer carries its definition's name instead -- so re-deriving it on a
+    move would overwrite a stated fact with a default.
+
+    Args:
+        from_account: The source account -- the expense leg's account, and the
+            account the INCOME shadow's name says the money came from.
+        to_account: The destination account -- the income leg's account, and
+            the account the EXPENSE shadow's name says the money went to.
+
+    Returns:
+        ``(expense_shadow_name, income_shadow_name)``, in the order
+        :class:`~app.services.transfer_service._validation.TransferRows`
+        declares its legs.
+    """
+    return (
+        f"Transfer to {to_account.name}",
+        f"Transfer from {from_account.name}",
+    )
+
+
 def _build_shadow(
     xfer: Transfer, account_id: int, name: str, transaction_type_id: int
 ) -> Transaction:
@@ -66,9 +122,28 @@ def _build_shadow(
 
     Both shadows are transfer-generated (``template_id=None``,
     ``credit_payback_for_id=None``, no independent ``notes``) and inherit
-    period / scenario / status / category / amount / due_date from the
-    just-created ``xfer`` so the three rows stay equal (Transfer
-    Invariants 1 and 3).  Only the per-side fields vary.
+    period / scenario / status / category / due_date from the just-created
+    ``xfer`` so the three rows stay equal (Transfer Invariants 1 and 5).  Only
+    the per-side fields vary.
+
+    **A shadow is BORN DERIVED and stores no figure at all, which is what makes
+    Transfer Invariant 3 STRUCTURAL rather than maintained** (plan step
+    X-au-g-2c-2, ruling **R-FI**).  It copied ``xfer.amount`` into
+    ``estimated_amount`` until this step, and two hand-written repairs existed
+    to keep that copy true -- ``_update``'s propagation and ``_restore``'s drift
+    corrector, which logged and rewrote the copies that got away.  A row that
+    READS its parent cannot drift from it, so both are gone and the invariant is
+    a property of the schema: ``ck_transactions_amount_ownership`` pairs the
+    empty figure with the declaration one-to-one.
+
+    **It declares the RELATION, not the rule, so a loan payment needs no special
+    case here** (ruling **R-FK**).  Every shadow names ``PARENT_TRANSFER``;
+    whether that parent is a loan payment -- and so whether the amount model
+    prices this row from the loan's own installment or from the parent's figure
+    -- is read live off the transfer's template at price time.  That is why
+    flipping a payment to auto-track
+    (``routes/loan/payment_transfer.track_payment``) rewrites no row: the
+    declaration it would otherwise have had to add is already there.
 
     Args:
         xfer: The parent :class:`Transfer`, already flushed so
@@ -83,7 +158,13 @@ def _build_shadow(
         An unsaved :class:`Transaction`; the caller adds it to the
         session.
     """
-    return Transaction(
+    shadow = Transaction(
+        # A shadow is its PARENT TRANSFER's, and the transfer states its own
+        # owner (plan step ``pay_calendar:C13-a``).  Reading it off the parent
+        # rather than off ``account_id`` is what makes an endpoint on a
+        # stranger's account a refused INSERT instead of a row that agrees
+        # with itself and not with the transfer.
+        user_id=xfer.user_id,
         account_id=account_id,
         template_id=None,       # Shadows are transfer-generated, not template-generated.
         transfer_id=xfer.id,
@@ -93,30 +174,37 @@ def _build_shadow(
         name=name,
         category_id=xfer.category_id,
         transaction_type_id=transaction_type_id,
-        estimated_amount=xfer.amount,
         settled_amount=None,
         settled_basis_id=None,
+        # The settle DAY and its basis are the ASSERTION, and a shadow is
+        # born asserting nothing: a born-SETTLED transfer's day is written
+        # by ``apply_settle_day_to_pair`` below, through the seam, so this
+        # constructor never states one (plan step **X-az**).
+        settled_on=None,
+        settled_day_basis_id=None,
         is_override=False,
         is_deleted=False,
         credit_payback_for_id=None,
         notes=None,
         due_date=xfer.due_date,
     )
+    declare_derived(shadow, AmountSourceEnum.PARENT_TRANSFER)
+    return shadow
 
 
 @dataclass(frozen=True)
 class TransferSpec:  # pylint: disable=too-many-instance-attributes
     """The canonical inputs for creating a transfer.
 
-    Bundles the twelve fields :func:`create_transfer` needs into one
+    Bundles the fourteen fields :func:`create_transfer` needs into one
     cohesive value object so the sole transfer-creation path takes a
-    single argument rather than a twelve-field signature.  Every field
+    single argument rather than a fourteen-field signature.  Every field
     is read by ``create_transfer`` and supplied together by every caller
     (the new-transfer route, the recurrence engine, the materialize path)
     -- this is one "transfer to create" request, mirroring the columns
     of the ``Transfer`` row it produces.
 
-    Pylint: ``too-many-instance-attributes`` (12/7) -- these are the
+    Pylint: ``too-many-instance-attributes`` (14/7) -- these are the
     irreducible inputs of one creation request, read as a flat unit by
     the single consumer; there is NO cohesive sub-group to nest, so
     splitting would fragment one concept for no gain.  Mirrors the
@@ -140,14 +228,23 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
             account names.
         due_date: Optional due date stored on the transfer and mirrored
             to both shadow transactions.
-        settled_on: Optional settle DAY for a transfer created ALREADY
-            settled (plan step E1a): mirrored to both shadows exactly as
-            the update path's explicit ``settled_on`` is, with the same
-            default -- a born-settled transfer without one settled TODAY
-            (the F-048 / C-22 rule, on the user's clock).  Meaningless for
-            an unsettled status, so :func:`create_transfer` rejects that
-            combination loudly rather than recording a settle day for a
-            payment that has not happened.
+        settle_day: Optional settle DAY, and HOW that day is known
+            (:class:`app.services.settle_day.SettleDay`), for a transfer
+            created ALREADY settled (plan step E1a): mirrored to both shadows
+            exactly as the update path's explicit day is, with the same
+            default -- a born-settled transfer without one settled TODAY on
+            the ``entered`` basis (the F-048 / C-22 rule, on the user's clock
+            and on nobody's word but theirs).  Meaningless for an unsettled
+            status, so :func:`create_transfer` rejects that combination loudly
+            rather than recording a settle day for a payment that has not
+            happened.
+        occurs_on: WHICH OCCURRENCE of its template's cadence this transfer
+            answers, or ``None`` for a transfer no cadence named -- an ad-hoc
+            one, or the one-time branch of ``routes/transfers/_instances``.
+            Only the transfer recurrence engine states it, and it is NOT
+            mirrored to the shadows: a shadow is created from its parent rather
+            than from an occurrence, and no generate pass asks a shadow whether
+            an occurrence has been written (plan step **R17**).
     """
 
     user_id: int
@@ -162,7 +259,8 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
     transfer_template_id: int | None = None
     name: str | None = None
     due_date: date | None = None
-    settled_on: date | None = None
+    settle_day: SettleDay | None = None
+    occurs_on: date | None = None
 
 
 def create_transfer(spec: TransferSpec) -> Transfer:
@@ -203,15 +301,22 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         spec.to_account_id, spec.user_id, label="Destination account"
     )
     _reject_transfer_out_of_loan(from_account)
-    _get_owned_period(spec.pay_period_id, spec.user_id)
     # R-C: a loan cannot receive a payment before it originates -- the fold
     # would erase it while the cash side still debits the funding account.
-    # Deliberately AFTER ``_get_owned_period``: this guard reads that period's
-    # ``start_date`` (the installment fallback), so running it first would read
-    # an unowned row and answer a cross-user id with a 400 carrying a date from
-    # it, where the ownership rule requires an indistinguishable 404.
+    #
+    # The ownership answer and the installment's fallback basis are ONE
+    # resolution (plan step ``pay_calendar:C13-b``).  This was a bare
+    # ``_get_owned_period`` on the line above followed by a comment explaining
+    # that the guard ran second DELIBERATELY -- because it read the period's
+    # ``start_date``, so running it first would answer a cross-user id with a
+    # 400 carrying a date off that row where the rule requires an
+    # indistinguishable 404.  Passing the resolved period makes that ordering
+    # a data dependency instead of a paragraph, and deletes the guard's own
+    # second read of the same row.
     _reject_payment_before_origination(
-        to_account, spec.pay_period_id, spec.due_date,
+        to_account,
+        _get_owned_period(spec.pay_period_id, spec.user_id),
+        spec.due_date,
     )
     _get_owned_scenario(spec.scenario_id, spec.user_id)
     _get_owned_category(spec.category_id, spec.user_id)
@@ -223,7 +328,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     # born-settled branch below is gated on the status being settled, so an
     # unsettled create carrying a day never reaches it and the day would be
     # dropped in silence.  One rule, two moments.
-    reject_settle_day_without_settled_status(spec.status_id, spec.settled_on)
+    reject_settle_day_without_settled_status(spec.status_id, spec.settle_day)
 
     # ── Ref data lookups ───────────────────────────────────────────
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
@@ -231,8 +336,9 @@ def create_transfer(spec: TransferSpec) -> Transfer:
 
     # ── Determine names ────────────────────────────────────────────
     transfer_name = spec.name or f"{from_account.name} to {to_account.name}"
-    expense_shadow_name = f"Transfer to {to_account.name}"
-    income_shadow_name = f"Transfer from {from_account.name}"
+    expense_shadow_name, income_shadow_name = shadow_names(
+        from_account, to_account,
+    )
 
     # ── Create transfer record ─────────────────────────────────────
     xfer = Transfer(
@@ -244,10 +350,11 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         status_id=spec.status_id,
         transfer_template_id=spec.transfer_template_id,
         name=transfer_name,
-        amount=amount,
+        amount_ownership=AmountOwnership.own(amount),
         category_id=spec.category_id,
         notes=spec.notes,
         due_date=spec.due_date,
+        occurs_on=spec.occurs_on,
         is_override=False,
         is_deleted=False,
     )
@@ -294,7 +401,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         # from the row rather than a human correcting what the app booked (plan
         # step X-au-c3).
         apply_settle_day_to_pair(
-            expense_shadow, income_shadow, spec.settled_on,
+            expense_shadow, income_shadow, spec.settle_day,
             settlement=status_seam.Settlement(
                 amount=amount, basis=SettlementBasisEnum.DERIVED,
             ),

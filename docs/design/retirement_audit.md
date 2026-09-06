@@ -342,9 +342,9 @@ buildable surfaces, all within the existing stack and mostly with existing data:
    the page supports this number.
 2. **The per-paycheck lever.** Shekel's whole identity is the pay period, and retirement saving is a
    per-paycheck act. "Contributing $X more per period from now until 2046-06-01 closes the gap" is
-   one solve against the existing growth engine (which already has a reverse-projection primitive)
-   -- and it converts the shortfall from an alarming abstraction into the exact number the user
-   asked the page for. This is the single highest-value missing surface.
+   one solve against the existing growth engine (which already has a reverse-projection
+   primitive) -- and it converts the shortfall from an alarming abstraction into the exact number
+   the user asked the page for. This is the single highest-value missing surface.
 3. **A timeline.** 19.9 years / ~520 paychecks to the planned date; earliest vs planned retirement
    date (D7's unused field); optionally "retiring one year later changes the verdict by $Y" as the
    second lever.
@@ -554,8 +554,14 @@ through `1d9eed7c`; suite 6947 passed, pylint 10.00/10):
   `is None`; closes the LOW-05 carry-open's display half (the bracket-fallback product question
   stays open).
 - **L5b (fixed):** lever outcome lines now carry the shortfall dollars per the locked anatomy.
-- **L2/L4 (documented):** needed-path interior frame mix (endpoints exact) and the mixed
-  flat+percentage cola split artifact, each with docstring notes and a pinning test.
+- **L2 (documented):** needed-path interior frame mix (endpoints exact), with a docstring note and a
+  pinning test.
+- **L4 (FIXED, not documented):** the mixed flat+percentage cola artifact was recorded here as a
+  split-at-cutoff compounding-order problem and was not one -- it was the raise walk applying all of
+  one raise's occurrences at that raise's sort position instead of in date order. Fixed by making
+  the walk chronological; the two-phase split was then removed separately and the artifact did not
+  return. Its pinning test now asserts the invariance
+  (`test_mixed_flat_and_percentage_colas_horizon_invariant`) and carries the superseded values.
 - **L3 (recorded, deferred):** extends finding D8 -- with two pensions of different dates in unlucky
   order, the retained salary series may not match the resolved (max) retirement date. Latent until a
   second pension exists; belongs to the same future multi-profile pass as D8.
@@ -572,8 +578,8 @@ Main checkout switched to the branch (other session moved to its own worktree; t
 files stashed as "pre-retirement-P4", untracked files untouched); dev app restarted; migration
 f7a1c2d3e4b5 auto-ran. Verified with real data on the corrected model:
 
-- **The verdict flipped: 117.2% funded, $135,536 surplus** (was
-  -$552,164 shortfall on the old page). Required dropped to $787,209 (merit horizon shrinks the
+- **The verdict flipped: 117.2% funded, $135,536 surplus**
+  (was -$552,164 shortfall on the old page). Required dropped to $787,209 (merit horizon shrinks the
   income target to $11,165.74/mo, pension net $8,541.71 covers 76% of it); your-path rose to
   $922,745 (day-count fix + cola-grown employer base). All figures hand-reconciled: gap $2,624.03 x
   12 / 0.04 = 787,209 exactly; account projections sum to the caption.

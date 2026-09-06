@@ -29,13 +29,24 @@ from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
-from app.services import balance_at, savings_dashboard_service, pay_period_service
+from app.services import balance_at, savings_dashboard_service
 from app.services import account_service
 from app.services.balance_at import BalanceContext
 from app.services.account_category import account_category
 from app.services.pay_calendar import DerivedPeriod
 from app.services.savings_dashboard_service._types import AccountProjection
+
+from tests._test_helpers import (
+    all_periods,
+    amount_basis_for_scenario,
+    current_pay_period,
+    derived_span,
+    last_covered_day,
+    open_books_before_the_first_assertion,
+    settle_day_columns,
+)
 from tests.oracles.recurrence_baseline import MONTHLY
+from app.models.amount_ownership import AmountOwnership
 
 
 def _derived_period(period_id, period_index=None):
@@ -788,13 +799,6 @@ class TestGoalTrajectoryDashboard:
             db.session.add(savings)
             db.session.flush()
 
-            # Authored through the write door (plan step R7c-b): the
-            # two-axis columns are NOT NULL, so a rule naming only a pattern
-            # cannot be stored.
-            rule = make_cadence_rule(
-                seed_user["user"].id, MONTHLY,
-            )
-
             from app.models.transfer_template import TransferTemplate
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
@@ -802,10 +806,15 @@ class TestGoalTrajectoryDashboard:
                 to_account_id=savings.id,
                 name="Monthly Savings",
                 default_amount=Decimal("500.00"),
-                recurrence_rule_id=rule.id,
                 is_active=True,
             )
             db.session.add(template)
+            db.session.flush()
+            # Authored through the write door (plan step R7c-b): the
+            # two-axis columns are NOT NULL, so a rule naming only a pattern
+            # cannot be stored.  Onto the definition, which plan step R-F6
+            # made the order: the rule carries its owner's FK.
+            make_cadence_rule(template, MONTHLY)
 
             goal = SavingsGoal(
                 user_id=seed_user["user"].id,
@@ -1111,7 +1120,9 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
         from app.utils.money import round_money
 
         params = load_loan_params(acct.id)
-        loan_ctx = load_loan_context(acct.id, scenario_id, params)
+        loan_ctx = load_loan_context(
+            acct.id, amount_basis_for_scenario(scenario_id), params,
+        )
         inputs = loan_resolver.LoanInputs(
             params, load_loan_anchor_facts(params),
             loan_ctx.payments, loan_ctx.rate_changes,
@@ -2383,7 +2394,7 @@ class TestDTIRaiseAware:
             db.session.add(profile)
             db.session.flush()
 
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id
             )
             assert current is not None, (
@@ -2640,7 +2651,7 @@ class TestDTIRaiseAware:
             db.session.add(profile)
             db.session.flush()
 
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id
             )
             assert current is not None
@@ -2754,6 +2765,7 @@ def _make_projected_envelope_expense(
 
     txn = Transaction(
         template_id=template.id,
+        user_id=pay_period.user_id,
         pay_period_id=pay_period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=target_account_id,
@@ -2761,11 +2773,18 @@ def _make_projected_envelope_expense(
         name=name,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=estimated,
+        amount_ownership=AmountOwnership.own(estimated),
     )
     db_session.add(txn)
     db_session.flush()
     return txn
+
+
+#: The civil day every purchase :func:`_add_entry` writes is bought and settled
+#: on.  Named because the account's BOOKS must precede it (ruling **R-HG**,
+#: plan step X-f3c-2b) and two literals that have to agree are two a caller can
+#: split -- it was spelled twice inside the helper below and nowhere else.
+_PURCHASE_DAY = date(2026, 1, 15)
 
 
 def _add_entry(
@@ -2786,8 +2805,8 @@ def _add_entry(
         user_id=user_id,
         amount=amount,
         description=description,
-        purchased_on=date(2026, 1, 15),
-        settled_on=date(2026, 1, 15) if is_settled else None,
+        purchased_on=_PURCHASE_DAY,
+        **settle_day_columns(_PURCHASE_DAY if is_settled else None),
         is_credit=is_credit,
     ))
     db_session.flush()
@@ -2839,7 +2858,7 @@ class TestCanonicalProducerRouting:
         with app.app_context():
             # Current period == anchor period: seed_periods_today
             # places today in period 4 of a 10-period biweekly window.
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None
@@ -2931,7 +2950,7 @@ class TestCanonicalProducerRouting:
             hysa_type = (
                 db.session.query(AccountType).filter_by(name="HYSA").one()
             )
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None
@@ -2946,6 +2965,15 @@ class TestCanonicalProducerRouting:
             )
             db.session.add(hysa)
             db.session.flush()
+            # **Its books open before the entries below** (plan step X-f3c-2b,
+            # ruling **R-HG**).  ``create_account`` opens them on the
+            # assertion's own day, and ``_add_entry`` settles earlier than
+            # that -- money already inside the $614.29 declared.  Moves no
+            # figure: the assertion the arithmetic below is computed from does
+            # not move.
+            open_books_before_the_first_assertion(
+                db.session, hysa, also_before=_PURCHASE_DAY,
+            )
             # HIGH-06 / Commit 24: ``apy`` NOT NULL, no server_default.
             db.session.add(InterestParams(
                 account_id=hysa.id, apy=Decimal("0.04500"),
@@ -3015,7 +3043,7 @@ class TestCanonicalProducerRouting:
           anchor_period_balance = 614.29 + 0 - 500.00 = 114.29
         """
         with app.app_context():
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None
@@ -3309,9 +3337,11 @@ class TestNetWorthSeries:
             # the first four points ARE the four elapsed periods, and the fifth
             # IS the current one.
             assert [p.end_date for p in series.periods[:4]] == [
-                seed_periods_today[i].end_date for i in range(4)
+                last_covered_day(seed_periods_today[i]) for i in range(4)
             ]
-            assert series.periods[4].end_date == seed_periods_today[4].end_date
+            assert series.periods[4].end_date == last_covered_day(
+                seed_periods_today[4],
+            )
 
     def test_net_equals_assets_minus_liabilities_each_point(
         self, app, db, seed_user, seed_periods,
@@ -4076,8 +4106,16 @@ class TestNetWorthHorizon:
     the build rather than inside it.
     """
 
-    def test_none_without_periods(self, app, db, bare_user):
+    def test_none_without_periods(self, app, db, bare_user_with_cadence):
         """No pay periods -> the horizon producer returns None (no axis).
+
+        **``bare_user_with_cadence`` rather than ``bare_user`` since plan step
+        ``pay_calendar:C4-d``** (ruling R-PC45): ``calendar_for`` refuses an
+        owner with no ``budget.pay_schedule`` row, so a bare owner would raise
+        inside ``build_horizon`` and this case would stop being about the
+        horizon producer's own empty answer.  The owner it builds is the one
+        this case has always been about -- no PAY PERIODS -- with the half of
+        them that was never the subject left in place.
 
         **The owner really has none**, and that is the change pay-calendar plan
         step C2-f2d-3 forced.  This case built a ``_DashboardCoreData`` with
@@ -4099,7 +4137,9 @@ class TestNetWorthHorizon:
             )
             core = _DashboardCoreData(
                 accounts=[],
-                balance_ctx=BalanceContext.build(bare_user["user"].id),
+                balance_ctx=BalanceContext.build(
+                    bare_user_with_cadence["user"].id,
+                ),
             )
             assert build_horizon(core, []) is None
 
@@ -4133,58 +4173,26 @@ class TestNetWorthHorizon:
                 BalanceContext.build(user_id),
             ) is None
 
-    def test_the_narrow_producers_do_not_need_a_CALENDAR_they_never_use(
-        self, app, db, seed_user,
-    ):
-        """An owner whose paydays cannot define a calendar still gets ``/``.
-
-        **The case above CANNOT fire on this defect and that is why this one
-        exists** (adversarial code review of pay-calendar plan step C2-f2d-3).
-        ``bare_user`` has no periods at all, so ``derive_periods((), None)``
-        answers the empty calendar and nothing is refused -- the arm is never
-        reached.  The state that reaches it is an owner who HAS a payday whose
-        span exceeds the 1..365 cadence range: ``derive_periods`` refuses it,
-        and every producer that touches the calendar raises.
-
-        That owner is reachable rather than contrived: ``pay_schedule`` did not
-        exist before plan step X-ad-a, so a period stored before it carries
-        whatever span it was generated with, and ``resolve_cadence``'s legacy
-        fallback infers the cadence from the periods themselves.
-
-        The defect this pins was live for one commit: C2-f2d-3 resolved the
-        current period inside ``_load_dashboard_core_data``, so
-        ``compute_debt_summary`` RAISED where it had answered ``None``.  It is
-        the pay cadence's defect from R7a-2a, on the same loader, through the
-        same two producers, one fact over -- which is why the remedy is the
-        same: the loader resolves neither, and the bundle derives on demand.
-        """
-        # pylint: disable=import-outside-toplevel
-        from datetime import timedelta
-
-        from app.models.pay_period import PayPeriod
-        from app.services.pay_calendar import PayCalendarError
-
-        with app.app_context():
-            user_id = seed_user["user"].id
-            period = (
-                db.session.query(PayPeriod).filter_by(user_id=user_id)
-                .order_by(PayPeriod.start_date).first()
-            )
-            period.end_date = period.start_date + timedelta(days=545)
-            db.session.commit()
-
-            # The premise, asserted rather than assumed: this owner's calendar
-            # really is unbuildable, so the two assertions below are about a
-            # producer NOT reaching it rather than about a benign state.
-            with pytest.raises(PayCalendarError):
-                BalanceContext.build(user_id).calendar()
-
-            assert savings_dashboard_service.compute_debt_summary(
-                BalanceContext.build(user_id),
-            ) is None
-            assert savings_dashboard_service.compute_goal_progress(
-                BalanceContext.build(user_id),
-            ) == []
+    # **``test_a_stored_span_no_longer_decides_whether_a_calendar_derives`` was
+    # deleted at plan step ``pay_calendar:C4-c``.**  It stretched one period's
+    # stored span to 546 days and asserted the owner's cadence still came from
+    # ``budget.pay_schedule`` rather than from that span -- the inference plan
+    # step C4-b-2 deleted, whose out-of-range answer used to make every balance
+    # page a 500 (ledger row **P35**).
+    #
+    # **It planted a stored ``budget.pay_periods.end_date`` that disagreed with
+    # the owner's paydays, and plan step ``pay_calendar:C4-c`` dropped that
+    # column.**  The plant is not merely unreachable, it is SILENT: assigning to
+    # an attribute the model no longer maps sets a plain Python attribute, writes
+    # no UPDATE, and survives ``expire_all`` -- so the case and its own premise
+    # assertion both went on passing while measuring nothing.  Deleted rather
+    # than left green.
+    #
+    # There is no span to stretch now: a period's end is the day before the next
+    # payday, computed on every read.  ``resolve_cadence`` reading the schedule
+    # row is graded by ``tests/test_services/test_pay_schedule_service.py`` and
+    # by ``test_c4b2_pay_period_schedule_key.py``, neither of which needs a
+    # doctored column to say it.
 
     def test_publishes_only_the_keys_the_page_reads(
         self, app, db, seed_user, seed_periods_today,
@@ -5733,9 +5741,9 @@ class TestTheProjectionShape:
             db.session.commit()
             user_id = seed_user["user"].id
             all_period_ids = {
-                p.id for p in pay_period_service.get_all_periods(user_id)
+                p.id for p in all_periods(user_id)
             }
-            current = pay_period_service.get_current_period(user_id)
+            current = current_pay_period(user_id)
 
             data = savings_dashboard_service.compute_dashboard_data(
                 BalanceContext.build(user_id),
@@ -6467,3 +6475,172 @@ class TestTheDebtFreeDateIsOneDerivation:
             # And every other key still agrees, which is the promise itself.
             assert narrow == full
 
+
+
+class TestTheTileHorizonsFollowTheOwnersCadence:
+    """``/savings`` tiles resolve their horizons per owner, not at 6 / 13 / 26.
+
+    Recurrence plan step **R-F17**, ledger row **F-17**.  This surface reads
+    the SAME producer the account detail pages do
+    (:func:`app.utils.period_projections.project_balance_horizons`), and until
+    the offsets were derived it read them at a fixed biweekly table -- so a
+    weekly owner's tile put its six-month balance under a "1 year" chip.
+
+    **Written weekly on purpose.**  Every other case in this file is biweekly,
+    where the derivation and the constant it replaced answer the same three
+    numbers -- so a hardcoded table planted in ``_build_projection_context``
+    survives the whole rest of this suite.  Measured: it did, until this class.
+
+    **The no-CURRENT-PERIOD case that stood here was DELETED as duplicate
+    coverage** (adversarial test review of this step): it exercised the same
+    ``project_balance_horizons`` guard the pure, database-free
+    ``TestProjectBalanceHorizons::test_no_current_period_returns_empty``
+    already pins, and it survived every mutation it was written for.  The
+    no-PAYDAY case below is different and stays -- that one is about the
+    cadence READ, not the guard.
+    """
+
+    def test_the_one_year_tile_reads_the_owners_own_year(
+        self, app, db, seed_user, seed_schedule_at_cadence,
+    ):
+        """A weekly owner's chips read 13 / 26 / 52 periods out, not 6 / 13 / 26.
+
+        The account is anchored at $1,000.00 and given ONE expense in each of
+        the three windows the two rules disagree over -- at offsets +10, +20
+        and +40 -- so every horizon holds a DIFFERENT figure under the derived
+        offsets than under the biweekly table they replaced:
+
+          offset  balance      derived reads it as   the old table read it as
+          +6      $1,000.00    --                    3 months
+          +13       $900.00    3 months              6 months
+          +26       $700.00    6 months              1 year
+          +52       $400.00    1 year                --
+
+        A first draft of this case asserted the equality alone on a flat
+        $1,000.00 account, and a planted biweekly table SURVIVED it: three
+        chips agreeing because every column held the same dollar.  The three
+        expenses are what make the assertion bite, which is why the balances
+        are spelled out above rather than left to the map.
+        """
+        with app.app_context():
+            periods = seed_schedule_at_cadence(cadence_days=7, num_periods=120)
+            current = current_pay_period(seed_user["user"].id)
+            by_index = {derived_span(p).period_index: p for p in periods}
+            for offset, amount in ((10, "100.00"), (20, "200.00"), (40, "300.00")):
+                _make_projected_envelope_expense(
+                    db.session, seed_user=seed_user,
+                    pay_period=by_index[derived_span(current).period_index + offset],
+                    estimated=Decimal(amount), name=f"Bill +{offset}",
+                )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            checking = next(
+                projection for projection in result["account_data"]
+                if projection.account.id == seed_user["account"].id
+            )
+
+            assert checking.projected == {
+                "3 months": Decimal("900.00"),
+                "6 months": Decimal("700.00"),
+                "1 year": Decimal("400.00"),
+            }
+
+    def test_an_owner_with_no_paydays_is_answered_rather_than_refused(
+        self, app, db, seed_user,
+    ):
+        """No PAYDAYS: the narrow per-account producer still answers.
+
+        **The state that makes ``_build_projection_context``'s guard
+        load-bearing**, measured rather than assumed.  An account carries no
+        anchor PERIOD any more (rulings R-EH / R-EO deleted both columns), so
+        an owner can hold accounts and no pay periods.
+        ``compute_account_balance_cell`` publishes no horizon for such an
+        owner, and the guard is what keeps the offsets unresolved for a figure
+        the fragment never shows.
+
+        **The owner keeps their ``budget.pay_schedule`` row since plan step
+        ``pay_calendar:C4-d``** (ruling R-PC45), and the split is the step.
+        This case deleted the row as well, so it measured the owner who has
+        stated NOTHING -- for whom ``PayCalendar.cadence`` then refused.  That
+        owner has no calendar at all now and is refused at ``calendar_for``,
+        which is :meth:`test_an_owner_with_NO_SCHEDULE_ROW_is_refused` below.
+        What is left here is the state the guard is actually for: paydays gone,
+        rhythm stated, nothing to publish a horizon over.
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+        from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
+        from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+            PayCalendarError,
+            calendar_for,
+        )
+        with app.app_context():
+            user_id = seed_user["user"].id
+            # **The owner must hold no stored cadence, and since plan step
+            # ``pay_calendar:C4-b-1`` the fixture writes one** -- the seeded
+            # opening payday comes from ``pay_period_write.record_paydays``,
+            # which upserts the ``budget.pay_schedule`` row in the same call.
+            # So this state is CONSTRUCTED here rather than inherited from a
+            # fixture that happened to supply it, which is the stronger form:
+            # the assertion that used to stand here could only report that the
+            # fixture had changed.  It is still a real owner -- somebody who
+            # has never generated a schedule holds neither row -- and the
+            # periods go FIRST, which is the order the foreign key plan step
+            # ``pay_calendar:C4-b-2`` adds makes the only non-cascading one.
+            db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
+            db.session.commit()
+
+            # The premise, asserted rather than assumed: the owner really has
+            # no payday and really still has a rhythm, so the empty answer
+            # below is the guard's and not a refusal wearing its clothes.
+            calendar = calendar_for(user_id)
+            assert calendar.periods == ()
+            assert calendar.cadence.cadence_days == 14
+
+            cell = savings_dashboard_service.compute_account_balance_cell(
+                BalanceContext.build(user_id), seed_user["account"].id,
+            )
+
+            assert cell.projected == {}
+
+    def test_an_owner_with_NO_SCHEDULE_ROW_is_refused(
+        self, app, db, seed_user,
+    ):
+        """The other half of "no paydays", and it is a refusal (plan step C4-d).
+
+        The owner above states a rhythm and has recorded no payday under it.
+        This one has stated nothing -- no ``budget.pay_schedule`` row, which
+        since ``fk_pay_periods_schedule`` means no paydays either -- and that
+        is the companion's shape, production's user 2.
+
+        Before the ruling this owner reached the narrow producer and got an
+        empty ``projected`` map, because ``_build_projection_context`` guarded
+        the cadence read.  They are refused at ``calendar_for`` now, once, for
+        every surface, so the two halves of "this owner has no rhythm" stop
+        being answered differently by each page that happens to guard.
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+        from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
+        from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+            PayCalendarError,
+            calendar_for,
+        )
+        with app.app_context():
+            user_id = seed_user["user"].id
+            # Periods FIRST: ``fk_pay_periods_schedule`` is ON DELETE RESTRICT.
+            db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
+            db.session.commit()
+
+            with pytest.raises(PayCalendarError, match="no pay calendar"):
+                calendar_for(user_id)
+            with pytest.raises(PayCalendarError, match="no pay calendar"):
+                savings_dashboard_service.compute_account_balance_cell(
+                    BalanceContext.build(user_id), seed_user["account"].id,
+                )

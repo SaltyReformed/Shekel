@@ -32,9 +32,10 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import pay_period_service
 from app.services.balance_at import BalanceContext, grid_balance_view
+from app.services.pay_calendar import calendar_for
 from app.utils.dates import display_today, to_display_date
+
 
 _RULES = ("shipped", "derived", "order", "strict", "none")
 
@@ -126,8 +127,12 @@ def main():
             db.session.query(Account).filter_by(name="Checking").one()
         )
         user_id = account.user_id
-        periods = pay_period_service.get_all_periods(user_id)
-        current = pay_period_service.get_current_period(user_id, as_of=today)
+        # The owner's calendar: a period's span is derived from the payday
+        # set since plan step ``pay_calendar:C4-c`` dropped the column, so
+        # the report reads ``DerivedPeriod`` values throughout.
+        calendar = calendar_for(user_id)
+        periods = calendar.saved()
+        current = calendar.period_containing(today)
 
         entries = _entries_with_accounts()
         account_ids = {account_id for _entry, account_id in entries}
@@ -172,16 +177,17 @@ def main():
             if period.end_date < current.start_date:
                 continue
             label = f"{period.start_date}..{period.end_date}"
-            marker = " <= current" if period.id == current.id else ""
+            marker = (" <= current"
+                      if period.period_id == current.period_id else "")
             row = f"{label:<26}"
             for rule in _RULES:
-                row += f"{results[rule][0][period.id]:>13}"
+                row += f"{results[rule][0][period.period_id]:>13}"
             print(row + marker)
         print()
         for rule in _RULES:
             print(f"{rule:<10} flags rewritten vs stored: "
                   f"{results[rule][1]:>3}   current period: "
-                  f"{results[rule][0][current.id]}")
+                  f"{results[rule][0][current.period_id]}")
         # Nothing was committed; prove it.
         stored_true = (
             db.session.query(db.func.count(TransactionEntry.id))

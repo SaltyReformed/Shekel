@@ -48,11 +48,10 @@ from app.extensions import db
 from app.models.category import Category
 from app.services import companion_service, grid_view_service
 from app.services.cash_ledger import (
-    amount_basis,
-    display_amounts_by_id,
+    baseline_amount_basis,
+    amounts_by_id,
     settled_amounts_by_id,
 )
-from app.services.scenario_resolver import require_baseline_scenario
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.transaction_service import retained_settle_amounts_by_id
 from app.utils.dates import display_today
@@ -132,13 +131,13 @@ def _build_partial_context(
     #
     # It resolves the SAME scenario ``get_visible_transactions`` scoped its
     # query to -- the owner's baseline -- which is what makes the pins right
-    # rather than merely present.  Both go through ``require_baseline_scenario``,
-    # so an owner with no baseline meets the application's ONE designed answer
-    # (ruling R-BW) instead of two surfaces disagreeing about whether they can
-    # price anything.
-    budgets = display_amounts_by_id(
-        transactions,
-        amount_basis(owner_id, require_baseline_scenario(owner_id).id),
+    # rather than merely present.  Both go through
+    # ``cash_ledger.baseline_amount_basis``, which resolves the pin and RAISES
+    # on a missing baseline, so an owner without one meets the application's
+    # ONE designed answer (ruling R-BW) instead of two surfaces disagreeing
+    # about whether they can price anything.
+    budgets = amounts_by_id(
+        transactions, baseline_amount_basis(owner_id),
     )
     # What each row's money DID, beside what its amount IS (plan step X-au-c3).
     # The card macro reads BOTH maps -- a settled row shows the figure it
@@ -156,11 +155,24 @@ def _build_partial_context(
     retained = retained_settle_amounts_by_id(transactions)
     entry_sums = build_entry_sums_dict(transactions, budgets)
     # Pre-render context for the inline envelope entries list -- see
-    # the matching comment in app/routes/grid/page.py::_build_grid_row_data
-    # for the rate-limit rationale.  Companion shares the macro with
-    # owner mobile (mobile-first v3 plan Commit 13), so it needs the
-    # same context shape.
-    entry_lists = build_entry_lists_dict(transactions, budgets)
+    # app/routes/grid/page.py::_build_entry_maps for the rate-limit
+    # rationale.  Companion shares the macro with owner mobile
+    # (mobile-first v3 plan Commit 13), so it needs the same context shape.
+    #
+    # **The span map holds exactly ONE paycheck** (pay-calendar plan step
+    # C4-a-3), and that is a property of the query rather than of this page's
+    # size: ``get_visible_transactions`` filters
+    # ``Transaction.pay_period_id == period.period_id``, so every row here is
+    # in the period the page is titled with.  Building the map from the period
+    # the read already answered is what keeps this route off a SECOND
+    # ``calendar_for`` derivation -- ``companion_service`` derives one to
+    # answer the three questions on this record and deliberately does not hand
+    # it out (the design review of plan step C2-f2b), so asking for a whole
+    # calendar here to look up a period we are already holding would be a
+    # redundant read for no new answer.
+    entry_lists = build_entry_lists_dict(
+        transactions, budgets, {view.period.period_id: view.period},
+    )
     return {
         "periods": [view.period],
         "current_period": view.period,

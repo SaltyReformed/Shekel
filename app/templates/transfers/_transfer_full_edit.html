@@ -7,7 +7,7 @@
    Optional: source_txn_id -- when opened from a shadow transaction cell,
    the form targets #txn-cell-<source_txn_id> instead of #xfer-cell-<xfer.id>.
 
-   Finalised transfers (is_immutable: Paid / Received / Settled /
+   Finalised transfers (is_immutable: Paid / Received /
    Cancelled) lock the BUDGET DECISIONS -- the amount, the period, the category,
    the due date: those inputs are disabled so they neither accept nor submit a
    value (matching the route guard #26 -- a disabled input is omitted from the
@@ -79,6 +79,21 @@
                class="form-control form-control-sm"
                placeholder="Amount"
                {{ 'disabled' if locked else '' }}>
+        {# WHAT WE SHOWED, posted back beside whatever comes out of the box
+           above (ruling R-JR, plan step X-au-h).  The transaction popover's
+           twin of this states the argument in full.
+
+           **On a transfer this companion is what keeps the question answerable
+           after plan step X-au-f.**  The door used to compare the submitted
+           figure against ``xfer.amount``; X-au-f empties that column for a
+           generated transfer, at which point the comparison is true for every
+           call and every save claims a re-price (findings N-436 and N-448).
+           Rendering the companion from the SAME expression as the input means
+           it keeps agreeing with the box when that expression becomes the
+           resolved figure rather than the stored one -- the cutover moves both
+           or neither. #}
+        <input type="hidden" name="amount_as_rendered"
+               value="{{ xfer.amount }}">
       </div>
       {# **The ACTUAL: what the bank really moved.**
 

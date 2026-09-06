@@ -28,101 +28,212 @@ The parser was validated first: it reproduces the bank's own `2026_ytd_daily_bal
 The last row is the arc's shape in one number: **the bank speaks in purchases**, so an envelope row
 (`Groceries $505.91`) has no bank counterpart and the matcher works at two grains.
 
-**This arc does NOT replace manual entry, and that is the developer's own bound** (2026-08-13).
-Marking a row paid, ticking the reconcile panel and typing a balance all stay; the import CONFIRMS
-and CORRECTS. The two facts are separable by design -- `settled_on` is the user's record that money
-moved, the clearing link is the statement's record that it was seen -- so an owner who never imports
-anything loses nothing but the corrections.
+**The manual-entry bound MOVED on 2026-08-24** (it was "this arc does NOT replace manual entry",
+2026-08-13): a standing rule the owner stated is manual entry's consent given ONCE, so a
+rule-covered NEW swipe files itself (**R-GH**), while any row the owner made by hand still changes
+only under a tick. `settled_on` stays the record that money moved and the clearing link the record
+that it was seen; an owner who states no rules keeps exactly the old workflow.
 
 ## The rulings
 
-| ruling | date | what was ruled |
-|---|---|---|
-| **R-FP** | 2026-08-13 (developer) | **A statement importer is a SOURCE ADAPTER over one normalized line shape**; matching, review and fact-writing are source-independent, so the file path ships first and an automated source is additive. `FITID` is the idempotency key -- 342 of 342 distinct in the developer's own OFX -- so re-importing a file cannot duplicate. **A match is a PROPOSAL, never a silent apply**: it is reviewed before commit, every corrected `settled_on` goes through `system.audit_log`, and unmatched lines on BOTH sides are shown rather than guessed at. Rejected for the automated source: OFX Direct Connect, which needs no third party but stores the credentials that grant FULL account access, against SimpleFIN / Plaid, which store a revocable READ-ONLY token -- the strict option is the revocable one even though it adds a vendor. Also recorded, because it is what makes the file path first: the developer's exports already cover both accounts, so the matcher can be GRADED before an adapter exists |
-| **R-FS** | 2026-08-16 (developer) | **A MATCH has three shapes, because the grain mismatch runs in BOTH directions.** Measured on the developer's own accounts 2026-08-16: the bank shows 156 individual card-swipe lines where the app holds 34 envelope rows, and shows ONE payroll deposit where the app holds three rows (`$2,473.38` + `$100.00` + `$39.54`). So a match is (1) one line to one row, (2) a GROUP -- N app rows summing to one line, or N lines summing to one row -- with the bank's day and the clearing link written to every member, or (3) a bank line the app has no row for BECOMING a purchase against an envelope the owner picks. The third is what makes the app's records reach the bank's grain permanently, and `balance:X-f3b` is what makes it work: a purchase carrying a posting day is already a cash movement of its own whose envelope books only the remainder. Rejected: one-to-one only, which explains 119 of 227 lines and leaves half the account with no clearing fact at all |
-| **R-FT** | 2026-08-16 (developer) | **An import PERSISTS a normalized line table**, not nothing and not an id ledger. `budget.bank_statement_lines` under a `budget.statement_imports` batch, with accepted matches recorded separately and PROPOSALS never stored. Uniqueness on the line's identity makes re-import idempotent STRUCTURALLY rather than by the importer remembering to look -- and the same table is the fact `balance:X-f3a-2` needs (a statement walked line by line, so a line it did not show is NOT CLEARED) and the provenance `balance:X-f3c` needs to re-open a recorded difference. One table serves three steps; storing nothing would have each invent its own |
-| **R-FU** | 2026-08-16 (developer, on measurement) | **The source is SECU's CSV with running balances, and a line's identity is POSITIONAL rather than the bank's own id.** QBO and QFX are the same file as the OFX -- 342 identical `STMTTRN` blocks plus two Intuit routing tags -- so the real choice was CSV or OFX. The OFX truncates 326 of 361 descriptions to 32 characters and carries no per-line balance; the CSV carries the merchant, the bank's category and a running balance, and its description STARTS WITH the OFX name on 306 of 306 shared lines. What the CSV lacks is `FITID`, and **R-FP's idempotency key is superseded on measurement**: the positional key `(account, posted_on, amount, sequence within that group)` reproduced the `FITID` key EXACTLY across two exports twelve days apart -- 0 keys in one export only, 0 disagreeing ids, over 342 shared lines -- so identity is one rule for every adapter and an external id is stored as corroboration. The ordinal is what makes it total: two real charges may share a day and an amount. **AMENDED 2026-08-16 by the step's own adversarial review, because the measurement is blind on the key's only novel component**: 0 groups needed an ordinal in either export, so `sequence_in_group` was 0 on all 361 lines and the comparison tested `(day, amount)` against `FITID` -- never the ordinal, which is the one term that is derived rather than observed and the one that can be unstable. The honest statement of the ruling is therefore: identity is positional, and the positional key is proven equivalent to the bank's own id ONLY on data where no group exceeded one member. What holds the key total in the meantime is the description compare in the write door, not the ordinal -- which is finding **N-303**'s subject |
-| **R-FV** | 2026-08-17 (developer) | **A match is stored as IDENTITY, and the CLEARING LINK is not written from one.** The two answer different questions: a match says *which real movement this app row is*, and `transactions.reconciled_by_id` (ruling **R-FL**) says *which declared balance already contains it*. The second is DERIVABLE from the first once a statement carries the line -- anything matched to a line on a statement covering day D is inside any balance declared for D or later -- while the first is not derivable from the second, so the app stores the fact and derives the rest. Two measurements make it concrete rather than tidy: `reconciled_by_id` names an `account_anchor_history` row, a balance the owner typed, and a bank line names none; and R-FQ's theorem bounds a link to assertions SHARING the date rule's day, of which production has three on Checking, so a bank import could not choose among them anyway. What an accepted match writes is the bank's posted day, which makes the date rule's INPUT an observation instead of a guess. **It does not make that rule correct, and a first draft of this ruling said it did** -- R-FL rejects *"sharpening the date rule with the bank's posted day"* by name, because a civil day still cannot tell a mid-day reading from a late-posting item, and 9 of 55 Checking assertions are measured to be exactly that shape. The honest claim is narrower: the same rule now runs on a true day, which is strictly better and is still a guess until `X-f3c`. **The settle doors RELEASE any prior link as they move the day**, which this ruling inherits from `X-f3a-1` rather than justifies: the bank contradicts the DAY, not the STATEMENT, and an assertion observed weeks later still contains the row. The release is safe (`_recorded_anchor_id` falls back rather than raising, so a stale link is inert) and it is a LOSS -- a row the owner had ticked goes CLEARED back to UNKNOWN. `0` of 1,012 production rows carry a link today, so nothing is destroyed now; **N-307** owns the class. **Also ruled, on the same principle:** an unbalanced group is REFUSED and its difference NAMED, never apportioned (which needs a rule about which member is wrong -- a decision about a paycheck, not a matcher's) and never absorbed by a tolerance (which would silence finding **N-239**, the `$0.05`-`$0.06` gap on 6 of 16 payroll deposits that this matcher is the first instrument to see from OUTSIDE the app's own arithmetic -- recorded as N-312 and merged into N-239 on 2026-08-18, the row whose mechanism it measures); and a match MAY settle a still-Projected row, because a statement is evidence that money moved and 11 rows inside the developer's own statement span had never been marked as having happened -- which the GROUP path must reach too, and a first implementation excluded undated rows from it outright, so a split payroll deposit with one unsettled member was unproposable. **Rejected:** writing the link to whatever assertion the date rule already picks, which stores a copy of a derivation; and recording the BANK's own daily closing balances as assertions, which is the best data available -- only 17 of 55 hand assertions equal the bank's closing balance -- but would move Checking's OPENING assertion from 2026-03-27 back to 2026-01-02 and redefine the account's opening equity, which is the cutover's decision. That is recorded as **N-304**, owned by `balance:X-f3c` |
-| **R-FW** | 2026-08-18 (developer, on measurement) | **A match corrects a purchase's PURCHASE day as well as its posting day, and it corrects only the day the bank CONTRADICTS.** A purchase carries two clocks -- `purchased_on`, the day it was made, and `settled_on`, the day the bank took the money -- and R-FV ruled only the second. **What forced the first is that the step below it was measured to be building a duplicate machine**: of the 121 lines the matcher leaves unexplained on the developer's own 2026-08-16 statement against a 2026-08-18 production clone, **14 worth `$1,028.66` are an exact amount at the same merchant as an app purchase the screen ALSO lists as unexplained** -- six of them typed in one bookkeeping session on 2026-04-29 for swipes the bank posted on 04-24 and 04-27. They are not offered because `entry_service` refuses a posting day earlier than the purchase day, correctly; so `X-f6a-3`'s create-a-purchase door would have invited the owner to record every one of them a SECOND time. The app HAS these rows, and what is wrong is the day. **The day it writes is the one the bank STATED, not the one it cleared on**, which is a fact this app was throwing away: SECU states the swipe day inside a card line's description (`DATE 08-13`) on **182 of 361** lines, 1-4 days before posting, and the adapter copied `posted_on` into `transaction_on` on all 361 -- so the column could not distinguish an observation from a restatement. That column is now NULLABLE and the NULL means *this source states none*, because the alternative source states none at all (the OFX's `DTUSER` equals `DTPOSTED` on 359 of 361 and is one day LATER on the other two). **Rejected: taking the bank's day unconditionally**, which is the symmetric-sounding rule and is measurably worse -- it moves 27 of the 44 purchases in today's proposals, 18 of them onto a CLEARING day because the source states no swipe day at all, replacing 27 dates the owner got right to fix 3 they got wrong. Correcting only what is refuted moves exactly those 3, and each is an impossibility rather than a disagreement. **Also rejected: relaxing `ck_transaction_entries_settled_not_before_purchase`** -- money cannot leave an account before it is spent, and the constraint is what makes the correction necessary rather than optional. **AMENDED the same day by three adversarial reviews, and two of the amendments are the ruling's own consequences rather than implementation slips.** (1) Making the pairing LEGAL removed the only bound an undated purchase had: `DAY_WINDOW` is measured from `settled_on` and such a row has none, so the app offered to re-date a purchase by **59 days** on an exact-amount coincidence, overwriting the one fact that would have exposed the mis-pairing. A purchase is never truly undated -- it is now anchored on the day it was MADE, which cut the worst re-dating to 6 days and refused 2 of 17. (2) What REFUTES a purchase day is the EARLIEST line of a match, not the latest: money cannot leave before it is spent, so a purchase explained by lines posted 06-01 and 06-10 was made on or before 06-01, and testing against 06-10 left an impossibility standing that `update_entry` could not catch either. (3) The day is read from the bank's DESCRIPTION cell rather than the `Description | Memo` text the row stores, so a user's own memo cannot state it |
+**This arc's rulings are in `rulings.md`, rows whose `arc` is `bank_import`.** They moved there at
+`balance:X-ao-1` with the balance arc's, which also REPAIRED `R-FW` (`0d6f8c09`). How that lift came
+about, and what it caught, is that registry's own header to tell.
 
-**The match predicate is RULED (R-FS) and the measurement that forced its shape is worth carrying.**
-A naive exact-amount matcher plateaus: 36 of 227 bank lines at a same-day tolerance, 119 at
-plus-or-minus fourteen days, and it never reaches further. The 108 it never explains are four
-structural classes rather than noise -- 156 card-swipe lines an envelope aggregates, 9 payroll
+**The match predicate is RULED (`R-FS`) and the measurement that forced its shape is worth
+carrying.** A naive exact-amount matcher plateaus: 36 of 227 bank lines at a same-day tolerance, 119
+at plus-or-minus fourteen days, and it never reaches further. The 108 it never explains are four
+structural classes rather than noise: 156 card-swipe lines an envelope aggregates, 9 payroll
 deposits the app splits into two or three rows each, 9 card payments against 20 payback rows, and a
 handful of lines the app models not at all (dividends `$0.66`, a `-$4.00` foundation donation, ATM
-cash).
-**Two of those classes carry a defect of their own, recorded as findings rather than fixed here**:
-the app's projected paycheck runs `$0.05`-`$0.06` BELOW the actual deposit on 6 of 9 deposits, and
-the payback rows do not reconcile to what was actually paid to the card.
+cash). **Two of those classes carry a defect of their own**, and both are rows in `ledger.md` rather
+than a second copy here (rule 16): **N-239** and **N-323**.
 
 ## The steps
 
 - [ ] **X-f6** `feat(import): the bank says when money moved` -- the DECOMPOSED parent of the
       statement importer (**R-FP**), carrying **N-173**.
-      **It is no longer the sequenced follow-on the balance arc's ruling R-EB made it**: what the
-      cash cutover needed was never the import surface but the CLEARING FACTS, so its first leaf
-      moved AHEAD of that cutover on the developer's ruling 2026-08-13. It ticks with X-f6b.
-  - [ ] **X-f6a** the DECOMPOSED parent of the importer's CORE (**R-FP**), carrying **N-173**, split
-        into three leaves 2026-08-16 and into FOUR on 2026-08-18. Its one-step form was specified to
-        RULE the match predicate as its first act; the measurement came back many-to-many in BOTH
-        directions (**R-FS**), which is three separable kinds of write rather than one -- and the
-        third leaf split again when its own premise was measured false (**R-FW**).
-        **When it ticks is `steps.md`'s to say and is not restated here** -- the sentence that used
-        to name a leaf disagreed with the order table's own answer, which is what rule 16 exists to
-        stop.
-    - [x] **X-f6a-1** `40a490c3` a statement is RECORDED: four tables, one normalized line shape
-          behind a source adapter, the SECU CSV reader, and the import page. Balance-neutral on a
-          production clone (9 accounts, 434 grid cells, 6,076 daily points byte-identical with 306
-          real lines). **What a LATER leaf must obey**: identity is positional and its ordinal is
-          UNMEASURED (see R-FU's amendment), the restatement guard compares only the description,
-          and a refusal has no repair door -- **N-313**, **N-302**, **N-303**.
-    - [x] **X-f6a-2** `267cb75e` a bank line IS these rows: `budget.statement_matches` and its
-          members hold the correspondence over an exclusive arc, the proposer offers it, and an
-          accepted match writes the bank's posted day onto every member. Closed **N-173**; opened
-          **N-305**, **N-306** and **N-314**. **What a LATER step must obey**: no clearing link is
-          written from a match (**R-FV**), an unbalanced group is refused rather than apportioned,
-          and a group's day is its LATEST.
-
-    - [ ] **X-f6a-4** `feat(import): an import can be undone` -- the repair door finding **N-302**
-          says a refusal owes. A `StatementLineConflict` is TERMINAL today: no door in `app/`
-          deletes an import, a line or a recorded account identity, so once one fires for an
-          account, importing into that account is dead until someone runs SQL -- while the message
-          tells the user it "needs a human before anything overwrites it", a promise the app cannot
-          keep. **The refusal POLICY is right and stays** (refusing beats overwriting an
-          observation); what is missing is the remediation beside it. Two shapes, and the second is
-          now the cheaper one because `X-f6a-2` built the screen: a delete-this-import door,
-          audited, or the review screen resolving a divergence rather than the write door
-          hard-stopping. Balance-neutral either way -- deleting an import deletes what the bank
-          SAID, and the days an accepted match wrote are the app's own record and stay.
-
-    - [x] **X-f6a-3a** `140f1f24` + `feb2ea91` the bank owns BOTH of a purchase's days (**R-FW**):
-          `transaction_on` goes NULLABLE, the adapter reads the swipe day SECU states in a card
-          line's description, and a match corrects a purchase's `purchased_on` where the bank
-          refutes it. Forced by X-f6a-3b's premise being measured FALSE. Opened **N-312**.
-          **What a LATER leaf must obey**: a purchase day moves only where the bank REFUTES it, and
-          only a line within `DAY_WINDOW` of the day it was MADE may refute it.
-
-    - [ ] **X-f6a-3b** `feat(import): a bank line becomes a purchase` -- ruling **R-FS**'s third
-          shape. **MOVES MONEY.** The card-swipe lines an envelope aggregates have no app row to
-          match, so the import offers to CREATE one: a `transaction_entry` against an envelope the
-          owner picks, dated the bank's posted day. `balance:X-f3b` already made such a purchase a
-          cash movement of its own whose envelope books only the remainder, so this changes no rule
-          -- it supplies the records the rule was built for.
-          **Re-measure before building: the count is 74 and three other numbers are in the record.**
-          On the 2026-08-18 clone the matcher leaves 107 lines unexplained, of which 91 are outflows
-          and 74 are card swipes; R-FS's 156 predates any matcher, and the 88 X-f6a-3a started from
-          became 74 when it explained 14 as purchases the app already held. The remainder is what
-          the owner is being asked to type, so it is the number that matters. It also inherits
-          **N-312**, the undated arm's exact-amount reach.
-          **It is ranked before the cutover deliberately**: the cutover classifies what the records
-          do not explain, and this is the step that stops those lines being unexplainable. It also
-          owns **N-306**, the one-proposal-per-request control, because it rebuilds this screen.
+      **It is no longer the sequenced follow-on ruling R-EB made it** (developer, 2026-08-13): what
+      the cash cutover needed was the CLEARING FACTS, not the import surface. When it ticks is
+      `steps.md`'s to say and is not restated here (conventions rule 16).
+  - [ ] **X-f6c** `feat(import): a merchant answer names a template` -- a NEW-ENVELOPE answer
+        creates a recurring TEMPLATE once and names that template thereafter, so the container a
+        merchant rule files into carries an identity ACROSS pay periods instead of a NAME. Finding
+        **N-328**, ruled by the developer 2026-08-20 on the argument **R-GA** already makes: a
+        budget line either has a period-independent identity or it does not, so the answer set is
+        really {existing template, NEW template, never} and *a new envelope* is
+        *a new template, first time*. X-f6a-4's convergence made the fragmentation stop; it did not
+        give the row an identity, so the reuse it performs is a string compare on a name the owner
+        can rename. **Verified before the ruling rather than assumed**: a template carrying no
+        recurrence rule generates nothing (`recurrence_engine._generate.resolve_generation_plan`
+        returns `None` for a rule-less template), so this adds no unwanted future rows.
+        **It waits on `balance:X-au-e`** and the reason is a constraint rather than a preference: a
+        row that HAS a template has a derivation to read (`ck_transactions_amount_ownership`), and
+        X-au-e is the step that rebuilds what a templated row's amount is. Building against today's
+        shape would mean building it twice.
+  - [ ] **X-f6g** `refactor(reconcile): a statement-covered account reconciles from statements` --
+        the reconcile panel stops offering an account whose statements the owner imports
+        (**R-GD(d)**). **Its specification pass FOLDED into `balance:X-bj-1` on 2026-09-03**
+        (**R-JN**): coverage is defined ONCE, by the level relation, as a level row's own span, and
+        **N-343** went with it. What remains here is the panel change, reading that coverage; ranked
+        below the card arc with the other enhancements (**R-JL**).
   - [ ] **X-f6b** `feat(import): the statement arrives without being fetched` -- the automated
-        SOURCE ADAPTER (**R-FP**), additive to X-f6a's core and touching no correctness path.
-        SimpleFIN is the recommended target, on the security ground R-FP states.
-        **The identity rule does not re-open for it** (R-FU): a positional key serves a JSON feed
-        exactly as it serves a CSV, and SimpleFIN's own id joins as corroboration.
-        **It needs infrastructure this app does not have**: no scheduler, no task queue and no CLI
-        entry point exist in `app/` or `scripts/` today, so the trace decides where a scheduled
-        fetch runs before an adapter is written.
+        SOURCE ADAPTER (**R-FP**), RE-SCOPED 2026-08-24: the daily fetch lands on standing rules
+        (**R-GH**), never a review queue, and its per-sync balance is the corroboration source the
+        evidence ladder lost when SECU dropped running balances (it carries **N-338**'s ruling
+        question too). The identity rule does not re-open (R-FU): a positional key serves a JSON
+        feed as it serves a CSV, and SimpleFIN's own id joins as corroboration. The scheduler
+        decision is ruled toward host cron through a CLI door, matching the no-scheduler,
+        no-exposed-ports deployment posture. A CARD-statement adapter (Capital One -- its exports
+        are already measured in R-FP's context) is worth minting once the card ledger exists
+        (`credit_card:CC1a`..`CC1c`); no step for it exists yet, deliberately.
+
+**The release is cut after `X-gj-4b` merges and before `X-gi`** (`bank_import:R-JK`, 2026-09-03).
+
+**The X-ga..X-gj leaves are the standing-consent REDESIGN the developer approved 2026-08-24**
+(**R-GH**..**R-GL**; argument: `docs/audits/bank_import_redesign/README.md`), and
+**the shipped X-gb..X-gf-3b-2 span is ARCHIVED under rule 5** to the five
+`historical/bank_import_x_*` files: every finding it did not close is a live `ledger.md` row, and
+what it leaves a LATER step is on that step's own entry.
+
+- [x] **X-gb** `ec346c46` -- the delete door (**R-GM**), P-6. Closed **N-344**; opened **N-348**.
+- [x] **X-gc** `0452eef3` -- three surfaces stopped stating what is false (**R-GN**..**R-GP**).
+- [x] **X-gd** `d1910c95` -- a merchant answer became a standing RULE: its identity and its store.
+- [x] **X-gd-1** `395b14f7` -- a merchant is a ROW (**R-GR**).
+- [x] **X-gd-2** `154cfcec` -- the rule STORE (**R-GS**, **R-GT**); **N-353** shut, **N-358** open.
+- [x] **X-ge** `6d3e3ca1` -- the auto-apply door (**R-GH**, **R-GU**); MONEY, no press. **N-359**.
+- [x] **X-ge-1** `6d3e3ca1` -- each tier publishes the refusals it used to swallow.
+- [x] **X-gf** `ff744d79` -- the review is an exception queue; minted **X-gi**.
+- [x] **X-gf-1** `a4db019f` -- an unmatched inflow becomes income (`bank_import:R-GW`).
+- [x] **X-gf-2** `64cfca05` -- the register is not the queue (**R-GX**, **R-GY**). Shut **N-358**,
+      **N-349**.
+- [x] **X-gf-3** `ff744d79` -- decomposed parent of the queue proper; ticked with its two.
+- [x] **X-gf-3a** `44f1cc7b` -- one rule VERDICT, one SENTENCE. Shut **N-359**, **N-371**.
+- [x] **X-gf-3b** `ff744d79` -- decomposed parent of the queue's second leaf; ticked with two.
+- [x] **X-gf-3b-1** `d2248fe6` -- the workbench is not the queue (**R-HC**). Closed **N-374**.
+- [x] **X-gf-3b-2** `ff744d79` -- one list by the decision (**R-HB**, **R-HD**). **N-380** shut,
+      **N-381** open.
+- [x] **X-gj** `f119ec0a` -- the Reconcile rebuild, one page on four verbs (**R-HP**..**R-HX**);
+      ticked with `X-gj-4b`. Detail: `historical/bank_import_x_gj_as_built_2026-09-04.md`.
+- [x] **X-gj-1** `a43e8e2f` -- the page, split three ways on the services boundary.
+- [x] **X-gj-1a** `bc851df9` -- the pass becomes CARDS (**R-HP**, **R-HQ**, **R-HW**).
+- [x] **X-gj-1b** `cfcfcac9` -- the page and the three bank-line tabs; minted `X-gk`.
+- [x] **X-gj-1c** `a43e8e2f` -- the two settled tabs; the register RETIRED (**R-HU**).
+- [x] **X-gj-2** `a23315dc` -- **R-HT(a)**'s inflow answer, deposit half and refund half.
+- [x] **X-gj-2a** `751eba5d` -- a standing rule answers a DEPOSIT: the fifth `RuleAnswer`.
+- [x] **X-gj-2b** `a23315dc` -- the refund filing. Ruled **R-IK**, **R-IL**, **R-IM**.
+- [x] **X-gj-2b-1** `9920bed7` -- the entry positivity check becomes `amount <> 0` (**R-II**).
+- [x] **X-gj-2b-2** `1bfeff07` -- a rule FILES a refund; a PARTITION correction, not a new arm.
+- [x] **X-gj-2b-3** `a23315dc` -- the reader census; a purchase's sign is PICKED, not derived.
+- [x] **X-gj-3** `e42dcd6b` -- **R-HT(b)**'s group answer; its second leaf WITHDRAWN (**R-JJ**).
+- [x] **X-gj-3a** `e42dcd6b` -- a group's difference lands on a member the OWNER names (**R-IU**).
+- [x] **X-gj-4** `f119ec0a` -- the SKIP verb, split at its gate; **R-JG** took the act ROW.
+- [x] **X-gj-4a** `758bbe55` -- the STORE and its two doors: `budget.statement_line_skips`.
+- [x] **X-gj-4b** `f119ec0a` -- the SKIP verb LIT, shut on an account payment (**R-HW**, **R-JI**).
+- [x] **X-gj-4c** `56f97b98` -- the SKIPPED TAB (**R-JH**); its ORDER argument is spent.
+- [x] **X-gj-4c-1** `456d6bd2` -- a *never a purchase* answer is not a disposition (**R-JH**).
+- [x] **X-gj-4c-2** `56f97b98` -- the TAB, its Undo, and a `CardKind` the building arm states.
+- [x] **X-gk** `8569e5ec` -- the MERCHANTS surface (**R-IC**); opened **N-402** and **N-403**.
+- [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the DECOMPOSED
+      parent of the exception queue's retirement, split 2026-09-05 at its own census into five
+      leaves. **The census may delete nothing it has not shown orphaned**, because a route that
+      reads dead is not one no door reaches (**N-112**'s shape). Measured on `cef75a42`: three route
+      modules over nine endpoints, seven templates, `statement_review.js`, `.stmt-pick-list`,
+      `_queue.py`, `_register.py`, four test modules -- and SIX live inbound links to repoint FIRST.
+      *It VOIDED its own headline*: 287 matches, none naming two bank lines, measures an import
+      feature the developer had abandoned, so no step may cite it.
+  - [ ] **X-gi-1** `feat(import): the links point at Reconcile, and MATCH works unscripted` -- the
+        FOUR repoints left, plus **R-KA**: `?open=<line_id>` renders ONE card's candidate rows
+        server-side. Rendering ALL of them is 143,298 bytes of a 238,645-byte page, which is
+        **N-374** re-opened; one card is at most 15 rows. `X-gm` took the grid pair.
+        **The parent's "SIX" was a count with no census under it and it enumerated FIVE.** The
+        census, 2026-09-05, over every `url_for` to the three retiring endpoints on a template
+        `X-gi-2` keeps: `statements.html` 45, 88, 375, and `_statement_reconcile_macros.html:138`.
+        JS carries none. **THE FOURTH IS R-KA, NOT A REPOINT**: it is the Reconcile page's own
+        `<noscript>` Build link, the scriptless path for the hand-built group match **R-GJ** leaves
+        as a parked card payment's ONLY arm (`$7,412.94`), pointing into the workbench `X-gi-2`
+        deletes -- so it becomes `?open=<line_id>` or the arm goes. Had `X-gi-2` shipped on the old
+        enumeration that class would have lost its only act and looked like a clean deletion.
+  - [ ] **X-gi-2** `refactor(import): review, register and workbench retire as pages` -- **R-HU**'s
+        deletion, once nothing links in. Closes **N-404**, whose remedy was always this.
+  - [ ] **X-gi-3** `refactor(import): the queue's model has no reader` -- `_queue.py` whole
+        (`_SAID`, `_notes_for`, the evidence grouping), `_register.py`, four `ReviewSet` members,
+        their re-exports, `test_queue.py`, and `test_rules.py`'s queue half.
+        **A LATER READER must obey**: `TestNoSweptRowCarriesASentence` goes WITH the queue, never
+        before it. **Plus a TEMPLATE orphan** (X-gi-1's census, 2026-09-05):
+        `_statement_queue_macros.html` SURVIVES -- `_statement_reconcile_macros.html:3` imports
+        `books_already_hold` -- but its `match_by_hand` does not, its sole importer being the review
+        body `X-gi-2` deletes. A LIVE file holding a DEAD macro whose `url_for` names a deleted
+        endpoint; Jinja never evaluates an uncalled macro, so nothing raises until someone calls it
+        and gets a `BuildError`.
+  - [ ] **X-gi-4** `fix(import): three findings the deletion does not close` -- **N-470**'s two
+        unrendered receipt figures, **N-405**'s CSP-dead inline style, **N-402**'s 12 uncovered
+        route decorators. **N-405's ledger diagnosis was WRONG**: djlint H021 runs in pre-commit and
+        CI and refuses an inline style UNLESS a Jinja expression sits between `style=` and the tag's
+        `>`; that one blind spot passed all 159 templates. `SHK01` closes it. No X-gm dependency.
+  - [ ] **X-gi-5** `fix(import): one ordered read takes every lock a pass needs` -- **N-471**.
+        `apply_reviewed` locks in submission order across THREE loops, so two presses naming the
+        same lines in opposite order deadlock. **MOVES MONEY, OWN PR.** No X-gm dependency.
+- [x] **X-gm** `1b722d52` -- the badge and the inbox are ONE producer (**R-KB**, **R-KD**):
+      `inbox_partition` is one Python walk that BOTH read, and it owns BOTH halves, moving the
+      badge's LINK to Reconcile too. **27 against 18 -> 18 against 18.** Closed **N-476**; deleted
+      `impossible_day_count` and two SQL restatements. **A LATER STEP OBEYS TWO**: the walk decides
+      what the PROPOSER is given, so removing a line reprices another's row (**R-GD(a)**), and
+      `to_explain` counts CARDS where the badge counts LINES -- `X-gn` keeps those equal.
+- [ ] **X-gn** `feat(import): a match may name a second bank line` -- **R-KC**. The workbench is the
+      only door to a multi-line group and `X-gi-2` deletes it; the developer accepted that gap. The
+      AXIS stays: `MatchSides.of` sums over lines, `MatchDays.posted_first` exists only for it,
+      `test_accept.py` covers it, **R-JY**'s model keeps `group_id`, and
+      `uq_statement_match_members_line` forbids faking it as two matches.
+- [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
+      the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
+      same-name double-render the review measured); it mints the build steps rather than building.
+      **It waits on `credit_card:CC3c`** (developer ruling 2026-08-24): envelope filling is
+      two-source -- debit swipes from SECU lines, card swipes from card-side charges -- and the
+      card-tender entry shape the loop must design over is what CC3c rewrites. Designing over the
+      payback shape the card arc deletes is the mistake that withdrew `balance:X-au-i`.
+- [ ] **X-gl** `feat(import): a bank line's disposition is one row` -- the DECOMPOSED parent of the
+      ACT-MODEL rebuild the developer ruled from scratch on 2026-09-04 (**R-JY**). The argument,
+      what it deletes, the limit it does NOT reach and the forks still open are
+      `docs/design/statement_disposition_model.md`. ONE row per bank line names the VERB it ended on
+      and WHO decided, replacing the two act stores; **R-HP**'s *exactly one verb per line* becomes
+      a UNIQUE key rather than an invariant two doors maintain under a row lock, and
+      `applied_by_rule` (**R-GT**) becomes one column over all four verbs. Ranked beside the card
+      arc after the release **R-JK** requires: TRANSFER is the verb the disposition exists to admit,
+      and `credit_card` is what makes TRANSFER real.
+  - [ ] **X-gl-1** `feat(import): the disposition row` -- `budget.line_dispositions`, its migration,
+        its backfill from `budget.statement_matches` and `budget.statement_line_skips`, and every
+        reader repointed; `undisposed()` becomes one anti-join. It MOVES NO MONEY: a disposition
+        records what already happened. **What the archived X-gj span binds on it** (rule 5, moved
+        here because this step rewrites it): `_resolve.load_lines` takes a row lock on a
+        keyword-only `for_write` with NO default, `_preview` passing `False` because the lock is
+        refused in the `REPEATABLE READ, READ ONLY` transaction a GET runs in -- the new store must
+        keep that refusal or state why it no longer needs it.
+  - [ ] **X-gl-2** `feat(import): a disposition that claims nothing is deleted` -- the
+        `AFTER DELETE` trigger that removes a disposition whose act no longer names an app row, and
+        the deletion of `_candidates.act_still_names_a_row` and most of
+        `app/services/match_withdrawal`. **Without it X-gl-1's UNIQUE key is not earned**: a stale
+        MATCH disposition would block a later SKIP on a genuinely unanswered line. FORK, unruled --
+        keeping the filter instead gives up the key, which is most of the reason to do the work.
+  - [ ] **X-gl-3** `feat(import): a rule states a disposition and a refusal` -- `merchant_rules`
+        carries a nullable DISPOSITION beside a separate REFUSAL flag; *never a purchase* leaves the
+        answer set and `RuleAnswer` is replaced by the verb set. Makes **R-JH** structural rather
+        than a rule a reader must remember, and makes the card arc's arrival a DATA change. The
+        disposition a rule may state INCLUDES SKIP (**R-JZ**), so this step owes the `filed_total`
+        exclusion -- a skip names no created subject -- while `X-gl-5` owes the
+        *Skipped by your rule* surface those filings render on; a skip rule without that surface is
+        the harm the ruling names, not the rule. FORK 3 stays unruled: whether *never a purchase*
+        migrates to the refusal flag or is re-stated per merchant.
+  - [ ] **X-gl-4** `refactor(import): consent is a type, not a check` -- two batch values, a ticked
+        pass carrying all four act lists and a rule pass carrying only the classes **R-GH** consents
+        to. `ReviewedBatch.__post_init__` deletes whole, taking both its existing refusals and
+        `X-gj-4b`'s third with it.
+  - [ ] **X-gl-5** `feat(import): one vocabulary on every surface` -- the merchant control rebuilt
+        on the four verbs, the settled tabs' authorship split extended to SKIP, and `AddAct` deleted
+        as `LinePipeline`'s second spelling. **What the archived X-gj span binds on it**: `parked`
+        is account-payments ONLY, so its chip's MAGNITUDE is theirs alone.
+
+*`X-gh` (**R-GL**, *the bank's balance asserts the anchor*) was WITHDRAWN on 2026-09-03 as
+superseded by `balance:R-IS` and **R-JN**: under the level relation `balance:X-bj-1` builds, the
+bank's closing is an OBSERVATION and neither asserts nor restates. The record is
+`historical/decision_sweep_2026-09-03.md`; **N-470** went to `X-gi` and **N-434** to `X-bj-1`.*

@@ -20,8 +20,13 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum
-from app.exceptions import ValidationError
+from app.enums import (
+    AmountSourceEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
+from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.journal_entry import JournalEntry
@@ -37,11 +42,17 @@ from app.services import posting_service, status_seam, transaction_service
 # the package attribute would grade nothing.
 from app.services.transaction_service import _settle
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.cash_ledger import amount_basis, amounts_by_id
 from tests._test_helpers import (
+    amount_basis_for,
+    an_entered_day,
     make_every_period_rule,
     net_posted_by_day,
     settlement_basis_id,
+    settlement_if_settling,
 )
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import declare_derived, state_own_amount
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -84,13 +95,10 @@ def _make_envelope_template(seed_user, *, txn_type_name="Expense",
         .filter_by(name=txn_type_name).one()
     )
 
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Groceries"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=txn_type.id,
         name=f"Tracked {txn_type_name}",
         default_amount=Decimal(default_amount),
@@ -98,6 +106,8 @@ def _make_envelope_template(seed_user, *, txn_type_name="Expense",
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
     return template
 
 
@@ -109,6 +119,7 @@ def _make_projected_txn(seed_user, period, *, template,
     )
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -116,7 +127,7 @@ def _make_projected_txn(seed_user, period, *, template,
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=Decimal(estimated_amount),
+        amount_ownership=AmountOwnership.own(Decimal(estimated_amount)),
     )
     db.session.add(txn)
     db.session.flush()
@@ -405,6 +416,7 @@ class TestSettleFromEntriesPreconditions:
                 .filter_by(name="Expense").one()
             )
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -412,7 +424,7 @@ class TestSettleFromEntriesPreconditions:
                 name="Ad-hoc expense",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -430,12 +442,10 @@ class TestSettleFromEntriesPreconditions:
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
             )
-            rule = make_every_period_rule(db.session, seed_user["user"].id)
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
                 category_id=seed_user["categories"]["Rent"].id,
-                recurrence_rule_id=rule.id,
                 transaction_type_id=expense_type.id,
                 name="Rent",
                 default_amount=Decimal("1200.00"),
@@ -443,6 +453,8 @@ class TestSettleFromEntriesPreconditions:
             )
             db.session.add(template)
             db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            rule = make_every_period_rule(db.session, template)
 
             txn = _make_projected_txn(
                 seed_user, seed_periods[0], template=template,
@@ -689,7 +701,7 @@ class TestSettleTransactionTheVerb:
             db.session.flush()
 
             with pytest.raises(ValidationError) as exc:
-                transaction_service.settle_amount(txn)
+                transaction_service.settle_amount(txn, amount_basis_for(txn))
 
             assert "soft-deleted" in str(exc.value)
 
@@ -844,24 +856,41 @@ class TestASettleBooksTheFreshestFigure:
     """Plan step **X-aq**, ruling **R-FE**, finding **N-224**.
 
     **The defect these grade is two answers to one question.**
-    ``transactions.estimated_amount`` is a CACHE of a derivation, and
-    ``income_service.live_projected_net`` recomputes a salary-linked paycheck at
-    READ time without writing back -- so every balance surface showed the live
-    figure while every settle door booked the stored one, and settling moved the
-    projected end balance by the difference.  That is the exact invariant ruling
-    R-DH (c) states and plan step X-f3 is ship-gated on.
+    ``transactions.estimated_amount`` was a CACHE of a derivation that a
+    read-time repair recomputed without writing back -- so every balance
+    surface showed the live figure while every settle door booked the stored
+    one, and settling moved the projected end balance by the difference.  That
+    is the exact invariant ruling R-DH (c) states and plan step X-f3 is
+    ship-gated on.
+
+    **Plan step X-au-d closed it at the source rather than at the settle**, and
+    these cases are what that looks like from here.  A salary row DECLARES the
+    definition that prices it and stores no figure, so there is no cache to
+    book instead of and none to reconcile: what the settle books is what the
+    amount model answers, and its RECORD (``settled_amount`` on the ``derived``
+    basis) is the only figure the row ends up holding.  A test that passed by
+    reading the plan column would now have to report ``None``.
 
     The setup is the sibling suite's, so the expected net is not invented here:
     a ``$104,000`` profile over 26 periods with no tax configs seeded nets
     ``$4,000.00`` a period, which
-    ``test_income_service.TestLiveProjectedNet.test_recomputes_live_ignoring_stored_amount``
-    pins independently.  Every row below stores ``$1.00`` against it, so a test
-    that passed by reading the cache would have to report ``$1.00``.
+    ``test_income_service.TestSalaryNetFor.test_recomputes_live_ignoring_stored_amount``
+    pins independently.
     """
 
     @staticmethod
     def _salary_row(seed_user, period, *, estimated="1.00", is_override=False):
-        """Return a Projected income row whose template IS a salary profile."""
+        """Return a Projected income row whose template IS a salary profile.
+
+        **The row's OWNERSHIP follows its override flag, which is the shape the
+        app produces after plan step X-au-d**: a paycheck nobody has re-priced
+        DECLARES its definition and stores nothing, and one a human re-priced
+        OWNS the figure they typed (the edit door states both together through
+        ``amount_ownership.state_own_amount``, and raises the flag beside it).
+        Building the two independently would let a test assert against a state
+        ``ck_transactions_amount_ownership`` and the write doors between them
+        cannot produce.
+        """
         # pylint: disable=import-outside-toplevel  -- the salary models are not
         # part of this module's subject and importing them at the top would put
         # the paycheck stack on every transaction-service test's load path.
@@ -876,7 +905,6 @@ class TestASettleBooksTheFreshestFigure:
             name="X-aq Salary",
             annual_salary=Decimal("104000.00"),
             state_code="NC",
-            pay_periods_per_year=26,
             is_active=True,
         )
         db.session.add(profile)
@@ -891,37 +919,40 @@ class TestASettleBooksTheFreshestFigure:
             seed_user, period, template=template, estimated_amount=estimated,
         )
         txn.is_override = is_override
+        if not is_override:
+            declare_derived(txn, AmountSourceEnum.TEMPLATE)
         db.session.flush()
         return txn
 
-    def test_a_stale_estimate_settles_at_the_live_figure(
+    def test_a_declared_paycheck_settles_at_what_its_PROFILE_pays(
         self, app, db, seed_user, seed_periods,
     ):
-        """The row books ``$4,000.00``, not the ``$1.00`` in its column.
+        """The row books ``$4,000.00`` and its plan column stays empty.
 
-        The headline of X-aq.  Before it, this settle booked ``$1.00`` while
-        the grid cell beside it read ``$4,000.00`` -- ``$3,999.00`` of income
-        deleted from the projection by pressing Mark Paid.
+        The headline of X-aq, restated at X-au-d.  Before X-aq this settle
+        booked a stale ``$1.00`` while the grid cell beside it read
+        ``$4,000.00`` -- ``$3,999.00`` of income deleted from the projection by
+        pressing Mark Paid.  X-aq made the settle ask the same producer the
+        grid asked; X-au-d deleted the stale figure, so there is no second
+        answer left for either of them to prefer.
 
-        **The refresh lands in ``estimated_amount`` and ``actual_amount`` stays
-        NULL**, which is the developer's ruling of 2026-08-11 amending R-FE.
-        The stale column IS the cache, so reconciling it is what the settle
-        does; ``actual_amount`` means "a human entered this fact" and three
-        subsystems read its NULL-ness that way -- ``income_service`` (a settled
-        income row's actual is never a recomputable projection),
-        ``spending_analysis`` (only an explicitly entered actual is a surprise)
-        and the grid cell (which strikes through the estimate whenever the two
-        differ).  A machine write there is indistinguishable from a correction
-        afterwards, and permanent: the row leaves ``live_projected_net``'s
-        Projected-only candidate set at this very flip.
+        **The settle writes NO plan column**, which is what the deleted
+        reconciler used to do here.  A derived row has no cache to reconcile,
+        so the only figure this act writes is the RECORD -- and the record says
+        HOW it is known (``settled_basis_id``), which is what keeps a machine's
+        resolution distinguishable from a human's correction.
         """
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
             db.session.commit()
+            assert txn.estimated_amount is None
 
             transaction_service.settle_transaction(txn)
 
-            assert txn.estimated_amount == Decimal("4000.00")
+            assert txn.estimated_amount is None, (
+                "the settle must not hand a derived row back to its owner: "
+                "that is finding N-437, and the plan stays the definition's"
+            )
             # **The settle RECORDS what it booked, and says HOW that figure is
             # known** (plan step X-au-c3).  This asserted ``actual_amount is
             # None`` until that step, because a NULL there was the only signal
@@ -944,15 +975,13 @@ class TestASettleBooksTheFreshestFigure:
         (ruling **R-FB**) is safe: the panel's prefilled amount is what the
         statement says, and a live recompute must not overwrite it.
 
-        **It is also the control for the two columns being SEPARABLE**, which
-        is what the developer's 2026-08-11 amendment to R-FE bought.  Both
-        facts survive one settle and neither is readable off the other: the
-        machine's recompute lands in ``estimated_amount`` (``$4,000.00``, what
-        the projection was holding) and the human's in ``actual_amount``
-        (``$3,912.44``, what the bank really paid).  Under the shipped-then-
-        withdrawn single-column version the recompute was invisible here, so
-        nothing could tell a stale projection from an accurate one after the
-        fact -- and plan step X-ar's reconciler could not have cleaned it.
+        **The two facts stay SEPARABLE**, which is what the record's own basis
+        column buys: the human's ``$3,912.44`` is what the row RECORDS, and the
+        machine's ``$4,000.00`` is what its PLAN still resolves to -- from the
+        definition, not from a column, so the plan is not something this settle
+        wrote.  Under the shipped-then-withdrawn single-column version the
+        resolution was invisible here, so nothing could tell a stale projection
+        from an accurate one after the fact.
         """
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
@@ -963,18 +992,29 @@ class TestASettleBooksTheFreshestFigure:
             )
 
             assert txn.settled_amount == Decimal("3912.44")
-            assert txn.estimated_amount == Decimal("4000.00")
+            assert txn.estimated_amount is None
             assert owned_contribution(txn) == Decimal("3912.44")
+            # The PLAN, asserted rather than described: it still resolves from
+            # the definition, and it is a different number from the record.
+            # An adversarial review of this step found the docstring claiming
+            # this and nothing grading it -- ``estimated_amount is None`` says
+            # the column is empty, not that the derivation still answers.
+            assert amounts_by_id(
+                [txn], amount_basis(txn.account.user_id, txn.scenario_id),
+            )[txn.id] == Decimal("4000.00")
 
     def test_an_overridden_row_is_not_re_derived(
         self, app, db, seed_user, seed_periods,
     ):
-        """``is_override`` means the user set this amount, so nothing recomputes.
+        """A paycheck a human re-priced settles at the figure they typed.
 
-        The rule is the projection's own -- ``live_projected_net`` drops an
-        overridden row -- and this verb inherits it by ASKING that producer
-        rather than restating which rows carry a live value.  Stored
-        ``$1,234.56`` settles at ``$1,234.56`` with the column left NULL.
+        **The REASON changed at plan step X-au-d** and the outcome did not.  It
+        used to hold because the read-time repair dropped an ``is_override``
+        row; it holds now because such a row OWNS its figure, so amount rule 1
+        answers it and no salary producer is consulted at all (finding
+        **N-262**).  The flag is set here because that is what the edit door
+        does beside taking ownership, not because anything reads it to price.
+        Owned ``$1,234.56`` settles at ``$1,234.56``.
         """
         with app.app_context():
             txn = self._salary_row(
@@ -997,37 +1037,16 @@ class TestASettleBooksTheFreshestFigure:
             assert settled_figure(txn) == Decimal("1234.56")
             assert owned_contribution(txn) == Decimal("1234.56")
 
-    def test_an_agreeing_live_figure_leaves_the_column_null(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Nothing is written when the two answers already agree.
-
-        **Not an optimisation -- a signal.**  ``actual_amount`` is NULL on every
-        uncorrected row, which is what makes "a human typed a figure here"
-        readable at all; ruling R-FB's own production measurement ("11 of 93
-        settled bills carry a hand-typed correction") is made of exactly that
-        NULL.  Storing ``$4,000.00`` into the actual because the derivation
-        agreed would erase it.
-        """
-        with app.app_context():
-            txn = self._salary_row(
-                seed_user, seed_periods[0], estimated="4000.00",
-            )
-            db.session.commit()
-
-            transaction_service.settle_transaction(txn)
-
-            # **The settle RECORDS what it booked, and says HOW that figure is
-            # known** (plan step X-au-c3).  This asserted ``actual_amount is
-            # None`` until that step, because a NULL there was the only signal
-            # that no human had typed a figure -- so a settle with nothing to
-            # correct recorded nothing at all, and every reader fell back to
-            # the row's PLAN.  The signal is a column of its own now, so the
-            # record can state the figure AND stay distinguishable from a
-            # correction.
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
-            assert settled_figure(txn) == Decimal("4000.00")
-            assert owned_contribution(txn) == Decimal("4000.00")
+    # ``test_an_agreeing_live_figure_leaves_the_column_null`` lived here until
+    # plan step X-au-d, and its SUBJECT is deleted rather than the case being
+    # weakened.  It graded the cache reconciler's own suppression rule -- that
+    # a refresh writes nothing when the live figure already equals the stored
+    # one -- so that ``actual_amount``'s NULL-ness stayed readable as "a human
+    # typed this".  There is no reconciler and no cache: a derived row's plan
+    # column is empty before and after every settle, which
+    # ``test_a_declared_paycheck_settles_at_what_its_PROFILE_pays`` asserts
+    # directly.  The signal that survived is ``settled_basis_id``, and the
+    # ``derived``-versus-``corrected`` pair above is its control.
 
     def test_a_row_with_no_live_seam_is_untouched(
         self, app, db, seed_user, seed_periods,
@@ -1087,21 +1106,18 @@ class TestASettleBooksTheFreshestFigure:
     # ``test_a_hand_typed_actual_is_NEVER_overwritten`` lived here until plan
     # step X-au-c3, and its state is unconstructible now rather than merely
     # untested.  It built a PROJECTED salary row carrying
-    # ``actual_amount = 3880.15`` and proved ``_freshest_amount``'s fourth
-    # guard kept the settle from booking ``$4,000.00`` over it.  A figure
+    # ``actual_amount = 3880.15`` and proved a fourth guard on the settle's
+    # cache refresh kept it from booking ``$4,000.00`` over it.  A figure
     # RECORDS a settle now, so ``ck_transactions_settled_amount_needs_basis``
     # refuses one on a row whose money has not moved -- and the door that
     # produced the state is gone with it: the full-edit form's Actual box was
     # deleted, so the only way a human's pre-settle figure reaches a row is
-    # ``estimated_amount``, which ``routes/transactions/mutations`` DOES flag
-    # ``is_override`` for.  That flag is what excludes the row from the
-    # projection's override map, and
+    # ``estimated_amount``, and stating one there is what TAKES OWNERSHIP of
+    # the row (``amount_ownership.state_own_amount``, plan step X-au-d).  That
+    # ownership is why no derived rule prices such a row, and
     # ``test_an_overridden_row_is_not_re_derived`` above is the control on it.
-    # The guard was deleted rather than translated to ``settled_basis_id is not
-    # None``: every caller of ``_freshest_amount`` is pre-settle and both live
-    # producers are Projected-only, so no single-line mutation of the
-    # translated guard could fail a test, and a guard whose only possible test
-    # cannot fail is not a guard (finding **N-184**'s rule).
+    # The refresh and its guards are all deleted with the cache they kept
+    # true.
 
     def test_a_supplied_figure_equal_to_the_booked_one_writes_nothing(
         self, app, db, seed_user, seed_periods,
@@ -1158,61 +1174,75 @@ class TestASettleBooksTheFreshestFigure:
                                       template=template)
             txn.transfer_id = 1
 
+            # The basis comes from the SEEDED bundle, not from the row:
+            # this row is deliberately left dirty in memory (a template link
+            # AND a transfer link, which ``ck_transactions_one_pricing_link``
+            # forbids), and reading ``txn.account`` to build one would autoflush
+            # that state into an IntegrityError before the refusal under test
+            # could speak.  ``reject_unsettleable`` fires first either way; the
+            # bundle just keeps the session clean while it does.
             with pytest.raises(ValidationError) as exc:
-                transaction_service.settle_amount(txn)
+                transaction_service.settle_amount(
+                    txn,
+                    amount_basis(
+                        seed_user["user"].id, seed_user["scenario"].id,
+                    ),
+                )
 
             assert "transfer shadow" in str(exc.value)
 
-    def test_the_live_figure_is_resolved_BEFORE_the_status_flip(
+    def test_the_figure_is_resolved_BEFORE_the_status_flip(
         self, app, db, seed_user, seed_periods,
     ):
         """Order is load-bearing, and this is the control that says so.
 
-        ``live_projected_net`` filters to Projected rows, so a verb that asked
-        AFTER ``apply_status_change`` would always be handed an empty map and
-        would silently book the cache -- passing every other test in this class
-        except this one.  Grading it as an ORDER rather than as an outcome:
-        the row is Projected at the moment the resolver is called.
+        A row's valuation answers from its SETTLEMENT RECORD once it has
+        settled (``row_valuation.fixed_contribution``), so a verb that resolved
+        AFTER ``apply_status_change`` would be asking about the very record
+        that call had just written -- circular, and it would book whatever the
+        seam happened to store.  Grading it as an ORDER rather than as an
+        outcome: the row is Projected at the moment the resolution is made.
 
-        Shown to FIRE: moving the :func:`_reconcile_cached_amount` call below
-        ``apply_status_change`` books ``$1.00``.
+        **The reason survived plan step X-au-d and its mechanism did not.**  It
+        used to be that the read-time repair filtered to Projected rows, so
+        asking late always answered "nothing fresher" and the settle silently
+        booked the cache.  There is no repair and no cache; what makes the
+        order load-bearing now is the settlement record itself.
 
         **The LIST is the control on the one-resolution rule too** (developer
         ruling, 2026-08-17).  It is asserted as a whole rather than by
-        membership, so a settle that resolved the derivation twice -- which is
-        what ``booked``, the echo comparison and the cache refresh each doing
-        their own would produce -- fails here with ``[2, 2] != [2]``.  That is
-        the measurement, not a claim about it.
+        membership, so a settle that resolved the amount twice -- which is what
+        the booked figure and the echo comparison each doing their own would
+        produce -- fails here with ``[2, 2] != [2]``.  That is the measurement,
+        not a claim about it.
 
         **The spy is installed on the LEAF that owns the name**, not on the
         package that re-exports the verb, and the difference is not cosmetic:
-        ``_reconcile_cached_amount`` resolves ``_freshest_amount`` as a global
-        of its own module, so patching a package attribute would intercept
-        nothing and this control would pass while grading nothing.  It moved
-        with the code at plan step X-f2-c3, which made ``transaction_service``
-        a package; the assertion is unchanged.
+        ``settle_transaction`` resolves ``settle_amount`` as a global of its
+        own module, so patching a package attribute would intercept nothing and
+        this control would pass while grading nothing.
         """
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
             db.session.commit()
 
             seen_status = []
-            real = _settle._freshest_amount  # noqa: SLF001
+            real = _settle.settle_amount
 
             def _spy(row, basis):
                 seen_status.append(row.status_id)
                 return real(row, basis)
 
-            _settle._freshest_amount = _spy  # noqa: SLF001
+            _settle.settle_amount = _spy
             try:
                 transaction_service.settle_transaction(txn)
             finally:
-                _settle._freshest_amount = real  # noqa: SLF001
+                _settle.settle_amount = real
 
             assert seen_status == [
                 ref_cache.status_id(StatusEnum.PROJECTED),
             ]
-            assert txn.estimated_amount == Decimal("4000.00")
+            assert txn.estimated_amount is None
             # **The settle RECORDS what it booked, and says HOW that figure is
             # known** (plan step X-au-c3).  This asserted ``actual_amount is
             # None`` until that step, because a NULL there was the only signal
@@ -1433,7 +1463,7 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             db.session.flush()
 
             self._revert(txn)
-            txn.estimated_amount = Decimal("610.00")
+            state_own_amount(txn, Decimal("610.00"))
             db.session.flush()
 
             booked_a_human_figure = self._settle(txn)
@@ -1470,7 +1500,7 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             self._revert(txn)
             db.session.flush()
 
-            offered = transaction_service.settle_amount(txn)
+            offered = transaction_service.settle_amount(txn, amount_basis_for(txn))
             assert offered == Decimal("245.32")
 
             self._settle(txn)
@@ -1501,11 +1531,13 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
 
             self._revert(txn)
-            txn.estimated_amount = Decimal("610.00")
+            state_own_amount(txn, Decimal("610.00"))
             db.session.flush()
             # Nothing is OFFERED from the retained record either -- the offer
             # and the booking are one expression, so both re-derive.
-            assert transaction_service.settle_amount(txn) == Decimal("610.00")
+            assert transaction_service.settle_amount(
+                txn, amount_basis_for(txn),
+            ) == Decimal("610.00")
 
             self._settle(txn)
             db.session.flush()
@@ -1637,11 +1669,17 @@ class TestAReplayedSettleIsANoOp:
     def test_it_is_NARROWER_than_the_settled_band(
         self, app, db, seed_user, seed_periods,
     ):
-        """``Settled -> Paid`` still owes the state machine an answer.
+        """``Paid -> Received`` still owes the state machine an answer.
 
         A first version of this guard asked ``status_id in settled_status_ids()``
         and thereby swallowed an ILLEGAL transition, turning a designed 400 into
         a silent 200.  Only the IDENTITY move is nothing to do.
+
+        The specimen was ``Settled -> Paid`` until plan step **balance:X-am**
+        deleted the archive.  ``Paid -> Received`` is now the ONLY non-identity
+        move inside the settled band -- the band is exactly those two -- so it
+        is the one case that can still tell a band test from an identity test.
+        Without it this guard's narrowness would be unfalsifiable.
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
@@ -1650,14 +1688,20 @@ class TestAReplayedSettleIsANoOp:
             )
             _make_entry(txn.id, seed_user["user"].id, "40.00", "Store A")
             db.session.flush()
-            transaction_service.settle_transaction(txn)
+            # An INCOME row, so its type-correct settle target is Received and
+            # the Paid it holds is the other member of the band.
+            txn.transaction_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
             status_seam.apply_status_change(
-                txn, ref_cache.status_id(StatusEnum.SETTLED),
+                txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(
+                    txn, ref_cache.status_id(StatusEnum.DONE),
+                ),
             )
             db.session.flush()
 
-            # The row is ARCHIVED; a settle asks for Paid, which is not the
-            # status it holds -- so this is a transition, not a re-submit.
+            # The row holds Paid; its TYPE settles as Received, which is not
+            # the status it holds -- so this is a transition, not a re-submit,
+            # and the state machine refuses it.
             with pytest.raises(ValidationError):
                 transaction_service.settle_transaction(txn)
 
@@ -1728,9 +1772,20 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
     sits beside the Actual box -- so a user correcting a figure on the way to
     filing the row away got half of what they asked for, silently.
 
-    ``Settled`` is TERMINAL (``settled: {settled}`` in the workflow map), so the
-    archive is the LAST moment either fact can be stated.  Dropping either half
-    loses something no later edit can restate.
+    **The sharpest specimen is GONE and this says so rather than leaving the
+    reader to notice.**  ``Paid -> Settled`` was a real status MOVE that a
+    correction could ride, and plan step **balance:X-am** deleted the terminal
+    ``Settled`` archive.  A settled row's only remaining status move is the
+    REVERT, and a revert carrying a CHANGED figure is deliberately refused
+    (below) rather than composed -- so the "move plus correction" case has no
+    legal instance left and its test went with the status.
+
+    What still grades the composition is the IDENTITY move below: the door is
+    handed a status AND a figure in one call and must apply both, which is the
+    property whose absence dropped status changes on the floor.  What is no
+    longer graded is the same composition across a status BOUNDARY, and that is
+    a real reduction -- recorded here, not absorbed.  The first status move
+    added to a settled row's map owes this class a case.
     """
 
     #: A settle day that is NOT the user's today.  A settle stamps
@@ -1751,22 +1806,28 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
         db.session.flush()
         transaction_service.apply_requested_status(
             txn, ref_cache.status_id(StatusEnum.DONE),
-            settled_on=display_today() - cls._SETTLED_DAY_OFFSET,
+            settle_day=an_entered_day(display_today() - cls._SETTLED_DAY_OFFSET),
         )
         return txn
 
-    def test_an_archive_carrying_a_correction_does_BOTH(
+    def test_a_correction_with_a_status_IN_HAND_does_BOTH(
         self, app, db, seed_user, seed_periods,
     ):
-        """Paid -> Settled at $123.45: the row archives AND records $123.45.
+        """The identity case: the figure lands, the status stays, the ledger moves.
+
+        The composition, and since plan step **balance:X-am** the only legal
+        instance of it: the door is handed a status AND a figure in ONE call
+        and must apply both.  It used to record the figure and RETURN, so the
+        status half was dropped -- measured 2026-08-18 on ``Paid -> Settled``,
+        the move that no longer exists.
 
         Hand arithmetic: the row settles at its $100.00 plan, so the cash
         account is $100.00 down.  The correction restates the figure as
-        $123.45, so the settled effect becomes -$123.45 -- the difference
+        $87.10, so the settled effect becomes -$87.10 -- the difference
         re-posted, not a second full booking.
 
-        Shown to FIRE: restoring the early ``return`` after the correction
-        leaves ``status_id`` at Paid while the figure and the ledger both move.
+        The settle day is preserved, because a figure correction moves no day
+        and ruling **R-FL** releases the clearing link on the DAY alone.
         """
         with app.app_context():
             txn = self._settled_row(seed_user, seed_periods[0])
@@ -1774,19 +1835,16 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             day = txn.settled_on
 
             transaction_service.apply_requested_status(
-                txn, ref_cache.status_id(StatusEnum.SETTLED),
-                submitted=Decimal("123.45"),
+                txn, txn.status_id, submitted=Decimal("87.10"),
             )
 
-            assert txn.status_id == ref_cache.status_id(StatusEnum.SETTLED), (
-                "the archive was dropped while the figure was recorded"
-            )
-            assert settled_figure(txn) == Decimal("123.45")
+            assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
+            assert settled_figure(txn) == Decimal("87.10")
             assert txn.settled_basis_id == settlement_basis_id(
                 SettlementBasisEnum.CORRECTED,
             )
             assert txn.settled_on == day, (
-                "the archive moved the day the money moved"
+                "a figure correction moved the settle day"
             )
             # The POSTING LEDGER, read from ``budget.journal_entries``.
             # ``posting_service.settled_transaction_effect`` is NOT an oracle
@@ -1798,31 +1856,7 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             # The net per day is what separates "re-booked" from "booked twice".
             assert net_posted_by_day(
                 JournalEntry.transaction_id == txn.id,
-            ) == {day: Decimal("123.45")}
-
-    def test_a_correction_with_no_status_move_still_records(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The identity case: the figure lands and the status stays put.
-
-        The other side of the composition -- proving the merged seam call did
-        not make a status change a PRECONDITION of recording a figure.  The
-        settle day is preserved, because a figure correction moves no day and
-        ruling **R-FL** releases the clearing link on the DAY alone.
-        """
-        with app.app_context():
-            txn = self._settled_row(seed_user, seed_periods[0])
-            day = txn.settled_on
-
-            transaction_service.apply_requested_status(
-                txn, txn.status_id, submitted=Decimal("87.10"),
-            )
-
-            assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
-            assert settled_figure(txn) == Decimal("87.10")
-            assert txn.settled_on == day, (
-                "a figure correction moved the settle day"
-            )
+            ) == {day: Decimal("87.10")}
 
     def test_a_REVERT_carrying_a_figure_is_refused_and_changes_nothing(
         self, app, db, seed_user, seed_periods,
@@ -1979,3 +2013,94 @@ class TestTheRetainedMapAnswersOnlyARetainedCORRECTION:
             assert transaction_service.retained_settle_amounts_by_id(
                 [txn],
             ) == {txn.id: None}
+
+
+class TestTheDeleteDoorReconcilesItsOwnerArgument:
+    """``delete_transaction`` checks the owner it is handed against the row.
+
+    Finding **N-373**, landed at plan step **pay_calendar:C13-b**.  This door
+    took an ``owner_id`` for its events and reconciled it against the row
+    NOWHERE, while its sibling ``entry_service.delete_entry`` re-validated --
+    so of the two doors ``statement_match._release._remove`` calls, one asked
+    and one trusted.  Both live callers prove ownership first, so the finding
+    measured ``$0.00`` and no reachable defect; what it names is a PERMISSION
+    a third caller would inherit.
+
+    It is ONE comparison because ``budget.transactions`` carries its owner as
+    a COLUMN since plan step ``C13-a``.  Before that the predicate was a join
+    walk through the paycheck, which is why the finding was sequenced behind
+    the key rather than fixed when it was raised.
+
+    The refusal is a ``NotFoundError`` naming only the row's id -- the same
+    shape and the same silence as the sibling door, per the security response
+    rule that "not yours" and "not found" read alike.
+    """
+
+    def test_a_foreign_owner_is_refused(
+        self, app, seed_user, seed_periods, second_user,
+    ):
+        """A caller naming another user as the owner gets the 404 shape."""
+        with app.app_context():
+            template = _make_envelope_template(seed_user)
+            txn = _make_projected_txn(
+                seed_user, seed_periods[0], template=template,
+            )
+            db.session.flush()
+
+            with pytest.raises(NotFoundError) as exc:
+                transaction_service.delete_transaction(
+                    txn, second_user["user"].id,
+                )
+            assert str(txn.id) in str(exc.value)
+            assert not txn.is_deleted
+
+    def test_the_owner_is_refused_BEFORE_the_deletion_rules(
+        self, app, seed_user, seed_periods, second_user,
+    ):
+        """The ownership arm runs ahead of ``deletion_refusal``.
+
+        Ordering is the half a status code cannot show: a foreign caller must
+        be told NOTHING about the row, so the ownership refusal has to come
+        before the rules that name WHY a row may not be deleted.  The row here
+        is one ``deletion_refusal`` rejects by name -- a CC payback -- so the
+        two arms give different exceptions and the order is observable: put
+        ownership second and this call comes back as a ``ValidationError``
+        whose sentence tells a stranger the row is a payback.
+
+        The OWNER's own call is made too, and it must reach that
+        ``ValidationError``: without it this case would also pass on a door
+        that refused everything.
+        """
+        with app.app_context():
+            template = _make_envelope_template(seed_user)
+            source = _make_projected_txn(
+                seed_user, seed_periods[0], template=template,
+            )
+            # Built directly: a payback carries no template, because
+            # ``ck_transactions_one_pricing_link`` allows a row exactly one
+            # pricing parent.
+            payback = Transaction(
+                user_id=seed_user["user"].id,
+                pay_period_id=seed_periods[1].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Tracked Expense (payback)",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                credit_payback_for_id=source.id,
+            )
+            db.session.add(payback)
+            db.session.flush()
+
+            with pytest.raises(NotFoundError) as exc:
+                transaction_service.delete_transaction(
+                    payback, second_user["user"].id,
+                )
+            assert "payback" not in str(exc.value).lower()
+
+            with pytest.raises(ValidationError):
+                transaction_service.delete_transaction(
+                    payback, seed_user["user"].id,
+                )

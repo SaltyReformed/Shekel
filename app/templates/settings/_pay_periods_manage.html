@@ -1,9 +1,12 @@
-{% from "_form_macros.html" import render_field %}
+{% from "_form_macros.html" import render_field, render_select %}
 {# Manage an existing pay-period schedule: a read-only period list with
    lock badges, plus the extend / truncate / regenerate actions.  Included
    by settings/_pay_periods.html only when the user already has periods.
    pp_periods (rows of {period, locked, badge_label, badge_class}) and the
-   optional pp_confirm ({op, count, params}) come from the route context. #}
+   optional pp_confirm ({op, count, params}) come from the route context.
+   `period` is a pay_calendar.DerivedPeriod since plan step C2-f3b, so its
+   identity is `.period_id` rather than `.id` -- the stored `end_date` the
+   ORM row's label read is one of the two columns plan step C4-c dropped. #}
 
 <h5 class="mt-4 mb-3"><i class="bi bi-sliders"></i> Manage Schedule</h5>
 
@@ -105,7 +108,7 @@
             <select id="keep_through_period_id" name="keep_through_period_id"
                     class="form-select" required>
               {% for row in pp_periods %}
-              <option value="{{ row.period.id }}">
+              <option value="{{ row.period.period_id }}">
                 #{{ row.period.period_index }} ({{ row.period.label }})
               </option>
               {% endfor %}
@@ -138,6 +141,21 @@
           {{ render_field("cadence_days", "Days between paydays",
                           type="number", value="14", required=true,
                           input_attrs='min="1" max="365"') }}
+          {# The rhythm's second half (plan step pay_calendar:C14-b, ruling
+             R-PC56).  PRESELECTED to the owner's stored answer, never to
+             "none": this form posts the whole rhythm, so a control that
+             defaulted to none would silently switch a chosen convention off
+             on every regenerate the owner ran for an unrelated reason.
+             ``request.form`` comes first so a refused submission re-renders
+             the owner's own answer rather than snapping back -- see the
+             generate card for why that ordering matters most to THIS rule. #}
+          {{ render_select("shift", PAYDAY_SHIFT_LABEL,
+                           PAYDAY_SHIFT_OPTIONS,
+                           selected_value=(request.form.get('shift')
+                                           or (pp_schedule.shift_id
+                                               if pp_schedule else SHIFT_NONE)),
+                           help_text=PAYDAY_SHIFT_HELP,
+                           required=true) }}
           {# Neutral outline: rebuilding the tail is not an archive /
              deactivate action, so it may not wear amber (D5); the
              discard-confirm gate carries the caution when hand-entered
@@ -148,6 +166,64 @@
         </form>
       </div>
     </div>
+  </div>
+</div>
+
+{# --- When these paychecks started ---
+   Plan step balance:X-bh-2 (ruling balance:R-IA).  Its own form rather than a
+   field on the rolling-window card below: that one configures a WRITE (how far
+   ahead to keep generating) and this states a fact about the owner, so saving
+   either must not restate the other's answer.  A cleared box saves NULL, which
+   means NOT STATED: Shekel then counts only the paydays it has recorded, which
+   is what it did before this card existed.  The entered day is a FLOOR on the
+   backward rhythm, never a payday, which is why the wording asks when the
+   paychecks started rather than for one of them.
+   The real upper bound is the owner's first recorded payday, which the service
+   refuses past; ``max`` here is the app's calendar window only. #}
+<div class="card mt-3">
+  <div class="card-body">
+    <h6 class="card-title">
+      <i class="bi bi-clock-history"></i> When your paychecks started
+    </h6>
+    <p class="card-text text-muted small">
+      Tell Shekel when these paychecks began and it will count the ones that
+      came before the first paycheck it has recorded, so your year-to-date pay,
+      tax withholding and deduction limits are right from the start of the
+      year. Until you do, it counts only what it has recorded.
+    </p>
+    <form method="POST" action="{{ url_for('pay_periods.history') }}"
+          class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-sm-5">
+        {# The REGISTER form's wording, verbatim.  This card said "First
+           paycheck at this job" for one review pass, which names a specific
+           paycheck -- and the stored value is a FLOOR, never an anchor: the
+           rhythm is stepped back from the first RECORDED payday and the day
+           entered here is not itself treated as a payday.  An owner who read
+           the old label and entered their true first paycheck's date would
+           get a rhythm whose earliest day is within one cadence of it and
+           never that day, with no signal.  Two doors onto one column ask one
+           question. #}
+        <label for="history_opens_on" class="form-label">
+          When did these paychecks start?
+        </label>
+        <input type="date" class="form-control form-control-sm"
+               id="history_opens_on" name="history_opens_on"
+               min="{{ CALENDAR_DATE_MIN }}" max="{{ CALENDAR_DATE_MAX }}"
+               value="{{ pp_schedule.history_opens_on.isoformat() if pp_schedule and pp_schedule.history_opens_on else '' }}">
+      </div>
+      <div class="col-sm-4">
+        {# The blank answer states something, so the sentence says WHAT. #}
+        <div class="form-text mt-0">
+          Blank means Shekel counts only the paychecks it has recorded.
+        </div>
+      </div>
+      <div class="col-sm-3">
+        <button type="submit" class="btn btn-primary btn-sm w-100">
+          <i class="bi bi-save"></i> Save
+        </button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -230,6 +306,17 @@
         {{ render_field("cadence_days", "Days between paydays",
                         type="number", value="14", required=true,
                         input_attrs='min="1" max="365"', classes="rs") }}
+      </div>
+      <div class="col-sm-6">
+        {# Preselected to the stored answer, for the reason the regenerate
+           card above gives. #}
+        {{ render_select("shift", PAYDAY_SHIFT_LABEL,
+                         PAYDAY_SHIFT_OPTIONS,
+                         selected_value=(request.form.get('shift')
+                                         or (pp_schedule.shift_id
+                                             if pp_schedule else SHIFT_NONE)),
+                         help_text=PAYDAY_SHIFT_HELP,
+                         required=true, classes="rs") }}
       </div>
       <div class="col-12">
         <div class="form-check">

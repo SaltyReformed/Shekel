@@ -40,7 +40,7 @@ from decimal import Decimal
 
 from app.models.account import Account
 from ._context import BalanceContext
-from ._fold import fold_from_walk
+from ._fold import fold_from_walk, last_closed_on
 
 # The payoff derivation this module INJECTS into the read pass's memo (see
 # :func:`loan_figures`).  ``_positions`` does not import this module, so the
@@ -155,6 +155,20 @@ class LoanFigures:
             pays off within its plan (negative amortization, or an underpayment
             too severe to clear the post-contractual extension -- say so; do not
             hide the chip).
+        closing_date: The loan's ONE closing date, past AND future
+            (:func:`loan_closing_date`, plan step ``recurrence:R7d-h``) -- the
+            forward crossing while it still owes, the date it LAST became closed
+            once it does not.  ``None`` now means only *never pays off*, so
+            unlike :attr:`payoff_date` it needs no companion flag to be read.
+
+            :attr:`payoff_date` answers half its own question: it folds FORWARD
+            from the confirmed present, so a retired loan returns ``None`` for
+            *not my half* and every consumer invented a meaning for it -- the
+            recurrence bound substituted the READ CLOCK, so a finished loan's
+            stop moved with the day it was rendered and its admitted occurrence
+            set GREW one per cadence period.  Read this for "when does this loan
+            end"; read :attr:`payoff_date` only for "what does the forward plan
+            project".
         is_retired: Whether the loan is DONE -- it has ORIGINATED and the fold
             of its recorded events answers ``<= 0``.  It has no debt line left:
             no balance now, and nothing scheduled ahead.
@@ -185,6 +199,7 @@ class LoanFigures:
 
     terms: LoanTerms
     payoff_date: date | None
+    closing_date: date | None
     is_retired: bool
     is_paid_off: bool
 
@@ -290,12 +305,100 @@ def loan_figures(
     resolved = resolved_loan(account, ctx)
     if resolved is None:
         return None
+    # Derived ONCE and threaded: :func:`_is_retired` folds the walk at
+    # ``as_of``, and the WALK is memoized on the pass while the FOLD is not, so
+    # each extra call re-sorts the dated deltas and re-runs the prefix sum.
+    # ``/savings`` builds this bundle per loan.
+    retired = _is_retired(resolved, account, ctx)
     return LoanFigures(
         terms=_terms_from(resolved, ctx.as_of),
         payoff_date=memoized_payoff(account, ctx),
-        is_retired=_is_retired(resolved, account, ctx),
+        closing_date=_closing_date(account, ctx, retired),
+        is_retired=retired,
         is_paid_off=_is_paid_off(resolved, account, ctx),
     )
+
+
+def loan_closing_date(
+    account: Account, ctx: BalanceContext,
+) -> date | None:
+    """Return *account*'s ONE closing date -- past AND future.
+
+    The whole of "when does this loan end", where
+    :func:`~app.services.balance_at.loan_payoff_date` answers only half of it
+    (plan step ``recurrence:R7d-h``).  That producer folds FORWARD from the
+    confirmed present seed, so a loan already at zero has no crossing left and
+    returns ``None`` -- which does not mean *never*, it means *not my half*.
+    Three consumers each invented a meaning for that ``None``, and the recurrence
+    bound's invention was a defect: it substituted the read pass's own ``as_of``,
+    so a finished loan's stop tracked the day the page was loaded and its
+    admitted occurrence set grew one occurrence per cadence period.
+
+    Composed from the two producers that already own its halves, so it spells
+    neither again:
+
+    * **Closed at ``ctx.as_of``** (:func:`_is_retired`, THE seam's one definition
+      of "no debt line left") -- the day it LAST became closed, the BACKWARD
+      crossing over the recorded events
+      (:func:`~app.services.balance_at._fold.last_closed_on`).
+    * **Still owing** -- the FORWARD crossing, off the pass's memoized payoff
+      (:func:`~app.services.balance_at._positions.memoized_payoff`), so this and
+      the payoff chip cannot disagree about a loan that has not finished.
+
+    ``None`` therefore means one thing only: the loan never pays off (negative
+    amortization, or an underpayment too severe to clear the post-contractual
+    extension).  A caller needs no companion flag to read it -- which is the
+    point of the step, since needing one is what produced three inventions.
+
+    Args:
+        account: The amortizing loan account (the caller owns the ownership
+            check).  Fails loud for a non-configured account, exactly as
+            :func:`~app.services.balance_at.loan_payoff_date` does -- returning
+            ``None`` there would re-introduce the ambiguity this producer exists
+            to delete.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+
+    Returns:
+        The loan's closing date, or ``None`` when it never pays off.
+
+    Raises:
+        BaselineMissingError: When ``ctx.scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
+        ValueError: When *account* is not a configured loan.
+    """
+    resolved = resolved_loan(account, ctx)
+    if resolved is None:
+        raise ValueError(
+            f"loan_closing_date() requires a configured loan; account "
+            f"{account.id} ({account.name!r}) has no LoanParams. A consumer "
+            f"that must tell a non-loan apart takes loan_figures(), which "
+            f"returns None for one."
+        )
+    return _closing_date(account, ctx, _is_retired(resolved, account, ctx))
+
+
+def _closing_date(
+    account: Account, ctx: BalanceContext, is_retired: bool,
+) -> date | None:
+    """Return the closing date, given the loan's ALREADY-DERIVED retired state.
+
+    The body of :func:`loan_closing_date`, taking the predicate as a parameter
+    rather than deriving it, so :func:`loan_figures` -- which needs the same
+    boolean for its own field -- folds the walk once and fills both from it.
+
+    Args:
+        account: The loan account, threaded to the backward crossing's walk.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+        is_retired: Whether the loan is closed at ``ctx.as_of``
+            (:func:`_is_retired`), which selects the crossing to answer with.
+
+    Returns:
+        The loan's closing date, or ``None`` when it never pays off.
+    """
+    if is_retired:
+        return last_closed_on(ctx.loan_walk(account), ctx.as_of)
+    return memoized_payoff(account, ctx)
 
 
 def _is_originated(resolved: ResolvedLoan, as_of: date) -> bool:

@@ -22,11 +22,17 @@ from flask import abort, flash, redirect, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from app.utils.auth_helpers import get_or_404, get_owned_via_parent, require_owner
+from app.utils.auth_helpers import (
+    get_or_404,
+    get_owned_via_parent,
+    require_owned_fk,
+    require_owner,
+)
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.account import Account
 from app import ref_cache
 from app.enums import CalcMethodEnum
 from app.utils.db_errors import is_unique_violation
@@ -324,6 +330,11 @@ def add_deduction(profile_id):
         return redirect(url_for("salary.edit_profile", profile_id=profile_id))
 
     data = _deduction_schema.load(request.form)
+    # N-534 (salary:R14-a): a deduction's ``target_account_id`` is what makes
+    # it a CONTRIBUTION FEED into an investment account, and the schema checks
+    # only that the value is a positive integer -- so ownership is answered
+    # here, or one owner points a payroll deduction at another owner's account.
+    require_owned_fk(Account, data, "target_account_id")
     data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
@@ -487,6 +498,12 @@ def update_deduction(ded_id):
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
     data = _deduction_update_schema.load(request.form)
+    # N-534: a re-point must land on the requester's own account too.
+    # N-534 (salary:R14-a): a deduction's ``target_account_id`` is what makes
+    # it a CONTRIBUTION FEED into an investment account, and the schema checks
+    # only that the value is a positive integer -- so ownership is answered
+    # here, or one owner points a payroll deduction at another owner's account.
+    require_owned_fk(Account, data, "target_account_id")
     data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
 
     # Stale-form check (commit C-18 / F-010).

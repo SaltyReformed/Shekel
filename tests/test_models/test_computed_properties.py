@@ -6,7 +6,6 @@ Tests for computed properties on models:
     rules, now ``row_valuation.owned_contribution``), is_income, is_expense
   - Transfer: what its amount resolves to (``resolve_transfer_amount``)
   - Category: display_name
-  - PayPeriod: label
   - PaycheckBreakdown: total_pre_tax, total_post_tax, total_taxes
 """
 
@@ -16,9 +15,9 @@ import pytest
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.ref import Status, TransactionType
-from app.models.transaction import Transaction, reject_settle_instant
+from app.models.mixins import reject_settle_instant
+from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.paycheck_calculator import (
     DeductionBreakdown,
@@ -33,7 +32,15 @@ from app.utils.dates import display_today
 from app.utils.dates import add_months
 from app.services.cash_ledger import resolve_transfer_amount
 from app.services.row_valuation import owned_contribution
-from tests._test_helpers import default_settle_day, settlement_columns
+from tests._test_helpers import (
+    an_entered_day,
+    default_settle_day,
+    open_books_before_the_first_assertion,
+    settle_day_columns,
+    settlement_columns,
+)
+from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── What a TRANSACTION contributes ───────────────────────────────────
@@ -57,7 +64,7 @@ class TestTransactionEffectiveAmount:
     its ``$0.00`` twin (E-12's projected half).  Both are refuted now, and by
     the STATUS rather than by the columns: an unsettled row carrying a recorded
     figure is perfectly constructible -- it is the RETAINED state a revert
-    leaves behind, which ``ck_transactions_settle_day_needs_basis`` admits on
+    leaves behind, which ``ck_transactions_settle_day_needs_a_record`` admits on
     purpose -- and ``row_valuation.settled_figure`` answers ``None`` for it
     whatever it still remembers, so such a row is worth its PLAN.  The
     preference those two cases asserted has no state left to hold in.
@@ -86,6 +93,7 @@ class TestTransactionEffectiveAmount:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         settled_on = default_settle_day(seed_periods[0], status.id)
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -93,8 +101,8 @@ class TestTransactionEffectiveAmount:
             name="Test",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=estimated,
-            settled_on=settled_on,
+            amount_ownership=AmountOwnership.own(estimated),
+            **settle_day_columns(settled_on),
             **settlement_columns(settled_on, estimated, submitted=actual),
         )
         db.session.add(txn)
@@ -238,6 +246,7 @@ class TestTransactionTypeProperties:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -245,7 +254,7 @@ class TestTransactionTypeProperties:
                 name="Paycheck",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -259,6 +268,7 @@ class TestTransactionTypeProperties:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -266,7 +276,7 @@ class TestTransactionTypeProperties:
                 name="Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("85.00"),
+                amount_ownership=AmountOwnership.own(Decimal("85.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -324,7 +334,7 @@ class TestTransferAmountResolves:
             scenario_id=seed_user["scenario"].id,
             status_id=status.id,
             name="Test Transfer",
-            amount=amount,
+            amount_ownership=AmountOwnership.own(amount),
         )
         db.session.add(xfer)
         db.session.flush()
@@ -399,6 +409,11 @@ class TestTransferSettleDay:
         )
         db.session.add(savings)
         db.session.flush()
+        # Its BOOKS open before anything this fixture dates (plan step
+        # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day
+        # it asserts -- the owner's today -- and this helper settles the
+        # transfer on a day the caller chooses, which is earlier.
+        open_books_before_the_first_assertion(db.session, savings)
 
         xfer = transfer_service.create_transfer(
             transfer_service.TransferSpec(
@@ -419,7 +434,7 @@ class TestTransferSettleDay:
             status_id=ref_cache.status_id(StatusEnum.DONE),
         )
         transfer_service.update_transfer(
-            xfer.id, seed_user["user"].id, settled_on=day,
+            xfer.id, seed_user["user"].id, settle_day=an_entered_day(day),
         )
         db.session.flush()
         return xfer
@@ -543,8 +558,8 @@ class TestTransferSettleDay:
             day_a = display_today() - timedelta(days=15)
             day_b = display_today() - timedelta(days=17)
             for income_day, expense_day in ((day_a, day_b), (day_b, day_a)):
-                income_shadow.settled_on = income_day
-                expense_shadow.settled_on = expense_day
+                record_settle_day(income_shadow, an_entered_day(income_day))
+                record_settle_day(expense_shadow, an_entered_day(expense_day))
                 db.session.flush()
                 db.session.expire(xfer, ["shadow_transactions"])
 
@@ -590,7 +605,7 @@ class TestTransferSettleDay:
                 seed_user, seed_periods, display_today() - timedelta(days=21),
             )
             with pytest.raises(AttributeError):
-                xfer.settled_on = date(2026, 7, 20)
+                record_settle_day(xfer, an_entered_day(date(2026, 7, 20)))
 
 
 # ── Category.display_name ────────────────────────────────────────────
@@ -604,78 +619,6 @@ class TestCategoryDisplayName:
         with app.app_context():
             cat = seed_user["categories"]["Rent"]
             assert cat.display_name == "Home: Rent"
-
-
-# ── PayPeriod.label ──────────────────────────────────────────────────
-
-
-class TestPayPeriodLabel:
-    """Tests for PayPeriod.label property."""
-
-    def test_label_format(self, app, db, seed_user, seed_periods):
-        """label returns 'MM/DD - MM/DD' formatted string."""
-        with app.app_context():
-            period = seed_periods[0]
-            # seed_periods start 2026-01-02, cadence 14 days → end 2026-01-15.
-            assert period.label == "01/02 - 01/15"
-
-    def test_label_cross_month(self, app, db, seed_user):
-        """Label formats correctly when period spans two different months.
-
-        A period from Jan 25 to Feb 7 should show both month prefixes.
-        Expected: '01/25 - 02/07'.
-        """
-        with app.app_context():
-            period = PayPeriod(
-                user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 25),
-                end_date=date(2026, 2, 7),
-                # Index 1: clear seed_user's bootstrap period (index 0) so
-                # the uq_pay_periods_user_index constraint holds.  label is
-                # date-derived, so the index does not affect the assertion.
-                period_index=1,
-            )
-            db.session.add(period)
-            db.session.flush()
-            assert period.label == "01/25 - 02/07"
-
-    def test_label_cross_year(self, app, db, seed_user):
-        """Label includes 2-digit year when period spans a year boundary.
-
-        A Dec 26 - Jan 8 period crosses the year boundary. The label
-        adds /YY to both dates so the user can distinguish the years.
-        Expected: '12/26/26 - 01/08/27'.
-        """
-        with app.app_context():
-            period = PayPeriod(
-                user_id=seed_user["user"].id,
-                start_date=date(2026, 12, 26),
-                end_date=date(2027, 1, 8),
-                # Index 1: clear seed_user's bootstrap period (index 0); the
-                # label is date-derived, so the index is invisible here.
-                period_index=1,
-            )
-            db.session.add(period)
-            db.session.flush()
-            assert period.label == "12/26/26 - 01/08/27"
-
-    def test_label_same_month(self, app, db, seed_user):
-        """Label formats correctly when start and end are in the same month.
-
-        Expected: '03/01 - 03/14'.
-        """
-        with app.app_context():
-            period = PayPeriod(
-                user_id=seed_user["user"].id,
-                start_date=date(2026, 3, 1),
-                end_date=date(2026, 3, 14),
-                # Index 1: clear seed_user's bootstrap period (index 0); the
-                # label is date-derived, so the index is invisible here.
-                period_index=1,
-            )
-            db.session.add(period)
-            db.session.flush()
-            assert period.label == "03/01 - 03/14"
 
 
 # ── PaycheckBreakdown computed totals ────────────────────────────────
@@ -863,6 +806,7 @@ class TestDaysUntilDue:
         status = db.session.query(Status).filter_by(name=status_name).one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -870,7 +814,7 @@ class TestDaysUntilDue:
             name="Test Due",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             due_date=due_date_val,
         )
         db.session.add(txn)
@@ -917,7 +861,7 @@ class TestSettleDayRefusesAnInstant:
     silently, which is the split ruling R-DH (b) exists to delete.
 
     **These pin the VALIDATOR, and they exist because nothing did.**  The seam
-    calls :func:`~app.models.transaction.reject_settle_instant` itself, ahead of
+    calls :func:`~app.models.mixins.reject_settle_instant` itself, ahead of
     any assignment, so ``test_status_seam.py``'s refusal test proves the SEAM
     and cannot reach the column hook at all -- it asserts the row was left
     untouched, i.e. that the assignment never ran.  Deleting the ``@validates``
@@ -937,6 +881,7 @@ class TestSettleDayRefusesAnInstant:
                 db.session.query(TransactionType).filter_by(name="Expense").one()
             )
             txn = Transaction(
+                user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
@@ -944,8 +889,8 @@ class TestSettleDayRefusesAnInstant:
                 name="Instant refusal",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("100.00"),
-                settled_on=seed_periods[0].start_date,
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                **settle_day_columns(seed_periods[0].start_date),
                 **settlement_columns(
                     seed_periods[0].start_date, Decimal("100.00"),
                 ),
@@ -953,6 +898,11 @@ class TestSettleDayRefusesAnInstant:
             db.session.add(txn)
             db.session.flush()
 
+            # The BARE column assignment, which is exactly the path the
+            # validator exists for: ``SettleDay`` refuses an instant at
+            # construction, so a caller going through the pair writer never
+            # reaches the column at all (plan step X-az).  This is the fixture
+            # or service that writes the attribute directly.
             with pytest.raises(TypeError, match="must be a date"):
                 txn.settled_on = datetime(2026, 3, 4, 4, 30, tzinfo=timezone.utc)
             # The stored day is untouched: the validator runs before the set.
@@ -974,6 +924,7 @@ class TestSettleDayRefusesAnInstant:
             )
             with pytest.raises(TypeError, match="must be a date"):
                 Transaction(
+                    user_id=seed_periods[0].user_id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
@@ -981,7 +932,7 @@ class TestSettleDayRefusesAnInstant:
                     name="Instant refusal",
                     category_id=seed_user["categories"]["Groceries"].id,
                     transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
                     settled_on=datetime(2026, 3, 4, 4, 30, tzinfo=timezone.utc),
                 )
 
@@ -1004,6 +955,7 @@ class TestDaysPaidBeforeDue:
         status = db.session.query(Status).filter_by(name="Paid").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -1011,9 +963,9 @@ class TestDaysPaidBeforeDue:
             name="Test Paid Timing",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             due_date=due_date_val,
-            settled_on=settled_on_val,
+            **settle_day_columns(settled_on_val),
             **settlement_columns(settled_on_val, Decimal("100.00")),
         )
         db.session.add(txn)

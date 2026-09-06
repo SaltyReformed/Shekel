@@ -126,7 +126,7 @@
 {%- if value > 0 %}+{% endif %}{{ money(value, cents=cents) }}
 {%- endmacro %}
 
-{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, budgets, settled, retained, txn_type_id, account, today, current_period_id=none, band=none) -%}
+{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, budgets, settled, retained, due_captions, txn_type_id, account, today, current_period_id=none, band=none) -%}
 {#- Desktop grid row.  Emits one <tr> containing the sticky row
     label (<th scope="row">) followed by one <td class="text-end
     cell"> per visible period.  Group-header rows are emitted by
@@ -142,6 +142,13 @@
 
     `budgets` and `settled` are the page's two amount maps, threaded as
     PARAMETERS -- see the file header for why they cannot be context.
+
+    `due_captions` is a third such map, threaded for the same reason:
+    `{transaction_id: the due date to caption, or none}` from
+    `grid_view_service.due_captions_by_id`, which the included cell
+    partial INDEXES.  That partial decided it itself, off
+    `t.pay_period.start_date`, until pay-calendar plan step C4-a-1 --
+    a database query issued from inside the render.
 
     `today` is accepted for caller-shape parity with the grid
     route's context; it is intentionally unread here.  The
@@ -178,15 +185,19 @@
         {% endfor %}
       {% else %}
         {% set category = rk.category %}
-        {#- The partial takes the ID, not the period: its other render entry
-            (`transactions.get_empty_cell`) resolves an ORM `PayPeriod` to
-            check ownership of a submitted id, so the two callers carry
-            different TYPES and only the id is common to both (plan step
-            C2-f2b).  Whitespace-controlled (`{%-`): this row renders once per
+        {#- The partial takes IDS, not objects: it builds one URL and reads
+            nothing else off either row (plan steps C2-f2b for the period,
+            C2-f3e for the account).  Both render entries hold a
+            `DerivedPeriod` since C2-f3e moved `transactions.get_empty_cell`
+            onto the owner's own derived calendar -- the same value this macro
+            is iterating -- so the scalar is now what they have in common
+            rather than the least they have in common.  Whitespace-controlled
+            (`{%-`): this row renders once per
             EMPTY cell, 226 of them on the real 6-period grid and ~1,200 at
             `?periods=52`, so an uncontrolled tag costs 29 KB of blank lines on
             the widest window -- measured before it was controlled. -#}
         {%- set period_id = period.period_id %}
+        {%- set account_id = account.id %}
         {% include "grid/_transaction_empty_cell.html" with context %}
       {% endif %}
     </td>
@@ -446,7 +457,12 @@
           <div class="progress progress-h-4">
             <div class="progress-bar{% if over_budget %} bg-danger{% endif %}"
                  role="progressbar"
-                 data-progress-pct="{{ [es.pct, 100]|min }}"
+                 {# NO CLAMP HERE (plan step ``bank_import:X-gj-2b-3``).  It
+                    read ``[es.pct, 100]|min`` over a value
+                    ``money.percent_complete`` already clamps to ``[0, 100]``
+                    -- a guard no input can reach, over money, in a template,
+                    which is the shape this package deletes on sight. #}
+                 data-progress-pct="{{ es.pct }}"
                  aria-valuenow="{{ es.pct|int }}"
                  aria-valuemin="0"
                  aria-valuemax="100"></div>

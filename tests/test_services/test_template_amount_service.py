@@ -390,18 +390,109 @@ class TestSetAmount:
 class TestDeleteAmountVersion:
     """Withdrawal, and the one entry it refuses."""
 
-    def test_withdraws_a_later_version(self, app, db, seed_user):
-        """Removing the June entry puts June back on the April price."""
+    def test_a_MIDDLE_version_that_moves_a_price_is_REFUSED(
+        self, app, db, seed_user,
+    ):
+        """Removing the June entry would re-price June, so it is refused.
+
+        **This case asserted the OPPOSITE until plan step balance:X-au-e** --
+        it was ``test_withdraws_a_later_version``, and its own docstring said
+        *"removing the June entry puts June back on the April price"*, which
+        is the money movement rather than a description of a repair. That was
+        harmless while generation copied ``default_amount`` onto each row: no
+        stored figure moved. A generated row resolves through
+        :func:`amount_as_of` on its own due date now, so the same withdrawal
+        silently re-prices every row inside the June-August window, with no
+        regeneration and no conflict chooser.
+
+        Measured on a clone of production 2026-09-03, which is where these
+        three versions come from: the 2026-06-01 entry was withdrawable and
+        taking it moved one row from ``$178.32`` to ``$178.00`` under a flash
+        reading only "Amount history entry removed".
+
+        The rule is now one sentence -- a version may go only when the version
+        BEFORE it states the same amount -- and the case below is its other
+        half, so the pair is disjoint rather than a single-direction pin.
+        """
         with app.app_context():
             template = _txn_template(seed_user)
             _seed_geico_history(template)
+            june_id = tas.amount_versions(template)[1].id
+
+            assert tas.delete_amount_version(template, june_id) is False
+            db.session.flush()
+
+            assert len(tas.amount_versions(template)) == 3
+            assert tas.amount_as_of(template, date(2026, 6, 15)) == Decimal("178.32")
+
+    def test_a_MIDDLE_version_that_moves_NOTHING_is_withdrawn(
+        self, app, db, seed_user,
+    ):
+        """A version its predecessor already states is a redundant record.
+
+        The other half of the rule, and what keeps the documented repair path
+        open: state the amount at the right date, which appends, then withdraw
+        the mis-dated entry -- legal exactly because the series answers the
+        same figure without it.
+        """
+        with app.app_context():
+            template = _txn_template(seed_user)
+            for eff, amount in (
+                (date(2026, 4, 1), "178.00"),
+                (date(2026, 6, 1), "178.00"),
+                (date(2026, 9, 1), "165.30"),
+            ):
+                template.amount_versions.append(TemplateAmountVersion(
+                    effective_date=eff, amount=Decimal(amount),
+                ))
+            db.session.flush()
             june_id = tas.amount_versions(template)[1].id
 
             assert tas.delete_amount_version(template, june_id) is True
             db.session.flush()
 
             assert len(tas.amount_versions(template)) == 2
+            # Every date answers exactly what it answered before.
             assert tas.amount_as_of(template, date(2026, 6, 15)) == Decimal("178.00")
+            assert tas.amount_as_of(template, date(2026, 9, 2)) == Decimal("165.30")
+
+    def test_the_REMOVE_button_and_the_service_answer_the_same_rule(
+        self, app, db, seed_user,
+    ):
+        """``is_deletable`` is the service's verdict, not a restatement.
+
+        It was ``index > 0`` in the display builder against a newest-price
+        test in the service, so the page offered Remove on the newest entry
+        and the service refused it -- two spellings of one rule, which is what
+        :class:`~app.services.template_amount_service.AmountVersionRow`'s own
+        docstring already claimed was not happening. Both call
+        ``_may_withdraw`` now, and this asserts they agree ROW FOR ROW rather
+        than that either is right on its own.
+        """
+        with app.app_context():
+            template = _txn_template(seed_user)
+            _seed_geico_history(template)
+            rows = tas.build_amount_history(template, date(2026, 9, 15))
+
+            offered = {row.id: row.is_deletable for row in rows}
+            assert offered, "the fixture rendered no history rows"
+            for version_id, is_offered in offered.items():
+                # A fresh read per probe: the service MUTATES on success.
+                probe = _txn_template(seed_user)
+                _seed_geico_history(probe)
+                mirror = {
+                    old.effective_date: new.id for old, new in zip(
+                        tas.amount_versions(template),
+                        tas.amount_versions(probe),
+                    )
+                }
+                dated = next(
+                    v.effective_date for v in tas.amount_versions(template)
+                    if v.id == version_id
+                )
+                assert tas.delete_amount_version(
+                    probe, mirror[dated],
+                ) is is_offered
 
     def test_refuses_the_earliest_version(self, app, db, seed_user):
         """Every date before the series begins is priced from it.
@@ -555,7 +646,13 @@ class TestBuildAmountHistory:
             assert [r.amount for r in rows] == [
                 Decimal("165.30"), Decimal("178.32"), Decimal("178.00"),
             ]
-            assert [r.is_deletable for r in rows] == [True, True, False]
+            # **None of the three is withdrawable, and that changed at plan
+            # step balance:X-au-e.**  It read ``[True, True, False]`` -- the
+            # display builder's own ``index > 0``, which offered Remove on two
+            # entries the service now refuses because each states a different
+            # amount from the one before it, so taking either would re-price
+            # the rows in its window.  Both sides read ``_may_withdraw`` now.
+            assert [r.is_deletable for r in rows] == [False, False, False]
 
     def test_a_derived_template_renders_nothing(self, app, db, seed_user):
         """No series, no panel -- a salary template has no price to show."""

@@ -16,10 +16,11 @@ from app.models.category import Category
 from app.models.user import MfaConfig, User, UserSettings
 from app.models.scenario import Scenario
 from app.routes.auth._helpers import _is_safe_redirect
-from app.services import mfa_service
+from app.services import mfa_service, pay_schedule_service
 from app.services.mfa_service import TotpVerificationResult
 from app.config import BaseConfig
 from app.models.pay_schedule import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
+from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 from app.schemas.validation.pay_periods import PERIOD_BATCH_MAX
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today
@@ -1839,6 +1840,72 @@ class TestRegistration:
                 f'value="{BaseConfig.DEFAULT_PAY_PERIOD_HORIZON}"'.encode()
                 in body
             )
+
+            # The fourth input (plan step balance:X-bh-2): how far back the
+            # owner's paychecks reach.  OPTIONAL -- no ``required`` -- because
+            # blank is a real answer, and bounded by the app's own calendar
+            # window rather than by a template literal.
+            assert b'name="history_opens_on"' in body
+            assert b"When did these paychecks start?" in body
+            assert f'min="{CALENDAR_DATE_MIN.isoformat()}"'.encode() in body
+            assert f'max="{CALENDAR_DATE_MAX.isoformat()}"'.encode() in body
+
+    def test_register_persists_a_stated_pay_history_opening(
+        self, app, db, client,
+    ):
+        """The form's fourth control reaches ``budget.pay_schedule``.
+
+        Plan step **balance:X-bh-2**.  End to end over HTTP rather than at the
+        service, because the path this grades is the browser's: the control is
+        rendered, submitted with every other one, normalized from a string,
+        validated against the app's calendar window and written after the
+        paydays that create the row it lands on.  A break anywhere in that
+        chain reads as "the owner answered and the app ignored them".
+        """
+        payday = display_today()
+        opening = (payday - timedelta(days=400)).isoformat()
+        with app.app_context():
+            response = client.post("/register", data=register_form_data(
+                email="history-route@example.com",
+                display_name="History Route",
+                last_payday=payday.isoformat(),
+                history_opens_on=opening,
+            ))
+
+            assert response.status_code == 302
+            user = db.session.query(User).filter_by(
+                email="history-route@example.com",
+            ).one()
+            assert pay_schedule_service.get_schedule(
+                user.id,
+            ).history_opens_on.isoformat() == opening
+
+    def test_register_with_the_history_box_untouched_stores_NULL(
+        self, app, db, client,
+    ):
+        """THE CONTROL, and the commonest sign-up.
+
+        ``register_form_data`` posts ``history_opens_on=""`` because that is
+        what a browser sends for a control nobody touched.  Without this case
+        the one above would pass against a form that wrote the same day for
+        everybody, and the empty string would never be exercised at all --
+        ``fields.Date`` refuses it as "Not a valid date." without the schema's
+        pre-load, so this is the arm that keeps sign-up working.
+        """
+        with app.app_context():
+            response = client.post("/register", data=register_form_data(
+                email="history-blank-route@example.com",
+                display_name="History Blank Route",
+                last_payday=display_today().isoformat(),
+            ))
+
+            assert response.status_code == 302
+            user = db.session.query(User).filter_by(
+                email="history-blank-route@example.com",
+            ).one()
+            assert pay_schedule_service.get_schedule(
+                user.id,
+            ).history_opens_on is None
 
     def test_register_preserves_the_pay_schedule_inputs_on_error(
         self, app, client, seed_user,

@@ -124,6 +124,7 @@ def build_calendar(
         ],
         cadence_days=cadence_days,
         user_id=user_id,
+        history_opens_on=None,
     )
 
 
@@ -911,6 +912,7 @@ class TestRefusals:
         """
         empty = PayCalendar.from_paydays(
             paydays=[], cadence_days=_CADENCE_DAYS, user_id=_USER_ID,
+            history_opens_on=None,
         )
 
         with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
@@ -929,6 +931,7 @@ class TestRefusals:
         """
         empty = PayCalendar.from_paydays(
             paydays=[], cadence_days=_CADENCE_DAYS, user_id=_USER_ID,
+            history_opens_on=None,
         )
 
         resolved = resolve(

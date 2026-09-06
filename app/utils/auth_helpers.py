@@ -8,8 +8,11 @@ Pattern A (direct user_id): Use get_or_404() for models with a
 user_id column (Account, TransactionTemplate, SavingsGoal, etc.).
 
 Pattern B (indirect via parent): Use get_owned_via_parent() for
-models scoped through a FK parent (Transaction via PayPeriod,
-SalaryRaise via SalaryProfile, etc.).
+models scoped through a FK parent (SalaryRaise via SalaryProfile,
+PaycheckDeduction via SalaryProfile).  It named Transaction via
+PayPeriod as its first example until plan step ``pay_calendar:C13-b``;
+``budget.transactions`` carries its own ``user_id`` now, so that row is
+Pattern A and the example was pointing new code at the wrong one.
 
 Pattern C (role-based): Use @require_owner on routes restricted
 to the owner role. Companions receive 404 to avoid revealing
@@ -180,6 +183,52 @@ def get_or_404(model, pk, user_id_field="user_id"):
 
 
 
+def require_owned_fk(model, data, key):
+    """Abort 404 if a submitted FK in *data* names a row the user does not own.
+
+    **The ONE spelling of "a form payload's foreign key must be the
+    requester's own"**, extracted at plan step **salary:R14-b** when a third
+    door needed it and pylint's ``duplicate-code`` gate said so.  Its three
+    callers are the links between a user's own rows that a schema cannot
+    check, because a schema sees an integer and not an owner:
+
+    * ``routes/retirement.create_pension`` / ``update_pension`` -- which
+      salary profile a pension's projected salary comes from.
+    * ``routes/investment.update_params`` -- which salary profile FUNDS an
+      account's employer contribution (**R-SAL5**), whose paychecks
+      ``salary:R14-b`` then prices that contribution off.
+    * ``routes/salary/items`` -- which account a payroll deduction FEEDS
+      (ledger row **N-534**, ruling **R-SAL8**, closed at ``salary:R14-a``).
+      **R-SAL8 is cited rather than the date it was ruled on**, which is that
+      ruling's own point: the guard this replaced carried "a developer ruling
+      of 2026-09-04" in its docstring, and a date is not a key anybody can
+      look up.
+
+    Each dropdown lists only the requester's own rows, so a foreign or
+    non-existent id in the submission is a forged FK (IDOR).  Before the first
+    of these guards the schema checked only that the value was a positive
+    integer (``RowId``) and the database FK checked only that the row EXISTED,
+    so one owner could point at another owner's row and read their salary --
+    or their raise history -- into their own figures.
+
+    :func:`get_or_404` verifies ownership and emits the cross-user denial
+    audit event; its ``None`` result maps to a 404 per the security response
+    rule (404 for both "not found" and "not yours").  An absent or ``None``
+    id means the link is simply not set, which is a legal state at all three
+    doors, so it passes through to the normal create/update path.
+
+    Args:
+        model: The SQLAlchemy model the id must name a row of.
+        data: The schema-loaded form payload.
+        key: The payload key holding the id.
+    """
+    row_id = data.get(key)
+    if row_id is None:
+        return
+    if get_or_404(model, row_id) is None:
+        abort(404)
+
+
 def log_refused_lookup(model_name: str, pk) -> None:
     """Log a refused id lookup where the two denial states are indistinguishable.
 
@@ -220,9 +269,14 @@ def get_owned_via_parent(model, pk, parent_attr,
     """Load a record by PK and verify ownership through its parent.
 
     For models that lack a direct ``user_id`` column but are scoped
-    through a FK parent (e.g. Transaction -> PayPeriod, SalaryRaise
-    -> SalaryProfile), this function lazy-loads the parent and checks
-    the parent's user_id.
+    through a FK parent (SalaryRaise -> SalaryProfile), this function
+    lazy-loads the parent and checks the parent's user_id.
+
+    **Transaction is NOT one of them any more** (plan step
+    ``pay_calendar:C13-b``).  It was this docstring's leading example, and
+    ``budget.transactions`` has carried a ``user_id`` since ``C13-a`` -- so a
+    door reaching for this helper with a ``Transaction`` would pay a
+    relationship load to read a column.  Every live caller is a salary row.
 
     Mirrors :func:`get_or_404`'s logging contract: the missing-PK
     branch emits ``resource_not_found`` at INFO, the cross-user
@@ -247,11 +301,11 @@ def get_owned_via_parent(model, pk, parent_attr,
 
     Examples::
 
-        # Transaction -> PayPeriod.user_id
-        get_owned_via_parent(Transaction, txn_id, "pay_period")
-
         # SalaryRaise -> SalaryProfile.user_id
         get_owned_via_parent(SalaryRaise, raise_id, "salary_profile")
+
+        # PaycheckDeduction -> SalaryProfile.user_id
+        get_owned_via_parent(PaycheckDeduction, ded_id, "salary_profile")
     """
     record = db.session.get(model, pk)
     if record is None:
@@ -306,11 +360,19 @@ def get_accessible_transaction(txn_id):
     The shared companion-aware access check behind the entry-CRUD
     (:mod:`app.routes.entries`) and status-change
     (:mod:`app.routes.transactions`) transaction routes.  Owners reach
-    transactions in their own pay periods; companions reach their linked
-    owner's transactions restricted to companion-visible rows (a template
-    flagged ``companion_visible``, or an ad-hoc row whose own
-    ``companion_visible`` flag is set -- resolved by
-    ``Transaction.visible_to_companion``).
+    transactions they OWN; companions reach their linked owner's
+    transactions restricted to companion-visible rows (a template flagged
+    ``companion_visible``, or an ad-hoc row whose own ``companion_visible``
+    flag is set -- resolved by ``Transaction.visible_to_companion``).
+
+    **The owner is read off the ROW, and this door is where plan step
+    ``pay_calendar:C13-b`` started.**  It was ``txn.pay_period.user_id`` -- a
+    relationship walk issued to learn a fact the row itself did not carry --
+    and it is the canonical route-boundary door, reached from eight route
+    sites, so it was the largest single consumer of finding **P75**'s census.
+    ``budget.transactions.user_id`` carries the same value since ``C13-a``,
+    held equal to the paycheck's by ``fk_transactions_owner_period``, so the
+    two cannot disagree and the walk bought a query rather than an answer.
 
     Follows the project security response rule: returns ``None`` for both
     "not found" and "not accessible" so the caller returns 404 in either
@@ -344,7 +406,7 @@ def get_accessible_transaction(txn_id):
         )
         return None
     requester_id = _safe_user_id()
-    owner_id = txn.pay_period.user_id
+    owner_id = txn.user_id
     companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
     if getattr(current_user, "role_id", None) == companion_role_id:
         # Companion path: linked owner's data + companion-visible

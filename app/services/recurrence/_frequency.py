@@ -594,8 +594,11 @@ def authorable_cadences() -> tuple[AuthorableCadence, ...]:
     next paycheck, exactly as its MONTH twin already did.  Measured on a
     2026-08-16 production clone: 0 of 46 live rules read differently, and a
     yearly cadence cannot put two occurrences in one paycheck at ANY cadence in
-    ``pay_schedule.cadence_days``' whole 1-365 domain, so it adds no exposure
-    to ``idx_transactions_template_period_scenario``.
+    ``pay_schedule.cadence_days``' whole 1-365 domain.  That mattered while
+    the generation index was keyed on the paycheck and a repeat was REFUSED;
+    plan step **R17** re-keyed it onto the occurrence, so a repeat now stores
+    and the observation is a statement about the cadence rather than about
+    exposure.
 
     The INTERVAL is not part of an offer.  Every positive interval is authorable
     for every unit here, which is what the form's free number box renders and

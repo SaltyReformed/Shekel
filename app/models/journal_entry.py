@@ -169,6 +169,23 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         nullable=False,
     )
+    # **The paycheck this entry posted into.  KEPT rather than derived**
+    # (plan step ``pay_calendar:C7``, ruling **R-PC53**, which holds the
+    # measurements and the argument).  Ledger row **P18** read the column as a
+    # materialisation of "which paycheck does ``entry_date`` fall in" and asked
+    # for its removal; that is refused, because the column has TWO halves and
+    # the premise fits neither as stated.  A SOURCE-LINKED entry COPIES its
+    # source row's own ``pay_period_id`` -- the owner's budgeting choice, not a
+    # function of ``entry_date``.  An ANCHOR correction DERIVES its period from
+    # the entry's date through ``PayCalendar.filing_period`` (ruling
+    # **balance:R-EA**).
+    #
+    # **Read this column back; never recompute it at read time.**  The reconcile
+    # targets a reversal at the period its postings landed in, which is what the
+    # stored value records.  R-PC53 states why that matters and what actually
+    # holds the value against rewriting -- in short, the ``shekel_app`` role has
+    # no ``UPDATE`` on this table (migration ``e3c23fadb21d``) while the owner
+    # role, and therefore any migration, does.
     pay_period_id = db.Column(
         db.Integer,
         db.ForeignKey(
@@ -181,7 +198,12 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
     # pylint: enable=duplicate-code
     # Civil date of the confirmed event, in the USER's timezone (ruling
     # R-DH (b)).  Not derivable from ``pay_period_id`` (a period spans 14
-    # days), so it is stored, not computed.  A source entry takes the source
+    # days), so it is stored, not computed.  **Nor does it DETERMINE
+    # ``pay_period_id``** -- see that column's comment above and ruling
+    # **R-PC53**: the relationship differs by source kind and is not a
+    # derivation in general.
+    #
+    # A source entry takes the source
     # row's stored ``transactions.settled_on``; an anchor correction takes the
     # assertion's stored ``observed_on``.  BOTH are now stored facts read
     # through one accessor rather than days derived from an instant -- the

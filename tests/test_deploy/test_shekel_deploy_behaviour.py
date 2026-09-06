@@ -428,7 +428,23 @@ class TestTheMigrationBearingReleaseIsNotRePinned:
         """The dump path it prints is a file that is actually on disk."""
         result = stack.run(health="unhealthy", **_MIGRATION_BEARING)
         output = result.stdout + result.stderr
-        assert len(stack.dumps) == 1
+        # **The message renders what the script SAID**, because this assertion
+        # firing bare is what cost a 47-minute CI cycle its own diagnosis on
+        # 2026-09-03: ``output`` was bound one line above, held the answer, and
+        # was not read.  ``shekel-deploy.sh`` refuses with one of three named
+        # sentences -- a non-zero ``pg_dump``, a dump that does not decode end
+        # to end, or a database container that is not running -- and any of
+        # them settles in one line what an ``assert 0 == 1`` cannot.
+        #
+        # The directory listing is the FOURTH case: both refusals that reach
+        # here delete the ``.part`` before dying, so a ``.part`` surviving means
+        # a path nobody has enumerated.
+        assert len(stack.dumps) == 1, (
+            f"no dump artifact was written, so the refusal has nothing to "
+            f"name.  The script exited {result.returncode} and said:\n{output}"
+            f"\nbackup dir holds: "
+            f"{sorted(p.name for p in stack.backup_dir.iterdir())}"
+        )
         assert str(stack.dumps[0]) in output, (
             "the refusal does not name the dump it took, so the operator has "
             "nothing to restore from"

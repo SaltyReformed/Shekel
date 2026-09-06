@@ -10,16 +10,17 @@ import logging
 from decimal import Decimal
 
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.category import Category
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.services import posting_service, status_seam
+from app.services import match_withdrawal, posting_service, status_seam
 from app.services.cash_ledger import (
     amount_basis,
     resolve_transaction_amount,
 )
-from app.services.pay_calendar import DerivedPeriod, calendar_for
+from app.services.pay_calendar import DerivedPeriod, FiledRow, calendar_for
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.balance_predicates import is_credit, is_projected
 from app.utils.log_events import (
@@ -96,8 +97,8 @@ def lock_source_transaction_for_payback(
         The locked Transaction with refreshed column attributes.
 
     Raises:
-        NotFoundError: If the row does not exist or its pay-period
-            does not belong to ``owner_id``.
+        NotFoundError: If the row does not exist or does not belong to
+            ``owner_id``.
     """
     txn = (
         db.session.query(Transaction)
@@ -108,10 +109,11 @@ def lock_source_transaction_for_payback(
     )
     if txn is None:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
-    # Defense-in-depth: verify ownership via pay period.  Performed
-    # after the lock is acquired so an attacker probing for valid
+    # Defense-in-depth: verify ownership on the row's own owner column
+    # (``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``).
+    # Performed after the lock is acquired so an attacker probing for valid
     # IDs cannot race the lock window to confirm existence.
-    if txn.pay_period.user_id != owner_id:
+    if txn.user_id != owner_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
     return txn
 
@@ -168,6 +170,14 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
     deleted_payback_id = None
     if payback:
         deleted_payback_id = payback.id
+        # A payback a bank line was matched to stops existing here, so an act
+        # it was the last app row of is withdrawn and that line is unexplained
+        # again (developer ruling 2026-08-25, plan step ``bank_import:X-gb``).
+        # FIRST, while the member rows still exist to be read: their foreign
+        # keys CASCADE.  Measured on the developer's own dev database at 4
+        # matched paybacks, every one of them reachable from the Undo CC button
+        # on the grid card -- which is why that button now asks first.
+        match_withdrawal.withdraw_for_rows([payback], user_id)
         # Reverse the payback's own ledger postings before it is deleted
         # (Build-Order Step 3 reverse-before-delete): a payback that was settled
         # -- and therefore posted -- before its source's Credit status is
@@ -185,8 +195,49 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
     )
 
 
+def live_payback_chain(txn: Transaction) -> "list[Transaction]":
+    """Return every live payback that goes down with *txn*, nearest first.
+
+    **The walk, published, because THREE things need it and one of them may not
+    write** (plan step ``bank_import:X-gb``).  A payback can itself be marked
+    Credit, so a source can carry a chain rather than a single row:
+    :func:`delete_payback_on_source_delete` takes the whole chain down, the
+    delete verb withdraws the statement matches naming every row in it, and the
+    confirm dialog on the delete control has to NAME them before the owner
+    presses anything.  A read that could not see the chain would print a dialog
+    the press then exceeds, which is the one thing a destructive dialog may not
+    do.
+
+    **It replaced a RECURSION inside the teardown**, which was the same walk
+    expressed where nothing else could reach it.
+
+    **Bounded against a cycle** by the ids it has already seen.  ``ck_transactions
+    _one_pricing_link`` does not forbid one and the FK points at this same
+    table, so a corrupt ``A repays B repays A`` is expressible; the recursion
+    this replaced would have exhausted the stack on it.
+
+    Args:
+        txn: The row whose live paybacks to walk.
+
+    Returns:
+        The chain, nearest first -- ``[]`` for the ordinary row that has none.
+        A soft-deleted prior payback is not in it (the
+        :func:`get_active_payback` contract).
+    """
+    chain: "list[Transaction]" = []
+    seen = {txn.id}
+    current = txn
+    while True:
+        payback = get_active_payback(current.id)
+        if payback is None or payback.id in seen:
+            return chain
+        chain.append(payback)
+        seen.add(payback.id)
+        current = payback
+
+
 def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
-    """Delete the live auto-generated payback when its source is deleted.
+    """Delete the live auto-generated payback chain when its source is deleted.
 
     The deletion-side sibling of :func:`delete_payback_on_credit_revert`:
     where that helper cleans up after a Credit row returning to
@@ -201,12 +252,27 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
     own ``status_id`` is NOT Credit -- a status guard would miss them.
     Entry links (``TransactionEntry.credit_payback_id``) are severed
     before the delete: a template-linked source soft-deletes, so its
-    entries outlive it and must not point at a vanished payback.  A
-    payback can itself be marked Credit, so the helper recurses to take
-    the whole live chain down with the source.  No-op (and no log event)
-    when no live payback exists -- the common case for every ordinary
-    delete.  A soft-deleted prior payback stays in place for the audit
-    trail (the :func:`get_active_payback` contract).
+    entries outlive it and must not point at a vanished payback.  No-op
+    (and no log event) when no live payback exists -- the common case for
+    every ordinary delete.
+
+    **It walks :func:`live_payback_chain` where it used to RECURSE**, and
+    the order is unchanged: DEEPEST FIRST, so each level reverses and
+    deletes before the level above it does and every ledger account is
+    net-zero before a ``transaction_id`` link SET-NULLs on the delete.
+    The walk is published because the delete verb and its confirm dialog
+    need the same chain and neither may write to get it (plan step
+    ``bank_import:X-gb``).
+
+    **It does NOT withdraw the statement matches naming the chain**, and
+    that is the caller's job on purpose: ``transaction_service
+    .delete_transaction`` withdraws for the source AND its whole chain in
+    ONE act, so the figure its confirm dialog printed and the figure its
+    receipt reports are one derivation.  Withdrawing here as well would
+    make the verb's own report exclude the chain it took down -- measured
+    at a ``$200.00`` card payment silently un-explained while the dialog
+    said nothing and the log line read ``matches_withdrawn=0`` (adversarial
+    review, 2026-08-25).
 
     This helper does not commit -- the deletions join the caller's
     transaction so the source delete and the payback removal land
@@ -214,40 +280,32 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
 
     Args:
         txn: The source transaction about to be deleted.
-        user_id: The owning user's ID, recorded on the audit event.
+        user_id: The owning user's ID, recorded on the audit events.
     """
-    payback = get_active_payback(txn.id)
-    if payback is None:
-        return
+    chain = live_payback_chain(txn)
+    for depth in range(len(chain) - 1, -1, -1):
+        payback = chain[depth]
+        parent = txn if depth == 0 else chain[depth - 1]
+        # Sever entry links before the delete.  On a hard-deleted ad-hoc
+        # source the entries cascade away anyway; on a soft-deleted
+        # template-linked source they survive as rows and must not keep a
+        # pointer to the deleted payback (mirrors sync_entry_payback's
+        # delete branch).
+        for entry in parent.entries:
+            if entry.credit_payback_id == payback.id:
+                entry.credit_payback_id = None
+        # Reverse this level's postings while ``journal_entries.transaction_id``
+        # still links them.  Idempotent no-op for a still-Projected payback.
+        posting_service.reverse_postings_before_delete(payback)
+        db.session.delete(payback)
 
-    # Sever entry links before the delete.  On a hard-deleted ad-hoc
-    # source the entries cascade away anyway; on a soft-deleted
-    # template-linked source they survive as rows and must not keep a
-    # pointer to the deleted payback (mirrors sync_entry_payback's
-    # delete branch).
-    for entry in txn.entries:
-        if entry.credit_payback_id == payback.id:
-            entry.credit_payback_id = None
-
-    # The payback may itself be a credit source (a projected expense
-    # can be marked Credit); its own live payback dies with it under
-    # the same invariant.
-    delete_payback_on_source_delete(payback, user_id)
-    # Reverse the payback's own ledger postings before deleting it (Build-Order
-    # Step 3 reverse-before-delete).  The recursion above runs FIRST, so each
-    # deeper level of the chain reverses-then-deletes before this one does --
-    # every ledger account is net-zero before the row's transaction_id link
-    # SET-NULLs on the delete.  Idempotent no-op for a still-Projected payback.
-    posting_service.reverse_postings_before_delete(payback)
-    db.session.delete(payback)
-
-    log_event(
-        logger, logging.INFO, EVT_PAYBACK_DELETED_WITH_SOURCE, BUSINESS,
-        "Source transaction deleted; live payback deleted with it",
-        user_id=user_id,
-        transaction_id=txn.id,
-        deleted_payback_id=payback.id,
-    )
+        log_event(
+            logger, logging.INFO, EVT_PAYBACK_DELETED_WITH_SOURCE, BUSINESS,
+            "Source transaction deleted; live payback deleted with it",
+            user_id=user_id,
+            transaction_id=parent.id,
+            deleted_payback_id=payback.id,
+        )
 
 
 def mark_as_credit(transaction_id, user_id):
@@ -348,15 +406,29 @@ def mark_as_credit(transaction_id, user_id):
     category = get_or_create_cc_category(user_id)
 
     # Find the next pay period, asked of the owner's one calendar (plan step
-    # C2-f) rather than of a ``period_index + 1`` query.  The payday comes off
-    # the relationship ``lock_source_transaction_for_payback`` has already
-    # loaded -- this line was a second ``db.session.get(PayPeriod, ...)`` for a
-    # row the session was holding -- and it is the payday rather than the end
-    # deliberately: ``start_date`` is the only fact in that row, so this
-    # survives plan step C4 unchanged.  The entry-level twin
+    # C2-f) rather than of a ``period_index + 1`` query.  It is the payday
+    # rather than the end deliberately: ``start_date`` is the only fact in
+    # that row, so this survives plan step C4 unchanged.  The entry-level twin
     # (``entry_credit_workflow._create_payback``) reads it the same way.
-    next_period = calendar_for(user_id).period_starting_after(
-        txn.pay_period.start_date,
+    #
+    # **The payday it counts FROM comes out of that same calendar** since plan
+    # step ``pay_calendar:C13-b``.  It was ``txn.pay_period.start_date``, and
+    # the comment here said the payday "comes off the relationship
+    # ``lock_source_transaction_for_payback`` has already loaded".  That door
+    # loaded it as a side effect of walking ``txn.pay_period.user_id`` for its
+    # ownership check; the check reads ``txn.user_id`` now and hydrates
+    # nothing, so the same expression would have become a LAZY load -- a
+    # second read of a span the derivation on this line already holds.
+    #
+    # **The READ ORDER, stated because ``require_period`` requires every caller
+    # to state its own**: the ROW is read first, the paydays second, so a
+    # concurrent DESTRUCTIVE pay-period door -- reset, regenerate or truncate
+    # -- committing between them raises rather than answering off a stale
+    # picture.  That is balance finding **N-358**, whose remedy is
+    # `balance:X-i5`.
+    calendar = calendar_for(user_id)
+    next_period = calendar.period_starting_after(
+        calendar.require_period(FiledRow.for_row(txn)).start_date,
     )
     if next_period is None:
         raise ValidationError(
@@ -422,16 +494,21 @@ def unmark_credit(transaction_id, user_id):
          called as a final policy choke point so any future caller
          that adds a new ``Status`` row -- or any code path that
          skips the bespoke guard -- still cannot push a row through
-         an illegal transition.  ``Settled -> Projected`` is the
-         transition the state machine refuses; the bespoke guard
-         above already excludes that case but the redundancy makes
-         the policy explicit at the database boundary.
+         an illegal transition.  **After plan step balance:X-am this
+         verifier can no longer refuse any RECOGNISED status here**, and that
+         is worth stating rather than leaving a reader to find: this call site
+         only ever asks for ``Projected``, and every state in the transaction
+         map now has an edge to it.  What the check still catches is a corrupt
+         current ``status_id``, and a future status added without that edge --
+         which is what defense in depth is for.  It named
+         ``Settled -> Projected`` until X-am deleted that status, and that
+         refusal really did fire here.
 
     Args:
         transaction_id: The ID of the credited transaction.
         user_id: The ID of the user who owns the transaction.
-            Defense-in-depth: ownership is verified via the
-            transaction's pay period.
+            Defense-in-depth: ownership is verified against the row's own
+            ``user_id`` column.
 
     Raises:
         NotFoundError: If the transaction doesn't exist or doesn't
@@ -444,8 +521,9 @@ def unmark_credit(transaction_id, user_id):
     txn = db.session.get(Transaction, transaction_id)
     if txn is None:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
-    # Defense-in-depth: verify ownership via pay period.
-    if txn.pay_period.user_id != user_id:
+    # Defense-in-depth: verify ownership on the row's own owner column
+    # (``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``).
+    if txn.user_id != user_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
@@ -567,6 +645,11 @@ def create_cc_payback_transaction(
         ``id`` is available for entry linkage and logging.
     """
     payback = Transaction(
+        # The payback belongs to whoever the credit row belongs to (plan step
+        # ``pay_calendar:C13-a``); it is the same fact the account and the
+        # period below already carry, and the composite keys refuse a
+        # disagreement.
+        user_id=source_txn.user_id,
         account_id=source_txn.account_id,
         template_id=None,
         pay_period_id=next_period.period_id,
@@ -575,7 +658,7 @@ def create_cc_payback_transaction(
         name=f"CC Payback: {source_txn.name}",
         category_id=cc_category.id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=amount,
+        amount_ownership=AmountOwnership.own(amount),
         credit_payback_for_id=source_txn.id,
     )
     db.session.add(payback)

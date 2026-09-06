@@ -1,0 +1,295 @@
+{% from "accounts/_merchant_rule_macros.html" import merchant_answer_cell, merchant_name_cell %}
+
+{# WHERE YOUR MERCHANTS GO, and the answer door's own receipt.
+
+   Plan step bank_import:X-gk, ruling bank_import:R-IC.  It is a partial rather
+   than part of the page because saving an answer ANSWERS WITH THIS: the
+   receipt at the top says what changed and the list below is re-rendered from
+   the state that save left.  One template, so what htmx swaps in after a POST
+   cannot drift from what a reload shows.
+
+   NOTHING HERE MOVES MONEY.  A rule is read to SUGGEST where a merchant's
+   spending goes; only a destination submitted for one specific line on the
+   Reconcile page records a purchase (ruling R-FZ).
+
+   ONE MERCHANT IS ON THE WIRE PER PRESS.  A closed row STATES its answer and
+   carries no control at all; the open row is the only form on the page.  That
+   is what makes "saving one merchant changed a second one" unconstructible
+   rather than guarded against -- three defects of exactly that shape were
+   found on the register's whole-page form -- and it is what keeps the render
+   bounded: the two big selects (17 templates, 31 categories on the
+   developer's own account, 4,313 bytes a row) are drawn once, for the row
+   being edited, instead of 62 times.
+
+   THE OPEN ROW IS A QUERY ARGUMENT, so Edit works with scripting off: the link
+   is this page plus ?edit=<merchant id>, and htmx swaps the same markup this
+   template renders for a full page load.
+
+   Context: account, directory (MerchantDirectory), asked (DirectoryAsk),
+   categories, filters, rows, close_url, clear_url, whole_list_url,
+   search_action, search_args, search_max_length, save_action, unbounded_url,
+   rules (StatedRules or None), error (a sentence or None). #}
+
+<div id="statement-merchants-body">
+
+  {# ── What the last answer recorded ──────────────────────────────────── #}
+  {% if error %}
+  <div class="alert alert-danger d-flex gap-2 align-items-start" role="alert">
+    <i class="bi bi-x-octagon mt-1"></i>
+    <div>{{ error }}</div>
+  </div>
+  {% endif %}
+
+  {% if rules %}
+  <div class="card mb-3 border-{% if rules.refused %}warning{% else %}success{% endif %}">
+    <div class="card-header">
+      <i class="bi bi-signpost-split"></i> What that recorded
+    </div>
+    <div class="card-body">
+      {% if rules.stated %}
+      <ul class="mb-0 small">
+        {% for said in rules.stated %}
+        <li class="mb-1">{{ said }}</li>
+        {% endfor %}
+      </ul>
+      {% elif not rules.refused %}
+      {# THE NO-OP ARM.  This form carries ONE merchant, so "nothing changed"
+         here means exactly one thing -- the answer submitted was already the
+         answer stored -- where the register's whole-page form had to say how
+         many OTHER merchants were left alone.  One merchant on the wire is
+         what lets this sentence be that short. #}
+      <p class="mb-0 text-body-secondary">
+        Nothing changed -- that was already your answer.
+      </p>
+      {% endif %}
+      <p class="mt-2 mb-0 small text-body-secondary">
+        This changed no money. It changes where the NEXT swipe from that
+        merchant goes; anything already recorded stays where it is.
+      </p>
+    </div>
+    {% if rules.refused %}
+    <div class="card-body border-top">
+      <p class="fw-semibold mb-2">This was not recorded:</p>
+      <ul class="mb-0 small">
+        {% for reason in rules.refused %}
+        <li class="mb-1">{{ reason }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# ── What this page is for ──────────────────────────────────────────── #}
+  {# The id is what the statements page and the Reconcile page link to when
+     they explain that a stated rule files a new swipe by itself (plan step
+     bank_import:X-ge): the sentence names the control that gives consent, so
+     the link has to reach the control. #}
+  <div id="merchant-rules">
+    <p class="rec-done small mb-2">
+      A new swipe from a merchant you have answered for is filed where you said,
+      at import, without asking. A merchant you have <em>not</em> answered for
+      waits for you on the
+      <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id) }}">Reconcile</a>
+      page, one line at a time. <strong>An answer is never taken away, only
+      changed</strong> -- if you would rather decide case by case, say
+      <em>ask me every time</em>, which is an answer too.
+    </p>
+
+    {# ── The three filters ──────────────────────────────────────────── #}
+    {# COUNTED OVER THE WHOLE ACCOUNT and never over what is rendered, so the
+       bar answers "what do I still owe" while a search is narrowing the list
+       below it.  Which one is current is the ROUTE's fact, not a comparison
+       here: a template restating a partition is a second place for it to be
+       wrong. #}
+    <nav class="rec-tabs" aria-label="Which merchants">
+      {% for count, href, current in filters %}
+      <a class="rec-tab{% if current %} rec-tab-open{% endif %}"
+         href="{{ href }}"{% if current %} aria-current="page"{% endif %}>
+        {{ count.wanted.label }}
+        <span class="rec-tab-count font-mono">{{ count.count }}</span>
+      </a>
+      {% endfor %}
+    </nav>
+
+    {# ── The search ─────────────────────────────────────────────────── #}
+    {# A GET FORM, so the result is a URL the owner can bookmark and the back
+       button works.  It serialises its own controls, which is why the filter
+       and the ceiling ride as hidden inputs rather than on the action: a
+       browser drops the action's query string when it submits a GET. #}
+    <form method="get" action="{{ search_action }}"
+          class="d-flex gap-2 align-items-center flex-wrap mb-3">
+      {# THE VIEW RIDES AS HIDDEN INPUTS, and which arguments those are is the
+         route's one statement of it (`search_args`) rather than a second list
+         here.  A GET form serialises its own controls, so the filter and the
+         ceiling have to be controls; the OPEN row is deliberately absent,
+         because searching closes whatever was being edited.
+
+         `q` IS ABSENT TOO, and that absence is load-bearing: this form already
+         renders a visible control named `q` below, so a hidden one made the
+         browser submit the argument TWICE -- and `request.values.get` takes
+         the FIRST, which is the OLD term.  Typing a new merchant name and
+         pressing Find re-ran the previous search forever, and clearing the box
+         did not clear it.  The route drops it from `search_args` for exactly
+         this reason.  Found by adversarial review 2026-08-31. #}
+      {% for name, value in search_args.items() %}{% if value is not none %}
+      <input type="hidden" name="{{ name }}" value="{{ value }}">
+      {% endif %}{% endfor %}
+      <label class="visually-hidden" for="merchant-search">Find a merchant</label>
+      <input class="form-control form-control-sm" style="max-width: 22rem;"
+             type="search" id="merchant-search" name="q"
+             maxlength="{{ search_max_length }}"
+             value="{{ asked.text }}"
+             placeholder="Find a merchant by name">
+      <button type="submit" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-search"></i> Find
+      </button>
+      {# CLEAR drops the SEARCH, which `close_url` does not: that one keeps the
+         whole view and is the CANCEL link.  Rendered only when there is
+         something to clear -- and until an adversarial review pressed it, it
+         reloaded the identical search. #}
+      {% if asked.text %}
+      <a class="btn btn-sm btn-link" href="{{ clear_url }}">Clear</a>
+      {% endif %}
+    </form>
+
+    {# ── The list ───────────────────────────────────────────────────── #}
+    {% if rows %}
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead>
+          <tr>
+            <th scope="col">Merchant</th>
+            <th scope="col">Goes in</th>
+            <th scope="col">Seen</th>
+            <th scope="col" class="text-end">
+              <span class="visually-hidden">Change this answer</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry, edit_href in rows %}
+          {% if entry.is_open %}
+          {# ── THE ONE OPEN ROW: the only form on this page ──────────── #}
+          <tr class="table-active">
+            <td colspan="4">
+              <form method="post"
+                    action="{{ save_action }}"
+                    hx-post="{{ save_action }}"
+                    hx-target="#statement-merchants-body"
+                    hx-swap="outerHTML show:top"
+                    hx-disabled-elt="find button[type=submit]">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                {# THE KEY IS THE MERCHANT'S OWN ID, which is what the hidden
+                   input the macro emits carries and what the door acts on.
+                   Keying the field names by it too -- rather than by a
+                   rendered position -- is what makes "one merchant per press"
+                   readable in the payload itself, and it is the key the
+                   Reconcile receipt's own offer already uses. #}
+                {{ merchant_name_cell(entry.summary, entry.summary.merchant_id) }}
+                <div class="mt-2">
+                  {{ merchant_answer_cell(entry.summary, entry.summary.merchant_id, directory.templates, categories) }}
+                </div>
+                <div class="d-flex justify-content-between align-items-center gap-2 mt-2 flex-wrap">
+                  <span class="small text-body-secondary">
+                    Saving this records no purchase and changes no balance.
+                  </span>
+                  <span class="d-flex align-items-center gap-2">
+                    <span class="htmx-indicator text-body-secondary small">
+                      <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                      Saving...
+                    </span>
+                    <a class="btn btn-sm btn-link" href="{{ close_url }}">Cancel</a>
+                    <button type="submit" class="btn btn-outline-primary btn-sm">
+                      Save this answer
+                    </button>
+                  </span>
+                </div>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          {# ── A STATED ROW: no control, so nothing here is on any wire ─ #}
+          <tr>
+            <td class="fw-semibold">{{ entry.summary.merchant }}</td>
+            <td class="{% if not entry.is_answered %}text-body-secondary{% endif %}">
+              {# THE PHRASE IS THE SERVICE'S (MerchantEntry.says).  The four
+                 answers are told apart by RuleAnswer identity there, never by
+                 comparing a string here. #}
+              {{ entry.says }}
+            </td>
+            <td class="small text-body-secondary text-nowrap">
+              {% if entry.activity.line_count > 0 %}
+              <span class="font-mono">{{ entry.activity.line_count }}</span>
+              line(s), last
+              <span class="font-mono">{{ entry.activity.last_seen }}</span>
+              {% else %}
+              {# AN ANSWERED MERCHANT OUTLIVES ITS LINES.  Deleting the import
+                 that recorded them sweeps only the merchants no answer is
+                 about, so this row is real state rather than a hypothetical --
+                 and "0 line(s)" would read as a count that failed. #}
+              no lines on file
+              {% endif %}
+            </td>
+            <td class="text-end">
+              {# A PLAIN LINK and deliberately not an htmx swap.  The open
+                 row IS the URL, so navigating to it keeps the address bar
+                 telling the truth about what is on screen -- which makes the
+                 open row bookmarkable and the back button correct -- and it
+                 leaves this page with exactly ONE response shape per route
+                 rather than a second one selected by a request header. #}
+              <a class="btn btn-sm btn-outline-secondary" href="{{ edit_href }}">
+                {% if entry.is_answered %}Change{% else %}Answer{% endif %}
+                <span class="visually-hidden">
+                  where {{ entry.summary.merchant }} goes
+                </span>
+              </a>
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {# ── The bound, said ────────────────────────────────────────────── #}
+    {# A TRUNCATED LIST THAT DOES NOT SAY SO is a page claiming to be the whole
+       record, which is the disclosure ruling bank_import:R-GX already requires
+       of the accepted register.  It appears only when the ceiling BINDS. #}
+    {% if unbounded_url is not none %}
+    <p class="small mt-2 mb-0">
+      Showing {{ directory.entries | length }} of {{ directory.matched_count }}.
+      <a href="{{ unbounded_url }}">Show the other
+        {{ directory.withheld_count }} merchant(s)</a>
+      -- or narrow the list with the search above.
+    </p>
+    {% endif %}
+
+    {% else %}
+    {# THE ANCHOR IS ON EVERY BRANCH.  Two pages link to #merchant-rules to
+       explain what a standing rule does, and an owner whose search matched
+       nothing -- or who has imported no statement at all -- is exactly the
+       reader following that link, so an id that existed only where there were
+       rows would land nowhere for the reader who most needed it. #}
+    <div class="card">
+      <div class="card-body text-body-secondary">
+        {% if directory.total > 0 %}
+        {# THE ESCAPE FROM AN EMPTY RESULT, and it has to actually escape: this
+           sentence says *whole list* and prints the ALL count, so its link
+           drops the search AND the filter.  It was `close_url`, which keeps
+           both -- so the one way out of a search that matched nothing led
+           straight back to it. #}
+        No merchant here matches that. The
+        <a href="{{ whole_list_url }}">whole list</a> holds
+        {{ directory.total }}.
+        {% else %}
+        Your bank statements have not named a merchant on this account yet.
+        <a href="{{ url_for('accounts.statements', account_id=account.id) }}">Import
+        a statement</a> and every merchant it names appears here.
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+</div>

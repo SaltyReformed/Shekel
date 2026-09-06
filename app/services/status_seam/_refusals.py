@@ -26,6 +26,7 @@ from typing import Optional, Union
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
+from app.services.settle_day import SettleDay
 from app.services.status_seam._record import Settlement
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import display_today
@@ -52,13 +53,13 @@ StatusBearingRow = Union[Transaction, Transfer]
 
 
 def reject_settle_day_without_settled_status(
-    status_id: int, settled_on: Optional[date],
+    status_id: int, settle_day: Optional[SettleDay],
 ) -> None:
     """Refuse a settle day supplied for a status that is not settled.
 
     **One half of the settled-iff-dated invariant, stated once** (plan step
     X-f1, finding **N-183**).  A row carries the civil day its money moved if
-    and only if it is in a settled status (Paid / Received / Settled), so a day
+    and only if it is in a settled status (Paid or Received), so a day
     handed in beside a Projected / Credit / Cancelled status is not a value to
     store -- it is a request to record a payment that has not happened.
 
@@ -73,12 +74,13 @@ def reject_settle_day_without_settled_status(
 
     Args:
         status_id: The ``ref.statuses.id`` the row is (or would be) in.
-        settled_on: The settle day supplied beside it, or ``None`` when the
+        settle_day: The day supplied beside it and how it is known
+            (:class:`app.services.settle_day.SettleDay`), or ``None`` when the
             caller supplied none.  ``None`` is always accepted -- it means "no
             day was offered", which is legal for either kind of status.
 
     Raises:
-        ValidationError: When *settled_on* is not ``None`` and *status_id* is
+        ValidationError: When *settle_day* is not ``None`` and *status_id* is
             not one of :func:`~app.utils.balance_predicates.settled_status_ids`.
 
             **A ``ValidationError`` (a 400) rather than a programming error,
@@ -93,15 +95,15 @@ def reject_settle_day_without_settled_status(
             coming rather than re-picked when it lands; saying so beats a
             rationale in the present tense that is not yet true.
     """
-    if settled_on is None:
+    if settle_day is None:
         return
     if status_id in settled_status_ids():
         return
     raise ValidationError(
-        f"A settle day ({settled_on.isoformat()}) was supplied for status "
+        f"A settle day ({settle_day.day.isoformat()}) was supplied for status "
         f"{status_id}, which is not a settled status.  A row records the day "
-        "its money moved only while it is settled (Paid / Received / "
-        "Settled); mark it settled to give it a day, or clear the day to "
+        "its money moved only while it is settled (Paid or Received); "
+        "mark it settled to give it a day, or clear the day to "
         "leave it projected."
     )
 
@@ -178,19 +180,19 @@ def reject_settlement_without_settled_status(
     raise ValidationError(
         f"A settlement record was supplied for status {status_id}, which is "
         "not a settled status.  A row records what moved only while it is "
-        "settled (Paid / Received / Settled); mark it settled to record a "
+        "settled (Paid or Received); mark it settled to record a "
         "figure, or leave it projected, which records nothing."
     )
 
 
 def reject_settle_day_without_a_record(
     row: Transaction,
-    settled_on: Optional[date],
+    settle_day: Optional[SettleDay],
     settlement: Optional[Settlement],
 ) -> None:
     """Refuse a settle DAY on a row that neither records nor is recording one.
 
-    **``ck_transactions_settle_day_needs_basis`` said in words**, at the one
+    **``ck_transactions_settle_day_needs_a_record`` said in words**, at the one
     door that writes both columns.  The constraint is the surviving half of a
     repealed biconditional: a row asserting the day its money moved must record
     WHAT moved, while the reverse -- a record with no day -- is the legal
@@ -212,7 +214,8 @@ def reject_settle_day_without_a_record(
 
     Args:
         row: The row being written.
-        settled_on: The day this call asserts, or ``None``.
+        settle_day: The day this call asserts and how it is known
+            (:class:`app.services.settle_day.SettleDay`), or ``None``.
         settlement: The record this call writes, or ``None``.
 
     Raises:
@@ -220,7 +223,7 @@ def reject_settle_day_without_a_record(
             and is being given nothing to record.  A 400: it is reachable from
             the correction box on a legacy row, and the message is the repair.
     """
-    if settled_on is None or settlement is not None:
+    if settle_day is None or settlement is not None:
         return
     if row.settled_basis_id is not None:
         return
@@ -232,7 +235,36 @@ def reject_settle_day_without_a_record(
     )
 
 
-def reject_future_settle_day(settled_on: Optional[date]) -> None:
+def day_is_in_the_future(day: date) -> bool:
+    """Return whether *day* is later than the user's today (ruling **R-EJ**).
+
+    **The PREDICATE behind :func:`reject_future_settle_day`, published so a
+    SCREEN can ask it.**  A door that raises answers *may I do this*, and a
+    control that must not be rendered needs *would this be refused* -- and the
+    project's own rule is that a screen may not offer a control whose
+    submission can never succeed, a shape the statement-match package has now
+    closed six times.  Before this, the only way to ask was a second
+    ``day > display_today()`` comparison at the call site, which is one money
+    rule spelled twice.
+
+    Added at plan step ``bank_import:X-gf-1`` for
+    :func:`app.services.statement_match._leftovers._recordable_inflows`, whose
+    card would otherwise render a tick for a bank line the bank dates in the
+    future -- and whose door wrote the row before this refusal fired.  Found by
+    adversarial financial review 2026-08-27.
+
+    Args:
+        day: The civil day to test.
+
+    Returns:
+        Whether it is after the user's today
+        (:func:`~app.utils.dates.display_today`), which is the display-timezone
+        clock every settle door already reads.
+    """
+    return day > display_today()
+
+
+def reject_future_settle_day(settle_day: Optional[SettleDay]) -> None:
     """Refuse a settle day that has not happened yet (ruling **R-EJ**).
 
     A row carries a settle day if and only if it is settled, and settled means
@@ -248,7 +280,7 @@ def reject_future_settle_day(settled_on: Optional[date]) -> None:
     independent derivations, one number -- the step's own trace and a neutral
     adversarial review).  A settled source counts from its own ``settled_on``
     (``cash_ledger.dated_deltas``), and
-    :func:`app.services.cash_ledger.walk_cash_ledger` absorbs one into an
+    :func:`app.services.balance_at._assertions.assertion_corrections` absorbs one into an
     assertion only when the assertion is dated ON OR AFTER it -- so a
     future-dated settle rides on top of every assertion until that day arrives.
     On a ``$1,000`` anchor a ``$100`` expense settled three days ago reads
@@ -288,23 +320,26 @@ def reject_future_settle_day(settled_on: Optional[date]) -> None:
     so the server's clock would refuse a settle the user is making right now.
 
     Args:
-        settled_on: The candidate settle day, or ``None`` when none was
-            supplied.  ``None`` is always accepted -- it means "derive the day
-            from the status", which is the everyday path.
+        settle_day: The candidate day and how it is known
+            (:class:`app.services.settle_day.SettleDay`), or ``None`` when none
+            was supplied.  ``None`` is always accepted -- it means "derive the
+            day from the status", which is the everyday path.  The BASIS is not
+            read: no provenance makes a day that has not happened a fact, and a
+            bank line dated tomorrow is a pending item rather than a posting.
 
     Raises:
-        ValidationError: When *settled_on* is later than the user's today.  A
+        ValidationError: When *settle_day*'s day is later than the user's today.  A
             400 rather than a programming error, because plan step X-f1c makes
             it reachable by an ordinary user typing in the correction box; the
             route layer renders it as a designed error fragment.
     """
-    if settled_on is None:
+    if settle_day is None:
+        return
+    if not day_is_in_the_future(settle_day.day):
         return
     today = display_today()
-    if settled_on <= today:
-        return
     raise ValidationError(
-        f"A settle day of {settled_on.isoformat()} has not happened yet "
+        f"A settle day of {settle_day.day.isoformat()} has not happened yet "
         f"(today is {today.isoformat()}).  A row records the day its money "
         "moved, so the day cannot be in the future -- if the payment is "
         "scheduled rather than made, leave it Projected."

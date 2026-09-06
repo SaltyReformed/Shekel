@@ -1,6 +1,6 @@
 """Shared machinery for grading an ARC DOCUMENT and for reading an owner cell.
 
-The four arc documents no longer carry a findings ledger: every finding is a
+The arc documents no longer carry a findings ledger: every finding is a
 row in ``docs/plans/ledger.md`` and every step is indexed in
 ``docs/plans/steps.md``, both graded by :mod:`_registry`.  What is left here is
 the machinery that is still genuinely per-document, plus the one primitive the
@@ -129,7 +129,7 @@ class PlanSpec:
             (e.g. ``"## 5."``).  Matched on the numbered prefix, which is
             stable: no document renumbers.
         steps_label: How to name that section in a message (e.g. ``"Section
-            5"``).  Still per-document: the four documents number their steps
+            5"``).  Still per-document: the arc documents number their steps
             sections differently, and a message naming the wrong one sends the
             reader to a section that does not hold their step.
         line_cap: The whole-document line cap.

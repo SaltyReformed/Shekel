@@ -32,7 +32,7 @@ an analysis against an arbitrary savings account.
 """
 
 from app import ref_cache
-from app.enums import AcctTypeEnum
+from app.enums import AcctCategoryEnum, AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.services import account_service
@@ -89,6 +89,53 @@ def is_cash_flow_account(account: Account) -> bool:
     """
     acct_type = account.account_type
     return acct_type is None or not acct_type.has_amortization
+
+
+def serves_cash_detail(account: Account) -> bool:
+    """Return True when the CASH DETAIL page may render *account*.
+
+    The wider gate :func:`is_cash_flow_account`'s docstring names.  A cash
+    detail surface refuses an amortizing loan like every cash-flow surface
+    does, and ALSO refuses appreciating physical assets and retirement /
+    investment accounts, which keep their own screens.
+
+    **It lives here rather than beside the page it gates because a SECOND
+    surface now asks it**: the grid's bank statement control links into that
+    page, so a control rendered for an account the page 404s is a door onto
+    an error.  ``routes.accounts._cash_page`` is a private module of another
+    route package (``shekel-private-module-import``), so restating the rule
+    in the grid was the only alternative to sharing it -- and a rule stated
+    twice is a rule that drifts once.  One predicate, because it is one
+    question: the reason :func:`is_cash_flow_account` is one.
+
+    Branches on the type row's boolean columns and integer category id only,
+    never a ref-table ``name`` string (the IDs-for-logic invariant).
+
+    Args:
+        account: An :class:`Account` with its ``account_type`` relationship
+            reachable (lazy load is fine; callers operate inside a request
+            session).
+
+    Returns:
+        True for Checking, the ``has_interest`` kinds (HYSA / Money Market /
+        CD / HSA) and plain cash kinds (Savings, Credit Card, plain custom);
+        False for loans, physical assets and retirement / investment
+        accounts.  An account with no ``account_type`` (degenerate /
+        partially loaded) is served, matching
+        :func:`~app.services.account_projection.classify_account`'s
+        None-is-PLAIN branch.
+    """
+    acct_type = account.account_type
+    if acct_type is None:
+        return True
+    return not (
+        acct_type.has_amortization
+        or acct_type.has_appreciation
+        or acct_type.category_id in (
+            ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT),
+            ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT),
+        )
+    )
 
 
 def list_grid_accounts(user_id: int) -> list[Account]:

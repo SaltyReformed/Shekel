@@ -149,10 +149,17 @@ def current_rate_baseline(
 
     Single source of truth for "what rate is in effect on ``as_of``" for callers
     that need the rate WITHOUT the full schedule generation
-    :func:`resolve_loan` runs -- the standalone amortization-schedule route,
-    whose ARM rate column falls back to it for rows carrying no per-row rate, and
-    which composes its own schedule (so a full resolve just to read the rate
-    would derive the schedule twice).  Returns the same value as
+    :func:`resolve_loan` runs.
+
+    **It has NO caller in ``app/`` as of plan step X-au-g-2b**, and this
+    paragraph named the one it had: the standalone amortization-schedule route,
+    whose ARM rate column fell back to this for rows carrying no per-row rate.
+    That fallback guarded a state no ``AmortizationRow`` can be in -- every
+    construction sets ``interest_rate`` from a rate period -- so the step
+    deleted the branch and the route's ``date.today()`` call with it.  What is
+    left here is a public, fence-ruled name with no production reader; whether
+    it should go is a decision on its own and is NOT taken here (rule 6).
+    Returns the same value as
     ``resolve_loan(...).current_rate`` for the same inputs -- the governing rate
     period's annual rate (DH-#56: the resolver-derived rate that replaced the
     retired ``LoanParams.interest_rate`` column) -- by the same cheap rate-period
@@ -247,11 +254,12 @@ def resolve_loan(
             ``loan_payment_settings``; ``Decimal("0.00")`` when none), applied
             to every forward month of the committed schedule so the payoff date,
             total interest, and forward balances reflect the real plan (step 8).
-            The summary read path (``balance_at._resolution.resolved_loan``) loads
-            it centrally via
-            :func:`recurring_transfer_query.loan_standing_extra_for_account` and
-            threads it into the resolve; a direct caller (e.g. the ``date.max``
-            probe) may leave it ``0.00``.
+            The summary read path (``balance_at._resolution.resolved_loan``)
+            loads the loan's WHOLE standing payment centrally via
+            :func:`recurring_transfer_query.standing_payment` -- the forward
+            plan needs the definition and not just this field of it, since plan
+            step R7d-a -- and threads this term into the resolve; a direct
+            caller (e.g. the ``date.max`` probe) may leave it ``0.00``.
 
     Returns:
         A :class:`LoanState` with the four resolver fields.

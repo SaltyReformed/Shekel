@@ -33,13 +33,18 @@ class PeriodWindow:
     both accepted an arbitrary list, so deriving over a six-period grid window
     gave that window's last period a cadence-projected end while the same
     period ended a day earlier everywhere else.  **In ``app/``** a window is
-    only ever produced by :meth:`~._calendar.PayCalendar.saved`,
+    only ever produced by one of :class:`~._calendar.PayCalendar`'s own view
+    methods -- :meth:`~._calendar.PayCalendar.saved`,
     :meth:`~._calendar.PayCalendar.window`,
-    :meth:`~._calendar.PayCalendar.overlapping` or
-    :meth:`~._calendar.PayCalendar.axis`, each of which views a calendar that
-    was built from a complete payday set.  The scope is stated because the
-    TEST suite constructs one directly, which is the only way the refusal
-    below can be shown firing at all.
+    :meth:`~._calendar.PayCalendar.overlapping`,
+    :meth:`~._calendar.PayCalendar.current_and_future`,
+    :meth:`~._calendar.PayCalendar.axis` and
+    :meth:`~._calendar.PayCalendar.projection_axis` -- each of which views a
+    calendar that was built from a complete payday set.  *This list is a
+    derived value stored in prose: it named four until plan step C4's first
+    commit added the fifth, and had never named ``projection_axis`` at all.*
+    The scope is stated because the TEST suite constructs one directly, which
+    is the only way the refusal below can be shown firing at all.
 
     **What this type guarantees, and the claim it does NOT make** (ledger row
     **P24**).  An earlier draft said a window "cannot be derived FROM", and
@@ -66,15 +71,17 @@ class PeriodWindow:
       untidy: the balance column a reader scans down does not telescope across
       the hole, and the per-period reconciliation identity that column rests on
       values each period at its OWN boundaries, so nothing on screen explains
-      the step.  ``cash_period_view``'s contract used to PERMIT it in as many
+      the step.  ``period_view_of``'s contract used to PERMIT it in as many
       words ("they need not be contiguous"), which is row **P32**.
 
-      **Three of the four views cannot produce one and the fourth can, and an
-      earlier draft of this paragraph said all four could not.**
-      :meth:`~._calendar.PayCalendar.window`,
-      :meth:`~._calendar.PayCalendar.overlapping` and
-      :meth:`~._calendar.PayCalendar.axis` SLICE a tiling, and a slice of a
-      tiling tiles.  :meth:`~._calendar.PayCalendar.saved` FILTERS it, and a
+      **Five of the six views cannot produce one and the sixth can, and an
+      earlier draft of this paragraph said all four of the four it then knew
+      could not.**  :meth:`~._calendar.PayCalendar.window`,
+      :meth:`~._calendar.PayCalendar.overlapping`,
+      :meth:`~._calendar.PayCalendar.current_and_future`,
+      :meth:`~._calendar.PayCalendar.axis` and
+      :meth:`~._calendar.PayCalendar.projection_axis` SLICE a tiling, and a
+      slice of a tiling tiles.  :meth:`~._calendar.PayCalendar.saved` FILTERS it, and a
       filter does not: an UNSAVED candidate payday between two saved ones
       leaves exactly this hole, which is why that method documents the refusal
       as one of its own outcomes.  No such calendar exists today --
@@ -151,11 +158,17 @@ class PeriodWindow:
         **Its consumer is the /investment growth chart** (plan step C2-f2c).
         That module scanned the window period by period for the one holding the
         planned retirement date, which is this predicate written a second time
-        and the last HAND-ROLLED member of ledger row **P6**'s census -- the
-        census names one other survivor, ``pay_period_service.get_current_period``,
-        which is SQL rather than a scan and which plan step **C2-f3** retires.
-        The scan and this agree over a tiling window, so retiring it removed a
-        duplicate rather than a divergence.
+        and the last HAND-ROLLED member of ledger row **P6**'s census.  The
+        scan and this agree over a tiling window, so retiring it removed a
+        duplicate rather than a divergence.  **The census's LAST survivor of
+        any kind, ``pay_period_service.get_current_period``, is DELETED at plan
+        step C2-f3a** -- it was SQL rather than a scan, and its ``.first()``
+        carried no ``ORDER BY`` (ledger row **P19**), so over two periods
+        covering one day it answered whichever row the planner reached first.
+        Row **P6**'s CENSUS is empty -- every "which pay period contains this
+        date" in ``app/`` is now one of the searches in :mod:`._searches` --
+        though the ROW is open until the ``C2`` container it is owned by
+        ticks.
 
         **Not derived from ``period_index``.**  A window is a slice of a tiling
         calendar, so ``found.period_index - self[0].period_index`` gives the

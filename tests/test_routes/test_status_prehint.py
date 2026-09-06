@@ -16,7 +16,9 @@ from app.enums import StatusEnum
 from app.extensions import db
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
-from app.services import account_service, transfer_service
+from app.services import account_service, status_seam, transfer_service
+from tests._test_helpers import settlement_if_settling
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_expense(seed_user, seed_periods_today, *, is_envelope=False):
@@ -26,6 +28,7 @@ def _create_expense(seed_user, seed_periods_today, *, is_envelope=False):
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     txn = Transaction(
+        user_id=seed_periods_today[0].user_id,
         pay_period_id=seed_periods_today[0].id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -33,7 +36,7 @@ def _create_expense(seed_user, seed_periods_today, *, is_envelope=False):
         name="Prehint Expense",
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("42.00"),
+        amount_ownership=AmountOwnership.own(Decimal("42.00")),
         is_envelope=is_envelope,
     )
     db.session.add(txn)
@@ -58,13 +61,58 @@ def _option_tag(html, status_id):
 class TestTransactionCardPreHint:
     """The transaction card's dropdown disables illegal transitions."""
 
-    def test_projected_disables_settled_enables_done(
+    def test_paid_disables_cancelled_enables_projected(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """From Projected: Settled is disabled, Paid stays selectable.
+        """From Paid: Cancelled is disabled, Projected stays selectable.
 
-        projected -> settled is illegal (a row must pass through Done /
-        Received); projected -> done is the everyday transition.
+        The pre-hint's two halves on one card -- a move the state machine
+        refuses renders ``disabled`` with the reason in its ``title``, and the
+        revert beside it does not.
+
+        It was written from PROJECTED, where ``Settled`` was the one disabled
+        option.  Plan step **balance:X-am** deleted that status, and Projected
+        now reaches every status the enum has -- so a from-Projected card has
+        nothing disabled to assert, and the case moves to the row state that
+        does.  ``test_projected_offers_every_status`` below is the other half.
+        """
+        with app.app_context():
+            txn = _create_expense(seed_user, seed_periods_today)
+            paid_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(
+                txn, paid_id,
+                settlement=settlement_if_settling(txn, paid_id),
+            )
+            db.session.commit()
+
+            resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+
+            cancelled_tag = _option_tag(
+                html, ref_cache.status_id(StatusEnum.CANCELLED),
+            )
+            assert "disabled" in cancelled_tag
+            assert "Not reachable from Paid" in cancelled_tag
+
+            projected_tag = _option_tag(
+                html, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            assert "disabled" not in projected_tag
+
+    def test_projected_offers_every_status(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """From Projected, no option is disabled but the type mismatch.
+
+        The other half of the pre-hint, and it is the assertion plan step
+        **balance:X-am** makes possible: Projected reaches every status, so the
+        only thing greyed on an EXPENSE card is ``Received`` -- which the
+        state machine allows and ``transaction_service.offerable_status_ids``
+        removes, because an expense settles as Paid.
+
+        Asserting the whole set rather than one option is what catches a status
+        added to the enum with nobody deciding whether Projected may reach it.
         """
         with app.app_context():
             txn = _create_expense(seed_user, seed_periods_today)
@@ -73,14 +121,16 @@ class TestTransactionCardPreHint:
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            settled_tag = _option_tag(
-                html, ref_cache.status_id(StatusEnum.SETTLED),
+            disabled = {
+                member.value for member in StatusEnum
+                if "disabled" in _option_tag(
+                    html, ref_cache.status_id(member),
+                )
+            }
+            assert disabled == {"Received"}, (
+                f"expense card disables {sorted(disabled)}; expected only the "
+                "type-mismatched settled status"
             )
-            assert "disabled" in settled_tag
-            assert "Not reachable from Projected" in settled_tag
-
-            done_tag = _option_tag(html, ref_cache.status_id(StatusEnum.DONE))
-            assert "disabled" not in done_tag
 
     def test_envelope_row_disables_credit_option(
         self, app, auth_client, seed_user, seed_periods_today,

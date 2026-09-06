@@ -79,7 +79,7 @@ companion's default period read the clock, so a BEFORE captured yesterday and
 an AFTER captured today differ by the calendar rather than by the change.
 
 **AND RUN BOTH SIDES ON THE SAME DATA.**  Nothing here writes, but a sibling
-probe can: ``GET /grid`` calls ``pay_period_admin.top_up_rolling_window`` and
+probe can: ``GET /grid`` calls ``pay_period_rolling.top_up_rolling_window`` and
 COMMITS, so any harness that drives the real route creates a pay period on the
 clone the first time it runs.  Capturing a BEFORE, driving ``/grid``, then
 capturing an AFTER diffs 61 paydays against 62 and reports a change this leaf
@@ -135,16 +135,18 @@ from datetime import date
 
 from app import create_app
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.user import User
 from app.services import balance_at, companion_service, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
+from tests._test_helpers import all_periods
+
 
 #: Which side of the cutover this file is running on, keyed on the reader plan
-#: step C2-f2b DELETES.  ``get_current_period`` and ``get_all_periods`` survive
-#: this leaf (``C2-f3`` takes them), so neither can mark the boundary;
+#: step C2-f2b DELETES.  ``get_current_period`` and ``get_all_periods`` survived
+#: this leaf (``C2-f3`` took the first at ``C2-f3a``), so neither could mark the
+#: boundary;
 #: ``get_periods_in_range`` had all three of its ``app/`` call sites in the grid
 #: route and goes with it, which makes its absence the exact marker.
 _IS_HEAD = hasattr(pay_period_service, "get_periods_in_range")
@@ -160,10 +162,18 @@ _OFFSETS = (-99, -2, 0, 2)
 #: the single column the mobile This Period tab navigates with.
 _COUNTS = (6, 52, 1)
 
-#: The Plan tab's fixed forward window.  Copied rather than imported because
-#: the constant lives in ``routes.grid`` on one side of this diff and
-#: ``routes.grid.page`` on the other, and a harness that cannot import on both
-#: sides grades nothing.
+#: The Plan tab's forward window AT A BIWEEKLY CADENCE.  Copied rather than
+#: imported because the constant lived in ``routes.grid`` on one side of the
+#: diff this harness graded and ``routes.grid.page`` on the other, and a
+#: harness that cannot import on both sides grades nothing.
+#:
+#: **It is no longer a constant in production.**  Recurrence plan step R-F17
+#: replaced ``PLAN_WINDOW_PERIODS`` with ``PLAN_WINDOW_MONTHS``, resolved
+#: through ``PayCadence.paychecks_within`` -- so this 13 is the answer for the
+#: developer's own 14-day cadence and for no other.  The harness is a
+#: before/after instrument for a shipped cutover, run against that owner, so
+#: the literal still grades what it was written to grade; a harness pointed at
+#: any other cadence must derive it instead.
 _PLAN_WINDOW_PERIODS = 13
 
 
@@ -209,9 +219,15 @@ def _window(periods):
 
 
 def _current_period(user_id, calendar, ctx):
-    """Return the paycheck the grid opens on, per this side's reader."""
-    if _IS_HEAD:
-        return pay_period_service.get_current_period(user_id)
+    """Return the paycheck the grid opens on, per this side's reader.
+
+    **The HEAD arm is GONE and its reader with it** (plan step C2-f3a deleted
+    ``pay_period_service.get_current_period``), so this is no longer a branch.
+    The parameter list keeps ``user_id`` because every ``_probe`` here takes
+    the same three, and a signature that varied per probe is what the shared
+    driver below exists to avoid.
+    """
+    del user_id  # noqa: F841 -- see the docstring; the HEAD arm is deleted
     return calendar.period_containing(ctx.as_of)
 
 
@@ -227,7 +243,7 @@ def _periods_in_range(user_id, calendar, first_index, count):
 def _all_periods(user_id, ctx):
     """Return the owner's whole reported domain, per this side's reader."""
     if _IS_HEAD:
-        return pay_period_service.get_all_periods(user_id)
+        return all_periods(user_id)
     return ctx.reported_periods()
 
 
@@ -247,46 +263,13 @@ def _flags(view, periods):
     }
 
 
-def _derived_vs_stored(user_id):
-    """Report whether this database can express a stored/derived disagreement.
-
-    **Read this before reading the diff.**  Every equality this leaf claims
-    holds on a schedule whose stored ``end_date`` and ``period_index`` equal
-    the derivation over the owner's paydays.  Where they disagree the two sides
-    legitimately differ, and that disagreement is plan finding **P1** rather
-    than a regression -- but a reader cannot tell which without this count.
-    """
-    calendar = calendar_for(user_id)
-    derived = {p.period_id: p for p in calendar.periods}
-    rows = (
-        db.session.query(PayPeriod)
-        .filter(PayPeriod.user_id == user_id)
-        .order_by(PayPeriod.start_date)
-        .all()
-    )
-    end_mismatches, index_mismatches = [], []
-    for row in rows:
-        match = derived.get(row.id)
-        if match is None:
-            continue
-        if match.end_date != row.end_date:
-            end_mismatches.append({
-                "id": row.id,
-                "stored": row.end_date.isoformat(),
-                "derived": match.end_date.isoformat(),
-            })
-        if match.period_index != row.period_index:
-            index_mismatches.append({
-                "id": row.id,
-                "stored": row.period_index,
-                "derived": match.period_index,
-            })
-    return {
-        "stored_rows": len(rows),
-        "derived_periods": len(calendar.periods),
-        "end_mismatches": end_mismatches,
-        "index_mismatches": index_mismatches,
-    }
+# **``_derived_vs_stored`` was deleted at plan step ``pay_calendar:C4-c``.**
+# It counted, per owner, where the stored ``end_date`` and ``period_index``
+# disagreed with what the paydays derive -- the premise this file's
+# byte-identity gate rested on, since a moved line was either such a
+# disagreement or a defect and the gate could not tell them apart without
+# it.  C4-c dropped both columns.  There is one answer now and the question
+# has no second side: a moved line here is a defect, full stop.
 
 
 def _visible_windows(user_id, calendar, current):
@@ -378,7 +361,6 @@ def _grid_figures(user_id):
             "plan": _guard("flags(plan)", lambda: _flags(view, plan)),
             "card": _guard("flags(card)", lambda: _flags(view, card)),
         },
-        "derived_vs_stored": _derived_vs_stored(user_id),
     }
 
 

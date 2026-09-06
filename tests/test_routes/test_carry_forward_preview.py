@@ -47,11 +47,20 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
-from app.services import pay_period_service, transfer_service
+from app.services import pay_period_write, transfer_service
+from app.services.pay_calendar import calendar_for
 from app.services.auth_service import hash_password
 from app.services.row_valuation import settled_figure
+from app.utils.dates import display_today
 from app.services import account_service
-from tests._test_helpers import make_every_period_rule
+from tests._test_helpers import (
+    current_pay_period,
+    last_covered_day,
+    make_every_period_rule,
+    resolved_amount,
+    state_template_price,
+)
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -65,12 +74,10 @@ def _make_envelope_template(
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"][category_key].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name=name,
         default_amount=Decimal(default_amount),
@@ -78,6 +85,9 @@ def _make_envelope_template(
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
     return template
 
 
@@ -89,6 +99,7 @@ def _make_envelope_txn(
     status = db.session.query(Status).filter_by(name=status_name).one()
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -96,10 +107,10 @@ def _make_envelope_txn(
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=Decimal(
+        amount_ownership=AmountOwnership.own(Decimal(
             estimated_amount if estimated_amount is not None
             else str(template.default_amount)
-        ),
+        )),
         is_override=is_override,
     )
     db.session.add(txn)
@@ -135,6 +146,7 @@ def _make_discrete_template(seed_user, *, name="Recurring Bill",
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     return template
 
 
@@ -145,6 +157,7 @@ def _make_discrete_txn(seed_user, period, template):
     )
     txn = Transaction(
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
@@ -152,7 +165,7 @@ def _make_discrete_txn(seed_user, period, template):
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=template.default_amount,
+        amount_ownership=AmountOwnership.own(template.default_amount),
     )
     db.session.add(txn)
     db.session.flush()
@@ -384,8 +397,8 @@ class TestCarryForwardPreviewConfirmGating:
         posting the mutation that would just refuse anyway.
 
         The target rows must live in the period the route resolves as
-        ``current_period`` (via ``pay_period_service.get_current_period``)
-        -- placing them in any other period leaves the actual target
+        ``current_period`` -- the paycheck CONTAINING the owner's day --
+        because placing them in any other period leaves the actual target
         period empty and the branch creates a row, producing an
         actionable plan that misses the assertion.
         """
@@ -394,7 +407,7 @@ class TestCarryForwardPreviewConfirmGating:
             source = _make_envelope_txn(
                 seed_user, seed_periods_today[0], template,
             )
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id,
             )
             assert current_period is not None
@@ -528,14 +541,45 @@ class TestCarryForwardPreviewConfiguration:
     ):
         """No current period -> 400 (matches POST route's check).
 
-        Patches the service helper so the test does not have to
-        construct a non-overlapping period range.  Mirrors the same
-        defensive behaviour the POST route already has.
+        **It now REACHES that state instead of stubbing it** (plan step
+        C2-f3a).  This patched ``pay_period_service.get_current_period`` to
+        return ``None``, and said so: "so the test does not have to construct a
+        non-overlapping period range".  That reader is deleted, and the stub
+        was the weaker grade anyway -- it asserts the route branches on
+        whatever the producer says, where the question is whether the PRODUCER
+        answers ``None`` for an owner whose schedule has run out.
+
+        So the schedule really runs out: every period from the one containing
+        today onward is retired through ``pay_period_write``, the one door in
+        ``app/`` that removes a pay period, leaving a calendar whose horizon is
+        in the past.  The SOURCE period the route is asked about
+        (``seed_periods_today[0]``) survives, so the 400 is the missing TARGET
+        and not a 404 for the source.
+
+        **Freezing the clock forward was tried first and does not work here**:
+        the session's idle bound is measured against the same ``datetime.now``
+        the freeze moves, so a client authenticated before the jump is logged
+        out and the route answers 302 rather than 400.
         """
         with app.app_context():
-            from app.services import pay_period_service as pps  # pylint: disable=import-outside-toplevel
-            monkeypatch.setattr(
-                pps, "get_current_period", lambda user_id: None,
+            periods = (
+                db.session.query(PayPeriod)
+                .filter_by(user_id=seed_user["user"].id)
+                .order_by(PayPeriod.start_date)
+                .all()
+            )
+            today = display_today()
+            doomed = [p for p in periods if last_covered_day(p) >= today]
+            assert doomed, "the fixture must cover today for this to remove it"
+            pay_period_write.retire_paydays(
+                seed_user["user"].id, {period.id for period in doomed},
+            )
+            db.session.commit()
+            assert calendar_for(
+                seed_user["user"].id,
+            ).period_containing(today) is None, (
+                "the retire left a period still covering today, so the 400 "
+                "below would not be the branch this case is about"
             )
 
             resp = auth_client.get(
@@ -661,7 +705,7 @@ class TestCarryForwardPreviewEndToEnd:
         Asserts on the final state matches the preview's prediction.
 
         Note on the target period: both routes resolve it via
-        ``pay_period_service.get_current_period(user_id)`` so the
+        ``current_pay_period(user_id)`` so the
         test must place its target row in the period that contains
         the test-runner's "today".  Pre-creating the canonical in
         a hard-coded index would be wrong -- the route ignores it
@@ -678,8 +722,9 @@ class TestCarryForwardPreviewEndToEnd:
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
-            # The route resolves target via get_current_period.
-            current_period = pay_period_service.get_current_period(
+            # The route resolves the target as the period containing the
+            # owner's day; this reads it the same way.
+            current_period = current_pay_period(
                 seed_user["user"].id,
             )
             assert current_period is not None, (
@@ -718,5 +763,5 @@ class TestCarryForwardPreviewEndToEnd:
                     is_deleted=False,
                 ).one()
             )
-            assert target.estimated_amount == Decimal("135.00")
+            assert resolved_amount(target) == Decimal("135.00")
             assert target.is_override is True

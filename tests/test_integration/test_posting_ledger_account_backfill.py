@@ -306,7 +306,7 @@ class TestBackfillPostsHistoricalCorrection:
             # A second, later anchor assertion (the true-up to $600).  Its
             # created_at post-dates the opening's, so the walk orders it second.
             add_anchor_history(
-                db.session, savings, seed_user["bootstrap_period"],
+                db.session, savings,
                 Decimal("600.00"),
             )
             db.session.commit()

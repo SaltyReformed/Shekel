@@ -18,10 +18,12 @@ the P-AC1 ruling fixed on worked real-data examples:
   (:func:`app.services.retirement_projection.build_projection_context` plus
   the ``project_accounts_with_batch`` probe seam over the OWNER'S OWN pay
   periods to the horizon end), sampled annually -- so the band is the
-  engine's own projection (the constant-employer-base path every net-worth
-  consumer uses, the ruled oracle), never a parallel model.  See
-  :func:`_retirement_investment_bands` for why the constant base -- not the
-  /retirement readiness page's salary-basis refinement -- is the reuse here.
+  engine's own projection, never a parallel model.  It supplies no
+  LONG-HORIZON salary path, which since plan step **salary:R14-b** means the
+  employer base is the paycheck engine's own per payday inside the saved
+  calendar and a held paycheck past it -- not the constant this said until
+  then.  See :func:`_retirement_investment_bands` for what that changed and
+  for the P-AC1 oracle figure it retired.
 * **Asset band** = per-account param growth: a Property compounds at its
   ``annual_appreciation_rate``, an interest account at its ``apy``, and plain
   cash holds flat -- every figure traceable to a parameter the account
@@ -333,27 +335,44 @@ def _retirement_investment_bands(
 
     Reuses the retirement dashboard's own context builder and the
     ``project_accounts_with_batch`` probe seam over the horizon axis, so the
-    band is the engine's projection, never a parallel model -- it equals the
-    ret_probe oracle the P-AC1 ruling anchored on ($1,187,745.83 at
-    2049-12-31 on the developer's data).  Each account's per-period rows are
+    band is the engine's projection, never a parallel model.  *It EQUALLED
+    the ret_probe oracle the P-AC1 ruling anchored on -- $1,187,745.83 at
+    2049-12-31 -- and plan step salary:R14-b made that unreproducible through
+    this path; see the paragraph on the employer base below.*  Each account's
+    per-period rows are
     sampled annually and summed into its category band; the today point is
     the account's model-from-anchor displayed balance, so the band starts at
     the hero's retirement / investment subtotal.
 
-    The employer-contribution base is held CONSTANT (``employer_salary_basis``
-    is ``None``), which is what the ruled oracle used and what every
-    net-worth consumer does.  **The two bands no longer share a growth MODEL**
+    **The employer-contribution base stopped being CONSTANT at plan step
+    salary:R14-b, and this paragraph asserted the opposite until then.**  It
+    read "held CONSTANT (``employer_salary_basis`` is ``None``), which is what
+    the ruled oracle used and what every net-worth consumer does".  The
+    ``None`` argument is unchanged and still means "no LONG-HORIZON salary
+    path", but ``retirement_projection._run_account_projection`` now composes
+    the paycheck engine's own per-payday gross underneath it, so inside the
+    owner's saved calendar this band is priced per period like every other
+    surface, and only PAST that calendar does the ``None`` mean a held
+    paycheck.  The P-AC1 oracle figure this paragraph quoted
+    ($1,187,745.83 at 2049-12-31) was measured against the constant base and
+    is not reproducible through this path any more.  It is stated as HISTORY
+    where it appears above rather than restated at a number nobody has
+    re-measured.  *An earlier draft of this sentence said the figure was
+    "removed" while it was still asserted as a live equality four paragraphs
+    up -- a fix describing itself, which is the class round three caught.*
+
+    **The two bands no longer share a growth MODEL**
     (plan step X-g2b): the ``2 years`` band is the per-period balance map, which
     is now the daily event replay, while this Horizon band still projects
     forward through ``growth_engine`` -- ruling R-U keeps the engine for the
     forward what-if and moves only the balance-at-T half.  What they share is
-    their TODAY point (both read the seam's modelled value there) and the
-    constant employer base, so the two ranges of one chart still meet where they
-    touch.  Only the /retirement READINESS page grows the employer base with
-    the projected salary path (its own fork F3 refinement, documented at
-    ``retirement_dashboard_service`` as "every other engine consumer keeps
-    the constant base"); applying it here would diverge the Horizon range
-    from the ``2 years`` range of the same chart.
+    their TODAY point (both read the seam's modelled value there) and, since
+    salary:R14-b, the ENGINE-PRICED employer base rather than a constant one
+    -- so the two ranges of one chart still meet where they touch, and they
+    now meet by pricing the same paycheck rather than by both being flat.
+    The /retirement READINESS page still supplies the merit-horizon salary
+    path (its own fork F3 refinement) for paydays past the saved calendar,
+    which is the one place the two still differ.
 
     The engine is skipped entirely (returning zero bands) when the user has
     no retirement or investment account, so a loan- or cash-only user pays
@@ -375,7 +394,7 @@ def _retirement_investment_bands(
     period contains today (``_pick_current_period_balances``), and that figure
     is this band's index-0 point while ``frame.today`` came from the other pass
     -- against the module's own "index 0 equals the net-worth hero" invariant.
-    And ruling R-G's forward clamp (``_cash_fold.assemble``) dates every still
+    And ruling R-G's forward clamp (``_cash_fold._assemble``) dates every still
     -projected row from ``as_of``, so the balance map is a function of it too.
     Both priced ``$0.00`` on the developer's data only because the three
     investment accounts hold zero transaction rows (ruling R-R's measurement),
@@ -405,8 +424,11 @@ def _retirement_investment_bands(
         return bands
 
     # The last two args are return_rate_override and employer_salary_basis,
-    # both None: no slider override, and the constant employer base every
-    # net-worth consumer uses (the ruled oracle; see the docstring).
+    # both None: no slider override, and no LONG-HORIZON salary path.  Since
+    # plan step salary:R14-b that second None no longer means a constant
+    # employer base -- the paycheck engine's own per-payday gross is composed
+    # underneath it inside the owner's saved calendar, and only past that
+    # calendar does the None mean a held paycheck (see the docstring).
     ctx = retirement_projection.build_projection_context(
         core.balance_ctx, frame.horizon_end, None, None,
     )

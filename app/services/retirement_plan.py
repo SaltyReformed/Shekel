@@ -355,7 +355,10 @@ def load_retirement_inputs(balance_ctx: BalanceContext) -> RetirementInputs:
 
     Raises:
         PayCalendarError: The owner has no resolvable pay cadence -- no
-            ``budget.pay_schedule`` row and no pay period to infer one from.
+            ``budget.pay_schedule`` row, which since plan step C4-b-2 IMPLIES no
+            pay periods (``fk_pay_periods_schedule``).  Since plan step
+            pay_calendar:C4-d it is raised where the calendar is BUILT rather
+            than where the cadence is read.
             See :func:`app.services.retirement_dashboard_service.load_gap_inputs`.
     """
     gap = load_gap_inputs(balance_ctx)
@@ -643,6 +646,7 @@ def _derive_picture(
         return_rate_override=point.return_rate_override,
         employer_salary_basis=build_employer_salary_basis(
             gap.salary_profiles, retirement_date, merit_horizon, as_of,
+            gap.pay_cadence,
         ),
     )
     axis = resolve_projection_axis(ctx)

@@ -19,7 +19,6 @@ from app.models.user import User, UserSettings
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
@@ -31,6 +30,7 @@ from app.services.balance_at import BalanceContext
 from app.services import account_service
 from app.services.cash_ledger import resolve_transfer_amount
 from app.services.row_valuation import owned_contribution
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -47,19 +47,12 @@ def _create_other_user():
     db.session.flush()
 
 
-    # Bootstrap pay period (E-19, Commit 3): the
-    # account_service factory requires the user to have at
-    # least one pay period to anchor against.
-    from datetime import date as _date, timedelta as _td
-    from app.models.pay_period import PayPeriod as _PayPeriod
-    _bootstrap = _PayPeriod(
-        user_id=other.id,
-        start_date=_date(2024, 1, 5),
-        end_date=_date(2024, 1, 5) + _td(days=13),
-        period_index=0,
-    )
-    db.session.add(_bootstrap)
-    db.session.flush()
+    # The account_service factory requires the user to have at least one pay
+    # period to anchor against.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    from datetime import date as _date
+    from tests._test_helpers import open_owner_calendar as _open_calendar
+    _bootstrap = _open_calendar(other.id, _date(2024, 1, 5))[0]
     settings = UserSettings(user_id=other.id)
     db.session.add(settings)
 
@@ -112,7 +105,12 @@ def _create_other_user():
 
 
 def _create_savings_account(user_id):
-    """Create a savings account for the given user."""
+    """Create and COMMIT a savings account for the given user.
+
+    Committed rather than flushed (plan step balance:X-i3): the ownership
+    tests here post a form naming this account and then follow the redirect,
+    and a request cannot see a row that was never committed.
+    """
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = account_service.create_account(
         account_service.AccountSpec(
@@ -123,7 +121,7 @@ def _create_savings_account(user_id):
         ),
     )
     db.session.add(acct)
-    db.session.flush()
+    db.session.commit()
     return acct
 
 
@@ -139,6 +137,7 @@ class TestEffectiveAmountDecimal:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         txn = Transaction(
             template_id=None,
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -146,7 +145,7 @@ class TestEffectiveAmountDecimal:
             name="Test Credit",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -160,6 +159,7 @@ class TestEffectiveAmountDecimal:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         txn = Transaction(
             template_id=None,
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -167,7 +167,7 @@ class TestEffectiveAmountDecimal:
             name="Test Cancelled",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -196,7 +196,7 @@ class TestEffectiveAmountDecimal:
             scenario_id=seed_user["scenario"].id,
             status_id=cancelled.id,
             name="Cancelled Transfer",
-            amount=Decimal("200.00"),
+            amount_ownership=AmountOwnership.own(Decimal("200.00")),
         )
         db.session.add(xfer)
         db.session.flush()
@@ -217,7 +217,7 @@ class TestEffectiveAmountDecimal:
             scenario_id=seed_user["scenario"].id,
             status_id=projected.id,
             name="Active Transfer",
-            amount=Decimal("200.00"),
+            amount_ownership=AmountOwnership.own(Decimal("200.00")),
         )
         db.session.add(xfer)
         db.session.flush()

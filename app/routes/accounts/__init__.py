@@ -44,6 +44,15 @@ Module map:
   beside what its records produced just before each one.  A third subject
   beside ``detail``'s page and ``anchor``'s write door, split for the reason
   ``reconcile`` was.
+* :mod:`app.routes.accounts.opening` -- What the books OPENED with (plan
+  step X-f3c-2b-2a, ruling **R-HG**): the card the shared account edit page
+  renders and the POST that appends a restatement.  A write door for an
+  append-only MONEY fact, split from ``crud`` for the reason ``history`` was
+  split from ``detail`` -- ``crud`` writes plain columns on one row and this
+  goes through a service that takes the owner's write lock and re-bases the
+  posted ledger.  The balance-history card LINKS here rather than editing in
+  place: one door, two entrances, and the second is the only surface every
+  account kind reaches.
 * :mod:`app.routes.accounts.statements` -- What the BANK said (plan step
   ``bank_import:X-f6a-1``, ruling R-FP): the statement import page and its
   write door.  A fourth subject beside ``anchor``'s assertion, ``reconcile``'s
@@ -53,10 +62,62 @@ Module map:
 * :mod:`app.routes.accounts.statement_matches` -- What the app DOES about it
   (plan step ``bank_import:X-f6a-2``, ruling R-FS): the review screen that
   proposes which of this account's rows each recorded line IS, and the two
-  write doors that accept and release one.  Its boundary against ``statements``
+  write doors that apply a reviewed pass and answer for a merchant nobody has
+  answered for yet.  **The door that RELEASES one is no longer here**: it went
+  with the accepted acts at ``bank_import:X-gf-2``, to
+  ``_statement_release`` and the two surfaces that render it.  Its boundary against ``statements``
   is the one ``reconcile`` cuts against ``anchor``: a read of an outside record
   against the door that acts on it.  **It MOVES MONEY** -- an accepted match
   writes the bank's posted day onto every row it names.
+* :mod:`app.routes.accounts.statement_register` -- What has already been
+  DECIDED (plan step ``bank_import:X-gf-2``, ruling **bank_import:R-GX**): the
+  merchant answers already given and the matches already accepted, each with
+  its undo.  Its boundary against ``statement_matches`` is the one that step
+  exists for -- a QUEUE holds what is still being decided and a REGISTER holds
+  what is not, and the two were one 578,523-byte page of which 76% was the
+  register half.  **RETIRED AS A PAGE at ``bank_import:X-gj-1c``** (ruling
+  **R-HU**): its accepted list is the Reconcile screen's two settled tabs and
+  its merchant answers are ``statement_merchants``, so nothing it does is
+  reachable only here.  **It is still LINKED, three times, from the review
+  QUEUE** (``_statement_review_body.html``), which ``X-gi`` retires beside it
+  -- so that census must take the two together or the queue's own header
+  button lands on a deleted route.  The route stays alive until then.
+* :mod:`app.routes.accounts.statement_merchants` -- WHERE YOUR MERCHANTS GO
+  (plan step ``bank_import:X-gk``, ruling **bank_import:R-IC**): one row per
+  merchant this account has ever seen, carrying its standing answer or *You
+  have not said*, edited ONE merchant at a time.  Its boundary against
+  ``statement_register`` is the one R-IC draws: that page shows only the
+  merchants already ANSWERED for, and measured on a clone of the developer's
+  own database 2026-08-31 that left 32 of his 62 merchants on no surface at
+  all.  **It MOVES NO MONEY** and posts to the rule door three other surfaces
+  already use.
+* :mod:`app.routes.accounts.statement_workbench` -- The TOOL, not the queue
+  (plan step ``bank_import:X-gf-3b``, ruling **bank_import:R-HC**): the
+  hand-build match form, where the owner asserts a correspondence the matcher
+  would not guess.  **It MOVES MONEY** -- recording a group writes the bank's
+  posted day onto every row it names, which makes it the SECOND door here that
+  does, beside ``statement_matches``.  Its boundary against that one is that a
+  queue holds exceptions and this holds the tool three of them send the owner
+  to; its two pick lists were 59% of the review page.
+* :mod:`app.routes.accounts.statement_reconcile` -- ONE PAGE ON FOUR VERBS
+  (plan step ``bank_import:X-gj-1b``, rulings **bank_import:R-HP**..**R-HX**):
+  the Reconcile screen that replaces the three above.  Every bank line ends on
+  MATCH, ADD, TRANSFER or SKIP, and the inbox is the lines with none yet.
+  **It MOVES MONEY through doors that already exist** -- it applies through
+  ``apply_reviewed`` like ``statement_matches`` and ``statement_workbench``,
+  and releases through ``_statement_release`` like the register and the import
+  receipt (plan step ``bank_import:X-gj-1c``), opening none of its own.  Its
+  two SETTLED tabs came with that step, and with them the register's whole job:
+  the acts it listed, the bound it applied, the link past that bound and the
+  Undo on each.  The three pages it replaces stay alive beside it until
+  ``bank_import:X-gi``'s census deletes them, which is ruling **R-HU**'s
+  sequencing: nothing is removed on the way in.
+* :mod:`app.routes.accounts.bank_agreement` -- The two records SIDE BY SIDE
+  (plan step ``bank_import:X-f6e-2``, ruling R-GF): a per-day comparison of
+  what the app's own rows moved against what the bank's lines did, and of the
+  two running balances.  It reports and never gates.  Its boundary against
+  ``statements`` is ``difference``'s against ``anchor`` -- a read-only
+  comparison of what a write door wrote is not that door's subject.
 * :mod:`app.routes.accounts.types` -- Account-type CRUD for the
   per-user custom catalogue (commit C-28 / F-044).
 * :mod:`app.routes.accounts.detail` -- Per-account detail pages.  The
@@ -93,10 +154,17 @@ from app.routes.accounts import reconcile  # noqa: F401, E402
 from app.routes.accounts import history  # noqa: F401, E402
 from app.routes.accounts import anchor  # noqa: F401, E402
 from app.routes.accounts import difference  # noqa: F401, E402
+from app.routes.accounts import outstanding  # noqa: F401, E402
+from app.routes.accounts import opening  # noqa: F401, E402
 from app.routes.accounts import types  # noqa: F401, E402
 from app.routes.accounts import detail  # noqa: F401, E402
 from app.routes.accounts import statements  # noqa: F401, E402
 from app.routes.accounts import statement_matches  # noqa: F401, E402
+from app.routes.accounts import statement_register  # noqa: F401, E402
+from app.routes.accounts import statement_workbench  # noqa: F401, E402
+from app.routes.accounts import statement_reconcile  # noqa: F401, E402
+from app.routes.accounts import statement_merchants  # noqa: F401, E402
+from app.routes.accounts import bank_agreement  # noqa: F401, E402
 
 
 __all__ = ["accounts_bp"]

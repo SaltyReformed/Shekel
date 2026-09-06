@@ -88,7 +88,11 @@ from app.models.user import User, UserSettings
 from app.services import cash_ledger
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today
-from tests._test_helpers import registration_spec
+from tests._test_helpers import (
+    current_pay_period,
+    last_covered_day,
+    registration_spec,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -242,11 +246,11 @@ class TestCreationPathsWriteAnchor:
             # whole schedule now, not one placeholder.
             periods = db.session.query(PayPeriod).filter_by(
                 user_id=user.id,
-            ).order_by(PayPeriod.period_index).all()
+            ).order_by(PayPeriod.start_date).all()
             assert len(periods) == 3
             assert periods[0].start_date == last_payday
-            assert periods[0].end_date == last_payday + timedelta(days=13)
-            assert periods[0].start_date <= signup_day <= periods[0].end_date
+            assert last_covered_day(periods[0]) == last_payday + timedelta(days=13)
+            assert periods[0].start_date <= signup_day <= last_covered_day(periods[0])
 
             histories = db.session.query(AccountAnchorHistory).filter_by(
                 account_id=account.id,
@@ -277,19 +281,17 @@ class TestCreationPathsWriteAnchor:
         AccountAnchorHistory row.
 
         Arithmetic: ``seed_periods_today`` places today in period 4
-        of the seed_user's period set.  The route resolves the
-        current period via ``pay_period_service.get_current_period``
-        and uses it as the anchor.  The submitted anchor_balance is
+        of the seed_user's period set.  The route resolves the period
+        CONTAINING the owner's day and uses it as the anchor.  The submitted anchor_balance is
         ``$1500.00`` and must appear verbatim on both the column
         and the history row.
         """
-        from app.services import pay_period_service
 
         with app.app_context():
             savings_type = (
                 db.session.query(AccountType).filter_by(name="Savings").one()
             )
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None
@@ -314,7 +316,7 @@ class TestCreationPathsWriteAnchor:
             assert (
                 current_period.start_date
                 <= history.observed_on
-                <= current_period.end_date
+                <= last_covered_day(current_period)
             )
             assert history.anchor_balance == Decimal("1500.00")
 
@@ -379,6 +381,38 @@ def _enclosing_defs(tree) -> dict[int, str]:
     return owner
 
 
+def _docstring_nodes(tree) -> set[int]:
+    """Return ``id()`` of every string Constant that is a DOCSTRING.
+
+    A module, class or function docstring is the first statement of its body
+    and is an ``ast.Expr`` wrapping a string ``Constant``.  Identified by
+    position rather than by content, so a string that merely LOOKS like prose
+    is still censused and a SQL literal that happens to sit first in a function
+    is still counted as one.
+
+    Args:
+        tree: The parsed module.
+
+    Returns:
+        The set of ``id()`` values of the docstring Constant nodes.
+    """
+    import ast  # pylint: disable=import-outside-toplevel
+
+    holders = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, holders) or not node.body:
+            continue
+        first = node.body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            docstrings.add(id(first.value))
+    return docstrings
+
+
 def _anchor_history_writers(root: pathlib.Path) -> list[tuple[str, str, int]]:
     """Return every site under *root* that could WRITE an assertion row.
 
@@ -397,6 +431,18 @@ def _anchor_history_writers(root: pathlib.Path) -> list[tuple[str, str, int]]:
 
     A ``SELECT`` literal naming the table is NOT a writer and is not reported
     (``scripts/integrity_check.py`` has two, legitimately).
+
+    **Nor is a DOCSTRING, and that arm had the exact hole this census's first
+    line says it was built to avoid** (plan step X-f3c-2c).  The reason given
+    for walking the AST rather than grepping is that "a grep cannot tell a
+    construction from a docstring naming the class" -- and the raw-SQL arm then
+    read every string constant, docstrings included.  It fired on
+    ``app/append_only_infrastructure.py``, whose module docstring explains why
+    a bulk ``UPDATE`` on ``budget.account_anchor_history`` is refused: prose
+    ABOUT a write, reported as one.  Docstrings are excluded by IDENTITY
+    (``ast.get_docstring`` semantics: the first statement of a module, class or
+    function, when it is a string) rather than by pattern, so a genuine SQL
+    literal that happens to sit first in a function is still counted.
 
     Args:
         root: The directory to census.  Parameterised so the negative control
@@ -421,6 +467,7 @@ def _anchor_history_writers(root: pathlib.Path) -> list[tuple[str, str, int]]:
     for path in sorted(root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         owner = _enclosing_defs(tree)
+        docstrings = _docstring_nodes(tree)
         names = {_MODEL}
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
@@ -453,7 +500,11 @@ def _anchor_history_writers(root: pathlib.Path) -> list[tuple[str, str, int]]:
                     hit = True
                 elif called in {"insert", "Insert"} and mentions_model(node):
                     hit = True
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            elif (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
                 lowered = node.value.lower()
                 hit = _TABLE in lowered and any(
                     verb in lowered for verb in _SQL_WRITE_VERBS

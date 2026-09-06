@@ -26,7 +26,7 @@ Two questions this file does NOT answer, and their homes:
   ``test_balance_calculator.py`` until that module deletes.
 
 The rule under test: only rows the shared ``is_projected`` predicate admits
-contribute; income counts at :func:`~app.services.cash_ledger.income_amount`
+contribute; income counts at :func:`~app.services.cash_ledger.contribution_of`
 and expense at the entries-aware reservation, and the split follows the
 transaction TYPE.
 
@@ -227,7 +227,7 @@ class TestTheTwoLegs:
         same figure on an income row carrying NO entries, where both valuation
         rules return ``effective_amount`` and the assertion therefore held
         whichever one priced it -- finding N-69's shape.  Measured: routing the
-        income leg through ``_expense_amount`` failed nothing until the entry
+        income leg through ``_entry_aware_amount`` failed nothing until the entry
         was added.  With it, the expense rule would answer
         max(2000.00 - 0 - 500.00, 0) = 1500.00 and this fails.
 

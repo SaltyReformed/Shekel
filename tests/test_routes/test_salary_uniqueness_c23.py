@@ -57,8 +57,8 @@ def _freeze_today_inside_seed_range(monkeypatch):
 
     Mirrors the fixture in ``test_salary.py``.  Required because
     these tests exercise routes that call ``_regenerate_salary_transactions``,
-    which in turn calls ``pay_period_service.get_current_period``;
-    that lookup needs to find a seeded period at "today" or it
+    which in turn asks which paycheck contains today; that lookup
+    needs to find a seeded period at "today" or it
     skips regeneration silently and the tests cannot tell whether
     the constraint or the regeneration path failed.
     """
@@ -84,13 +84,10 @@ def _create_profile(seed_user):
         db.session.add(cat)
         db.session.flush()
 
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name="Day Job",
         default_amount=Decimal("75000.00") / 26,
@@ -98,6 +95,8 @@ def _create_profile(seed_user):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     profile = SalaryProfile(
         user_id=seed_user["user"].id,
@@ -107,7 +106,6 @@ def _create_profile(seed_user):
         name="Day Job",
         annual_salary=Decimal("75000.00"),
         state_code="NC",
-        pay_periods_per_year=26,
     )
     db.session.add(profile)
     db.session.commit()
@@ -230,7 +228,6 @@ class TestSalaryRaiseUniqueConstraint:
                 name="Side Gig",
                 annual_salary=Decimal("20000.00"),
                 state_code="NC",
-                pay_periods_per_year=26,
             )
             db.session.add(profile_b)
             db.session.commit()

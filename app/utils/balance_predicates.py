@@ -122,26 +122,37 @@ def settled_status_ids() -> frozenset[int]:
     """Return the cached set of status IDs that represent a settled transaction.
 
     Per ``app/ref_seeds.py`` the rows with ``is_settled=True`` are
-    exactly ``Paid`` (``StatusEnum.DONE``), ``Received`` and ``Settled``
-    -- the three statuses whose real-world money movement has completed.
+    exactly ``Paid`` (``StatusEnum.DONE``) and ``Received`` -- the two
+    statuses whose real-world money movement has completed.
     This is the ID-list counterpart of the semantic ``Status.is_settled``
     column: SQLAlchemy filters that need the set for a
     ``status_id.in_(...)`` clause consume this accessor, while the sibling
     sites that read ``txn.status.is_settled`` (the calendar, variance,
     savings-metric, and balance-calculator Python loops) consult the
-    column directly. Both forms resolve to the same three rows by
+    column directly. Both forms resolve to the same two rows by
     construction, so a "settled spending" total computed via the ID list
     can never disagree with one gated on the boolean column. The
     ``TestSettledStatusIds`` parity test derives the expected set from the
     ``is_settled`` column itself, so adding or removing a settled status
     in the seed matrix without updating this accessor fails that test.
 
+    **The band held THREE members until plan step X-am** (ruling
+    **balance:R-HA**, closing finding **N-177**).  The third was ``Settled``,
+    the ARCHIVE, and every reader here consumed the SET rather than the member
+    -- so the balance engine could not tell the three apart and the archive
+    contributed nothing this accessor's callers could see.  What it DID have
+    were two readers that told it apart, ``is_archived`` and
+    ``not_archived_clause``, both of them guards over a state carrying zero
+    rows; both are deleted with it.  Now that the band is exactly the two
+    type-specific settle targets, ``transaction_service.settled_status_member``
+    is TOTAL over it: every member of this set is the settled status of exactly
+    one transaction type.
+
     Returns:
         A ``frozenset[int]`` of the ``ref.statuses.id`` values for
-        ``StatusEnum.DONE``, ``StatusEnum.RECEIVED`` and
-        ``StatusEnum.SETTLED``. ``frozenset`` (not ``set``) so the value
-        is hashable and immutable -- callers treat it as an inert lookup,
-        never mutate it.
+        ``StatusEnum.DONE`` and ``StatusEnum.RECEIVED``. ``frozenset``
+        (not ``set``) so the value is hashable and immutable -- callers
+        treat it as an inert lookup, never mutate it.
 
     Raises:
         RuntimeError: propagated from ``ref_cache.status_id`` if the
@@ -152,7 +163,6 @@ def settled_status_ids() -> frozenset[int]:
     return frozenset({
         ref_cache.status_id(StatusEnum.DONE),
         ref_cache.status_id(StatusEnum.RECEIVED),
-        ref_cache.status_id(StatusEnum.SETTLED),
     })
 
 
@@ -185,11 +195,14 @@ def is_identity_move(row, new_status_id: int) -> bool:
     measured 2026-08-17.
 
     **It is deliberately NARROWER than "already in the settled band"**, and the
-    difference is a refusal.  Asking the band swallows ``Settled -> Paid``,
+    difference is a refusal.  Asking the band swallows ``Paid -> Received``,
     which is an ILLEGAL transition ``state_machine.verify_transition`` exists to
-    reject, and turns its designed 400 into a silent 200.  Only the identity
-    move is nothing to do; every other move still owes the state machine an
-    answer.
+    reject (the maps are keyed on the STATUS and give ``done`` no edge to
+    ``received``), and turns its designed 400 into a silent 200.  Only the
+    identity move is nothing to do; every other move still owes the state
+    machine an answer.  The sharper example used to be ``Settled -> Paid``,
+    out of the terminal ARCHIVE plan step **X-am** deleted; the rule did not
+    change, only the illegal move available to illustrate it.
 
     Polymorphic over both status-bearing models for the reason
     :func:`enters_settled_band` below states: the question is over ``status_id``
@@ -216,12 +229,26 @@ def enters_settled_band(row, new_status_id: int) -> bool:
     Cancelled reach the band through Projected, never directly).
 
     **Staying inside the band is NOT a settle**, and that half is load-bearing.
-    ``Paid -> Settled`` is an ARCHIVE of a row whose money already moved and
-    whose amount is already a fact, and ``Paid -> Paid`` is an idempotent
-    re-submit; routing either to a settle verb would ask an immutable row to
-    re-price itself, which an envelope's settle refuses by precondition and a
-    manual settle would answer by re-reading a projection the row left months
-    ago.
+    ``Paid -> Paid`` is an idempotent re-submit -- an HTMX double click, a stale
+    tab, a Save on a popover whose status box was not touched -- and routing it
+    to a settle verb would ask an immutable row to re-price itself, which an
+    envelope's settle refuses by precondition and a manual settle would answer
+    by re-reading a projection the row left months ago.
+
+    Identity is now the only LEGAL within-band move, which was not true until
+    plan step **X-am**: ``Paid -> Settled`` was the other one, an ARCHIVE of a
+    row whose money had already moved and whose amount was already a fact, and
+    it needed this same half for the same reason.  Deleting that status
+    narrowed the case without changing the rule, so nothing here loosened.
+
+    **"Legal" is doing work in that sentence.**  ``Paid -> Received`` is a
+    within-band move that is not the identity, and a door CAN submit it -- this
+    predicate is asked before ``verify_transition`` refuses it
+    (``transaction_service._door.apply_requested_status``,
+    ``status_seam._seam.apply_status_change``).  It answers False here, which is
+    correct: it does not settle.  The refusal is the state machine's, and
+    :func:`is_identity_move` exists to be narrower than the band precisely so
+    that move keeps owing one.
 
     **It lives HERE rather than on either service, and the move is plan step
     X-f2-c3's.**  It was ``transaction_service``'s, published so
@@ -419,8 +446,7 @@ def is_projected(row: Transaction | Transfer) -> bool:
     Returns:
         ``True`` if ``row.status_id`` equals the cached integer ID for
         ``StatusEnum.PROJECTED``; ``False`` for every other status,
-        including ``Paid``, ``Received``, ``Credit``, ``Cancelled``,
-        and ``Settled``.
+        including ``Paid``, ``Received``, ``Credit`` and ``Cancelled``.
 
     Raises:
         RuntimeError: propagated from ``ref_cache.status_id`` if the
@@ -514,44 +540,6 @@ def is_done(txn: Transaction) -> bool:
             reference cache has not been initialized.
     """
     return txn.status_id == ref_cache.status_id(StatusEnum.DONE)
-
-
-def is_archived(txn: Transaction) -> bool:
-    """Return True iff *txn*'s status is the TERMINAL ``Settled``.
-
-    **Read the name twice: this is not the settled BAND.**
-    ``Status.is_settled`` is True for Paid, Received AND Settled -- "the money
-    moved" -- and is what every balance and posting reader consumes.  This
-    predicate is the single terminal status ``StatusEnum.SETTLED``, the archive:
-    the state machine gives it no outgoing edge but identity, so a row that
-    reaches it is a historical record.  The two are one word apart and mean
-    opposite-sized things, which is exactly why the equality gets a NAME rather
-    than being spelled inline beside ``status.is_settled`` in the same function
-    -- the shape finding **N-229** is made of.
-
-    Added at plan step X-ap for ``entry_service``, which must refuse a purchase
-    recorded against an archived envelope: the row's cost is already history and
-    a new entry would either be silently inert or retroactively rewrite what the
-    books say it cost.  Pure status equality; does not consider ``is_deleted``.
-
-    Production carries ZERO rows in this status (finding **N-177**, which
-    proposes deleting it outright as plan step **X-am**), so the predicate is a
-    guard against a state the full-edit Status dropdown can still reach rather
-    than a description of live data.
-
-    Args:
-        txn: a ``Transaction`` instance with ``status_id`` populated.
-
-    Returns:
-        ``True`` if ``txn.status_id`` equals the cached integer ID for
-        ``StatusEnum.SETTLED``; ``False`` for every other status, INCLUDING the
-        other two members of the settled band.
-
-    Raises:
-        RuntimeError: propagated from ``ref_cache.status_id`` if the
-            reference cache has not been initialized.
-    """
-    return txn.status_id == ref_cache.status_id(StatusEnum.SETTLED)
 
 
 def is_projected_clause(model_class):

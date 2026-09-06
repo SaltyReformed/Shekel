@@ -37,7 +37,15 @@ from app.models.user import MfaConfig, User, UserSettings
 # Budget domain
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import (
+    Account,
+    AccountAnchorHistory,
+    AccountAnchorHistoryImmutableError,
+)
+from app.models.account_opening import (
+    AccountOpening,
+    AccountOpeningImmutableError,
+)
 from app.models.category import Category
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.recurrence_anchors import (
@@ -61,6 +69,8 @@ from app.models.loan_features import RateHistory
 from app.models.escrow_line import EscrowLine, EscrowComponentVersion
 from app.models.investment_params import InvestmentParams
 from app.models.asset_appreciation_params import AssetAppreciationParams
+from app.models.merchant import Merchant
+from app.models.merchant_rule import MerchantRule
 from app.models.statement_import import (
     AccountExternalIdentity,
     BankStatementLine,
@@ -70,6 +80,7 @@ from app.models.statement_match import (
     StatementMatch,
     StatementMatchMember,
 )
+from app.models.statement_line_skip import StatementLineSkip
 
 # Salary domain
 from app.models.salary_profile import SalaryProfile
@@ -123,6 +134,9 @@ __all__ = [
     "PaySchedule",
     "Account",
     "AccountAnchorHistory",
+    "AccountAnchorHistoryImmutableError",
+    "AccountOpening",
+    "AccountOpeningImmutableError",
     "Category",
     "RecurrenceRule",
     "RecurrenceWeekdayAnchor",
@@ -146,11 +160,14 @@ __all__ = [
     "EscrowComponentVersion",
     "InvestmentParams",
     "AssetAppreciationParams",
+    "Merchant",
+    "MerchantRule",
     "AccountExternalIdentity",
     "BankStatementLine",
     "StatementImport",
     "StatementMatch",
     "StatementMatchMember",
+    "StatementLineSkip",
     # Salary domain
     "SalaryProfile",
     "SalaryRaise",

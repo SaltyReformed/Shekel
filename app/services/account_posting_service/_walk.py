@@ -65,7 +65,7 @@ from app.services.account_projection import (
 )
 from app.services.posting_reads import PostingError, _ledger_account_for
 from app.services.cash_ledger import (
-    CashAnchorFact,
+    account_opening_fact,
     cash_anchor_facts,
     statement_coverage,
 )
@@ -76,27 +76,51 @@ _ZERO_MONEY = Decimal("0.00")
 
 @dataclass(frozen=True)
 class AccountAnchorCorrection:
-    """One anchor's balance correction: an opening or a true-up.
+    """One correction the posted ledger owes: the OPENING, or a true-up.
 
-    The per-anchor result of :func:`walk_account_ledger`.  The correction's
-    linked-ledger delta is ``anchor_balance - ledger_before`` (its equity
-    leg the negative), so the two sum to zero and the linked ledger's total
-    through the assertion instant lands exactly on the asserted balance.  A
-    correction whose ``ledger_before`` already equals the anchor balance
-    books nothing (a fresh $0 account mints no entries and no equity row).
+    The per-correction result of :func:`walk_account_ledger`.  The
+    linked-ledger delta is ``target_balance - ledger_before`` (its counter leg
+    the negative), so the two sum to zero and the linked ledger's total lands
+    exactly on the target.  A correction whose ``ledger_before`` already equals
+    its target books nothing (a fresh $0 account mints no entries and no equity
+    row).
+
+    **It carries no ``CashAnchorFact`` since plan step X-f3c-2a, and that is
+    the point.**  Every field the reconcile needs is now stated ON the
+    correction, because the FIRST correction is no longer an assertion at all:
+    it is the account's stored OPENING EQUITY
+    (``budget.account_openings``), which has an ``opened_on`` and an amount but
+    no assertion behind it.  Reading ``correction.anchor.is_opening`` was how
+    the posting path decided which correction opened the books, and that read
+    was positional -- whichever assertion sorted first -- so a BACK-DATED
+    assertion silently re-elected the opening AND re-dated its journal entry.
+    The loan side has never had that problem for the same reason this no longer
+    does: its origination is SYNTHESIZED from a stored fact
+    (``loan_loaders.synthesize_origination_anchor``) rather than elected from
+    the assertion series.
 
     Attributes:
-        anchor: The :class:`~app.services.cash_ledger.CashAnchorFact` this
-            correction books for.
-        ledger_before: The walked ledger total JUST BEFORE this assertion
-            resets it -- the prior corrections' cumulative effect plus every
-            source net attributed on or before this instant.
-            ``Decimal("0.00")`` for the opening of an account with no
-            pre-anchor settled history.
+        observed_on: The civil day this correction's journal entry is dated --
+            the assertion's own ``observed_on``, or the opening's ``opened_on``.
+        target_balance: What the linked ledger must read once this correction
+            posts -- the asserted balance, or the opening equity.
+        ledger_before: The walked ledger total JUST BEFORE this correction --
+            the prior corrections' cumulative effect plus every source net
+            attributed on or before this day.  ``Decimal("0.00")`` for the
+            opening, which by definition precedes every posting.
+        opens_the_books: ``True`` for the ONE correction that books the
+            account's opening equity, ``False`` for every balance assertion.
+            A stored fact read off ``budget.account_openings``, not a position
+            in a list: it selects the ``account_opening`` journal source and
+            the ``anchor_equity`` counter, where an assertion selects
+            ``account_trueup`` and (for a modelled account, ruling R-FO)
+            ``interest_income`` or ``unrealized_change``.
     """
 
-    anchor: CashAnchorFact
+    observed_on: date
+    target_balance: Decimal
     ledger_before: Decimal
+    opens_the_books: bool
 
 
 @dataclass(frozen=True)
@@ -670,12 +694,35 @@ def walk_account_ledger(
         if anchor_id is not None:
             cleared[anchor_id] = cleared.get(anchor_id, _ZERO_MONEY) + source.net
 
-    corrections: list[AccountAnchorCorrection] = []
-    running = _ZERO_MONEY
+    # The OPENING EQUITY is the first correction and it is not an assertion
+    # (plan step X-f3c-2a, ruling R-GX): what the account held before its
+    # records begin, read from ``budget.account_openings``.  Booking it here --
+    # rather than letting the earliest assertion's delta come out equal to it --
+    # is what gives the quantity ONE definition.  It had two: this walk derived
+    # it as ``asserted - ledger_before`` while the READ fold derived it as
+    # ``asserted - balance_before``, and they agreed to the cent on all seven
+    # production accounts only because both ran the same subtraction.  The
+    # moment either is restated (finding N-275 plans exactly that, moving
+    # account 1 by ``$436.05``) two derivations become two answers.
+    opening = account_opening_fact(account_id)
+    corrections: list[AccountAnchorCorrection] = [
+        AccountAnchorCorrection(
+            observed_on=opening.opened_on,
+            target_balance=opening.opening_equity,
+            ledger_before=_ZERO_MONEY,
+            opens_the_books=True,
+        )
+    ]
+    running = opening.opening_equity
     for fact in facts:
         running += cleared.get(fact.anchor_id, _ZERO_MONEY)
         corrections.append(
-            AccountAnchorCorrection(anchor=fact, ledger_before=running)
+            AccountAnchorCorrection(
+                observed_on=fact.observed_on,
+                target_balance=fact.anchor_balance,
+                ledger_before=running,
+                opens_the_books=False,
+            )
         )
         # The correction resets the walked total to the asserted balance
         # (the closing-balance reset, the account analogue of the loan

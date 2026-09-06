@@ -1,0 +1,190 @@
+{% from "_money_macros.html" import money %}
+{# Outstanding difference: what this account's own books cannot explain.
+
+   Plan step balance:X-f3c-3, rulings R-FN and R-GY.  The owner's latest
+   declared balance, beside what the account's books produce for that same day
+   -- its stored opening equity plus every posting through it -- and beside
+   whether an imported bank statement has checked the days between them.
+
+   ONE FIGURE, NEVER THE PER-ASSERTION PLUG.  Each true-up's correction is
+   defined as whatever forces the ledger to the balance just declared, so the
+   corrections telescope and their net is a function of the LAST assertion
+   alone (R-FN).  The balance-history card below renders them one by one, under
+   the column heading "Correction"; this card renders their total, under its
+   own name.  The two are deliberately different words for two different
+   questions -- a review of X-f2-b found this arc publishing two such figures
+   under one label "Difference" on one screen.
+
+   IT IS THE POST-CUTOVER BALANCE, EVALUATED TODAY.  Plan step X-f3c-5 makes
+   balance(T) exactly "opening equity + the postings through T" for a plain
+   cash account, so what this names is what the flip will leave unexplained on
+   the day it lands.  Plan step X-f3c-4 is the act that accepts it as an
+   ordinary uncategorized transaction; nothing here offers one, and this card
+   moves no money at all.
+
+   Rendered in two places from this one file: the cash detail page's initial
+   render and the HTMX fragment the card re-fetches itself through on
+   ``balanceChanged`` (``accounts.outstanding_difference``).  One
+   implementation, so a refreshed card cannot come to say something different
+   from the one the page drew.  It renders the WHOLE card, for the reason
+   ``accounts/_balance_history.html`` does: the page owns a plain region div
+   and swaps this partial into it.
+
+   NEITHER THE ARITHMETIC NOR THE VERDICT IS HERE.  Every figure arrives
+   computed with Decimal from the balance seam
+   (``balance_at.cash_outstanding_difference``) and every count from
+   ``bank_agreement.BankAgreement.over_span``; ``verdict`` arrives decided in
+   the route.  A sign comparison spelled in Jinja would be a second statement
+   of the convention -- the same reason ``_anchor_difference.html`` takes a
+   computed label, and the two share one classifier so the two surfaces cannot
+   come to read one sign two ways.
+
+   Expected context, all under ``books_difference``
+   (``accounts.outstanding.outstanding_context``).  NOT under
+   ``outstanding``: the reconcile panel already publishes that name for its
+   own outstanding PURCHASES, and this card is rendered on the same page --
+   ``render_template`` raised on the collision, which is the one time this
+   family of mistake announces itself rather than silently re-rooting a
+   region.  Keys:
+     difference     -- CashOutstandingDifference, or None.  None renders
+                       NOTHING: an account whose balance carries a modelled
+                       tier is not being reconciled against a bank statement,
+                       and the same subtraction there is its gain (R-FO,
+                       finding N-213).  The cash detail page serves those kinds
+                       too, so the card has to be able to not exist.
+     verdict        -- which of ``verdicts``' three names the sign means.
+     verdicts       -- the three DIFF_* names, so the branches below compare
+                       against THEM and not against re-typed literals.
+     reconciliation -- SpanAgreement, or None when the account holds no
+                       recorded bank line at all.
+     panel_id       -- the page region's DOM id.
+     account_id     -- for the link to the day-by-day comparison.
+#}
+{% if books_difference.difference is not none %}
+{% set d = books_difference.difference %}
+{% set r = books_difference.reconciliation %}
+<div class="card mb-3">
+  <div class="card-header">
+    <h6 class="mb-0">
+      <i class="bi bi-question-circle" aria-hidden="true"></i>
+      Outstanding difference
+    </h6>
+  </div>
+
+  <div class="card-body">
+    {# BOTH SIDES, never the difference alone: a single number on screen cannot
+       be checked against anything, and naming what each side IS is what lets a
+       reader do the subtraction themselves. #}
+    <dl class="mb-2 mw-px-500">
+      <div class="d-flex justify-content-between gap-3">
+        <dt class="fw-normal text-body-secondary">
+          You last recorded
+          <span class="fs-xs">
+            {{ d.asserted_on.strftime('%b %-d, %Y') }}
+          </span>
+        </dt>
+        <dd class="font-mono mb-0">{{ money(d.asserted) }}</dd>
+      </div>
+      <div class="d-flex justify-content-between gap-3">
+        <dt class="fw-normal text-body-secondary">
+          Your books produce
+          <span class="fs-xs">
+            {{ money(d.opening_equity) }} opening, plus every transaction you
+            have recorded since &mdash; ignoring every balance you have
+            declared
+          </span>
+        </dt>
+        <dd class="font-mono mb-0">{{ money(d.books) }}</dd>
+      </div>
+      <div class="d-flex justify-content-between gap-3 border-top pt-1 mt-1">
+        <dt>Outstanding difference</dt>
+        <dd class="font-mono mb-0">{{ money(d.amount) }}</dd>
+      </div>
+    </dl>
+
+    {# NO COLOR ON THE FIGURE, and it is the ruling the balance-history card's
+       Correction column already carries: neither direction is a money state.
+       A positive difference is money the app had not accounted for and a
+       negative one is spend it had not recorded, and both are the ORDINARY
+       state of this workflow until the cutover.
+
+       THE WORDING IS DELIBERATELY NOT THE TRUE-UP PREVIEW'S, though the two
+       share one classifier.  ``_anchor_difference.html`` renders on this same
+       page whenever the balance hero's editor is open, and its figure is a
+       DIFFERENT quantity: it compares what you typed against the running
+       balance just before that day's assertion, which already contains every
+       EARLIER assertion's reset.  This compares a declaration against the
+       records alone.  The two differ by the net of every prior correction --
+       $0.00 here and -$1,000.00 there on the very fixture
+       ``TestItIsOneFigureAndNotThePerAssertionPlug`` builds -- so both name
+       their own basis in their own words.  Publishing two money figures under
+       one vocabulary is the defect this arc has now measured three times, and
+       an adversarial review caught this card being the third. #}
+    <p class="small text-body-secondary mb-0">
+      {% if books_difference.verdict == books_difference.verdicts.DIFF_AGREES %}
+        Everything you have recorded adds up to the balance you declared.
+      {% elif books_difference.verdict == books_difference.verdicts.DIFF_UNRECORDED_SPEND %}
+        Your records account for more than you say the account holds: spend
+        Shekel has recorded twice, or income it has not.
+      {% else %}
+        Your records do not account for what you say the account holds: money
+        Shekel has not recorded, or spend it recorded that never left.
+      {% endif %}
+    </p>
+  </div>
+
+  {# WHAT HAS CHECKED THESE DAYS.  Ruling R-GY offers the acceptance act only
+     over a span an imported statement reconciles, and the span that matters is
+     the one the figure above accumulated over -- not a statement's own period,
+     which would let one reconciled week vouch for months nobody has read.
+
+     EACH SENTENCE IS ABOUT THE WHOLE SPAN, NEVER A PART OF A TOTAL.  The two
+     counts OVERLAP: a day before every recorded line is both un-imported and
+     un-compared, so a reader adding them would double-count.  They are
+     phrased "N of them" against the same denominator for that reason.
+
+     "YOUR STATEMENTS' LINES" IS EXACT AND "YOUR STATEMENTS" WOULD NOT BE.  An
+     import records the span between its file's FIRST and LAST line day
+     (``statement_import._record``); no adapter stores the period a file
+     DECLARES.  So a March statement whose first transaction is the 5th does
+     not vouch for the 1st here even though it read it -- the count refuses
+     more than it must, never less, which is the safe direction for the gate
+     X-f3c-4 hangs on it.  Finding N-434 owns making it exact. #}
+  <div class="card-footer text-muted small">
+    {% if d.span.is_empty %}
+      Your books open on {{ d.opened_on.strftime('%b %-d, %Y') }}, on or after
+      the day you last recorded a balance, so there is nothing between them for
+      a statement to check.
+    {% elif r is none %}
+      No bank statement has been imported for this account, so nothing has
+      checked these days.
+      <a href="{{ url_for('accounts.statements', account_id=books_difference.account_id) }}">Import one</a>.
+    {% elif r.reconciles %}
+      Your statements' lines span all {{ r.day_count }} days from
+      {{ r.first_day.strftime('%b %-d, %Y') }} to
+      {{ r.last_day.strftime('%b %-d, %Y') }}, and on every one of them what
+      your bank moved and what you recorded come to the same total.
+      <a href="{{ url_for('accounts.statement_agreement', account_id=books_difference.account_id) }}">Compare against your bank, day by day</a>.
+    {% else %}
+      These {{ r.day_count }} days run from
+      {{ r.first_day.strftime('%b %-d, %Y') }} to
+      {{ r.last_day.strftime('%b %-d, %Y') }}.
+      {% if r.unimported %}
+      {{ r.unimported }} of them fall outside the lines of every statement you
+      have imported.
+      {% endif %}
+      {% if r.unchecked %}
+      {{ r.unchecked }} of them could not be compared &mdash; either your
+      records do not reach that far back, or they fall outside the range this
+      comparison draws.
+      {% endif %}
+      {% if r.disagreeing %}
+      On {{ r.disagreeing }} of the {{ r.compared }} days that were compared,
+      what your bank moved and what you recorded do not come to the same
+      total.
+      {% endif %}
+      <a href="{{ url_for('accounts.statement_agreement', account_id=books_difference.account_id) }}">Compare against your bank, day by day</a>.
+    {% endif %}
+  </div>
+</div>
+{% endif %}

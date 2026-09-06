@@ -107,7 +107,6 @@ from decimal import Decimal
 
 from app import create_app
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.user import User
 from app.services import (
     calendar_service,
@@ -193,47 +192,13 @@ def _guard(label, thunk):
         }
 
 
-def _derived_vs_stored(user_id):
-    """Report whether this database can express a stored/derived disagreement.
-
-    **Read this before reading the diff.**  Every equality this leaf claims
-    holds on a schedule whose stored ``end_date`` and ``period_index`` equal
-    the derivation over the owner's paydays.  Where they disagree the two sides
-    legitimately differ, and that disagreement is plan finding **P1** rather
-    than a regression -- but a reader cannot tell which without this count.
-    """
-    calendar = calendar_for(user_id)
-    derived = {p.period_id: p for p in calendar.periods}
-    rows = (
-        db.session.query(PayPeriod)
-        .filter(PayPeriod.user_id == user_id)
-        .order_by(PayPeriod.start_date)
-        .all()
-    )
-    end_mismatch = [
-        {
-            "period_id": row.id,
-            "stored_end": row.end_date.isoformat(),
-            "derived_end": derived[row.id].end_date.isoformat(),
-        }
-        for row in rows
-        if row.id in derived and row.end_date != derived[row.id].end_date
-    ]
-    index_mismatch = [
-        {
-            "period_id": row.id,
-            "stored_index": row.period_index,
-            "derived_index": derived[row.id].period_index,
-        }
-        for row in rows
-        if row.id in derived and row.period_index != derived[row.id].period_index
-    ]
-    return {
-        "saved_paydays": len(rows),
-        "cadence_days": calendar.cadence_days,
-        "end_mismatches": end_mismatch,
-        "index_mismatches": index_mismatch,
-    }
+# **``_derived_vs_stored`` was deleted at plan step ``pay_calendar:C4-c``.**
+# It counted, per owner, where the stored ``end_date`` and ``period_index``
+# disagreed with what the paydays derive -- the premise this file's
+# byte-identity gate rested on, since a moved line was either such a
+# disagreement or a defect and the gate could not tell them apart without
+# it.  C4-c dropped both columns.  There is one answer now and the question
+# has no second side: a moved line here is a defect, full stop.
 
 
 def _month_span(user_id):
@@ -369,10 +334,6 @@ def main(out_path):
         dump = {
             str(user.id): {
                 "email": user.email,
-                "derived_vs_stored": _guard(
-                    "derived_vs_stored",
-                    lambda uid=user.id: _derived_vs_stored(uid),
-                ),
                 "calendar": _guard(
                     "calendar", lambda uid=user.id: _calendar_figures(uid),
                 ),

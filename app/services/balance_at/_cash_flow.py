@@ -26,12 +26,16 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import AccountOpeningSourceEnum
 from app.models.account import Account
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.utils.dates import to_display_date
+from app.services.cash_ledger import CashOpeningFact
+from app.utils.dates import days_in_range, to_display_date
+from app.utils.money import round_money
 
 from ._context import BalanceContext
 
@@ -158,8 +162,8 @@ def cash_balance_map(
             the step that removes it.
     """
     _require_scenario(ctx)
-    return _cash_fold.cash_period_balances(
-        account, ctx.amounts(), ctx.as_of, ctx.reported_periods(),
+    return _cash_fold.period_balances(
+        _cash_fold.assembled_fold(account, ctx), ctx.reported_periods(),
     )
 
 
@@ -175,7 +179,7 @@ def cash_balance_at(
     ``end_date`` is the one its owner's paydays derive -- which plan step C2-c
     made the qualifier it is.  It read "by construction" until then, and the
     map now samples the DERIVED end while a caller reading ``P.end_date`` off
-    an ORM row supplies the stored one; plan step C4 drops that column and
+    an ORM row supplies the stored one; plan step C4-c dropped that column and
     makes the sentence unconditional again.  Measured 0 of 62 and 0 of 61
     disagreements on the two production-shaped databases.
 
@@ -212,9 +216,7 @@ def cash_balance_at(
     """
     _require_scenario(ctx)
     _require_civil_date("cash_balance_at", as_of=as_of)
-    return _cash_fold.fold_cash_balances(
-        account, ctx.amounts(), ctx.as_of, [as_of],
-    )[as_of]
+    return _cash_fold.balances_at(_cash_fold.assembled_fold(account, ctx), [as_of])[as_of]
 
 
 def cash_daily_balance_series(
@@ -273,16 +275,74 @@ def cash_daily_balance_series(
     if last_day < first_day:
         return OrderedDict()
 
-    days: list[date] = []
-    day = first_day
-    while day <= last_day:
-        days.append(day)
-        day += _ONE_DAY
+    days = days_in_range(first_day, last_day)
 
-    folded = _cash_fold.fold_cash_balances(
-        account, ctx.amounts(), ctx.as_of, days,
-    )
+    folded = _cash_fold.balances_at(_cash_fold.assembled_fold(account, ctx), days)
     return OrderedDict((day, folded[day]) for day in days)
+
+
+def cash_daily_facts_series(
+    account: Account,
+    ctx: BalanceContext,
+    first_day: date,
+    last_day: date,
+) -> "_cash_fold.CashDaySeries":
+    """Return each day's cash-flow balance beside the three tiers that moved it.
+
+    :func:`cash_daily_balance_series` with the day's MOVEMENT split out, for a
+    reader comparing the account against a record kept OUTSIDE the app -- the
+    bank's own statement (plan step ``bank_import:X-f6e-2``).  Such a reader
+    needs the split because a balance difference alone cannot tell the three
+    apart, and they mean different things: money the app's rows say moved, a
+    balance the owner ASSERTED, and a plan that has not happened.
+
+    **Measured, which is why it exists rather than a difference column**: on
+    the developer's own Checking account, over the 149 days his statement and
+    his records both cover, 35 days carry a real disagreement between his rows
+    and the bank's lines -- and 11 of those read as EXACT agreement in the
+    balance difference, because a same-day assertion cancels the error to the
+    cent.  One of the eleven is the ``$943.41`` of card paybacks finding
+    **N-337** names.
+
+    ``balance`` here is the same figure :func:`cash_daily_balance_series`
+    reports for the same day, off the same running total, so a surface may show
+    both without qualifying either.
+
+    Args:
+        account: The account to project.  Its kind is NOT consulted (see
+            :func:`cash_daily_balance_series`); must be session-attached.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+        first_day: Inclusive first calendar day of the range.
+        last_day: Inclusive last calendar day of the range.
+
+    Returns:
+        The :class:`~app.services.balance_at.CashDaySeries`, whose ``facts`` is
+        an ``OrderedDict`` mapping each calendar ``date`` in the inclusive
+        range (ascending) to its
+        :class:`~app.services.balance_at.CashDayFacts`, and whose
+        ``first_event_on`` is the day this account's records begin.  An
+        inverted range yields an empty map and that same day.
+
+    Raises:
+        BaselineMissingError: When ``ctx`` carries no scenario.
+        TypeError: When ``first_day`` / ``last_day`` are not civil
+            :class:`datetime.date` values -- a ``datetime`` INCLUDED.
+    """
+    _require_scenario(ctx)
+    _require_civil_date(
+        "cash_daily_facts_series", first_day=first_day, last_day=last_day,
+    )
+    days = days_in_range(first_day, last_day)
+
+    series = _cash_fold.day_facts(_cash_fold.assembled_fold(account, ctx), days)
+    # Re-keyed into range order, which a dict comprehension over an unordered
+    # sample list does not promise.  An inverted range yields no days and still
+    # reports where the records begin -- the account HAS a first event whether
+    # or not the caller asked about a day it falls in.
+    return _cash_fold.CashDaySeries(
+        facts=OrderedDict((day, series.facts[day]) for day in days),
+        first_event_on=series.first_event_on,
+    )
 
 
 def records_balance_at(
@@ -296,8 +356,11 @@ def records_balance_at(
     NOT what the app currently reports, which after a balance is recorded for a
     day IS that recorded balance.
 
-    **The distinction exists because an assertion RESETS the walk**
-    (``cash_ledger._walk``: ``running = anchor.anchor_balance``).  So
+    **The distinction exists because the fold applies an assertion as a RESET**
+    (``balance_at._assertions``: ``running = anchor.anchor_balance``, merged
+    into the step list by ``_cash_fold._actual_steps`` for EVERY account kind
+    today -- plan step X-f3c-5 is what stops merging it for the PLAIN ones).
+    So
     :func:`cash_balance_at` on a day that already carries an assertion answers
     with that assertion, and a difference measured against it is zero by
     construction -- or worse, on a CORRECTION it is the gap between the user's
@@ -307,16 +370,17 @@ def records_balance_at(
     entry the third reads ``-$45.86``; against the records it reads
     ``-$92.29``.
 
-    **It is the walk's OWN field, not arithmetic over the fold.**
-    :attr:`~app.services.cash_ledger.CashAnchorCorrection.balance_before` is
+    **It is the replay's OWN field, not arithmetic over the fold.**
+    :attr:`~._assertions.CashAnchorCorrection.balance_before` is
     documented as the running balance *just before this assertion resets it*,
     which is exactly this question, already public and already the figure the
     LOAN side's drift card renders (``loan_posting_service._display``:
     ``computed``).  Subtracting correction deltas out of
     :func:`cash_balance_at` instead would be a second statement of the fold's
-    step rule -- and a wrong one, because ``_cash_fold._actual_steps`` moves the
-    OPENING correction into the seed and books a compensator for it, so the
-    opening's delta is not a step to subtract.
+    step rule, and this field is the rule's own output.  *It was also WRONG
+    until plan step X-f3c-2a, for a reason that has since been deleted: the
+    fold moved the OPENING correction into its seed and booked a compensator
+    for it, so the opening's delta was not a step anyone could subtract.*
 
     Two branches, and they are one rule rather than a special case:
 
@@ -360,8 +424,7 @@ def records_balance_at(
         # precedence this codebase has already been bitten by stating twice
         # (S6-03).
         return None
-    walk = _cash_fold.assemble(account, ctx.amounts(), ctx.as_of).walk
-    for correction in walk.anchor_corrections:
+    for correction in _cash_fold.assembled_fold(account, ctx).corrections:
         if correction.observed_on == as_of:
             return correction.balance_before
     return cash_balance_at(account, ctx, as_of)
@@ -376,19 +439,8 @@ class CashAnchorRow:
 
     **:attr:`ledger` and :attr:`correction` are OPTIONAL, and their absence is
     a statement rather than a gap.**  Both are ``None`` exactly where the pair
-    has no agreed meaning, and the two cases are one rule:
+    has no agreed meaning, which since plan step **X-f3c-2a** is ONE case:
 
-    * **the OPENING row.**  Its ``balance_before`` is the sum of settled rows
-      dated BEFORE the account's first assertion, replayed from a zero seed --
-      which :func:`app.services.cash_ledger.dated_deltas` documents as "not a
-      balance the account ever had", and what a reader should answer there is
-      OPEN finding **N-37**.  On the real Checking account it reads
-      ``$2,057.42`` against an opening of ``$2,746.58``, and the ``$689.16``
-      between them is the account's opening EQUITY (the figure plan step X-f5
-      books), not a correction -- so publishing it would say "the records were
-      off by $689.16 the day the account opened", which is false.  The loan
-      twin renders the same two cells ``--`` for the same reason, one tier
-      down: a loan opens from nothing.
     * **an account whose balance carries a MODELLED tier.**  The walk sees
       recorded CASH only; an HYSA's accrued interest and a brokerage's growth
       never were transactions, so the figure would name a model-vs-market gap
@@ -412,14 +464,39 @@ class CashAnchorRow:
             twelve" degenerated to "the twelve newest ``observed_on``" and
             buried the back-dated row the pair exists to surface.  That is not
             a rare tie -- it is what a bookkeeping session looks like.
+        recorded_on: The civil day this assertion was ENTERED, in the user's
+            zone.  **A stored fact carried through from
+            :attr:`~app.services.cash_ledger.CashAnchorFact.recorded_on`, not
+            derived from :attr:`recorded_at`** (finding **N-299**, developer
+            ruling 2026-08-25).
+
+            It exists so a BACK-DATED row identifies itself.  Sorted by
+            :attr:`observed_on` a balance recorded today for a past day lands
+            at that past day's position -- 40 rows down on the real Checking
+            account -- so ordering alone does not give a back-dated write the
+            retrieval path finding **N-205** is about.  It equals
+            :attr:`observed_on` for the ordinary same-day true-up, which is why
+            the card shows the caption only when the two differ.
+
+            **Splitting rank from show was right and stopped one step short.**
+            Both halves were still computed from ``created_at``, which
+            PostgreSQL stamps (``server_default=db.func.now()``), while
+            :attr:`observed_on` comes from the application's
+            ``display_today()``.  So the caption gated on
+            ``recorded_on != observed_on`` compared two clocks: red on every
+            calendar-sweep matrix date since 2026-08-10, because
+            ``time_machine`` fakes one of them and cannot fake the other, and
+            wrong in production for a true-up submitted in a civil day's last
+            second.  The shown value now has its own application-written
+            column and :attr:`recorded_at` keeps the ranking job alone.
         recorded: The balance the user asserted, cent-quantized.  A fact for
             every account kind, which is why it is never ``None``.
         ledger: What the running balance held immediately before this assertion
             RESET it
-            (:attr:`~app.services.cash_ledger.CashAnchorCorrection.balance_before`),
+            (:attr:`~._assertions.CashAnchorCorrection.balance_before`),
             or ``None`` in the two cases above.
         correction: ``recorded - ledger``
-            (:attr:`~app.services.cash_ledger.CashAnchorCorrection.delta`) --
+            (:attr:`~._assertions.CashAnchorCorrection.delta`) --
             the jump THIS assertion booked, or ``None`` alongside
             :attr:`ledger`.
 
@@ -442,57 +519,69 @@ class CashAnchorRow:
             working: ``recorded - ledger`` reconciles on the row, and a day's
             corrections telescope to the day's total (``-7.46 + -38.97 +
             -45.86 = -92.29``, the gap the preview names).
-        is_opening: ``True`` for the account's first assertion.
+    **It carried an ``is_opening`` flag until plan step X-f3c-2b and no longer
+    does.**  The flag badged whichever assertion fell on the day
+    ``budget.account_openings`` said the books opened -- which was true only
+    while the two shared a day.  Ruling **R-HG** made the opening equity the
+    CLOSING balance for ``opened_on``, so no movement and no assertion of the
+    records' own era can share that day on an account whose books were
+    back-dated to reach its earliest record: the badge went from 9 of 9
+    production accounts to 4, measured.  An opening is not an assertion, and
+    the card renders it as :class:`CashOpeningRow` instead -- the fact itself,
+    with its own provenance, rather than a label borrowed by a neighbouring
+    row.
     """
 
     observed_on: date
     recorded_at: datetime
+    recorded_on: date
     recorded: Decimal
     ledger: "Decimal | None"
     correction: "Decimal | None"
-    is_opening: bool
 
-    @property
-    def recorded_on(self) -> date:
-        """Return the civil day this assertion was ENTERED, in the user's zone.
 
-        DERIVED rather than stored, so the pair cannot be constructed
-        inconsistent: a frozen row carrying both an instant and a hand-supplied
-        day for it is a state where the two can disagree, and this record is
-        public.
+@dataclass(frozen=True)
+class CashOpeningRow:
+    """What an account's books OPENED with, as the history card's foundation row.
 
-        It exists so a BACK-DATED row identifies itself.  Sorted by
-        :attr:`observed_on` a balance recorded today for a past day lands at
-        that past day's position -- 40 rows down on the real Checking account
-        -- so ordering alone does not give a back-dated write the retrieval
-        path finding **N-205** is about.  It equals :attr:`observed_on` for the
-        ordinary same-day true-up, which is why the card shows the caption only
-        when the two differ.
+    The :class:`~app.models.account_opening.AccountOpening` record in force,
+    rendered as the oldest row of the balance-history card (plan step
+    **X-f3c-2b**).  It is not an assertion and is deliberately not one of
+    :attr:`CashAnchorHistory.rows`: nobody told the account it held this, the
+    books simply opened there, and every balance above it is this figure plus
+    what the records say happened since.
 
-        **The conversion is here rather than in the template because the
-        template needs a DATE to compare, not a rendering.**
-        :mod:`app.jinja_filters` does carry a ``local_datetime`` filter, so "a
-        template cannot convert a timezone" would be false; what a formatting
-        filter cannot give is the ``recorded_on != observed_on`` test the
-        caption is gated on.
+    **Its ledger / correction cells are empty by construction rather than by
+    suppression**, which is the distinction plan step X-f3c-2a drew and this
+    keeps: there is nothing before an opening for a correction to be measured
+    against, where an assertion always has the records that preceded it.
 
-        Returns:
-            The display-timezone civil day of :attr:`recorded_at`.
+    Attributes:
+        opened_on: The civil day the books opened -- the day this equity was
+            the whole of what the account held, at its CLOSE (ruling
+            **R-HG**).
+        recorded_on: The civil day the record itself was written, from its
+            ``created_at``.  It equals :attr:`opened_on` for an account whose
+            owner declared its opening at creation and differs for one whose
+            books were restated later, which is the same "entered" caption the
+            assertion rows carry and it means the same thing.
+        equity: The capital the books opened with, cent-quantized and
+            LEDGER-NATIVE -- negative for a liability, exactly as an
+            assertion's own figure is.
+        declared: ``True`` when a human stated this figure
+            (:attr:`~app.enums.AccountOpeningSourceEnum.USER_DECLARED`),
+            ``False`` when the app computed it.  The card says which, because
+            a derived opening is the pre-X-f3c-2a inference frozen and may be
+            WRONG -- findings **N-275** and **N-379** measure two of the seven
+            production figures wrong against the owner's own bank -- and a
+            surface that cannot tell them apart presents a guess and a fact
+            identically.
+    """
 
-        Raises:
-            ValueError: If the row carries no recording instant, which
-                ``account_anchor_history.created_at`` being NOT NULL with a
-                server default makes unreachable.  Raised rather than passed
-                through, because the alternative is a ``None`` reaching a
-                template that formats it.
-        """
-        day = to_display_date(self.recorded_at)
-        if day is None:
-            raise ValueError(
-                "an assertion carries no recording instant; "
-                "account_anchor_history.created_at is NOT NULL"
-            )
-        return day
+    opened_on: date
+    recorded_on: date
+    equity: Decimal
+    declared: bool
 
 
 @dataclass(frozen=True)
@@ -505,6 +594,13 @@ class CashAnchorHistory:
             which is the order the card reads in; it is not the order the
             figures were computed in, and it cannot change them (each row's
             ``ledger`` is the running total of the events BEFORE it).
+        opening: The account's :class:`CashOpeningRow` -- the foundation every
+            row above rests on.  **Always present**, and separate from
+            :attr:`rows` because it is a different kind of fact: a balance the
+            owner was told, versus the level the books started at.  Not
+            optional, because the fold cannot answer at all without it
+            (:func:`app.services.cash_ledger.account_opening_fact` raises), so
+            a caller holding a history holds an opening.
         reconcilable: ``True`` when this account's balance is recorded cash
             alone, so the :attr:`CashAnchorRow.ledger` /
             :attr:`~CashAnchorRow.correction` pair means something and the card
@@ -512,16 +608,77 @@ class CashAnchorHistory:
 
             **It cannot be derived from the rows, and that is a trap worth
             naming.**  ``any(row.correction is not None)`` looks equivalent and
-            is wrong for a PLAIN account carrying exactly ONE assertion: its
-            only row is the opening, whose pair is ``None`` for the ruled
-            reason above, and the derived flag would then hide the columns on
-            an account that reconciles perfectly well.  It is read from
+            is wrong for a PLAIN account whose every assertion agrees with its
+            books: every ``correction`` is then ``0.00`` -- not ``None``, but a
+            derived flag written as ``any(row.correction)`` would hide the
+            columns on the healthiest account there is.  A PLAIN account
+            carrying exactly ONE assertion was the older statement of this trap
+            and it was sharper still: until plan step X-f3c-2a that single row
+            was the OPENING, whose pair was suppressed outright, so the derived
+            flag hid the columns on an account that reconciles perfectly well.
+            It is read from
             :func:`~app.services.account_projection.classify_account`, stated
             once, here.
     """
 
     rows: "list[CashAnchorRow]"
+    opening: CashOpeningRow
     reconcilable: bool
+
+
+#: Which opening-equity provenances count as a HUMAN saying so, for the
+#: history card's caption.  A map over the whole enum rather than a positive
+#: test, so a member added later cannot default to "derived" unnoticed -- the
+#: lookup raises instead.  The question the card asks is the one
+#: :class:`~app.enums.AccountOpeningSourceEnum`'s own docstring poses: did a
+#: human state this figure, or did the app compute it?
+_OPENING_WAS_DECLARED: "dict[AccountOpeningSourceEnum, bool]" = {
+    AccountOpeningSourceEnum.USER_DECLARED: True,
+    AccountOpeningSourceEnum.MIGRATION_DERIVED: False,
+}
+
+
+def _opening_row(opening: CashOpeningFact) -> CashOpeningRow:
+    """Return the history card's foundation row for *opening*.
+
+    The one place ``budget.account_openings``' stored provenance becomes the
+    boolean the card renders.  It is a MAP over
+    :class:`~app.enums.AccountOpeningSourceEnum` rather than
+    ``source is USER_DECLARED``, and the difference is what happens when a
+    third member is added: a positive test reads any new source as "not
+    declared" silently, where a ``KeyError`` here forces whoever adds it to
+    say which side of the question it falls on.  The same construction
+    :func:`app.services.settle_day.settle_day_from_columns` uses on the
+    settled-day bases, and for the same reason.
+
+    Args:
+        opening: The account's governing
+            :class:`~app.services.cash_ledger.CashOpeningFact`, off the walk
+            the caller already holds.
+
+    Returns:
+        The :class:`CashOpeningRow` the card renders as its oldest row.
+
+    Raises:
+        KeyError: When the stored ``source_id`` names no
+            :class:`~app.enums.AccountOpeningSourceEnum` member, or names one
+            this map has no answer for.  Unreachable through the foreign key,
+            which admits only the seeded rows.
+    """
+    member = {
+        ref_cache.account_opening_source_id(source): source
+        for source in AccountOpeningSourceEnum
+    }[opening.source_id]
+    return CashOpeningRow(
+        opened_on=opening.opened_on,
+        # The RECORDING day, in the user's timezone -- the same two-clock
+        # split every assertion row carries (``recorded_on`` beside
+        # ``observed_on``), so the card's "entered" caption means one thing
+        # on every row it appears on.
+        recorded_on=to_display_date(opening.recorded_at),
+        equity=round_money(opening.opening_equity),
+        declared=_OPENING_WAS_DECLARED[member],
+    )
 
 
 def cash_anchor_history(
@@ -537,11 +694,12 @@ def cash_anchor_history(
     by definition is not the back-dated row (finding **N-205**).
 
     **It needs no new producer and adds no new rule.**  Every column is a field
-    the walk already publishes: :class:`~app.services.cash_ledger.CashAnchorCorrection`
-    carries ``observed_on``, its anchor's ``anchor_balance`` and ``asserted_at``,
-    ``balance_before`` and ``delta``.  Re-deriving any of them here would be a
-    second statement of the walk's own arithmetic, which is the shape plan step
-    X-f2-a corrected in the difference preview.
+    the fold's assertion replay already publishes:
+    :class:`~._assertions.CashAnchorCorrection` carries ``observed_on``, its
+    anchor's ``anchor_balance`` and ``asserted_at``, ``balance_before`` and
+    ``delta``.  Re-deriving any of them here would be a second statement of that
+    replay's arithmetic, which is the shape plan step X-f2-a corrected in the
+    difference preview.
 
     **It takes no valuation date, and that is exact rather than an omission.**
     The loan twin
@@ -576,13 +734,25 @@ def cash_anchor_history(
     """
     _require_scenario(ctx)
     reconcilable = classify_account(account) is AccountProjectionKind.PLAIN
-    # Through ``assemble`` rather than ``walk_cash_ledger`` directly, which is
-    # the spelling :func:`records_balance_at` one function up already uses.
-    # Two spellings of one dependency inside one module is how a later
-    # request-scoped memo on ``assemble`` would collapse ONE of the cash
-    # detail page's two walks and quietly leave the other -- and that memo is
-    # plan step X-i1, the step this page's double walk is waiting on.
-    walk = _cash_fold.assemble(account, ctx.amounts(), ctx.as_of).walk
+    # Through the pass rather than ``walk_cash_ledger`` directly, which is the
+    # spelling :func:`records_balance_at` one function up already uses.  Two
+    # spellings of one dependency inside one module is how a memo on the fold
+    # would collapse ONE of this module's walks and quietly leave the other --
+    # and plan step **X-i4** put that memo on the pass, so every reading here
+    # shares the one assembly it holds.
+    folded = _cash_fold.assembled_fold(account, ctx)
+    corrections = folded.corrections
+    # **The opening is a ROW of its own, not a badge on a neighbour** (plan
+    # step X-f3c-2b).  It was ``CashAnchorFact.is_opening`` -- the earliest
+    # assertion by position -- until X-f3c-2a moved it onto "the assertion
+    # falling on the day ``budget.account_openings`` names".  Ruling **R-HG**
+    # then made the opening equity the CLOSING balance for that day, so an
+    # account whose books were moved back to reach its earliest record has no
+    # assertion on it at all: the badge disappeared from 5 of 9 production
+    # accounts, measured.  Publishing the record itself is what the badge was
+    # trying to say in the first place, and it can carry the one thing a
+    # borrowed label never could -- whether a human stated the figure.
+    opening = _opening_row(folded.walk.opening)
     # ``booked`` rather than ``correction``: the walk's record and the row's
     # field would otherwise share a name inside one expression, and
     # ``correction=correction.delta`` reads as a self-reference.
@@ -590,21 +760,22 @@ def cash_anchor_history(
         CashAnchorRow(
             observed_on=booked.observed_on,
             recorded_at=booked.anchor.asserted_at,
+            recorded_on=booked.anchor.recorded_on,
             recorded=booked.anchor.anchor_balance,
-            # One condition, both cases: the pair is published only where it
-            # has an agreed meaning (see :class:`CashAnchorRow`).
-            ledger=(
-                booked.balance_before
-                if reconcilable and not booked.anchor.is_opening
-                else None
-            ),
-            correction=(
-                booked.delta
-                if reconcilable and not booked.anchor.is_opening
-                else None
-            ),
-            is_opening=booked.anchor.is_opening,
+            # ONE condition now, where there were two (plan step X-f3c-2a):
+            # the OPENING row is no longer suppressed.  Its pair was hidden
+            # because the fold swallowed the opening's correction into its seed,
+            # so ``balance_before`` was the records summed from zero and the gap
+            # between them was opening EQUITY rather than a correction --
+            # publishing it would have said "the records were off by $689.16 the
+            # day the account opened", which is false.  With the equity a stored
+            # fact the pair means what the column headers say on every row: what
+            # the books held, and what the owner's declaration moved it by.
+            ledger=booked.balance_before if reconcilable else None,
+            correction=booked.delta if reconcilable else None,
         )
-        for booked in reversed(walk.anchor_corrections)
+        for booked in reversed(corrections)
     ]
-    return CashAnchorHistory(rows=rows, reconcilable=reconcilable)
+    return CashAnchorHistory(
+        rows=rows, opening=opening, reconcilable=reconcilable,
+    )

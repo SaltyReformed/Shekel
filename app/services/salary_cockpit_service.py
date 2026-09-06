@@ -102,7 +102,7 @@ def _calibration_zero_federal(breakdown: PaycheckBreakdown, calibration_active: 
 def clean_raise_label(raw_label: str) -> str:
     """Return a display-clean version of a calculator ``raise_event`` string.
 
-    :func:`app.services.paycheck_calculator.get_raise_event` emits raw
+    :func:`app.services.salary_raises.get_raise_event` emits raw
     labels in exactly two shapes, joined with ``", "`` when several raises
     land in one period: ``"{TYPE} +{pct}%"`` (percentage, e.g.
     ``"MERIT +2.5000%"`` -- the trailing places follow the stored

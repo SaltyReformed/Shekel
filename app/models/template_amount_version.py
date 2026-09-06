@@ -43,9 +43,20 @@ calculator prices each row) and a derive-mode loan-payment transfer template
 predicate, and :func:`app.services.template_amount_service.set_amount` is the
 single write door.
 
-Additive as of plan step **X-au-a**: ``default_amount`` stays authoritative and
-nothing prices a row from this table yet.  Plan step **X-au-b** builds the
-resolver that reads it and **X-au-e** cuts generated rows over onto it.
+**This table PRICES every generated transaction row, as of plan step
+X-au-e.**  It was additive at X-au-a -- ``default_amount`` was authoritative
+and nothing read this table -- then X-au-b built the resolver over it, and
+X-au-e cut generated rows onto it: such a row stores no figure and is worth
+what this series states on its own due date (amount rule 3,
+``template_amount_service.amount_as_of``).  **Two consequences a reader needs.**
+A definition with NO version here generates rows nothing can price, which is
+why both create doors call ``set_amount`` immediately after the flush and why
+the cutover migration refuses rather than declaring such a row.  And withdrawing
+a version is a money-moving act unless its predecessor states the same amount,
+which ``template_amount_service._may_withdraw`` is the one statement of.
+
+A generated TRANSFER still stores its own amount; plan step X-au-f is what puts
+that half onto this table too.
 """
 
 from app.extensions import db

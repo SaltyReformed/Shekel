@@ -23,6 +23,7 @@ from app.services.auth_service import hash_password
 from app.services import account_service
 
 from tests._test_helpers import create_loan_account, loan_params_for
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_savings_account(
@@ -345,13 +346,14 @@ class TestAccountHardDelete:
             projected = db.session.query(Status).filter_by(name="Projected").one()
 
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=acct_id,
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=txn_type.id,
                 name="Test Expense",
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 status_id=projected.id,
             )
             db.session.add(txn)
@@ -483,8 +485,7 @@ class TestAccountHardDelete:
 
     def test_hard_delete_account_idor(self, app, auth_client, seed_user, db):
         """C-5A.5-27: Hard-deleting another user's account returns 404 (security)."""
-        from datetime import date as _date, timedelta as _td  # pylint: disable=import-outside-toplevel
-        from app.models.pay_period import PayPeriod as _PayPeriod  # pylint: disable=import-outside-toplevel
+        from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             other_user = User(
@@ -497,16 +498,13 @@ class TestAccountHardDelete:
             settings = UserSettings(user_id=other_user.id)
             db.session.add(settings)
 
-            # Bootstrap period (E-19) for the second user so the
-            # factory has somewhere to anchor.
-            _bootstrap = _PayPeriod(
-                user_id=other_user.id,
-                start_date=_date(2024, 1, 5),
-                end_date=_date(2024, 1, 5) + _td(days=13),
-                period_index=0,
+            # The second user's calendar, so the factory has somewhere to
+            # anchor.
+            # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                open_owner_calendar as _open_calendar,
             )
-            db.session.add(_bootstrap)
-            db.session.flush()
+            _bootstrap = _open_calendar(other_user.id, _date(2024, 1, 5))[0]
 
             checking_type = db.session.query(AccountType).filter_by(name="Checking").one()
             other_acct = account_service.create_account(
@@ -589,13 +587,14 @@ class TestAccountHardDelete:
             projected = db.session.query(Status).filter_by(name="Projected").one()
 
             txn = Transaction(
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=acct_id,
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=txn_type.id,
                 name="Pre-existing Expense",
-                estimated_amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 status_id=projected.id,
             )
             db.session.add(txn)

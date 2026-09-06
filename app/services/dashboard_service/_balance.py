@@ -81,15 +81,19 @@ def compute_balance_section(section: DashboardSection | None) -> dict:
     so the reverted control and the region it swaps back into cannot name
     different paychecks.
 
-    **It can now raise ``PayCalendarError`` where it could not** (ledger row
-    **P35**).  Reading ``section.current_period`` derives the owner's calendar,
-    which refuses an owner whose paydays cannot define one -- a legacy period
-    stored before ``budget.pay_schedule`` existed, whose span
-    ``resolve_cadence``'s fallback reads back as a cadence outside 1..365.  The
-    retired ``get_current_period`` was SQL and touched no calendar, so this
-    fragment derived none.  Contained rather than fixed: ``/`` itself already
-    raises for that owner on both trees, so the editor this fragment reverts
-    cannot be opened.
+    **It began deriving a calendar where it had not**, and reading
+    ``section.current_period`` is what does it: the retired
+    ``get_current_period`` was SQL and touched no calendar.  That widened
+    ledger row **P35** to this fragment -- an owner whose paydays could not
+    define a calendar, being a legacy period stored before
+    ``budget.pay_schedule`` existed whose span ``resolve_cadence``'s fallback
+    read back as a cadence outside 1..365, would meet ``PayCalendarError``
+    here.  *Plan step C4-b-2 CLOSED that row: ``fk_pay_periods_schedule``
+    makes the owner unstorable and the fallback is deleted, so the cadence can
+    only come from a column bounded to the same 1..365 the derivation
+    enforces.*  The containment argument that stood beside it -- ``/`` itself
+    already raises for that owner, so the editor this fragment reverts cannot
+    be opened -- is kept because it never depended on the fallback.
 
     Args:
         section: The render's :class:`~._section.DashboardSection`, or ``None``

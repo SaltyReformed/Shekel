@@ -31,13 +31,41 @@ import re
 import subprocess
 import sys
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import time_machine
 
 from app.extensions import db
 from app.models.user import User
-from app.utils.dates import display_today
+from app.utils.dates import to_display_tz
+
+
+def _real_display_today():
+    """Return the display-timezone civil day on the REAL clock.
+
+    The clock a CHILD PROCESS will judge a date against, which is finding
+    **N-300**: ``time_machine`` patches the calling process only, so a value
+    derived from this process's faked clock is months in the child's own
+    future and ``seed_user.py`` correctly exits 1 refusing it.
+
+    ``escape_hatch`` reaches the unpatched clock but RAISES
+    ``ValueError("Not currently time-travelling.")`` when no travel is active,
+    which is every ordinary run -- so ``is_travelling()`` gates it rather than
+    a ``try``.  A first version of this helper did not, and turned a sweep-only
+    failure into an every-run one.
+
+    Returns:
+        Today's date in :data:`~app.utils.dates.DISPLAY_TIMEZONE`, taken from
+        the real clock whether or not the suite is time-travelling.
+    """
+    hatch = time_machine.escape_hatch
+    if hatch.is_travelling():
+        now = hatch.datetime.datetime.now(timezone.utc)
+    else:
+        now = datetime.now(timezone.utc)
+    return to_display_tz(now).date()
 
 
 SEED_USER_SCRIPT = Path("scripts/seed_user.py")
@@ -172,6 +200,19 @@ class TestSeedUserSubprocessOutput:
         honest default.  The value is the USER's today, never
         ``date.today()`` -- the service refuses a future payday, and a
         UTC-pinned process is already on tomorrow's date every evening.
+
+        **It is the REAL clock's display day, not this process's, and that
+        is finding N-300** (developer ruling 2026-08-25).  ``time_machine``
+        patches the CALLING process only, so under the weekly calendar sweep
+        a plain ``display_today()`` here handed the CHILD a payday months in
+        its own future and ``seed_user.py`` correctly exited 1 refusing it --
+        red on all five matrix dates.  The child has no faked clock and
+        validates against its real one, so the value it is given must come
+        from the clock it will be judged by.  The remedy is deliberately NOT
+        propagating the fake into the child, which would put test-only
+        machinery in a production provisioning script.  The DISPLAY-timezone
+        conversion is kept for the reason above: it is the user's civil day
+        that the service bounds, not the process's UTC one.
         """
         env = {}
         for key in ("PATH", "PYTHONPATH", "PYTHONHOME", "HOME",
@@ -183,7 +224,7 @@ class TestSeedUserSubprocessOutput:
         if "TEST_DATABASE_URL" in env:
             env["DATABASE_URL"] = env["TEST_DATABASE_URL"]
         env["FLASK_ENV"] = "development"
-        env["SEED_USER_LAST_PAYDAY"] = display_today().isoformat()
+        env["SEED_USER_LAST_PAYDAY"] = _real_display_today().isoformat()
         env.update(overrides)
         return env
 

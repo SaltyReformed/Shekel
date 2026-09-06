@@ -316,9 +316,9 @@ Section 4.
   rejected. (2) Asset band = per-account params: property at its annual appreciation rate, interest
   accounts compounding at APY, plain cash held flat -- every figure traceable to a param the account
   carries. (3) Horizon domain = last loan payoff + 1 year, rounded to year end (2049 on current
-  data), adapting as loans change; loan-free users get a fixed 10-year fallback. (4) Milestone flags
-  = each loan payoff, debt-free, and every `$500k` net-worth crossing inside the domain, flag count
-  capped for lane readability. **As-mocked C1 anatomy (the P2 visual reference; approved mock +
+  data), adapting as loans change; loan-free users get a fixed 10-year fallback. (4) Milestone
+  flags = each loan payoff, debt-free, and every `$500k` net-worth crossing inside the domain, flag
+  count capped for lane readability. **As-mocked C1 anatomy (the P2 visual reference; approved mock + <!-- MD013 kept: rumdl 0.2.58's own `fmt` reflows this list-item line TO 101 and its `check` then rejects it, so the two disagree and any hand wrap is reverted on the next format; left as the format's canonical output. --> <!-- rumdl-disable-line MD013 -->
   generator + real-data series + engine probe preserved at `~/projects/shekel_theme/pac1_loop_a/`,
   keep until Loop B ships):** band fills at ~30% opacity (danger ~22%) so they stay quiet at panel
   scale, each band's top boundary stroked 1.75px in its own solid color, the internal asset-band
@@ -417,10 +417,10 @@ Section 4.
   it owed. Confirmed rows no longer participate in any balance-at-T walk; the future is
   `current_balance` minus UNCONFIRMED scheduled principal
   (`account_projection.forward_balance_at_date`). (4) The cross-page oracle gained a late-paid
-  fixture, a true-up-after-last-payment case, and a "a loan can never GROW" monotonicity invariant
-  -- all four proven to FAIL against the old code. Verified on real data: ledger == card == seam
-  scalar == `2 years` band == Horizon, to the cent, on both real loans. NEXT = developer acceptance
-  drive + the Loop-B dev->main prod ship.
+  fixture, a true-up-after-last-payment case, and a "a loan can never GROW" monotonicity
+  invariant -- all four proven to FAIL against the old code. Verified on real data: ledger ==
+  card == seam scalar == `2 years` band == Horizon, to the cent, on both real loans. NEXT =
+  developer acceptance drive + the Loop-B dev->main prod ship.
 - **P-AC2 [consistency - FIXED 2026-07-10 (S13 Loop B)]** "Payoff Strategies" is
   `btn-outline-warning` - RC3. Fixed structurally: the D6-F rebuild replaced the button with an
   accent link in the Liabilities group-card footer.
@@ -543,10 +543,10 @@ Section 4.
   composition/deduction segments and the third-paycheck row tint were categorical series colors
   riding the caution amber. S7 ruling: post-tax -> per-theme achromatic neutral; third-paycheck
   markers -> accent. Full rationale recorded at the Salary section's S7-ruling entry.
-- **P-RT5 [polish - FIXED 2026-07-11 (S7, commit 2dc59e37)]** "Close the Gap" hero said
-  +$7 while the stepper said +$6.71 - rounding put principle 2 on a hair trigger. Fixed: the hero
-  renders cents, so hero, stepper prefill, and outcome line all show the producer's same round_money
-  value (no service change).
+- **P-RT5 [polish - FIXED 2026-07-11 (S7, commit 2dc59e37)]** "Close the Gap" hero
+  said +$7 while the stepper said +$6.71 - rounding put principle 2 on a hair trigger. Fixed: the
+  hero renders cents, so hero, stepper prefill, and outcome line all show the producer's same
+  round_money value (no service change).
 
 ### Analytics (shell)
 
@@ -953,24 +953,24 @@ which needs a token proposal ratified on real-page mockups before their dependen
     appear as `$0.00` rows under By change (Mortgage, Savings Transfer, Birthday in the June data);
     singleton groups collapse to one row ("Credit Card - Payback"; the grid D3 singleton rule ported
     - today two identical `$784.01` rows render); Estimate Surprises keeps its rail unchanged.
-  Data findings that shaped the ruling: the per-period-trend change basis misleads on a month-anchored
-  page (real June data: Car Payment listed as a +100.00% Top Mover while June exactly equals May at
-  `$531.94`; Mortgage/Rent, the single largest change at `-$1,910.95` to zero - it never settled
-  inside June - appeared NOWHERE in Top Movers); settled history is 4 months deep (Mar-Jun 2026), so
-  the chart must degrade gracefully; a 5-series stacked-by-group chart was rejected before
-  presentation (a one-hue steel ramp fails the dataviz palette validator - adjacent steps read as one
-  gray, darkest steps 1.4-2.1:1 on the dark surface - and a multi-hue ramp would break Steel Ink's
-  one-chroma commitment); small multiples was the compliant sibling and lost to A on taste. Loop B
-  build order: (1) OPUS data slice - expose the monthly-totals series (the hero already computes these
-  windows) and prior-month per-category totals for the MoM deltas including zero-current rows; with
-  sparklines and Top Movers gone the per-period trend engine has no remaining consumer on this tab
-  (ItemTrend display, movers, and the sparkline serializer retire; evaluate for dead code). (2) FABLE
-  page slice - template + analytics.css rebuild per the ruled form, chart in the app chart grammar
-  with click-to-navigate bars; mobile reflows the ledger to name / delta / amount and compresses the
-  chart. Scratch viewer (real data, all four candidates) at
-  ~/Documents/spending_directions_mockup.html until Loop B ships. **BUILT 2026-07-10 (S14 Loop B, both
-  slices in one Fable 5 session per the S3 precedent; commits 5bbcf9e7 rebuild + 0f57cdaf dead-code
-  deletion).** As ruled, with these as-built notes:
+  Data findings that shaped the ruling: the per-period-trend change basis misleads on a
+  month-anchored page (real June data: Car Payment listed as a +100.00% Top Mover while June exactly
+  equals May at `$531.94`; Mortgage/Rent, the single largest change at `-$1,910.95` to zero - it
+  never settled inside June - appeared NOWHERE in Top Movers); settled history is 4 months deep
+  (Mar-Jun 2026), so the chart must degrade gracefully; a 5-series stacked-by-group chart was
+  rejected before presentation (a one-hue steel ramp fails the dataviz palette validator - adjacent
+  steps read as one gray, darkest steps 1.4-2.1:1 on the dark surface - and a multi-hue ramp would
+  break Steel Ink's one-chroma commitment); small multiples was the compliant sibling and lost to A
+  on taste. Loop B build order: (1) OPUS data slice - expose the monthly-totals series (the hero
+  already computes these windows) and prior-month per-category totals for the MoM deltas including
+  zero-current rows; with sparklines and Top Movers gone the per-period trend engine has no
+  remaining consumer on this tab (ItemTrend display, movers, and the sparkline serializer retire;
+  evaluate for dead code). (2) FABLE page slice - template + analytics.css rebuild per the ruled
+  form, chart in the app chart grammar with click-to-navigate bars; mobile reflows the ledger to
+  name / delta / amount and compresses the chart. Scratch viewer (real data, all four candidates) at
+  ~/Documents/spending_directions_mockup.html until Loop B ships. **BUILT 2026-07-10 (S14 Loop B,
+  both slices in one Fable 5 session per the S3 precedent; commits 5bbcf9e7 rebuild + 0f57cdaf
+  dead-code deletion).** As ruled, with these as-built notes:
   - The producer's trailing-12 series is the ONE source for the chart bars AND the hero's vs-prior /
     vs-average baselines (agreement by construction); a pre-history month is a None point (excluded
     from the average, drawn as a baseline tick) while a tracked zero-spend month counts as a real

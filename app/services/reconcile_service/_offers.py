@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.services.cash_ledger import AnchorPoint
+from app.services.pay_calendar import DerivedPeriod
+from app.services.reconcile_service._rows import Statement
 
 
 class OfferKind(enum.Enum):
@@ -161,10 +162,13 @@ class OutstandingTransaction:
             publishing it grants nothing.
         attributed_on: The day the PROJECTION lands this row on -- its
             ``due_date``, falling back to its pay period's start and clamped
-            into that period (:func:`~app.utils.dates.attribution_date`).  It
-            is the day the panel captions the row with, and the same day the
-            offer's own bound is measured against, so a row cannot be offered
-            under a caption that disagrees with why it was offered.
+            into that period
+            (:meth:`~app.services.pay_calendar.DerivedPeriod.attribution_day`,
+            over the span the owner's calendar DERIVES since pay-calendar plan
+            step C4-a-2).  It is the day the panel captions the row with, and
+            the same day the offer's own bound is measured against, so a row
+            cannot be offered under a caption that disagrees with why it was
+            offered.
         amount: **What ticking this row will BOOK**, resolved by
             ``transaction_service.settle_amount`` rather than read off a
             column.  The panel showing a figure the verb would not book is this
@@ -227,7 +231,17 @@ class OutstandingPurchase:
             what the row is captioned with.  Never the day it settled: an
             outstanding purchase has no settle day, which is the definition.
         description: The purchase's own description, as typed.
-        amount: The purchase's amount, positive.
+        amount: The purchase's amount, SIGNED.  **It said POSITIVE until plan
+            step ``bank_import:X-gj-2b-3``**, which held only while
+            ``ck_transaction_entries_positive_amount`` said ``amount > 0``.
+            Ruling **bank_import:R-II** made a merchant credit a NEGATIVE
+            purchase and one REACHES this set: the scope selects debit
+            purchases with no recorded posting day, and a refund has none
+            wherever the owner typed the negative on the edit door or cleared a
+            posting day they had recorded.  It is not the bank-import door's
+            refunds -- ``_born_purchase`` gives those the bank's own posting
+            day at birth, so they are outside this set by construction.  The
+            panel prints the figure through ``money()``, which signs it.
     """
 
     entry_id: int
@@ -261,16 +275,34 @@ class OutstandingGroup:
             parent's OWN close tick to this block and posts it; nothing in this
             leaf posts it.
         name: The parent's name, for the block's heading.
-        period_start: The first day of the pay period the parent is budgeted
-            in, so the heading names WHICH one.  **Without it two blocks can
-            carry the identical heading**: the recurrence engine materialises
-            one row per template per period, so one envelope in two periods is
-            two parents with one name, and both can hold outstanding purchases
-            at one assertion.  The flat list was equally ambiguous per line;
-            grouping PROMOTES that ambiguity to the heading, so the leaf that
-            creates the heading is the leaf that has to resolve it.
-        period_end: Its last day, so the caption is a span rather than a date
-            the user has to look up.
+        period: The pay period the parent is budgeted in, as the owner's
+            calendar DERIVES it, so the heading names WHICH one.  **Without it
+            two blocks can carry the identical heading**: the recurrence engine
+            materialises one row per template per period, so one envelope in
+            two periods is two parents with one name, and both can hold
+            outstanding purchases at one assertion.  The flat list was equally
+            ambiguous per line; grouping PROMOTES that ambiguity to the heading,
+            so the leaf that creates the heading is the leaf that has to resolve
+            it.  **It was a ``period_start`` / ``period_end`` PAIR until
+            pay-calendar plan step C4-a-2**, read out of the two columns that
+            step's parent drops; one value is the same normalization the four
+            paragraphs below apply to :attr:`kind` and :attr:`total`, since two
+            date fields that must describe one paycheck are two fields a
+            builder can fill from two.
+
+            **It does NOT resolve the ambiguity completely, and it stops doing
+            so entirely once `recurrence:R17`'s second leaf lands** -- that step
+            makes the skip question ask about an OCCURRENCE rather than about a
+            paycheck, so one template may legitimately materialise TWICE in ONE
+            period (measured by that session on a production clone: at cadence
+            31, eleven templates across twelve paychecks).  Two such rows share
+            a name AND a period, so this heading separates them no better than
+            the name alone.  Nothing is mis-BOOKED -- a tick posts
+            :attr:`transaction_id`, which differs -- and no such row exists on
+            either database today.  What would separate them is the occurrence
+            each answers, which is exactly the value that step adds; it is
+            named here rather than fixed because the column does not exist on
+            this branch and inventing a caption for it would be a guess.
         purchases: Its outstanding purchases, oldest first.  **May be EMPTY
             since plan step X-f2-c2**, and ruling **R-FC** is what that means
             for the screen: a childless block prints its name inline as one row
@@ -299,8 +331,7 @@ class OutstandingGroup:
 
     transaction_id: int
     name: str
-    period_start: date
-    period_end: date
+    period: DerivedPeriod
     purchases: "tuple[OutstandingPurchase, ...]"
     settle: "OutstandingTransaction | None"
     section: "Section | None"
@@ -408,7 +439,16 @@ class OutstandingSet:
         purchase_count: How many PURCHASES the set offers -- entries whose
             posting day has not been recorded.  Ticking one moves no money on
             its own; it releases that much of its envelope's reservation.
-        purchase_total: The sum of those purchases.
+            **A refund is one of them** (ruling **bank_import:R-II**), which is
+            that ruling's own vocabulary rather than a widening: a refund IS a
+            negative purchase, and one the bank has not been seen to pay back
+            is outstanding in exactly the sense this panel asks about.
+        purchase_total: The sum of those purchases, SIGNED and NETTED.  Two
+            offers of `$120.00` and `-$45.00` come to `$75.00`, and the panel's
+            *N purchase(s) (X) still held back* reads on that net -- which is
+            what the envelope's reservation is really holding, since `$120.00`
+            is expected to leave and `$45.00` to arrive.  The count stays a
+            count of ROWS: it says how many ticks the owner has to make.
         payment_count: How many EXPENSE rows the set offers -- an envelope's
             own close, or a bill.  Ticking one settles the row.
         payment_total: What those rows would book.
@@ -486,29 +526,35 @@ class ReconcileSubmission:
     it, :func:`~app.services.reconcile_service.record_reconciliation` runs the
     arms over it in the one order that works.
 
+    **It carries the READ's own value rather than that value's parts, since
+    pay-calendar plan step C4-a-2.**  It held an ``owner_id``, an
+    ``account_id`` and an ``anchor`` -- which is exactly a
+    :class:`~app.services.reconcile_service._rows.Statement`, and the write
+    union then rebuilt one out of them on its first line.  Three fields
+    reassembled into the value they came from is a second spelling of one
+    thing, and it had already grown a second copy of that value's ``owner_id``
+    derivation in this module.  Now the ROUTE builds one statement, the GET
+    reads against it and the POST writes against it, and nothing can
+    reconstruct a different one in between.
+
     Attributes:
-        owner_id: The user_id whose rows these must be.  Every arm re-scopes on
-            it rather than trusting the ids.
-        account_id: The cash account whose balance was asserted.
+        statement: The :class:`~app.services.reconcile_service.Statement` being
+            reconciled -- the owner's pay calendar (whose rows these must be,
+            and the spans they are dated against), the account whose balance was
+            asserted, and the governing
+            :class:`~app.services.cash_ledger.AnchorPoint`.  That anchor's id is
+            what every ticked row records as having shown it (ruling **R-FL**)
+            and its ``observed_on`` is the day every settled row records its
+            money as having moved.
         entry_ids: The purchase entry ids the user ticked.
         transaction_ids: The source-row ids the user ticked.
         corrections: ``{transaction id: amount}`` from the panel's amount
             boxes.  Passed through: the arm decides which of them it may READ
             (ruling **R-FF**) and the settle verb decides whether each is a
             correction or an echo of the prefill.
-        anchor: The governing
-            :class:`~app.services.cash_ledger.AnchorPoint` -- the STATEMENT
-            being reconciled against.  Its id is what every ticked row records
-            as having shown it (ruling **R-FL**) and its ``observed_on`` is the
-            day every settled row records its money as having moved.  It
-            carried the bare day until plan step X-f3a-1; a civil day cannot
-            name a statement, because production holds three days on which
-            Checking carries more than one assertion.
     """
 
-    owner_id: int
-    account_id: int
+    statement: Statement
     entry_ids: "set[int]"
     transaction_ids: "set[int]"
     corrections: "dict[int, Decimal]"
-    anchor: AnchorPoint

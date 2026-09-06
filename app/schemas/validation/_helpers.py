@@ -28,7 +28,8 @@ from marshmallow import (
 
 from app import ref_cache
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
-from app.utils.digit_strings import MIN_ROW_ID, parse_row_id
+from app.utils.rendered_figure import as_rendered_field
+from app.utils.digit_strings import MIN_ROW_ID, is_ascii_digits, parse_row_id
 
 
 # ── Shared range validators (commit C-24) ─────────────────────────
@@ -136,14 +137,49 @@ def _normalize_empty_inputs(schema, data):
         declared on the schema (e.g. ``csrf_token``) are dropped when
         empty, exactly as before.
     """
+    return {
+        key: value
+        for key, value in _clear_nullable_empties(schema, data).items()
+        if value != ""
+    }
+
+
+def _clear_nullable_empties(schema, data):
+    """Map each ``""`` to ``None`` for an ``allow_none`` field; keep the rest.
+
+    :func:`_normalize_empty_inputs`' first half, extracted at plan step
+    **balance:X-bh-2** because one door wants ONLY it.  "Which fields read an
+    empty control as null" is a single rule and this is where it is stated;
+    that function is this plus "an empty non-nullable input was not provided",
+    and the two are separable because a form can want the first without the
+    second.
+
+    ``RegisterSchema`` is the door that does.  Its optional pay-history date
+    needs the ``""`` an untouched HTML date input submits turned into ``None``,
+    but it must NOT drop an empty ``display_name``: dropping one turns the
+    field's own "Display name is required." into marshmallow's "Missing data
+    for required field.", and that schema's docstring is explicit that the
+    user-facing credential messages stay stable.  Measured rather than
+    reasoned -- routing registration through the full normalizer changed that
+    message and two suites said so.
+
+    Args:
+        schema: the schema instance (``self`` inside a ``@pre_load`` hook);
+            nullability is read from ``schema.fields``.
+        data: the incoming ``@pre_load`` payload (a mapping).
+
+    Returns:
+        A new dict, ``""`` mapped to ``None`` for every ``allow_none`` field
+        declared on *schema* and every other entry passed through unchanged --
+        an empty non-nullable input included, which is the whole difference.
+    """
     cleaned = {}
     for key, value in data.items():
-        if value != "":
-            cleaned[key] = value
-            continue
         field = schema.fields.get(key)
-        if field is not None and field.allow_none:
+        if value == "" and field is not None and field.allow_none:
             cleaned[key] = None
+        else:
+            cleaned[key] = value
     return cleaned
 
 
@@ -399,6 +435,56 @@ def _reject_envelope_on_income(data, message):
         raise ValidationError(message, field_name="is_envelope")
 
 
+def reject_figure_without_its_rendered_companion(data, field):
+    """Refuse a money figure that does not say what the form had RENDERED.
+
+    Ruling **R-JR** (developer, 2026-09-03, second sitting), shared by the
+    transaction and transfer update schemas so the two doors cannot come to
+    disagree about what a well-formed money payload is.
+
+    **A figure alone is not a statement about authorship.**  An HTML form posts
+    every control it renders, so a submitted amount says only that a box
+    existed.  The doors decide whether a HUMAN typed it by comparing the
+    submitted figure against the one the form rendered into that box, which the
+    form posts beside it (``app.routes._authored_figure``).  A payload carrying
+    the figure and not the companion cannot be judged, and this refuses it.
+
+    **The refusal replaces a GUESS, and the guess was measured backwards.**
+    The first implementation assumed such a figure was authored, arguing that
+    wrongly taking an echo is undone by the conflict resolver while a discarded
+    re-price is not.  Neither half held: ``is_override`` is in no schema and the
+    conflict chooser is suppressed for a salary-linked template, so a wrongly
+    taken salary row -- finding **N-248**'s own population, 51 rows /
+    `$4,897.50` -- has no in-app hand-back; while a discarded figure re-renders
+    the row's cell immediately, in front of the person who typed it.
+
+    **What the refusal buys is structural rather than tidy.**  A door that omits
+    the companion, or spells it wrongly, now fails on its FIRST save instead of
+    silently taking ownership of every row it touches while the suite stays
+    green -- three of the four templates that emit it had no case asserting they
+    do.  The cost is one 400 for a form cached across the deploy, paid once.
+
+    Args:
+        data: The deserialized schema payload.
+        field: The money field's name (``"amount"``,
+            ``"estimated_amount"``).  The companion's name is derived from it,
+            so a caller cannot pair the wrong two keys.
+
+    Raises:
+        ValidationError: When *field* is present and its companion is not.  The
+            error is attached to the COMPANION rather than to the figure,
+            because the companion is what is missing and a form fixing this
+            adds that input rather than changing the amount.
+    """
+    if field not in data:
+        return
+    if as_rendered_field(field) not in data:
+        raise ValidationError(
+            "This form is out of date. Reload the page and try again.",
+            field_name=as_rendered_field(field),
+        )
+
+
 def form_payload(form, schema):
     """Return *form* as a plain dict, expanding *schema*'s LIST fields.
 
@@ -439,3 +525,73 @@ def form_payload(form, schema):
         else:
             payload[key] = form[key]
     return payload
+
+
+#: The most digits a submitted ordering token may carry and still be READ as a
+#: number.  A rendered proposal's index is bounded by the batch ceiling in
+#: :mod:`~app.schemas.validation.statements`
+#: and a bank line's key by a 32-bit serial, so nine is far past anything this
+#: application emits -- and the bound is what licenses the ``int()`` below.
+#: :func:`~app.utils.digit_strings.is_ascii_digits` is TRUE for an arbitrarily
+#: long run of digits, which CPython then refuses to convert
+#: (``sys.get_int_max_str_digits()``, 4,300), and that module's own docstring
+#: says so in as many words: *"a true answer does NOT license ``int()``"*.
+MAX_ORDER_DIGITS: int = 9
+
+
+def order_token_key(raw: str) -> tuple:
+    """Return a total order over submitted ordering tokens.
+
+    Numeric where the token is a number this application could have emitted,
+    lexical otherwise -- so the applied order is the rendered order, which is
+    what the receipt reads down, and so **no submitted string can raise here**.
+
+    **``str.isdigit`` is the wrong predicate and this project already owns
+    that fact** (:mod:`app.utils.digit_strings`, plan step X-ae, finding
+    **N-136**): it is true for 888 characters, 128 of which make ``int()``
+    raise -- ``'\N{SUPERSCRIPT TWO}'`` among them.  A first draft of this
+    function used it and claimed in its own docstring that a crafted
+    submission "cannot raise a ``TypeError`` inside a sort", which guarded the
+    wrong exception one token before reintroducing ``ValueError``.  There is no
+    ``ValueError`` arm in ``app/error_handlers.py``, so ``apply=%C2%B2`` was a
+    500 on the door that applies a whole reviewed pass.  Found by adversarial
+    security review 2026-08-19.
+
+    **It is NOT :func:`~app.utils.digit_strings.parse_row_id`**, and the
+    difference is the domain rather than the strictness: this token is an
+    ORDINAL, not a row id, so ``0`` is a legitimate value -- it is the first
+    rendered proposal -- where ``parse_row_id`` refuses it by design.  Reading
+    these through that function would push the first item of every pass to the
+    end.
+
+    **The non-numeric arm is a SECURITY guard and not a feature of any form.**
+    It read as both while the hand-build form submitted the reserved index
+    ``"hand"``; plan step ``bank_import:X-gf-3b`` moved that form to a surface
+    of its own whose door carries no ordering token at all
+    (:func:`~app.schemas.validation.statements.hand_match_payload`), so no
+    control this app renders emits a non-numeric one any more.  The arm stays
+    because what it exists for is the CRAFTED token above, which no control
+    ever emitted either.
+
+    **It is in this module because BOTH halves of the review screen submit
+    ordering tokens** -- the money pass
+    (:mod:`~app.schemas.validation.statements`) and the merchant-rule pass
+    (:mod:`~app.schemas.validation.merchant_rules`), which plan step
+    ``bank_import:X-gf-1`` split apart -- and a second spelling of *which
+    submitted strings may be read as numbers* is a security predicate stated
+    twice.  **A first version of this paragraph claimed that split had already
+    happened when it had not**, and the honest reason at the time was only the
+    line cap; the split shipped in the same commit, which is what made the
+    claim true rather than reworded.  Found by adversarial design review
+    2026-08-27.
+
+    Args:
+        raw: A submitted ``apply`` value, a ``destination-`` field's key, or
+            a ``rule-`` field's key.
+
+    Returns:
+        Its sort key.  Every ``str`` has one.
+    """
+    if is_ascii_digits(raw) and len(raw) <= MAX_ORDER_DIGITS:
+        return (0, int(raw), "")
+    return (1, 0, raw)

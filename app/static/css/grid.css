@@ -553,6 +553,30 @@ thead .sticky-col {
 }
 
 /* =============================================
+   BANK STATEMENT DOOR
+   ============================================= */
+/* Sits beside the anchor because the two answer the same question: the
+   anchor is this balance stated from memory, the statement is the bank's
+   own account of it.  Deliberately quieter than the anchor -- the anchor
+   is the hero figure of this header and a second accent-filled control
+   would compete with it -- so the door is an outline button and only the
+   badge carries chroma. */
+.grid-bank-door {
+  white-space: nowrap;
+}
+
+/* Work outstanding, NOT a money state: accent rather than a money token
+   (design language D11).  --shekel-done / --shekel-danger here would say
+   these lines are settled or over budget, which is a claim about money
+   that nothing has measured yet. */
+.grid-bank-badge {
+  background-color: var(--shekel-accent);
+  color: var(--shekel-header-text);
+  font-variant-numeric: tabular-nums;
+  margin-left: 0.25rem;
+}
+
+/* =============================================
    TRANSACTION CELL & INLINE EDIT
    ============================================= */
 /* Cell focus ring */

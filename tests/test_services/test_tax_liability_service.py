@@ -52,7 +52,6 @@ def _make_profile(
         scenario_id=seed_user["scenario"].id,
         name=name,
         annual_salary=Decimal("110000.00"),
-        pay_periods_per_year=26,
         filing_status_id=filing_status.id,
         state_code=state_code,
         is_active=True,

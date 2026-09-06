@@ -28,6 +28,7 @@ import pytest
 from app import ref_cache
 from app.enums import BusinessDayShiftEnum, RecurrenceUnitEnum
 from app.models.recurrence_rule import RecurrenceRule
+from app.models.transaction_template import TransactionTemplate
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
     RecurrenceResolutionError,
@@ -57,11 +58,20 @@ _USER_ID = 1
 _A_FIRST_OCCURRENCE = date(2026, 4, 22)
 
 
-def _rule(cadence, starts_on=_A_FIRST_OCCURRENCE, **columns):
+def _rule(cadence, starts_on=_A_FIRST_OCCURRENCE, *, owner_id=_USER_ID,
+          **columns):
     """Return an unsaved rule of *cadence*, as R7c-c stores one.
 
     Transient by design: the read door takes a rule row and issues no query,
     so nothing here needs the rule to exist in a table.
+
+    **The OWNER is an unsaved template, since plan step R-F6.**  A recurrence
+    rule belongs to exactly one definition and reads its ``user_id`` through
+    it, so a rule built here needs one -- transient like the rule, added to no
+    session, which keeps these pure.  It is also what
+    :meth:`TestItSwallowsNothingElse.test_another_owners_schedule_still_raises`
+    now varies: the owner check compares the calendar against the DEFINITION'S
+    owner rather than against a column on the rule.
 
     **It states the SIX cadence columns and nothing else** (plan step R7c-c).
     ``interval_n``, ``unit_id`` and ``placement_id`` are what
@@ -76,13 +86,14 @@ def _rule(cadence, starts_on=_A_FIRST_OCCURRENCE, **columns):
         starts_on: The rule's first occurrence.  Defaults to
             :data:`_A_FIRST_OCCURRENCE`, which the shared
             :func:`build_calendar` schedule reaches.
+        owner_id: Who owns the definition the rule hangs off.  Defaults to
+            :data:`_USER_ID`, the owner ``build_calendar`` also defaults to.
         **columns: Any other column to override.
 
     Returns:
         The unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
     defaults = {
-        "user_id": _USER_ID,
         # 1 rather than the cadence's own interval, because one case below
         # deliberately stores the value
         # ``ck_recurrence_rules_positive_interval`` refuses and every other
@@ -95,7 +106,9 @@ def _rule(cadence, starts_on=_A_FIRST_OCCURRENCE, **columns):
         "starts_on": starts_on,
     }
     defaults.update(columns)
-    return RecurrenceRule(**defaults)
+    rule = RecurrenceRule(**defaults)
+    TransactionTemplate(user_id=owner_id).recurrence_rule = rule
+    return rule
 
 
 class TestOneComposition:
@@ -215,7 +228,8 @@ class TestTheEmptySchedule:
         """
         with app.app_context():
             empty = PayCalendar.from_paydays(
-                paydays=(), cadence_days=None, user_id=_USER_ID,
+                paydays=(), cadence_days=14, user_id=_USER_ID,
+                history_opens_on=None,
             )
             rule = _rule(MONTHLY)
 
@@ -225,7 +239,8 @@ class TestTheEmptySchedule:
         """No meaning and no placements, never a meaning without placements."""
         with app.app_context():
             empty = PayCalendar.from_paydays(
-                paydays=(), cadence_days=None, user_id=_USER_ID,
+                paydays=(), cadence_days=14, user_id=_USER_ID,
+                history_opens_on=None,
             )
             rule = _rule(EVERY_PERIOD)
 
@@ -238,7 +253,8 @@ class TestTheEmptySchedule:
         """The shape three surfaces and the baseline take is unchanged."""
         with app.app_context():
             empty = PayCalendar.from_paydays(
-                paydays=(), cadence_days=None, user_id=_USER_ID,
+                paydays=(), cadence_days=14, user_id=_USER_ID,
+                history_opens_on=None,
             )
             rule = _rule(EVERY_PERIOD)
 

@@ -73,6 +73,7 @@ from app.services.savings_dashboard_service._types import (
     _ProjectionContext,
 )
 from app.utils.money import round_money
+from app.utils.period_projections import horizon_offsets
 
 if TYPE_CHECKING:
     from app.services.pay_calendar import PayCalendar
@@ -112,6 +113,36 @@ def _build_projection_context(
         current_period=core.current_period,
         params=params,
         balance_ctx=core.balance_ctx,
+        # The forward horizons resolve ONCE for the whole loop (plan step
+        # R-F17), and behind the current period rather than beside it.
+        #
+        # **The REASON for that placement is gone at plan step
+        # pay_calendar:C4-d** (ruling R-PC45) and what the guard DOES is not.
+        # It read this way because ``PayCalendar.cadence`` REFUSED a calendar
+        # holding no cadence, and a current period was the proof there was one;
+        # the three NARROW producers sharing this builder --
+        # ``compute_debt_summary``, ``compute_goal_progress`` and
+        # ``compute_account_balance_cell`` -- publish no horizon, so resolving
+        # unguarded would have refused for a figure the fragment never shows.
+        # ``calendar_for`` refuses the cadence-less owner at the door now, so a
+        # calendar in hand always answers ``.cadence`` and nothing here can
+        # raise.
+        #
+        # **What the guard still decides is a PRODUCT rule, not a refusal**: an
+        # owner whose schedule does not cover today -- periods, but none current
+        # -- publishes no horizon chips.  That state is real and unrelated to
+        # the cadence; it is the LAPSED schedule, which
+        # ``routes/accounts/detail`` guards for separately because
+        # ``_interest_next_year`` dereferences ``current_period.period_index``.
+        # Nothing here dereferences it, so the guard is dispositional alone.
+        # Ledger row **P81** asks whether that disposition is intended, which
+        # is a question for the savings surface rather than for this step:
+        # C4-d deleted the guards whose subject it deleted and changed no
+        # page's answer for an owner who HAS a schedule.
+        horizon_offsets=(
+            horizon_offsets(core.balance_ctx.calendar().cadence)
+            if core.current_period is not None else ()
+        ),
     )
 
 
@@ -243,8 +274,11 @@ def compute_debt_summary(balance_ctx: BalanceContext) -> DebtSummary | None:
             ``budget.pay_schedule`` row and no pay period to infer one
             from.  Reached only by an owner who HAS a loan
             AND a configured salary, because the DTI denominator is the only
-            figure here that converts (plan step R7a-2a; see
-            :func:`app.services.pay_calendar.cadence_for`).
+            figure here that converts.  **Raised where the calendar is BUILT
+            since plan step pay_calendar:C4-d** (ruling R-PC45) -- this
+            producer opens a read pass, and ``BalanceContext.calendar()``
+            reaches :func:`app.services.pay_calendar.calendar_for`, which
+            refuses that owner.
     """
     core = _load_dashboard_core_data(balance_ctx)
     params = _load_account_params(core.accounts)
@@ -266,8 +300,7 @@ def compute_debt_summary(balance_ctx: BalanceContext) -> DebtSummary | None:
     account_data = _compute_account_projections(debt_accounts, ctx)
 
     current_breakdown = _get_current_paycheck_breakdown(
-        core.balance_ctx.user_id, core.balance_ctx.reported_periods(),
-        core.current_period,
+        core.balance_ctx, core.current_period,
     )
     return _debt_summary_with_dti(
         account_data, params.escrow_map, current_breakdown, core.balance_ctx,
@@ -313,8 +346,9 @@ def compute_goal_progress(balance_ctx: BalanceContext) -> list[GoalProgress]:
             ``budget.pay_schedule`` row and no pay period to infer one
             from.  Reached only by an owner who HAS an
             active goal, whose contribution floor and income-relative target
-            are both conversions against how often they are paid (plan step R7a-2a; see
-            :func:`app.services.pay_calendar.cadence_for`).
+            are both conversions against how often they are paid.  **Raised
+            where the calendar is BUILT since plan step pay_calendar:C4-d**
+            (ruling R-PC45), not where the cadence is read.
     """
     core = _load_dashboard_core_data(balance_ctx)
 
@@ -332,8 +366,7 @@ def compute_goal_progress(balance_ctx: BalanceContext) -> list[GoalProgress]:
     account_data = _compute_account_projections(goal_accounts, ctx)
 
     current_breakdown = _get_current_paycheck_breakdown(
-        core.balance_ctx.user_id, core.balance_ctx.reported_periods(),
-        core.current_period,
+        core.balance_ctx, core.current_period,
     )
     net_biweekly_pay = (
         current_breakdown.earnings.net_pay if current_breakdown is not None
@@ -344,26 +377,20 @@ def compute_goal_progress(balance_ctx: BalanceContext) -> list[GoalProgress]:
         core.balance_ctx.user_id,
         account_data,
         _GoalInputs(
-            all_periods=core.balance_ctx.reported_periods(),
             net_biweekly_pay=net_biweekly_pay,
-            # After the no-goals early return above, for the reason
-            # ``compute_debt_summary`` resolves it after ITS early return.
-            # The WHOLE schedule rather than the cadence since plan step
-            # R7b-3: the contribution filter has to tell whether a
-            # count-bounded template has spent its count, which depends on
-            # when the paychecks fall.
-            #
-            # Off the PASS since plan step C2-f2d-1, not through
-            # ``calendar_for``: this producer already holds a read pass whose
-            # whole job is to derive that calendar once, and calling the loader
-            # beside it derived a second copy of the same value -- measured at
-            # two derivations per ``compute_goal_progress`` call on a
-            # production clone.  The memo makes a second ask free rather than
-            # cheap, so the early return above still costs an owner with no
+            # The PASS itself (plan step R7d-e), where the inputs carried its
+            # reported window, its calendar and its day as three scalars: the
+            # contribution filter reads the composed door now, which folds a
+            # loan and so needs the pass.  What the scalars bought still holds
+            # -- the WHOLE schedule rather than the cadence (plan step R7b-3,
+            # so a count-bounded template that has spent its count leaves the
+            # floor), off the pass's memo rather than through ``calendar_for``
+            # (plan step C2-f2d-1, which measured a second derivation of the
+            # same calendar per call), and the build's ONE day (plan step
+            # C2-f2d-3, ledger row **P55**) -- and the memo makes a later ask
+            # free, so the early return above still costs an owner with no
             # goals nothing.
-            calendar=core.balance_ctx.calendar(),
-            # The build's ONE day (plan step C2-f2d-3, ledger row **P55**).
-            as_of=core.balance_ctx.as_of,
+            balance_ctx=core.balance_ctx,
         ),
         active_goals,
     )
@@ -665,9 +692,7 @@ def _compute_emergency_fund_section(
         (:class:`~app.services.savings_goal_service.SavingsCoverage`),
         ``total_savings`` and ``avg_monthly_expenses``.
     """
-    avg_monthly_expenses = _compute_avg_monthly_expenses(
-        core.balance_ctx.user_id, core, calendar,
-    )
+    avg_monthly_expenses = _compute_avg_monthly_expenses(core, calendar)
     total_savings = _sum_liquid_balances(account_data)
     return {
         "emergency_metrics": savings_goal_service.calculate_savings_metrics(
@@ -704,8 +729,10 @@ def compute_dashboard_data(balance_ctx: BalanceContext):
             ``budget.pay_schedule`` row and no pay period to infer one
             from.  Unlike the two narrow producers this has no
             early return: the coverage footer states a span in PAYCHECKS on
-            every render, so the page cannot be built without the cadence (plan step R7a-2a; see
-            :func:`app.services.pay_calendar.cadence_for`).
+            every render, so the page cannot be built without the cadence.
+            **Raised where the calendar is BUILT since plan step
+            pay_calendar:C4-d** (ruling R-PC45), not where the cadence is
+            read.
     """
     core = _load_dashboard_core_data(balance_ctx)
 
@@ -759,8 +786,7 @@ def compute_dashboard_data(balance_ctx: BalanceContext):
     # a 3% recurring raise saw a DTI denominator ~$260/mo too low (audit
     # worked example: $8,666.67 vs $8,926.67, 27.7% vs 26.9%).
     current_breakdown = _get_current_paycheck_breakdown(
-        core.balance_ctx.user_id, core.balance_ctx.reported_periods(),
-        core.current_period,
+        core.balance_ctx, core.current_period,
     )
     net_biweekly_pay = (
         current_breakdown.earnings.net_pay if current_breakdown is not None
@@ -772,11 +798,12 @@ def compute_dashboard_data(balance_ctx: BalanceContext):
         core.balance_ctx.user_id,
         account_data,
         _GoalInputs(
-            all_periods=core.balance_ctx.reported_periods(),
             net_biweekly_pay=net_biweekly_pay,
-            calendar=calendar,
-            # The build's ONE day (plan step C2-f2d-3, ledger row **P55**).
-            as_of=core.balance_ctx.as_of,
+            # The pass, whole (plan step R7d-e): its calendar is the one
+            # ``calendar`` above was read off, its reported window is the goal
+            # count's domain, and its day is the build's ONE day (plan step
+            # C2-f2d-3, ledger row **P55**).
+            balance_ctx=core.balance_ctx,
         ),
         _load_active_goals(core.balance_ctx.user_id),
     )

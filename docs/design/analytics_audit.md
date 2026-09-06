@@ -119,10 +119,10 @@ income/taxes with W-2 box labels, mortgage interest, spending by category, trans
 monthly `balance_at` endpoints + chart), debt progress, savings progress, payment timeliness.
 
 **Divergence (the big one):** the income/tax section is a pure simulation. `_compute_income_tax`
-(`_income_tax.py:19-80`) runs `paycheck_calculator.project_salary` over ALL pay periods of the year
--- no settled filter, never reads a received paycheck's `actual_amount`, never reconciles against
-reality. In July it shows a full-year model dressed in W-2 box labels. Mortgage interest is the
-honest exception (confirmed ledger actuals + projected remainder, `_income_tax.py:190-263`).
+(`_income_tax.py:19-80`) runs `paycheck_calculator.project_salary` over ALL pay periods of the
+year -- no settled filter, never reads a received paycheck's `actual_amount`, never reconciles
+against reality. In July it shows a full-year model dressed in W-2 box labels. Mortgage interest is
+the honest exception (confirmed ledger actuals + projected remainder, `_income_tax.py:190-263`).
 Spending/transfers/timeliness are settled-only (real). Net worth, debt, and savings sections now
 duplicate surfaces the cockpit and retirement pages own. And nothing computes filing-time liability,
 so the one number the developer wants (refund) does not exist.
@@ -260,8 +260,8 @@ EXCLUDES Step 4(b) additional deductions -- 4(b) stays a withholding-only hint b
 A check owns the itemize-vs-standard election at filing. NC base = wages gross + 4(a) - pre-tax (the
 same AGI-style base the withholding path already uses via ``taxable_biweekly``,
 ``paycheck_calculator.py:239``), minus the NC standard deduction inside ``calculate_state_tax``.
-CTC/ODC are applied as nonrefundable (liability clamps at zero; ACTC refundability out of scope v1)
--- disclosed in the assumptions box. Worked anchor (single, NC, 2026; salary 110,000, pre-tax
+CTC/ODC are applied as nonrefundable (liability clamps at zero; ACTC refundability out of scope
+v1) -- disclosed in the assumptions box. Worked anchor (single, NC, 2026; salary 110,000, pre-tax
 12,000, 4(a) 1,200, 4(b) 3,000): federal taxable 83,100 -> liability 12,994.00; NC (98,000 + 1,200 -
 12,750) x 3.99% = 3,449.36. Build process ruling: T-P1..T-P3 built by Opus subagents with review +
 verification between phases (the dashboard/salary pattern).
@@ -522,9 +522,11 @@ Data layer shipped; presentation (P2) not started. What landed:
   nets from `balance_calculator.sum_projected`. Oracle test:
   `series[P.end_date] == cash_balance_at(P.end_date)` for each overlapping period, plus continuity,
   per-day step, pre-anchor-flat, settled-excluded, clamp, and within-period-entry reconciliation.
-- **Shared attribution rule:** `app/utils/dates.attribution_date` (due_date or period start, clamped
-  into the period span) is used by BOTH the producer's ramp and the calendar's day grouping, so a
-  flow's cell and the line's step share one day.
+- **Shared attribution rule:** `pay_calendar.DerivedPeriod.attribution_day` (due_date or period
+  start, clamped into the period span) is used by BOTH the producer's ramp and the calendar's day
+  grouping, so a flow's cell and the line's step share one day. It was
+  `app/utils/dates.attribution_date` until pay-calendar plan step `C4-a-2` moved the rule onto the
+  value that carries the span and deleted the free function.
 - **Calendar query change:** `calendar_service._query_transactions_for_range` now selects by PERIOD
   MEMBERSHIP (`pay_period_id.in_(period_ids)`), not raw `due_date` (`monthly_attribution_clause`
   retired from calendar) -- required by the clamp so a stray-dated flow is not dropped. Two tests

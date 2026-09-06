@@ -8,30 +8,29 @@ surface and ``/retirement`` was wrong for any owner who is not paid biweekly --
 a weekly-paid owner's ``$100`` per-paycheck bill reported ``$216.67`` a month
 against a true ``$433.33``.
 
-**This is the one CONVERSION-side producer, and it is not the only paycheck
-count in the application.**  The fact here is ``cadence_days``, and the count
-of paychecks in a year is derived from it in this module and nowhere else --
-it is not a column, because a derivation stored beside its own input is a
-cache and a cache drifts the moment one writer moves one side alone (the
-argument :mod:`app.services.recurrence._resolution` makes for the two-axis
-recurrence values, applied to this one).
+**This is THE producer of "how many paychecks in a year", for every side of
+the application.**  The fact here is ``cadence_days``, and the count is derived
+from it in this module and nowhere else -- it is not a column, because a
+derivation stored beside its own input is a cache and a cache drifts the moment
+one writer moves one side alone (the argument
+:mod:`app.services.recurrence._resolution` makes for the two-axis recurrence
+values, applied to this one).
 
-**But ``salary.salary_profiles.pay_periods_per_year`` is a SECOND, stored,
-user-selected paycheck count**, a 12 / 24 / 26 / 52 dropdown on the salary
-form, and nothing ties it to ``cadence_days``.  It is the DIVISOR the paycheck
-engine uses to turn an annual salary into one paycheck
-(``paycheck_calculator:225`` and seven more ``or 26`` sites), and this module's
-conversions multiply that paycheck back up.  While both read 26 the two errors
-CANCELLED; they no longer do, so where the two disagree a figure that was
-accidentally right is now visibly wrong -- measured on a ``$91,675`` salary:
-profile 26 beside a 7-day cadence gives ``$15,279.17`` of monthly gross against
-a true ``$7,639.58``.  Where they AGREE, which is every consistent owner and
-all of production, the conversions here are right and the old constant was
-wrong for anyone but a biweekly one.  **The remedy is one producer for both
-sides and the developer ruled it IN THIS ARC** (2026-08-11), as the leaf after
-this one; until it lands, the sentence above rather than the "one fact, one
-producer" this module claimed in its first draft is the true statement of
-where the count comes from.
+**It became the only one at plan step R-F16, and until then it was not.**
+``salary.salary_profiles.pay_periods_per_year`` was a SECOND, stored,
+user-selected count -- a 12 / 24 / 26 / 52 dropdown on the salary form -- and
+nothing tied it to ``cadence_days``.  It was the DIVISOR the paycheck engine
+turned an annual salary into one paycheck with, while this module's conversions
+multiplied that paycheck back up.  While both read 26 the two errors CANCELLED;
+plan step R7a-2a fixed this side and made the mismatch visible, and finding
+**F-16** is what it exposed: measured with the real engine on a ``$91,675``
+salary, a profile reading 26 beside a 7-day cadence gave ``$15,279.20`` of
+monthly gross against a true ``$7,639.60``, and the year's paychecks summed to
+200% of salary.  R-F16 dropped the column; the engine takes a
+:class:`PayCadence` (bound to its profile as
+:class:`app.services.payroll_basis.PayrollBasis`) and divides by the
+count derived here.  A salary profile's paycheck recurs every pay period by
+definition, so there was never a second count to hold.
 
 Why the ROUNDED integer, and not the exact rate
 -----------------------------------------------
@@ -62,6 +61,30 @@ of how far the schedule happens to have been generated.
 
 The rule also covers plan step R8's WEEK unit with no second rule:
 ``round(365.2425 / 7) = 52``.
+
+**And it covers the forward HORIZONS at plan step R-F17.**  Every surface that
+labels a window in MONTHS and then resolves it in pay periods reads
+:meth:`PayCadence.paychecks_within` now, where each held its own hardcoded
+``months x 26 / 12``.  Ledger row **F-17**, ruling **R-R31**.
+
+**The census is stated as MEMBERSHIP rather than a count, because the count has
+been wrong four times.**  It read TWO in the ledger row, THREE here, FOUR in
+``period_projections`` and FIVE after R-F17's two adversarial reviews -- and an
+adversarial review of plan step R10-b found FIVE wrong too.  Every version
+collapsed something.  The re-greppable statement:
+
+* ``paychecks_within`` has FOUR call sites --
+  ``period_projections.offered_spans`` (the shared resolver),
+  ``routes.accounts.detail`` (the interest chip), ``routes.grid.page`` (the
+  mobile Plan window) and ``dashboard_service._pulse`` (the chart);
+* ``offered_spans`` serves THREE renderers -- the ACCOUNT DETAIL page's balance
+  chips and the ``/savings`` cockpit's, which call it separately through
+  ``horizon_offsets``, and the grid's range buttons;
+* so SIX rendered surfaces resolve through four call sites.
+
+Collapsing the two chip renderers into "the account pages' balance chips" is
+what produced FIVE, and it is the same collapse every earlier count made.  Grep
+``paychecks_within`` and ``horizon_offsets``; do not count from a sentence.
 
 Why the conversions live on the value
 -------------------------------------
@@ -99,7 +122,7 @@ Pure: no Flask, no ORM, no clock, no database.  The one door that reads an
 owner's cadence out of the table is :func:`~._loader.cadence_for`.
 """
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 from app.utils.money import MONTHS_PER_YEAR
 
@@ -152,15 +175,41 @@ class PayCadence:
     def __post_init__(self) -> None:
         """Refuse a cadence ``ck_pay_schedule_cadence_range`` would refuse.
 
-        The check is load-bearing HERE and not merely repeated from
-        :func:`~._derive.derive_periods`, because this value has a door that
-        does not go through a calendar: ``pay_schedule_service.resolve_cadence``
-        falls back for a schedule-row-less owner to
-        ``(end_date - start_date).days + 1`` off the last period, which
-        ``ck_pay_periods_date_order`` bounds below and NOTHING bounds above
-        (plan finding **P8**).  A hand-written period spanning two years would
-        otherwise answer "half a paycheck a year" and misstate every monthly
-        equivalent on the page.
+        The check is a property of the VALUE rather than of any one producer,
+        which is why it is here and not merely repeated from
+        :func:`~._derive.derive_periods`.  A :class:`PayCadence` is constructed
+        from a bare ``int`` at four sites in ``app/`` -- ``_loader.cadence_for``,
+        :meth:`~._calendar.PayCalendar.cadence`,
+        ``routes.salary.profiles``' paycheck count, and
+        ``recurrence._frequency._WEEKLY``, a module-level literal answering to
+        no database at all -- so the type is the only tier every one of them
+        passes through.  A type that admitted 800 would answer "half a
+        paycheck a year" and misstate every monthly equivalent derived from it.
+        It is graded directly, not inferred:
+        ``test_paycheck_calculator`` asserts ``PayCadence(cadence_days=0)``
+        raises, and ``test_grid`` builds one at 365 to drive the range options.
+
+        *An earlier draft of this paragraph cited "the harness that drives the
+        derivation over production's paydays" as a caller that constructs one.
+        It did not.  ``derive_periods`` has exactly one caller in ``app/`` --
+        :meth:`~._calendar.PayCalendar.__post_init__` -- and it takes a bare
+        ``int``, which is a different function and a different code path from
+        this constructor.  The harness that draft named was deleted outright at
+        plan step C4-c, since the stored columns it diffed against are gone.
+        An adversarial review measured the first claim; a second measured the
+        correction, which had named ``pay_period_write`` as a caller of
+        ``derive_periods`` and it is not one.*
+
+        *Until plan step C4-b-2 the reason was a specific producer:
+        ``pay_schedule_service.resolve_cadence`` fell back for a
+        schedule-row-less owner to ``(end_date - start_date).days + 1`` off the
+        last period, which ``ck_pay_periods_date_order`` bounded below and
+        nothing bounded above -- ledger rows **P8** and **P35**.  (That CHECK
+        went with its column at plan step C4-c.)  That producer
+        is gone: ``fk_pay_periods_schedule`` makes the owner unstorable and the
+        only source now is the column, bounded to 1..365 by
+        ``ck_pay_schedule_cadence_range``.  The check stays because the
+        argument for it never needed that producer.*
 
         Raises:
             PayCalendarError: The value is not a plain ``int`` (a ``bool``
@@ -249,10 +298,13 @@ class PayCadence:
         to :meth:`_times_paychecks_per_month`, so the shared arithmetic is
         shared rather than written twice.
 
-        Its one caller is the emergency-fund footer's "paychecks covered",
-        which is measured from the same raw ratio as its months and years so
-        each of the three is quantized exactly once (ruling **R-CS**, finding
-        **N-120**).
+        Two callers, and they want the ratio at different precisions.  The
+        emergency-fund footer's "paychecks covered" reads it RAW, because it is
+        measured from the same ratio as its months and years so each of the
+        three is quantized exactly once (ruling **R-CS**, finding **N-120**).
+        :meth:`paychecks_within` floors it to a whole paycheck, because a
+        forward horizon resolves to a pay period and there is no half period to
+        land on.  Neither rounds here: the caller's question decides.
 
         Args:
             months: A duration in months, unrounded.
@@ -261,6 +313,100 @@ class PayCadence:
             The same duration in paychecks, NOT quantized.
         """
         return self._times_paychecks_per_month(months)
+
+    def paychecks_within(self, months: int) -> int:
+        """Return how many of this owner's paychecks arrive within *months*.
+
+        The rule behind every forward window this application labels in MONTHS
+        and then resolves in PAY PERIODS: the balance chips' "3 months" /
+        "6 months" / "1 year" on the account page AND on ``/savings``, the
+        "Interest, next 12 mo" chip, the grid's 6M / 1Y / 2Y range buttons, the
+        mobile Plan tab's window, and the dashboard pulse chart -- whose canvas
+        announces "the next six months" to a screen reader while a
+        ``_CHART_HORIZON_PERIODS = 13`` decided what it drew.  Ledger row
+        **F-17** names the first two; the developer widened the step to the
+        grid, and both of R-F17's reviews found the mobile window and the chart
+        by re-grepping the row's own predicate rather than the diff.  Every one
+        of them counted a hardcoded 6 / 13 / 26 / 52 until plan step **R-F17**:
+        those numbers are ``months x 26 / 12``, so the label told the truth for
+        a biweekly owner and for nobody else.  At a weekly cadence "1 year"
+        reached 26 x 7 = 182 days and said a year; at a monthly one it reached
+        780 days and said the same.
+
+        **The module docstring states the census as membership and says why a
+        COUNT of it keeps going stale** -- this docstring said FIVE until an
+        adversarial review of plan step R10-b showed the two chip renderers are
+        two, not one.
+
+        **Ruling R-R31 (developer, 2026-08-19): the horizon is the LAST WHOLE
+        PAYCHECK that ARRIVES within the span.**  Paydays are exactly
+        ``cadence_days`` apart, so that count is
+        ``floor(months x DAYS_PER_YEAR / (MONTHS_PER_YEAR x cadence_days))`` --
+        a division against the CADENCE ITSELF, not against
+        :attr:`periods_per_year`.
+
+        **Deriving it through the rounded annual count instead was the first
+        implementation, and an adversarial review measured it wrong.**
+        ``floor(months x periods_per_year / 12)`` rounds twice, and the two
+        forms disagree on 384 of the 1,460 cadence-by-horizon cases -- always
+        overshooting by one period, never undershooting.  In **74** of those it
+        OFFERS a horizon the owner has no paycheck inside at all, which is the
+        state this ruling's second half exists to refuse: at ``cadence_days =
+        243`` it offered "6 months" pointing at a paycheck arriving 60 days
+        AFTER the day that label names, which is row F-17's own defect at
+        greater magnitude than the one it replaced.  Every common cadence is
+        untouched by the correction -- 7, 14, 15, 28 and 30 all answer
+        identically, including the developer's own 6 / 13 / 26 / 52.
+
+        **Why the fraction FLOORS rather than rounds**, which is the rest of
+        the ruling and was chosen on measurement.  Over every legal cadence
+        (1..365) crossed with the 3 / 6 / 12 / 24-month spans the two disagree
+        on 388 of 1,460 cases; scoring each by the MEAN ABSOLUTE distance, in
+        days, between the resolved period's END and the day the label names --
+        swept over all twelve opening months and every phase within a period --
+        the floored answer is closer in 387 and the two are equal in the last
+        (``cadence_days = 1`` at six months, 14 days of error each way).  The
+        metric is stated because it decides the tie: counted per case rather
+        than aggregated, that last one splits 6-6 instead.
+
+        **Zero is a real answer and callers must not clamp it.**  An owner paid
+        less often than every 92 days receives no paycheck at all inside three
+        months, and one paid less often than every 183 days receives none
+        inside six.  The surfaces then OFFER no such horizon (ruling R-R31's
+        second half): the pay period is this application's finest forward
+        resolution, so a chip that resolved to offset zero would publish the
+        balance at the end of a months-long current period under a label naming
+        a shorter span.  Twelve months can never be zero -- ``365.2425 / 365``
+        still clears 1 -- so the "1 year" chip and the "Interest, next 12 mo"
+        window it shares are always answerable.
+
+        **It is NOT equal to** :attr:`periods_per_year` **at twelve months**,
+        and the first draft of this class claimed it was: at ``cadence_days =
+        31`` eleven paychecks arrive within a year (``11 x 31 = 341``) where
+        the rounded annual count is 12, because the twelfth lands seven days
+        late.  The two chips that share a twelve-month span agree because they
+        BOTH call this method with the same constant, not because either equals
+        that attribute.
+
+        Args:
+            months: A forward span in whole months.  Non-negative.
+
+        Returns:
+            The number of this owner's paychecks that fall within that span, as
+            a plain ``int`` -- a period-INDEX offset rather than money, which is
+            why it is not a ``Decimal`` like every conversion above it.  Read as
+            an OFFSET from the current period by the chips (the last paycheck
+            within the span) and as a COUNT of columns by the grid and the Plan
+            tab (that many paychecks starting at the current one); the two
+            readings differ by one pay period and each call site says which it
+            takes.
+        """
+        return int(
+            (
+                Decimal(months) * DAYS_PER_YEAR
+                / (MONTHS_PER_YEAR * self.cadence_days)
+            ).to_integral_value(rounding=ROUND_FLOOR)
+        )
 
     def _times_paychecks_per_month(self, value: Decimal) -> Decimal:
         """Multiply *value* by paychecks-per-month, in the sequential order.

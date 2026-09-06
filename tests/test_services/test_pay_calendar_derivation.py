@@ -1,27 +1,50 @@
 """
-Shekel Budget App -- Pay Calendar Derivation Tests (plan step C1)
+Shekel Budget App -- Pay Calendar Derivation Tests (plan steps C1 and C4-c)
 
-The suite half of C1's proof.  ``tests/manual/verify_pay_calendar_derivation.py``
-drives the same oracle over a clone of production -- 61 contiguous biweekly
-paydays at one cadence, which is ONE schedule shape however many rows it has.
-These tests cover what that run structurally cannot see:
+``pay_calendar.derive_periods`` is the ONE answer to "which paycheck, and how
+far does it run", and since plan step ``pay_calendar:C4-c`` it is the only one:
+that step dropped ``budget.pay_periods.end_date`` and ``period_index``, so
+nothing stores a second opinion.  This suite is what holds the derivation to
+its hand-computed values.
+
+*It was the suite half of a two-dataset proof until then.*  C1 required the
+derivation to reproduce the stored columns before anything read it, wrote it,
+or dropped them, so ``tests/manual/verify_pay_calendar_derivation.py`` drove
+the shared oracle over a clone of production while this file drove it over
+schedules the live data cannot supply.  The comparator, its payday control and
+its verdict went with the columns, and so did that script; the proof they were
+is in migration ``b7a41e2c9d63``'s docstring, measured on production itself.
+
+What is left is the half that was never about the columns:
 
 * the shapes the live data does not supply -- a one-day period, a 90-day
-  cadence, a hole, an overlap, a single-payday schedule, an ordinal out of date
-  order, a mid-schedule cadence change, and the empty calendar
-  (``IRREGULAR_SHAPES``, each with hand-computed expected values);
+  cadence, a payday jump, a thirteen-day period, a single-payday schedule,
+  paydays handed in out of order, a mid-schedule cadence change, and the empty
+  calendar (``IRREGULAR_SHAPES``, each with hand-computed expected values);
 * what the derivation REFUSES, which a clean database never exercises;
-* the writer's output at six cadences spanning the storable range (2, 7, 14,
-  30, 90, 365 of the 364 that ``ck_pay_schedule_cadence_range`` permits once
-  ``ck_pay_periods_date_order`` has excluded 1), each pinned to a hand-computed
-  end on BOTH branches rather than only to "the two sides agree";
+* the writer's output at seven cadences spanning the whole storable range (1,
+  2, 7, 14, 30, 90, 365 -- ``ck_pay_schedule_cadence_range`` permits 1..365 and
+  C4-c removed the stored-column floor that excluded 1), each pinned to a
+  hand-computed end on BOTH branches;
 * **re-derivation stability** -- whether yesterday's answer still holds after
-  another payday is written.  That is the only axis on which a derived end can
-  behave differently from the stored column it replaces, and no other test here
-  asks about it;
-* the ORACLE's own logic -- the verdict, the two controls, the owner guard --
-  because it decides whether a run passed and the manual script that used to
-  hold it could not be tested.
+  another payday is written.  That is the axis on which a derived end behaves
+  differently from the stored column it replaced, and no other test here asks
+  about it;
+* the CADENCE control, which measures the one branch a regular schedule cannot
+  show;
+* **the boundary arithmetic plan step ``C14-c`` corrected**, which needs a
+  payday that MOVES and so cannot be reached through the package at all while
+  the shift convention is off.  Those cases substitute the producer ``C14-e``
+  will ship -- the nominal rhythm displaced by the shipped
+  :func:`~app.utils.business_days.shift_to_business_day` -- and then drive the
+  REAL ``derive_periods`` and ``project_period_after``, so the candidate
+  window, the end rule and the selector are graded rather than the arithmetic
+  estimate alone (:func:`_displace_under` says why that distinction is
+  load-bearing).  Their control is
+  ``test_the_OLD_end_rule_would_NOT_have_tiled``: the deleted
+  ``start + cadence - 1`` agrees with the surviving rule everywhere no payday
+  moves, so a suite that never displaced one would pass against the defect --
+  which is what made ``C2-a``'s first ``P14`` test vacuous.
 
 **No date here is read from a clock.**  Every date is a literal or is derived
 from one by explicit ``timedelta`` arithmetic; nothing calls ``date.today()``
@@ -35,45 +58,65 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from app.services import pay_period_service, pay_period_write
+from app.enums import BusinessDayShiftEnum
+from app.services import pay_period_write
 from app.services.pay_calendar import (
     MAX_CADENCE_DAYS,
     DerivedPeriod,
     PayCalendar,
     PayCalendarError,
+    PeriodWindow,
     derive_periods,
 )
-from tests._test_helpers import open_calendar_hole
+
+# Package-PRIVATE on purpose, and this is the one import in the suite that
+# takes it.  ``covering_projection`` and ``projected_payday`` have no
+# application caller outside :mod:`app.services.pay_calendar._derive` -- they
+# are the two halves plan step ``C14-c`` split :func:`project_period_after`
+# into -- so exporting them would widen the package's curated surface for a
+# test's convenience.  The W9910 gate (``shekel-private-module-import``) runs
+# over ``app/``, ``scripts/`` and ``tests/manual/`` -- not this tree -- and
+# ``tests/test_services/test_spending_report_service.py`` reaches a sibling
+# package's ``_window`` the same way.
+from app.services.pay_calendar import _derive
+from app.services.pay_calendar._derive import (
+    covering_projection,
+    projected_payday,
+)
+from app.utils.business_days import (
+    shift_to_business_day,
+    shortest_collision_free_cadence,
+)
+from tests._test_helpers import all_periods, rhythm_of
 from tests.oracles.pay_calendar_derivation import (
     IRREGULAR_SHAPES,
-    build_stored_rows,
     cadence_control,
-    compare,
-    identified_paydays,
-    perturb,
     shape,
-    verdict,
 )
 
-#: Production's own schedule, measured on ``shekel-prod-db`` 2026-08-08: 61
-#: paydays from 2026-03-26 at a 14-day cadence, the last on 2028-07-13 with a
-#: stored ``end_date`` of 2028-07-26.  Reproduced here so the suite asserts the
-#: real shape rather than a convenient one.
+#: Production's own schedule, measured on ``shekel-prod-db`` 2026-09-01: 63
+#: paydays from 2026-03-26 at a 14-day cadence, the last on 2028-08-10 running
+#: to 2028-08-23.  Reproduced here so the suite asserts the real shape rather
+#: than a convenient one.
 _LIVE_FIRST_PAYDAY = date(2026, 3, 26)
-_LIVE_PERIOD_COUNT = 61
+_LIVE_PERIOD_COUNT = 63
 _LIVE_CADENCE_DAYS = 14
-_LIVE_LAST_PAYDAY = date(2028, 7, 13)
-_LIVE_LAST_END = date(2028, 7, 26)
+_LIVE_LAST_PAYDAY = date(2028, 8, 10)
+_LIVE_LAST_END = date(2028, 8, 23)
 
 #: ``(cadence_days, first period's end, last period's end)`` for six periods
 #: opening 2026-01-02.  The FIRST end exercises the ``lead(start) - 1`` branch
 #: and the LAST the ``start + cadence - 1`` projection, so each row pins both.
-#: Cadence 1 is absent: the writer stores ``end_date = start_date`` for it and
-#: ``ck_pay_periods_date_order CHECK (start_date < end_date)`` rejects that
-#: outright (plan finding P9).  The derivation handles it -- the
-#: ``one_day_periods`` shape proves that at the value level -- but the column
-#: cannot hold it, so there is nothing to compare against until C4.
+#:
+#: **Cadence 1 is here because plan step ``pay_calendar:C4-c`` legalised it**
+#: (plan finding **P9**).  It was excluded while the writer stored
+#: ``end_date = start_date`` for a one-day cycle and
+#: ``ck_pay_periods_date_order CHECK (start_date < end_date)`` rejected the
+#: row; the derivation always handled it, and now the writer can record it.
+#: Six paydays a day apart open 2026-01-02 and run to 2026-01-07, and every
+#: period covers exactly its own payday.
 _CADENCE_ANCHORS = (
+    (1, date(2026, 1, 2), date(2026, 1, 7)),
     (2, date(2026, 1, 3), date(2026, 1, 13)),
     (7, date(2026, 1, 8), date(2026, 2, 12)),
     (14, date(2026, 1, 15), date(2026, 3, 26)),
@@ -195,89 +238,134 @@ class TestDerivationRefusals:
 
 
 # ---------------------------------------------------------------------------
-# TestTheCadenceIsRequiredOnlyBesideAPayday
+# TestTheCadenceIsRequired
 # ---------------------------------------------------------------------------
 
 
-class TestTheCadenceIsRequiredOnlyBesideAPayday:
-    """Plan step C2-b1: ``cadence_days`` and ``paydays`` travel together.
+class TestTheCadenceIsRequired:
+    """Plan step C4-d (ruling **R-PC45**): a calendar HAS a cadence, always.
 
-    The cadence is read for exactly one thing -- the LAST period's end -- so an
-    owner with no paydays has nothing to read it for, and
-    ``pay_schedule_service.resolve_cadence`` answers ``None`` for exactly that
-    owner (no ``budget.pay_schedule`` row, and no period to infer one from).
-    Production's companion user is one: zero paydays, measured 2026-08-08.
+    **This class replaces ``TestTheCadenceIsRequiredOnlyBesideAPayday``, and
+    the rename is the whole change.**  ``cadence_days`` was ``int | None``:
+    ``None`` legal beside an empty payday set, refused beside a non-empty one,
+    and the pairing policed here at runtime because the type would not express
+    it.  What that absence stood for was an owner with no
+    ``budget.pay_schedule`` row, and ``pay_calendar._loader.calendar_for``
+    refuses that owner now rather than building an empty calendar carrying no
+    cadence -- so nothing constructs the pair and there is nothing conditional
+    left to grade.
 
-    The same absence BESIDE a payday is a different fact -- plan finding P8's
-    broken state -- and this is the only place in the application that refuses
-    it.  Both directions are asserted here because a rule tested in one
-    direction is a rule that can be satisfied by refusing everything.
+    What is graded instead is the unconditional rule and the two things it
+    could quietly get wrong: that the refusal no longer DEPENDS on the payday
+    set (a rule stated for one input shape and not the other is the shape this
+    class used to have), and that an EMPTY calendar is still buildable and
+    still answers -- it is an owner with a schedule row and zero paydays, which
+    ``pay_period_admin.reset_pay_periods`` passes through, and it is the case a
+    "cadence required" rule could break by refusing everything.
     """
 
-    def test_no_paydays_and_no_cadence_derive_an_empty_calendar(self):
-        """The legal pairing, and the reason the empty calendar stays buildable.
+    def test_no_paydays_and_a_cadence_derive_an_empty_calendar(self):
+        """The empty calendar stays buildable, and now carries a real cadence.
 
         ``recurrence._reading.resolved_recurrence`` answers ``None`` for an
         owner with no periods so the Recurring surface still renders; raising
         here would take that page to a 500 for the one owner it is written for.
         """
-        assert derive_periods([], None) == ()
+        assert derive_periods([], 14) == ()
 
-    def test_a_payday_with_no_cadence_is_refused(self):
+    def test_an_absent_cadence_is_refused_beside_a_payday(self):
         """P8's state: a payday exists and its period's end cannot be derived.
 
         Every alternative invents a horizon the owner never chose, so the
-        refusal names the invariant rather than clamping.
+        refusal names the invariant rather than clamping.  The message is
+        ``validate_cadence``'s since plan step C4-d -- ``None`` is one more
+        wrong TYPE beside ``bool`` and ``float`` rather than a state with a
+        refusal of its own.
         """
-        with pytest.raises(PayCalendarError, match="no cadence"):
+        with pytest.raises(PayCalendarError, match="must be a plain int") as excinfo:
             derive_periods([(1, date(2026, 1, 2))], None)
 
-    def test_the_refusal_counts_the_paydays_it_refused(self):
-        """The message names the value, per the project's error-message rule."""
-        with pytest.raises(PayCalendarError, match=r"\b3 payday\(s\)"):
-            derive_periods(
-                [
-                    (1, date(2026, 1, 2)),
-                    (2, date(2026, 1, 16)),
-                    (3, date(2026, 1, 30)),
-                ],
-                None,
-            )
+        # The message NAMES what it refused, which is this project's
+        # error-message rule and which the deleted refusal used to carry (it
+        # counted the paydays).  Eight ``raises`` sites inherited the new
+        # message and an adversarial review found none of them asserting it
+        # says anything at all about the offending value.
+        assert "NoneType" in str(excinfo.value)
 
-    def test_an_absent_cadence_is_refused_after_a_duplicate_payday(self):
-        """Order of refusals: the payday set is graded before the pairing.
+    def test_an_absent_cadence_is_refused_with_NO_paydays_TOO(self):
+        """The refusal stopped depending on the payday set, which IS the step.
 
-        A caller who hands in both faults hears about the one that is a
-        property of the data they supplied, not the one that is a property of
-        their schedule row -- and this pins that order so the two refusals
-        cannot start racing.
+        ``derive_periods([], None)`` was LEGAL before plan step C4-d, and it is
+        the exact pair that made ``cadence_days`` optional at five tiers.
+        Asserted beside the case above rather than instead of it: what changed
+        is that one rule now covers both payday shapes, and a test of only the
+        non-empty shape would pass identically against the old conditional.
         """
-        with pytest.raises(PayCalendarError, match="appears twice"):
+        with pytest.raises(PayCalendarError, match="must be a plain int"):
+            derive_periods([], None)
+
+    def test_the_cadence_is_graded_BEFORE_the_payday_set(self):
+        """Order of refusals, INVERTED by plan step C4-d and pinned as such.
+
+        A caller handing in both faults -- a duplicate payday and no cadence --
+        used to hear "appears twice", because the absent cadence was checked
+        after the payday set was sorted and de-duplicated.  The cadence is
+        validated eagerly now, before the paydays are looked at, which is what
+        ``derive_periods`` already did for every value except ``None`` and what
+        its own ``Args:`` has always said: a bad cadence is a bad caller
+        whether or not this particular owner has paydays yet.  Pinned so the
+        two refusals cannot start racing.
+        """
+        with pytest.raises(PayCalendarError, match="must be a plain int"):
             derive_periods(
                 [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], None,
             )
 
-    def test_a_present_cadence_is_still_graded_beside_an_empty_set(self):
-        """Absence is excused; a WRONG value never is, whatever the payday set.
+    def test_a_duplicate_payday_is_still_refused_beside_a_GOOD_cadence(self):
+        """The payday-set grading survived the reorder, which is what could break.
 
-        ``None`` means "there is no schedule"; ``0`` means "the schedule says
-        zero", which no write door could have produced.
+        The case above proves the cadence is graded first; on its own that is
+        also what a ``derive_periods`` which had stopped checking paydays
+        entirely would report.  This is the other side: a good cadence, and the
+        duplicate is still named.
+        """
+        with pytest.raises(PayCalendarError, match="appears twice"):
+            derive_periods(
+                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], 14,
+            )
+
+    def test_a_present_cadence_is_still_graded_beside_an_empty_set(self):
+        """A WRONG value is refused whatever the payday set.
+
+        ``0`` means "the schedule says zero", which no write door could have
+        produced -- and the eager validation is what makes an empty payday set
+        no excuse for it.
         """
         with pytest.raises(PayCalendarError, match="at least 1 day and at most 365"):
             derive_periods([], 0)
 
-    def test_an_empty_calendar_answers_every_question_without_a_cadence(self):
-        """The pairing is safe because no method reads what is not there.
+    def test_an_empty_calendar_answers_every_question_it_has_an_answer_for(self):
+        """An empty calendar is ordinary, and every search still answers ``None``.
 
         Asserted over the whole public surface rather than the two methods that
-        obviously touch the cadence: the claim being made is that NONE of them
-        reads it, and a spot check of two would not be that claim.
+        obviously touch the cadence: the claim is that a "cadence required"
+        rule did not make the empty calendar unbuildable or turn its searches
+        into refusals.
+
+        **The cadence read is asserted too, and it is the assertion this case
+        did not have before plan step C4-d**: the class it replaces built this
+        calendar with ``cadence_days=None`` and its whole point was that no
+        method READ the cadence.  A calendar carries one now, so the honest
+        version checks that reading it ANSWERS -- which is
+        ``PayCalendar.cadence`` having become total.
         """
         calendar = PayCalendar.from_paydays(
-            paydays=[], cadence_days=None, user_id=1,
+            paydays=[], cadence_days=14, user_id=1,
+            history_opens_on=None,
         )
         day = date(2026, 1, 2)
 
+        assert calendar.cadence.cadence_days == 14
         assert calendar.periods == ()
         assert calendar.opening_bound() is None
         assert calendar.horizon() is None
@@ -286,7 +374,6 @@ class TestTheCadenceIsRequiredOnlyBesideAPayday:
         assert calendar.period_starting_on_or_after(day) is None
         assert calendar.period_starting_on_or_before(day) is None
         assert calendar.period_by_id(1) is None
-        assert calendar.earliest_start_in_month(2026, 1) is None
         assert len(calendar.window(0, 6)) == 0
         assert len(calendar.overlapping(day, date(2027, 1, 1))) == 0
         assert len(calendar.axis(day, date(2027, 1, 1))) == 0
@@ -321,35 +408,17 @@ class TestIrregularShapeSweep:
     @pytest.mark.parametrize(
         "irregular", IRREGULAR_SHAPES, ids=lambda s: s.label,
     )
-    def test_the_shape_disagrees_with_exactly_the_expected_stored_rows(
-        self, irregular,
-    ):
-        """The comparator names precisely the rows the derivation contradicts.
-
-        Four of the shapes disagree BY DESIGN -- a hole, a shared boundary
-        day, an ordinal out of date order, and a stored cadence the schedule
-        has outgrown.  The rest must reproduce byte-identically.
-        """
-        comparison = compare(
-            user_id=1,
-            periods=build_stored_rows(irregular, user_id=1),
-            cadence_days=irregular.cadence_days,
-            cadence_is_stored=True,
-        )
-        assert tuple(
-            row.start_date for row in comparison.disagreements
-        ) == irregular.disagreeing_starts, irregular.why
-
-    @pytest.mark.parametrize(
-        "irregular", IRREGULAR_SHAPES, ids=lambda s: s.label,
-    )
     def test_the_derived_spans_tile_the_calendar(self, irregular):
         """Consecutive derived periods abut exactly: no gap, no overlap.
 
         This is the normalization's whole claim, asserted rather than argued.
-        Three of these shapes are STORED with a hole, an overlap or an ordinal
-        out of order, and the derivation of each still tiles -- because a set
-        of distinct sorted dates cannot produce anything else.
+        Three of these shapes were the payday sets behind a stored hole, a
+        shared boundary day and an ordinal out of date order, and the
+        derivation of each tiles -- because a set of distinct sorted dates
+        cannot produce anything else.  That is why plan step
+        ``pay_calendar:C4-c`` could delete the three ``integrity_check``
+        anomalies and the four ``_pp_assert_structure`` invariants that
+        policed those states: none of them is expressible.
         """
         derived = derive_periods(irregular.paydays, irregular.cadence_days)
         for earlier, later in zip(derived, derived[1:]):
@@ -362,9 +431,10 @@ class TestIrregularShapeSweep:
     def test_exactly_the_last_end_is_projected(self, irregular):
         """Only the final period's end comes from the cadence.
 
-        The flag is the one thing the two dropped columns could not say.  True
-        for the last period of a non-empty calendar and for no other -- and for
-        none at all when the calendar is empty.
+        The flag is the one thing the two columns plan step
+        ``pay_calendar:C4-c`` dropped could never have said.  True for the last
+        period of a non-empty calendar and for no other -- and for none at all
+        when the calendar is empty.
         """
         derived = derive_periods(irregular.paydays, irregular.cadence_days)
         projected = [
@@ -377,8 +447,8 @@ class TestIrregularShapeSweep:
     def test_the_input_order_does_not_change_the_answer(self):
         """A calendar is a property of the payday SET, not of the query order.
 
-        ``get_all_periods`` orders by ``period_index`` today, which C4 drops;
-        the derivation must not care.
+        The reads that feed this order by ``start_date``; the derivation sorts
+        for itself so a caller's query order cannot change the answer.
         """
         paydays = [
             (1, date(2026, 1, 2)),
@@ -480,7 +550,7 @@ class TestReDerivationStability:
         by the plan's own definition and is not the mid-schedule insert C6
         rules on.  It still moves the second period's end from 2026-01-29 to
         2026-01-27.  A row dated 2026-01-28 and pointed at that period is not
-        left outside it -- ``utils.dates.attribution_date`` clamps -- so it
+        left outside it -- ``DerivedPeriod.attribution_day`` clamps -- so it
         RENDERS on 2026-01-27 instead, which is plan finding P10's damage
         reached through a door P10 does not cover.
 
@@ -523,97 +593,103 @@ class TestReDerivationStability:
 
 
 # ---------------------------------------------------------------------------
-# TestTheStoredColumnsAreReproduced
+# TestTheWritersOwnScheduleDerives
 # ---------------------------------------------------------------------------
 
 
-class TestTheStoredColumnsAreReproduced:
-    """The derivation against what the real writer actually stores."""
+class TestTheWritersOwnScheduleDerives:
+    """The derivation against the paydays the real writer actually records.
 
-    def test_the_production_schedule_reproduces_byte_identically(
+    **This class compared the derivation with the STORED columns until plan
+    step ``pay_calendar:C4-c``**, which dropped them.  What it grades now is
+    the other half of that pairing and the half that was always load-bearing:
+    the writer's own output, driven through
+    ``pay_period_write.record_paydays`` and pinned to dates worked out by hand.
+    A cutover that quietly changed which paydays the writer records fails here.
+    """
+
+    def test_the_production_schedule_derives_its_known_shape(
         self, app, db, bare_user,
     ):
-        """Production's own 61-payday shape, rebuilt and diffed row by row.
+        """Production's own 63-payday shape, rebuilt through the writer.
 
-        The clone run measures this against the live rows; this measures it
-        against the writer that produced them, so a change to the writer is
-        caught in CI rather than at the next manual run.
+        Measured on ``shekel-prod-db`` 2026-09-01: 63 paydays from 2026-03-26
+        at cadence 14, the last on 2028-08-10.  ``2026-03-26 + 62 * 14 days``
+        is that day, and its period's projected end is thirteen days later.
         """
         with app.app_context():
             periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id,
                 first_payday=_LIVE_FIRST_PAYDAY,
                 num_periods=_LIVE_PERIOD_COUNT,
-                cadence_days=_LIVE_CADENCE_DAYS,
+                rhythm=rhythm_of(_LIVE_CADENCE_DAYS),
             )
             db.session.commit()
 
             assert len(periods) == _LIVE_PERIOD_COUNT
-            # 2026-03-26 + 60 * 14 days = 2028-07-13, the live last payday.
             assert periods[-1].start_date == _LIVE_LAST_PAYDAY
-            assert periods[-1].end_date == _LIVE_LAST_END
 
-            comparison = compare(
-                user_id=bare_user["user"].id,
-                periods=periods,
-                cadence_days=_LIVE_CADENCE_DAYS,
-                cadence_is_stored=True,
+            derived = derive_periods(
+                [(period.id, period.start_date) for period in periods],
+                _LIVE_CADENCE_DAYS,
             )
-            assert comparison.disagreements == ()
-            assert len(comparison.rows) == _LIVE_PERIOD_COUNT
-            assert comparison.rows[-1].end_is_projected is True
+            assert len(derived) == _LIVE_PERIOD_COUNT
+            assert derived[-1].end_date == _LIVE_LAST_END
+            assert derived[-1].end_is_projected is True
+            assert [period.period_index for period in derived] == list(
+                range(_LIVE_PERIOD_COUNT),
+            )
 
     @pytest.mark.parametrize(
         "cadence_days,first_end,last_end",
         _CADENCE_ANCHORS,
         ids=[f"cadence_{row[0]}" for row in _CADENCE_ANCHORS],
     )
-    def test_every_storable_cadence_reproduces_hand_computed_ends(
+    def test_every_storable_cadence_derives_hand_computed_ends(
         self, app, db, bare_user, cadence_days, first_end, last_end,
     ):
-        """The writer's output equals the derivation, and equals known dates.
+        """The writer's paydays derive to known dates on BOTH branches.
 
-        Asserting only ``disagreements == ()`` would be satisfied by a
-        derivation that used ``start + cadence - 1`` for EVERY period -- the
-        pre-normalization defect -- because the writer spaces its paydays
-        exactly one cadence apart, which makes the two branches agree on every
-        row it writes.  So each cadence also pins the FIRST end (the
-        ``lead(start) - 1`` branch) and the LAST (the projection), by hand.
+        The writer spaces its paydays exactly one cadence apart, so
+        ``lead(start) - 1`` and ``start + cadence - 1`` agree on every row it
+        writes -- which is why each cadence pins the FIRST end (the ``lead``
+        branch) and the LAST (the projection) by hand rather than pinning that
+        the two agree.  A derivation that took the projection branch everywhere
+        would still be caught, by the shapes in
+        :class:`TestIrregularShapeSweep` and by
+        :class:`TestTheCadenceControl`.
+
+        **Cadence 1 is one of the seven rows since plan step
+        ``pay_calendar:C4-c``** (plan finding **P9**): the writer refused it
+        while a stored ``end_date`` could not hold a one-day period.
         """
         with app.app_context():
             periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=6,
-                cadence_days=cadence_days,
+                rhythm=rhythm_of(cadence_days),
             )
             db.session.commit()
 
             derived = derive_periods(
-                identified_paydays(periods), cadence_days,
+                [(period.id, period.start_date) for period in periods],
+                cadence_days,
             )
             assert derived[0].end_date == first_end
             assert derived[0].end_is_projected is False
             assert derived[-1].end_date == last_end
             assert derived[-1].end_is_projected is True
 
-            comparison = compare(
-                user_id=bare_user["user"].id,
-                periods=periods,
-                cadence_days=cadence_days,
-                cadence_is_stored=True,
-            )
-            assert comparison.disagreements == ()
-
-    def test_a_second_contiguous_batch_reproduces(
+    def test_a_second_contiguous_batch_continues_the_rhythm(
         self, app, db, bare_user,
     ):
-        """The extend path's shape -- a batch opening the day after the last end.
+        """The extend path's shape -- a batch opening one cadence after the last.
 
-        ``pay_period_admin.extend_pay_periods`` derives its start as
-        ``last.end_date + 1`` (``pay_period_admin.py``), which is the one
-        append that moves no previously-derived end -- see
-        :class:`TestReDerivationStability`.
+        ``pay_period_admin.extend_pay_periods`` asks the CALENDAR where the
+        next payday falls (plan step C2-f3b) rather than doing arithmetic of
+        its own, and this is the append that moves no previously-derived end --
+        see :class:`TestReDerivationStability`.
         """
         with app.app_context():
             user_id = bare_user["user"].id
@@ -621,194 +697,35 @@ class TestTheStoredColumnsAreReproduced:
                 user_id=user_id,
                 first_payday=date(2026, 1, 2),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
             pay_period_write.record_paydays(
                 user_id=user_id,
-                first_payday=first[-1].end_date + timedelta(days=1),
+                first_payday=first[-1].start_date + timedelta(days=14),
                 num_periods=3,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.commit()
 
-            comparison = compare(
-                user_id=user_id,
-                periods=pay_period_service.get_all_periods(user_id),
-                cadence_days=14,
-                cadence_is_stored=True,
+            derived = derive_periods(
+                [
+                    (period.id, period.start_date)
+                    for period in all_periods(user_id)
+                ],
+                14,
             )
-            assert comparison.disagreements == ()
-
-    def test_a_gapped_batch_diverges_on_the_row_before_the_hole(
-        self, app, db, bare_user,
-    ):
-        """Plan finding P2 -- and BOTH halves of what plan step C3-b did to it.
-
-        The batch guard of the day, ``_reject_overlapping_batch``, refused a
-        batch starting on or before the latest existing end and refused nothing
-        else, so a batch opening two weeks late was accepted and left
-        2026-01-30 through 2026-02-12 funded by no paycheck.  The derivation
-        cannot express that, so the row before the hole was the one
-        disagreement this oracle reported.
-
-        **C3-b closed the writer, so this test now asserts the closure FIRST**:
-        the late batch goes in through the real writer and the oracle reports
-        NOTHING, because the stored columns are the derivation.  The hole is
-        then punched by hand -- the only way to reach it since C3-b, and the
-        shape data written before it still carries -- and the oracle's answer
-        is what it always was.  Two claims, one fixture, and neither can pass
-        while the other is broken.
-        """
-        with app.app_context():
-            user_id = bare_user["user"].id
-            first = pay_period_write.record_paydays(
-                user_id=user_id,
-                first_payday=date(2026, 1, 2),
-                num_periods=2,
-                cadence_days=14,
+            assert [period.start_date for period in derived] == [
+                date(2026, 1, 2) + timedelta(days=14 * step)
+                for step in range(6)
+            ]
+            assert [period.period_index for period in derived] == list(range(6))
+            # Every end but the last is its successor's payday minus a day.
+            for earlier, later in zip(derived, derived[1:]):
+                assert earlier.end_date == later.start_date - timedelta(days=1)
+            assert derived[-1].end_date == derived[-1].start_date + timedelta(
+                days=13,
             )
-            # The missing payday would have been 2026-01-30; this batch opens
-            # a fortnight after THAT, 15 days past the payday before it.
-            pay_period_write.record_paydays(
-                user_id=user_id,
-                first_payday=date(2026, 2, 13),
-                num_periods=2,
-                cadence_days=14,
-            )
-            db.session.commit()
-
-            # Half one: the writer left NO hole.  The second period's stored
-            # end runs to the day before the late payday.
-            assert compare(
-                user_id=user_id,
-                periods=pay_period_service.get_all_periods(user_id),
-                cadence_days=14,
-                cadence_is_stored=True,
-            ).disagreements == ()
-            assert first[1].end_date == date(2026, 2, 12)
-
-            # Half two: hand the oracle the pre-C3-b shape and it reports the
-            # row before the hole, exactly as it did when the writer made one.
-            open_calendar_hole(db.session, first[1], date(2026, 1, 29))
-            db.session.commit()
-
-            comparison = compare(
-                user_id=user_id,
-                periods=pay_period_service.get_all_periods(user_id),
-                cadence_days=14,
-                cadence_is_stored=True,
-            )
-            disagreements = comparison.disagreements
-            assert len(disagreements) == 1
-            moved = disagreements[0]
-            assert moved.start_date == date(2026, 1, 16)
-            assert moved.index_agrees is True
-            assert moved.stored_end == date(2026, 1, 29)
-            # lead(start_date) - 1 = 2026-02-13 - 1 day.
-            assert moved.derived_end == date(2026, 2, 12)
-
-
-# ---------------------------------------------------------------------------
-# TestThePaydayControl
-# ---------------------------------------------------------------------------
-
-
-class TestThePaydayControl:
-    """The first control, without which byte-identity proves nothing.
-
-    Plan step C1: "it must be paired with a perturbation control (move one
-    payday and require the harness to report the shifted indices and ends), or
-    the equality proves only that the harness reads what it reads."
-    """
-
-    def test_the_unperturbed_schedule_reports_no_disagreement(self):
-        """The control's baseline: five ordinary fortnights agree."""
-        rows = build_stored_rows(shape("biweekly_five"), user_id=1)
-        assert compare(1, rows, 14, cadence_is_stored=True).disagreements == ()
-
-    def test_moving_one_payday_reports_the_shifted_indices_and_ends(self):
-        """One relocated payday, and every row it moved is named.
-
-        The payday at position 2 (2026-01-30) is relocated to 2026-01-01, one
-        day before the earliest.  Derived afresh, the payday order is
-        2026-01-01, 01-02, 01-16, 02-13, 02-27, so:
-
-        * 2026-01-01 holds stored ordinal 2 and derives 0, and its stored end
-          2026-02-12 collapses to 2026-01-01 (the next payday is the day
-          after);
-        * 2026-01-02 holds stored ordinal 0 and derives 1, its end unchanged;
-        * 2026-01-16 holds stored ordinal 1 and derives 2, and its end runs on
-          from 2026-01-29 to 2026-02-12 because the payday that used to close
-          it has left;
-        * the last two rows are untouched -- the relocation reordered only the
-          head, which is itself worth pinning: a control that moved everything
-          would not show that the comparator is row-precise.
-        """
-        perturbation = perturb(build_stored_rows(shape("biweekly_five"), 1))
-        assert perturbation is not None
-        assert perturbation.moved_from == date(2026, 1, 30)
-        assert perturbation.moved_to == date(2026, 1, 1)
-
-        comparison = compare(
-            1, perturbation.rows, 14, cadence_is_stored=True,
-        )
-        assert {
-            (row.start_date, row.stored_index, row.derived_index)
-            for row in comparison.disagreements
-            if not row.index_agrees
-        } == {
-            (date(2026, 1, 1), 2, 0),
-            (date(2026, 1, 2), 0, 1),
-            (date(2026, 1, 16), 1, 2),
-        }
-        assert {
-            (row.start_date, row.stored_end, row.derived_end)
-            for row in comparison.disagreements
-            if not row.end_agrees
-        } == {
-            (date(2026, 1, 1), date(2026, 2, 12), date(2026, 1, 1)),
-            (date(2026, 1, 16), date(2026, 1, 29), date(2026, 2, 12)),
-        }
-
-    def test_the_relocation_never_duplicates_an_existing_payday(self):
-        """The moved payday lands strictly before every other, at any cadence.
-
-        A one-day nudge would collide on a one-day cadence and the derivation
-        would refuse the whole control rather than report it.
-        """
-        rows = build_stored_rows(shape("one_day_periods"), user_id=1)
-        perturbation = perturb(rows)
-        assert perturbation is not None
-        moved = [row.start_date for row in perturbation.rows]
-        assert len(set(moved)) == len(moved)
-        assert perturbation.moved_to < min(row.start_date for row in rows)
-
-    def test_a_single_payday_schedule_cannot_be_perturbed(self):
-        """Fewer than two paydays leaves no order to disturb.
-
-        ``None`` rather than a no-op copy, so a harness reports that the
-        control was INAPPLICABLE instead of that it failed -- every fresh
-        signup is a one-payday user, so scoring that as a failure meant any
-        database holding a new account could never go green.
-        """
-        assert perturb(build_stored_rows(shape("single_payday"), 1)) is None
-        assert perturb([]) is None
-
-    def test_the_payday_control_leaves_the_last_projected_end_alone(self):
-        """Why a second control is needed, stated as an assertion.
-
-        The relocation never touches the last payday and never touches the
-        cadence, so the projected end is identical before and after.  A
-        derivation that computed EVERY end from the cadence would therefore
-        pass this control -- which is what :func:`cadence_control` exists for.
-        """
-        rows = build_stored_rows(shape("biweekly_five"), user_id=1)
-        perturbation = perturb(rows)
-        assert perturbation is not None
-        before = derive_periods(identified_paydays(rows), 14)
-        after = derive_periods(identified_paydays(perturbation.rows), 14)
-        assert before[-1].end_date == after[-1].end_date == date(2026, 3, 12)
 
 
 # ---------------------------------------------------------------------------
@@ -817,12 +734,13 @@ class TestThePaydayControl:
 
 
 class TestTheCadenceControl:
-    """The second control: the one that separates the two end branches.
+    """The control that separates the two end branches.
 
-    On production's regular schedule ``lead(start) - 1`` and
-    ``start + cadence - 1`` agree on all 61 rows, so byte-identity cannot say
-    which branch produced an end.  Re-deriving at a neighbouring cadence
-    separates them.
+    On a regular schedule ``lead(start) - 1`` and ``start + cadence - 1`` agree
+    on every row, so a run over one cannot say which branch produced an end --
+    production's 63 paydays are exactly that shape.  Re-deriving at a
+    neighbouring cadence separates them: exactly one end may move, and by
+    exactly one day.
     """
 
     def test_exactly_one_end_moves_by_exactly_one_day(self):
@@ -859,8 +777,9 @@ class TestTheCadenceControl:
     def test_it_fires_on_a_single_payday_schedule(self):
         """One period, whose only end is the projected one.
 
-        The payday control cannot run here; this one can, so a brand-new
-        account is not a wholly unmeasured user.
+        Every fresh signup is a one-payday owner (``auth_service.register_user``
+        writes one bootstrap payday), so this is the common shape rather than a
+        corner.
         """
         control = cadence_control([(1, date(2026, 3, 26))], 14)
         assert control.moved == ((date(2026, 3, 26), 1),)
@@ -868,144 +787,460 @@ class TestTheCadenceControl:
 
 
 # ---------------------------------------------------------------------------
-# TestTheOraclesOwnVerdict
+# The boundary arithmetic (plan step C14-c)
 # ---------------------------------------------------------------------------
 
+#: The production owner's real horizon and rhythm, measured on
+#: ``shekel-prod-db`` and ``shekel-dev-db`` 2026-09-05: 63 paydays, every one a
+#: Thursday, the last 2028-08-10, cadence 14.  The displacement cases below run
+#: off THIS anchor rather than a convenient one.
+_HORIZON = date(2028, 8, 10)
 
-class TestTheOraclesOwnVerdict:
-    """The pass/fail rule, which decides whether a real-data run counts."""
+#: The first payday past ``_HORIZON`` that either convention displaces, and it
+#: is the SAME nominal day for both: 2028-08-10 + 60 * 14 = 2030-11-28, which
+#: is the fourth Thursday of November 2030 and so Thanksgiving.  ``prior`` pays
+#: it 2030-11-27 (Wednesday), ``next`` pays it 2030-11-29 (Friday).
+_THANKSGIVING_STEPS = 60
+_THANKSGIVING_NOMINAL = date(2030, 11, 28)
 
-    @staticmethod
-    def _rows(label="biweekly_five"):
-        """Return a shape's stored rows for user 1.
 
-        Args:
-            label: The :data:`IRREGULAR_SHAPES` label to build.
+def _saved(anchor: date, cadence_days: int) -> "tuple[DerivedPeriod, ...]":
+    """Return a one-period saved calendar ending on *anchor*.
 
-        Returns:
-            The unsaved rows.
+    Args:
+        anchor: The last recorded payday.
+        cadence_days: Days between paydays.
+
+    Returns:
+        The derived periods, as ``project_period_after`` takes them.
+    """
+    return derive_periods([(1, anchor)], cadence_days)
+
+
+def _displace_under(monkeypatch, shift: BusinessDayShiftEnum) -> None:
+    """Give the package plan step ``C14-e``'s producer for one test.
+
+    **The SIMULATION the probe is graded against, and why it is a substitution
+    rather than a fixture.**  With the convention still at ``none``,
+    ``projected_payday`` answers the nominal rhythm, every payday sits exactly
+    on the arithmetic grid and the neighbouring candidates
+    ``project_period_after`` offers can never win -- so a test driving the real
+    function would grade the estimate and nothing else.  What ``C14-e`` changes
+    is that ONE body: the nominal day displaced onto a business day under the
+    owner's convention.  Substituting exactly that, and then calling the REAL
+    ``project_period_after`` and ``derive_periods``, grades the window, the end
+    rule and the selector against the mechanism itself -- where hand-building
+    candidates in the test would grade the selector alone and pass against a
+    production window narrowed back to one candidate.
+
+    It replaces a COLLABORATOR, never the code under test:
+    :func:`~app.utils.business_days.shift_to_business_day` is the shipped
+    displacement from plan step ``C14-a``, not a stand-in for one.
+
+    Args:
+        monkeypatch: pytest's patcher.
+        shift: The convention to displace under.
+    """
+    monkeypatch.setattr(
+        _derive,
+        "projected_payday",
+        lambda anchor, cadence_days, steps: shift_to_business_day(
+            anchor + timedelta(days=steps * cadence_days), shift,
+        ),
+    )
+
+
+class TestTheProjectedPaydayHasOneProducer:
+    """``projected_payday`` is the rhythm's forward step, written once.
+
+    Plan step ``C14-c``.  The expression was at three sites -- the last saved
+    period's end in :func:`derive_periods`, and the opening and closing paydays
+    in ``project_period_after`` -- which is rule 14's tell: one value with
+    three homes that agree only because nothing can move a payday yet.
+    """
+
+    def test_it_steps_whole_cadences_from_the_anchor(self):
+        """Hand-computed: 2028-08-10 at a 14-day cadence."""
+        assert projected_payday(_HORIZON, 14, 0) == date(2028, 8, 10)
+        assert projected_payday(_HORIZON, 14, 1) == date(2028, 8, 24)
+        assert projected_payday(_HORIZON, 14, 2) == date(2028, 9, 7)
+
+    def test_it_reads_the_rhythm_backwards_too(self):
+        """A negative step is the rhythm below the anchor, and it is REACHED.
+
+        Not a courtesy: ``span_containing`` asks the projection about a day
+        inside an unsaved INTERIOR candidate -- its materialisation filter
+        skips that candidate -- and ``cadence_steps_to`` answers such a day
+        with a negative count, which arrives here.  *An earlier form of this
+        docstring justified the direction by ``_rhythm``, which open-codes the
+        same arithmetic and does NOT call this; an adversarial review of
+        ``C14-c`` struck that, and ``projected_payday`` now names the
+        duplication rather than claiming a monopoly it does not have.*
         """
-        return build_stored_rows(shape(label), user_id=1)
+        assert projected_payday(_HORIZON, 14, -1) == date(2028, 7, 27)
 
-    def _verdict_for(self, rows, cadence_days=14, cadence_is_stored=True):
-        """Run both controls and the verdict over *rows*.
+    def test_it_does_not_COMPOUND(self):
+        """Every step is measured from ONE anchor, never from the last answer.
 
-        Args:
-            rows: The owner's stored pay periods.
-            cadence_days: The cadence to drive with.
-            cadence_is_stored: Whether it came from a schedule row.
-
-        Returns:
-            The ``(passed, reasons)`` pair.
+        The hazard :func:`shift_to_business_day`'s own docstring hands to the
+        caller: feeding a displaced answer back in as the next anchor moves
+        every later payday permanently.  Asserted as the property that makes it
+        structural -- ``n`` steps of one cadence equals one step of ``n``
+        cadences -- so plan step ``C14-e`` can displace the RESULT here without
+        the progression drifting.
         """
-        comparison = compare(1, rows, cadence_days, cadence_is_stored)
-        return verdict(
-            comparison,
-            perturb(rows),
-            cadence_control(identified_paydays(rows), cadence_days),
+        assert projected_payday(_HORIZON, 14, 60) == _THANKSGIVING_NOMINAL
+        assert projected_payday(_HORIZON, 14, 60) == projected_payday(
+            projected_payday(_HORIZON, 14, 59), 14, 1,
         )
 
-    def test_a_clean_schedule_passes_with_no_reasons(self):
-        """The ordinary case: both controls fire and nothing disagrees."""
-        assert self._verdict_for(self._rows()) == (True, ())
+    @pytest.mark.parametrize(
+        "shift", [BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT],
+        ids=lambda s: s.name.lower(),
+    )
+    def test_the_last_derived_end_FOLLOWS_the_producer(self, monkeypatch, shift):
+        """The ONE end rule, over every shape in the catalogue, DISPLACED.
 
-    def test_a_real_disagreement_fails(self):
-        """A hole is a disagreement the verdict must not absorb."""
-        passed, reasons = self._verdict_for(self._rows("hole"))
-        assert passed is False
-        assert any("disagree with the stored columns" in r for r in reasons)
+        *The first form of this test compared ``derive_periods``' last end
+        against ``projected_payday`` on the nominal path -- an equality whose
+        two sides share ONE producer, which an adversarial review of ``C14-c``
+        showed grades nothing: reverting the last end to the deleted
+        ``start + cadence - 1`` left it PASSING, because on the nominal grid
+        the two agree.*  Displacing the producer separates them, so this now
+        asserts what it always claimed to: the last end follows the payday the
+        producer answers, whatever that payday is.
 
-    def test_an_inferred_cadence_disqualifies_one_ROW_not_the_user(self):
-        """Plan finding P8, scoped correctly.
-
-        Only the LAST row's end is circular under an inferred cadence -- every
-        earlier end derives from the next payday and never reads it.  The first
-        cut of this rule disqualified the whole user, so a schedule-less owner
-        with a genuine hole exited 0.  Here the hole still fails.
+        The catalogue's own hand-computed ``expected`` values are the
+        independent oracle for the nominal case
+        (``test_the_shape_derives_its_hand_computed_values``); this is the
+        oracle for the moved one.
         """
-        passed, reasons = self._verdict_for(
-            self._rows("hole"), cadence_is_stored=False,
+        nominal = {
+            irregular.label: derive_periods(
+                irregular.paydays, irregular.cadence_days,
+            )
+            for irregular in IRREGULAR_SHAPES
+        }
+        _displace_under(monkeypatch, shift)
+        moved = 0
+
+        for irregular in IRREGULAR_SHAPES:
+            derived = derive_periods(
+                irregular.paydays, irregular.cadence_days,
+            )
+            if not derived:
+                continue
+            last = derived[-1]
+            assert last.end_date == shift_to_business_day(
+                last.start_date + timedelta(days=irregular.cadence_days), shift,
+            ) - timedelta(days=1), irregular.label
+            # Every OTHER end is dictated by a recorded payday, so displacing
+            # the producer must not touch one.
+            assert derived[:-1] == nominal[irregular.label][:-1], irregular.label
+            moved += last.end_date != nominal[irregular.label][-1].end_date
+
+        assert moved, (
+            f"no shape's last end moved under {shift.name}, so this graded the "
+            f"nominal path a second time"
         )
-        assert passed is False
-        assert any("disagree with the stored columns" in r for r in reasons)
 
-    def test_an_inferred_cadence_forgives_only_the_last_rows_end(self):
-        """The row it does forgive, shown to be forgiven.
 
-        ``stored_cadence_no_longer_matches`` disagrees on exactly the last
-        row's end.  With the cadence STORED that is a real finding; with it
-        INFERRED the comparison is circular and must not be scored.
+class TestTheCoveringProbeToleratesAMovedBoundary:
+    """The probe, driven through the REAL producer under C14-e's substitution.
+
+    Ruling **R-PC57**: ``C14-c`` corrects the boundary arithmetic and the
+    containment probe tolerates a moved boundary.  With the convention at
+    ``none`` the arithmetic estimate is right on every call, so each
+    displacement case swaps in the producer ``C14-e`` will ship
+    (:func:`_displace_under`) and then calls the shipped
+    :func:`~app.services.pay_calendar._derive.project_period_after` -- which
+    grades the candidate WINDOW and the end rule, not only the selector.
+    """
+
+    def test_the_estimate_wins_when_no_payday_moved(self):
+        """The ordinary call, and the one every call is today.
+
+        No substitution: this is the nominal path.  2028-08-10 + 2 * 14 =
+        2028-09-07, a Thursday, so the estimate for 2028-09-10 is step 2 and
+        step 2 is the answer, running to the day before 2028-09-21.
         """
-        rows = self._rows("stored_cadence_no_longer_matches")
-        stored = compare(1, rows, 7, cadence_is_stored=True)
-        inferred = compare(1, rows, 7, cadence_is_stored=False)
-        assert len(stored.provable_disagreements) == 1
-        assert inferred.provable_disagreements == ()
+        found = _derive.project_period_after(
+            _saved(_HORIZON, 14), 14, date(2028, 9, 10),
+        )
 
-    def test_an_inapplicable_payday_control_is_not_a_failure(self):
-        """A one-payday owner passes on their own merits.
+        assert found.start_date == date(2028, 9, 7)
+        assert found.end_date == date(2028, 9, 20)
+        assert found.period_index == 2
+        assert found.period_id is None
+        assert found.end_is_projected is True
 
-        The cadence control still runs for them, so they are measured; it is
-        the CALLER's job to refuse a whole database in which no payday control
-        was ever applicable, and the manual harness does that.
+    def test_a_payday_paid_EARLY_is_found_at_the_LATER_neighbour(
+        self, monkeypatch,
+    ):
+        """``prior`` pulls Thanksgiving 2030 back, and the division misses low.
+
+        Hand-computed.  2028-08-10 + 60 * 14 = 2030-11-28, the fourth Thursday
+        of November 2030 and so Thanksgiving; ``prior`` pays it 2030-11-27.
+        Asked to place 2030-11-27, the division answers
+        ``(2030-11-27 - 2028-08-10) / 14 = 839 / 14 = 59`` -- one period SHORT,
+        because the paycheck arrived a day before the nominal grid allows.  The
+        LATER neighbour is the one that covers it, and its span runs to the day
+        before the next payday, 2030-12-12.
         """
-        assert self._verdict_for(self._rows("single_payday")) == (True, ())
+        _displace_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
+        day = date(2030, 11, 27)
+
+        found = _derive.project_period_after(_saved(_HORIZON, 14), 14, day)
+
+        assert (day - _HORIZON).days // 14 == _THANKSGIVING_STEPS - 1
+        assert found.period_index == _THANKSGIVING_STEPS
+        assert found.start_date == day
+        assert found.end_date == date(2030, 12, 11)
+
+    def test_a_payday_paid_LATE_is_found_at_the_EARLIER_neighbour(
+        self, monkeypatch,
+    ):
+        """``next`` pushes the same payday forward, and the division misses high.
+
+        The mirror of the case above, off the same anchor and the same nominal
+        day.  ``next`` pays Thanksgiving 2030-11-28 on 2030-11-29, so on
+        2030-11-28 the owner has NOT been paid yet: the division answers step
+        60, whose period has not opened, and the covering paycheck is still
+        step 59's -- which now runs 2030-11-14 to 2030-11-28 rather than
+        stopping at 2030-11-27.
+        """
+        _displace_under(monkeypatch, BusinessDayShiftEnum.NEXT)
+        day = _THANKSGIVING_NOMINAL
+
+        found = _derive.project_period_after(_saved(_HORIZON, 14), 14, day)
+
+        assert (day - _HORIZON).days // 14 == _THANKSGIVING_STEPS
+        assert found.period_index == _THANKSGIVING_STEPS - 1
+        assert found.start_date == date(2030, 11, 14)
+        assert found.end_date == day
+
+    def test_the_displaced_projection_TILES_the_calendar(self, monkeypatch):
+        """No day falls in two paychecks and none falls in none.
+
+        The property the deleted ``start + cadence - 1`` end breaks and this
+        step exists to restore, asserted over the whole displaced stretch
+        rather than argued.  Built the way ``_views.projected_paychecks``
+        builds it -- step to ``end_date + 1`` and ask again -- so the walk this
+        asserts about is the one the application takes, and handed to
+        :class:`~app.services.pay_calendar.PeriodWindow`, which refuses a hole
+        and an overlap.
+        """
+        for shift in (BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT):
+            _displace_under(monkeypatch, shift)
+            saved = _saved(_HORIZON, 14)
+            walked, opens_at = [], saved[-1].end_date + timedelta(days=1)
+            while len(walked) < 80:
+                period = _derive.project_period_after(saved, 14, opens_at)
+                walked.append(period)
+                opens_at = period.end_date + timedelta(days=1)
+
+            assert PeriodWindow(periods=tuple(walked)).periods == tuple(walked)
+            assert [p.period_index for p in walked] == list(range(1, 81))
+            assert any(
+                p.end_date - p.start_date != timedelta(days=13)
+                for p in walked
+            ), f"{shift.name} displaced nothing in 80 paychecks"
+
+    @pytest.mark.parametrize(
+        ("shift", "real_end", "damage"),
+        [
+            # ``prior`` pulls the 2030-11-28 payday back to 2030-11-27, so the
+            # deleted rule's end for the paycheck opening 2030-11-14 IS the day
+            # the next one arrives: two paychecks claim 2030-11-27.
+            (BusinessDayShiftEnum.PRIOR, date(2030, 11, 26), "overlap"),
+            # ``next`` pushes the same payday to 2030-11-29, so the deleted
+            # rule stops that paycheck a day EARLY and 2030-11-28 falls in no
+            # period -- the failure R-PC54's own worked example names.
+            (BusinessDayShiftEnum.NEXT, date(2030, 11, 28), "hole"),
+        ],
+        ids=["prior_double_covers", "next_leaves_a_hole"],
+    )
+    def test_the_OLD_end_rule_would_NOT_have_tiled(
+        self, monkeypatch, shift, real_end, damage,
+    ):
+        """The control, forced to fire in BOTH directions.
+
+        Without this the tiling test grades nothing -- it would pass just as
+        well against the rule the step removed, because wherever no payday
+        moves the two expressions agree on every row (the shape that made
+        ``C2-a``'s first ``P14`` test vacuous).  Parametrised because the
+        deleted rule fails ASYMMETRICALLY, and a control that saw one direction
+        would report the other as covered: on the production owner's own
+        anchor, ``prior`` makes the paycheck opening 2030-11-14 end on the day
+        the NEXT one arrives (2030-11-27 claimed twice), while ``next`` stops
+        it a day early and leaves 2030-11-28 in no period.  Both arms end at
+        ``PeriodWindow``, which refuses a hole and an overlap alike.
+        """
+        _displace_under(monkeypatch, shift)
+        saved = _saved(_HORIZON, 14)
+        opening = _derive.project_period_after(saved, 14, date(2030, 11, 14))
+        following = _derive.project_period_after(saved, 14, date(2030, 11, 30))
+        old_rule_end = opening.start_date + timedelta(days=13)
+
+        assert opening.start_date == date(2030, 11, 14)
+        assert opening.end_date == real_end
+        assert old_rule_end == date(2030, 11, 27)
+        assert (old_rule_end == following.start_date) is (damage == "overlap")
+        assert (
+            old_rule_end < following.start_date - timedelta(days=1)
+        ) is (damage == "hole")
+        with pytest.raises(PayCalendarError, match="unbroken span"):
+            PeriodWindow(periods=(
+                DerivedPeriod(
+                    period_id=None,
+                    period_index=opening.period_index,
+                    start_date=opening.start_date,
+                    end_date=old_rule_end,
+                    end_is_projected=True,
+                ),
+                following,
+            ))
+
+    def test_the_last_SAVED_end_follows_the_displaced_next_payday(
+        self, monkeypatch,
+    ):
+        """``derive_periods`` reads the same producer, so its last end moves too.
+
+        The other half of the end rule, and the half a projection test cannot
+        reach: the last RECORDED period has no successor row, so its end is the
+        projected payday's eve.  Under ``prior`` the payday after 2030-11-14
+        arrives 2030-11-27, so a calendar ending on 2030-11-14 runs to
+        2030-11-26 -- not to 2030-11-27, which the deleted expression answers.
+        """
+        _displace_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
+
+        derived = derive_periods([(1, date(2030, 11, 14))], 14)
+
+        assert derived[-1].end_is_projected is True
+        assert derived[-1].end_date == date(2030, 11, 26)
+        assert derived[-1].end_date != date(2030, 11, 14) + timedelta(days=13)
+
+    def test_it_refuses_when_no_candidate_covers_the_day(self):
+        """A day outside every candidate is refused, never answered wrongly.
+
+        The backstop ruling **R-PC59** reports rather than closes: a write-time
+        refusal cannot see a stored row a later holiday-set change made
+        illegal.  Answering with a period that does not contain the day it was
+        asked about is the alternative, and it would place money silently.
+        """
+        candidates = _saved(_HORIZON, 14)
+
+        with pytest.raises(PayCalendarError, match="no projected pay period"):
+            covering_projection(candidates, date(2029, 1, 1))
+
+
+class TestOneNeighbourEitherSideIsEnough:
+    """The theorem the three-candidate window rests on, swept exhaustively.
+
+    A displacement is bounded by the longest run of consecutive closed days,
+    and :func:`~app.utils.business_days.shortest_collision_free_cadence` is
+    that run PLUS ONE -- the floor a displacing convention is held to
+    (**R-PC59**).  So no payday moves by a whole cadence, which puts the true
+    covering index within one of the arithmetic estimate.  Swept rather than
+    argued, because the window is the whole reason the probe stays O(1).
+    """
+
+    #: Anchors spanning a leap year, a Monday, a Saturday, and both sides of
+    #: the Juneteenth addition ``business_days.JUNETEENTH_FIRST_YEAR`` records.
+    #: A NON-business anchor is deliberate: a recorded payday need not be one
+    #: (**R-PC47**), and the projection anchors on a recorded day.
+    _ANCHORS = (
+        date(2020, 1, 2), date(2024, 2, 29), date(2028, 8, 10),
+        date(2026, 5, 16),
+    )
+
+    def test_the_probe_finds_a_covering_period_at_every_cadence(
+        self, monkeypatch,
+    ):
+        """The window is wide enough, asserted against the SHIPPED function.
+
+        Every cadence from the collision floor to a year, both displacing
+        conventions, four anchors, and steps either side of the anchor -- the
+        negative half included, because ``span_containing`` reaches the
+        projection there.  The floor is READ from
+        :func:`~app.utils.business_days.shortest_collision_free_cadence` rather
+        than written down: a literal would be a second home for it, and the
+        stale copy would fail SILENTLY, in the direction that stops sweeping
+        the tightest cadences.
+
+        *A first form of this swept a LOCAL re-implementation of the estimate
+        and the true index, so it graded the theorem and not the code, while
+        its docstring claimed "every cadence from the floor up" over eight
+        sampled ones.  An adversarial review of ``C14-c`` caught both.*  It now
+        calls :func:`~app.services.pay_calendar._derive.project_period_after`
+        under the producer ``C14-e`` will ship, and asserts three things of the
+        answer: it COVERS the day, its span is the two projected paydays either
+        side, and the neighbour arms were actually exercised in both
+        directions -- a sweep that never displaced anything would pass against
+        a probe offering no neighbours at all.
+        """
+        floor = shortest_collision_free_cadence()
+        cadences = (*range(floor, 46), 60, 90, 180, 364, 365)
+        seen_low = seen_high = 0
+
+        for shift in (BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT):
+            _displace_under(monkeypatch, shift)
+            payday = (
+                lambda anchor, cadence, steps: shift_to_business_day(
+                    anchor + timedelta(days=steps * cadence), shift,
+                )
+            )
+            for anchor in self._ANCHORS:
+                for cadence in cadences:
+                    saved = _saved(anchor, cadence)
+                    for steps in range(-3, 8):
+                        opens = payday(anchor, cadence, steps)
+                        closes = payday(anchor, cadence, steps + 1)
+                        for day in (opens, opens + (closes - opens) // 2,
+                                    closes - timedelta(days=1)):
+                            found = _derive.project_period_after(
+                                saved, cadence, day,
+                            )
+                            where = (shift, anchor, cadence, steps, day)
+                            assert found.covers(day), where
+                            assert found.start_date == opens, where
+                            assert found.end_date == closes - timedelta(
+                                days=1,
+                            ), where
+                            # NOT asserted: ``abs(period_index - estimate) <=
+                            # 1``.  ``project_period_after`` only ever offers
+                            # those three, so that comparison is true by
+                            # construction and would grade nothing.  What the
+                            # window is graded by is ``covers`` above -- a
+                            # window too narrow makes the answer a REFUSAL, not
+                            # a far-off index.  The counters below are the
+                            # separate question of whether the arms ran at all.
+                            estimate = (day - anchor).days // cadence
+                            seen_low += found.period_index == estimate + 1
+                            seen_high += found.period_index == estimate - 1
+
+        assert seen_low > 0, "the sweep never saw a payday paid EARLY"
+        assert seen_high > 0, "the sweep never saw a payday paid LATE"
 
 
 # ---------------------------------------------------------------------------
-# TestTheComparatorRefusesWhatItCannotMeasure
+# TestTheShapeCatalogueRefusesAnUnknownLabel
 # ---------------------------------------------------------------------------
 
 
-class TestTheComparatorRefusesWhatItCannotMeasure:
-    """The oracle's own guards -- an instrument that lies is worse than none."""
+class TestTheShapeCatalogueRefusesAnUnknownLabel:
+    """An instrument that lies is worse than none.
 
-    def test_two_owners_rows_in_one_list_are_refused(self):
-        """A merged payday set derives a calendar belonging to neither owner.
-
-        Production has exactly one owner with paydays, so a clone run cannot
-        surface this mistake; the guard is the only thing that can.
-        """
-        rows = build_stored_rows(shape("biweekly_five"), user_id=1)
-        rows[2].user_id = 2
-        with pytest.raises(ValueError, match="belonging to another owner"):
-            compare(1, rows, 14, cadence_is_stored=True)
-
-    def test_unsaved_rows_with_no_owner_are_accepted(self):
-        """An unsaved row carries no ``user_id`` and must not trip the guard."""
-        rows = build_stored_rows(shape("biweekly_five"), user_id=1)
-        for row in rows:
-            row.user_id = None
-        assert compare(1, rows, 14, cadence_is_stored=True).disagreements == ()
+    *This class held the COMPARATOR's guards -- two owners' rows merged into
+    one payday set, and an unsaved row carrying no owner -- until plan step
+    ``pay_calendar:C4-c`` deleted the comparator with the columns it compared.
+    It also held the oracle's verdict rule, which decided whether a run over a
+    production clone counted; there is no such run any more.  What survives is
+    the one guard that is about the shape CATALOGUE rather than about the
+    comparison.*
+    """
 
     def test_an_unknown_shape_label_raises_rather_than_skipping(self):
         """A renamed shape must not silently drop the test that used it."""
         with pytest.raises(KeyError, match="no IrregularShape labelled"):
             shape("no_such_shape")
-
-    def test_the_perturbed_rows_are_never_attached_to_a_session(
-        self, app, db, bare_user,
-    ):
-        """The control's copies must not reach the database it measures.
-
-        The manual harness runs this against a real clone, so an accidental
-        flush would write the perturbed calendar into it.
-        """
-        with app.app_context():
-            periods = pay_period_write.record_paydays(
-                user_id=bare_user["user"].id,
-                first_payday=date(2026, 1, 2),
-                num_periods=3,
-                cadence_days=14,
-            )
-            db.session.commit()
-
-            perturbation = perturb(periods)
-            assert perturbation is not None
-            assert not any(
-                row in db.session for row in perturbation.rows
-            )
-            db.session.flush()
-            assert pay_period_service.get_all_periods(
-                bare_user["user"].id,
-            )[0].start_date == date(2026, 1, 2)

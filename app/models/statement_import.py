@@ -161,17 +161,43 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
                         between the two is the overlap with what was already
                         known, and showing it is what makes idempotency
                         VISIBLE rather than merely true.
-        opening_balance / closing_balance -- the running balance before the
-                        first line and after the last, where the source carries
-                        one at all (NULLABLE for a source that does not).
+        stated_balance / stated_balance_on -- what the file's OWN header claims
+                        the account held, and the day it names.  A CLAIM, kept
+                        verbatim and never rewritten.  Both-or-neither,
+                        enforced by
+                        ``ck_statement_imports_stated_balance_paired``.
+        balance_effective_on -- the day that claimed figure is actually the
+                        balance FOR, solved from the file's own lines (plan
+                        step ``bank_import:X-f6e-1``, ruling **R-GF**).  NULL
+                        where the file's own lines cannot reach the day it
+                        claims, which a DATE-RANGE export always is.
+        balance_evidence_id -- how strongly that figure is HELD
+                        (``ref.statement_balance_evidence``): proved by the
+                        file's own chain, corroborated by other recorded
+                        statements, or confirmed by nothing.  It is the
+                        WEAKEST link in the chain behind the figure, so an
+                        anchor solved against an unconfirmed opening is itself
+                        unconfirmed.  See
+                        :class:`app.enums.StatementBalanceEvidenceEnum`.
 
-    **``closing_balance`` is derived from the line CHAIN, never from the file's
-    own balance header, and that is a measured trap rather than a preference.**
-    SECU's OFX reports ``LEDGERBAL`` as of the export instant, and on the
-    2026-08-16 export that figure (``$4,747.63``) was 2026-08-13's closing
-    balance while the same file listed two 2026-08-14 lines worth
-    ``-$1,006.72``.  An importer that had anchored a running balance on the
-    header would have been wrong by exactly the unposted tail, on every day.
+    **The stated day is NOT the day the figure is for, and that is measured
+    rather than defensive.**  SECU writes the balance as of the EXPORT INSTANT
+    and labels it with the export's own day.  On the developer's 2026-08-21
+    export the header reads ``Balance as of 08/21/2026,2501.310000`` while the
+    file's last line is 08-18 and ``2501.31`` is 08-18's closing; on the
+    2026-08-16 export it reads ``$4,747.63``, which is 2026-08-13's closing,
+    over a file listing two 2026-08-14 lines worth ``-$1,006.72``.  The claim
+    and the day it is FOR are therefore two facts, so the file's own words stay
+    in ``stated_balance_on`` and the solved day stands in
+    ``balance_effective_on`` beside it.
+
+    **``opening_balance`` and ``closing_balance`` were DROPPED at that step**,
+    and dropping them is the point rather than a tidy-up: ``closing`` is
+    ``opening + Sigma(lines)`` and ``opening`` is
+    ``stated - Sigma(lines up to the effective day)``, so both were derived
+    values stored beside their own source with nothing reconciling the three --
+    the root cause several of this project's arcs exist to remove.  What is
+    stored is the observation and how firmly it is held; every balance derives.
     """
 
     __tablename__ = "statement_imports"
@@ -202,6 +228,48 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
             "recorded_count >= 0 AND recorded_count <= line_count",
             name="ck_statement_imports_recorded_within_file",
         ),
+        # The file's CLAIM is one fact in two columns, and what the import
+        # made of it is a SECOND fact in two more.  A figure without its day
+        # asserts nothing about an account, a day without a figure asserts
+        # nothing at all, and a solved effective day without a basis is the
+        # inference finding **N-241** deleted one table over: a fact whose
+        # provenance a reader would have to guess from which other column
+        # happens to be populated.
+        db.CheckConstraint(
+            "(stated_balance IS NULL) = (stated_balance_on IS NULL)",
+            name="ck_statement_imports_stated_balance_paired",
+        ),
+        db.CheckConstraint(
+            "(balance_effective_on IS NULL) = (balance_evidence_id IS NULL)",
+            name="ck_statement_imports_balance_evidence_paired",
+        ),
+        # An anchor comes FROM a claim, so it cannot outlive one -- an
+        # implication rather than a biconditional, and the asymmetry is
+        # MEASURED.  A date-range export states the CURRENT balance rather
+        # than the range's closing: the developer's 2026-01-02..2026-03-31
+        # file, pulled 2026-08-23, states `$2,459.60` as of 08-23, which is
+        # 145 days past its last line and `$255.41` from the `$2,715.01` its
+        # own 139 lines imply.  Its claim is real and its anchor is
+        # undeterminable, so a claim with no anchor is the honest state.
+        db.CheckConstraint(
+            "balance_effective_on IS NULL OR stated_balance IS NOT NULL",
+            name="ck_statement_imports_anchor_needs_a_claim",
+        ),
+        # The solved day is one the FILE could have pinned, and both bounds are
+        # structural truths about the solve rather than tolerances.  It ranges
+        # over {the day before the first line} + {every day the file covers},
+        # so ``period_start - 1`` is its floor and ``period_end`` its ceiling;
+        # and a bank cannot state a balance for a day after the one it wrote on
+        # the header, so the claimed day is its other ceiling.  Measured on the
+        # developer's exports: 08-22 solves at 08-21 under a header dated
+        # 08-22, and 08-16 at 08-13 under one dated 08-16.
+        db.CheckConstraint(
+            "balance_effective_on IS NULL OR ("
+            "balance_effective_on >= period_start - 1 "
+            "AND balance_effective_on <= period_end "
+            "AND balance_effective_on <= stated_balance_on)",
+            name="ck_statement_imports_effective_day_within_file",
+        ),
         db.Index("idx_statement_imports_account", "account_id"),
         {"schema": "budget"},
     )
@@ -218,10 +286,23 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
     period_end = db.Column(db.Date, nullable=False)
     line_count = db.Column(db.Integer, nullable=False)
     recorded_count = db.Column(db.Integer, nullable=False)
-    opening_balance = db.Column(db.Numeric(12, 2))
-    closing_balance = db.Column(db.Numeric(12, 2))
+    # NULLABLE, because a source may state no balance at all -- and then this
+    # import determines no opening and the three columns below are NULL with
+    # it.  Every SECU export the developer holds states one.
+    stated_balance = db.Column(db.Numeric(12, 2))
+    stated_balance_on = db.Column(db.Date)
+    # The day :attr:`stated_balance` is the balance FOR, solved from the lines
+    # (plan step ``bank_import:X-f6e-1``).  NOT a copy of
+    # :attr:`stated_balance_on`: on the developer's own 2026-08-16 export the
+    # two are three days apart.
+    balance_effective_on = db.Column(db.Date)
+    balance_evidence_id = db.Column(
+        db.Integer,
+        db.ForeignKey("ref.statement_balance_evidence.id", ondelete="RESTRICT"),
+    )
 
     source = db.relationship("StatementSource", lazy="joined")
+    balance_evidence = db.relationship("StatementBalanceEvidence", lazy="joined")
     lines = db.relationship(
         "BankStatementLine", back_populates="statement_import",
         cascade="all, delete-orphan", passive_deletes=True,
@@ -272,11 +353,38 @@ class BankStatementLine(db.Model):
         amount       -- signed, positive INTO the account (see the module
                         docstring).
         description  -- what the bank called it, verbatim.
-        source_category -- the bank's OWN category string, kept as provenance
-                        and never read as logic.  It is the bank's opinion
-                        about a merchant, not a Shekel category, and treating
-                        it as one would be a reference value that no
-                        ``ref`` table governs.
+        merchant_id  -- the :class:`~app.models.merchant.Merchant` this line
+                        was with, or ``None`` where the source names none.
+                        **The one column here that a rule MATCHES on** (plan
+                        step ``bank_import:X-f6a-3d``): a
+                        :class:`~app.models.merchant_rule
+                        .MerchantRule` is keyed by the same row, so
+                        *lines from this merchant go in this budget line* is a
+                        fact the owner states once.  It held the bank's string
+                        itself until plan step ``bank_import:X-gd-1``, when the
+                        merchant became a row -- so the string lives once and
+                        the two tables agree by id rather than by comparing two
+                        independently-widened copies of it.  What the ADAPTER
+                        reads is still the source's own merchant FIELD rather
+                        than a token parsed out of :attr:`description` -- see
+                        below -- and ``statement_import._record`` is what turns
+                        that string into this row.
+        source_category -- the bank's OWN category string, kept as provenance.
+                        It is the bank's opinion about a merchant, not a Shekel
+                        category, and treating it as one would be a reference
+                        value that no ``ref`` table governs.  **It may never
+                        SUPPLY an answer, and since ruling R-GJ it may REQUIRE
+                        one** (plan step ``bank_import:X-ga``): a merchant a
+                        source files under a card-payment category has no
+                        create-a-purchase arm until the owner says where it
+                        goes -- whichever answer they give.  That is the whole
+                        of the exception, and it is narrow because the opinion
+                        is measurably wrong: SECU files the developer's Van
+                        Loan car payment under the same words as the Capital
+                        One card payments, 7 of the 22 lines carrying it.  The
+                        vocabulary is keyed by ADAPTER in
+                        ``statement_match._vocabulary``; nothing reads this
+                        column to decide a destination, a figure or a day.
         external_id  -- the source's own id for the line (OFX ``FITID``) where
                         it has one.  CORROBORATION, not identity -- see below.
         sequence_in_group -- the ordinal that completes the identity key.
@@ -285,13 +393,29 @@ class BankStatementLine(db.Model):
                         import VERIFY itself (see
                         ``statement_import.verify_running_balance``).
 
-    **A line's IDENTITY is ``(account_id, posted_on, amount,
+    **A line's stored IDENTITY is ``(account_id, posted_on, amount,
     sequence_in_group)``**, and the ordinal is what makes that key total.  Two
     genuinely distinct charges can share a day and an amount -- the same coffee
     twice -- and a key without the ordinal would reject the second as a
     duplicate, which is silent money loss on exactly the shape a duplicate
-    detector is supposed to protect.  The ordinal is assigned in the source's
-    own order within its group.
+    detector is supposed to protect.
+
+    **The ordinal is a SURROGATE this app mints, and no re-import compares
+    against it** (plan step ``bank_import:X-f6a-4``).  Three of the key's four
+    terms are facts the bank stated; this one is not, and the write door used
+    to compare an incoming line against whatever sat at its ordinal -- treating
+    an app-assigned number as though the bank had supplied it, which is a
+    derived value stored beside its source with nothing reconciling the two.
+    Measured against the shipped code 2026-08-20, that refused a whole file on
+    two events that were not restatements at all: two same-day same-amount
+    lines re-ordered between exports, and a genuinely NEW line the bank
+    INSERTED ahead of a recorded one.  A re-import now reconciles a
+    ``(posted_on, amount)`` GROUP as a set, pairing on the wording the bank
+    wrote (:func:`app.services.statement_import.pair_by_statement`), and mints
+    an ordinal only for a line it has decided is new
+    (:func:`app.services.statement_import.fresh_ordinals`).  What this key
+    still guarantees is that every recorded line has a distinct, stable
+    address, which is the whole of what a surrogate owes.
 
     **``external_id`` is corroboration rather than identity, and that is
     measured.**  Across two SECU exports twelve days apart the positional key
@@ -300,6 +424,27 @@ class BankStatementLine(db.Model):
     depending on it, while a source that HAS one still cannot write two lines
     claiming it (``uq_bank_statement_lines_external_id``).  One identity rule
     serves every adapter, including ``X-f6b``'s, instead of one rule per format.
+
+    **The merchant is a FACT the adapter states, not a token a reader parses,
+    and the NULL is the source saying it names none** (plan step
+    ``bank_import:X-f6a-3d``).  It was
+    ``statement_match._offers.merchant_of(description)``, read at render time,
+    and that was right for what it fed: a form's name box, where a wrong parse
+    costs a badly-named row.  Keying a RULE on it is a stronger claim than a
+    display default can carry, in one specific way -- that reader is TOTAL, so
+    a source with no merchant token falls back to the whole description, and
+    SECU's own OFX truncates 326 of its 361 descriptions to exactly 32
+    characters.  Every one of those would key one rule, which would then fire
+    on every merchant behind them.  A NULL keys nothing, so a source that
+    cannot name a merchant offers no rule rather than a wrong one -- the same
+    direction a missing fact has to fail in that :attr:`transaction_on` already
+    fails in.
+    **It is read from the source's own merchant FIELD** (for SECU's CSV, the
+    parenthesised trailing token of the Description CELL) rather than from
+    :attr:`description`, which is the ``Description | Memo`` join -- so a
+    user's own memo ending in parentheses cannot become the key a rule matches
+    on.  That bound is structural rather than guarded, exactly as
+    ``_secu_csv._stated_transaction_day``'s is.
 
     **There is deliberately no ``transaction_on <= posted_on`` CHECK.**  The
     obvious constraint is false on real data: 2 of 361 lines in the developer's
@@ -342,8 +487,13 @@ class BankStatementLine(db.Model):
         # This line's account IS its import's, guaranteed rather than
         # maintained -- the same construction
         # ``fk_transaction_entries_parent_account`` uses.  CASCADE so that
-        # deleting an account takes its imports and their lines with it; there
-        # is no door in ``app/`` that deletes an import on its own.
+        # deleting an account takes its imports and their lines with it -- and
+        # since plan step ``bank_import:X-f6a-4`` so that DELETING AN IMPORT
+        # takes the lines it first recorded, which is the mechanism its repair
+        # door rests on (``statement_import.delete_import``).  The comment here
+        # used to justify the cascade by "there is no door in ``app/`` that
+        # deletes an import on its own", which that step made false while
+        # leaving the cascade exactly as right.
         db.ForeignKeyConstraint(
             ["import_id", "account_id"],
             ["budget.statement_imports.id",
@@ -376,10 +526,34 @@ class BankStatementLine(db.Model):
             "OR running_balance < 'NaN'::numeric)",
             name="ck_bank_statement_lines_amount_real_nonzero",
         ),
+        # This line's merchant is one of THIS ACCOUNT's, structurally (plan
+        # step ``bank_import:X-gd-1``).  Composite rather than a bare
+        # ``merchant_id`` FK for the reason
+        # ``fk_bank_statement_lines_import_account`` is composite: otherwise
+        # "is this merchant on this account" is a reader's check that can be
+        # forgotten.  ``MATCH SIMPLE`` (PostgreSQL's default) is what lets it
+        # sit on a nullable column -- a line whose ``merchant_id`` is NULL
+        # satisfies it whatever ``account_id`` says, which is the source
+        # naming none.  The blank-name rule it replaces now lives once, on
+        # ``ck_merchants_name_not_blank``.
+        db.ForeignKeyConstraint(
+            ["merchant_id", "account_id"],
+            ["budget.merchants.id", "budget.merchants.account_id"],
+            name="fk_bank_statement_lines_merchant_account",
+        ),
         # The walk reads a whole account in posted-day order.
         db.Index(
             "idx_bank_statement_lines_account_day",
             "account_id", "posted_on",
+        ),
+        # The review screen groups an account's unexplained lines BY MERCHANT
+        # and resolves one rule per group (plan step ``bank_import:X-f6a-3d``,
+        # ``statement_match._rules``).  Partial, because a NULL merchant joins
+        # no rule and so is never looked up by this column.
+        db.Index(
+            "idx_bank_statement_lines_account_merchant",
+            "account_id", "merchant_id",
+            postgresql_where=db.text("merchant_id IS NOT NULL"),
         ),
         {"schema": "budget"},
     )
@@ -400,6 +574,12 @@ class BankStatementLine(db.Model):
     transaction_on = db.Column(db.Date)
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     description = db.Column(db.String(200), nullable=False)
+    # NULLABLE, and the NULL means "this source names no merchant" rather than
+    # "unknown" -- see the class docstring for why that direction is the safe
+    # one on the fact a rule matches against.  No direct single-column key:
+    # the merchant is reached through a composite that also holds the ACCOUNT
+    # equal, the same shape ``import_id`` above takes.
+    merchant_id = db.Column(db.Integer)
     source_category = db.Column(db.String(100))
     external_id = db.Column(db.String(64))
     # NO server default, deliberately.  The table is new and empty, so there
@@ -413,6 +593,39 @@ class BankStatementLine(db.Model):
         "StatementImport", back_populates="lines",
         foreign_keys=[import_id, account_id],
     )
+    # **Eager and VIEWONLY** (plan step ``bank_import:X-gd-1``).  Eager because
+    # every reader that has a line wants what its merchant is CALLED -- the
+    # review screen renders 91 of them at once, and a lazy load there is the
+    # N+1 finding **N-309** already paid for.  Viewonly because the writer sets
+    # ``merchant_id`` from a resolved map (``statement_import._record``), so
+    # nothing assigns through this and the two relationships sharing
+    # ``account_id`` cannot contend over persisting it.
+    #
+    # **A writer that sets ``merchant_id`` may not then read
+    # :attr:`merchant_name` on the same instance**, and that is not a rule
+    # about ``viewonly`` -- it is what a loaded many-to-one does in any
+    # session: assigning the FK column does not move it, so the stale name
+    # survives until the instance is expired.  It cost a real test failure on
+    # 2026-08-25, where the arm under test was correct and the assertion read
+    # the object rather than the row.  No writer in ``app/`` reads it: both
+    # writers are in ``statement_import._record``, which sets the column and
+    # returns counts.  The direction the seam runs in is the whole reason this
+    # is viewonly.
+    merchant = db.relationship(
+        "Merchant", foreign_keys=[merchant_id, account_id],
+        lazy="joined", viewonly=True,
+    )
+
+    @property
+    def merchant_name(self) -> "str | None":
+        """Return what the source CALLS this line's merchant, or ``None``.
+
+        The label half of the fact :attr:`merchant_id` is the key half of, so
+        a caller holding this row does not have to know that a merchant is a
+        row to print its name.  ``None`` exactly when :attr:`merchant_id` is,
+        which is the source naming none.
+        """
+        return self.merchant.name if self.merchant is not None else None
 
     def __repr__(self):
         return (

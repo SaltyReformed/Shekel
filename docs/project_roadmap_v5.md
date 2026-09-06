@@ -461,10 +461,10 @@ cockpit page (Section 7, Phase 6) is future UI work that runs through the same s
 
 **Status:** Planned; resumes after Section 8 (Import and Reconciliation), whose actuals feed every
 feature here. **Spec status:** the detailed v5.3 specification (data models, thresholds, UI copy)
-was written in April 2026, before the posting ledger and the UI overhaul, and had rotted in places
--- it targeted the removed dashboard mark-as-paid flow and recommended the Credit workflow Section 7
-deletes. It is superseded; the full text remains in git history (v5.3, commit bb879797). Write a
-fresh plan of record (the Section 7 pattern) before building.
+was written in April 2026, before the posting ledger and the UI overhaul, and had rotted in
+places -- it targeted the removed dashboard mark-as-paid flow and recommended the Credit workflow
+Section 7 deletes. It is superseded; the full text remains in git history (v5.3, commit bb879797).
+Write a fresh plan of record (the Section 7 pattern) before building.
 
 **Intent:** make projections smarter from the actuals the app accumulates, and catch bad data at the
 point of entry. The app's core value is projection accuracy; these features compound it.
@@ -485,7 +485,10 @@ point of entry. The app's core value is projection accuracy; these features comp
 
 **Kept as intent, unscheduled:** 3.3 expense inflation (per-template opt-in; 3.4 deduction inflation
 folds in here as a yearly open-enrollment prompt rather than an engine); 3.8 third paycheck
-suggestions (the calendar already detects the months; this adds the actionable card).
+suggestions (the calendar already detects the months; this adds the actionable card); a NAMED
+27-paycheck year (a biweekly owner gets one in some years, and once `pay_calendar:C14` makes the
+per-year count a derived fact the grid and the paycheck page can say so -- was ledger row
+`recurrence:F-5`, ruled a feature and not a defect 2026-09-03, `R-R54`).
 
 **Dropped:** 3.10 bill due-date optimization, demoted to Appendix B. Detection (the low-balance
 alert) and the action (the shipped period-move UI) already exist; only the recommender between them

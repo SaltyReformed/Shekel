@@ -18,10 +18,23 @@ The shared filter applied here, in one place, by every consumer:
 
   1. Skip if the template has no recurrence rule (one-off charge or
      orphaned reference -- no defined cadence to monthly-equivalent).
-  2. Skip if the rule's own CLOSING BOUND has already stopped it
+  2. Skip if anything that stops the definition has already stopped it
      (``recurrence.has_ended``) -- an expired recurring template is no
      longer a future obligation. This is the filter the audit found
-     missing from ``compute_committed_monthly``.
+     missing from ``compute_committed_monthly``.  **It reads the COMPOSED
+     closing since plan step R7d-e**: the bound the owner authored AND the
+     stop the destination derives, through the one door
+     (``recurring_definition.read_definition``).  Until then it read the
+     rule's own two columns, and for a loan payment those hold the
+     chokepoints' CACHE of the payoff (ruling **R-R56**) -- so a retired
+     loan's payment stayed in both totals until some chokepoint happened to
+     rewrite the column, and left on the day it did rather than on the day
+     the loan was finished -- and where the cache was EARLIER than the
+     payoff (ledger row **D35**'s shape) a LIVE payment left them early.
+     **MOVES MONEY** on both surfaces in both directions; nothing moves only
+     where the cached column agrees with the derived stop on whether the
+     payment has ended on the day asked, which is what both live loans do
+     on the dev database today.
   3. Skip if ``default_amount is None`` or ``default_amount == 0``
      -- nothing to contribute.
 
@@ -66,21 +79,29 @@ module's own first sentence says it should; how often a cadence FIRES is
 ``recurrence.Cadence.occurrences_per_year``, which is the recurrence package's
 to answer.
 
-All functions are pure: they accept ORM template instances (or any
-object exposing the same ``recurrence_rule`` / ``default_amount``
-attributes -- duck-typing supports the ``types.SimpleNamespace`` mock
-templates used in tests), ``as_of`` and the owner's pay cadence, and return
-Decimal results.  No Flask imports.
+**Both entry points take the READ PASS** (plan step R7d-e), the
+:class:`~app.services.balance_at.BalanceContext` the route built, because
+step 2 of the filter is a question about a definition's DESTINATION as well as
+its rule and only the pass can fold a loan's balance.  A pass carries the
+owner's schedule and the ``as_of`` the pass is read at, so the two cannot be
+handed in disagreeing -- which is the same reason every producer beside this
+one takes it.  Only a route builds one (developer ruling 2026-08-16); this
+module TAKES it.
+
+Every function here is a read: ORM template instances (or any object exposing
+the same ``recurrence_rule`` / ``default_amount`` attributes -- duck-typing
+supports the ``types.SimpleNamespace`` mock templates used in tests) and the
+pass in, Decimal results out.  No Flask imports.
 """
 
-from datetime import date
 from decimal import Decimal
 from typing import Iterable, Union
 
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.services.pay_calendar import PayCalendar
-from app.services.recurrence import cadence_of, has_ended
+from app.services.balance_at import BalanceContext
+from app.services.recurrence import RuleReading, cadence_of, has_ended
+from app.services.recurring_definition import read_definition
 from app.utils.money import MONTHS_PER_YEAR, round_money
 
 # Either ORM template class exposes ``recurrence_rule`` and
@@ -98,8 +119,10 @@ def template_rule(template: RecurringTemplate):
     The one accessor for "does this definition repeat", beside the
     ``RecurringTemplate`` type both readers duck-type over.  ``getattr`` rather
     than attribute access because the test fixtures build templates as
-    ``types.SimpleNamespace``; "does not repeat" is ``recurrence_rule_id IS
-    NULL`` on both ORM kinds since plan step R2e-3.
+    ``types.SimpleNamespace``; "does not repeat" is the ABSENCE of a
+    ``budget.recurrence_rules`` row naming the definition, on both ORM kinds
+    since plan step R2e-3 (which read as ``recurrence_rule_id IS NULL`` until
+    plan step R-F6 moved the owning FK onto the rule).
 
     Lives here rather than in ``recurring_view`` because this module owns the
     shared filter's step 1 and was already performing the same read inline --
@@ -115,16 +138,54 @@ def template_rule(template: RecurringTemplate):
     return getattr(template, "recurrence_rule", None)
 
 
-def template_monthly_or_none(
-    template: RecurringTemplate,
-    as_of: date,
-    calendar: PayCalendar,
-) -> Decimal | None:
-    """Return the monthly equivalent of one recurring template, or None.
+def _committed_amount(template: RecurringTemplate) -> Decimal | None:
+    """Return what *template* commits per occurrence, or ``None``.
 
-    Applies the shared filter (no rule -- which is how a definition says
-    it does not repeat -- expired, missing/zero amount).  The returned Decimal
-    is NOT quantized -- callers that aggregate first then round
+    Filter steps 1 and 3 -- the two that need neither a schedule nor a walk: a
+    definition that does not repeat commits nothing, and so does one with a
+    missing or zero amount.  Held apart from step 2 so both entry points can
+    ask them BEFORE the door is read: step 2 resolves the definition against
+    the owner's schedule, folds its destination and walks its occurrences,
+    which is real work to reach the same ``None`` a zero amount reaches for
+    free.  The three are independent skips, so their order is ours to choose,
+    and this order was plan step R7b-3's for the same reason.
+
+    Args:
+        template: A ``TransactionTemplate`` or ``TransferTemplate`` (or any
+            object exposing ``recurrence_rule`` and ``default_amount``).
+
+    Returns:
+        The committed amount as a ``Decimal``, or ``None`` when the definition
+        does not repeat or states no positive amount.
+    """
+    if template_rule(template) is None:
+        return None
+    amount = template.default_amount
+    if amount is None:
+        return None
+    amount = Decimal(str(amount))
+    if amount == 0:
+        return None
+    return amount
+
+
+def monthly_or_none(
+    template: RecurringTemplate, reading: RuleReading, ctx: BalanceContext,
+) -> Decimal | None:
+    """Return the monthly equivalent of a definition already READ, or ``None``.
+
+    The layer under :func:`template_monthly_or_none` for a caller that has
+    already read the definition through the composed door and holds the
+    reading: the Recurring surface reads every definition once for its stop
+    line and its next date, and its monthly column is a third question about
+    that same reading rather than a second resolution of the rule
+    (``CLAUDE.md`` rule 14, ONE WALK -- and the second resolution this deletes
+    is the one ``test_a_loan_payment_is_RESOLVED_exactly_once_per_build`` had
+    to scope itself around).
+
+    Applies the shared filter (no rule -- which is how a definition says it
+    does not repeat -- expired, missing/zero amount).  The returned Decimal is
+    NOT quantized -- callers that aggregate first then round
     (``committed_monthly``) need full precision; callers that display a per-row
     value round at the display boundary with ``round_money``.
 
@@ -135,60 +196,43 @@ def template_monthly_or_none(
     total correctly rather than falling to a ``None`` the caller drops.
 
     Args:
-        template: A ``TransactionTemplate`` or ``TransferTemplate``
-            ORM instance (or any object exposing ``recurrence_rule``
-            and ``default_amount``). The recurrence rule is read via
-            attribute access; loading is the caller's responsibility
-            (``joinedload(.recurrence_rule)`` in the production
-            routes).
-        as_of: Reference date used to evaluate the rule's closing bound. A
-            rule the bound has already stopped is treated as expired and
-            excluded. Callers pass ``date.today()`` for "as of now" semantics.
-        calendar: The owner's whole pay-period schedule.  It answers TWO
-            questions here and that is why it replaced the bare
-            :class:`~app.services.pay_calendar.PayCadence` at plan step
-            R7b-3: the cadence, off ``calendar.cadence``, which is all the
-            conversion needs -- and, for a COUNT-bounded rule, when that
-            count is spent, which depends on when the paychecks fall and so
-            cannot be answered from the cadence alone.  Resolved once per
-            request by the caller and threaded, never looked up per row.
+        template: A ``TransactionTemplate`` or ``TransferTemplate`` ORM
+            instance (or any object exposing ``recurrence_rule`` and
+            ``default_amount``).  The recurrence rule is read via attribute
+            access; loading is the caller's responsibility
+            (``joinedload(.recurrence_rule)`` in the production routes).
+        reading: *template* read through
+            :func:`app.services.recurring_definition.read_definition` against
+            *ctx* -- what its rule means, narrowed by what its destination
+            allows, and every occurrence that names.  The expired filter reads
+            the composed closing off it and judges it against the walk it
+            already holds.
+        ctx: The read pass.  Its ``as_of`` is the day the expired filter asks
+            about; its ``calendar()`` supplies the cadence the conversion
+            needs and the horizon the filter needs -- ONE schedule, so a
+            paycheck-space template's monthly equivalent is measured against
+            the same rhythm its stop was judged against.
 
     Returns:
-        The full-precision Decimal monthly equivalent, or ``None`` if
-        the template is filtered out by any of the shared-filter
-        rules. ``None`` means "do not include this template in any
-        monthly-equivalent total."
+        The full-precision Decimal monthly equivalent, or ``None`` if the
+        template is filtered out by any of the shared-filter rules.  ``None``
+        means "do not include this template in any monthly-equivalent total."
 
     Raises:
-        RecurrenceResolutionError: The rule names a pattern this application
+        RecurrenceResolutionError: The rule names a cadence this application
             does not model, so it has no derivable cadence.  A REFUSAL rather
-            than a skip since plan step R7a-2b: a rule the app cannot read is
-            a broken invariant, and dropping it silently understated every
-            total this module feeds while the Recurring surface 500'd on the
-            same row.  Since plan step R7b-3 a COUNT-bounded rule can also
-            raise it from the filter itself, which resolves such a rule against
-            *calendar* -- the same disposition, one step earlier.
-        RecurrenceGenerationError: For a count-bounded rule only, when the
-            resolved value names something the occurrence engine cannot walk
-            (``recurrence.has_ended``).
+            than a skip since plan step R7a-2b: a rule the app cannot read is a
+            broken invariant, and dropping it silently understated every total
+            this module feeds while the Recurring surface 500'd on the same
+            row.
     """
-    rule = template_rule(template)
-    if rule is None:
-        return None
-
-    # The AMOUNT guards run first, and the order matters since plan step
-    # R7b-3: step 2 resolves a COUNT-bounded rule against the owner's schedule
-    # and walks its occurrences, which is real work to reach the same ``None``
-    # a zero amount reaches for free.  The three are independent skips, so
-    # their order is ours to choose.
-    amount = template.default_amount
+    amount = _committed_amount(template)
     if amount is None:
         return None
-    amount = Decimal(str(amount))
-    if amount == 0:
-        return None
 
-    if has_ended(rule, calendar, on=as_of):
+    rule = template_rule(template)
+    calendar = ctx.calendar()
+    if has_ended(rule, reading, calendar, on=ctx.as_of):
         return None
 
     # ONE division, and the denominator is an exact integer: a monthly
@@ -205,59 +249,99 @@ def template_monthly_or_none(
     )
 
 
+def template_monthly_or_none(
+    template: RecurringTemplate, ctx: BalanceContext,
+) -> Decimal | None:
+    """Return the monthly equivalent of one recurring template, or ``None``.
+
+    :func:`monthly_or_none` for a caller that holds the template and the pass
+    but has not read the definition: this reads it through the composed door
+    (:func:`app.services.recurring_definition.read_definition`) and hands the
+    reading down.  The ``/savings`` emergency-fund floor and the per-goal
+    contribution floors take this entry; the Recurring surface, which has
+    already read every definition once, takes the one below it.
+
+    The two schedule-free skips are asked FIRST, here as well as there, so a
+    definition that cannot contribute costs no door read.
+
+    Args:
+        template: A ``TransactionTemplate`` or ``TransferTemplate`` ORM
+            instance, or any object exposing ``recurrence_rule``,
+            ``default_amount`` and ``to_account_id`` -- the door's own
+            duck-typed contract (:data:`~app.services.recurrence.
+            RecurrenceOwner`).  **Must belong to ``ctx.user_id``**: the caller
+            owns the ownership check, as every seam entry this reaches states.
+        ctx: The read pass.  See :func:`monthly_or_none`.
+
+    Returns:
+        See :func:`monthly_or_none`.
+
+    Raises:
+        RecurrenceResolutionError: See :func:`monthly_or_none`; also raised by
+            the door for a rule paired with another owner's pass.
+        RecurrenceGenerationError: The resolved value names something the
+            occurrence engine cannot walk -- a business-day shift, until plan
+            step R8-d gives it a walk.
+        BaselineMissingError: The definition pays into a configured loan and
+            *ctx* has no baseline scenario (ruling **R-R30**), from the seam's
+            own ``require_scenario``: the loan's stop is a fold over its plan,
+            and a producer that needs a scenario REFUSES rather than answering
+            a bound nothing derived.  A definition with no loan behind it
+            still resolves for such an owner.
+    """
+    if _committed_amount(template) is None:
+        return None
+    return monthly_or_none(template, read_definition(template, ctx), ctx)
+
+
 def committed_monthly(
-    templates: Iterable[RecurringTemplate],
-    as_of: date,
-    calendar: PayCalendar,
+    templates: Iterable[RecurringTemplate], ctx: BalanceContext,
 ) -> Decimal:
     """Sum monthly equivalents across a set of recurring templates.
 
-    Routes every template through ``template_monthly_or_none``, which
+    Routes every template through :func:`template_monthly_or_none`, which
     applies the shared filter (no rule, expired, missing/zero amount).
-    Templates returning ``None`` contribute zero to
-    the total; only non-None Decimals are summed. The final result is
-    rounded once at the boundary with ``round_money`` (ROUND_HALF_UP
-    via ``app.utils.money``) -- intermediate sums stay at full
-    Decimal precision so penny-level drift cannot accumulate.
+    Templates returning ``None`` contribute zero to the total; only non-None
+    Decimals are summed.  The final result is rounded once at the boundary with
+    ``round_money`` (ROUND_HALF_UP via ``app.utils.money``) -- intermediate
+    sums stay at full Decimal precision so penny-level drift cannot accumulate.
 
-    This is the single canonical aggregator behind both the
-    ``/obligations`` page totals and the ``/savings`` emergency-fund
-    baseline + per-goal contribution-floor figures. Per E-24 /
-    HIGH-05, every consumer must call this function rather than
+    This is the single canonical aggregator behind both the Recurring
+    surface's totals (the retired ``/obligations`` page's kernel) and the
+    ``/savings`` emergency-fund baseline + per-goal contribution-floor figures.
+    Per E-24 / HIGH-05, every consumer must call this function rather than
     inline its own filter+sum loop.
 
     Args:
-        templates: Iterable of ORM template instances
-            (``TransactionTemplate``, ``TransferTemplate``, or any
-            duck-typed equivalent). Callers are responsible for
-            scoping the query (user_id, is_active, account_id, etc.);
-            this function applies only the cross-cutting recurrence
-            filter, not the data-ownership filter.
-        as_of: Reference date for the expired-rule filter (see
-            ``template_monthly_or_none``).
-        calendar: The owner's whole pay-period schedule, threaded to every
-            per-template conversion (see ``template_monthly_or_none``).  One
-            value for the whole set: these templates belong to one owner, so
-            summing figures resolved against two schedules would be adding
-            different units.
+        templates: Iterable of ORM template instances (``TransactionTemplate``,
+            ``TransferTemplate``, or any duck-typed equivalent).  Callers are
+            responsible for scoping the query (user_id, is_active, account_id,
+            etc.); this function applies only the cross-cutting recurrence
+            filter, not the data-ownership filter.  **Every one must belong to
+            ``ctx.user_id``.**
+        ctx: The read pass, one value for the whole set: these templates belong
+            to one owner, so summing figures resolved against two schedules or
+            judged on two days would be adding different units.
 
     Returns:
         The total monthly-equivalent Decimal, rounded to cents with
-        ``ROUND_HALF_UP``. Returns ``Decimal("0.00")`` if every input
-        template is filtered out or the iterable is empty.
+        ``ROUND_HALF_UP``.  Returns ``Decimal("0.00")`` if every input template
+        is filtered out or the iterable is empty.
 
     Raises:
-        RecurrenceResolutionError: A template's rule names a pattern this
+        RecurrenceResolutionError: A template's rule names a cadence this
             application does not model, so the total cannot be completed.  The
             whole sum is refused rather than shrunk by one row -- see
-            :func:`template_monthly_or_none`, and note that this function's
-            three callers (the Recurring surface, the emergency-fund floor and
-            the per-goal contribution floors) each publish a figure a missing
-            row would silently understate.
+            :func:`monthly_or_none`, and note that this function's three
+            callers (the Recurring surface, the emergency-fund floor and the
+            per-goal contribution floors) each publish a figure a missing row
+            would silently understate.
+        RecurrenceGenerationError: See :func:`template_monthly_or_none`.
+        BaselineMissingError: See :func:`template_monthly_or_none`.
     """
     total = Decimal("0")
     for template in templates:
-        monthly = template_monthly_or_none(template, as_of, calendar)
+        monthly = template_monthly_or_none(template, ctx)
         if monthly is not None:
             total += monthly
     return round_money(total)

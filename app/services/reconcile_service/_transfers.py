@@ -56,7 +56,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import transfer_service
-from app.services.cash_ledger import AnchorPoint
+from app.services.cash_ledger import AmountBasis
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
@@ -87,7 +87,9 @@ def _settle_one(
         shadow: The leg on this account, still Projected.
         submitted: The figure the panel's amount box posted, or ``None``.
         statement: The statement being reconciled; its day is what both legs
-            record the money as having moved on.
+            record the money as having moved on, on the ``asserted`` basis --
+            the owner asserted a BALANCE for that day, so the day bounds the
+            movement from above rather than naming it (plan step **X-az**).
 
     Returns:
         Whether the verb booked *submitted* as a human's correction -- the
@@ -100,7 +102,7 @@ def _settle_one(
     corrected = transfer_service.settle_transfer(
         shadow.transfer_id, statement.owner_id,
         submitted=submitted,
-        settled_on=statement.observed_on,
+        settle_day=statement.settle_day,
     )
     # WHICH statement showed THIS LEG (ruling **R-FL**), through the transfer
     # service because the row is a SHADOW and ``CLAUDE.md``'s transfer invariant
@@ -164,7 +166,7 @@ def arm(owner_id: int) -> _rows.Arm:
 
 
 def outstanding_transfers(
-    owner_id: int, account_id: int, anchor: AnchorPoint,
+    statement: _rows.Statement, basis: "AmountBasis",
 ) -> "dict[int, OutstandingTransaction]":
     """Return this arm's offers, ``{shadow transaction id: offer}``.
 
@@ -193,11 +195,19 @@ def outstanding_transfers(
     Reads only (no writes, no commit).
 
     Args:
-        owner_id: The user_id whose rows to list.
-        account_id: The cash account whose balance was asserted.
-        anchor: The governing assertion -- the STATEMENT being
-            reconciled against.  Its ``observed_on`` bounds the offer
-            set and its id is what a tick records (ruling **R-FL**).
+        statement: The :class:`~._rows.Statement` being reconciled -- whose
+            calendar, which account, which assertion.  **Built ONCE by
+            :func:`~._assemble.outstanding_set` and threaded**; see
+            :func:`~._transactions.outstanding_transactions` for why one value
+            rather than three arguments, which is pay-calendar plan step
+            C4-a-2's doing.
+        basis: The PANEL's :class:`~app.services.cash_ledger.AmountBasis`,
+            built ONCE by :func:`~._assemble.outstanding_set` and threaded
+            (plan step X-au-j, finding **N-295**).  This is the EXPENSIVE half of that
+            finding: each offered shadow built its own basis and so paid the
+            scenario-wide loan-config join, plus a full loan resolve for every
+            derive-mode payment -- finding **N-269** reintroduced one tier up,
+            exactly as N-295's impact column predicted.
 
     Returns:
         ``{transaction_id: OutstandingTransaction}`` keyed on the SHADOW's own
@@ -207,12 +217,11 @@ def outstanding_transfers(
         holding no overdue transfer, which is production's state at its latest
         assertion today.
     """
-    statement = _rows.Statement(owner_id, account_id, anchor)
     return {
         shadow.id: OutstandingTransaction(
             transaction_id=shadow.id,
-            attributed_on=_rows.attributed_on(shadow),
-            amount=transfer_service.settle_amount(shadow),
+            attributed_on=_rows.attributed_on(statement, shadow),
+            amount=transfer_service.settle_amount(shadow, basis),
             # Always the whole figure: a shadow can hold no entries, so there
             # is no card half for the statement to disagree with (N-226).
             cash_amount=None,
@@ -220,5 +229,7 @@ def outstanding_transfers(
             is_income=shadow.is_income,
             kind=OfferKind.TRANSFER,
         )
-        for shadow in _rows.outstanding_rows(arm(owner_id), statement)
+        for shadow in _rows.outstanding_rows(
+            arm(statement.owner_id), statement,
+        )
     }

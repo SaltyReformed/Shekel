@@ -1,4 +1,4 @@
-"""Loan recurring-payment VALIDITY WINDOW sync (Risk R-4: off the GET path).
+"""A loan recurrence's VALIDITY WINDOW: the resolver, and the sync it replaces.
 
 Keeps a loan's recurring-payment :class:`~app.models.recurrence_rule.RecurrenceRule`
 bounded at BOTH ends by the loan's own facts, so the recurrence engine generates
@@ -10,8 +10,9 @@ a payment only while the loan actually exists and owes:
   the origination anchor resets over it: $0.00 principal, the whole payment to
   Refund) while the cash side still debits it, so a mortgage closing one month
   out projected $3,220.92 of payments for a loan that did not exist.
-* ``end_date`` = the loan's PROJECTED PAYOFF (Risk R-4), so nothing generates
-  past payoff.
+* ``end_date`` = the loan's CLOSING DATE (Risk R-4), so nothing generates past
+  the day the debt ends -- the projected payoff while it still owes, and the day
+  it LAST became closed once it does not.
 
 This used to run as a write on the loan-detail GET (documented Risk R-4); it now
 runs at every chokepoint that can MOVE either bound -- a params / rate edit, a
@@ -26,10 +27,14 @@ move one and leave the other stale.
 committed schedule -- a walk that amortizes one contractual installment per month
 whether or not a payment stands behind it -- so the date this column persisted
 could disagree with the payoff every screen showed.  It now reads the seam's
-:func:`app.services.balance_at.loan_payoff_date`: the date the loan's BALANCE
-folds to zero, the same figure the loan card's chip, the /savings cockpit, and the
-property equity chart render.  One derivation, one answer, and the stored copy is
-a projection of it rather than a second opinion.
+:attr:`~app.services.balance_at.LoanFigures.closing_date`
+(:func:`app.services.balance_at.loan_closing_date`, plan step
+``recurrence:R7d-h``): the date the loan's BALANCE folds to zero looking
+FORWARD, or -- for a loan already at zero, which has no forward crossing left --
+the day it LAST became closed, read backward over the recorded events.  One
+derivation, one answer, and the stored copy is a projection of it rather than a
+second opinion.  Until R7d-h that retired branch substituted the READ PASS's own
+now, so the stored bound moved with the day a chokepoint happened to run.
 
 Idempotent, and a genuine fixpoint: it recomputes the payoff and writes only when
 ``end_date`` actually changes.  Writing ``end_date = D`` stops shadow generation
@@ -39,6 +44,48 @@ D again.  The payoff is always measured in the owner's BASELINE scenario (the lo
 card's trajectory), whatever scenario triggered the sync.  Flask-isolated: plain
 ``account_id`` in, no ``request`` / ``session`` reads; flushes into the caller's
 transaction and never commits (the caller owns the transaction boundary).
+
+The RESOLVER that replaces the closing half of all that
+----------------------------------------------------------
+
+**A persisted derivation is a cache, and this one is measurably behind on live
+data** (plan ledger row **D35**): rule 48 stores ``end_date`` ``2029-01-22``
+where the Van Loan's derived payoff is ``2029-02-22``, so extending the calendar
+generates rows only to the stored date and the ``$531.94`` installment due
+``2029-02-22`` is never created.  TEN call sites write the column between them
+-- ``params.py:190`` / ``:330`` / ``:448``, ``escrow_rates.py:170``,
+``payment_transfer.py:251`` / ``:277`` / ``:344`` / ``:423`` and
+``_loan_posting.py:356`` / ``:437`` (census 2026-09-04) -- and any reader can
+arrive before the next one runs.
+:func:`loan_payment_window` answers the same question by ASKING the loan, and
+plan step R7d decomposes into one leaf per surface that reads it: R7d-b built
+the resolver, R7d-d moved its ANSWER SHAPES into the recurrence package and put
+the Recurring surface on it, R7d-c-2 / R7d-e / R7d-f move the remaining
+readers, and R7d-g stops the write and lands
+``ck_recurrence_rules_valid_window`` true by construction.
+
+**Since R7d-d a reader does not ask this function directly.**  The composed
+door (:func:`app.services.recurring_definition.resolved_definition`) calls it
+once and puts the answer on the resolved recurrence's
+:class:`~app.services.recurrence.Closing`, ANDed with the bound the rule
+authors, so the occurrence walk and the display's phrase read one value rather
+than each performing the conjunction.  A caller reaching for this function
+instead is asking for half the answer.
+
+**Only the CLOSING bound stops being stored** (ruling **R-R29**).  ``starts_on``
+is a contract fact rather than a fold -- it resolves for an owner with no
+baseline scenario, where a payoff cannot -- and it is the cadence ANCHOR that a
+MONTH-unit rule has no day to fire on without, so :func:`_sync_loan_cadence`
+stays a writer.  That asymmetry is why the two halves are separate functions
+here and always were.
+
+**The resolver takes the DEFINITION and not the loan** (ruling **R-R35**), so
+it never has to answer which recurring transfer into a loan is "the" payment --
+a question nothing in the schema answers and every consumer of
+:func:`~app.services.recurring_transfer_query.active_recurring_transfer_template`
+currently tie-breaks on ``id``.  Every recurring transfer into a loan is paying
+it down, and each stops when the loan does.  See that function's docstring for
+the measurement and for the half of plan ledger row **D47** that remains.
 """
 
 import logging
@@ -52,9 +99,15 @@ from app.models.account import Account
 from app.services import balance_at, loan_loaders, rate_period_engine
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
+    EMPTY,
+    INDEFINITE,
     NEVER_ENDS,
+    ClosesOn,
+    DerivedStop,
     EndsOnDate,
+    RecurrenceOwner,
     RecurrenceSpec,
+    ResolvedRecurrence,
     end_bound_from_columns,
     offerable_nominal_days,
     reauthor_rule,
@@ -79,53 +132,196 @@ if TYPE_CHECKING:  # pragma: no cover -- typing only; these are ORM row types
 logger = logging.getLogger(__name__)
 
 
-def recurrence_end_date(
-    payoff_date: date | None, is_retired: bool, as_of: date,
-) -> date | None:
-    """Return the recurrence end_date a loan's derived payoff implies.
+def loan_payment_window(
+    template: RecurrenceOwner,
+    resolved: ResolvedRecurrence,
+    ctx: BalanceContext,
+) -> DerivedStop | None:
+    """Return when *template* stops paying its destination loan, or ``None``.
 
-    The three states of the DERIVED payoff
-    (:attr:`~app.services.balance_at.LoanFigures.payoff_date`), mapped onto the
-    recurrence bound.  ``payoff_date`` is ``None`` for two different loans, and
-    ``is_retired`` is what tells them apart -- collapsing them would either leave a
-    finished loan generating payments forever or halt a loan that still owes:
+    **The RESOLVER plan step R7d-b builds, and the value TEN call sites
+    currently write into ``budget.recurrence_rules.end_date`` between them**
+    (R7d-g deletes nine of them; ``params.py:190`` stays, for the OPENING bound
+    R-R29 keeps stored).
+    A loan's payoff is a fold over its forward plan, so a bound persisted at
+    mutation time is a CACHE of a derivation -- and it is measurably behind on
+    live data: rule 48 stores ``2029-01-22`` where the Van Loan's derived
+    payoff is ``2029-02-22``, so extending the calendar generates rows only to
+    the stored date and the ``$531.94`` installment due ``2029-02-22`` is never
+    created (plan ledger row **D35**).  Asking rather than storing is what
+    makes that unconstructible.
 
-    * **Pays off on a date** -- that date, so recurrence stops the month the
-      balance reaches zero.
-    * **Already RETIRED** (``None`` and owing nothing) -- *as_of*, the pass's own
-      now: the loan plans no further payments.  (The pre-C8d writer used the last
-      schedule row for a retired loan WITH history and its ``origination_date``
-      for one without -- two dates for one state; *as_of* is ONE rule.)
+    **It takes the DEFINITION, not the loan, and that is a developer ruling of
+    2026-08-25** (**R-R35**) rather than the ``(account, ctx)`` this step was
+    originally specified with.  Asking "when does this loan's payment stop"
+    forces a prior question -- WHICH of the recurring transfers into the loan
+    is its payment -- that nothing in the schema answers, so
+    :func:`~app.services.recurring_transfer_query.active_recurring_transfer_template`
+    tie-breaks it on ``id``.  Measured on a production clone with the sweep's
+    id FORCED below the Mortgage payment's (that tie-break is ascending, so a
+    row created later loses it and the reachable ordering is the sweep
+    authored FIRST): a ``$200.00``/mo transfer into the Mortgage drives the
+    derived payoff from ``2048-12-01`` to ``None``, against a ``$616.99``
+    monthly escrow the ``$200.00`` does not even cover.  Asking "when does THIS
+    transfer into a loan stop" needs no such answer: **every** recurring
+    transfer into a loan is paying it down --
+    the settled fold
+    (:func:`~app.services.loan_loaders.query_shadow_income`) and the PLANNED
+    tier (``balance_at._plan.loan_plan``) both already sum every
+    one of them with no template filter -- and each of them stops when the loan
+    does, because past payoff the ONE allocation
+    (:func:`~app.utils.money.apply_payment_cash`) routes the whole cash
+    to ``excess`` (a Refund) rather than to principal.
 
-      **This bounds the OCCURRENCE, and plan step R4a is what changed that.**
-      ``end_date`` used to bound PERIODS -- a period was admitted when
-      ``period.start_date <= end_date``, so the CURRENT period, which started
-      before *as_of*, still matched and only ``should_skip_period`` stopped a
-      further payment being generated into it for a loan that owes nothing.
-      Forward generation stops at the first occurrence past the bound, so a
-      retired loan's next installment is simply never emitted: finding **N-19**
-      (a bound that excluded the current period outright would have to be that
-      period's start minus a day) is closed by the model rather than by a
-      different bound.  Note also that a retired loan whose
-      payoff-affecting mutations span days rewrites this to each new day, so
-      "idempotent" is idempotent WITHIN a day.
-    * **Never pays off** (``None`` and NOT retired -- negative amortization, or an
-      underpayment too severe to clear the plan's post-contractual extension) --
-      ``None``, leaving recurrence indefinite until the user raises the payment.
-      That is what C7's payment-drift warning exists to prompt.
+    **What that buys is precise, and it is less than "the tie-break is gone".**
+    This function's SUBJECT is no longer chosen by one -- every definition into
+    a loan is asked about and every one gets the same answer -- but the
+    ANSWER's value still travels through it: ``loan_figures`` ->
+    ``resolved_loan`` -> ``standing_payment`` ->
+    ``active_recurring_transfer_template``, whose ``.order_by(id).first()``
+    prices the ESTIMATED tier.  In the `$200.00` case above the resolver
+    returns ``INDEFINITE`` for BOTH definitions: they agree, and both are
+    wrong.  Plan ledger row **D47** carries that half and **R16** closes it by
+    making the estimate SUM, as its two sibling tiers already do.
+
+    **EMPTY is decided against the definition's RESOLVED first occurrence**,
+    read off the *resolved* value the caller already holds
+    (:attr:`~app.services.recurrence.ResolvedRecurrence.starts_on`).  "The
+    loan closed before this definition ever fires" is exactly
+    ``closes < resolved.starts_on``, and it is the same comparison as "no
+    occurrence of this rule falls inside the window" because every walk
+    ascends from that date.  Two things follow from TAKING that value rather
+    than deriving it here.  The rule is resolved ONCE per read pass: the
+    composed door resolves it to build the value and hands the value down,
+    where the first build of plan step R7d-d resolved the same rule a second
+    time inside this function (``CLAUDE.md`` rule 14's ONE WALK).  And the
+    stored column cannot reach this decision.  ``budget.recurrence_rules
+    .starts_on`` equals the first occurrence for every unit but ``PERIOD``,
+    which ``_resolution`` re-normalises on every read to the START of the
+    paycheck covering the stored date, so after a pay-schedule edit the
+    walk's first occurrence can land BEFORE the column (plan ledger row
+    **D39**) and a comparison against the column would answer EMPTY --
+    "finished" -- about a definition with a live occurrence.  A bare ``date``
+    parameter would have let a caller pass that column back in; the resolved
+    value the door hands down is not built from it -- it is the rule's authored
+    cadence resolved against the owner's calendar.
+
+    **Its first reader arrived at plan step R7d-d**, which is the composed
+    door :func:`app.services.recurring_definition.resolved_definition` -- the
+    Recurring surface's cadence sentence and next date read this answer
+    through it, and the door reads the stored copy as the cache it is for the
+    definition :func:`owns_validity_window` names (ruling **R-R56**), so that
+    row's stop line and next date come from this answer and not the column.
+    The column is still read on that surface by the archived drawer (an
+    archived payment is not the one the predicate names); the monthly
+    equivalent stopped reading it at plan step R7d-e, when
+    ``obligations_aggregator`` took the door and ``has_ended`` began judging
+    the composed closing; and a closing bound an owner authored on the generic
+    create form, which cannot lock the control, is read as the cache before
+    the first chokepoint makes it one.  R7d-c-2 / R7d-f move the remaining
+    reading surfaces onto the same door, and R7d-g then stops the column being
+    written at all.
+
+    A pure READ: it opens no transaction, writes nothing and reads no clock of
+    its own (*ctx* carries the pass's ``as_of``).
 
     Args:
-        payoff_date: The loan's derived payoff, or ``None``.
-        is_retired: Whether the loan has originated and owes nothing
-            (:attr:`~app.services.balance_at.LoanFigures.is_retired`).
-        as_of: The read pass's as-of, the retired loan's bound.
+        template: The recurring definition being asked about -- a
+            ``TransferTemplate``, or a ``TransactionTemplate``, which can never
+            pay into an account and always answers ``None``.  ``getattr`` on
+            the FK COLUMN is what keeps this kind-agnostic across the two, the
+            same way :func:`owns_validity_window` is.  **Must belong to
+            ``ctx.user_id``** -- the caller owns the ownership check, as every
+            seam entry this reaches states.  A pairing of one owner's
+            definition with another's read pass is refused by the pass itself
+            when the loan is memoized (``ForeignAccountError`` from
+            ``BalanceContext._memoize_once``, plan step X-i4); the composed
+            door reaches the rule's own refusal first, before any account is
+            loaded.
+        resolved: What *template*'s rule MEANS against the owner's schedule
+            -- the value :func:`~app.services.recurrence.resolved_recurrence`
+            built for it -- read here for its first occurrence alone.  Taken
+            rather than re-derived, for the two reasons above.
+        ctx: The read pass's
+            :class:`~app.services.balance_at.BalanceContext`.  Its ``as_of`` is
+            the day the loan's state is read at -- since plan step
+            ``recurrence:R7d-h`` it selects WHICH crossing answers, and is no
+            longer itself a retired loan's bound -- and its scenario scopes the
+            fold; the pass
+            is TAKEN and never built here (the 2026-08-16 ruling -- a producer
+            below the route does not build one).
 
     Returns:
-        The recurrence ``end_date``, or ``None`` to leave generation indefinite.
+        The :class:`~app.services.recurrence.DerivedStop`, or ``None`` when
+        nothing about a loan bounds this definition: it pays into no account,
+        or its destination is not a configured loan.  (A definition with no
+        rule never arrives here -- there is no resolved value to ask about, and
+        the composed door answers *does not repeat* for it one call up.)
+        ``None`` is "this question does not apply here" and never a fourth
+        shape -- the three shapes are the answers a loan gives, and a
+        definition with no loan behind it has no derived stop at all.
+
+        **The shapes live in the recurrence package since plan step R7d-d**,
+        and this function is what stayed: deciding WHICH shape applies means
+        folding a loan's balance, which needs the ORM and the balance seam,
+        while the shapes themselves are plain values over dates.  Splitting
+        them that way is what lets the occurrence walk and the display's
+        phrase-writer both read this answer -- neither could import this
+        module without a cycle.  A loan is one supplier of a derived stop and
+        nothing in the type says it is the only one.
+
+    Raises:
+        BaselineMissingError: When the destination IS a configured loan and
+            *ctx* has no baseline scenario, from the seam's own
+            ``require_scenario``.  Ruling **R-R30** (2026-08-19): a producer
+            that needs a scenario REFUSES, to the single application-level
+            handler, rather than early-returning -- the early return it
+            replaces left the last-written bound standing, and once nothing is
+            stored there is nothing to stand.  The not-a-loan answer above is
+            reached FIRST, so a savings or investment transfer still resolves
+            for an owner with no baseline.
     """
-    if payoff_date is not None:
-        return payoff_date
-    return as_of if is_retired else None
+    # **The COLUMN, then a lookup -- never ``template.to_account``**, and an
+    # adversarial review of this step measured why.  That relationship is
+    # ``lazy="joined"``, which loads it with the template and then does NOT
+    # refresh it when the FK column is written: measured on SQLAlchemy 2.0.49,
+    # a ``setattr(template, "to_account_id", other)`` leaves ``to_account``
+    # pointing at the OLD account through the following ``flush()`` and only
+    # re-loads at ``commit()``.  ``routes/transfers/templates.py`` writes
+    # exactly that -- ``to_account_id`` is in ``_TEMPLATE_UPDATE_FIELDS`` and
+    # is assigned by ``setattr`` -- and then REGENERATES before committing, so
+    # a resolver reading the relationship would bound the new destination's
+    # rows by the OLD loan's payoff.  A pending template is the second state:
+    # its ``to_account_id`` is set and its ``to_account`` is still ``None``.
+    # ``db.session.get`` costs nothing when the row is already in the identity
+    # map, which is the case the joined load creates anyway.
+    account_id = getattr(template, "to_account_id", None)
+    if account_id is None:
+        return None
+    account = db.session.get(Account, account_id)
+    if account is None:
+        # Unreachable for a persisted definition -- ``to_account_id`` is NOT
+        # NULL under an ``ON DELETE RESTRICT`` foreign key -- and reachable
+        # only for one not yet flushed, which generates nothing either way.
+        # The same early return :func:`sync_recurring_payment_bounds` makes.
+        return None
+    # ``loan_figures`` is asked for the not-a-loan answer as well as for the
+    # payoff, rather than a ``load_loan_params`` pre-check beside it: that
+    # would be a second producer of "is this a configured loan", and the seam
+    # runs its own test BEFORE the scenario guard precisely so a caller may
+    # use it this way (see its docstring).
+    figures = balance_at.loan_figures(account, ctx)
+    if figures is None:
+        return None
+    closes = figures.closing_date
+    if closes is None:
+        return INDEFINITE
+    # The RESOLVED first occurrence, never ``rule.starts_on``: see the EMPTY
+    # paragraph above for the ``PERIOD``-unit drift (plan ledger row **D39**)
+    # that makes the column the wrong side of this comparison.
+    if closes < resolved.starts_on:
+        return EMPTY
+    return ClosesOn(on=closes)
 
 
 @dataclass(frozen=True)
@@ -399,7 +595,7 @@ def owns_validity_window(template: "object") -> bool:
         ``end_date``, so its form must render both read-only.
     """
     account_id = getattr(template, "to_account_id", None)
-    if account_id is None or template.recurrence_rule_id is None:
+    if account_id is None or template.recurrence_rule is None:
         return False
     if loan_loaders.load_loan_params(account_id) is None:
         return False
@@ -415,8 +611,9 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
 
     * ``starts_on`` -- the loan's first contractual installment
       (:func:`loan_cadence_spec`); a payment cannot precede the loan.
-    * ``end_date`` -- the loan's derived payoff (R-4,
-      :func:`recurrence_end_date`); a payment cannot follow the payoff.
+    * ``end_date`` -- the loan's derived closing date (R-4,
+      :func:`~app.services.balance_at.loan_closing_date`); a payment cannot
+      follow the payoff.
 
     The two are deliberately NOT symmetric in what they require: the start is a
     contract fact and resolves with no scenario, while the end is a fold over
@@ -476,9 +673,7 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
         # Not a configured loan (no LoanParams) -- nothing to bound.
         return
 
-    new_end_date = recurrence_end_date(
-        figures.payoff_date, figures.is_retired, ctx.as_of,
-    )
+    new_end_date = figures.closing_date
     new_bound = (
         NEVER_ENDS if new_end_date is None else EndsOnDate(on=new_end_date)
     )

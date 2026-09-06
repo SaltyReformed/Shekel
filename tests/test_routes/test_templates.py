@@ -36,7 +36,8 @@ from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.routes._form_errors import GENERIC_VALIDATION_FLASH
 from app.services.auth_service import hash_password
-from app.services import account_service, pay_period_service, status_seam
+from app.services import account_service, status_seam
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
@@ -47,20 +48,27 @@ from app.services.recurrence import (
 )
 from app.utils.dates import display_today
 from tests._test_helpers import (
-    settlement_columns,
-    settlement_if_settling,
+    all_periods,
     cadence_payload,
     create_account_of_type,
     create_loan_account,
+    current_pay_period,
     end_bound_payload,
     make_cadence_rule,
     make_transfer_template,
+    resolved_amount,
+    settle_day_columns,
+    settlement_columns,
+    settlement_if_settling,
+    state_template_price,
 )
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     EVERY_N_PERIODS,
     MONTHLY,
 )
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -94,24 +102,25 @@ def _create_template(seed_user, name="Rent", amount="1200.00",
     txn_type_obj = db.session.query(TransactionType).filter_by(name=txn_type).one()
     category = seed_user["categories"]["Rent"]
 
-    rule = None
-    if cadence:
-        # Authored through the write door, which is what plan step R7c-b made
-        # the only way to make a rule: ``unit_id``, ``placement_id``,
-        # ``shift_id`` and ``starts_on`` are ``NOT NULL``, so naming a pattern
-        # and nothing else no longer produces a row.
-        rule = make_cadence_rule(seed_user["user"].id, cadence)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=category.id,
         transaction_type_id=txn_type_obj.id,
-        recurrence_rule_id=rule.id if rule else None,
         name=name,
         default_amount=Decimal(amount),
     )
     db.session.add(template)
+    db.session.flush()
+    state_template_price(template)
+    if cadence:
+        # Authored through the write door, which is what plan step R7c-b made
+        # the only way to make a rule: ``unit_id``, ``placement_id``,
+        # ``shift_id`` and ``starts_on`` are ``NOT NULL``, so naming a pattern
+        # and nothing else no longer produces a row.  ONTO the template, which
+        # plan step R-F6 made the order: the rule carries its owner's FK, so
+        # the definition has to exist first.
+        make_cadence_rule(template, cadence)
     db.session.commit()
     return template
 
@@ -126,8 +135,10 @@ def _future_override_txn(seed_user, template, amount="1500.00"):
     """
     from app.services import recurrence_engine, pay_period_service
     scenario = seed_user["scenario"]
-    periods = pay_period_service.get_all_periods(seed_user["user"].id)
-    recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
+    periods = all_periods(seed_user["user"].id)
+    recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+        BalanceContext.build(template.user_id), {p.id for p in periods},
+    ), scenario.id)
     db.session.flush()
     txn = (
         db.session.query(Transaction)
@@ -136,7 +147,7 @@ def _future_override_txn(seed_user, template, amount="1500.00"):
         .first()
     )
     txn.is_override = True
-    txn.estimated_amount = Decimal(amount)
+    state_own_amount(txn, Decimal(amount))
     db.session.commit()
     return txn
 
@@ -156,19 +167,12 @@ def _create_other_user_with_template():
     db.session.flush()
 
 
-    # Bootstrap pay period (E-19, Commit 3): the
-    # account_service factory requires the user to have at
-    # least one pay period to anchor against.
-    from datetime import date as _date, timedelta as _td
-    from app.models.pay_period import PayPeriod as _PayPeriod
-    _bootstrap = _PayPeriod(
-        user_id=other_user.id,
-        start_date=_date(2024, 1, 5),
-        end_date=_date(2024, 1, 5) + _td(days=13),
-        period_index=0,
-    )
-    db.session.add(_bootstrap)
-    db.session.flush()
+    # The account_service factory requires the user to have at least one pay
+    # period to anchor against.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    from datetime import date as _date
+    from tests._test_helpers import open_owner_calendar as _open_calendar
+    _bootstrap = _open_calendar(other_user.id, _date(2024, 1, 5))[0]
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
@@ -317,7 +321,7 @@ class TestTemplateCreate:
                 .filter_by(name="Browser Shaped No Recurrence")
                 .one()
             )
-            assert template.recurrence_rule_id is None
+            assert template.recurrence_rule is None
 
     def test_create_with_a_starts_on_date_bounds_the_rule(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -378,7 +382,7 @@ class TestTemplateCreate:
                 name="Internet Bill"
             ).one()
             assert template.default_amount == Decimal("79.99")
-            assert template.recurrence_rule_id is None
+            assert template.recurrence_rule is None
 
     def test_create_template_with_recurrence(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates creates a template with recurrence and generates transactions."""
@@ -661,6 +665,27 @@ class TestTemplateUpdate:
                 TransactionTemplate, tid,
             ).default_amount == Decimal("1200.00")
 
+    # **``test_the_chooser_names_the_DERIVED_paycheck`` was deleted at plan step
+    # ``pay_calendar:C4-c``.**  It asserted that the override chooser named the
+    # row's paycheck with the DERIVED label and never with the label the STORED
+    # ``end_date`` would give -- absence being what distinguished the two
+    # readers, since both put a string in the page and only one was wrong.
+    #
+    # **It planted a stored ``budget.pay_periods.end_date`` that disagreed with
+    # the owner's paydays, and plan step ``pay_calendar:C4-c`` dropped that
+    # column.**  The plant is not merely unreachable, it is SILENT: assigning to
+    # an attribute the model no longer maps sets a plain Python attribute, writes
+    # no UPDATE, and survives ``expire_all`` -- so the case and its own premise
+    # assertion both went on passing while measuring nothing.  Deleted rather
+    # than left green.
+    #
+    # ``PayPeriod.label`` went at plan step C4-a-5 and the column at C4-c, so
+    # there is no second label a page could print: the property survives as a
+    # consequence of there being ONE producer rather than as an assertion.
+    # ``tests/test_routes/test_period_options.py``'s
+    # ``TestTheCardNamesTheDERIVEDPaycheck`` keeps the positive half for the
+    # full-edit card, located rather than searched for.
+
     def test_chooser_apply_use_realigns_override(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
@@ -683,11 +708,54 @@ class TestTemplateUpdate:
             assert resp.status_code == 200
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
-            assert reloaded.estimated_amount == Decimal("1400.00")
+            assert resolved_amount(reloaded) == Decimal("1400.00")
             assert reloaded.is_override is False
             assert db.session.get(
                 TransactionTemplate, tid,
             ).default_amount == Decimal("1400.00")
+
+    def test_the_chooser_PAGE_offers_no_figure_for_a_transaction(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """"Use" reads as *Follow the template*, never as *Use $1,400.00*.
+
+        Plan step balance:X-au-e, ruling **R-JD**.  The chooser is shared
+        verbatim with the transfer-template route, whose generated rows still
+        STORE their amount until plan step X-au-f, so the page's "use" side is
+        per-kind (``RecurrenceConflictKind.use_states_a_figure``).  Rendering
+        the transfer's sentence over a transaction would promise a figure no
+        writer writes: nothing moves the row to $1,400.00, it stops overriding
+        and its definition's series prices it on its own due date.
+
+        **The page says the wrong thing in three places if the flag is
+        dropped**, so all three are asserted: the framing sentence, the bulk
+        button, and the footnote about the rows that are NOT in the list.  The
+        footnote is the one that would be flatly false -- those rows are
+        derived already and this page changes nothing about them.
+        """
+        with app.app_context():
+            template = _create_template(
+                seed_user, cadence=EVERY_PERIOD, amount="1200.00",
+            )
+            _future_override_txn(seed_user, template, amount="1500.00")
+            tid = template.id
+
+            resp = auth_client.post(f"/templates/{tid}", data={
+                "default_amount": "1400.00",
+                **cadence_payload(),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            body = resp.data
+            # The chooser really did render -- without this the three
+            # absence assertions below pass on any page at all.
+            assert b"Some upcoming instances were hand-edited" in body
+            assert b"Follow the template" in body
+            assert b"Use new value for all" not in body
+            assert b"Your other upcoming instances move to" not in body
+            # The framing sentence still names the new price, because the
+            # DEFINITION's price genuinely did change to it.
+            assert b"1,400.00" in body
 
     def test_chooser_apply_keep_preserves_override(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -782,8 +850,10 @@ class TestTemplateUpdate:
                 amount="1200.00",
             )
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
+            periods = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in periods},
+            ), scenario.id)
             db.session.flush()
             txn = (
                 db.session.query(Transaction)
@@ -806,7 +876,7 @@ class TestTemplateUpdate:
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
             assert reloaded.is_deleted is False
-            assert reloaded.estimated_amount == Decimal("1400.00")
+            assert resolved_amount(reloaded) == Decimal("1400.00")
             assert reloaded.name == "Apartment Rent"
 
     def test_amount_edit_commits_when_the_only_conflict_is_a_retained_row(
@@ -838,10 +908,12 @@ class TestTemplateUpdate:
             template.is_envelope = True  # rows track purchases, as production
             db.session.flush()
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_periods(template.user_id, periods),
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
+                ),
                 scenario.id,
             )
             db.session.flush()
@@ -853,7 +925,7 @@ class TestTemplateUpdate:
             # both constraints at once: the update route sweeps from today, so
             # an earlier row is out of the window, and a purchase may not be
             # dated in the future (ruling R-M), so a later row cannot hold one.
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             txn = (
@@ -926,9 +998,11 @@ class TestTemplateUpdate:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.commit()
 
@@ -975,9 +1049,11 @@ class TestTemplateUpdate:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.flush()
 
@@ -1011,9 +1087,11 @@ class TestTemplateUpdate:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.commit()
 
@@ -1061,9 +1139,11 @@ class TestGridRowKeyBuilder:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.flush()
 
@@ -1120,23 +1200,25 @@ class TestGridRowKeyBuilder:
             # names -- these must remain distinct rows.
             txn_a = Transaction(
                 account_id=account.id,
+                user_id=period.user_id,
                 pay_period_id=period.id,
                 scenario_id=scenario.id,
                 status_id=projected.id,
                 name="One-off A",
                 category_id=rent_cat.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
             )
             txn_b = Transaction(
                 account_id=account.id,
+                user_id=period.user_id,
                 pay_period_id=period.id,
                 scenario_id=scenario.id,
                 status_id=projected.id,
                 name="One-off B",
                 category_id=rent_cat.id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("75.00"),
+                amount_ownership=AmountOwnership.own(Decimal("75.00")),
             )
             db.session.add_all([txn_a, txn_b])
             db.session.flush()
@@ -1167,8 +1249,10 @@ class TestTemplateArchive:
             # Generate projected transactions.
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
+            periods = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in periods},
+            ), scenario.id)
             db.session.commit()
 
             txn_count = db.session.query(Transaction).filter_by(
@@ -1232,8 +1316,10 @@ class TestTemplateUnarchive:
             # Generate and then delete.
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
+            periods = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in periods},
+            ), scenario.id)
             db.session.commit()
 
             # Archive via the archive route.
@@ -2000,8 +2086,10 @@ class TestTemplateHardDelete:
             # Generate projected transactions.
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
+            periods = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in periods},
+            ), scenario.id)
             db.session.commit()
 
             template_id = template.id
@@ -2040,6 +2128,160 @@ class TestTemplateHardDelete:
             assert b"permanently deleted" in resp.data
             assert db.session.get(TransactionTemplate, template_id) is None
 
+    def test_MOVING_a_template_a_merchant_rule_names_is_refused(
+        self, app, auth_client, seed_user,
+    ):
+        """A designed refusal where there was an unhandled 500.
+
+        Plan step ``bank_import:X-gd-2``.
+        ``fk_merchant_rules_template_account`` is composite over
+        ``(template_id, account_id)`` with no ``ON UPDATE``, so moving a
+        template between accounts orphans every rule naming it and PostgreSQL
+        raises -- an IntegrityError ``commit_or_handle_stale`` does not catch
+        and no error handler renders.  Verified against the developer's own
+        data 2026-08-26: ``UPDATE budget.transaction_templates SET account_id
+        = 10 WHERE id = 19`` is refused by that constraint.
+
+        **The 500 predates this step and the UNRECOVERABILITY does not**: the
+        owner's way out used to be withdrawing the rule, and ruling R-GS
+        removed the withdrawal.  Found by an adversarial security review.
+        """
+        from app.models.merchant import (  # pylint: disable=import-outside-toplevel
+            Merchant,
+        )
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
+        )
+
+        with app.app_context():
+            template = _create_template(seed_user)
+            template_id = template.id
+            origin = template.account_id
+            elsewhere = Account(
+                user_id=seed_user["user"].id,
+                name="Second Checking",
+                account_type_id=seed_user["account"].account_type_id,
+            )
+            db.session.add(elsewhere)
+            db.session.flush()
+            merchant = Merchant(account_id=origin, name="Food Lion")
+            db.session.add(merchant)
+            db.session.flush()
+            db.session.add(MerchantRule(
+                user_id=seed_user["user"].id,
+                account_id=origin,
+                merchant_id=merchant.id,
+                template_id=template_id,
+                never_a_purchase=False,
+            ))
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/templates/{template_id}",
+                data={"account_id": str(elsewhere.id)},
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"cannot be moved to another" in resp.data
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionTemplate, template_id,
+            ).account_id == origin
+
+    def test_MOVING_a_template_NO_rule_names_still_works(
+        self, app, auth_client, seed_user,
+    ):
+        """The firing control: the guard refuses a move, it does not forbid one.
+
+        Without it the case above would be satisfied by a door that refused
+        every account change, which is an ordinary edit the form offers.
+        """
+        with app.app_context():
+            template = _create_template(seed_user)
+            template_id = template.id
+            elsewhere = Account(
+                user_id=seed_user["user"].id,
+                name="Second Checking",
+                account_type_id=seed_user["account"].account_type_id,
+            )
+            db.session.add(elsewhere)
+            db.session.commit()
+            target = elsewhere.id
+
+            resp = auth_client.post(
+                f"/templates/{template_id}",
+                data={"account_id": str(target)},
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionTemplate, template_id,
+            ).account_id == target
+
+    def test_hard_delete_template_a_MERCHANT_RULE_names_is_archived(
+        self, app, auth_client, seed_user,
+    ):
+        """A stated answer is not collateral of deleting the row it names.
+
+        Plan step ``bank_import:X-gd-2``.  ``fk_merchant_rules_template_account``
+        is ON DELETE CASCADE, and this door gated only on settled TRANSACTIONS
+        -- so permanently deleting a template destroyed every standing merchant
+        rule filing into it, under a flash that mentioned only the template.
+        Ruling **R-GS** is what makes it matter rather than untidy: a rule row
+        is never un-stated by its owner, so a silent cascade was the only way
+        one could vanish at all.
+
+        Measured on the developer's dev database 2026-08-26: 16 of 29 rules
+        name a template, and template 19 (`Clothes`) carried a rule and ZERO
+        settled transactions -- so the permanent arm was live on it.  Found by
+        three adversarial reviews the same day; the category twin of this door
+        was already closed and this one was not.
+        """
+        from app.models.merchant import (  # pylint: disable=import-outside-toplevel
+            Merchant,
+        )
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
+        )
+
+        with app.app_context():
+            template = _create_template(seed_user)
+            template_id = template.id
+            merchant = Merchant(
+                account_id=seed_user["account"].id, name="Food Lion",
+            )
+            db.session.add(merchant)
+            db.session.flush()
+            rule = MerchantRule(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                merchant_id=merchant.id,
+                template_id=template_id,
+                never_a_purchase=False,
+            )
+            db.session.add(rule)
+            db.session.commit()
+            rule_id = rule.id
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            # The sentence names the REASON.  Saying "has payment history" for
+            # a template whose only usage is a rule is the screens-stating-what-
+            # is-false defect this arc keeps closing.
+            assert b"where a merchant" in resp.data
+            assert b"payment history" not in resp.data
+            surviving = db.session.get(TransactionTemplate, template_id)
+            assert surviving is not None
+            assert surviving.is_active is False
+            assert db.session.get(MerchantRule, rule_id) is not None
+
     def test_hard_delete_template_with_history(self, app, auth_client, seed_user, seed_periods_today):
         """C-5A.5-12: Template with Paid txn is blocked and archived instead."""
         with app.app_context():
@@ -2047,8 +2289,10 @@ class TestTemplateHardDelete:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
+            periods_list = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in periods_list},
+            ), scenario.id)
             db.session.commit()
 
             # Mark one transaction as Paid.
@@ -2101,8 +2345,10 @@ class TestTemplateHardDelete:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
+            periods_list = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in periods_list},
+            ), scenario.id)
             db.session.commit()
 
             # Mark one transaction as Paid.
@@ -2141,8 +2387,10 @@ class TestTemplateHardDelete:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
+            periods_list = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in periods_list},
+            ), scenario.id)
             db.session.commit()
 
             # Pre-archive via route (soft-deletes projected txns).
@@ -2221,17 +2469,18 @@ class TestTemplateHardDelete:
 
             paycheck = Transaction(
                 template_id=template.id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 category_id=salary_cat.id,
                 transaction_type_id=income_type.id,
                 name="Biweekly Paycheck",
-                estimated_amount=Decimal("2000.00"),
+                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
                 status_id=received_status.id,
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
-                settled_on=seed_periods_today[0].start_date,
+                **settle_day_columns(seed_periods_today[0].start_date),
                 **settlement_columns(
                     seed_periods_today[0].start_date, Decimal("2000.00"),
                 ),
@@ -2316,30 +2565,32 @@ class TestTemplateHardDelete:
 
             received_paycheck = Transaction(
                 template_id=template.id,
+                user_id=seed_periods_today[0].user_id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 category_id=salary_cat.id,
                 transaction_type_id=income_type.id,
                 name="Past Paycheck",
-                estimated_amount=Decimal("1500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
                 status_id=received_status.id,
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
-                settled_on=seed_periods_today[0].start_date,
+                **settle_day_columns(seed_periods_today[0].start_date),
                 **settlement_columns(
                     seed_periods_today[0].start_date, Decimal("1500.00"),
                 ),
             )
             projected_paycheck = Transaction(
                 template_id=template.id,
+                user_id=seed_periods_today[1].user_id,
                 pay_period_id=seed_periods_today[1].id,
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 category_id=salary_cat.id,
                 transaction_type_id=income_type.id,
                 name="Future Paycheck",
-                estimated_amount=Decimal("1500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
                 status_id=projected_status.id,
             )
             db.session.add_all([received_paycheck, projected_paycheck])
@@ -2406,8 +2657,10 @@ class TestTemplateHardDelete:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
+            periods_list = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in periods_list},
+            ), scenario.id)
             db.session.commit()
 
             resp = auth_client.post(
@@ -3192,25 +3445,26 @@ def _template_with_starts_on(seed_user, txn_type, starts_on):
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`.
     """
-    rule = make_cadence_rule(
-        seed_user["user"].id, EVERY_PERIOD, starts_on=starts_on,
-    )
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=txn_type.id,
-        recurrence_rule_id=rule.id,
         name="Bounded Expense",
         default_amount=Decimal("42.00"),
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template, EVERY_PERIOD, starts_on=starts_on,
+    )
     return template
 
 
 def _loan_payment_template(seed_user):
-    """Create and flush a recurring LOAN PAYMENT transfer template.
+    """Create and COMMIT a recurring LOAN PAYMENT transfer template.
 
     A loan payment is a transfer template carrying
     :class:`~app.models.loan_payment_settings.LoanPaymentSettings` -- decision
@@ -3222,24 +3476,32 @@ def _loan_payment_template(seed_user):
         seed_user: The seeded owner fixture.
 
     Returns:
-        The flushed :class:`~app.models.transfer_template.TransferTemplate`.
+        The committed :class:`~app.models.transfer_template.TransferTemplate`.
+
+    The CADENCE is committed too (plan step balance:X-i3).  It was only
+    flushed, so every test here that went on to issue a request was asking the
+    route to read a rule no request could see -- a request holds its own
+    transaction and an uncommitted row is invisible in it.  The template
+    itself was already committed one line above, which is the shape this
+    matches rather than departs from.
     """
     loan_account = create_loan_account(seed_user, db.session)
-    rule = make_cadence_rule(
-        seed_user["user"].id, MONTHLY,
-        fires_on_day=1, end_date=date(2030, 1, 1),
-    )
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=loan_account.id,
-        recurrence_rule_id=rule.id,
         name="Loan Payment",
         default_amount=Decimal("500.00"),
         is_active=True,
     )
     template.settings = LoanPaymentSettings(derive_from_loan=False)
     db.session.add(template)
+    db.session.commit()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template, MONTHLY,
+        fires_on_day=1, end_date=date(2030, 1, 1),
+    )
     db.session.commit()
     return template
 
@@ -3354,7 +3616,7 @@ class TestACreateDoesNotBackfillClosedPayPeriods:
     option, preselecting the CURRENT period -- so every definition ever created
     carried an opening bound of "the paycheck I am in".  Replacing it with a
     date box that defaults to EMPTY silently changed that to "unbounded", and
-    the create routes generate over ``GenerationSchedule.for_user`` -- every
+    the create routes generate over ``GenerationSchedule.for_pass`` -- every
     period the owner has, with no lower window bound -- so a rent template
     created today wrote projected debits into every pay period that had already
     closed.
@@ -3374,7 +3636,7 @@ class TestACreateDoesNotBackfillClosedPayPeriods:
             txn_type = db.session.query(TransactionType).filter_by(
                 name="Expense",
             ).one()
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None, "fixture must cover today"
@@ -3600,7 +3862,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
         """The arm that already worked, kept so the union cannot lose it."""
         with app.app_context():
             template = _loan_payment_template(seed_user)
-            rule_id = template.recurrence_rule_id
+            rule_id = template.recurrence_rule.id
 
             resp = auth_client.post(
                 f"/transfers/{template.id}",
@@ -3621,7 +3883,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
             db.session.expire_all()
             assert db.session.get(
                 TransferTemplate, template.id,
-            ).recurrence_rule_id == rule_id
+            ).recurrence_rule.id == rule_id
 
     def test_a_loan_payment_with_NO_settings_row_is_refused_too(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3636,9 +3898,14 @@ class TestALoanPaymentCannotBeMadeOneTime:
         with app.app_context():
             loan = create_loan_account(seed_user, db.session)
             template = make_transfer_template(db.session, seed_user, loan)
-            db.session.flush()
+            # COMMITTED, not flushed (plan step balance:X-i3): this case posts
+            # a REFUSAL, so the route redirects without committing, and the
+            # followed redirect is a fresh request that cannot see rows this
+            # fixture never committed.  The sibling above rides
+            # ``_loan_payment_template``, which commits its own.
+            db.session.commit()
             assert template.settings is None, "fixture must have no settings row"
-            rule_id = template.recurrence_rule_id
+            rule_id = template.recurrence_rule.id
 
             resp = auth_client.post(
                 f"/transfers/{template.id}",
@@ -3659,7 +3926,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
             db.session.expire_all()
             assert db.session.get(
                 TransferTemplate, template.id,
-            ).recurrence_rule_id == rule_id
+            ).recurrence_rule.id == rule_id
 
     def test_an_ordinary_transfer_can_still_be_made_one_time(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3694,7 +3961,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
             db.session.expire_all()
             assert db.session.get(
                 TransferTemplate, template.id,
-            ).recurrence_rule_id is None
+            ).recurrence_rule is None
 
 
 class TestAnEditStatesTheOpeningBoundOrSaysNothing:

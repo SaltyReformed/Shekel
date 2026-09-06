@@ -67,6 +67,8 @@ from app.exceptions import ShekelError
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
     NEVER_ENDS,
+    Closing,
+    DerivedStop,
     EndsOnDate,
     RecurrenceGenerationError,
     RecurrenceResolutionError,
@@ -86,7 +88,6 @@ from app.services.recurrence import _months, _occurrence, _resolution
 from app.services.recurrence import EndBound, EndsAfterOccurrences
 from tests.oracles import recurrence_baseline
 from tests.test_services.test_recurrence_resolution import build_calendar
-
 #: The committed R1 snapshot the parallel run is measured against.
 BASELINE_PATH = Path(recurrence_baseline.__file__).with_suffix(".txt")
 
@@ -198,6 +199,7 @@ def resolved_value(
     placement: PeriodPlacementEnum = PeriodPlacementEnum.CONTAINING_DATE,
     shift: BusinessDayShiftEnum = BusinessDayShiftEnum.NONE,
     end_bound: EndBound = NEVER_ENDS,
+    derived: DerivedStop | None = None,
     nominal_day: int | None = None,
 ) -> ResolvedRecurrence:
     """Return a two-axis value stated directly, bypassing ``resolve``.
@@ -222,7 +224,12 @@ def resolved_value(
         offset_periods: Phase within the ``PERIOD`` cycle.
         placement: How an occurrence maps onto a pay period.
         shift: Weekend/holiday adjustment.
-        end_bound: When the recurrence stops.
+        end_bound: The bound the OWNER authored -- when the rule itself says
+            it stops.
+        derived: A stop the definition did NOT author, from something outside
+            the rule (plan step R7d-d).  ``None`` is "nothing outside the rule
+            bounds this", which is every definition whose destination is not a
+            configured loan.
         nominal_day: The day the rule means when the first occurrence's
             month clamped it.
 
@@ -236,7 +243,7 @@ def resolved_value(
         starts_on=starts_on,
         placement=placement,
         shift=shift,
-        end_bound=end_bound,
+        closing=Closing(authored=end_bound, derived=derived),
         nominal_day=nominal_day,
     )
 
@@ -317,28 +324,41 @@ def _day_sweep_occurrences(
 
 def _linear_place(
     day: date, periods: list, placement: PeriodPlacementEnum,
+    cadence_days: int,
 ) -> int | None:
     """Return the index of the period *day* places into, by linear scan.
 
     The independent oracle for placement: no bisect, no calendar object, and
     the two rules written out separately rather than shared with the engine.
 
+    **The ordinal is the POSITION and the span is computed**, since plan step
+    ``pay_calendar:C4-c`` dropped both columns this used to read off the row.
+    That makes the oracle more independent rather than less: it had been
+    reading values the application's own writer had materialised, and it now
+    states the rule itself through
+    ``recurrence_baseline.period_last_covered_day``.
+
     Args:
         day: The date to place.
-        periods: Pay periods in ``period_index`` order.
+        periods: Pay periods in payday order, which is ordinal order.
         placement: Which placement rule to apply.
+        cadence_days: The cadence *periods* was built at, which is what the
+            LAST period's end is projected from.
 
     Returns:
-        The period's ``period_index``, or ``None`` when none qualifies.
+        The period's ordinal, or ``None`` when none qualifies.
     """
     if placement is PeriodPlacementEnum.CONTAINING_DATE:
-        for period in periods:
-            if period.start_date <= day <= period.end_date:
-                return period.period_index
+        for index, period in enumerate(periods):
+            end = recurrence_baseline.period_last_covered_day(
+                periods, cadence_days, index,
+            )
+            if period.start_date <= day <= end:
+                return index
         return None
-    for period in periods:
+    for index, period in enumerate(periods):
         if period.start_date >= day:
-            return period.period_index
+            return index
     return None
 
 
@@ -365,15 +385,21 @@ def _baseline_schedules() -> tuple[list, list]:
 def _empty_calendar() -> PayCalendar:
     """Return the calendar of an owner with no paydays at all.
 
-    ``cadence_days`` is ``None``, which plan step C2-b1 made legal beside an
-    empty payday set and only there: with no last period there is no projected
-    end for it to feed, so the value is provably unread.
+    It carries a real ``cadence_days``, which plan step C4-d made required:
+    this is an owner who HAS a ``budget.pay_schedule`` row and has recorded no
+    payday under it -- the state ``pay_period_admin.reset_pay_periods`` passes
+    through.  *It carried ``None`` until that step, on plan step C2-b1's rule
+    that an absent cadence was legal beside an empty payday set and only there;
+    the owner that stood for has no calendar at all now.*  Nothing here reads
+    the cadence either way: with no last period there is no projected end for
+    it to feed.
 
     Returns:
         The empty :class:`~app.services.pay_calendar.PayCalendar`.
     """
     return PayCalendar.from_paydays(
-        paydays=(), cadence_days=None, user_id=_USER_ID,
+        paydays=(), cadence_days=14, user_id=_USER_ID,
+        history_opens_on=None,
     )
 
 
@@ -618,7 +644,10 @@ class TestTheParallelRun:
             shape.label: shape for shape in recurrence_baseline.build_shapes()
         }
         biweekly, _long = _baseline_schedules()
-        by_index = {period.period_index: period for period in biweekly}
+        # The ordinal is the POSITION in payday order: these rows are the
+        # oracle's own unsaved ones, so no calendar holds them and there is no
+        # stored ordinal to read since plan step ``pay_calendar:C4-c``.
+        by_index = dict(enumerate(biweekly))
         committed = _committed_rows()
 
         for label, (index, occurrence) in _BOUND_DIVERGENCES.items():
@@ -628,9 +657,12 @@ class TestTheParallelRun:
                 f"occurrence of its own cadence"
             )
             period = by_index[index]
-            assert period.start_date <= occurrence <= period.end_date, (
+            period_end = recurrence_baseline.period_last_covered_day(
+                biweekly, recurrence_baseline.SCHEDULE_CADENCE_DAYS, index,
+            )
+            assert period.start_date <= occurrence <= period_end, (
                 f"{label}: period {index} ({period.start_date}.."
-                f"{period.end_date}) does not contain {occurrence}, so it is "
+                f"{period_end}) does not contain {occurrence}, so it is "
                 f"not the row a period-bounded matcher would have generated"
             )
             # The opening side needs no ``is not None`` guard since plan step
@@ -672,7 +704,10 @@ class TestTheParallelRun:
                 first_day, last_day, base_month, month_step, nominal_day,
             )
             expected = [
-                (day, _linear_place(day, long_periods, placement))
+                (day, _linear_place(
+                    day, long_periods, placement,
+                    recurrence_baseline.LONG_CADENCE_DAYS,
+                ))
                 for day in swept
             ]
             assert placements[label] == expected, (
@@ -730,10 +765,10 @@ class TestTheParallelRun:
         2026-08-07).  Two months of rent funded by one paycheck are two
         obligations: summing at generation would lose which month is unpaid,
         break an amount that changes mid-group, and put one row in front of
-        two events.  ``idx_transactions_template_period_scenario`` cannot hold
-        them today -- it is UNIQUE over ``(template, period, scenario)`` -- and
-        re-keying it onto the occurrence is plan step R5's work, in the
-        migration that renames ``due_date`` to ``occurs_on``.
+        two events.  The paycheck-keyed index could not hold them, which is why
+        generation REFUSED such a cadence outright; plan step **R17** re-keyed
+        it onto ``(template, scenario, occurs_on)``, so both rows are now
+        written and stored and this producer's answer is one a pass can act on.
         """
         _biweekly, long_periods = _baseline_schedules()
         placements = _new_engine_placements()["long_cadence.monthly_first"]
@@ -1021,15 +1056,137 @@ class TestThePeriodUnit:
         assert placed_indices(containing, calendar) == list(range(61))
         assert placed_indices(on_or_after, calendar) == list(range(61))
 
-    def test_a_bound_past_the_horizon_fires_nowhere(self):
-        """No paycheck exists past the schedule, so nothing is emitted."""
+    def test_a_rule_starting_past_the_horizon_fires_on_projected_paydays(self):
+        """The cadence names paydays the SAVED schedule has not reached.
+
+        **The control for plan step R16-b-1**, and it asserted the opposite
+        until then: ``_period_walk`` iterated the saved periods, so a rule
+        anchored past the horizon answered ``[]`` and raised nothing.  Its
+        premise -- "no paycheck exists past the schedule" -- is the thing that
+        step measures false.  A saved schedule is where rows have been
+        MATERIALISED; the owner goes on being paid, so the cadence goes on
+        firing.
+
+        The expected dates are computed from the schedule's OWN arithmetic
+        (first payday plus 14n), never read off the engine: 61 saved periods
+        run out at index 60 / ``2028-07-13``, the first paycheck not ending
+        before ``2030-01-01`` is index 98 / ``2029-12-27``, and index 228 /
+        ``2034-12-21`` is the last opening on or before ``2035-01-01``.
+        """
         calendar = build_calendar()
         value = resolved_value(
             unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2030, 1, 1),
         )
 
-        assert dates_through(value, calendar, date(2035, 1, 1)) == []
+        emitted = dates_through(value, calendar, date(2035, 1, 1))
+
+        assert emitted == [
+            date(2026, 3, 26) + timedelta(days=14 * index)
+            for index in range(98, 229)
+        ]
+        assert len(emitted) == 131
+        assert emitted[0] == date(2029, 12, 27)
+        assert emitted[-1] == date(2034, 12, 21)
+
+    def test_an_occurrence_past_the_horizon_places_nowhere(self):
+        """Firing is a fact about the CADENCE; placing is one about the schedule.
+
+        The half of the retired
+        ``test_a_bound_past_the_horizon_fires_nowhere`` that is still true, and
+        keeping the two apart is the whole distinction plan step R16-b-1 draws:
+        a projected payday is not a row either placement search can return, so
+        ``occurrence_placements`` still answers ``()`` while
+        :meth:`test_a_rule_starting_past_the_horizon_fires_on_projected_paydays`
+        gets 131 dates from the same value.
+        """
+        calendar = build_calendar()
+        value = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2030, 1, 1),
+        )
+
         assert occurrence_placements(value, calendar) == ()
+        # And with the window stated explicitly, every pair carries no period
+        # rather than the composition dropping them.
+        past_horizon = occurrence_placements(
+            value, calendar, through=date(2030, 3, 1),
+        )
+        assert len(past_horizon) == 5
+        assert all(pair.period is None for pair in past_horizon)
+
+    def test_the_phase_keeps_stepping_across_the_saved_horizon(self):
+        """A multi-period cadence does not restart or skip at the boundary.
+
+        The projected paychecks continue the saved ``period_index`` sequence
+        (:func:`app.services.pay_calendar._derive.project_period_after`), so
+        ``(index - offset) % interval_n`` spans the boundary.  Index 60 is the
+        last saved and IS in phase for a 3-period rule anchored at index 0, so
+        a walk that restarted its count past the horizon would emit index 61 or
+        62 next instead of 63.
+        """
+        calendar = build_calendar()
+        value = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD,
+            starts_on=date(2026, 3, 26),
+            interval_n=3,
+        )
+
+        emitted = dates_through(value, calendar, date(2028, 10, 1))
+
+        assert emitted == [
+            date(2026, 3, 26) + timedelta(days=14 * index)
+            for index in range(0, 64, 3)
+        ]
+        # The saved run ends at index 60 (2028-07-13); the next in-phase
+        # paycheck is 63, not 61 or 62.
+        assert emitted[-2] == date(2028, 7, 13)
+        assert emitted[-1] == date(2028, 8, 24)
+
+    def test_a_count_bound_counts_paychecks_the_schedule_has_not_saved(self):
+        """"Stop after 70" fires 70 times on a 61-period schedule.
+
+        :class:`~app.services.recurrence.EndsAfterOccurrences` states that the
+        count is of occurrences the CADENCE names, "including any the saved
+        schedule does not reach and never places".  That was a documented
+        contract this unit did not honour: the truncating walk ran out of saved
+        periods at 61, so the bound was satisfied by the schedule's length
+        rather than by the rule's own count.
+        """
+        calendar = build_calendar()
+        value = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD,
+            starts_on=date(2026, 3, 26),
+            end_bound=EndsAfterOccurrences(count=70),
+        )
+
+        emitted = dates_through(value, calendar, date(2040, 1, 1))
+
+        assert len(emitted) == 70
+        # The 70th occurrence is index 69, nine paychecks past the saved run.
+        assert emitted[-1] == date(2028, 11, 16)
+
+    def test_the_walk_stops_at_the_applications_last_calendar_day(self):
+        """An unbounded rule asked past the calendar TERMINATES.
+
+        :func:`_bounded` stops on the first occurrence past the caller's
+        window, so a walk whose window lies beyond every date this application
+        can express has to run out on its own.
+        :func:`~app.services.pay_calendar.paychecks_from` bounds it
+        at :data:`~app.utils.dates.CALENDAR_DATE_MAX` exactly as
+        :func:`~app.services.recurrence._months.walk_months` does, so the
+        sequence is finite and a consumer that forgets to stop pulling does not
+        hang.
+        """
+        calendar = build_calendar()
+        value = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 3, 26),
+        )
+
+        emitted = dates_through(value, calendar, date(2200, 1, 1))
+
+        # 2026-03-26 + 14 x 1950 = 2100-12-23; the next payday, 2101-01-06,
+        # is past CALENDAR_DATE_MAX and is never named.
+        assert emitted[-1] == date(2100, 12, 23)
+        assert len(emitted) == 1951
 
 
 @pytest.mark.usefixtures("app")
@@ -1275,6 +1432,7 @@ class TestTheClosingBounds:
             paydays=[(1, date(2026, 1, 1)), (2, date(2026, 1, 15))],
             cadence_days=14,
             user_id=_USER_ID,
+            history_opens_on=None,
         )
         value = resolved_value(
             unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 1, 20),
@@ -1709,6 +1867,7 @@ class TestTheScheduleSearches:
             ],
             cadence_days=14,
             user_id=_USER_ID,
+            history_opens_on=None,
         )
 
         day = calendar.opening_bound()

@@ -90,6 +90,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
+from app.models.account_opening import AccountOpening
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.utils.balance_predicates import (
@@ -103,6 +104,58 @@ from ._amounts import ReconciledThrough
 from ._cash_leg import settled_cash_leg
 from ._clearing import StatementCoverage, statement_coverage
 from ._facts import _unwindowed_contributing_rows
+
+
+@dataclass(frozen=True)
+class CashOpeningFact:
+    """What an account held BEFORE its records begin, as a loaded fact.
+
+    The governing :class:`~app.models.account_opening.AccountOpening` row for
+    one account (plan step **X-f3c-2a**, ruling **R-GX**), read once per walk
+    and carried on :class:`~._walk.CashLedgerWalk` beside the assertions and the
+    movements.  It is the LEVEL the fold's running total starts from: every
+    balance the app renders is this figure plus what the records say happened
+    since.
+
+    **It replaces a derivation, and the model docstring lists the four defects
+    that derivation caused.**  Until this step the same quantity was recomputed
+    on every read as "the earliest assertion minus the movements dated at or
+    before it" (ruling **R-I**), which made it move when an assertion was
+    back-dated, differ between scenarios, impossible to correct, and derived a
+    second time by the posted ledger.
+
+    Attributes:
+        opening_id: The ``budget.account_openings`` row's own id -- the
+            restatement this fact is, so a reader can tell two apart.
+        account_id: The account whose books these are.
+        opened_on: The civil day the books opened.  The ``account_opening``
+            journal entry is dated on it, which is what stops a back-dated
+            assertion re-dating that entry.
+        opening_equity: The capital the books opened with, LEDGER-NATIVE and
+            in the same sign convention as
+            :attr:`CashAnchorFact.anchor_balance`.
+        source_id: ``ref.account_opening_sources.id`` -- whether a human stated
+            this figure or the X-f3c-2a migration derived it.  Carried because
+            a derived figure is the old inference frozen and may be WRONG
+            (finding **N-275** measures one wrong by ``$436.05``), so a surface
+            must be able to tell a guess from an observation.  The walk itself
+            never branches on it: an opening is an opening whatever wrote it.
+        recorded_at: The RECORDING instant, aware-UTC.  It is what ORDERS the
+            restatements (see :func:`account_opening_fact`) and it dates
+            nothing -- :attr:`opened_on` is the business date, the same
+            two-clock split :attr:`CashAnchorFact.asserted_at` documents one
+            table over.  Carried since plan step **X-f3c-2b** so the history
+            card can caption a RESTATED opening the way it captions a
+            back-dated assertion: books opening in March, recorded in August,
+            is a fact the owner should be able to see rather than infer.
+    """
+
+    opening_id: int
+    account_id: int
+    opened_on: date
+    opening_equity: Decimal
+    source_id: int
+    recorded_at: datetime
 
 
 @dataclass(frozen=True)
@@ -172,16 +225,34 @@ class CashAnchorFact:
             business date and one is a tie-break over assertions about the same
             business date.  It was the partition key until ruling R-DH, which is
             what cost production ``$4,001.42`` (see the module docstring).
+        recorded_on: The civil day the assertion was ENTERED, in the user's
+            timezone.  **Read from the stored
+            ``account_anchor_history.recorded_on``, not derived from
+            :attr:`asserted_at`** (finding **N-299**, developer ruling
+            2026-08-25).  It partitions nothing and orders nothing; its one
+            reader is the balance-history card, which captions a row as
+            back-dated when it differs from :attr:`observed_on`.  Deriving it
+            put that comparison across two clocks -- this column is the
+            APPLICATION's ``display_today()`` and :attr:`asserted_at` is
+            PostgreSQL's ``now()`` -- so an ordinary same-day true-up read as
+            back-dated wherever the two could disagree.  Nothing else in the
+            walk may read it: an assertion's effect on a balance is a function
+            of :attr:`observed_on` alone.
         is_opening: True for the account's first history row; False for a
             true-up.  **A LABEL, not a partition input** (finding N-133 / F1):
             the walk treats both kinds identically -- an assertion closes its
-            civil day, whichever kind it is -- and this flag survives only for
-            the two places the DISTINCTION is real: the posting source kind an
-            assertion books under (``account_opening`` vs ``account_trueup``,
-            ``account_posting_service._anchors``) and ruling R-I's back-
-            projection, which moves the FIRST assertion's correction into the
-            fold's seed.  It was a partition input for one day and cost
-            ``$2,057.42`` of period 0's remainder while it was.
+            civil day, whichever kind it is.  It was a partition input for one
+            day and cost ``$2,057.42`` of period 0's remainder while it was.
+
+            **NOTHING reads it any more, and plan step X-f3c-2a is why.**  Its
+            two consumers were the posting source kind an assertion books under
+            and ruling R-I's back-projection; the first reads
+            ``AccountAnchorCorrection.opens_the_books`` now (a stored fact) and
+            the second is deleted.  The balance-history card's "Opening" badge
+            asks ``budget.account_openings`` which day the books opened rather
+            than which assertion sorts first.  The field is kept because the
+            walk's ORDERING contract is still load-bearing and this is the
+            cheapest statement of it; it decides no figure.
     """
 
     anchor_id: int
@@ -189,6 +260,7 @@ class CashAnchorFact:
     anchor_balance: Decimal
     observed_on: date
     asserted_at: datetime
+    recorded_on: date
     is_opening: bool
 
     @property
@@ -273,11 +345,12 @@ class CashSourceFact:
     amount on three rows whose entries are all credit (their true checking effect
     is ``$0.00`` and the ledger correctly posts nothing at all).
 
-    The projection's own read-time adjustments cannot reach a settled row and are
-    deliberately not applied: the entries-aware RESERVATION models money still to
-    leave (this has left), and the live override map is built from
-    ``income_service.live_projected_net`` / ``LoanPricing.live_cash``, both of
-    which filter to ``is_projected`` candidates.
+    The projection's own read-time adjustment cannot reach a settled row and is
+    deliberately not applied: the entries-aware RESERVATION models money still
+    to leave, and this has left.  *A live OVERRIDE map used to be named here as
+    a second such adjustment; both its producers are deleted -- ``LoanPricing.live_cash``
+    at plan step X-au-g-2c-2 and ``income_service.live_projected_net`` at
+    X-au-d -- because a derived row stores no figure for one to supersede.*
 
     Attributes:
         transaction_id: The source row's id -- the transaction itself, or for a
@@ -353,6 +426,122 @@ class CashSourceFact:
     delta: Decimal
 
 
+def governing_account_opening(account_id: int) -> CashOpeningFact | None:
+    """Return *account_id*'s governing opening record, or ``None`` for no row.
+
+    **The WRITE door's question**, and the non-raising twin of
+    :func:`account_opening_fact` exactly as
+    :func:`~._facts.governing_anchor_on` is :func:`~._facts.resolve_anchor`'s
+    (plan step **X-f3c-2b-2a**).  Before appending a restatement, the door has
+    to know what already stands so it can decline a submission that changes
+    nothing (ruling **R-EQ**'s rule, one table over) -- and
+    ``account_service.create_account`` reaches the same writer with an account
+    that by construction carries none.  "This account has no opening yet" is an
+    honest answer to a writer where it is a broken invariant to a reader, which
+    is why the two policies are two functions over ONE query rather than one
+    function with a flag.
+
+    **The order is ``id`` DESC alone, and the term it LOST is the interesting
+    half.**  The positional read plan step X-f3c-2a deleted
+    (``is_opening = index == 0``) ordered by ``observed_on``, a business date
+    any owner may back-date, so an ordinary act silently re-elected the
+    opening.  Its replacement led on ``created_at``, justified as "set by the
+    database on INSERT and therefore monotone in recording order" -- **which is
+    false, and plan step X-f3c-2b-2a's review measured what it cost.**
+    :class:`app.models.mixins.CreatedAtMixin` defaults the column to
+    ``db.func.now()``, and PostgreSQL's ``now()`` is ``transaction_timestamp()``
+    -- the instant the transaction BEGAN.  Two restatements from two tabs can
+    therefore commit in the opposite order to their instants, and the second
+    one's row sorts BELOW the row it was meant to supersede: the owner is told
+    "Books restated" and nothing moves.
+    :func:`app.services.anchor_service._governing_loan_anchor` already stated
+    the ``now()`` fact for the loan twin; this door never carried it across.
+
+    ``id`` is a sequence value allocated when the INSERT executes, and
+    :func:`app.services.opening_service.stage_account_opening` holds
+    ``lock_user_writes`` across its compare-and-append, so within one account
+    the id order IS the order the owner made the statements.  The SQL tier
+    orders identically from one stated constant
+    (:data:`app.opening_infrastructure.GOVERNING_ORDER_SQL`), so the Python
+    reader and the database constraint cannot disagree about which restatement
+    is in force.
+
+    Args:
+        account_id: The account whose opening to load.
+
+    Returns:
+        The governing :class:`CashOpeningFact`, or ``None`` when the account
+        carries no ``budget.account_openings`` row at all.
+    """
+    row = (
+        db.session.query(AccountOpening)
+        .filter_by(account_id=account_id)
+        .order_by(AccountOpening.id.desc())
+        .first()
+    )
+    if row is None:
+        return None
+    return CashOpeningFact(
+        opening_id=row.id,
+        account_id=account_id,
+        opened_on=row.opened_on,
+        opening_equity=Decimal(str(row.opening_equity)),
+        source_id=row.source_id,
+        # Normalised the same way ``cash_anchor_facts`` normalises an
+        # assertion's instant: PostgreSQL hands back an aware value, and
+        # ``utc_instant`` is where a naive one from a fixture is refused
+        # rather than compared against an aware one further downstream.
+        recorded_at=utc_instant(row.created_at),
+    )
+
+
+def account_opening_fact(account_id: int) -> CashOpeningFact:
+    """Return *account_id*'s GOVERNING opening-equity record.
+
+    The level a cash fold starts from (plan step **X-f3c-2a**).  The table is
+    append-only, so an account may carry several rows -- each a restatement of
+    what its books opened with -- and the one with the greatest ``id`` governs.
+    Which row that is comes from :func:`governing_account_opening`, whose
+    docstring states why the order lost its ``created_at`` term at plan step
+    **X-f3c-2b-2a**; this adds the READER's policy for an account that carries
+    none, and nothing else.
+
+    **It RAISES on an account with no row, and that is reachable only through a
+    broken invariant.**  Every account gets one at creation
+    (``account_service.create_account``) and migration ``a7c41f9d2b60``
+    backfilled every account that predated the table -- including the two
+    amortizing loans, because ``balance_at.balance_at`` falls through to this
+    fold for an amortizing account carrying no ``LoanParams``.  Answering a
+    missing row with ``Decimal("0.00")`` was the alternative and it is exactly
+    the fabrication that step exists to delete: it would silently move every
+    balance on the account to a level nothing recorded.  The same fail-loud
+    placement :func:`~._facts.resolve_anchor` documents for the assertion half.
+
+    Args:
+        account_id: The account whose opening to load.
+
+    Returns:
+        The account's governing :class:`CashOpeningFact`.
+
+    Raises:
+        RuntimeError: When the account carries no ``AccountOpening`` row --
+            a broken invariant, not an empty state.
+    """
+    fact = governing_account_opening(account_id)
+    if fact is None:
+        raise RuntimeError(
+            f"account_opening_fact: account id={account_id} has zero "
+            "AccountOpening rows.  Every account carries one -- "
+            "account_service.create_account writes it and migration "
+            "a7c41f9d2b60 backfilled every account that predated the table -- "
+            "so investigate any code path that constructed the Account row "
+            "without routing through the canonical factory.  A balance cannot "
+            "be folded without the level it starts from, and answering 0.00 "
+            "would move every figure on this account silently."
+        )
+    return fact
+
+
 def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
     """Return an account's balance assertions as facts, in assertion order.
 
@@ -367,15 +556,18 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
     ``(created_at, id)`` while ``observed_on`` was DERIVED from ``created_at``
     and therefore monotone in it; plan step 2 made the column user-supplied and
     broke that, so the loader now states the order the partition actually uses.
-    Getting this wrong is not cosmetic: the flag chooses which correction books
-    ``account_opening`` versus ``account_trueup``
-    (:func:`app.services.account_posting_service._anchors._account_correction_kinds`)
-    while ruling R-I's seed takes ``anchor_corrections[0]`` and the period
-    view's assertion component takes ``[1:]``
-    (:mod:`app.services.balance_at._cash_fold`) -- three consumers, one of them
-    keyed on the flag and two on the position. Ordering here is what keeps
-    "the FIRST is the opening" a single true statement rather than three that
-    happen to agree.  Measured: a fixture that pinned a true-up's instant to an
+    Getting this wrong is not cosmetic, though what it costs CHANGED at plan
+    step X-f3c-2a.  It used to choose which correction books
+    ``account_opening`` versus ``account_trueup`` and which one the fold's seed
+    swallowed -- three consumers, one keyed on the flag and two on the
+    position, which is why "the FIRST is the opening" had to be a single true
+    statement rather than three that happen to agree.  All three read
+    ``budget.account_openings`` now.  What still rests on this order is the
+    REPLAY: :func:`app.services.balance_at._assertions.assertion_corrections`
+    walks the assertions in it, and each correction is measured against the one
+    before, so a mis-ordered pair still moves two corrections.
+
+    Measured: a fixture that pinned a true-up's instant to an
     exact second while the origination carried the same second plus microseconds
     inverted the two and posted a ``$1,307.66`` true-up to the ledger as the
     account's OPENING.
@@ -420,6 +612,11 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
             # figure and every row keeps the day the engine already gave it.
             observed_on=row.observed_on,
             asserted_at=utc_instant(row.created_at),
+            # The day it was TYPED, stored rather than converted out of
+            # ``created_at`` -- finding N-299.  See the attribute's docstring:
+            # the caption that reads it compares against ``observed_on``, and
+            # the two must come off one clock.
+            recorded_on=row.recorded_on,
             is_opening=(index == 0),
         )
         for index, row in enumerate(rows)
@@ -432,10 +629,12 @@ def coverage_for(account_id: int) -> StatementCoverage:
     The DATABASE twin of :func:`~._clearing.statement_coverage`, for the callers
     that do not already hold an account's facts -- the entry list's indicator,
     reached from the grid (``entry_service.build_entry_lists_dict``) and from
-    the HTMX refresh (``routes/entries.py``).  The entry RESERVATION is not one
-    of them: it takes ``walk.coverage`` off the read pass's own walk
-    (``balance_at._cash_fold``), and the reconcile panel takes the governing
-    assertion itself (``cash_ledger.governing_anchor``).  It exists for the
+    the HTMX refresh (``routes/entries.py``).  Neither the entry RESERVATION nor
+    the reconcile panel is one of them: ruling **R-FM** dissolved the
+    reservation's question at plan step X-f3b, the panel takes the governing
+    assertion itself (``cash_ledger.governing_anchor``), and since plan step
+    X-f3c-1 the ONE reader of ``walk.coverage`` in ``app/`` is the fold's
+    assertion replay (``balance_at._assertions.assertion_corrections``).  It exists for the
     reason :func:`~._facts.reconciled_through` exists beside
     :attr:`~._walk.CashLedgerWalk.reconciled_through` -- a caller holding the
     walk must not pay a query, and a caller rendering one template row must not
@@ -553,8 +752,12 @@ def settled_cash_facts(
     valued and dated once, and both carry the budget column they were attributed
     to, so the ONE valued row set can be grouped on either clock (see
     :class:`CashSourceFact`).  For the transaction half both extra fields are
-    free: the shared loader already joins ``pay_period``, and the transaction
-    TYPE is a column on the row it already holds.
+    free: the budget column is the row's own ``pay_period_id`` and the
+    transaction TYPE is a column beside it, so neither costs a join.  *That
+    first clause read "the shared loader already joins ``pay_period``" until
+    pay-calendar plan step C4-a-1 deleted that eager load; the field this
+    carries was never the relationship, and saying it was made a stale
+    justification out of a true sentence.*
 
     **It loads its own rows and takes no period window, deliberately.**  An
     argument a caller can get wrong is a defect, not a contract (plan Section 8):
@@ -568,8 +771,8 @@ def settled_cash_facts(
     scenario scope, the shared
     :func:`~app.utils.balance_predicates.balance_contributing_clause` eligibility
     gate (``is_deleted = FALSE AND status_id NOT IN (Credit, Cancelled)``) and
-    both eager loads are stated once for the two halves of the event stream
-    rather than copied per half.  One gate for both halves is what makes the
+    its ``selectinload(entries)`` are stated once for the two halves of the
+    event stream rather than copied per half.  One gate for both halves is what makes the
     SETTLED and PLANNED tiers a partition of the contributing set rather than
     two filters that could disagree about which rows exist at all.
 

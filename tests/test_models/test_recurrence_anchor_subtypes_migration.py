@@ -52,7 +52,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.audit_infrastructure import AUDITED_TABLES
-from tests._test_helpers import load_migration_module
+from tests._test_helpers import bare_expense_template, load_migration_module
 
 _MIGRATION_FILENAME = "c8f2b6a41d93_add_recurrence_anchor_subtypes.py"
 _MIGRATION = load_migration_module(_MIGRATION_FILENAME)
@@ -98,8 +98,14 @@ _SUBTYPE_TABLES: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: producing exactly one row.  R9 dropped that table; a ``VALUES`` clause is
 #: what the statement always meant, and the scalar subqueries below are legal
 #: there unchanged.
+#: **``user_id`` became ``transaction_template_id`` at plan step R-F6**, which
+#: moved the owning FK onto this table: a rule belongs to exactly one
+#: definition (``ck_recurrence_rules_one_owner``), so the ``:u`` parameter
+#: below binds a TEMPLATE id rather than a user id.  The callers pass one from
+#: ``bare_expense_template``.
 _STORABLE_RULE_COLUMNS = (
-    "user_id, interval_n, unit_id, placement_id, shift_id, starts_on"
+    "transaction_template_id, interval_n, unit_id, placement_id, shift_id, "
+    "starts_on"
 )
 _STORABLE_RULE_VALUES = (
     ":u, 1, "
@@ -120,7 +126,7 @@ def _insert_rule_sql(extra_columns="", extra_values="", returning=""):
         returning: A ``RETURNING`` clause, or ``""``.
 
     Returns:
-        str: The SQL, taking a ``:u`` owner parameter.
+        str: The SQL, taking a ``:u`` OWNING-TEMPLATE parameter.
     """
     return (
         f"INSERT INTO budget.recurrence_rules "
@@ -223,7 +229,7 @@ class TestRuleCheckConstraintsReject:
                 db.session.execute(text(_insert_rule_sql(
                     extra_columns=", end_date, max_occurrences",
                     extra_values=", DATE '2026-12-31', 12",
-                )), {"u": seed_user["user"].id})
+                )), {"u": bare_expense_template(db.session, seed_user).id})
             db.session.rollback()
 
     def test_zero_max_occurrences_is_refused(self, app, db, seed_user):
@@ -232,7 +238,7 @@ class TestRuleCheckConstraintsReject:
             with pytest.raises(IntegrityError, match="positive_max_occurrences"):
                 db.session.execute(text(_insert_rule_sql(
                     extra_columns=", max_occurrences", extra_values=", 0",
-                )), {"u": seed_user["user"].id})
+                )), {"u": bare_expense_template(db.session, seed_user).id})
             db.session.rollback()
 
 
@@ -291,7 +297,7 @@ class TestSubtypeTables:
         with app.app_context():
             rule_id = db.session.execute(text(
                 _insert_rule_sql(returning="RETURNING id")
-            ), {"u": seed_user["user"].id}).scalar()
+            ), {"u": bare_expense_template(db.session, seed_user).id}).scalar()
             db.session.execute(text(
                 "INSERT INTO budget.recurrence_weekday_anchors "
                 "  (recurrence_rule_id, nth_week, weekday) "
@@ -310,7 +316,7 @@ class TestSubtypeTables:
         with app.app_context():
             rule_id = db.session.execute(text(
                 _insert_rule_sql(returning="RETURNING id")
-            ), {"u": seed_user["user"].id}).scalar()
+            ), {"u": bare_expense_template(db.session, seed_user).id}).scalar()
             db.session.execute(text(
                 "INSERT INTO budget.recurrence_weekday_anchors "
                 "  (recurrence_rule_id, nth_week, weekday) "
@@ -355,7 +361,7 @@ class TestSubtypeTables:
         with app.app_context():
             rule_id = db.session.execute(text(
                 _insert_rule_sql(returning="RETURNING id")
-            ), {"u": seed_user["user"].id}).scalar()
+            ), {"u": bare_expense_template(db.session, seed_user).id}).scalar()
             with pytest.raises(IntegrityError, match=constraint):
                 db.session.execute(text(
                     "INSERT INTO budget.recurrence_weekday_anchors "
@@ -388,7 +394,7 @@ class TestSubtypeTablesAreAudited:
         with app.app_context():
             rule_id = db.session.execute(text(
                 _insert_rule_sql(returning="RETURNING id")
-            ), {"u": seed_user["user"].id}).scalar()
+            ), {"u": bare_expense_template(db.session, seed_user).id}).scalar()
             db.session.execute(text(
                 "INSERT INTO budget.recurrence_weekday_anchors "
                 "  (recurrence_rule_id, nth_week, weekday) "

@@ -1,20 +1,34 @@
 {# Reusable confirmation modal -- replaces browser confirm() dialogs.
 
-   Usage on any form:
+   TWO ways in, both handled by the one block in confirm.js, which
+   base.html loads in <head> so it binds before the controls exist
+   (plan step bank_import:X-gc):
+
      <form method="POST" action="..." data-confirm="Are you sure?">
        <button type="submit">Delete</button>
      </form>
 
-   The JS in app.js intercepts submit, shows this modal, and only submits on confirm.
+     <button hx-delete="..." hx-confirm="Delete this? It also ...">
+
+   The first is intercepted on submit and the second on htmx:confirm; either
+   way the message lands in #confirmModalBody and the act runs only on Confirm.
+
+   NOT modal-sm, and the body keeps its line breaks (plan step
+   bank_import:X-gb).  Every message here is a DISCLOSURE -- what goes, what it
+   is worth, what else moves -- and the longest of them run four sentences: the
+   statement screen's Undo names rows and dollars, and the grid's Delete names
+   the bank lines that become unexplained again.  A small dialog rendered those
+   as a wall, which is how a reader learns to click through the one dialog that
+   mattered.
 #}
 <div class="modal fade" id="confirmModal" tabindex="-1" aria-labelledby="confirmModalLabel">
-  <div class="modal-dialog modal-sm modal-dialog-centered">
+  <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
         <h5 class="modal-title" id="confirmModalLabel">Confirm</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
-      <div class="modal-body" id="confirmModalBody">
+      <div class="modal-body confirm-modal-body" id="confirmModalBody">
         Are you sure?
       </div>
       <div class="modal-footer">

@@ -35,6 +35,16 @@ chips, top movers) retired with D7: the per-period trend basis misled on a
 month-anchored page, so the surface's only change basis is now
 window-over-window.
 
+**The producer answers THREE window types and the surface exposes ONE**, which
+is the S-P1 gate ruling deferring the pay-period and year pickers rather than
+cancelling them -- so `/analytics/spending` builds only month windows and
+:func:`app.routes.analytics_view.serialize_spending_chart` has only a month
+branch.  A pay-period report is therefore computable and not renderable today.
+The arm is maintained rather than deleted because plan step **C4-c** dropped the
+``period_index`` column every "which paycheck precedes this one" answer used to
+read, and an arm that reads it owes that conversion whichever surface reaches it
+(developer ruling 2026-08-19, at plan step C2-f3d).
+
 The Spending surface is MEASURED: settled-only, scoped to the user's active
 checking account (the audit's target-IA row).  It carries the account
 name / id and the settled-only flag so the template can label the scope on
@@ -73,6 +83,7 @@ or a template names, so no consumer reaches into a submodule.
 from app.models.transaction import Transaction
 from app.services import spending_analysis
 from app.services.account_resolver import resolve_analytics_account
+from app.services.cash_ledger import amount_basis
 from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 
@@ -97,7 +108,7 @@ from ._window import (
     _build_series,
     _load_window,
     _resolve_window,
-    _shift_window,
+    _series_windows,
     _window_total,
     _window_transactions,
 )
@@ -145,7 +156,10 @@ def compute_spending_report(
     Raises:
         ValueError: An invalid window (``validate_window``), or -- as its
             ``PayCalendarError`` subclass, newly reachable at plan step C2-f1
-            -- an owner whose paydays cannot define a calendar (finding **P8**).
+            -- an owner whose paydays cannot define a calendar.  *Finding
+            **P8** named the route that made that reachable from a page, and
+            plan step C4-b-2 closed it: the inferred cadence is gone and the
+            stored one is bounded to the range the derivation enforces.*
     """
     spending_analysis.validate_window(
         window.window_type, window.period_id, window.month, window.year,
@@ -166,10 +180,16 @@ def compute_spending_report(
     txns = _window_transactions(ids, resolved)
     viewed_total = _window_total(resolved, txns)
 
+    # The chart's twelve windows are DERIVED once, off the calendar the
+    # scope already carries (plan step C2-f3d): the prior window is the
+    # second-to-last slot rather than a separate backwards step, so the
+    # figure the hero compares against and the bar beside it are one answer.
+    windows = _series_windows(ids, window)
+    prior_window = windows[-2]
+
     # The prior window loads once: its transactions feed the per-category
     # deltas AND its total feeds both the series' step-1 point and the
     # hero's vs-prior baseline (one load, three consumers that must agree).
-    prior_window = _shift_window(user_id, window, 1)
     if prior_window is None:
         prior_txns: list[Transaction] = []
         prior_total = None
@@ -177,9 +197,8 @@ def compute_spending_report(
         prior_txns, prior_total = _load_window(ids, prior_window)
 
     series = _build_series(
-        ids, window,
+        ids, windows,
         viewed_total=viewed_total,
-        prior_window=prior_window,
         prior_total=prior_total,
     )
 
@@ -193,9 +212,22 @@ def compute_spending_report(
             settled_only=True,
             window_label=resolved.label,
         ),
-        hero=_build_hero(txns, series),
+        hero=_build_hero(txns, series, current_by_cat),
         series=series,
         breakdown=_build_breakdown(current_by_cat, prior_by_cat),
         changes=_build_changes(current_by_cat, prior_by_cat),
-        surprises=_build_surprises(txns),
+        # ONE basis for the pass.  The surprises list needs it to price a
+        # row whose plan the amount-source cutovers declared derived;
+        # every other consumer here values through
+        # ``row_valuation.owned_contribution``, which answers a settled
+        # row from its SETTLEMENT record and never reaches the amount
+        # model, so this is the package's only basis and costs no query
+        # (both of its derivations are lazy).
+        #
+        # It is built at the call rather than carried on ``_ScopeIds``
+        # beside the calendar, which is where a SECOND consumer would want
+        # it -- the calendar rides there for exactly that reason (C2-f1).
+        # With one consumer there is nothing yet to keep in step; the day a
+        # second appears in this package it belongs on the scope object.
+        surprises=_build_surprises(txns, amount_basis(user_id, scenario.id)),
     )

@@ -15,21 +15,24 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import AmountSourceEnum, StatusEnum
 from app.models.escrow_line import EscrowComponentVersion
 from app.models.loan_features import RateHistory
 from app.services import loan_loaders, transfer_service
+from app.services.row_valuation import owned_contribution
 from app.services.balance_at._plan import (
     _PAYOFF_EXTENSION_MONTHS,
-    fold_forward,
     loan_plan,
     memoized_plan,
 )
+from app.services.balance_at._plan_fold import fold_forward
 from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._context import _memoize_once
+from app.exceptions import AmountUnresolvable, ForeignAccountError
+from app.models.account import Account
 from tests._test_helpers import (
     add_escrow_line,
     create_loan_account,
@@ -37,6 +40,7 @@ from tests._test_helpers import (
     freeze_today,
     loan_income_shadow,
 )
+from app.services.amount_ownership import declare_derived
 
 #: The read instant for the early-settled-payment case ONLY -- deliberately
 #: later than the module-wide :data:`_AS_OF` below, because that case is about a
@@ -79,6 +83,7 @@ def test_a_loan_with_no_recurring_payment_is_all_estimated_future_installments(
     account, ctx = _configured_loan(seed_user, db)
 
     plan = loan_plan(account, ctx)
+    payments = plan.payments
 
     # The contractual schedule the ESTIMATED tier draws from, for cross-checking.
     contractual = contractual_schedule_from_origination(
@@ -87,11 +92,11 @@ def test_a_loan_with_no_recurring_payment_is_all_estimated_future_installments(
     future_rows = [row for row in contractual if row.payment_date >= _AS_OF]
 
     # Every plan entry is ESTIMATED (no records exist).
-    assert plan, "a configured loan must project a forward plan"
-    assert all(payment.is_estimated for payment in plan)
+    assert payments, "a configured loan must project a forward plan"
+    assert all(payment.is_estimated for payment in payments)
 
     # The plan splits into the future CONTRACTUAL installments then the EXTENSION.
-    plan_due = [p.due_date for p in plan]
+    plan_due = [p.due_date for p in payments]
     contractual_due = plan_due[:len(future_rows)]
     extension_due = plan_due[len(future_rows):]
 
@@ -109,15 +114,18 @@ def test_a_loan_with_no_recurring_payment_is_all_estimated_future_installments(
     # The extension pays the level P&I -- equal to a NON-last contractual
     # installment's payment (05-01 here; no standing extra) -- not the reduced
     # absorbed amount of the final contractual row.
-    first_extension = plan[len(future_rows)]
+    first_extension = payments[len(future_rows)]
     assert first_extension.cash == future_rows[0].payment
-    assert first_extension.escrow == Decimal("0.00")
     # The CONTRACTUAL ESTIMATED cash is the contractual P&I, escrow-free; the
     # effective date is the due date (all future, so the as_of + 1d clamp is a no-op).
-    for payment, row in zip(plan, future_rows):
+    for payment, row in zip(payments, future_rows):
         assert payment.cash == row.payment
-        assert payment.escrow == Decimal("0.00")
         assert payment.effective_date == payment.due_date
+    # The escrow is the ACCRUAL's since plan step R16-a: a month impounds it, not
+    # a payment.  This loan escrows nothing, and there is exactly one charge per
+    # period the payments occupy.
+    assert all(charge.escrow == Decimal("0.00") for charge in plan.charges)
+    assert [charge.on_date for charge in plan.charges] == plan_due
 
 
 def test_missed_installments_with_no_record_do_not_pay_the_loan_down(seed_user, db):
@@ -143,7 +151,7 @@ def test_missed_installments_with_no_record_do_not_pay_the_loan_down(seed_user, 
     assert folded[date(2026, 5, 1)] < _PRINCIPAL
     # Concretely: interest = round(12000 * 0.06 / 12) = 60.00; principal =
     # contractual P&I - 60.00.
-    first = plan[0]
+    first = plan.payments[0]
     expected = _PRINCIPAL - (first.cash - Decimal("60.00"))
     assert folded[date(2026, 5, 1)] == expected
 
@@ -169,6 +177,55 @@ def _project_loan_payment(seed_user, db, loan, period, amount, due_date):
     return shadow
 
 
+def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(
+    seed_user, db, seed_periods,
+):
+    """A projected shadow with NO stored figure is priced, not refused.
+
+    **The PLAN tier's half of plan step balance:X-au-g-2c-1**, and the reason
+    that step routed two readers rather than the one its finding named.
+    ``_planned_from_shadows`` valued these rows through
+    ``row_valuation.owned_contribution``, which REFUSES a row whose plan is
+    DERIVED -- the same accessor and the same refusal that made
+    ``get_payment_history`` the named blocker of finding **N-266**(a).  Routing
+    only the named one would have left the cutover to 500 here instead, on
+    ``/savings`` and every surface that folds a loan's forward plan; an
+    adversarial review censused the accessor and found TWO callers of an
+    unsettled row, not one.
+
+    The paired refusal below is what makes this a measurement rather than a
+    happy path: the SAME declaration, in the same fixture, still breaks the
+    accessor the tier used to call.
+    """
+    account = create_loan_account(
+        seed_user, db.session,
+        principal=_PRINCIPAL, rate=_RATE, term=_TERM,
+        origination_date=_ORIGINATION, payment_day=1,
+    )
+    shadow = _project_loan_payment(
+        seed_user, db, account, seed_periods[9],
+        amount=Decimal("2100.00"), due_date=date(2026, 6, 1),
+    )
+    # Declare it DERIVED.  Since plan step X-au-k this is ONE write of one
+    # attribute; it was two, and the pairing between them was the thing
+    # ``ck_transactions_amount_ownership`` had to catch.  Its parent transfer
+    # keeps its own figure, so rule 5 answers.
+    declare_derived(shadow, AmountSourceEnum.PARENT_TRANSFER)
+    db.session.commit()
+
+    # The accessor the tier used to call still refuses this row...
+    with pytest.raises(AmountUnresolvable):
+        owned_contribution(shadow)
+
+    # ...and the tier prices it anyway, from the parent transfer.
+    ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
+    plan = loan_plan(account, ctx)
+
+    june = {p.due_date: p for p in plan.payments}[date(2026, 6, 1)]
+    assert june.is_estimated is False
+    assert june.cash == Decimal("2100.00")
+
+
 def test_a_projected_record_makes_its_slot_planned_not_estimated(
     seed_user, db, seed_periods,
 ):
@@ -188,10 +245,10 @@ def test_a_projected_record_makes_its_slot_planned_not_estimated(
 
     plan = loan_plan(account, ctx)
 
-    by_due = {payment.due_date: payment for payment in plan}
+    by_due = {payment.due_date: payment for payment in plan.payments}
     # The 2026-06 slot is folded exactly once, as a PLANNED record at its cash --
     # never doubled by an ESTIMATED synthesis (the de-dup).
-    assert [p.due_date for p in plan].count(date(2026, 6, 1)) == 1
+    assert [p.due_date for p in plan.payments].count(date(2026, 6, 1)) == 1
     june = by_due[date(2026, 6, 1)]
     assert june.is_estimated is False
     assert june.cash == Decimal("2100.00")
@@ -216,9 +273,9 @@ def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
       * PERIOD-START keying (the N-34 defect): 0.06 and 100.00.
 
     This is not cosmetic on the forward side.  The escrow figure is what
-    :func:`app.services.balance_at._plan.fold_forward` subtracts from the record's
+    :func:`app.services.balance_at._plan_fold.fold_forward` subtracts from the record's
     cash, and the cash itself is now built on the DUE date's escrow
-    (``loan_payment_service._shadow_live_amount``); if the two ends key on
+    (``cash_ledger._loan_installment._shadow_live_amount``); if the two ends key on
     different dates, the difference lands silently in PROJECTED principal and
     propagates to the forward balance, ``plan_payoff_date``,
     ``plan_required_extra``, the projected Schedule A interest, and the property
@@ -257,10 +314,106 @@ def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
     ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
     plan = loan_plan(account, ctx)
 
-    june = {payment.due_date: payment for payment in plan}[date(2026, 6, 1)]
+    june = {p.due_date: p for p in plan.payments}[date(2026, 6, 1)]
     assert june.is_estimated is False
-    assert june.annual_rate == Decimal("0.12")
-    assert june.escrow == Decimal("500.00")
+    # The rate and the escrow are the ACCRUAL's since plan step R16-a, and its
+    # date is the period's earliest due -- the INSTALLMENT, which is what this
+    # control measures.  Both mutations die here and they die differently: a
+    # charge DATED on the pay-period start KeyErrors this lookup, and one dated
+    # right but RESOLVED on the period start reads 0.06 / 100.00 against the two
+    # asserts below.
+    june_charge = {
+        charge.on_date: charge for charge in plan.charges
+    }[date(2026, 6, 1)]
+    assert june_charge.period.annual_rate == Decimal("0.12")
+    assert june_charge.escrow == Decimal("500.00")
+
+
+def test_two_payments_in_one_month_produce_ONE_charge_at_the_EARLIEST(
+    seed_user, db, seed_periods,
+):
+    """The firing control for :func:`app.services.balance_at._plan._charges_for`.
+
+    **The producer half of plan step R16-a had NO test until an adversarial
+    review mutated it and the suite stayed green.**  Replacing ``_charges_for``
+    with the pre-R16-a rule -- one charge per PAYMENT -- left 5,427 tests
+    passing, because every plan any other test builds through the real producer
+    holds exactly one payment per slot, where "one charge per slot" and "one
+    charge per payment" are indistinguishable.  The two ``_plan()`` helpers that
+    DO build multi-payment plans state their charges by hand, so they grade the
+    FOLD and can never reach the builder.  This test builds the multi-payment
+    month through ``loan_plan`` itself.
+
+    Two projected payments land in June 2026 -- the 2026-06-01 installment and an
+    extra on 2026-06-20 -- and the month must yield exactly ONE charge.
+
+    **Its date is the EARLIEST of the two, and a rate and an escrow version
+    effective BETWEEN them are what make that a firing assertion rather than a
+    coincidence.**  Dated at the earliest the charge reads 6% / $100.00; dated at
+    the latest it reads 12% / $500.00, which is the same wrong-date defect N-34
+    names one function over, reached through the charge instead of the payment.
+    """
+    account = create_loan_account(
+        seed_user, db.session,
+        principal=_PRINCIPAL, rate=_RATE, term=_TERM,
+        origination_date=_ORIGINATION, payment_day=1,
+    )
+    escrow = add_escrow_line(
+        db.session, account.id, "Tax", Decimal("1200.00"),
+        effective_date=_ORIGINATION,
+    )
+    # Effective strictly BETWEEN the month's two payments, so the two candidate
+    # charge dates resolve to different figures.
+    db.session.add(EscrowComponentVersion(
+        line_id=escrow.line_id,
+        effective_date=date(2026, 6, 10),
+        annual_amount=Decimal("6000.00"),
+    ))
+    db.session.add(RateHistory(
+        account_id=account.id, effective_date=date(2026, 6, 10),
+        interest_rate=Decimal("0.12"),
+    ))
+    _project_loan_payment(
+        seed_user, db, account, seed_periods[9],
+        amount=Decimal("2100.00"), due_date=date(2026, 6, 1),
+    )
+    _project_loan_payment(
+        seed_user, db, account, seed_periods[9],
+        amount=Decimal("500.00"), due_date=date(2026, 6, 20),
+    )
+
+    ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
+    plan = loan_plan(account, ctx)
+
+    june_payments = [
+        payment for payment in plan.payments
+        if (payment.due_date.year, payment.due_date.month) == (2026, 6)
+    ]
+    assert sorted(p.due_date for p in june_payments) == [
+        date(2026, 6, 1), date(2026, 6, 20),
+    ], "precondition: both payments must reach the plan"
+
+    june_charges = [
+        charge for charge in plan.charges
+        if (charge.on_date.year, charge.on_date.month) == (2026, 6)
+    ]
+    assert len(june_charges) == 1, (
+        "a month charges ONCE however many payments fall in it -- one charge "
+        "per PAYMENT is the pre-R16-a rule this test exists to refuse"
+    )
+    charge = june_charges[0]
+    assert charge.on_date == date(2026, 6, 1), "dated at the EARLIEST due"
+    # Resolved AT that date: the versions effective 06-10 govern neither.
+    assert charge.period.annual_rate == _RATE
+    assert charge.escrow == Decimal("100.00")     # 1,200.00 a year
+
+    # And the whole plan holds one charge per occupied month, no more.
+    occupied = {
+        (payment.due_date.year, payment.due_date.month)
+        for payment in plan.payments
+    }
+    assert len(plan.charges) == len(occupied)
+    assert len({charge.on_date for charge in plan.charges}) == len(plan.charges)
 
 
 def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
@@ -303,12 +456,15 @@ def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
     ctx = BalanceContext.build(seed_user["user"].id, _EARLY_SETTLE_AS_OF)
     plan = loan_plan(account, ctx)
 
-    dues = [payment.due_date for payment in plan]
+    dues = [payment.due_date for payment in plan.payments]
     # The June installment is in the seed already, so it is NOT re-synthesized.
     assert date(2026, 6, 1) not in dues
     # The genuinely-uncovered July installment still is (ESTIMATED).
     assert date(2026, 7, 1) in dues
-    assert all(payment.is_estimated for payment in plan)
+    assert all(payment.is_estimated for payment in plan.payments)
+    # And no June CHARGE either: a period the plan does not pay in charges
+    # nothing, so the seed's own accrual is never counted twice.
+    assert date(2026, 6, 1) not in [c.on_date for c in plan.charges]
 
 
 # ── D-ctx-b: the plan memo is a PUBLIC pass-through cache the seam fills ──────
@@ -337,7 +493,7 @@ def test_the_plan_is_built_once_per_read_pass(seed_user, db):
     assert not ctx.plans, "the cache starts empty"
 
     first = memoized_plan(account, ctx)
-    assert first, "precondition: this loan has a non-empty forward plan"
+    assert first.payments, "precondition: this loan has a non-empty forward plan"
 
     # The slot the seam's funnel filled -- keyed on the account id alone now the
     # builder is no longer injected (plan step D-ctx-b).
@@ -348,18 +504,53 @@ def test_the_plan_is_built_once_per_read_pass(seed_user, db):
     )
 
 
+#: The owner every primitive case below builds its pass for, and the account id
+#: those cases memoize under.  Named because three tests share them and a bare
+#: ``7`` in four places is the kind of coincidence a later edit breaks silently.
+_PASS_OWNER = 1
+_OWNED_ACCOUNT_ID = 7
+
+
+def _pass_and_account(owner=_PASS_OWNER, account_owner=_PASS_OWNER):
+    """Return a ``(ctx, account)`` pair for the primitive's own cases.
+
+    Both halves are the REAL types -- a frozen
+    :class:`~app.services.balance_at.BalanceContext` and an
+    :class:`~app.models.account.Account` -- constructed in memory, because
+    ``_memoize_once`` reads exactly ``ctx.user_id``, ``account.user_id`` and
+    ``account.id`` and touches no database.  Passing *account_owner* different
+    from *owner* is how a case states the mis-pairing plan step X-i4 refuses.
+    """
+    return (
+        BalanceContext(user_id=owner, scenario=None, as_of=_AS_OF),
+        Account(id=_OWNED_ACCOUNT_ID, user_id=account_owner),
+    )
+
+
 def test_the_cache_stores_on_membership_not_truthiness():
     """An empty result is CACHED, not re-derived on every read.
 
-    ``_memoize_once`` -- the ONE primitive both forward memos
-    (``memoized_plan`` / ``memoized_payoff``) fill through -- tests
-    ``key not in cache``, never the value's truthiness, because both derivations
-    have a legitimately falsy answer: an empty plan (a not-yet-configured or
-    retired loan) and a ``None`` payoff (a loan that never clears).  A truthiness
-    check would rebuild those on EVERY read of every pass, unbounded and green
-    under any test that happens to use a loan with a non-empty plan.  Pinned
-    directly on the shared primitive, so it holds for the payoff cache too.
+    ``_memoize_once`` -- the ONE primitive every per-account pass memo fills
+    through (``memoized_plan`` / ``memoized_payoff`` / ``resolved_loan`` /
+    ``assembled_fold`` / ``loan_walk``) -- tests ``account.id not in cache``,
+    never the value's truthiness, because a derivation may have a legitimately
+    falsy answer: a ``None`` resolution (not a configured loan) and a ``None``
+    payoff (a loan that never clears).  A truthiness check would rebuild those
+    on EVERY read of every pass, unbounded and green under any test that happens
+    to use a configured loan that clears.  Pinned directly on the shared
+    primitive, so it holds for every cache it fills.
+
+    **The empty PLAN stopped being the second example at plan step R16-a**, and
+    the docstring said otherwise until an adversarial merge review found it one
+    site over from where it had already been corrected
+    (``_context._memoize_once``).  ``loan_plan`` answered ``[]``; it now answers
+    a ``LoanForwardPlan(payments=[], charges=[])``, which is unconditionally
+    TRUTHY.  This test is unaffected -- the primitive is generic and its
+    ``_build_empty`` below returns a real ``[]`` -- but the CLAIM about the plan
+    was false, and a falsy-answer example that is no longer falsy is how the
+    rule it argues for gets dropped by the next reader.
     """
+    ctx, account = _pass_and_account()
     cache: dict[int, list] = {}
     builds = []
 
@@ -368,21 +559,22 @@ def test_the_cache_stores_on_membership_not_truthiness():
         builds.append(1)
         return []
 
-    assert _memoize_once(cache, 7, _build_empty) == []
+    assert _memoize_once(ctx, cache, account, _build_empty) == []
     # The SECOND read must be served from the cache even though the value is falsy.
-    assert _memoize_once(cache, 7, _build_empty) == []
+    assert _memoize_once(ctx, cache, account, _build_empty) == []
     assert builds == [1], "an empty result must cache, not re-derive"
 
 
 def test_the_cache_does_not_store_a_raising_build():
     """A build that RAISES is never cached, so a fail-loud guard fires every call.
 
-    ``_memoize_once`` assigns ``cache[key]`` only from a returned value, so the
-    seam's ``require_scenario`` guard (raised inside the build for a no-baseline
-    context) cannot be worn down by retrying: the key stays absent and the next
-    read re-raises.  Pinned on the primitive both forward funnels fill through --
+    ``_memoize_once`` assigns ``cache[account.id]`` only from a returned value, so
+    the seam's ``require_scenario`` guard (raised inside the build for a
+    no-baseline context) cannot be worn down by retrying: the key stays absent and
+    the next read re-raises.  Pinned on the primitive every funnel fills through --
     the property the funnel docstrings assert.
     """
+    ctx, account = _pass_and_account()
     cache: dict[int, list] = {}
     attempts = []
 
@@ -393,6 +585,57 @@ def test_the_cache_does_not_store_a_raising_build():
 
     for _ in range(2):
         with pytest.raises(ValueError):
-            _memoize_once(cache, 7, _raising_build)
+            _memoize_once(ctx, cache, account, _raising_build)
     assert attempts == [1, 1], "a raising build must re-run, never be cached"
-    assert 7 not in cache
+    assert _OWNED_ACCOUNT_ID not in cache
+
+
+def test_the_primitive_refuses_an_account_the_pass_does_not_own():
+    """Plan step X-i4: creating per-account pass state BINDS it to the pass.
+
+    ``_memoize_once`` takes the ``account`` rather than a bare id precisely so it
+    can refuse one whose owner is not the pass's.  Pinned on the primitive rather
+    than on each funnel because that is what makes the rule a precondition rather
+    than a fence: there is no other way to memoize a derivation on a context, so
+    a funnel added later cannot forget a check it never had to remember.
+
+    The build must not run and nothing must be stored -- a refusal that derived
+    the value first would still have issued the foreign account's queries.
+    """
+    ctx, foreign = _pass_and_account(owner=_PASS_OWNER, account_owner=_PASS_OWNER + 1)
+    cache: dict[int, list] = {}
+    builds = []
+
+    with pytest.raises(ForeignAccountError) as excinfo:
+        _memoize_once(ctx, cache, foreign, lambda: builds.append(1) or [])
+
+    assert builds == [], "the derivation must not run for a foreign account"
+    assert cache == {}, "a refused account must leave no state on the pass"
+    # The message names both owners and the account, because the failure it
+    # reports is a caller pairing two values wrongly and neither id alone
+    # identifies which pairing.
+    message = str(excinfo.value)
+    assert str(_PASS_OWNER) in message and str(_PASS_OWNER + 1) in message
+    assert str(_OWNED_ACCOUNT_ID) in message
+
+
+def test_the_refusal_survives_a_WARM_cache():
+    """A foreign account is refused on a cache HIT, not only on a miss.
+
+    The order inside ``_memoize_once`` is load-bearing: the binding is checked
+    BEFORE the membership test.  Were it after, a pass that had already memoized
+    id ``7`` for its own account would hand that answer straight back to a caller
+    naming a DIFFERENT owner's account with the same id -- which is the worst
+    form of the defect, because the figure returned would be real, be the wrong
+    owner's, and cost no query to produce.
+    """
+    ctx, owned = _pass_and_account()
+    cache: dict[int, list] = {}
+    assert _memoize_once(ctx, cache, owned, lambda: ["warm"]) == ["warm"]
+    assert cache[_OWNED_ACCOUNT_ID] == ["warm"]
+
+    _, foreign = _pass_and_account(account_owner=_PASS_OWNER + 1)
+    assert foreign.id == owned.id, "precondition: the cache is warm for this id"
+    with pytest.raises(ForeignAccountError):
+        _memoize_once(ctx, cache, foreign, lambda: ["rebuilt"])
+    assert cache[_OWNED_ACCOUNT_ID] == ["warm"], "the refusal must not disturb the cache"

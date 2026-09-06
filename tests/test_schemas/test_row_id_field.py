@@ -16,13 +16,17 @@ stops the 76th declaration from being written with the lax field.
 """
 
 import ast
+from decimal import Decimal
 
 import pytest
 from marshmallow import ValidationError, fields
 
+from app.enums import BusinessDayShiftEnum
 from app.schemas.validation import _helpers, _recurrence
 from app.schemas.validation._helpers import RowId
 from app.schemas.validation.transactions import TransactionCreateSchema
+from app.schemas.validation.merchant_rules import SubmittedAnswer
+from app.services.statement_match import ReviewedRow, RowKind, RuleAnswer
 
 
 #: Field types that CONTAIN another field rather than declaring one
@@ -240,6 +244,33 @@ _LAX_INTEGER_SPELLINGS = frozenset({"Integer", "Int"})
 #: stale-entry arm below then holds it to being real.
 _LAX_INTEGER_FACTORIES = frozenset({"cadence_days_field", "num_periods_field"})
 
+#: Field builders in the package that return a STRICT row-id field -- the
+#: fourth category, added at plan step ``pay_calendar:C14-b`` because that step
+#: built the first one.
+#:
+#: **It is a category the gate did not have, and inventing it was the honest
+#: repair rather than filing the new builder under an existing set.**
+#: ``shift_field`` builds a ``BusinessDayShiftField``, which derives from
+#: ``_RefEnumField`` and so from :class:`RowId`: registering it as a LAX
+#: factory would state the opposite of what it does, and registering it as a
+#: NON-INTEGER one would be false twice over -- a ``RowId`` IS an integer
+#: field, and :meth:`TestNoIdFieldWasMissed
+#: ::test_every_non_integer_factory_really_builds_a_non_integer` would refuse
+#: the claim.  Either would have been the "cheapest way past the gate" every
+#: other registry's docstring here names.
+#:
+#: The class itself is deliberately NOT in :data:`_STRICT_ROW_ID_SPELLINGS`:
+#: no schema body declares ``BusinessDayShiftField(...)`` directly -- all four
+#: doors go through this factory, because ruling **R-PC56** pairs the question
+#: with the cadence beside it and that is a factory too.  Listing the class
+#: would pre-authorise a token nothing writes, which is what that set's own
+#: docstring refuses for ``_RefEnumField``.
+#:
+#: Held to being real by
+#: :meth:`TestNoIdFieldWasMissed
+#: ::test_every_strict_factory_really_builds_a_row_id`.
+_STRICT_ROW_ID_FACTORIES = frozenset({"shift_field"})
+
 #: What the AST scan treats as "declared lax": the two marshmallow spellings
 #: plus every registered factory.
 _LAX_DECLARATIONS = _LAX_INTEGER_SPELLINGS | _LAX_INTEGER_FACTORIES
@@ -249,7 +280,18 @@ _LAX_DECLARATIONS = _LAX_INTEGER_SPELLINGS | _LAX_INTEGER_FACTORIES
 #: because ``test_the_factories_are_the_only_unscanned_call_form`` treats an
 #: unclassified builder as a hole -- and "it happens to return a String" is a
 #: fact about the helper that should be asserted rather than assumed.
-_NON_INTEGER_FIELD_FACTORIES = frozenset({"_auth_email_field"})
+_NON_INTEGER_FIELD_FACTORIES = frozenset({
+    "_auth_email_field",
+    # An optional DATE -- how far back an owner's paychecks reach (plan step
+    # balance:X-bh-2).  Shared by the two doors that ask, so the schema tier
+    # and ``ck_pay_schedule_history_opens_range`` bound one window; it holds a
+    # day, never an id.
+    "history_opens_on_field",
+    # A money figure read through the statement package's own strict
+    # reader (plan step bank_import:X-f6d-4), so the row-id question does
+    # not arise: it holds a signed decimal, never an id.
+    "ReviewedFigureField",
+})
 
 #: Every marshmallow field spelling the package declares that is not an
 #: integer.
@@ -267,8 +309,39 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({"_auth_email_field"})
 #: :data:`_NON_ROW_ID_INTEGERS`.  So this set is held to being real by
 #: ``test_the_non_integer_spellings_are_all_declared``: adding a genuinely new
 #: field type means declaring it and listing it in the same commit.
+#: **``PurchaseDestination`` is here and it DOES carry a row id**, which is why
+#: :meth:`TestNoIdFieldWasMissed
+#: ::test_the_destination_field_is_strict_about_the_id_it_carries` stands
+#: beside this entry.  The statement review screen's destination select submits
+#: one of three things -- leave this line alone, an envelope's id, or "a new
+#: envelope" -- so the field cannot be a ``RowId`` subclass without lying about
+#: what it returns.  Listing it as a non-integer spelling would otherwise be
+#: exactly the standing permission the comment above refuses, so the strictness
+#: this gate exists to enforce is asserted DIRECTLY on it instead.
+#: **``Nested`` is not a hole**, and the reason is the scan's own shape: a
+#: nested field delegates to a SCHEMA, and that schema's declarations are read
+#: by this same sweep on their own account.  ``StatementBatchSchema`` carries
+#: two lists of them (plan step ``bank_import:X-f6a-3c-2``), and the ids inside
+#: each item are graded where they are declared -- so nothing is waved through
+#: by listing the container.
+#: **``RuleAnswerField`` is here on exactly ``PurchaseDestination``'s terms**
+#: (plan step ``bank_import:X-f6a-3d``): the merchant rule control submits
+#: one of FIVE things -- I have not said, a recurring definition's id, a new
+#: envelope, ask me every time, never a purchase (plan step
+#: ``bank_import:X-gd-2`` added the fourth answer) -- so it cannot derive from
+#: ``RowId`` either, and
+#: :meth:`TestNoIdFieldWasMissed
+#: ::test_the_rule_answer_field_is_strict_about_the_id_it_carries` asserts
+#: the strictness directly rather than granting it by listing.
+#: **``ReviewedRowField`` is here on the same terms** (plan step
+#: ``bank_import:X-f6d-3``): it carries a row id AND a version counter AND a
+#: figure in one token, so it returns a value object rather than an integer and
+#: cannot derive from ``RowId`` either.  :meth:`TestNoIdFieldWasMissed
+#: ::test_the_reviewed_row_field_is_strict_about_the_ids_it_carries` asserts
+#: the strictness on BOTH of its counters directly.
 _NON_INTEGER_FIELD_SPELLINGS = frozenset({
-    "Boolean", "Date", "Decimal", "String",
+    "Boolean", "Date", "Decimal", "Nested", "RuleAnswerField",
+    "PurchaseDestination", "ReviewedRowField", "String",
 })
 
 #: Every field-class spelling in the validation package that is STRICT about
@@ -361,7 +434,6 @@ _NON_ROW_ID_INTEGERS = frozenset({
     # field of the same name to be lax, which is what this set's own
     # stale-entry arm refuses.
     "other_dependents",
-    "pay_periods_per_year",
     "payment_day",
     "qualifying_children",
     "rolling_target_periods",
@@ -523,6 +595,7 @@ class TestNoIdFieldWasMissed:
         known = (
             _LAX_DECLARATIONS
             | _STRICT_ROW_ID_SPELLINGS
+            | _STRICT_ROW_ID_FACTORIES
             | _NON_INTEGER_FIELD_SPELLINGS
             | _NON_INTEGER_FIELD_FACTORIES
         )
@@ -535,9 +608,157 @@ class TestNoIdFieldWasMissed:
             "these schema attributes are built by a call this gate cannot "
             "classify, so they are outside the row-id sweep.  Register the "
             "callee: _LAX_INTEGER_FACTORIES if it builds a lax Integer, "
-            "_STRICT_ROW_ID_SPELLINGS if it builds a RowId, "
+            "_STRICT_ROW_ID_SPELLINGS if it IS a RowId subclass a schema "
+            "declares directly, _STRICT_ROW_ID_FACTORIES if it is a builder "
+            "that returns one, "
             f"_NON_INTEGER_FIELD_FACTORIES if it builds neither: {unknown}"
         )
+
+    def test_the_destination_field_is_strict_about_the_id_it_carries(self):
+        """``PurchaseDestination`` names a ROW and is graded like one.
+
+        It is listed as a non-integer spelling because it returns one of two
+        things -- an envelope's id, or the string naming the "a new envelope"
+        arm -- so it cannot derive from :class:`RowId` without lying about its
+        own return type.  That listing would otherwise be the standing
+        permission :data:`_NON_INTEGER_FIELD_SPELLINGS`' own docstring refuses,
+        so the guarantee is asserted here directly: every spelling
+        ``fields.Integer`` accepts and ``RowId`` refuses is refused by this
+        field too.
+
+        It matters because the id it carries is where a bank line's money goes.
+        A laxer reading would let ``'007'`` name envelope 7 -- a real budget
+        line, in a real pay period, that the owner never picked.
+        """
+        from app.schemas.validation.statements import (  # pylint: disable=import-outside-toplevel
+            NEW_ENVELOPE,
+            PurchaseDestination,
+        )
+
+        field = PurchaseDestination()
+        for lax in ("\u0661\u0662", " 12 ", "+12", "1_0", "007", "-5", "0"):
+            with pytest.raises(ValidationError):
+                field.deserialize(lax)
+        # ...and the two things it DOES accept.
+        assert field.deserialize("12") == 12
+        assert field.deserialize(NEW_ENVELOPE) == NEW_ENVELOPE
+
+    def test_the_reviewed_row_field_is_strict_about_the_ids_it_carries(self):
+        """``ReviewedRowField`` names a ROW and a REVISION, both graded.
+
+        :meth:`test_the_destination_field_is_strict_about_the_id_it_carries`'s
+        twin on the tick beside it (plan step ``bank_import:X-f6d-3``).  It is
+        listed as a non-integer spelling because one token carries four fields
+        and it returns a value object, so it cannot derive from :class:`RowId`
+        without lying about its return type -- and that listing would be the
+        standing permission :data:`_NON_INTEGER_FIELD_SPELLINGS`' own docstring
+        refuses, so the guarantee is asserted here.
+
+        **BOTH counters, because the id moved INSIDE a token and could have got
+        laxer on the way.**  The row id is where a bank line's money is
+        written; the version is what makes the staleness refusal fire at all,
+        and a lax reading of it (``'007'`` for 7) would let a crafted body
+        match a revision the screen never showed.
+
+        The FIGURE is graded here too, and ``NaN`` is the one that matters: the
+        staleness test compares with ``!=``, which is TRUE against ``NaN`` for
+        every row -- so a token carrying one would refuse everything, and a
+        first draft reading it with a bare ``Decimal()`` would have accepted it.
+        """
+        from app.schemas.validation.statements import (  # pylint: disable=import-outside-toplevel
+            ReviewedRowField,
+        )
+
+        field = ReviewedRowField()
+        for lax in ("\u0661\u0662", " 12 ", "+12", "1_0", "007", "-5", "0"):
+            with pytest.raises(ValidationError):
+                field.deserialize(f"transaction:{lax}:-180.00:1")
+            with pytest.raises(ValidationError):
+                field.deserialize(f"transaction:12:-180.00:{lax}")
+        for figure in ("NaN", "Infinity", "-Infinity", "1E+5", "1_0", "",
+                       "0x10", " -180.00", "-180.00 ", "--1"):
+            with pytest.raises(ValidationError):
+                field.deserialize(f"transaction:12:{figure}:1")
+        for shape in ("transaction:12:-180.00", "transaction:12:-180.00:1:9",
+                      "ledger:12:-180.00:1", "", "::::"):
+            with pytest.raises(ValidationError):
+                field.deserialize(shape)
+        # ...and what it DOES accept, both kinds and both signs.
+        assert field.deserialize("transaction:12:-180.00:3") == ReviewedRow(
+            kind=RowKind.TRANSACTION, row_id=12,
+            cash_amount=Decimal("-180.00"), version_id=3,
+        )
+        assert field.deserialize("purchase:7:2473.38:1") == ReviewedRow(
+            kind=RowKind.PURCHASE, row_id=7,
+            cash_amount=Decimal("2473.38"), version_id=1,
+        )
+
+    def test_the_rule_answer_field_is_strict_about_the_id_it_carries(self):
+        """``RuleAnswerField`` names a TEMPLATE and is graded like a row id.
+
+        :meth:`test_the_destination_field_is_strict_about_the_id_it_carries`'s
+        twin, on the control one card up the same screen.  It is listed as a
+        non-integer spelling because it returns one of FIVE things, so it
+        cannot derive from :class:`RowId` without lying about its return type;
+        that listing is the standing permission
+        :data:`_NON_INTEGER_FIELD_SPELLINGS`' docstring refuses, so the
+        guarantee is asserted here instead.
+
+        It matters because the id it carries decides where a merchant's
+        spending is SUGGESTED to go on every later statement, and a laxer
+        reading would let ``'007'`` name template 7 -- a real recurring
+        envelope the owner never picked, whose rows are then offered for every
+        line that merchant ever posts.
+        """
+        from app.schemas.validation.merchant_rules import (  # pylint: disable=import-outside-toplevel
+            ALWAYS_ASK,
+            NEVER,
+            NOT_SAID,
+            RuleAnswerField,
+        )
+        from app.schemas.validation.statements import (  # pylint: disable=import-outside-toplevel
+            NEW_ENVELOPE,
+        )
+
+        field = RuleAnswerField()
+        for lax in ("\u0661\u0662", " 12 ", "+12", "1_0", "007", "-5", "0"):
+            with pytest.raises(ValidationError):
+                field.deserialize(f"t:{lax}")
+        # A bare id with no arm prefix names nothing either: the prefix is what
+        # says WHICH answer this is, and reading a bare number as
+        # a template would make the arm inferable from a shape rather than
+        # stated -- the defect that made the existing-envelope arm unreachable
+        # from a browser one leaf earlier.
+        with pytest.raises(ValidationError):
+            field.deserialize("12")
+        # ...and the SIX things it DOES accept.  ``ALWAYS_ASK`` joined them at
+        # plan step ``bank_import:X-gd-2`` and the INCOME answer at
+        # ``bank_import:X-gj-2a``; this list is one of the two places a member
+        # missing from the grader is caught.
+        #
+        # **Everything but "I have not said" comes back DISCRIMINATED**, which
+        # is the change that made a second id-bearing answer safe: the field
+        # returned a bare int for a template and a bare string for the rest, so
+        # the route read *anything that is not a sentinel* as a template id.
+        assert field.deserialize("t:12") == SubmittedAnswer(
+            kind=RuleAnswer.TEMPLATE, row_id=12,
+        )
+        assert field.deserialize("i:12") == SubmittedAnswer(
+            kind=RuleAnswer.INCOME_CATEGORY, row_id=12,
+        )
+        assert field.deserialize(NOT_SAID) == NOT_SAID
+        assert field.deserialize(NEVER) == SubmittedAnswer(
+            kind=RuleAnswer.NEVER,
+        )
+        assert field.deserialize(NEW_ENVELOPE) == SubmittedAnswer(
+            kind=RuleAnswer.NEW_ENVELOPE,
+        )
+        assert field.deserialize(ALWAYS_ASK) == SubmittedAnswer(
+            kind=RuleAnswer.ALWAYS_ASK,
+        )
+        # **The two id-bearing answers are not each other**, which the bare-int
+        # return could not express and is the whole reason this value exists.
+        assert field.deserialize("i:12") != field.deserialize("t:12")
 
     def test_the_non_integer_spellings_are_all_declared(self):
         """No field type is waved through that the package does not declare.
@@ -581,9 +802,15 @@ class TestNoIdFieldWasMissed:
         integer.  Otherwise the cheapest way past the sweep would be to
         register a lax integer builder as "not an integer".
         """
-        from app.schemas.validation import auth  # pylint: disable=import-outside-toplevel
+        # pylint: disable=import-outside-toplevel -- resolved here so the
+        # registry above stays a plain frozenset of names.
+        from app.schemas.validation import auth, pay_periods, statements
 
-        modules = {"_auth_email_field": auth}
+        modules = {
+            "_auth_email_field": auth,
+            "ReviewedFigureField": statements,
+            "history_opens_on_field": pay_periods,
+        }
         for factory_name in _NON_INTEGER_FIELD_FACTORIES:
             module = modules.get(factory_name)
             assert module is not None, (
@@ -601,6 +828,40 @@ class TestNoIdFieldWasMissed:
                 "integer field -- it belongs in _LAX_INTEGER_FACTORIES or "
                 "_STRICT_ROW_ID_SPELLINGS, not here"
             )
+
+    def test_every_strict_factory_really_builds_a_row_id(self):
+        """The strict FACTORY registry cannot be padded either.
+
+        :data:`_STRICT_ROW_ID_FACTORIES` widens what the scan accepts exactly
+        as its three siblings do, so it gets the same treatment: each name is
+        resolved and the field it builds is asserted to be a real
+        :class:`RowId` -- strict by inheritance rather than by listing.  A
+        builder that started returning a plain ``Integer`` would belong on the
+        lax side, and registering it here would otherwise be the cheapest way
+        past the sweep.
+
+        It is built with the two declarations its four doors actually use --
+        required, and defaulted -- because a factory could in principle branch
+        on its keywords and return a lax field for one of them.
+        """
+        from app.schemas.validation import (  # pylint: disable=import-outside-toplevel
+            pay_periods,
+        )
+
+        for factory_name in _STRICT_ROW_ID_FACTORIES:
+            factory = getattr(pay_periods, factory_name, None)
+            assert factory is not None, (
+                f"{factory_name} is registered as a strict row-id factory but "
+                "does not exist in app.schemas.validation.pay_periods"
+            )
+            for built in (
+                factory(required=True),
+                factory(load_default=BusinessDayShiftEnum.NONE),
+            ):
+                assert isinstance(built, RowId), (
+                    f"{factory_name} is registered as a strict row-id factory "
+                    f"but built {type(built).__name__}, which is not a RowId"
+                )
 
     def test_every_strict_spelling_really_derives_from_row_id(self):
         """The strict allowlist cannot be padded with a lax field class.

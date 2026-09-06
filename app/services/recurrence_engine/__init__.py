@@ -40,7 +40,7 @@ never what a recurrence MEANS.
 What a definition can say it repeats by is the ``(interval_n, unit_id,
 placement_id)`` triple ``budget.recurrence_rules`` authors -- plan step R7c-c
 dropped the closed pattern set that used to be the whole vocabulary, and plan
-step R9 its table; "does not recur" is ``recurrence_rule_id IS NULL`` on either
+step R9 its table; "does not recur" is NO RULE naming the definition, on either
 template kind, which never reaches a resolver (plan step R2e-3 retired the
 ``Once`` pattern that was the second way to say it).
 
@@ -52,12 +52,18 @@ one question:
   - ``_plan`` -- WHICH periods, and on what day: the gating + occurrence walk
     (``resolve_generation_plan``) and ``compute_due_date``;
   - ``_amounts`` -- WHAT a row's definition says: :class:`DerivedRowFields`,
-    the single statement of the columns a template derives, and the salary /
-    paycheck pricing behind ``estimated_amount``;
+    the single statement of the columns a template derives, and which of ruling
+    **R-FI**'s two states a generated row's amount is in.  It PRICED a paycheck
+    until plan step balance:X-au-d; a salary-linked definition's rows declare it
+    now and ``income_service.SalaryPricing`` is what prices them;
   - ``_generate`` -- filling periods that hold no row;
-  - ``_maintain`` -- bringing the rows a definition already generated back into
-    line with it, and refusing to do so where the owner's own records are in
-    the way;
+  - ``_maintain`` -- the acts of bringing the rows a definition already
+    generated back into line with it, and refusing to do so where the owner's
+    own records are in the way;
+  - ``_pass`` -- what a regeneration IS, for BOTH engines: the transfer engine
+    performs the same pass with its own five acts
+    (:class:`~._pass.MaintainActs`), which is why that module and not
+    ``_recurrence_common`` is where it lives (see its docstring);
   - ``_conflicts`` -- applying the owner's keep/use decisions afterwards.
 
 Every public name is re-exported here, so the split moved no call site.
@@ -72,6 +78,13 @@ from app.services.recurrence_engine._generate import (
     generate_for_template,
 )
 from app.services.recurrence_engine._maintain import regenerate_for_template
+from app.services.recurrence_engine._pass import (
+    MaintainActs,
+    PassReporting,
+    create_for_unclaimed_occurrences,
+    derived_by_occurrence,
+    regenerate_definition,
+)
 from app.services.recurrence_engine._plan import (
     GenerationPlan,
     PlannedOccurrence,
@@ -82,10 +95,15 @@ from app.services.recurrence_engine._plan import (
 __all__ = [
     "DerivedRowFields",
     "GenerationPlan",
+    "MaintainActs",
+    "PassReporting",
     "PlannedOccurrence",
     "can_generate_in_period",
     "compute_due_date",
+    "create_for_unclaimed_occurrences",
+    "derived_by_occurrence",
     "generate_for_template",
+    "regenerate_definition",
     "regenerate_for_template",
     "resolve_conflicts",
     "resolve_generation_plan",

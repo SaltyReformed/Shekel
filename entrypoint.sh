@@ -262,6 +262,39 @@ python scripts/init_database.py
 echo "Seeding reference data..."
 python scripts/seed_ref_tables.py
 
+# ── 4b. Stamp occurs_on on pre-R17 recurrence rows (once) ───────
+# Plan step recurrence:R17 gave a generated row the OCCURRENCE it
+# answers; rows written before that column existed carry NULL, and the
+# value can only be computed by the occurrence walk (a row's due_date is
+# NOT its occurrence -- a Monthly First rule occurs on the 1st and is
+# dated on the payday).  It lives here rather than in the migration by
+# developer ruling recurrence:R-R46: no migration in this repository
+# imports application code, and build_test_template.py replays the whole
+# Alembic chain from zero, so an import there would break the SUITE the
+# day plan step R5 changes that walk.
+#
+# BELOW the reference-data seed, not above it: the walk resolves status
+# and recurrence members through ref_cache, which raises on a member the
+# cache does not hold.  A first draft ran it at step 3b, before seeding,
+# where it was inert only because a fresh install has nothing to stamp.
+#
+# SENTINEL-GATED, exactly like the user seed below.  The script's own
+# pre-flight count cannot reach zero -- rows it deliberately leaves NULL
+# stay NULL, and carry-forward keeps minting more -- so without this the
+# full pass would re-run against live financial data on every boot
+# forever.  The sentinel records SUCCESS: set -e aborts before it is
+# written if the script exits non-zero.
+STAMP_STATE_DIR="/home/shekel/app/state"
+STAMP_SENTINEL="${STAMP_STATE_DIR}/.occurrences-stamped"
+if [ -f "${STAMP_SENTINEL}" ]; then
+    echo "Occurrence stamp sentinel present; skipping."
+else
+    echo "Stamping recurrence occurrences..."
+    python scripts/stamp_occurrences.py
+    mkdir -p "${STAMP_STATE_DIR}"
+    : >"${STAMP_SENTINEL}"
+fi
+
 # ── 5. Seed initial user (optional, first run only) ────────────
 # Only runs if SEED_USER_EMAIL is set and non-empty AND the seed
 # sentinel file is absent.  seed_user.py is itself idempotent at the

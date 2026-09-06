@@ -57,6 +57,37 @@ class UndatedSettleError(ShekelError, ValueError):
     """
 
 
+class RequiredRecordMissing(ShekelError, ValueError):
+    """A record a live invariant says must exist does not.
+
+    Raised where the record is READ, by the surface that cannot answer without
+    it: an interest-bearing account with no ``budget.interest_params``, an
+    appreciating one with no ``budget.asset_appreciation_params``, an owner
+    with no ``auth.user_settings``.
+
+    **Each of those was an AUTO-CREATE on a GET until plan step
+    balance:X-i3.**  A render that repairs data is a write inside a read -- it
+    cost those pages the one snapshot every figure on them is computed against
+    (:mod:`app.db_transaction`) -- and it hid the doors that should have
+    written the row: the params seeder had ONE caller while THREE doors set an
+    account's kind, which is what
+    :mod:`app.services.account_params` now states once for all of them.
+
+    A ``ValueError`` as well as a ``ShekelError``, on
+    :class:`UndatedSettleError`'s reasoning exactly: the condition is a broken
+    invariant in stored data rather than a user input error, and no route
+    translates it -- reaching a user as a 500 is the correct disposition,
+    because a manufactured zero-rate row renders on screen exactly like a rate
+    the owner configured.
+
+    **Deliberately NOT given an application-wide handler**, which is where it
+    differs from :class:`BaselineMissingError` beneath it: that one has a
+    repair the owner can perform on a page the app can render, and this one
+    names a state no door can produce.  A rendered answer for it would be the
+    auto-create under another name.
+    """
+
+
 class AmountUnresolvable(ShekelError, ValueError):
     """A row was asked what its amount is and no rule could answer.
 
@@ -81,6 +112,48 @@ class AmountUnresolvable(ShekelError, ValueError):
     translates it -- reaching a user as a 500 is the correct disposition,
     because the request cannot be answered correctly and answering it wrongly is
     worse.
+    """
+
+
+class ForeignAccountError(ShekelError, ValueError):
+    """A read pass was asked to derive state for an account it does not own.
+
+    Raised by ``app.services.balance_at._context._memoize_once`` -- the ONE
+    primitive that creates state keyed by ``account.id`` on a
+    :class:`~app.services.balance_at.BalanceContext` -- when the account handed
+    in belongs to some other owner than the pass's ``user_id`` (plan step
+    balance:**X-i4**, finding **N-354**).
+
+    **It is a PAIRING refusal, not a second ownership gate.**  Whether the
+    requester may see the account is decided upstream, where an untrusted id
+    becomes a row (``account_resolver``, ``auth_helpers.require_owner``,
+    ``load_cash_account_or_404``), and a copy of that decision here would be a
+    band-aid.  This answers a question no upstream gate can even ask: the seam
+    takes the account and the pass as two arguments, the route validates the
+    account against ``current_user`` while the context is built separately from
+    ``current_user.id``, and a service-tier caller
+    (``debt_strategy``, ``tax_report_service``, ``loan_recurrence_sync``, a CLI
+    door) has no ``current_user`` at all.  Nothing above the seam knows a
+    context exists, so nothing above it can catch the two being mis-paired.
+
+    **What a mis-pairing would publish, which is why it raises rather than
+    returning nothing.**  The transaction rows are scenario-scoped, so a foreign
+    account folds NONE of its owner's rows -- but
+    :func:`app.services.cash_ledger.cash_anchor_facts` is scoped by ACCOUNT
+    alone, so the other owner's real balance ASSERTIONS replay and the fold
+    answers a confident figure built from them.  A wrong number that renders
+    like a right one, plus a cross-tenant disclosure.
+
+    **Not translated by any route**, which is the same disposition
+    :class:`UndatedSettleError` and :class:`RequiredRecordMissing` carry and for
+    the same reason: it names a state no door can legitimately produce, so
+    reaching a user as a 500 is correct.  Answering it as a 404 would make a
+    code defect read as an ordinary missing page -- which is exactly how a
+    permissive account resolver's silent fallback stayed invisible long enough
+    to need the guard at ``app/routes/analytics.py``.
+
+    A ``ValueError`` as well as a :class:`ShekelError`, on the same reasoning as
+    its neighbours above.
     """
 
 
@@ -134,120 +207,33 @@ class BaselineMissingError(ShekelError, ValueError):
         self.user_id = user_id
 
 
-class RecurrenceCadenceUnsupported(ShekelError):
-    """One paycheck must host a recurring row TWICE, and the table cannot.
-
-    A monthly bill is owed monthly whatever the pay cadence (developer ruling,
-    2026-08-07), so at a cadence of 30 days or more several of its occurrences
-    legitimately fall inside one paycheck -- three months of rent inside one
-    90-day pay period.  ``idx_transactions_template_period_scenario`` (and its
-    transfer twin) is UNIQUE over ``(template, pay_period, scenario)``, so
-    ``budget.transactions`` can hold only ONE of them.
-
-    **The index is keyed on the wrong column, and that is the real defect**
-    (plan ledger row D19): it is a generation-idempotency guard, and a
-    generated row's identity is its OCCURRENCE, not its paycheck.  Plan step
-    R5 re-keys it onto the occurrence and this exception goes with the fix.
-
-    Until then generation REFUSES, naming the template and the dates
-    (developer ruling, 2026-08-08).  The two alternatives were measured and
-    are worse: writing the rows raises an unhandled ``IntegrityError`` that
-    names nothing and rolls back the whole enclosing transaction -- a pay
-    schedule extend among them -- and writing only the first silently
-    under-budgets the paycheck by every occurrence after it ($3,000 on a
-    $1,500 rent at a 90-day cadence).
-
-    Unreachable below a 30-day cadence, because every calendar month then
-    holds at least one payday; ``cadence_days`` is user-selectable 1..365
-    (``schemas/validation/pay_periods.py``), so it is configuration rather
-    than a hypothetical.
-
-    ONE handler answers it for the whole application
-    (:func:`app.error_handlers.register_error_handlers`'s
-    ``recurrence_cadence_unsupported``), because the eleven call sites that
-    can reach generation would otherwise each decide for themselves -- the
-    failure mode plan step X-v's ruling R-BW catalogued for
-    :class:`BaselineMissingError`.
-
-    **It names the individual DATES, and plan step R4b-2 is what made them
-    available.**  The developer's ruling (2026-08-08) said "naming the dates";
-    at plan step R4a the engines still answered in PERIODS -- the adapter
-    returned one pay period per occurrence and discarded the occurrence itself
-    -- so a count was all that could be stated without calling the occurrence
-    engine a second time, which would have been a second producer of one
-    answer.  Generation now carries the ``(occurrence, period)`` pairs, so the
-    dates come from the same walk that found the collision.
-    :attr:`occurrence_count` is DERIVED from them rather than passed beside
-    them, because a count and its own list are one fact.
-
-    Args:
-        template_name: The recurring definition that cannot be generated.
-        occurrence_dates: Every occurrence date that falls inside the one
-            paycheck, ascending -- as generation walked them.  At least two,
-            or there would be nothing to refuse.
-        period_start: The paycheck's own payday.
-        period_end: The last day the paycheck covers.
-
-    Attributes:
-        template_name: As above.
-        occurrence_dates: As above, as a tuple.
-        period_start: As above.
-        period_end: As above.
-    """
-
-    def __init__(self, template_name, occurrence_dates, period_start, period_end):
-        """Build the message from the facts a user needs to act on."""
-        dates = tuple(occurrence_dates)
-        listed = ", ".join(day.isoformat() for day in dates)
-        super().__init__(
-            f"'{template_name}' falls {len(dates)} times ({listed}) inside the "
-            f"single pay period {period_start.isoformat()} to "
-            f"{period_end.isoformat()}. Shekel budgets one row per recurring "
-            f"definition per paycheck, so it cannot yet hold them separately. "
-            f"Shorten the pay cadence, or change how often this definition "
-            f"repeats."
-        )
-        self.template_name = template_name
-        self.occurrence_dates = dates
-        self.period_start = period_start
-        self.period_end = period_end
-
-    @property
-    def occurrence_count(self) -> int:
-        """How many times the definition falls inside the one paycheck.
-
-        Derived from :attr:`occurrence_dates` rather than stored beside it:
-        the two are one fact, and a stored count is a cache of its own list.
-        """
-        return len(self.occurrence_dates)
-
-
 class RecurrenceWindowError(ShekelError):
     """A generate pass was handed a write window its owner's schedule lacks.
 
     A broken invariant rather than user input.
-    :class:`~app.services.generation_schedule.GenerationSchedule` loads the
-    owner's whole schedule itself and takes only the WINDOW from its caller
-    (plan step R4b), so the ways the two can disagree are all bugs:
+    :class:`~app.services.generation_schedule.GenerationSchedule` takes the
+    owner's pay CALENDAR and the ids of the periods a pass may write into, and
+    refuses any id the calendar does not hold.  **ONE way in since pay-calendar
+    plan step C2-f3c**:
 
-    * the caller paired one user's template with another user's pay period --
-      every path already ownership-checks before reaching generation, so this
-      is a route-layer hole or a probe;
-    * the caller passed an UNSAVED period, which has no id to match against a
-      schedule read back from the database.  The repopulation paths flush
-      before populating (``pay_period_write.record_paydays``), so an
-      unsaved period here means a caller skipped that.
-    * **the schedule and the calendar describe different periods**, which plan
-      step **C2-b2** added by taking the calendar from
-      ``pay_calendar.calendar_for`` rather than building it from the rows this
-      class already loaded.  Two reads, two READ COMMITTED snapshots, so a
-      concurrent schedule write between them lands here -- and so does a stored
-      ``period_index`` whose order disagrees with its own payday order, because
-      the two reads order by different columns.  The first is a race the loud
-      answer is right for; the second is corrupt legacy data that would
-      otherwise silently re-phase every ``Every N Periods`` rule.
-      An earlier revision of this docstring said "exactly two ways" and was
-      left stale by that step; an adversarial review caught it.
+    * the caller paired one user's template with another user's pay period, or
+      named a period that no longer exists -- every path already
+      ownership-checks before reaching generation, so this is a route-layer
+      hole or a probe.  An UNSAVED period arrives here too, as an id of
+      ``None``: it is not one of the owner's materialised ids, so the same
+      refusal answers it.
+
+    **Two other arms lost their SUBJECT at C2-f3c and this docstring is the
+    third revision of that list.**  The value used to LOAD the schedule itself,
+    twice -- once as ORM rows and once as a calendar -- so it refused a
+    disagreement between the two reads (a concurrent schedule write between
+    them, or a stored ``period_index`` out of payday order) and refused an
+    unsaved period by name.  There is one read now and it is the caller's, its
+    order is payday order by construction, and a window is a set of integers,
+    so neither state is expressible rather than being refused.  An earlier
+    revision said "exactly two ways" and was left stale by plan step C2-b2; an
+    adversarial review caught that one, and an adversarial review of C2-f3c
+    caught this one going stale the same way.
 
     Raised rather than skipped because both alternatives are silent: a window
     period the schedule does not contain simply matches nothing, and the pass
@@ -374,54 +360,11 @@ class PayPeriodUnresolved(ShekelError):
         )
 
 
-class PayPeriodOverlapStored(ShekelError):
-    """A stored pay period covers days its successor's payday already claims.
-
-    Raised by ``pay_period_write._write_derivation`` (plan step C3-b) when a
-    non-last period's stored ``end_date`` is LATER than the day before the next
-    payday.  Two periods then cover the same days, which is the state
-    ``uq_pay_periods_user_index`` and three runtime fences exist to catch and
-    which no writer in this app's history could produce.  Nothing is written.
-
-    **It is not the mirror of a hole, and that is why it raises where a hole
-    repairs.**  A stored end BELOW the derivation is days the owner's paydays
-    cover and the column does not, so materialising the derivation LENGTHENS
-    the period and can only pull a row's money back into a column it belongs
-    in.  Above it, the two values contradict each other and rewriting the
-    column SHORTENS a period -- possibly one holding settled money -- on the
-    strength of a guess about which value is right.  A broken invariant, not
-    user input: no form can produce it and no route catches this, because the
-    right disposition is a stack trace naming the row.
-
-    Attributes:
-        period_id: The ``budget.pay_periods.id`` that overlaps.
-        payday: Its ``start_date``.
-        stored_end: The ``end_date`` on the row.
-        derived_end: The day before the next payday -- what the row's own
-            successor says its end must be.
-    """
-
-    def __init__(self, period_id, payday, stored_end, derived_end):
-        self.period_id = period_id
-        self.payday = payday
-        self.stored_end = stored_end
-        self.derived_end = derived_end
-        super().__init__(
-            f"Pay period {period_id} (payday {payday.isoformat()}) is stored "
-            f"ending {stored_end.isoformat()}, past {derived_end.isoformat()} "
-            f"-- the day before the next payday -- so it overlaps the period "
-            f"after it.  Refusing to rewrite the column: shortening a period "
-            f"that may hold settled money, to resolve a contradiction this "
-            f"writer cannot have created, needs a person to decide which value "
-            f"is right."
-        )
-
-
 class PayPeriodResetBlocked(ShekelError):
     """A full pay-period reset was refused: the user has settled history.
 
     Raised by ``pay_period_admin.reset_pay_periods`` when the user has at
-    least one settled (Paid / Received / Settled), non-deleted
+    least one settled (Paid or Received), non-deleted
     transaction.  Reset rebuilds the WHOLE schedule -- including the
     account anchor period -- and is a first-time-setup correction only; a
     user whose paychecks have begun settling must use Regenerate (which
@@ -494,6 +437,51 @@ class StatementIntegrityError(StatementImportError):
         )
 
 
+class StatementBalanceUnexplained(StatementImportError):
+    """The file's own running-balance CHAIN reaches its header figure on no day.
+
+    :class:`StatementIntegrityError`'s sibling, and separate from it because
+    the two name different defects in the same chain and a shared message would
+    state the wrong cause.  That one is a BREAK -- one line's balance does not
+    follow from the line before it -- and points at the pair.  This one is a
+    chain that is internally sound and still cannot produce the figure the
+    file's own header states.
+
+    A statement claims a balance and lists lines.  Where the file states a
+    balance beside every line it states its own opening, so the claim is
+    reconciled by the day ``d`` where ``stated - sum(lines up to d) == opening``
+    (plan step ``bank_import:X-f6e-1``, ruling **R-GF**).  Real exports need
+    that flexibility: the developer's 2026-08-16 file states 2026-08-13's
+    closing over a list containing two 2026-08-14 lines, and it reconciles at
+    08-13.  When NO day does, the file disagrees with itself, and a re-export
+    is the answer.
+
+    **It fires ONLY against the file's own chain, never against what the app
+    has recorded**, and that bound is the whole of its honesty.  A mismatch
+    with recorded history has innocent explanations the file cannot be blamed
+    for -- a date-range export states the CURRENT balance, so the movements
+    explaining it are simply not in the file -- and an earlier draft refused on
+    that too.  An adversarial review reproduced it rejecting an honest export
+    and telling the owner to delete an import, with a figure the bank's file
+    had never asserted (2026-08-23).  An unplaceable claim is recorded
+    unanchored instead.
+
+    Attributes:
+        stated: What the file's header claims the account held.
+        implied: What its own chain puts the account at after its last line.
+        detail: The sentence naming both, for the person who uploaded it.
+    """
+
+    def __init__(self, stated, implied, detail):
+        self.stated = stated
+        self.implied = implied
+        self.detail = detail
+        super().__init__(
+            f"This statement disagrees with itself: {detail}.  Nothing was "
+            f"imported.  Re-export the full span from your bank."
+        )
+
+
 class StatementAccountMismatch(StatementImportError):
     """The file names an account other than the one it is being imported into.
 
@@ -503,46 +491,88 @@ class StatementAccountMismatch(StatementImportError):
     that check failing -- importing the card's export into Checking, or one
     person's export into another's account.
 
+    **The message names the repair, because the mapping itself can be the
+    thing that is wrong** (plan step ``bank_import:X-f6a-4``, finding
+    **N-302**).  It is learned from a FIRST import and was, until that step,
+    unremovable -- so an owner who chose the wrong Shekel account once could
+    never import that account's statements again.  Deleting every import an
+    account holds from a source now clears the mapping with the last of them,
+    and the next import learns it afresh.
+
     Attributes:
         recorded: What the source called this account when the mapping was
             first recorded.
         submitted: What the uploaded file calls its account.
     """
 
-    def __init__(self, recorded, submitted):
+    def __init__(self, recorded, submitted, *, claimed_elsewhere=False):
         self.recorded = recorded
         self.submitted = submitted
+        self.claimed_elsewhere = claimed_elsewhere
+        # **The repair is on whichever account HOLDS the pairing, and the two
+        # arms hold it in different places** -- so the sentence naming it is
+        # per arm rather than appended to both.  A first version appended one
+        # sentence pointing at "this account's statements page", which is right
+        # for the arm below and WRONG for the one that fires when another of
+        # the owner's accounts claims the file: there this account has no
+        # pairing at all, and deleting its imports clears nothing.  That is the
+        # arm the repair door exists for -- import into the wrong account, then
+        # try the right one -- so it was the arm the sentence had to serve.
+        # Found by adversarial security review 2026-08-20.
+        repair = (
+            "The pairing is on that other account, so that is where to clear "
+            "it: delete its imports on its own statements page and the last "
+            "one takes the pairing with it."
+            if claimed_elsewhere else
+            "If the recorded pairing is itself wrong, delete this account's "
+            "imports on its statements page: the last one takes the pairing "
+            "with it."
+        )
         super().__init__(
             f"This file is for account '{submitted}', but this Shekel account "
             f"has been imported from '{recorded}' before.  Nothing was "
             f"imported.  Choose the matching account, or check that you "
-            f"exported the right one."
+            f"exported the right one.  {repair}"
         )
 
 
 class StatementLineConflict(StatementImportError):
     """A line already recorded now states something DIFFERENT.
 
-    A line's identity is ``(account, posted_on, amount, sequence)``.  When a
-    later import produces that same identity carrying a different description
-    or a different running balance, the bank has restated a line the app has
-    already recorded as an observation -- and an observation quietly rewritten
-    is exactly what ruling **R-FL** exists to prevent.
+    The app holds a line the file no longer states, and the file states a line
+    at the same day and amount that the app cannot account for.  The bank has
+    RESTATED a line the app recorded as an observation -- and an observation
+    quietly rewritten is exactly what ruling **R-FL** exists to prevent.
+
+    **That is a claim about a GROUP, not about a slot** (plan step
+    ``bank_import:X-f6a-4``).  A line's stored identity ends in an ordinal this
+    app mints, and comparing an incoming line against whatever sits at its
+    ordinal fired on two events the bank had not restated at all: two same-day
+    same-amount lines listed in the other order, and a genuinely new line the
+    bank inserted ahead of a recorded one.  Both refused a whole file.  The
+    reconciliation now pairs on the wording the bank itself wrote
+    (:func:`app.services.statement_import.pair_by_statement`), so what reaches
+    here is a contradiction rather than a re-ordering.
 
     **It refuses rather than overwriting, and refuses rather than ignoring**,
     which is a deliberate choice between three bad options on an event that has
-    never been observed: comparing the developer's 2026-08-04 and 2026-08-16
-    exports over their 342 shared lines gave 0 restatements.  Overwriting would
-    destroy the original observation with no record; ignoring would leave the
-    app holding a line the bank no longer states.  Refusing puts a human in
-    front of the only case where those differ, at the cost of a manual step on
-    an event measured never to happen.
+    never been observed: across the developer's 2026-07-19, 2026-08-16 and
+    2026-08-18 exports -- 1,041 lines, 0 groups holding more than one member --
+    there were 0 restatements.  Overwriting would destroy the original
+    observation with no record; ignoring would leave the app holding a line the
+    bank no longer states.  Refusing puts a human in front of the only case
+    where those differ.
+
+    **The two wordings it carries are EXAMPLES rather than a pairing.**  The
+    reconciliation declined to pair them, so where several stand unaccounted
+    for on each side there is no correspondence to name, and a message
+    asserting one would be a true sentence about the wrong problem.
 
     Attributes:
-        posted_on: The day the conflicting line posted.
-        amount: Its signed amount.
-        recorded: What the app already holds.
-        submitted: What the file now says.
+        posted_on: The day the conflicting lines posted.
+        amount: Their signed amount.
+        recorded: One wording the app holds that the file does not state.
+        submitted: One the file states that the app does not hold.
     """
 
     def __init__(self, posted_on, amount, recorded, submitted):
@@ -551,8 +581,11 @@ class StatementLineConflict(StatementImportError):
         self.recorded = recorded
         self.submitted = submitted
         super().__init__(
-            f"The line on {posted_on} for {amount} was already recorded as "
-            f"'{recorded}' and this file states '{submitted}'.  Nothing was "
-            f"imported.  A statement line is a record of what your bank "
-            f"showed, so this needs a human before anything overwrites it."
+            f"On {posted_on} this file states '{submitted}' for {amount}, "
+            f"which this account does not hold -- while it holds '{recorded}' "
+            f"for that day and amount, which this file does not state.  "
+            f"Nothing was imported.  A statement line is a record of what your "
+            f"bank showed, so the app will not overwrite one.  If the recorded "
+            f"line is the wrong one, delete the import that recorded it on the "
+            f"statements page and import this file again."
         )

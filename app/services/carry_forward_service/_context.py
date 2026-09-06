@@ -16,7 +16,6 @@ from typing import List, Optional
 
 from app.exceptions import NotFoundError
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
     AmountBasis,
@@ -46,8 +45,8 @@ class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
     :class:`~app.services.recurrence.ResolvedRecurrence` precedent.
     """
 
-    source_period: object  # PayPeriod
-    target_period: object  # PayPeriod
+    source_period: object  # DerivedPeriod
+    target_period: object  # DerivedPeriod
     user_id: int
     scenario_id: int
     shadow_txns: List[Transaction]
@@ -69,45 +68,86 @@ class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
 
 
 def _build_carry_forward_context(source_period_id, target_period_id,
-                                 user_id, scenario_id):
+                                 scenario_id, balance_ctx):
     """Validate periods, query projected source rows, three-way partition.
 
     Pure read-only setup shared by ``carry_forward_unpaid`` (mutating)
     and ``preview_carry_forward`` (read-only).  Raises ``NotFoundError``
-    if either period is missing or not owned by *user_id* -- both
+    if either period is missing or not the calendar owner's -- both
     callers want the same security response (404 at the route layer).
 
     The same-period short-circuit (``source == target``) returns an
     empty partition so callers can no-op cleanly without special
     casing in the loops.
 
+    **Both periods are ANSWERED BY THE CALENDAR, and that is what makes the
+    ownership check structural** (pay-calendar plan step C2-f3c).  Each was a
+    ``db.session.get(PayPeriod, ...)`` followed by a hand-written
+    ``row.user_id != user_id`` comparison -- correct, but a comparison a later
+    edit could drop, and one this module had to remember to write twice.  A
+    calendar is one owner's whole schedule and nothing else, so a period id
+    belonging to anybody else is simply not in it: "no such period" and "not
+    yours" are the same answer here because they are the same question, which
+    is the project's 404-for-both security rule expressed as a lookup rather
+    than as a guard.  It also drops two queries from every carry-forward
+    render.
+
     Args:
         source_period_id: pay_period.id to carry forward FROM.
         target_period_id: pay_period.id to carry forward TO.
-        user_id: defense-in-depth ownership check.
         scenario_id: scenario filter (mirrors the mutating path).
+        balance_ctx: The request's
+            :class:`~app.services.balance_at.BalanceContext`, opened once by
+            the route.  It carries the owner, so no ``user_id`` rides beside
+            it -- two spellings of one fact with nothing reconciling them is
+            the shape ruling P54 rejected -- and its calendar answers both
+            period lookups.  **It took the calendar itself until plan step
+            R7d-c-1**, which moved the derivation onto the pass so the value
+            the recurrence prediction resolves against and the value that
+            answers these lookups cannot be two different schedules.
+
+            **The SCENARIO still rides beside it, and that is deliberate
+            rather than an oversight the owner sentence above covers** -- an
+            adversarial review of R7d-c-1 read the two claims together and was
+            right to.  *scenario_id* is what this operation carries forward
+            WITHIN; the pass pins the owner's BASELINE.  Today every caller
+            passes ``balance_ctx.scenario_id`` and the two are the same value,
+            so :meth:`~app.services.balance_at.BalanceContext.amounts` would
+            answer the *basis* below identically -- but it would answer it for
+            the BASELINE whatever this argument said, which is a different
+            rule silently substituted.  The same pairing the recurrence
+            engines already take (``scenario_id`` beside a
+            ``GenerationSchedule``), and collapsing it is a decision about
+            what a non-baseline carry-forward MEANS rather than a rename.
 
     Returns:
         _CarryForwardContext.
 
     Raises:
-        NotFoundError: if either period is missing or not owned.
+        NotFoundError: if either period is missing or not the calendar
+            owner's.
     """
+    user_id = balance_ctx.user_id
+    calendar = balance_ctx.calendar()
 
-    source = db.session.get(PayPeriod, source_period_id)
-    if source is None or source.user_id != user_id:
+    source = calendar.period_by_id(source_period_id)
+    if source is None:
         raise NotFoundError(f"Source pay period {source_period_id} not found.")
 
-    target = db.session.get(PayPeriod, target_period_id)
-    if target is None or target.user_id != user_id:
+    target = calendar.period_by_id(target_period_id)
+    if target is None:
         raise NotFoundError(f"Target pay period {target_period_id} not found.")
 
     # ONE schedule for the whole request, its window narrowed to the target
     # period the envelope rollovers write into (plan step R4b-1).  Every
     # envelope row asks the recurrence engine the same question about the same
-    # target; building this per row would repeat the schedule query and the
-    # forward occurrence walk once per row.
-    schedule = GenerationSchedule.for_periods(user_id, [target])
+    # target; building this per row would repeat the forward occurrence walk
+    # once per row.  It is built from the pass the route already opened, so
+    # the request holds ONE derivation of the owner's schedule rather than
+    # the two plan ledger row **P68** measured.
+    schedule = GenerationSchedule.for_period_ids(
+        balance_ctx, {target.period_id},
+    )
     # ONE basis for the whole request, on the same terms as the schedule above:
     # every envelope row is priced against the same owner and scenario, and it
     # resolves nothing until the first row asks.
@@ -173,7 +213,7 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     )
 
 
-def _target_canonical_rows(source_txn, target_period, scenario_id, *,
+def _target_canonical_rows(source_txn, target_period_id, scenario_id, *,
                            include_deleted):
     """Return the target period's rows for *source_txn*'s template+scenario.
 
@@ -186,7 +226,9 @@ def _target_canonical_rows(source_txn, target_period, scenario_id, *,
 
     Args:
         source_txn: The source transaction; its ``template_id`` is read.
-        target_period: The PayPeriod the canonical lives in.
+        target_period_id: The ``budget.pay_periods.id`` the canonical lives
+            in.  An id rather than a period since pay-calendar plan step
+            C2-f3c: it is the only thing this ever read off one.
         scenario_id: Scenario filter for the lookup.
         include_deleted: When False, soft-deleted rows are excluded in
             SQL (the mutating path); when True, they are returned so the
@@ -197,7 +239,7 @@ def _target_canonical_rows(source_txn, target_period, scenario_id, *,
     """
     query = db.session.query(Transaction).filter(
         Transaction.template_id == source_txn.template_id,
-        Transaction.pay_period_id == target_period.id,
+        Transaction.pay_period_id == target_period_id,
         Transaction.scenario_id == scenario_id,
     )
     if not include_deleted:
@@ -209,11 +251,71 @@ def _is_finalised(target_row):
     """True if *target_row* cannot receive a rollover bump.
 
     A row is finalised when it has no status or an immutable one (Paid,
-    Received, Settled, Credit, Cancelled).  Bumping it would silently
+    Received, Credit, Cancelled).  Bumping it would silently
     override the user's prior status decision, so both the preview
     (blocks) and the mutating path (raises) gate on this one rule.
     """
     return target_row.status is None or target_row.status.is_immutable
+
+
+def _leftover_recipient(mutable):
+    """Return which of *mutable* receives the leftover, or None to refuse.
+
+    **One paycheck may legitimately hold more than one generated row since plan
+    step R17**, so "more than one mutable row" stopped being proof of
+    corruption.  A row answers an OCCURRENCE of its template's cadence and the
+    unique index is keyed on that
+    (``idx_transactions_template_scenario_occurrence``); a cadence that names
+    one paycheck twice -- a monthly bill at a pay cadence of 30 days or more, a
+    weekly one once plan step R5 makes weekly rules authorable -- now stores
+    both rows instead of being refused.  Measured on the developer's own
+    templates: at ``cadence_days`` 30 two of them repeat a paycheck, at 31
+    eleven of them do across 12 paychecks.
+
+    **The earliest occurrence receives the leftover** (developer ruling,
+    2026-08-28): the unspent money is rolling into the paycheck to meet the
+    next obligation, and the next obligation is the first occurrence in it.
+
+    **Genuine ambiguity still refuses**, and it is the state the guard was
+    written for: two rows answering the SAME occurrence, or an undated row
+    beside any other, are states no cadence produces and no pass should guess
+    at.  Refusing there is what the old ``len(mutable) > 1`` test meant when
+    the index made every multi-row paycheck corrupt.
+
+    Args:
+        mutable: The target period's rows that can still receive a bump --
+            non-deleted and not finalised, as
+            :func:`_classify_leftover_target` selects them.
+
+    Returns:
+        The row to top up, or ``None`` when there is none to choose (an empty
+        period) or the choice cannot be made honestly.
+    """
+    if not mutable:
+        return None
+    if len(mutable) == 1:
+        return mutable[0]
+    # **An OVERRIDE row disqualifies the whole tie-break**, and an adversarial
+    # review of plan step R17 is why this is stated rather than assumed.  The
+    # developer ruled the earliest occurrence among rows a CADENCE names; a row
+    # the owner moved into this paycheck through the PATCH door is not one of
+    # those -- it carries ``is_override = True`` and its own earlier
+    # ``occurs_on``, so an occurrence tie-break would select it over the
+    # paycheck's own canonical and the caller would then write
+    # ``estimated_amount = resolve + leftover`` and clear ``amount_source_id``
+    # ON THE FIGURE THE OWNER TYPED.  The old ``len(mutable) > 1`` guard
+    # refused that, and nothing in the 2026-08-28 ruling asked for it to stop.
+    # Permitting that sibling is the entire reason both indexes are partial on
+    # ``is_override = FALSE``, so it is the more reachable producer of a
+    # multi-row target, not the rarer one.
+    if any(row.is_override for row in mutable):
+        return None
+    occurrences = [row.occurs_on for row in mutable]
+    if any(day is None for day in occurrences):
+        return None
+    if len(set(occurrences)) != len(occurrences):
+        return None
+    return min(mutable, key=lambda row: row.occurs_on)
 
 
 class _TargetKind(enum.Enum):
@@ -228,7 +330,7 @@ class _TargetKind(enum.Enum):
     TOP_UP = "top_up"        # exactly one mutable row exists -> bump it
     GENERATE = "generate"    # empty + active template -> engine creates canonical
     CREATE = "create"        # no usable row -> create a fresh override row
-    AMBIGUOUS = "ambiguous"  # >1 mutable row -> refuse (corrupt state)
+    AMBIGUOUS = "ambiguous"  # >1 mutable row, unresolvable -> refuse
 
 
 @dataclass(frozen=True)
@@ -267,11 +369,14 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
     up; if none exists, create one:
 
       * ``AMBIGUOUS`` -- more than one mutable row matches ``(template,
-        period, scenario)``.  The partial unique index already prevents
-        two non-override canonicals, so this is a corrupt pre-existing
-        state; the caller refuses rather than guess which open row to
-        credit.
-      * ``TOP_UP`` -- exactly one mutable row exists; bump it.
+        period, scenario)`` and :func:`_leftover_recipient` cannot choose
+        between them honestly: they answer the same occurrence, or one of
+        them answers none.  The caller refuses rather than guess which open
+        row to credit.
+      * ``TOP_UP`` -- one mutable row, or several answering DIFFERENT
+        occurrences of a cadence that names this paycheck more than once, in
+        which case the earliest occurrence is bumped
+        (:func:`_leftover_recipient`).
       * ``GENERATE`` -- no rows at all and the template is active in the
         destination; the recurrence engine would create the canonical,
         which the caller then bumps.
@@ -286,7 +391,8 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
     Args:
         source_txn: The envelope source row being carried forward; its
             ``template`` / ``template_id`` drive the lookup.
-        target_period: The destination PayPeriod.
+        target_period: The destination
+            :class:`~app.services.pay_calendar.DerivedPeriod`.
         basis: The request's :class:`~app.services.cash_ledger.AmountBasis`;
             its ``scenario_id`` filters the lookup and the recurrence-engine
             prediction, and it prices the TOP_UP row's pre-bump base.
@@ -305,23 +411,25 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
     from app.services import recurrence_engine  # pylint: disable=import-outside-toplevel
 
     all_rows = _target_canonical_rows(
-        source_txn, target_period, basis.scenario_id, include_deleted=True,
+        source_txn, target_period.period_id, basis.scenario_id,
+        include_deleted=True,
     )
     non_deleted = [r for r in all_rows if not r.is_deleted]
     mutable = [r for r in non_deleted if not _is_finalised(r)]
 
-    if len(mutable) > 1:
+    recipient = _leftover_recipient(mutable)
+    if recipient is None and mutable:
         return _TargetResolution(_TargetKind.AMBIGUOUS)
-    if len(mutable) == 1:
+    if recipient is not None:
         return _TargetResolution(
-            _TargetKind.TOP_UP, row=mutable[0],
-            base=resolve_transaction_amount(mutable[0], basis),
+            _TargetKind.TOP_UP, row=recipient,
+            base=resolve_transaction_amount(recipient, basis),
         )
     if (not non_deleted
             and source_txn.template is not None
             and recurrence_engine.can_generate_in_period(
-                source_txn.template, target_period, basis.scenario_id,
-                schedule=schedule,
+                source_txn.template, target_period.period_id,
+                basis.scenario_id, schedule=schedule,
             )):
         return _TargetResolution(
             _TargetKind.GENERATE, base=source_txn.template.default_amount,

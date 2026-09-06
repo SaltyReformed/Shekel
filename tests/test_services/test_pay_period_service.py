@@ -26,7 +26,18 @@ none was deleted, because none of the behaviour was:
   replaced it, and grade it harder -- they cover the crossed range, which the
   query answered with an empty list and the calendar refuses.
 
-**A FOURTH reader's tests moved out at C2-f2b**, and it is the first of the
+**The SIXTH and LAST reader is gone at C2-f3c**: ``get_all_periods`` had ONE
+``app/`` caller left -- the recurrence generation seam's
+``GenerationSchedule``, which read it BESIDE the owner's calendar -- and that
+step deleted the second read.  Its single case here graded that the reader
+returned the owner's ten periods in ``period_index`` order; a
+:class:`~app.services.pay_calendar.PayCalendar` IS the owner's whole schedule,
+in payday order by construction, and ``test_pay_calendar_value`` and
+``test_pay_calendar_loader`` already grade that harder than a length check
+could -- so the case is DELETED rather than re-pointed at a test helper.
+Grading ``tests._test_helpers.all_periods`` would be grading the harness.
+
+**A FOURTH reader's tests moved out at C2-f2b**, and it was the first of the
 six to be DELETED rather than re-pointed: ``get_periods_in_range`` had all
 three of its ``app/`` call sites in the grid route (``page.py`` twice,
 ``partials.py`` once), so moving the grid onto ``PayCalendar.window`` left it
@@ -42,7 +53,7 @@ from ``/grid?offset=-99`` on every schedule.
 
 from datetime import date
 
-from app.services import pay_period_service
+from app.services.pay_calendar import calendar_for
 
 
 # ---------------------------------------------------------------------------
@@ -50,15 +61,31 @@ from app.services import pay_period_service
 # ---------------------------------------------------------------------------
 
 
-class TestGetCurrentPeriod:
-    """Tests for get_current_period()."""
+class TestTheCurrentPeriodComesFromTheDerivation:
+    """"Which paycheck covers this day" over a real schedule in the database.
+
+    **These graded ``pay_period_service.get_current_period`` until plan step
+    C2-f3a DELETED it**, and they are re-pointed rather than removed, because
+    none of the behaviour was removed -- the same discipline the three C2-f1
+    readers got (module docstring).  What answers now is
+    :meth:`~app.services.pay_calendar.PayCalendar.period_containing`, reached
+    through the one database door, so these remain an INTEGRATION grade of the
+    loader plus the derivation plus the search against real rows, where
+    ``test_pay_calendar_value`` grades the search alone with no database.
+
+    Two things the retired reader did that these cases now pin the ABSENCE of:
+    its ``.first()`` carried no ``ORDER BY`` (ledger row **P19**), and its day
+    defaulted to the process clock rather than being asked for (row **P49**).
+    Every case here states its own day as a literal, which is the clock
+    discipline ``.claude/rules/testing.md`` asks for and which the old
+    signature made optional.
+    """
 
     def test_returns_period_containing_date(self, app, db, bare_user, bare_periods):
         """A date within the first period (Jan 2-15) should return it."""
         with app.app_context():
-            period = pay_period_service.get_current_period(
-                bare_user["user"].id,
-                as_of=date(2026, 1, 5),
+            period = calendar_for(bare_user["user"].id).period_containing(
+                date(2026, 1, 5),
             )
             assert period is not None
             assert period.period_index == 0
@@ -68,9 +95,8 @@ class TestGetCurrentPeriod:
     def test_no_period_contains_date_returns_none(self, app, db, bare_user, bare_periods):
         """A date before all periods returns None."""
         with app.app_context():
-            period = pay_period_service.get_current_period(
-                bare_user["user"].id,
-                as_of=date(2020, 1, 1),
+            period = calendar_for(bare_user["user"].id).period_containing(
+                date(2020, 1, 1),
             )
             assert period is None
 
@@ -78,29 +104,12 @@ class TestGetCurrentPeriod:
         """Targeting the 3rd period (index 2) returns the correct period."""
         with app.app_context():
             # Period 2: starts Jan 2 + 28 days = Jan 30, ends Feb 12.
-            period = pay_period_service.get_current_period(
-                bare_user["user"].id,
-                as_of=date(2026, 2, 1),
+            period = calendar_for(bare_user["user"].id).period_containing(
+                date(2026, 2, 1),
             )
             assert period is not None
             assert period.period_index == 2
             assert period.start_date == date(2026, 1, 30)
-
-
-# ---------------------------------------------------------------------------
-# TestGetAllPeriods
-# ---------------------------------------------------------------------------
-
-
-class TestGetAllPeriods:
-    """Tests for get_all_periods()."""
-
-    def test_returns_all_periods_ordered_by_index(self, app, db, bare_user, bare_periods):
-        """Should return all 10 periods ordered 0..9."""
-        with app.app_context():
-            periods = pay_period_service.get_all_periods(bare_user["user"].id)
-            assert len(periods) == 10
-            assert [p.period_index for p in periods] == list(range(10))
 
 
 # ---------------------------------------------------------------------------
@@ -116,24 +125,27 @@ class TestNegativeAndBoundaryPaths:
     left here is the date-boundary behaviour of the lookups.
     """
 
-    def test_get_current_period_exact_start_date(self, app, db, bare_user, bare_periods):
-        """get_current_period with as_of equal to a period's start_date returns that period.
+    def test_the_current_period_includes_its_own_start_date(
+        self, app, db, bare_user, bare_periods,
+    ):
+        """A day equal to a period's start_date resolves to that period.
 
         Off-by-one on date boundaries is a classic bug. The first day of a
         period must be included in that period, not the previous one.
         """
         with app.app_context():
             # Period 0 starts on 2026-01-02.
-            period = pay_period_service.get_current_period(
-                bare_user["user"].id,
-                as_of=date(2026, 1, 2),
+            period = calendar_for(bare_user["user"].id).period_containing(
+                date(2026, 1, 2),
             )
             assert period is not None
             assert period.period_index == 0
             assert period.start_date == date(2026, 1, 2)
 
-    def test_get_current_period_exact_end_date(self, app, db, bare_user, bare_periods):
-        """get_current_period with as_of equal to a period's end_date returns that period.
+    def test_the_current_period_includes_its_own_end_date(
+        self, app, db, bare_user, bare_periods,
+    ):
+        """A day equal to a period's end_date resolves to that period.
 
         The last day of a period must be included in that period. If the
         boundary were exclusive, the user would see no current period on the
@@ -141,27 +153,30 @@ class TestNegativeAndBoundaryPaths:
         """
         with app.app_context():
             # Period 0 ends on 2026-01-15 (start + 13 days).
-            period = pay_period_service.get_current_period(
-                bare_user["user"].id,
-                as_of=date(2026, 1, 15),
+            period = calendar_for(bare_user["user"].id).period_containing(
+                date(2026, 1, 15),
             )
             assert period is not None
             assert period.period_index == 0
             assert period.end_date == date(2026, 1, 15)
 
-    def test_get_current_period_after_all_periods(self, app, db, bare_user, bare_periods):
-        """get_current_period returns None for a date after all generated periods.
+    def test_no_period_covers_a_day_past_the_last_one(
+        self, app, db, bare_user, bare_periods,
+    ):
+        """A day after every generated period resolves to ``None``.
 
         With 10 periods starting 2026-01-02 at 14-day cadence, the last period
         (index 9) ends on 2026-05-21. A date of 2026-05-22 is outside all ranges.
-        Ensures the service does not crash or return a wrong period when the
-        date is outside all generated ranges.
+        Ensures the derivation does not crash or return a wrong period when
+        the date is outside all generated ranges.  ``None`` here is the SAVED
+        answer, not the total one: ``span_containing`` would project a period
+        past the horizon, which is why the three routes that branch on this
+        call ``period_containing``.
         """
         with app.app_context():
             # Period 9: start = 2026-05-08, end = 2026-05-21.
-            period = pay_period_service.get_current_period(
-                bare_user["user"].id,
-                as_of=date(2026, 5, 22),
+            period = calendar_for(bare_user["user"].id).period_containing(
+                date(2026, 5, 22),
             )
             assert period is None
 

@@ -77,19 +77,23 @@ from pathlib import Path
 import pytest
 import sqlalchemy.exc
 
+from app import ref_cache
+from app.enums import AmountSourceEnum, StatusEnum
+from app.exceptions import AmountUnresolvable
 from app.services.cash_ledger import _amounts
 from app.services.cash_ledger._amounts import (
     _entry_aware_amount,
-    _expense_amount,
-    income_amount,
+    contribution_of,
 )
 from app.extensions import db
-from app.models.account import AccountAnchorHistory
+from app.models.account import Account
 from tests._test_helpers import (
     add_entry,
     add_txn,
     create_envelope_txn,
     planted_basis,
+    reassert_balance_on,
+    settle_instant_on,
 )
 
 
@@ -124,9 +128,10 @@ def _basis(*rows, overrides=None):
     (:class:`~tests._test_helpers.PlantedPricing`) rather than into a
     ``{transaction_id: Decimal}`` map the basis carries: plan step X-au-c2b
     made a basis hold the derivations themselves, keyed on an owner and a
-    scenario rather than on a row set.  Either half answers
-    :func:`live_override` identically, and which rule prices a row is never
-    decided by which one its id turned up in.
+    scenario rather than on a row set.  Since plan step **X-au-d** the salary
+    derivation is what amount RULE 2 asks directly, rather than what a
+    read-time repair indexed, so a planted answer is graded through the
+    resolver and not through an override seam laid over it.
 
     **It was a ``ProjectedBasis`` carrying the account's clearing rule beside
     this until plan step X-f3b** (ruling **R-FM**), because the reservation
@@ -594,10 +599,17 @@ class TestTheRecordedPostingDay:
                 [("200.00", False, _POSTED_ON)],
             )
 
-            for observed_on in (_STATEMENT_DAY, date(2026, 1, 1)):
-                db.session.query(AccountAnchorHistory).filter_by(
-                    account_id=txn.account_id,
-                ).update({"observed_on": observed_on})
+            # **Each day is ASSERTED, not written over the last one** (plan
+            # step X-f3c-2c).  The table is append-only, and the sweep means
+            # "whatever the account's statement day is": a later assertion
+            # governs, which is exactly how an owner moves that day.  The two
+            # days are given latest-last so each iteration's row is the
+            # governing one.
+            account = db.session.get(Account, txn.account_id)
+            for observed_on in (date(2026, 1, 1), _STATEMENT_DAY):
+                reassert_balance_on(
+                    db.session, account, settle_instant_on(observed_on),
+                )
                 db.session.flush()
 
                 assert _entry_aware_amount(
@@ -706,6 +718,18 @@ class TestTheEntriesRelationshipIsNotASeam:
                     )
 
 
+class _FakeActiveProfile:  # pylint: disable=too-few-public-methods
+    """The one attribute ``is_salary_linked_template`` reads off a profile."""
+
+    is_active = True
+
+
+class _FakeSalaryTemplate:  # pylint: disable=too-few-public-methods
+    """A definition an ACTIVE salary profile names, for rule 2's refinement."""
+
+    salary_profiles = (_FakeActiveProfile(),)
+
+
 class _FakeRow:  # pylint: disable=too-few-public-methods
     """A non-ORM stand-in carrying only what a valuation rule may read.
 
@@ -714,26 +738,55 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
     guards is load-bearing, and that shape is what proves it (see
     :meth:`TestTheLiveOverride.test_no_entries_short_circuits_before_the_status_read`).
 
-    **It grew the override seam's columns at plan step X-au-c2b and the
-    settlement record's at X-au-c3**, and the
-    reason is the restructure itself: :func:`live_override` indexed a
-    ``{transaction_id: Decimal}`` map the basis carried, so it read no column at
-    all; it asks the two live DERIVATIONS per row now, and each answers ``None``
-    from the row's own columns before touching anything expensive.  Those reads
-    are the same ones the producers made when they BUILT that map over a row
-    set -- moved, not added -- so a stand-in for a row a valuation may see
-    carries them.
+    **It grew the pricing columns at plan step X-au-c2b and the settlement
+    record's at X-au-c3**, and the reason is the restructure itself: a
+    read-time repair indexed a ``{transaction_id: Decimal}`` map the basis
+    carried, so it read no column at all; the RULES read the row's own columns
+    to decide which of them prices it.  Those reads are the same ones the
+    producers made when they BUILT that map over a row set -- moved, not added
+    -- so a stand-in for a row a valuation may see carries them.
+
+    **A salary-shaped row is DECLARED derived since plan step X-au-d**, which
+    is not a convenience: that step is what made "the salary profile prices
+    this row" and "this row stores no figure" the same fact, so a stand-in that
+    was salary-shaped AND owned a figure would be a state the amount model
+    cannot be in.  It carries the ``template`` stub amount rule 2's refinement
+    reads for the same reason.
     """
 
-    def __init__(self, txn_id=None, effective_amount="77.00", statusless=False):
+    def __init__(
+        self, txn_id=None, effective_amount="77.00", statusless=False,
+        *, salary_shaped=False, pay_period_id=None,
+    ):
         self.id = txn_id
         # What the row OWNS, which since plan step X-au-c2 is what the
         # valuation reads: ``amount_source_id IS NULL`` says the figure is the
         # row's own, and the four attributes below are every column the OWN arm
         # and the contribution gate touch.  There is no ``effective_amount``
         # property any more -- the resolved figure arrives as an argument.
-        self.estimated_amount = Decimal(effective_amount)
-        self.amount_source_id = None
+        #
+        # **Plain attributes, and NOT ``amount_ownership``** (plan step
+        # X-au-k).  This is a stand-in rather than a mapped row, so what it
+        # owes the rules under test is their READ shape; the composite is how
+        # the real model keeps those two reads consistent, and a stub that
+        # carried it would have to re-implement the projection to answer them
+        # at all.
+        # A salary-shaped row DECLARES its definition and stores no figure
+        # (plan step X-au-d); every other stand-in OWNS what it holds.  The two
+        # halves are one attribute on the real model
+        # (``ck_transactions_amount_ownership`` pairs them), so a stand-in that
+        # set them independently could express a state no row may be in.
+        self.estimated_amount = None if salary_shaped else Decimal(
+            effective_amount,
+        )
+        self.amount_source_id = (
+            ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE)
+            if salary_shaped else None
+        )
+        # What amount rule 2's refinement reads to tell a salary-linked
+        # definition from an ordinary one
+        # (``template_amount_service.is_salary_linked_template``).
+        self.template = _FakeSalaryTemplate() if salary_shaped else None
         # The settlement RECORD (plan step X-au-c3).  ``settled_figure`` asks
         # the STATUS first -- a retained record on a reverted row is not what
         # that row is worth -- and the basis only for a row the status says has
@@ -748,31 +801,50 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
         # facts.  ``None`` / ``False`` throughout, so neither derivation is
         # reached and the fall-through under test is what runs.
         self.transfer_id = None
+        # A row the SALARY half can answer for: income, on a template, in a
+        # period.  Off by default, so the fall-through under test is what runs.
+        # It became the only way to reach the seam at plan step X-au-g-2c-2 --
+        # the loan half is deleted, and it was the half a planted figure used
+        # to land on.
+        self._salary_shaped = salary_shaped
         # The scenario the basis this row is priced against declares.  Zero on
         # both sides, matching ``planted_basis``'s default: a mismatch is what
         # ``resolve_transaction_amount`` refuses (plan step X-au-c2b).
         self.scenario_id = 0
         self.is_override = False
-        self.is_income = False
-        self.template_id = None
-        self.pay_period_id = None
+        self.is_income = salary_shaped
+        self.template_id = txn_id if salary_shaped else None
+        self.pay_period_id = pay_period_id
         # ``status_id`` is always present, and *statusless* now means the
         # ``status`` RELATIONSHIP is absent rather than the column.  Since plan
         # step X-au-c3 every valuation asks the status whether a row is worth
         # what it RECORDED or what it PLANS, so a stand-in without the column is
         # not a row any valuation could see -- and a test double built around a
         # missing attribute grades an impossible input.
-        self.status_id = None
+        #
+        # A salary-shaped row carries the PROJECTED id, because the salary
+        # half's own gate is ``is_projected(txn) and not txn.is_override``.
+        self.status_id = (
+            ref_cache.status_id(StatusEnum.PROJECTED) if salary_shaped else None
+        )
 
 
-class TestTheLiveOverride:
-    """A live-derived amount replaces the stored figure, on both legs.
+class TestTheProjectedValuation:
+    """What a still-PROJECTED row contributes, by the rule that prices it.
 
-    The read-time seam (Workstream B): a projected salary paycheck reflects the
-    CURRENT salary profile and a recurring loan-payment shadow the loan's
-    current P&I + escrow, rather than a stored amount a later profile,
-    calibration or code change may have invalidated without firing a
-    regeneration.
+    **This class was ``TestTheLiveOverride`` until plan step X-au-d**, and the
+    rename is the change: there is no override.  A projected salary paycheck
+    still reflects the CURRENT salary profile rather than a figure a later
+    profile, calibration or code change invalidated -- but it does so because
+    the profile is the ONLY producer of that figure, not because a read-time
+    repair lays one over a stored copy.  ``income_amount``, which consumed that
+    repair, collapsed onto :func:`contribution_of` and was deleted rather than
+    kept as a second spelling (``CLAUDE.md`` rule 14).
+
+    The cases below are the same three claims restated against the model that
+    replaced the seam, and the THIRD is a behaviour change rather than a
+    rewording: an unanswered salary row used to fall back to its stored figure
+    and now REFUSES, because there is no figure to fall back to.
 
     Moved from ``TestIncomeOverridesSeam`` (X-c2c2a) and from
     ``test_balance_resolver.py`` (the expense leg's precedence and the guard
@@ -780,77 +852,76 @@ class TestTheLiveOverride:
     ``TestIncomeOverridesSeam`` test did NOT move: it pins that the override is
     honoured in the POST-ANCHOR period specifically, which is a ``_calculator``
     branch rather than a valuation rule.
-
-    **Both legs take a whole :class:`ProjectedBasis` since plan step S1-c.**  The
-    argument was a bare, optional ``amount_overrides`` map; the expense leg now
-    also needs the day through which the account's purchases are reconciled, and
-    two optional arguments would be two ways to hand a reduction half a basis --
-    which would silently value every purchase as outstanding and hold whole
-    budgets back.  One required record makes that shape unwritable, and the
-    income leg takes it too although it reads only one field, so there is no
-    shape in which one leg is valued on a basis the other was not.
     """
 
-    def test_an_override_replaces_the_income_amount(self):
-        """An income row whose id is in the map contributes the override.
+    def test_a_declared_paycheck_contributes_its_PROFILES_net(self, app):
+        """A salary row is worth what its profile pays for that period.
 
-        Override $2473.38 wins over the stored $2000.00.  (Was asserted as
-        anchor $100.00 + override = $2573.38.)
+        The valuation reaches amount rule 2, which asks the pass's salary
+        derivation.  The discriminator is the row's own column: a declared row
+        holds none, so a valuation reading it would answer ``None`` rather than
+        a figure.
         """
-        row = _FakeRow(txn_id=101, effective_amount="2000.00")
-        basis = _basis(row, overrides={101: Decimal("2473.38")})
+        with app.app_context():
+            row = _FakeRow(
+                txn_id=101, effective_amount="2000.00",
+                salary_shaped=True, pay_period_id=7,
+            )
+            basis = _basis(row, overrides={(101, 7): Decimal("2473.38")})
 
-        assert income_amount(row, basis) == Decimal("2473.38")
+            assert row.estimated_amount is None
+            assert contribution_of(row, basis) == Decimal("2473.38")
 
-    def test_an_empty_map_uses_the_stored_amount(self):
-        """An empty override map is byte-identical pre-seam behaviour.
+    def test_a_row_that_OWNS_its_figure_contributes_that_figure(self):
+        """Rule 1, and the non-vacuity partner for the case above.
 
-        ``{}`` rather than ``None``: the basis is required and every producer
-        builds its map (``live_amount_overrides`` returns ``{}`` when neither
-        seam has a candidate, which is the common case), so an absent map is
-        not a state a caller can be in.
+        Without it, a valuation that answered the salary derivation for EVERY
+        row would pass -- and that valuation prices a haircut at a paycheck.
         """
         row = _FakeRow(txn_id=101, effective_amount="2000.00")
         basis = _basis(row)
 
-        assert income_amount(row, basis) == Decimal("2000.00")
+        assert contribution_of(row, basis) == Decimal("2000.00")
 
-    def test_an_unlisted_id_falls_back_to_the_stored_amount(self):
-        """A non-empty map overrides only the ids it lists.
+    def test_a_paycheck_the_projection_does_not_cover_is_REFUSED(self, app):
+        """There is no fallback left, and that is plan step X-au-d's point.
 
-        The map keys id 999; row 101 keeps its stored $2000.00.
-        """
-        row = _FakeRow(txn_id=101, effective_amount="2000.00")
-        basis = _basis(row, overrides={999: Decimal("5.00")})
-
-        assert income_amount(row, basis) == Decimal("2000.00")
-
-    def test_an_override_wins_over_the_entry_formula(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """On the EXPENSE leg an override short-circuits the reduction.
-
-        A live-derived amount is what the row is worth now and carries no
-        entries to reduce, so the override is returned verbatim rather than the
-        50.00 the three-bucket reservation would give (est=500, two debits of
-        200.00 and 250.00 both taken by the bank on 01-21, inside a balance read
-        for 01-22: max(500 - 450 - 0, 0) = 50.00).
-
-        Both calls are made on the SAME basis except for the map, so the figure
-        that changes is attributable to the override alone.
+        The derivation answers for ``(999, 7)`` and this row is ``(101, 7)``.
+        Before the cutover such a row kept its stored figure -- which is
+        precisely the stale cache ruling **R-FI** deletes -- and a valuation
+        that still substituted one would be publishing it.  A refusal is never
+        a fallback, so the rule raises and names the row.
         """
         with app.app_context():
-            txn = _envelope(
-                db.session, seed_user, seed_periods[1], "500.00",
-                [("200.00", False, _POSTED_ON), ("250.00", False, _POSTED_ON)],
+            row = _FakeRow(
+                txn_id=101, effective_amount="2000.00",
+                salary_shaped=True, pay_period_id=7,
             )
-            no_override = _basis(txn)
-            overridden = _basis(
-                txn, overrides={txn.id: Decimal("123.45")},
-            )
+            basis = _basis(row, overrides={(999, 7): Decimal("5.00")})
 
-            assert _expense_amount(txn, no_override) == Decimal("50.00")
-            assert _expense_amount(txn, overridden) == Decimal("123.45")
+            with pytest.raises(
+                AmountUnresolvable, match="live recompute answered nothing",
+            ):
+                contribution_of(row, basis)
+
+    # ``test_an_override_wins_over_the_entry_formula`` lived here until plan
+    # step X-au-g-2c-2, and the RULE it graded is deleted rather than the test
+    # being weakened.  It asserted that on the EXPENSE leg a live-derived
+    # amount short-circuits the three-bucket reservation, returning $123.45
+    # verbatim instead of the $50.00 the entry formula gives.
+    #
+    # The seam had two halves and the LOAN one was the only one an expense row
+    # could ever take -- a loan payment's cash debit sits on the funding
+    # account.  That half went first: a transfer shadow is DERIVED, so there is
+    # no stored figure for an override to supersede.  Plan step **X-au-d** then
+    # took the salary half and the seam with it, and ``_expense_amount`` -- a
+    # one-line forward that existed only for symmetry with ``income_amount`` --
+    # went too.  ``sum_projected``'s expense leg calls
+    # ``_entry_aware_amount`` directly now, which is exactly what
+    # ``TestTheEntryAwareReservation`` below grades, so the successor case this
+    # note used to point at has no separate subject left and is deleted with
+    # the wrapper.  A test whose only possible outcome is a pass is not a test
+    # (finding **N-184**'s rule).
 
     def test_no_entries_short_circuits_before_the_status_read(
         self, monkeypatch,

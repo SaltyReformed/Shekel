@@ -10,11 +10,24 @@
    inputs) to ``action_url`` together with a per-instance keep/use
    decision.  Cancel abandons the whole edit.
 
-   Context (routes/_recurrence_form_helpers.render_recurrence_conflict_chooser):
+   Context (routes/_recurrence_conflict_chooser.render_recurrence_conflict_chooser):
      choices          -- list[ConflictChoice] (row_id, due_date,
                          period_label, your_amount, is_deleted_conflict).
+                         ``period_label`` is the DERIVED period's, off the
+                         pass's own calendar, since pay-calendar plan step
+                         C4-a-5; it was the ORM row's accessor, which reads a
+                         stored ``end_date`` no other screen reads.
      template_name    -- the edit's new name.
-     new_amount       -- the template's new amount (the "Use" figure).
+     new_amount       -- the template's new amount.  The framing sentence's
+                         figure for both kinds; the "Use" side's figure only
+                         when ``use_states_a_figure``.
+     use_states_a_figure -- whether "use" moves the row to ``new_amount`` (a
+                         transfer, which still stores its amount) or hands it
+                         back to its definition to be priced from that
+                         definition's series on the row's own due date (a
+                         transaction, since plan step balance:X-au-e -- ruling
+                         R-JD).  Both kinds answer false after X-au-f and this
+                         branch goes.
      effective_from   -- the edit's effective date.
      echo             -- {field: value} of the original edit form, re-emitted
                          so Apply reproduces the identical edit (csrf excluded;
@@ -38,7 +51,12 @@
           <span class="font-mono">{{ money(new_amount) }}</span>,
           effective {{ effective_from.strftime('%b %d, %Y') }}.
           The instances below were edited to a different amount on the grid.
+          {% if use_states_a_figure %}
           Choose which to keep and which to move to the new value.
+          {% else %}
+          Choose which to keep and which to hand back to this recurring
+          transaction, which prices each one on its own due date.
+          {% endif %}
         </p>
 
         <form method="POST" action="{{ action_url }}">
@@ -53,7 +71,10 @@
             <button type="button" class="btn btn-sm btn-outline-secondary"
                     data-conflict-bulk="{{ decision_keep }}">Keep all</button>
             <button type="button" class="btn btn-sm btn-outline-primary"
-                    data-conflict-bulk="{{ decision_use }}">Use new value for all</button>
+                    data-conflict-bulk="{{ decision_use }}">
+              {% if use_states_a_figure %}Use new value for all
+              {% else %}Follow the template for all{% endif %}
+            </button>
           </div>
 
           <ul class="list-group mb-3">
@@ -84,7 +105,11 @@
                        name="{{ decision_prefix }}{{ choice.row_id }}"
                        id="use-{{ choice.row_id }}" value="{{ decision_use }}">
                 <label class="btn btn-outline-primary" for="use-{{ choice.row_id }}">
+                  {% if use_states_a_figure %}
                   Use <span class="font-mono">{{ money(new_amount) }}</span>
+                  {% else %}
+                  Follow the template
+                  {% endif %}
                 </label>
               </span>
             </li>
@@ -93,8 +118,14 @@
 
           <p class="text-muted small">
             <i class="bi bi-info-circle"></i>
+            {% if use_states_a_figure %}
             Your other upcoming instances move to
             <span class="font-mono">{{ money(new_amount) }}</span> when you apply.
+            {% else %}
+            Your other upcoming instances already follow this recurring
+            transaction, so each is worth what it states on that instance's own
+            due date. Nothing here changes them.
+            {% endif %}
             Settled history is never touched.
           </p>
 

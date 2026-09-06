@@ -35,6 +35,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
+from app.routes._authored_figure import figure_was_authored
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
     _error_transaction_response,
@@ -46,6 +47,7 @@ from app.services import (
     status_seam,
     transfer_service,
 )
+from app.services.settle_day import recorded_settle_day
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +79,23 @@ def _apply_shadow_update(txn, txn_id, data):
         return finalised_error
 
     # Map transaction field names to transfer service kwargs.
+    #
+    # **The THIRD door onto a transfer's amount, and the one that is easy to
+    # miss** -- a PATCH addressed to a transfer SHADOW is answered by updating
+    # its PARENT, so a figure submitted here is a figure submitted for the
+    # transfer.  It therefore owes the same authorship fact the transfer
+    # popover owes (ruling **R-JR**, plan step X-au-h); a door that mapped the
+    # figure across without it would re-open findings **N-436** and **N-448**
+    # through a route neither is written about.
+    #
+    # An UNAUTHORED figure is not forwarded at all, matching
+    # ``transfers.mutations``: the transfer service's amount arm CLEARS the
+    # relation that prices the row, so passing an echo would un-derive a
+    # generated transfer on a save that touched only its status.
     svc_kwargs = {}
-    if "estimated_amount" in data:
+    amount_authored = figure_was_authored(data, "estimated_amount")
+    svc_kwargs["amount_authored"] = amount_authored
+    if amount_authored:
         svc_kwargs["amount"] = data["estimated_amount"]
     if "settled_amount" in data:
         svc_kwargs["settled_amount"] = data["settled_amount"]
@@ -124,11 +141,20 @@ def _apply_shadow_update(txn, txn_id, data):
             current_user.id,
             data.get("status_id", txn.transfer.status_id),
             data.get("settled_on"),
+            # The SHADOW's own recorded pair, which is the pair for both legs
+            # (Transfer Invariant 3).  It makes the reading echo-aware, so a
+            # re-submitted day does not restamp its basis (plan step X-az).
+            recorded_settle_day(txn),
         )
     except ValidationError as exc:
         return _error_transaction_response(txn_id, str(exc))
     if settle_day is not None:
-        svc_kwargs["settled_on"] = settle_day
+        # ``settle_day``, not ``settled_on``: the value is the day AND the basis
+        # that says how it is known (plan step **X-az**), and the transfer
+        # service's kwargs key is named for the pair rather than for a column
+        # ``Transfer`` does not have.  ``settle_day_for_status`` stamped the
+        # ``entered`` basis, which is what a day out of a date box is.
+        svc_kwargs["settle_day"] = settle_day
 
     try:
         transfer_service.update_transfer(
@@ -183,7 +209,8 @@ def _mark_done_shadow(txn, txn_id, submitted, target):
     """
     # **The capture-on-settle FREEZE left this route at plan step X-f2-c3**, and
     # its absence here is the fix rather than an omission.  This branch called
-    # ``loan_payment_service.live_loan_payment_amount`` and handed the answer
+    # ``loan_payment_service.live_loan_payment_amount`` (deleted; the rule is
+    # the amount model since plan step X-au-g-2c-2) and handed the answer
     # down as an ``actual_amount``, so an auto-derived loan payment recorded its
     # live payment-date cash through THIS door and the stale creation-time
     # escrow through the other three that can settle a transfer (the transfers
@@ -219,7 +246,7 @@ def _mark_done_shadow(txn, txn_id, submitted, target):
     except ValidationError as exc:
         # transfer_service.update_transfer runs the transition through
         # the state machine (commit C-21).  A mark-done request against
-        # a Cancelled or Settled transfer shadow surfaces here as a
+        # a Cancelled transfer shadow surfaces here as a
         # designed 400 fragment instead of crashing the request.
         return _error_transaction_response(txn_id, str(exc), target)
     db.session.refresh(txn)
@@ -258,7 +285,7 @@ def _cancel_shadow(txn, txn_id, cancelled_id):
         return _stale_transaction_response(txn_id)
     except ValidationError as exc:
         # transfer_service runs the transition through the state
-        # machine.  An attempt to cancel a Paid/Received/Settled
+        # machine.  An attempt to cancel a Paid/Received
         # transfer surfaces here as a designed 400 fragment instead of
         # crashing the request -- the transfer-service path was wired
         # by commit C-21; this clause is the route's translation.

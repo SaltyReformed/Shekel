@@ -203,9 +203,15 @@ def delete_category(category_id):
     """Permanently delete a category, or archive if in use.
 
     Uses archive_helpers.category_has_usage() to check whether any
-    templates or transactions reference this category for the current
-    user.  If in use, the category is archived instead of deleted.
-    If not in use, it is permanently removed.
+    templates, standing merchant rules or transactions reference this
+    category for the current user.  If in use, the category is archived
+    instead of deleted.  If not in use, it is permanently removed.
+
+    **The merchant-rule predicate joined that check at plan step
+    ``bank_import:X-gd-2``**, and it is this door it is about: a "no" here
+    permits a PERMANENT delete, ``fk_merchant_rules_category_owner``
+    cascades, and a category only a rule used was destroyed together with
+    the owner's stated answer under a flash that said nothing about it.
     """
     category = get_or_404(Category, category_id)
     if category is None:

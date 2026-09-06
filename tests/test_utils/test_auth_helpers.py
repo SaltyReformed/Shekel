@@ -38,6 +38,8 @@ from app.utils.log_events import (
     EVT_RESOURCE_NOT_FOUND,
 )
 from app.utils.session_helpers import FRESH_LOGIN_AT_KEY
+from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import rhythm_of
 
 
 class TestGetOr404:
@@ -93,6 +95,7 @@ class TestGetOwnedViaParent:
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = Transaction(
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -100,7 +103,7 @@ class TestGetOwnedViaParent:
             name="Test Expense",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -133,7 +136,7 @@ class TestGetOwnedViaParent:
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 3, 1),
                 num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -141,6 +144,7 @@ class TestGetOwnedViaParent:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             txn2 = Transaction(
+                user_id=periods2[0].user_id,
                 pay_period_id=periods2[0].id,
                 scenario_id=second_user["scenario"].id,
                 account_id=second_user["account"].id,
@@ -148,7 +152,7 @@ class TestGetOwnedViaParent:
                 name="Other User Expense",
                 category_id=second_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("99.00"),
+                amount_ownership=AmountOwnership.own(Decimal("99.00")),
             )
             db.session.add(txn2)
             db.session.flush()
@@ -577,7 +581,7 @@ class TestAccessDeniedLogging:
             user_id=second_user["user"].id,
             first_payday=date(2026, 3, 1),
             num_periods=2,
-            cadence_days=14,
+            rhythm=rhythm_of(14),
         )
         db.session.flush()
 
@@ -586,6 +590,7 @@ class TestAccessDeniedLogging:
             name="Expense"
         ).one()
         txn2 = Transaction(
+            user_id=periods2[0].user_id,
             pay_period_id=periods2[0].id,
             scenario_id=second_user["scenario"].id,
             account_id=second_user["account"].id,
@@ -593,7 +598,7 @@ class TestAccessDeniedLogging:
             name="Other User Expense",
             category_id=second_user["categories"]["Rent"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("99.00"),
+            amount_ownership=AmountOwnership.own(Decimal("99.00")),
         )
         db.session.add(txn2)
         db.session.flush()
@@ -703,6 +708,7 @@ class TestAccessDeniedLogging:
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
         txn = Transaction(
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=owner["scenario"].id,
             account_id=owner["account"].id,
@@ -710,7 +716,7 @@ class TestAccessDeniedLogging:
             name="Access-log test expense",
             category_id=next(iter(owner["categories"].values())).id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("50.00"),
+            amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -753,7 +759,7 @@ class TestAccessDeniedLogging:
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 3, 1),
                 num_periods=2,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
             txn = self._make_owned_txn(db, second_user, periods2[0])

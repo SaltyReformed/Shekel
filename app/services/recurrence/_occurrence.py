@@ -23,8 +23,8 @@ could not match the interior ones -- and ``cadence_days`` is user-selectable
 1..365 (``schemas/validation/pay_periods.py``), so that is reachable
 configuration.  Measured on the R1 baseline's own 90-day schedule: a monthly
 day-1 rule over three years matched 13 periods instead of 36 (and returned one
-period TWICE, which would violate
-``idx_transactions_template_period_scenario``), and a quarterly rule matched 1
+period TWICE, which the paycheck-keyed generation index of the day could not
+store), and a quarterly rule matched 1
 of its 12 occurrences.  That was plan defect **D3**.
 
 Generating forward and then placing removes the defect structurally rather
@@ -77,10 +77,15 @@ What an occurrence IS, per unit
   and a BOUND for the fourth -- and it is what ruling R-R16 removed.
 
 **A consequence worth stating rather than discovering: placement is INERT
-under the ``PERIOD`` unit.**  Every occurrence it emits is a period's own
-``start_date``, and both placements carry such a date back to that same period
--- ``CONTAINING_DATE`` because the period contains its own opening day, and
-``PERIOD_STARTING_ON_OR_AFTER`` because no earlier period starts later.  The
+under the ``PERIOD`` unit.**  Every occurrence it emits is a paycheck's own
+``start_date``, and both placements carry such a date back to that same
+paycheck -- ``CONTAINING_DATE`` because the period contains its own opening
+day, and ``PERIOD_STARTING_ON_OR_AFTER`` because no earlier period starts
+later.  Past the SAVED horizon both answer ``None`` instead, and they still
+agree: since plan step R16-b-1 the walk names PROJECTED paydays too, and a
+projected payday is not a row either search can return.  That is the ordinary
+"the schedule has not got there yet", which is what ``period is None`` means
+everywhere else here.  The
 plan's section 3 says the opposite ("a mid-period bound places differently
 under the two placements"); that claim reads the anchor as the emitted
 occurrence, which the paragraph above is exactly the decision not to do.
@@ -92,8 +97,11 @@ the first row's date.
 Bounds are OCCURRENCE bounds (ruling R-R6)
 ------------------------------------------
 
-The closing bound (:class:`~app.services.recurrence.EndBound`) is applied to
-the occurrence, not to the period it lands in.  The reverse matcher bounded
+The closing (:class:`~app.services.recurrence.Closing`) is applied to
+the occurrence, not to the period it lands in.  It holds the bound the owner
+AUTHORED and, since plan step R7d-d, any stop DERIVED from the definition's
+destination -- a recurring transfer into a loan stops when the debt does -- and
+both are applied here because both bound an occurrence.  The reverse matcher bounded
 PERIODS -- the end date was tested against a period's START -- so it generated
 rows dated outside the window the user stated: measured on the R1 baseline, a
 monthly-15th rule ending 2025-06-05 generated a row due 2025-06-15.  That was
@@ -132,40 +140,53 @@ extend places it.
 **Where the DERIVED calendar and the STORED columns disagree, this engine now
 believes the derivation** -- and that MOVES MONEY.  Stated here rather than
 discovered, because it is the whole risk surface plan step C2-b2 opened
-(adversarial review, 2026-08-11, which measured all three shapes).  There are
-three, and none of them is reachable through a live door: ``pay_period_write``
-materialises the derivation over the whole payday list on every write, so each
-one means rows written before plan step **C3-b** or edited outside that module,
-and the owner's next payday write REPAIRS them.
+(adversarial review, 2026-08-11, which measured all three shapes).
 
-* **A HOLE is absorbed** (plan ledger row **P27**).  A stored ``end_date``
-  short of the next payday leaves days uncovered; the derivation runs the
+**All three are now UNCONSTRUCTIBLE, and the paragraph is kept as the record of
+what the cutover crossed rather than as a live warning** (plan step
+``pay_calendar:C4-c``).  Each was a STORED column disagreeing with the payday
+set, and that step dropped both columns; there is one span and one ordinal,
+computed on every read, so nothing is left to disagree.  *Until then this
+paragraph said the states were unreachable because ``pay_period_write``
+re-materialised the derivation on every write and "the owner's next payday
+write REPAIRS them" -- true at the time and false since C4-c, which deleted
+that machinery along with its subject.  The writer repairs nothing now because
+there is nothing to repair.*  The three, as they were:
+
+* **A HOLE was absorbed** (plan ledger row **P27**).  A stored ``end_date``
+  short of the next payday left days uncovered; the derivation runs the
   preceding paycheck to the day before that payday, so an occurrence there
   seats against a real period id and generates a row where it used to be
   logged and skipped.
-* **The stored CADENCE moves the horizon** (row **P28**).  The last period's
-  derived end is ``payday + cadence_days - 1``, so a stored cadence that no
-  longer matches the stored end moves the generation window -- SHORTER loses
-  the occurrences past the new horizon, LONGER seats rows in a paycheck whose
-  stored span ends before their date.
-* **A stored ORDINAL is re-derived** (row **P26**).  ``period_index`` becomes a
-  period's position in payday order, so a stored ordinal that is not
-  ``0..n-1`` re-phases every ``Every N Periods`` rule -- including one naming a
+* **The stored CADENCE moved the horizon** (row **P28**).  The last period's
+  derived end is the day before the PROJECTED next payday, one cadence on
+  (``pay_calendar._derive.projected_payday``, spelled ``payday +
+  cadence_days - 1`` until plan step ``pay_calendar:C14-c`` made the two ends
+  one rule), so a stored cadence that no longer matched the stored end moved
+  the generation window -- SHORTER losing the occurrences past the new horizon,
+  LONGER seating rows in a paycheck whose stored span ended before their date.
+  **This one has a survivor**: the cadence is still an input to the last
+  period's PROJECTED end, so changing it still moves the horizon.  What is gone
+  is the DISAGREEMENT -- there is no stored end for it to come apart from.
+* **A stored ORDINAL was re-derived** (row **P26**).  ``period_index`` is a
+  period's position in payday order, so a stored ordinal that was not
+  ``0..n-1`` re-phased every ``Every N Periods`` rule -- including one naming a
   start period, which the plan's first statement of P26 did not cover.
 
 Two consequences ride on the first two.  Where the change puts a SECOND
-occurrence of one template into one paycheck,
-``_recurrence_common.refuse_unstorable_repeats`` refuses the whole pass -- the
-same refusal a 30-day-or-longer cadence already earns, and plan step C5b is
-what lifts it.  Where it does not repeat, the row is generated with a date
+occurrence of one template into one paycheck, both rows are now GENERATED and
+stored -- plan step **R17** re-keyed the unique index onto the occurrence, and
+the refusal a 30-day-or-longer cadence used to earn went with it.  Where it
+does not repeat, the row is generated with a date
 ``compute_due_date`` reads off the paycheck's two ENDPOINT months rather than
 off the occurrence this module found, so it can be dated in the wrong month
 entirely -- plan ledger row **D18**, whose fix is recurrence plan step **R5**
 (it gives the occurrence its own column and deletes ``compute_due_date``).
 Both are measured and pinned by
 ``test_recurrence_engine.TestALegacyScheduleHole``.  Of the three shapes only
-the HOLE has a detector: ``scripts/integrity_check.py`` **BA-07** asks it as a
-query over the stored column and dies with that column at plan step C4.
+the HOLE ever had a detector -- ``scripts/integrity_check.py`` **BA-07**, a
+query over the stored column -- and it died with that column at plan step
+C4-c, by which point it had no subject either.
 
 :func:`occurrence_placements` generates through the schedule's HORIZON by
 default, because that is the last day a placement can succeed at all.  A
@@ -192,13 +213,12 @@ months of rent, measured on the R1 baseline's own 90-day schedule.  That was
 defect D3, and for ``Monthly First`` it went unmeasured until plan step R3
 added the missing oracle shapes.
 
-``budget.transactions`` cannot hold them yet:
-``idx_transactions_template_period_scenario`` is UNIQUE over
-``(template, period, scenario)``.  **That index is keyed on the wrong column**
--- it is a generation-idempotency guard, and a generated row's identity is its
-OCCURRENCE, not its paycheck.  Re-keying it onto ``(template, scenario,
-occurs_on)`` is plan step R5's work, in the same migration that renames
-``due_date`` to ``occurs_on`` and so first gives the occurrence a column.
+``budget.transactions`` HOLDS them since plan step **R17**:
+``idx_transactions_template_scenario_occurrence`` is UNIQUE over
+``(template, scenario, occurs_on)``.  The old index was keyed on the wrong
+column -- it is a generation-idempotency guard, and a generated row's identity
+is its OCCURRENCE, not its paycheck -- which is what made a repeat unstorable
+and what made a MOVED row vacate its own occurrence (ledger row **D57**).
 
 **The rows stay separate; only the grid sums them** (developer ruling,
 2026-08-07).  Summing at generation would fit today's index, and that is
@@ -238,7 +258,7 @@ from app.enums import (
     RecurrenceUnitEnum,
 )
 from app.exceptions import ShekelError
-from app.services.pay_calendar import DerivedPeriod, PayCalendar
+from app.services.pay_calendar import DerivedPeriod, PayCalendar, paychecks_from
 from app.services.recurrence._months import (
     month_ordinal,
     months_per_step,
@@ -347,18 +367,40 @@ def _period_walk(
     ending before it, which is this loop's admission test read directly.
     Nothing has to agree with anything.
 
-    Naturally bounded by the schedule, unlike its two siblings.
+    **It walks the owner's paychecks, saved AND projected, since plan step
+    R16-b-1 -- and until then it TRUNCATED in silence.**  It iterated
+    ``calendar.periods``, the SAVED set, so a caller asking for occurrences
+    past the schedule's horizon got fewer dates than it asked for and no
+    signal that it had: measured on a production clone (2026-08-27), an
+    every-paycheck rule asked through ``2036-01-01`` answered 62 dates ending
+    ``2028-07-27`` against the 255 that owner is actually paid in the window,
+    the last ``2035-12-20`` -- 193 paydays dropped in silence.
+    A truncated walk and a completed one are indistinguishable from the
+    occurrences alone, which is the shape ledger row **P23** refuses one
+    concept over -- an axis that covers part of its range reads exactly like
+    one that covers all of it.
+
+    The horizon is a MATERIALISATION boundary, not a fact about the cadence:
+    an owner goes on being paid after the last payday anyone has saved, so
+    this sequence goes on naming paydays.
+    :func:`~app.services.pay_calendar.paychecks_from` is where
+    that continuation lives, beside the derivation it continues, and it bounds
+    the sequence at :data:`~app.utils.dates.CALENDAR_DATE_MAX` exactly as
+    :func:`~._months.walk_months` does -- so this walk stops where the MONTH
+    walk stops, and :func:`_bounded` is once again the ONLY place a bound is
+    applied.  (:func:`_week_walk`, the third sibling, is bounded by ``date``
+    itself rather than by that constant; the unit is unreachable until plan
+    step R8-b opens it, and bounding it is that step's.)
 
     Args:
         resolved: The recurrence's two-axis meaning.
         calendar: The owner's pay-period schedule.
 
     Yields:
-        Qualifying periods' ``start_date`` values, ascending.
+        Qualifying paychecks' ``start_date`` values, ascending -- saved where
+        the schedule reaches, projected at the owner's cadence beyond it.
     """
-    for period in calendar.periods:
-        if period.end_date < resolved.starts_on:
-            continue
+    for period in paychecks_from(calendar, resolved.starts_on):
         phase = period.period_index - resolved.offset_periods
         if phase % resolved.interval_n != 0:
             continue
@@ -379,8 +421,14 @@ def _unbounded(
         calendar: The owner's pay-period schedule.
 
     Returns:
-        An ascending iterator of occurrence dates, unbounded except for the
-        ``PERIOD`` unit, which the schedule bounds.
+        An ascending iterator of occurrence dates, unbounded for every unit in
+        the sense that nothing about the SCHEDULE stops one -- plan step
+        R16-b-1 removed the ``PERIOD`` unit's exception, which was a SILENT
+        truncation at the saved horizon rather than a bound anything had
+        chosen.  Where each walk finally runs out still differs: ``PERIOD`` and
+        the month-spanning units stop at
+        :data:`~app.utils.dates.CALENDAR_DATE_MAX`, ``WEEK`` at ``date``'s own
+        maximum.
 
     Raises:
         RecurrenceGenerationError: When *resolved* names a unit this engine
@@ -460,9 +508,19 @@ def _bounded(
     :meth:`~app.services.recurrence.EndBound.admits`, and this function does
     not change for it.
 
+    **It asks the whole CLOSING since plan step R7d-d, and gained no
+    parameter doing it.**  A definition can be stopped by something it did not
+    author -- a recurring transfer into a loan stops when the debt does -- and
+    that stop is now carried by the value this function already reads
+    (:class:`~app.services.recurrence.Closing`) rather than threaded past it.
+    The alternative considered and refused was an optional ``narrowed_by=``
+    argument here: it would have left every walking caller one forgotten
+    keyword away from a plausible answer that admits occurrences the loan does
+    not, with nothing to raise on.  A value cannot be forgotten.
+
     Args:
         raw: The rule's unbounded occurrence sequence, ascending.
-        resolved: The recurrence's two-axis meaning, carrying the bound.
+        resolved: The recurrence's two-axis meaning, carrying the closing.
         through: The last day the caller asked about.
 
     Yields:
@@ -472,7 +530,7 @@ def _bounded(
     for occurrence in raw:
         if occurrence > through:
             return
-        if not resolved.end_bound.admits(
+        if not resolved.closing.admits(
             emitted=emitted, occurrence=occurrence,
         ):
             return
@@ -568,9 +626,10 @@ def occurrences(
     """Return the dates this recurrence fires on, ascending, through *through*.
 
     The forward half of the redesign's generation model.  Walks the rule's own
-    cadence from :attr:`ResolvedRecurrence.starts_on`, applying the rule's
-    closing bound and the caller's window.  See the module docstring for what
-    an occurrence IS under each unit.
+    cadence from :attr:`ResolvedRecurrence.starts_on`, applying the value's
+    whole :attr:`~ResolvedRecurrence.closing` -- the bound its owner authored
+    AND any stop derived from its destination -- and the caller's window.  See
+    the module docstring for what an occurrence IS under each unit.
 
     **"Nothing before ``starts_on``" holds for EVERY unit, since plan step
     R7c-b.**  It held for the calendar units only while the ``PERIOD`` unit
@@ -611,9 +670,16 @@ def occurrences(
 
     Returns:
         An ascending iterator of occurrence dates.  Empty when *through*
-        precedes the anchor, when the rule's closing bound admits none of
-        them, or -- for the ``PERIOD`` unit -- when the schedule reaches no
-        qualifying paycheck.
+        precedes the anchor, when the value's closing admits none of
+        them, or -- for the ``PERIOD`` unit -- when the owner has no payday at
+        all.  **It is COMPLETE through *through* since plan step R16-b-1**, up to
+        :data:`~app.utils.dates.CALENDAR_DATE_MAX`, past which this application
+        names no date: the ``PERIOD`` walk used to stop at the SAVED schedule's
+        horizon and say nothing, so a caller asking past it was answered short
+        (62 dates against 255, measured on a production clone 2026-08-27).  The
+        schedule having "not got there yet" is a fact about PLACEMENT
+        (:func:`place` answering ``None``), never about whether the cadence
+        fires.
 
     Raises:
         RecurrenceGenerationError: See :func:`_require_generable`, plus a unit

@@ -13,10 +13,12 @@ defined once rather than re-implemented per surface (coding-standards rule
 13; the T-P3 ``projection_inputs`` precedent, which closed a cross-file
 ``duplicate-code`` finding the same way):
 
-* :func:`query_settled_expenses` -- the one settled-expense ORM query
-  (settled status, expense type, not deleted, scoped to one account /
-  scenario / period set).  Every consumer reads spending through it, so a
-  change to what "settled spending" selects is a single edit.
+* :func:`query_settled_expenses` -- the settled-expense ORM query selected by
+  a PERIOD SET (settled status, expense type, not deleted, scoped to one
+  account / scenario / period set).  Its one caller is the Spending report's
+  pay-period arm, which no route reaches today; the sibling below is what a
+  live render runs.  The two share their row filters, so a change to what
+  "settled spending" selects is still a single edit.
 * :func:`query_settled_expenses_in_span` -- the same row filters selected
   by the attribution rule instead of a period set: COALESCE(due_date,
   owning period start) inside a calendar span, across ALL the user's pay
@@ -34,23 +36,26 @@ defined once rather than re-implemented per surface (coding-standards rule
   days-before-due rule, given the already window-attributed settled
   expenses.
 
-Pure-function module -- no Flask imports; the only side effect is the read
-query in :func:`query_settled_expenses`.
+Pure-function module -- no Flask imports; the only side effects are the two
+read queries, :func:`query_settled_expenses` and
+:func:`query_settled_expenses_in_span`.
 """
 
 import calendar as cal_mod
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy.orm import contains_eager, joinedload, selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.services.pay_calendar import DerivedPeriod
 from app.services.row_valuation import owned_amount, settled_figure
 from app.utils.balance_predicates import settled_status_ids
+from app.utils.dates import pay_period_range_label
 from app.utils.money import CENTS, HUNDRED, ZERO
 
 _WINDOW_TYPES = frozenset({"pay_period", "month", "year"})
@@ -104,13 +109,50 @@ def query_settled_expenses(
 ) -> list[Transaction]:
     """Load settled expense transactions for one account over given periods.
 
-    Filters: settled status only (Paid/Received/Settled -- so Cancelled and
+    Filters: settled status only (Paid/Received -- so Cancelled and
     Credit, which are not settled, are excluded), expense type only, not
     deleted, one account, one scenario, and ``pay_period_id`` in
     *period_ids*.  Transfer shadows are included: they are ordinary
-    ``Transaction`` rows that participate in spending.  Eager-loads
-    ``category`` and ``pay_period`` to prevent N+1 lookups when the caller
-    groups by category or attributes by period.
+    ``Transaction`` rows that participate in spending.
+
+    **It eager-loads ``category`` and NOT ``pay_period``**, and the second half
+    of that changed at pay-calendar plan step **C2-f3d** -- in BOTH queries,
+    for one reason: an AST and grep census over everything reachable from
+    ``compute_spending_report`` found no read of ``txn.pay_period`` anywhere.
+    The period IS the window on this path, so its identity is already resolved
+    (:func:`._window._resolve_window`), and neither the breakdown, the hero nor
+    ``owned_contribution`` asks a row which paycheck it sits in.  The load's
+    stated reason was that a caller "attributes by period", which no caller
+    does.
+
+    **THAT CENSUS IS NO LONGER TOTAL, and it is recorded here rather than
+    re-run because what changed is reachability, not this query.**  The
+    surprises list prices a row through
+    ``cash_ledger.resolve_transaction_amount`` as of 2026-09-05 (the
+    ``/analytics/spending`` fix), and rule 4's arm --
+    ``LoanPricing.derive_cash`` -> ``loan_loaders.loan_payment_due_date`` --
+    reads ``pay_period`` on every call, by that function's own stated
+    precondition.  It is unreachable on production today, where
+    ``budget.loan_payment_settings`` is empty, and reachable in seeded data the
+    moment a payment is tracked in derive mode.  So the sentence above is true
+    of every arm but that one; the removal is not re-litigated here, and
+    whether this query should adopt
+    ``amount_relationships.pricing_load_options`` -- which would re-add the
+    ``pay_period`` load C2-f3d removed -- is finding **N-296**'s, whose census
+    of unguarded batch pricing callers this reader now joins.
+
+    **What the removal actually costs, said conditionally because the two
+    queries differ in whether they run.**  This one is reached only from the
+    pay-period arm, which no route builds (see :func:`._window._series_windows`),
+    so its ``joinedload`` executed on zero live renders; what it did there was
+    hydrate a ``PayPeriod`` per window into the identity map, which is what hid
+    the ``db.session.get`` the retired ordinal walk beside it ran.  The sibling
+    is the one every ``/analytics/spending`` render runs twelve times, and its
+    ``contains_eager`` went too -- **its JOIN is load-bearing and its
+    hydration was not**, which an earlier draft of this paragraph conflated:
+    the COALESCE attribution filter runs on the join, so the join stays and
+    only the ``PayPeriod`` columns leave the SELECT.  Measured on a clone of
+    production: the same 29 rows with the same ids, six fewer columns each.
 
     Args:
         scenario_id: The budget scenario to scope to (the caller's
@@ -136,7 +178,6 @@ def query_settled_expenses(
         db.session.query(Transaction)
         .options(
             joinedload(Transaction.category),
-            joinedload(Transaction.pay_period),
             # ``resolved_actual_amount`` asks ``row_valuation.settled_figure``,
             # which sums a ``purchases``-basis row's OWN entries rather than
             # reading a stored copy (plan step X-au-c3).  Without this the
@@ -191,7 +232,9 @@ def query_settled_expenses_in_span(
 
     Returns:
         The matching settled expense :class:`Transaction` rows, with
-        ``category`` and ``pay_period`` eager-loaded like the sibling query.
+        ``category`` eager-loaded like the sibling query.  ``pay_period`` is
+        JOINED and not loaded: the join carries the COALESCE filter above, and
+        no consumer reads the relationship (plan step C2-f3d).
     """
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     attribution_day = db.func.coalesce(
@@ -202,7 +245,6 @@ def query_settled_expenses_in_span(
         .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
         .options(
             joinedload(Transaction.category),
-            contains_eager(Transaction.pay_period),
             # The sibling query's reason, and the same consumer: see
             # :func:`query_settled_expenses` above.
             selectinload(Transaction.entries),
@@ -293,6 +335,63 @@ def calendar_window_bounds(
     return date(year, 1, 1), date(year, 12, 31)
 
 
+def window_label(
+    window_type: str,
+    month: "int | None",
+    year: "int | None",
+    period: DerivedPeriod | None,
+) -> str:
+    """Return the human label for an analytics window.
+
+    The THIRD shared window rule, beside :func:`validate_window` and
+    :func:`calendar_window_bounds`, and it is here for their reason: the
+    Spending report and the confirmed-ledger Income Statement each render a
+    window heading, and a rule defined per surface is a rule two surfaces can
+    come to disagree about.
+
+    **It was written TWICE, and finding that was pylint's** (plan step
+    C2-f3a).  Ledger row **P47** recorded three copies of the pay-period
+    REGISTER; collapsing those onto
+    :func:`~app.utils.dates.pay_period_range_label` left the two enclosing
+    ``_window_label`` functions structurally identical, and ``duplicate-code``
+    said so.  They were the same three-arm dispatch over two window dataclasses
+    that carry the same four fields -- ``StatementWindow`` and
+    ``SpendingWindow`` -- and their month arms produced one string from two
+    spellings (``date(...).strftime("%B")`` against an f-string format spec).
+    So the register was the visible half of a whole duplicated function.
+
+    **It takes the SCALARS rather than a window**, exactly as
+    :func:`validate_window` does at the same two call sites, because the two
+    dataclasses are per-surface types this module may not choose between --
+    and in :func:`validate_window`'s ORDER, ``month`` before ``year``, so two
+    functions called side by side at both sites cannot be read as taking their
+    arguments in different orders.
+
+    Args:
+        window_type: ``"pay_period"``, ``"month"`` or ``"year"``.
+        month: The calendar month 1-12, for a ``"month"`` window.
+        year: The calendar year, for a ``"month"`` or ``"year"`` window.
+        period: The resolved
+            :class:`~app.services.pay_calendar.DerivedPeriod` for a
+            ``"pay_period"`` window.  ``None`` for the calendar windows, and
+            also when a pay-period window's id names none of the owner's
+            periods -- which is what makes the empty string below a real
+            answer rather than a fallback.
+
+    Returns:
+        ``"Feb 21 - Mar 06, 2026"`` (pay period), ``"January 2026"`` (month),
+        ``"2026"`` (year), or ``""`` when a pay-period window resolved no
+        period.
+    """
+    if window_type == "pay_period":
+        if period is None:
+            return ""
+        return pay_period_range_label(period.start_date, period.end_date)
+    if window_type == "month":
+        return f"{date(year, month, 1):%B} {year}"
+    return str(year)
+
+
 def category_names(txn: Transaction) -> tuple[str, str]:
     """Return the ``(group_name, item_name)`` labels for a transaction.
 
@@ -315,11 +414,24 @@ def category_names(txn: Transaction) -> tuple[str, str]:
 def signed_pct(numerator: Decimal, base: Decimal) -> Decimal | None:
     """Return ``numerator / base`` as a signed 2-dp percent, or ``None``.
 
-    Guards division by zero: a zero base has no meaningful percentage (the
-    variance-figures and the Spending hero's vs-prior / vs-average chips
-    all read ``None`` in that case rather than a fabricated value).  The
-    percentage is rounded to two decimal places with ``ROUND_HALF_UP`` (the
-    project's money-rounding convention).
+    **The base must be POSITIVE, and that is one rule stated HERE** (plan step
+    ``bank_import:X-gj-2b-3``).  A zero base has no meaningful percentage, and
+    a NEGATIVE one reports the wrong DIRECTION: spend rising from ``-50.00`` to
+    ``100.00`` is a rise of ``150.00``, and ``150 / -50`` is ``-300%`` -- a
+    fall of three hundred percent printed over a rise, on a chip an owner
+    reads.  That is a fact about this OPERATION rather than about any caller,
+    so it lives here.
+
+    **It was ``base == ZERO`` here and ``baseline > ZERO`` at the caller**
+    (``spending_report_service._types.Comparison.of``), added when ruling
+    **bank_import:R-II** made a negative baseline reachable.  Two guards whose
+    fail sets NEST -- the caller's strictly subsumed this one -- is the shape
+    ``_income._load_line`` deleted eight files away in this same branch, and
+    ``CreationBars.bar_for`` before it.  One guard now, and the caller has
+    none.
+
+    The percentage is rounded to two decimal places with ``ROUND_HALF_UP``
+    (the project's money-rounding convention).
 
     Args:
         numerator: The signed quantity (a variance, or a vs-prior delta).
@@ -327,9 +439,9 @@ def signed_pct(numerator: Decimal, base: Decimal) -> Decimal | None:
 
     Returns:
         ``(numerator / base) * 100`` quantized to 0.01, or ``None`` when
-        ``base`` is zero.
+        ``base`` is not positive.
     """
-    if base == ZERO:
+    if base <= ZERO:
         return None
     return (numerator / base * HUNDRED).quantize(CENTS, rounding=ROUND_HALF_UP)
 

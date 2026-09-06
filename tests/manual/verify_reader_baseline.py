@@ -70,15 +70,16 @@ from app.services import (
     dashboard_service,
     loan_payment_service,
     loan_posting_service,
-    pay_period_service,
     retirement_projection,
     savings_dashboard_service,
     spending_report_service,
     transfer_service,
 )
+from app.services.cash_ledger import amount_basis
 from app.services.balance_at import BalanceContext
 from app.services.investment_dashboard_service import compute_dashboard_data
 from app.utils.balance_predicates import is_projected_clause
+from tests._test_helpers import all_periods, amount_basis_for
 
 # Six fixed valuation dates, the same discipline
 # ``verify_balance_baseline`` applies: a producer read at one date is blind
@@ -348,7 +349,7 @@ def _loans(user_id, scenario_id, accounts):
             lambda a=account: [
                 [str(p.due_date), _money(p.amount), p.is_confirmed]
                 for p in loan_payment_service.load_loan_context(
-                    a.id, scenario_id,
+                    a.id, amount_basis(user_id, scenario_id),
                     db.session.query(LoanParams)
                     .filter(LoanParams.account_id == a.id).one(),
                 ).payments
@@ -396,7 +397,9 @@ def _transfer_settle(scenario_id):
     return {
         str(shadow.id): _guard(
             f"settle_amount:{shadow.id}",
-            lambda s=shadow: _money(transfer_service.settle_amount(s)),
+            lambda s=shadow: _money(
+                transfer_service.settle_amount(s, amount_basis_for(s)),
+            ),
         )
         for shadow in shadows
     }
@@ -420,7 +423,7 @@ def _dump_user(user_id):
         .order_by(Account.id)
         .all()
     )
-    periods = pay_period_service.get_all_periods(user_id)
+    periods = all_periods(user_id)
     return {
         "period_count": len(periods),
         "calendar": {
@@ -442,7 +445,7 @@ def _dump_user(user_id):
                     [str(p.payment_date), str(p.due_date), _money(p.amount),
                      p.is_confirmed]
                     for p in loan_payment_service.get_payment_history(
-                        acc.id, scenario_id, 1,
+                        acc.id, amount_basis(user_id, scenario_id), 1,
                     )
                 ],
             )

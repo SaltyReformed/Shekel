@@ -121,6 +121,9 @@ def _true_up(account, balance):
         anchor_balance=Decimal(str(balance)),
         created_at=opening.created_at + timedelta(seconds=1),
         observed_on=opening.observed_on + timedelta(days=1),
+        # The ENTERED day moves with the observed one (**N-299**): the column
+        # defaults to the wall clock, which a historical row must not inherit.
+        recorded_on=opening.observed_on + timedelta(days=1),
     ))
     db.session.flush()
     account_posting_service.sync_account_anchor_postings_all_scenarios(

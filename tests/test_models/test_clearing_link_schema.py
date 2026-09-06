@@ -50,11 +50,19 @@ from app.enums import StatusEnum
 from app.extensions import db as _db
 from app.models.account import AccountAnchorHistory
 from app.models.ref import TransactionType
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import entry_service, status_seam
-from tests._test_helpers import settlement_columns, settlement_if_settling
+from tests._test_helpers import (
+    append_only_guard_lifted,
+    an_entered_day,
+    settle_day_columns,
+    settlement_columns,
+    settlement_if_settling,
+)
 from tests._test_helpers import load_migration_module
+from app.services.settle_day import record_settle_day
 
 _MIGRATION = load_migration_module("d5b8e2c74a19_clearing_is_a_recorded_fact.py")
 
@@ -120,6 +128,7 @@ def _make_transaction(data, **overrides) -> Transaction:
         _db.session.query(TransactionType).filter_by(name="Expense").one()
     )
     fields = {
+        "user_id": data["periods"][0].user_id,
         "pay_period_id": data["periods"][0].id,
         "scenario_id": data["scenario"].id,
         "account_id": data["account"].id,
@@ -130,8 +139,17 @@ def _make_transaction(data, **overrides) -> Transaction:
         "estimated_amount": Decimal("300.00"),
     }
     fields.update(overrides)
+    # **The settle DAY carries its basis unless the caller states one** (plan
+    # step **X-az**).  These builders write bare columns on purpose -- a control
+    # routed through a door would grade the door -- but a row is only bare on
+    # the axis its test is ABOUT: a day with no basis violates
+    # ``ck_*_settle_day_basis_pairing`` before it can reach the constraint the
+    # test is grading, so the pair is completed here and a test that means to
+    # break it says ``settled_day_basis_id`` outright.
+    if "settled_day_basis_id" not in overrides:
+        fields.update(settle_day_columns(fields.get("settled_on")))
     # A row carrying a settle DAY carries the whole settlement RECORD, because
-    # ``ck_transactions_settle_day_needs_basis`` requires it (plan step
+    # ``ck_transactions_settle_day_needs_a_record`` requires it (plan step
     # X-au-c3).  The implication runs one way only: the record may outlive the
     # day, which is what a revert leaves behind.  Resolved here rather than in :func:`_cleared_by`
     # because that helper also feeds :func:`_make_entry`, and an ENTRY has no
@@ -140,6 +158,10 @@ def _make_transaction(data, **overrides) -> Transaction:
     fields.update(
         settlement_columns(fields.get("settled_on"), fields["estimated_amount"])
     )
+    # **The amount-ownership pair is ONE attribute** (plan step X-au-k), so the
+    # figure this builder splats becomes the row's OWNERSHIP at the last
+    # moment -- after every line above that reads it as a column.
+    fields["amount_ownership"] = AmountOwnership.own(fields.pop("estimated_amount"))
     return Transaction(**fields)
 
 
@@ -164,6 +186,15 @@ def _make_entry(data, parent: Transaction, **overrides) -> TransactionEntry:
         "is_credit": False,
     }
     fields.update(overrides)
+    # **The settle DAY carries its basis unless the caller states one** (plan
+    # step **X-az**).  These builders write bare columns on purpose -- a control
+    # routed through a door would grade the door -- but a row is only bare on
+    # the axis its test is ABOUT: a day with no basis violates
+    # ``ck_*_settle_day_basis_pairing`` before it can reach the constraint the
+    # test is grading, so the pair is completed here and a test that means to
+    # break it says ``settled_day_basis_id`` outright.
+    if "settled_day_basis_id" not in overrides:
+        fields.update(settle_day_columns(fields.get("settled_on")))
     return TransactionEntry(**fields)
 
 
@@ -492,12 +523,12 @@ class TestALinkCannotOutliveItsSettleDay:
                     purchased_on=date(2026, 1, 5),
                 ),
             )
-            entry.settled_on = date(2026, 1, 6)
+            record_settle_day(entry, an_entered_day(date(2026, 1, 6)))
             entry.reconciled_by_id = opening.id
             db.session.flush()
 
             entry_service.update_entry(
-                entry.id, seed_user["user"].id, settled_on=None,
+                entry.id, seed_user["user"].id, settle_day=None,
             )
 
             assert entry.settled_on is None
@@ -536,13 +567,13 @@ class TestALinkCannotOutliveItsSettleDay:
                     purchased_on=opening.observed_on,
                 ),
             )
-            entry.settled_on = opening.observed_on
+            record_settle_day(entry, an_entered_day(opening.observed_on))
             entry.reconciled_by_id = opening.id
             db.session.flush()
 
             entry_service.update_entry(
                 entry.id, seed_user["user"].id,
-                settled_on=opening.observed_on + timedelta(days=1),
+                settle_day=an_entered_day(opening.observed_on + timedelta(days=1)),
             )
 
             assert entry.settled_on == opening.observed_on + timedelta(days=1)
@@ -570,7 +601,7 @@ class TestALinkCannotOutliveItsSettleDay:
                     purchased_on=opening.observed_on,
                 ),
             )
-            entry.settled_on = opening.observed_on
+            record_settle_day(entry, an_entered_day(opening.observed_on))
             entry.reconciled_by_id = opening.id
             db.session.flush()
 
@@ -605,7 +636,7 @@ class TestALinkCannotOutliveItsSettleDay:
 
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
-                settled_on=opening.observed_on + timedelta(days=2),
+                settle_day=an_entered_day(opening.observed_on + timedelta(days=2)),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             db.session.flush()
@@ -639,12 +670,29 @@ class TestAnAssertionAlineNamesCannotBeDeleted:
             db.session.add(txn)
             db.session.flush()
 
-            db.session.delete(opening)
-            with pytest.raises(
-                sqlalchemy.exc.IntegrityError,
-                match="fk_transactions_reconciled_by",
+            # **Two controls now stand here, and this case grades the
+            # INNER one** (plan step X-f3c-2c).  ``budget.account_anchor_history``
+            # is append-only at the database tier, so a DELETE aimed at one
+            # assertion is refused before the foreign key is ever consulted --
+            # which would leave ``ON DELETE RESTRICT`` passing and guarding
+            # nothing.  Lifting the outer guard for this statement is what
+            # keeps the FK measured; the outer guard has its own cases in
+            # ``tests/test_models/test_append_only.py``.
+            with append_only_guard_lifted(
+                db.session, "budget.account_anchor_history",
             ):
-                db.session.flush()
+                # Raw rather than ``db.session.delete``: the object-layer
+                # listener refuses an ORM delete too, and it is not what this
+                # case is about.  Lifting only the database trigger and then
+                # asking the ORM would grade the listener, not the FK.
+                with pytest.raises(
+                    sqlalchemy.exc.IntegrityError,
+                    match="fk_transactions_reconciled_by",
+                ):
+                    db.session.execute(sa.text(
+                        "DELETE FROM budget.account_anchor_history "
+                        "WHERE id = :i"
+                    ), {"i": opening.id})
             db.session.rollback()
 
 
@@ -670,6 +718,11 @@ class TestTheEntryAccountBackfill:
             db.session.add(entry)
             db.session.flush()
 
+            # **Drain the deferred constraint triggers before the DDL** (plan
+            # step X-f3c-2b).  The rows staged above queue an event for
+            # ``ck_movement_after_books_open``, and PostgreSQL refuses
+            # ``ALTER TABLE`` on a table carrying pending trigger events.
+            db.session.execute(sa.text("SET CONSTRAINTS ALL IMMEDIATE"))
             # NOT NULL is dropped for the length of the probe and restored in
             # the same transaction, which the rollback below also guarantees.
             db.session.execute(sa.text(

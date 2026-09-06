@@ -122,8 +122,67 @@ def totals_row(rows, item_count=None, credit=None, debit=None):
     ]
 
 
-def build(rows, *, with_totals=True, totals=None, balance_as_of="08/16/2026",
-          stated_balance="1000.00", header=None):
+#: The header day a file gets when its own rows state no readable date -- the
+#: shape a test planting a malformed Date cell builds.
+DEFAULT_BALANCE_AS_OF = "08/16/2026"
+
+
+def _implied_as_of(rows):
+    """Return the LATEST day *rows* state, in SECU's own format, or ``None``.
+
+    A bank writes its balance as of the moment it exported, so the header's day
+    is at or after the file's last line on every real export.  Deriving it
+    keeps a fixture from building the one file no bank can write -- a balance
+    stated for a day the statement has not reached, which
+    ``ck_statement_imports_effective_day_within_file`` refuses.
+
+    Args:
+        rows: Data rows in FILE order.
+
+    Returns:
+        ``MM/DD/YYYY`` for the latest parseable Date cell, or ``None`` when no
+        row carries one -- which is a file a test built to be refused, and
+        inventing a day for it would be the fixture deciding its subject.
+    """
+    days = []
+    for cell in rows:
+        try:
+            month, day, year = (int(part) for part in str(cell[0]).split("/"))
+        except (ValueError, IndexError):
+            continue
+        days.append((year, month, day))
+    if not days:
+        return None
+    year, month, day = max(days)
+    return f"{month:02d}/{day:02d}/{year:04d}"
+
+
+#: The header figure a file with no running-balance chain gets by default.
+#: Arbitrary and free to be: with no chain and no recorded history nothing can
+#: contradict it, so :func:`~app.services.statement_import.resolve_anchor`
+#: records it as ``assumed_last_day`` whatever it says.
+DEFAULT_STATED_BALANCE = "1000.00"
+
+
+def _implied_closing(rows):
+    """Return the closing balance *rows* state, or ``None`` when they state none.
+
+    Args:
+        rows: Data rows in FILE order, newest first.
+
+    Returns:
+        The chronologically LAST row's running balance -- which is the file's
+        own closing -- or ``None`` when the rows carry no running-balance
+        column.  Rows are newest-first, so the last chronologically is the
+        FIRST cell here.
+    """
+    if not rows or len(rows[0]) <= 10 or not str(rows[0][10]).strip():
+        return None
+    return str(rows[0][10]).strip()
+
+
+def build(rows, *, with_totals=True, totals=None, balance_as_of=None,
+          stated_balance=None, header=None):
     """Return a complete SECU-shaped CSV as bytes.
 
     Args:
@@ -132,18 +191,44 @@ def build(rows, *, with_totals=True, totals=None, balance_as_of="08/16/2026",
             exercises the adapter's reversal.
         with_totals: Whether to append the summary row.
         totals: An explicit summary row, overriding the computed one.
-        balance_as_of: The date in the file's second header line.
-        stated_balance: The figure in that line.  Deliberately allowed to
-            disagree with the lines, because it does on a real export.
+        balance_as_of: The date in the file's second header line.  ``None``,
+            the default, takes the LATEST day the rows themselves state, so
+            the header cannot claim a balance for a day the statement has
+            not reached.
+        stated_balance: The figure in that line.  ``None``, the default, makes
+            the file SELF-CONSISTENT: the header takes the closing the rows'
+            own running-balance chain implies, or
+            :data:`DEFAULT_STATED_BALANCE` when they carry no chain.  Pass a
+            figure to plant a disagreement deliberately.
         header: Override the column header row.
 
     Returns:
         The file's bytes: UTF-8, no BOM, LF line endings, as SECU writes them.
+
+    **The default changed at plan step ``bank_import:X-f6e-1``, and it was
+    scaffolding rather than an assertion that changed.**  It used to be a flat
+    ``"1000.00"`` on the reasoning that a header *"is deliberately allowed to
+    disagree with the lines, because it does on a real export"*.  Measured on
+    the developer's nine real exports, that is backwards: **eight state a
+    balance that follows exactly from their own lines**, and the ninth
+    (2026-08-16) states 2026-08-13's closing over a file listing two 08-14
+    lines -- a lag the anchor solve now RESOLVES rather than tolerates
+    (ruling **R-GF**).  So a chained fixture whose header said ``1000.00``
+    was not modelling a real export; it was modelling a file no bank writes,
+    and the door now refuses it correctly.
     """
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
+    stated = (
+        (_implied_closing(rows) or DEFAULT_STATED_BALANCE)
+        if stated_balance is None else stated_balance
+    )
+    as_of = (
+        (_implied_as_of(rows) or DEFAULT_BALANCE_AS_OF)
+        if balance_as_of is None else balance_as_of
+    )
     writer.writerow(["Checking", ACCOUNT_NUMBER])
-    writer.writerow([f"Balance as of {balance_as_of}", stated_balance])
+    writer.writerow([f"Balance as of {as_of}", stated])
     writer.writerow(HEADER if header is None else header)
     for data_row in rows:
         writer.writerow(data_row)

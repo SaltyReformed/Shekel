@@ -29,14 +29,16 @@ from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger, dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    add_txn as _add_txn,
     dashboard_section,
     default_settle_day,
-    settlement_columns,
     make_every_period_rule,
-    add_txn as _add_txn,
     make_investment_account,
     set_default_grid_account,
+    settle_day_columns,
+    settlement_columns,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Entry-tracked bill row, single declared base (E-21 / MED-03) ────
@@ -68,12 +70,10 @@ class TestBillRowSingleBase:
         # pylint: disable=import-outside-toplevel
         from app.models.recurrence_rule import RecurrenceRule
         from app.models.transaction_template import TransactionTemplate
-        rule = make_every_period_rule(db.session, seed_user["user"].id)
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]["Groceries"].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
             name="Envelope bill",
             default_amount=Decimal(str(estimated)),
@@ -81,23 +81,26 @@ class TestBillRowSingleBase:
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_every_period_rule(db.session, template)
         _settle_day = default_settle_day(
             period, ref_cache.status_id(status_enum),
         )
         txn = Transaction(
             account_id=seed_user["account"].id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             status_id=ref_cache.status_id(status_enum),
             name="Envelope bill",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            estimated_amount=Decimal(str(estimated)),
+            amount_ownership=AmountOwnership.own(Decimal(str(estimated))),
             template_id=template.id,
             due_date=date(2026, 1, 5),
             # The settlement record -- day, figure and basis together, through
             # the one door a bare-built fixture uses (plan step X-au-c3).
-            settled_on=_settle_day,
+            **settle_day_columns(_settle_day),
             **settlement_columns(
                 _settle_day, Decimal(str(estimated)),
                 submitted=Decimal(str(actual)) if actual is not None else None,

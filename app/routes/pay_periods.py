@@ -23,8 +23,10 @@ from app.exceptions import (
     PayPeriodUnresolved,
     ValidationError,
 )
+from app.routes._period_population import populate_new_periods
 from app.routes.settings import render_settings_dashboard
 from app.schemas.validation import (
+    PayHistorySchema,
     PayPeriodExtendSchema,
     PayPeriodGenerateSchema,
     PayPeriodRegenerateSchema,
@@ -32,6 +34,7 @@ from app.schemas.validation import (
     PayPeriodTruncateSchema,
     PayScheduleSchema,
 )
+from app import ref_cache
 from app.services import pay_period_admin, pay_period_write, pay_schedule_service
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,7 @@ _truncate_schema = PayPeriodTruncateSchema()
 _regenerate_schema = PayPeriodRegenerateSchema()
 _reset_schema = PayPeriodResetSchema()
 _schedule_schema = PayScheduleSchema()
+_history_schema = PayHistorySchema()
 
 
 def _pay_periods_redirect():
@@ -90,25 +94,64 @@ def generate():
             user_id=current_user.id,
             first_payday=data["start_date"],
             num_periods=data["num_periods"],
-            cadence_days=data["cadence_days"],
+            rhythm=pay_schedule_service.Rhythm(
+                cadence_days=data["cadence_days"], shift=data["shift"],
+            ),
         )
+        # POPULATE, like every other door that creates a pay period (ruling
+        # **R-R38**), and this door needed saying out loud: it reads as
+        # first-time-only and is not.  ``record_paydays``' forward-only rule
+        # accepts any payday AFTER the owner's last, so on an owner who
+        # already has a schedule this behaved as an extend that skipped every
+        # template -- measured through this route at 3 appended periods
+        # holding 0 template rows, with "Generate pay periods" one click away
+        # in the main nav on every screen.  That was ledger row **D58**, found
+        # by censusing the five writers this step split and closed here.
+        #
+        # A genuinely NEW owner is unaffected twice over: no template can
+        # exist yet, and this route is reachable only once they have an
+        # account, so the pass finds nothing to generate.
+        populate_new_periods(current_user.id, periods)
     except ValidationError as exc:
         # Forward-only rule (ruling R-PC1, plan step C3-b): a payday that would
         # land BETWEEN two existing ones is rejected.  Surfaced on the
         # start_date field, mirroring the schema 422 -- and that attribution
         # is PROVABLE rather than assumed.  ``record_paydays`` refuses for
-        # three reasons, and ``PayPeriodGenerateSchema`` bounds the cadence and
-        # the batch size to exactly the ranges the writer and the schedule
-        # column accept (``_CADENCE_DAYS_RANGE`` takes the TIGHTER of the two
-        # floors, which is the writer's), so those two cannot reach here and
-        # the date one is what is left.  Widen either field and this line
-        # starts rendering a cadence message under the date box.
+        # FIVE reasons -- an undatable payday, a batch size out of range, a
+        # cadence out of range, a convention the cadence cannot carry, and the
+        # forward-only floor -- and the first four cannot reach this line:
+        # ``fields.Date`` guarantees a plain ``date``, and
+        # ``PayPeriodGenerateSchema`` bounds the batch size and the cadence to
+        # exactly the ranges the writer and the column accept AND asks the
+        # cadence-convention pair through ``validate_derivable_rhythm``, so the
+        # schema's own 422 answers them first.  The floor is what is left.
+        # Widen any of those fields and this line starts rendering their
+        # message under the date box.
         #
-        # The rollback is what makes the 422 clean.  ``record_paydays`` now
-        # runs every refusal BEFORE its first durable statement, so there is
-        # nothing staged to discard on this path -- but the response below
-        # re-renders a form, and a rendered response should not sit on a unit
-        # of work whose emptiness depends on reading the writer.
+        # *The FOURTH reason arrived at plan step ``pay_calendar:C14-b``, and
+        # this comment's own warning is what caught it*: that step's first
+        # draft refused the pair at the write door alone, so a two-day cadence
+        # chosen with an early-pay convention rendered "Days between paydays
+        # must be at least 4..." beneath "First Payday".  The schema-level
+        # cross-field rule is what put the message back on the control the
+        # owner would have to change.
+        #
+        # *Both halves of that sentence were false until plan step
+        # ``pay_calendar:C4-c`` corrected them* (adversarial review,
+        # 2026-09-01).  It said THREE reasons, which was right only while the
+        # cadence bound was asked inside ``_apply`` rather than at the door;
+        # and it said ``_CADENCE_DAYS_RANGE`` "takes the TIGHTER of the two
+        # floors, which is the writer's", which C4-c deleted -- there is one
+        # floor now, ``ck_pay_schedule_cadence_range``'s, and the schema reads
+        # it directly.  The conclusion held throughout; the proof of it did
+        # not.
+        #
+        # The rollback is what makes the 422 clean.  ``record_paydays`` runs
+        # every refusal BEFORE its first durable statement, so nothing is
+        # staged when IT is the raiser -- but the populate above it can raise
+        # after flushing, and the response below re-renders a form, which
+        # should not sit on a unit of work whose emptiness depends on reading
+        # a writer.
         db.session.rollback()
         return render_template(
             "pay_periods/generate.html",
@@ -132,14 +175,24 @@ def extend():
 
     data = _extend_schema.load(request.form)
     try:
+        # RECORD, then POPULATE, and the order is the whole of ruling R-R38:
+        # the read pass the recurrence resolves in is opened by
+        # ``populate_new_periods`` AFTER the paydays exist, because a pass
+        # resolved before them holds a calendar that does not contain them and
+        # a loan whose payoff has not moved yet.  The door leaves the periods
+        # EMPTY; dropping this second call ships paydays with no rent, no
+        # paycheck and no recurring transfer in them.
         new_periods = pay_period_admin.extend_pay_periods(
             current_user.id, data["num_periods"],
         )
+        populate_new_periods(current_user.id, new_periods)
     except ValidationError as exc:
         # Rolled back before the redirect: ``extend_pay_periods`` takes the
-        # per-user advisory lock and may have flushed the repopulation pass
-        # before a later statement refused, and the page this redirects to
-        # reads the owner's schedule back.
+        # per-user advisory lock, and whichever of the two calls above ran
+        # before the refusal may have flushed -- the door's own refusals run
+        # before its first durable statement, the repopulation's do not. The
+        # page this redirects to reads the owner's schedule back, so it reads
+        # committed state either way.
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()
@@ -165,9 +218,7 @@ def truncate():
             current_user.id, data["keep_through_period_id"],
             confirm_discard=data["confirm_discard"],
         )
-    except (
-        PayPeriodLocked, PayPeriodUnresolved, ValidationError,
-    ) as exc:
+    except (PayPeriodLocked, PayPeriodUnresolved) as exc:
         # ``PayPeriodUnresolved`` is the service refusing an id that names no
         # pay period of this user's (plan step C3-a): a forged one, another
         # owner's, or a STALE one -- the confirm panel below re-submits the id
@@ -184,17 +235,27 @@ def truncate():
         # this door is not an existence oracle.  Which case it was is recorded
         # in the ACCESS log instead (``_log_unresolved_period``).
         #
-        # ``ValidationError`` is new to this door at plan step C3-b and was
-        # an unhandled 500 until an adversarial review found it: the writer now
-        # reads the stored cadence to re-project the surviving last period, and
-        # ``budget.pay_schedule.cadence_days`` accepts 1 while no stored
-        # ``end_date`` can express a one-day period.  Only legacy data holds
-        # such a value, and a schedule button is the right place for it to be a
-        # message.
+        # **``ValidationError`` was the THIRD member here until plan step
+        # ``pay_calendar:C4-c``, and removing it is that step's own argument
+        # applied to this door.**  It joined at C3-b because the writer
+        # re-projected the surviving last period from the stored cadence, and
+        # ``budget.pay_schedule.cadence_days`` accepts 1 while a stored
+        # ``end_date`` could not express a one-day period -- so a legacy owner
+        # met an unhandled 500 here.  C4-c dropped that column: a delete now
+        # removes rows and computes nothing, ``retire_paydays`` reaches
+        # ``_apply`` with ``recording=[]`` so ``upsert_schedule`` is never
+        # called, and the whole path below this line raises no
+        # ``ValidationError`` at all.
         #
-        # All three refuse BEFORE the ``DELETE``, so nothing durable is staged;
-        # the rollback is for the page this redirects to, which reads the
-        # owner's schedule back and should read committed state.
+        # Leaving it would be the exact defect the paragraph above rejects for
+        # ``PayPeriodUnresolved``: a business-rule refusal added anywhere under
+        # ``_gate_deletable_tail`` in future would be flashed as advice about a
+        # dropdown and silently rolled back, instead of surfacing.  Found by an
+        # adversarial review of C4-c, 2026-09-01.
+        #
+        # BOTH refuse BEFORE the ``DELETE``, so nothing durable is staged; the
+        # rollback is for the page this redirects to, which reads the owner's
+        # schedule back and should read committed state.
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()
@@ -227,8 +288,14 @@ def regenerate():
     try:
         new_periods = pay_period_admin.regenerate_pay_periods(
             current_user.id, data["new_start_date"], data["num_periods"],
-            data["cadence_days"], confirm_discard=data["confirm_discard"],
+            pay_schedule_service.Rhythm(
+                cadence_days=data["cadence_days"], shift=data["shift"],
+            ),
+            confirm_discard=data["confirm_discard"],
         )
+        # The rebuilt tail comes back EMPTY; this fills it.  See the extend
+        # route for why the pass may only be opened here (ruling R-R38).
+        populate_new_periods(current_user.id, new_periods)
     except (PayPeriodLocked, ValidationError) as exc:
         # Rolled back for the reason the generate route states, and here it is
         # not a nicety: ``regenerate_pay_periods`` DELETES the rebuildable tail
@@ -252,6 +319,13 @@ def regenerate():
                 "new_start_date": data["new_start_date"].isoformat(),
                 "num_periods": data["num_periods"],
                 "cadence_days": data["cadence_days"],
+                # Back to the WIRE spelling, because the confirm banner
+                # re-POSTs each of these as a hidden input and this door
+                # requires the field: the schema hands out an enum member and
+                # a member rendered into ``value=""`` is not one this form can
+                # submit back.  Omitting it would refuse every discard-confirm
+                # rather than only mis-stating one.
+                "shift": ref_cache.business_day_shift_id(data["shift"]),
             },
         }}, status=422)
 
@@ -287,19 +361,68 @@ def reset():
     try:
         new_periods = pay_period_admin.reset_pay_periods(
             current_user.id, data["new_start_date"], data["num_periods"],
-            data["cadence_days"],
+            pay_schedule_service.Rhythm(
+                cadence_days=data["cadence_days"], shift=data["shift"],
+            ),
         )
+        # LAST, after the wipe, the rebuild and both posting re-syncs -- see
+        # ``reset_pay_periods`` for why the re-syncs cannot see what this
+        # writes and why generating AFTER them is the order R7d-c-2 needs, and
+        # the extend route for why the pass opens here.
+        populate_new_periods(current_user.id, new_periods)
     except (PayPeriodResetBlocked, ValidationError) as exc:
-        # ``reset_pay_periods`` wipes every period before it generates the new
-        # schedule, so a refusal raised at the second half leaves the wipe in
-        # the session.  The settled-transaction refusal happens before any of
-        # it; the rollback is for the other one.
+        # ``reset_pay_periods`` wipes every period before it records the new
+        # schedule, so a refusal raised after that leaves the wipe, the
+        # rebuild and both posting re-syncs staged in the session -- as does
+        # one raised by the repopulation below it.  The settled-transaction
+        # refusal happens before any of it; the rollback is for the rest.
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()
 
     db.session.commit()
     flash(f"Reset your schedule: {len(new_periods)} new period(s).", "success")
+    return _pay_periods_redirect()
+
+
+@pay_periods_bp.route("/pay-periods/history", methods=["POST"])
+@login_required
+@require_owner
+def history():
+    """Save how far back the owner's paychecks reach.
+
+    Plan step **balance:X-bh-2** (ruling **balance:R-IA**).  The second door
+    onto ``budget.pay_schedule.history_opens_on``, and the only one an existing
+    owner has: registration asks the question once, and every owner who signed
+    up before the column existed holds ``NULL`` with no sign-up form left to
+    revisit.
+
+    A cleared field stores ``NULL``, which is a real answer rather than a
+    no-op -- "I have been paid this way longer than the app needs to know" --
+    so this route submits whatever the schema loaded rather than skipping an
+    absent value.  The service refuses a day outside the app's calendar window
+    or after the owner's first recorded payday, and both come back as a flash
+    rather than a 500.
+    """
+    errors = _history_schema.validate(request.form)
+    if errors:
+        flash(_summarize_errors(errors), "danger")
+        return _pay_periods_redirect()
+
+    data = _history_schema.load(request.form)
+    try:
+        pay_schedule_service.set_history_opening(
+            current_user.id, data["history_opens_on"],
+        )
+    except ValidationError as exc:
+        # Nothing is staged before the refusal -- the setter validates ahead of
+        # its one assignment -- so this needs no rollback, unlike the four
+        # structural doors above it.
+        flash(str(exc), "danger")
+        return _pay_periods_redirect()
+
+    db.session.commit()
+    flash("Saved when your paychecks started.", "success")
     return _pay_periods_redirect()
 
 

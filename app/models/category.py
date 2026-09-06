@@ -23,6 +23,15 @@ class Category(UserScopedMixin, SortOrderMixin, IsActiveMixin, CreatedAtMixin, d
             "user_id", "group_name", "item_name",
             name="uq_categories_user_group_item",
         ),
+        # The SUPERKEY ``fk_merchant_rules_category_owner`` targets, so a
+        # merchant rule's category is provably its OWNER's (plan
+        # step ``bank_import:X-f6a-3d``) -- the IDOR every create door in this
+        # project probes for by hand, made unwritable instead.  It constrains
+        # nothing on its own: ``id`` is already the primary key.
+        # **Declared HERE as well as in the migration**, because a constraint
+        # the model does not know about is one the next ``flask db migrate``
+        # emits a DROP for.
+        db.UniqueConstraint("id", "user_id", name="uq_categories_id_user"),
         db.Index("idx_categories_user_group", "user_id", "group_name"),
         {"schema": "budget"},
     )

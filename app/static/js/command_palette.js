@@ -18,6 +18,9 @@
  *     add-purchase amount input once the entries list loads)
  *   - Go to row  -- scrolls a row into view and sets the cell cursor
  *   - Update anchor balance -- opens the inline anchor editor
+ *   - Import bank statement / Review bank matches -- navigates to
+ *     the statements and review pages, read off the grid's own
+ *     bank door (its href and its data-review-url)
  *
  * Result rows are built with createElement/textContent, never
  * innerHTML, because labels carry user-named transactions.
@@ -61,6 +64,48 @@
     }
 
     /** Scan the grid DOM and rebuild the action index. */
+    /** Push the bank door's two destinations onto the action index.
+
+        Read off the RENDERED control rather than plumbed in separately: the
+        route already decided whether this account may have statements at
+        all, and a palette entry that navigated somewhere the header does not
+        link would be a second answer to that question.  Navigation, not a
+        mutation -- these are the only actions here that leave the page, and
+        they are why the feature is findable by name.
+
+        Its own function because its four locals belong at a function root
+        (biome ``correctness/noInnerDeclarations``), and hoisting them into
+        buildActions would park them ~120 lines from their only use. */
+    function pushBankDoorActions() {
+        var bankDoor = document.querySelector('.grid-bank-door');
+        if (!bankDoor) return;
+        var bankBadge = bankDoor.querySelector('.grid-bank-badge');
+        var waiting = bankBadge ? bankBadge.textContent.trim() : '';
+        /* Both from DATA, never from href: the door's href is whichever act is
+           live (the review screen once lines are waiting), so reading it as the
+           import URL sent this action to the wrong screen the moment a badge
+           appeared.  The fallback keeps the action working against a door
+           rendered before data-import-url existed. */
+        var importUrl = bankDoor.dataset.importUrl || bankDoor.href;
+        var reviewUrl = bankDoor.dataset.reviewUrl;
+        actions.push({
+            kind: 'bank',
+            label: 'Import bank statement',
+            meta: 'account',
+            run: function () { window.location.assign(importUrl); },
+        });
+        if (reviewUrl) {
+            actions.push({
+                kind: 'bank',
+                label: (waiting
+                    ? 'Review bank matches -- ' + waiting + ' waiting'
+                    : 'Review bank matches'),
+                meta: 'account',
+                run: function () { window.location.assign(reviewUrl); },
+            });
+        }
+    }
+
     function buildActions() {
         actions = [];
         var table = gridTable();
@@ -169,6 +214,8 @@
                 },
             });
         }
+
+        pushBankDoorActions();
     }
 
     /** Scroll a grid cell to the center of every scrollport (the grid

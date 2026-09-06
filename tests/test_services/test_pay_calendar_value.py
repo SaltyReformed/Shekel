@@ -38,18 +38,24 @@ written at the edges rather than in the middle:
 has no clock; a test that gave it one would be testing the fixture.
 """
 
+from dataclasses import FrozenInstanceError
 from datetime import date, timedelta
+from itertools import islice
+from types import SimpleNamespace
 
 import pytest
 
 from app.services.pay_calendar import (
     DerivedPeriod,
+    FiledRow,
     PayCalendar,
     PayCalendarError,
     PeriodWindow,
     containing_period,
     latest_started_period,
+    paychecks_from,
 )
+from app.utils.dates import CALENDAR_DATE_MAX
 
 #: A contiguous biweekly schedule -- production's shape, four paydays of it.
 #: Ids are deliberately not 0-based so a test cannot pass by confusing an id
@@ -116,8 +122,8 @@ SHAPES = [
     ("an unsaved candidate payday", WITH_UNSAVED, 14),
     ("one payday only", [(1, date(2026, 1, 2))], 14),
     (
-        "paydays a day apart -- the one-day period ck_pay_periods_date_order "
-        "forbids and C4 legalises",
+        "paydays a day apart -- the one-day period "
+        "ck_pay_periods_date_order forbade and C4-c legalised",
         [(1, date(2026, 1, 2)), (2, date(2026, 1, 3)), (3, date(2026, 1, 4))],
         14,
     ),
@@ -143,7 +149,17 @@ def calendar(paydays=None, cadence=14, user_id=1):
     """
     return PayCalendar.from_paydays(
         BIWEEKLY if paydays is None else paydays, cadence, user_id,
+        history_opens_on=None,
     )
+
+
+def _filed(*, table="budget.transactions", row_id=77, period_id):
+    """Build the :class:`FiledRow` a ``require_period`` test places.
+
+    Keyword-only for the value's own reason: these tests would otherwise be
+    the first place two bare ids get written in a fixed order again.
+    """
+    return FiledRow(table=table, row_id=row_id, period_id=period_id)
 
 
 class TestThePeriodsAreDerivedAndCannotBeSuppliedOrChanged:
@@ -332,7 +348,7 @@ class TestTheThreeQuestionsAnswerDifferently:
         being TOTAL is its whole contract -- so this pins the filter rather
         than the calendar's contents.
         """
-        cal = PayCalendar.from_paydays(WITH_INTERIOR_UNSAVED, 14, user_id=1)
+        cal = PayCalendar.from_paydays(WITH_INTERIOR_UNSAVED, 14, user_id=1, history_opens_on=None)
         candidate = cal.periods[1]
         assert candidate.period_id is None
         inside = candidate.start_date + timedelta(days=3)
@@ -478,7 +494,7 @@ class TestTheFilingRuleEqualsTheChainItDeletes:
 
     def test_filing_on_an_empty_calendar_raises_rather_than_guessing(self):
         """The companion role holds no paydays, and production has one."""
-        empty = PayCalendar.from_paydays([], 14, user_id=2)
+        empty = PayCalendar.from_paydays([], 14, user_id=2, history_opens_on=None)
         with pytest.raises(PayCalendarError, match="no materialised pay period"):
             empty.filing_period(date(2026, 1, 1))
 
@@ -716,7 +732,7 @@ class TestPeriodStartingAfter:
         The INCLUSIVE pair is the control: it still answers the candidate, so
         this pins the filter rather than the calendar's contents.
         """
-        cal = PayCalendar.from_paydays(WITH_INTERIOR_UNSAVED, 14, user_id=1)
+        cal = PayCalendar.from_paydays(WITH_INTERIOR_UNSAVED, 14, user_id=1, history_opens_on=None)
         candidate = cal.periods[1]
         assert candidate.period_id is None
 
@@ -737,6 +753,7 @@ class TestPeriodStartingAfter:
         """Every payday an unsaved candidate leaves nothing to answer with."""
         cal = PayCalendar.from_paydays(
             [(None, date(2026, 1, 2)), (None, date(2026, 1, 16))], 14, user_id=1,
+            history_opens_on=None,
         )
         assert cal.period_starting_after(date(2026, 1, 2)) is None
         assert cal.period_starting_before(date(2026, 1, 16)) is None
@@ -759,7 +776,7 @@ class TestPeriodStartingAfter:
         schedule whose paydays are one cadence apart cannot distinguish "the
         period after this payday" from "the period one cadence later".
         """
-        cal = PayCalendar.from_paydays(OFF_CADENCE, 14, user_id=1)
+        cal = PayCalendar.from_paydays(OFF_CADENCE, 14, user_id=1, history_opens_on=None)
         mid = cal.periods[1].start_date + timedelta(days=3)
         assert cal.period_starting_after(mid) is cal.periods[2]
         assert cal.period_starting_before(mid) is cal.periods[1]
@@ -937,6 +954,282 @@ class TestAWindowIsAViewAndKeepsTheRealEnds:
             calendar().overlapping(date(2026, 2, 1), date(2026, 1, 1))
 
 
+class TestCurrentAndFuture:
+    """"How many paychecks are left", counting the one the day falls in.
+
+    Plan step **C4**, finding **P70**: the rolling top-up compared its target
+    against a ``PayPeriod.end_date >= as_of`` count in SQL, which was the last
+    query in ``pay_period_admin`` naming a column plan step C4-c dropped.  The rule
+    is this method now, so it is graded here rather than only through the door.
+    """
+
+    def test_the_period_containing_the_day_is_counted(self):
+        """"Keep N ahead" counts the current period as one of the N.
+
+        The boundary is INCLUSIVE at both ends of the current period: asked on
+        a period's own last covered day it is still counted, and asked on the
+        day after, it is not.  Both are asserted, because a reader off by one
+        passes the first alone.
+        """
+        cal = calendar()
+        assert [p.period_id for p in cal.current_and_future(date(2026, 1, 15))] == [
+            10, 11, 12, 13,
+        ]
+        assert [p.period_id for p in cal.current_and_future(date(2026, 1, 16))] == [
+            11, 12, 13,
+        ]
+
+    def test_it_reads_the_DERIVED_end_and_not_the_cadence_projection(self):
+        """Graded on ``OFF_CADENCE``, where the two rules disagree.
+
+        On ``BIWEEKLY`` ``lead(start) - 1`` and ``start + cadence - 1`` give
+        the same day, so an assertion written there passes against the defect
+        it is meant to catch.  Here the 01-16 period ends 01-19 (the day before
+        the 01-20 payday) and NOT 01-29 (its own payday plus a cadence), so a
+        count taken on 01-20 drops it -- and a reader using the projection
+        would keep it.
+
+        The second assertion is a SEPARATE defect's control and is why one day
+        is not enough: on 01-20 a reader comparing ``start_date`` instead of
+        the end gives the same ``[12]`` and passes.  On 01-17 -- a day INSIDE
+        the 01-16 period rather than on a payday -- the end rule keeps that
+        period and the start rule drops it, so the two days together pin both.
+        """
+        cal = calendar(OFF_CADENCE)
+        assert [p.period_id for p in cal.current_and_future(date(2026, 1, 20))] == [
+            12,
+        ]
+        assert [p.period_id for p in cal.current_and_future(date(2026, 1, 17))] == [
+            11, 12,
+        ]
+
+    def test_past_the_horizon_it_ANSWERS_empty_where_overlapping_REFUSES(self):
+        """The one behaviour that makes this its own producer.
+
+        ``overlapping(day, horizon())`` is the same question with its bounds
+        written out, and it is the wrong door: past the horizon those bounds
+        cross, which that producer treats as a caller defect because an empty
+        range and a crossed one are indistinguishable in ITS answer.  Here they
+        are not -- "every paycheck has already ended" is exactly the state the
+        rolling top-up exists to repair, so it must come back as a count of
+        zero rather than as a 500 on ``/grid`` and ``/dashboard``.
+
+        The control is the pair: the refusal is shown FIRING on the same
+        calendar and the same day, so this cannot pass by both doors being
+        lenient.
+        """
+        cal = calendar()
+        past_horizon = date(2026, 2, 27)
+        assert cal.horizon() == date(2026, 2, 26)
+        assert len(cal.current_and_future(past_horizon)) == 0
+        with pytest.raises(PayCalendarError, match="ends before it starts"):
+            cal.overlapping(past_horizon, cal.horizon())
+
+    def test_an_empty_calendar_answers_an_empty_window(self):
+        """An owner with no payday has no paycheck left, which is not an error."""
+        assert len(PayCalendar.from_paydays(
+            [], 14, 7, history_opens_on=None,
+        ).current_and_future(date(2026, 1, 2))) == 0
+
+    @pytest.mark.parametrize("name,paydays,cadence", SHAPES + [
+        # The one shape ``SHAPES`` omits and the only one on which this
+        # claim BITES: an unsaved candidate BETWEEN two saved paydays is
+        # where ``saved()`` legitimately leaves a hole and a slice cannot
+        # (ledger row **P39**).  Naming it in the docstring and not running
+        # it was found by an adversarial review of plan step C4.
+        ("an INTERIOR unsaved candidate", WITH_INTERIOR_UNSAVED, 14),
+    ])
+    def test_the_result_is_a_SUFFIX_of_the_calendar_on_every_shape(
+        self, name, paydays, cadence,
+    ):
+        """A slice of a tiling tiles, so no shape can produce a gapped window.
+
+        The window type refuses a hole, and this producer FILTERS rather than
+        slicing an index range -- so the claim that it cannot leave one rests
+        on the ends ascending with the paydays.  That is asserted directly
+        here, over every shape the payday model can express including the
+        interior unsaved candidate on which ``saved()`` legitimately refuses.
+
+        **Each period is probed on its LAST covered day as well as its first,
+        and the last is what carries the case.**  Probing openings alone made
+        this vacuous against a reader comparing ``start_date``: asking on a
+        payday, "starts on or after it" and "ends on or after it" name the same
+        suffix, and a mutation run measured this test passing on that defect.
+        A period's own end is INSIDE it, so only the end rule keeps it there.
+
+        Args:
+            name: The shape's name, for the failure message.
+            paydays: Its ``(period_id, payday)`` pairs.
+            cadence: Its cadence.
+        """
+        cal = calendar(paydays, cadence)
+        for period in cal.periods:
+            expected = [
+                p for p in cal.periods if p.period_index >= period.period_index
+            ]
+            for probe in (period.start_date, period.end_date):
+                assert list(cal.current_and_future(probe)) == expected, (
+                    name, period.period_index, probe,
+                )
+
+
+class TestPaychecksFromContinuesPastTheSavedSchedule:
+    """:func:`~app.services.pay_calendar.paychecks_from`, plan step **R16-b-1**.
+
+    ``current_and_future``'s TOTAL companion: the saved producer answers where
+    the schedule reaches, this one keeps naming paydays past it at the owner's
+    cadence.  It exists because its absence was a SILENT wrong answer one
+    package over -- ``recurrence._occurrence._period_walk`` iterated the saved
+    periods, so ``occurrences(..., through=X)`` returned fewer dates than *X*
+    asked for and raised nothing.
+
+    Graded HERE and not only through that consumer.  A producer tested only
+    through the thing that calls it is the hole plan step R16-a's adversarial
+    review measured: replacing ``_charges_for`` wholesale left 5,427 tests
+    green, because every control built its input by hand.
+    """
+
+    def test_the_saved_run_ends_exactly_where_the_saved_producer_does(self):
+        """The saved prefix is ``current_and_future``, and the SEAM is graded.
+
+        The equality itself is structural since this method yields
+        ``current_and_future_window`` rather than restating its admission test,
+        so asserting only that would grade nothing.  What is graded here is the
+        JOIN: the saved run is exactly as long as the saved producer's answer,
+        and the very next value is a PROJECTION that continues it -- adjacent,
+        one ordinal on, and carrying no ``period_id``.  A composition that
+        dropped a saved period, repeated one, or restarted the projection at the
+        wrong payday fails on the element after the prefix, which is the one
+        place the two halves meet.
+        """
+        for name, paydays, cadence in SHAPES:
+            cal = calendar(paydays, cadence)
+            for probe in (cal.opening_bound(), cal.horizon()):
+                saved = list(cal.current_and_future(probe))
+                assert len(saved) > 0, (name, probe)
+                run = list(islice(paychecks_from(cal, probe), len(saved) + 1))
+                assert run[:-1] == saved, (name, probe)
+                seam, last_saved = run[-1], saved[-1]
+                assert seam.period_id is None, (name, probe)
+                assert seam.end_is_projected, (name, probe)
+                assert seam.start_date == last_saved.end_date + timedelta(days=1), (
+                    name, probe, last_saved, seam,
+                )
+                assert seam.period_index == last_saved.period_index + 1, (
+                    name, probe,
+                )
+
+    def test_it_projects_at_the_cadence_once_the_saved_run_ends(self):
+        """Past the horizon the paydays continue, marked as projections.
+
+        The dates are computed from the last SAVED payday plus 14n rather than
+        read off the value: ``BIWEEKLY`` ends at ``2026-02-13`` (index 3), so
+        the next two paychecks open ``2026-02-27`` and ``2026-03-13`` at
+        indices 4 and 5.  ``period_id`` is ``None`` on both, which is what
+        stops a caller writing a projection into a foreign key.
+        """
+        cal = calendar()
+        first_six = list(islice(paychecks_from(cal, date(2026, 1, 2)), 6))
+
+        assert [p.period_id for p in first_six] == [10, 11, 12, 13, None, None]
+        assert [p.period_index for p in first_six] == [0, 1, 2, 3, 4, 5]
+        assert [p.start_date for p in first_six[4:]] == [
+            date(2026, 2, 27), date(2026, 3, 13),
+        ]
+        assert [p.end_date for p in first_six[4:]] == [
+            date(2026, 3, 12), date(2026, 3, 26),
+        ]
+        assert all(p.end_is_projected for p in first_six[4:])
+
+    def test_asked_far_past_the_horizon_it_opens_at_the_covering_paycheck(self):
+        """The projection is arithmetic, so a distant opening costs one step.
+
+        ``2030-01-01`` is 101 cadences past ``BIWEEKLY``'s last payday
+        (``2026-02-13 + 14 x 101 = 2029-12-28``, which is why the index is
+        ``3 + 101``).  The
+        first value yielded is the paycheck COVERING that day -- opening
+        ``2029-12-28`` at index 104 -- rather than the sequence walking there a
+        fortnight at a time and yielding every paycheck in between.
+        """
+        cal = calendar()
+        first = next(iter(paychecks_from(cal, date(2030, 1, 1))))
+
+        assert first.start_date == date(2029, 12, 28)
+        assert first.end_date == date(2030, 1, 10)
+        assert first.period_index == 104
+        assert first.period_id is None
+        # It COVERS the day asked for -- the admission test is "has not ended
+        # before it", so the covering paycheck qualifies and is the first.
+        assert first.start_date <= date(2030, 1, 1) <= first.end_date
+
+    def test_a_day_below_the_opening_bound_yields_the_whole_schedule(self):
+        """Nothing is projected BACKWARDS (the 2026-08-10 ruling).
+
+        Before an owner's first payday there is no paycheck, so a *day* under
+        the opening bound cannot pull earlier ones into existence -- it simply
+        admits every paycheck there is, starting at the first saved one.
+        """
+        cal = calendar()
+        taken = list(islice(paychecks_from(cal, date(2020, 1, 1)), 5))
+
+        assert [p.period_id for p in taken] == [10, 11, 12, 13, None]
+        assert taken[0].start_date == date(2026, 1, 2)
+
+    def test_an_owner_with_no_payday_is_answered_nothing(self):
+        """An empty calendar has no last payday to continue from.
+
+        The same answer :meth:`PayCalendar.current_and_future` gives them.  The
+        sequence returns before the projection, so the cadence this calendar
+        carries is never read -- *which is what the paragraph here used to
+        argue made ``cadence_days is None`` SAFE beside an empty payday set.
+        Plan step ``pay_calendar:C4-d`` made a cadence required, so the
+        property is now that the walk is empty rather than that an absent value
+        goes unread.*
+        """
+        empty = PayCalendar.from_paydays([], 14, 7, history_opens_on=None)
+
+        assert list(paychecks_from(empty, date(2026, 1, 1))) == []
+        assert len(empty.current_and_future(date(2026, 1, 1))) == 0
+
+    def test_the_sequence_is_finite_and_stops_at_the_apps_last_calendar_day(self):
+        """It ENDS, so a consumer that forgets to stop pulling does not hang.
+
+        Bounded at :data:`~app.utils.dates.CALENDAR_DATE_MAX` exactly as
+        ``recurrence._months.walk_months`` is -- the comment on that constant
+        names THIS projection as the ``OverflowError`` it was introduced for.
+        ``2026-02-13 + 14 x 1953 = 2100-12-24``; the next payday, ``2101-01-07``,
+        lies outside the calendar this application can express and is never
+        named.
+        """
+        cal = calendar()
+        every = list(paychecks_from(cal, date(2026, 1, 2)))
+
+        assert every[-1].start_date == date(2100, 12, 24)
+        assert every[-1].period_index == 1956
+        assert len(every) == 1957
+        assert all(p.start_date <= CALENDAR_DATE_MAX for p in every)
+
+    def test_every_paycheck_is_ascending_and_adjacent(self):
+        """The projected run tiles exactly as the saved run does.
+
+        The tiling invariant :class:`PayCalendar` makes structural for its
+        saved periods has to hold across the seam too, or a consumer walking
+        this sequence would meet a gap or an overlap at the horizon -- the
+        states ledger row **P25** and three retired runtime fences are about.
+        Asserted over every shape, and the seam is inside the slice taken.
+        """
+        for name, paydays, cadence in SHAPES:
+            cal = calendar(paydays, cadence)
+            run = list(islice(paychecks_from(cal, cal.opening_bound()), 12))
+            for earlier, later in zip(run, run[1:]):
+                assert earlier.end_date + timedelta(days=1) == later.start_date, (
+                    name, earlier, later,
+                )
+                assert later.period_index == earlier.period_index + 1, (
+                    name, earlier, later,
+                )
+
+
 class TestTheWindowTypeEnforcesItsOwnTwoInvariants:
     """Ledger rows **P24** and **P32**, made properties of the type (C2-c).
 
@@ -1106,7 +1399,9 @@ class TestTheSavedWindowIsTheBalanceSeamsDomain:
 
     def test_an_empty_calendar_answers_an_empty_window(self):
         """A brand-new owner has no columns, which is an answer not an error."""
-        assert len(PayCalendar.from_paydays([], None, 1).saved()) == 0
+        assert len(PayCalendar.from_paydays(
+            [], 14, 1, history_opens_on=None,
+        ).saved()) == 0
 
 
 class TestTheAxisReplacesTheSyntheticProjection:
@@ -1154,7 +1449,7 @@ class TestTheAxisReplacesTheSyntheticProjection:
 
     def test_an_empty_calendar_yields_an_empty_axis(self):
         """Nothing to project FROM, so nothing is invented."""
-        empty = PayCalendar.from_paydays([], 14, user_id=2)
+        empty = PayCalendar.from_paydays([], 14, user_id=2, history_opens_on=None)
         assert len(empty.axis(date(2026, 1, 1), date(2027, 1, 1))) == 0
 
 
@@ -1206,7 +1501,7 @@ class TestTheAxisRefusesARangeItCanOnlyHalfCover:
         :meth:`PayCalendar.saved` answers them too.  The refusal is about a
         range half-covered, not about a calendar that covers nothing.
         """
-        empty = PayCalendar.from_paydays([], 14, user_id=2)
+        empty = PayCalendar.from_paydays([], 14, user_id=2, history_opens_on=None)
         assert len(empty.axis(date(2020, 1, 1), date(2027, 1, 1))) == 0
 
     def test_a_crossed_range_is_still_refused_first(self):
@@ -1323,7 +1618,7 @@ class TestTheClampedProjectionAxis:
 
     def test_an_empty_calendar_yields_an_empty_axis(self):
         """Nothing to project FROM, so nothing is invented -- and no refusal."""
-        empty = PayCalendar.from_paydays([], 14, user_id=2)
+        empty = PayCalendar.from_paydays([], 14, user_id=2, history_opens_on=None)
         assert len(empty.projection_axis(
             date(2026, 1, 1), date(2027, 1, 1),
         )) == 0
@@ -1334,7 +1629,7 @@ class TestTheRemainingLookupsMovedIntact:
 
     def test_the_bounds_of_an_empty_calendar_are_none_not_an_error(self):
         """The companion role, which by design holds no paydays of its own."""
-        empty = PayCalendar.from_paydays([], 14, user_id=2)
+        empty = PayCalendar.from_paydays([], 14, user_id=2, history_opens_on=None)
         assert empty.opening_bound() is None
         assert empty.horizon() is None
         assert empty.period_containing(date(2026, 1, 1)) is None
@@ -1398,48 +1693,244 @@ class TestPeriodByIdIsIdentityNotASearch:
         assert all(period.period_id is not None for period in cal.periods)
 
 
-class TestEarliestStartInMonthIsWhatMonthlyFirstAsks:
-    """Plan step C2-b1: when a month's FIRST paycheck lands."""
+#: :data:`SHAPES` plus the one axis it does not vary.  Identity indexing is
+#: blind to payday SPACING, so six of those seven shapes re-measure one thing;
+#: what adds information is a candidate INSIDE the saved set, which
+#: ``WITH_UNSAVED`` puts at the head and :data:`WITH_INTERIOR_UNSAVED` puts in
+#: the middle.  Appended here rather than to :data:`SHAPES`, which three other
+#: classes parametrize over for their own reasons.
+_INDEX_SHAPES = SHAPES + [
+    ("an interior unsaved candidate", WITH_INTERIOR_UNSAVED, 14),
+]
 
-    def test_it_returns_the_earliest_payday_of_a_month_holding_two(self):
-        """January 2026 holds 01-02 and 01-16; the pattern fires on the first."""
-        assert calendar().earliest_start_in_month(2026, 1) == date(2026, 1, 2)
 
-    def test_it_returns_the_only_payday_of_a_month_holding_one(self):
-        """February 2026 holds 02-13 alone."""
-        assert calendar().earliest_start_in_month(2026, 2) == date(2026, 2, 13)
+class TestTheSavedIndexIsBOTHTheScopeAndTheLookup:
+    """``saved_by_id`` -- ``period_by_id`` in BULK (plan step **C4-a-4**).
 
-    def test_a_month_the_schedule_covers_but_opens_no_payday_in_answers_none(self):
-        """A real answer, not an error -- and the distinction that matters.
+    Two callers hold a whole ROW SET rather than one id --
+    ``statement_match._candidates`` and both of
+    ``reconcile_service._rows``'s scope properties -- and each wrote its own
+    ``period_id is not None`` comprehension until this step.  What the one
+    accessor buys is not the comprehension: it is that a caller's query SCOPE
+    and its per-row LOOKUP come from ONE value, so a row the query returns and
+    the mapping cannot place is unconstructible rather than guarded against.
 
-        OFF_CADENCE opens 2026-01-02, 01-16 and 01-20, so its last period runs
-        01-20 to 02-02 at a 14-day cadence: February 2nd IS covered by a
-        paycheck, and February opens none.  "Which paycheck covers this day"
-        and "does a paycheck START this month" are different questions, and a
-        ``Monthly First`` rule asks the second.
+    The cases below grade the value.  **The property that needs a caller is
+    graded at the caller** -- that ``destinations_for`` filters on this
+    mapping and indexes the same one -- in
+    ``test_statement_match/test_create.py``.
+    """
+
+    def test_it_keys_on_the_ID_and_not_on_the_ordinal(self):
+        """The fixture's ids start at 10, so the two cannot be confused.
+
+        An implementation keyed on ``period_index`` would answer the FIRST
+        period for key 0 and hold nothing at 10.
         """
-        cal = calendar(OFF_CADENCE)
+        index = calendar().saved_by_id()
 
-        assert cal.period_containing(date(2026, 2, 2)) is not None
-        assert cal.earliest_start_in_month(2026, 2) is None
+        assert sorted(index) == [10, 11, 12, 13]
+        assert index[12].start_date == date(2026, 1, 30)
+        assert index[12].period_index == 2
 
-    def test_a_month_past_the_horizon_answers_none_and_is_not_projected(self):
-        """SAVED periods only, so a Monthly First rule cannot fire into thin air.
+    def test_every_value_IS_the_period_the_scanning_twin_answers(self):
+        """One derivation behind both, so an indexer and a scanner agree.
 
-        This is the method's one sharp edge: the calendar PROJECTS for
-        ``span_containing`` and must not here, because the answer selects a
-        paycheck a generated row will be seated in by ``pay_period_id``.
+        The whole reason the accessor is on the calendar rather than spelled
+        at each caller: two ways of asking "which paycheck is id N" that came
+        from two places could drift, and this asserts they are the same
+        object rather than merely equal.
         """
         cal = calendar()
-        assert cal.span_containing(date(2026, 6, 1)) is not None
-        assert cal.earliest_start_in_month(2026, 6) is None
 
-    def test_it_does_not_confuse_the_same_month_in_another_year(self):
-        """Both halves of the key are read, which one careless filter would not."""
-        cal = calendar([(30, date(2025, 1, 9)), (31, date(2026, 1, 23))])
+        for period_id, period in cal.saved_by_id().items():
+            assert period is cal.period_by_id(period_id)
 
-        assert cal.earliest_start_in_month(2025, 1) == date(2025, 1, 9)
-        assert cal.earliest_start_in_month(2026, 1) == date(2026, 1, 23)
+    def test_it_answers_over_an_OFF_CADENCE_schedule_too(self):
+        """The end a caller reads is the DERIVED one, on the shape that shows it.
+
+        ``OFF_CADENCE``'s second payday is four days after the first, so
+        ``lead(start) - 1`` and ``start + cadence - 1`` disagree -- which is
+        exactly the divergence ``pay_periods.end_date`` stored and plan step
+        C4-c dropped.  On ``BIWEEKLY`` the two rules coincide and this assertion
+        would pass against either.
+        """
+        index = calendar(OFF_CADENCE).saved_by_id()
+
+        assert index[10].end_date == date(2026, 1, 15)
+        assert index[11].end_date == date(2026, 1, 19)
+
+    def test_an_UNSAVED_candidate_is_not_in_it(self):
+        """A projection and a candidate carry no id, so neither may be a key.
+
+        Ledger row **P21**: an ``{p.id: ...}`` map over a set holding more
+        than one of them collapses, because they SHARE that ``None``.  The
+        filter is ``materialised_periods``' -- the package's one "is this
+        period SAVED" rule -- rather than a fourth spelling of it.
+        """
+        cal = calendar(WITH_UNSAVED)
+        index = cal.saved_by_id()
+
+        assert sorted(index) == [11]
+        assert None not in index
+        assert any(period.period_id is None for period in cal.periods)
+
+    def test_an_INTERIOR_unsaved_candidate_is_not_in_it_either(self):
+        """The candidate INSIDE the saved set, which the head case cannot show.
+
+        ``WITH_UNSAVED`` puts the candidate FIRST, so an implementation that
+        dropped ``periods[0]`` rather than filtering would pass it; this one
+        cannot be passed that way, and it is the shape plan step **C6** builds
+        by design.  The key set is asserted EXACTLY rather than by absence:
+        "the candidate is not in it" is also true of an empty mapping.
+
+        **It replaces a case that could not fail** (adversarial test-quality
+        review 2026-08-31): the old one asked whether a period from
+        ``span_containing`` -- a PROJECTION, ``period_id`` ``None`` -- was
+        among the values, which holds for ``return {}`` and for any keying
+        whatever, because ``saved_by_id`` is only ever shown ``self.periods``
+        and a projection is never in those.  That is the same vacuity
+        ``test_the_searchable_id_space_holds_only_saved_periods`` above records
+        a review catching on this very producer pair.
+        """
+        cal = calendar(WITH_INTERIOR_UNSAVED)
+        index = cal.saved_by_id()
+
+        assert sorted(index) == [10, 12]
+        assert index[10].start_date == date(2026, 1, 2)
+        assert index[12].start_date == date(2026, 1, 30)
+        assert any(period.period_id is None for period in cal.periods)
+
+    def test_an_EMPTY_calendar_answers_an_empty_mapping(self):
+        """Which as a SCOPE admits nothing, and that is the right answer.
+
+        An owner with no paydays has no rows to offer, so a filter built from
+        this returns none -- rather than a scope that is missing and reads as
+        unbounded.
+        """
+        assert calendar(paydays=[]).saved_by_id() == {}
+
+    def test_the_mapping_is_READ_ONLY_and_the_same_one_every_call(self):
+        """MEMOIZED, and immutable so the sharing cannot be turned against it.
+
+        One review pass asks this twice -- a candidate scope and a destination
+        scope -- and each apply door builds two passes, so a request asks four
+        times; that is what the memo is for, and an adversarial design review
+        measured the "once per pass" claim a first cut rested on as false
+        (2026-08-31).
+
+        **Memoizing and handing out a plain ``dict`` would be worse than not
+        memoizing**: the value is a query SCOPE deciding whose budget rows may
+        be offered money, so one producer clearing or narrowing it would
+        silently narrow the other's. The proxy makes that unconstructible.
+        Both halves are asserted, because a memo that returned a fresh copy
+        would pass the mutation half alone.
+        """
+        cal = calendar()
+        first = cal.saved_by_id()
+
+        assert cal.saved_by_id() is first
+        # The attack this is for is NARROWING, not emptying: dropping one id
+        # from a shared scope removes exactly that paycheck's rows from the
+        # other producer's offer set, and nothing downstream would say so.
+        with pytest.raises(TypeError):
+            del first[10]
+        with pytest.raises(TypeError):
+            first[99] = cal.periods[0]
+        assert sorted(cal.saved_by_id()) == [10, 11, 12, 13]
+
+    def test_the_memo_is_PER_CALENDAR_and_not_shared_between_two(self):
+        """Two owners' calendars answer their own ids, memo or no memo.
+
+        The slot is an instance field, but a memo written wrong -- on the class,
+        or keyed on nothing -- would hand the second calendar the first one's
+        scope, which is one owner's rows offered under another's name.
+        """
+        mine = calendar(paydays=[(1, date(2026, 1, 2))], user_id=1)
+        theirs = calendar(paydays=[(81, date(2026, 1, 9))], user_id=2)
+
+        assert sorted(mine.saved_by_id()) == [1]
+        assert sorted(theirs.saved_by_id()) == [81]
+        assert sorted(mine.saved_by_id()) == [1]
+
+    @pytest.mark.parametrize(
+        "name,paydays,cadence", _INDEX_SHAPES,
+        ids=[s[0][:40] for s in _INDEX_SHAPES],
+    )
+    def test_it_equals_the_comprehension_it_replaced_on_every_shape(
+        self, name, paydays, cadence,
+    ):
+        """The accessor and the open-coded map agree over every payday shape.
+
+        The expectation is the comprehension the three retired sites wrote
+        out, SPELLED HERE, so the two sides come from two places -- the
+        discipline ``TestTheContainmentRuleOnOnePeriod``'s own sweep states,
+        for the same reason: an expectation derived from the producer under
+        test measures nothing.
+        """
+        cal = calendar(paydays, cadence)
+        expected = {
+            period.period_id: period
+            for period in cal.periods
+            if period.period_id is not None
+        }
+
+        assert cal.saved_by_id() == expected, name
+
+
+class TestTheHistoryBoundIsAFactOfTheCALENDAR:
+    """Plan step **balance:X-bh-2**: the second bound the rhythm is read to.
+
+    The value carries ``history_opens_on`` rather than taking it at each
+    question, for the reason it carries ``cadence_days``: the paydays and the
+    bounds on them are one owner's one rhythm.  What that buys is graded here;
+    what the bound DOES is graded in ``test_pay_calendar_rhythm.py``.
+
+    *This class replaced ``TestEarliestStartInMonthIsWhatMonthlyFirstAsks``,
+    whose subject the same step deleted as unreached in ``app/`` (ledger row
+    **N-396**).  Its five cases were not dropped: they moved to
+    ``test_pay_calendar_rhythm.py::TestSavedPaydaysInMonthThrough``, the
+    producer that answers the same question over the same set.*
+    """
+
+    def test_it_is_carried_and_read_back(self):
+        """The fact the loader threads is the fact the rhythm reads."""
+        stated = date(2020, 6, 1)
+
+        assert calendar().history_opens_on is None
+        assert PayCalendar.from_paydays(
+            BIWEEKLY, 14, user_id=1, history_opens_on=stated,
+        ).history_opens_on == stated
+
+    def test_two_calendars_differing_only_in_it_are_NOT_equal(self):
+        """It is a FACT, so it is compared, and the derivation is not.
+
+        ``periods`` is excluded from equality because it is derived; this is
+        an input, and two owners with the same paydays and different stated
+        histories are answered differently by the engine.  Equality that
+        ignored it would let a memo hand back the wrong one.
+        """
+        unbounded = PayCalendar.from_paydays(
+            BIWEEKLY, 14, user_id=1, history_opens_on=None,
+        )
+        bounded = PayCalendar.from_paydays(
+            BIWEEKLY, 14, user_id=1, history_opens_on=date(2026, 1, 2),
+        )
+
+        assert unbounded != bounded
+        assert unbounded.periods == bounded.periods
+
+    def test_the_constructor_REQUIRES_it(self):
+        """No default, because ``None`` is a real answer as well as an easy one.
+
+        A defaulted argument would let a calendar claim an unbounded rhythm
+        its owner never stated -- a wrong figure rather than an error, which
+        is the expensive direction.  The rule is graded here rather than
+        trusted, because the whole point is that forgetting it must not be
+        possible.
+        """
+        with pytest.raises(TypeError):
+            PayCalendar.from_paydays(BIWEEKLY, 14, user_id=1)
 
 
 class TestTheDerivedPeriodContract:
@@ -1451,10 +1942,436 @@ class TestTheDerivedPeriodContract:
         assert [period.end_is_projected for period in cal.periods] == [
             False, False, False, True,
         ]
-        assert PayCalendar.from_paydays([], 14, 1).periods == ()
+        assert PayCalendar.from_paydays([], 14, 1, history_opens_on=None).periods == ()
 
     def test_a_projected_span_is_a_derived_period_like_any_other(self):
         """One shape for saved and projected, discriminated only by ``period_id``."""
         span = calendar().span_containing(date(2027, 1, 1))
         assert isinstance(span, DerivedPeriod)
         assert span.period_id is None
+
+
+class TestTheContainmentRuleOnOnePeriod:
+    """Pin ``DerivedPeriod.covers``, the one-period span test (**C4-a-3**).
+
+    Ruled at **R-PC31** and landed with plan step C4-a-3 for the three sites
+    that open-coded ``start_date <= day <= end_date``: the purchase-date
+    warning (``entry_service._sums.entry_list_view``), the recurrence engine's
+    base-month scan (``recurrence_engine._plan.compute_due_date``) and this
+    package's own ``_searches.containing_index``.
+
+    **The five point cases below came from
+    ``entry_service.check_purchase_date_in_period``**, which this method
+    replaced and which was DELETED with the ORM read it made: it asked
+    ``transaction.pay_period`` for the STORED ``end_date`` plan step C4-c
+    drops.  They assert exactly what they asserted there -- inside, before,
+    after, on the payday, on the last covered day -- against the DERIVED span
+    rather than the column, which is the whole of the move.
+
+    The class does not stop at those five, because five point assertions on
+    one biweekly shape cannot say the rule holds for the one-day period, the
+    long stretch or the cadence-projected end.  The sweep at the bottom does.
+    """
+
+    def test_a_day_inside_the_period_is_covered(self):
+        """The ordinary answer: a purchase made mid-paycheck is in period."""
+        period = calendar().periods[0]
+
+        assert period.start_date == date(2026, 1, 2)
+        assert period.end_date == date(2026, 1, 15)
+        assert period.covers(date(2026, 1, 5)) is True
+
+    def test_a_day_BEFORE_the_payday_is_not_covered(self):
+        """The lower bound excludes, so the previous paycheck keeps its days."""
+        assert calendar().periods[0].covers(date(2025, 12, 31)) is False
+
+    def test_a_day_AFTER_the_last_covered_day_is_not_covered(self):
+        """The upper bound excludes, so the next paycheck keeps its days."""
+        assert calendar().periods[0].covers(date(2026, 1, 20)) is False
+
+    def test_BOTH_boundary_days_are_covered(self):
+        """Inclusive at both ends -- the payday and the day before the next.
+
+        Writing the rule out twice is how a chained comparison comes to carry
+        ``<`` on one end, so both ends are asserted rather than one.
+        """
+        period = calendar().periods[0]
+
+        assert period.covers(date(2026, 1, 2)) is True
+        assert period.covers(date(2026, 1, 15)) is True
+
+    def test_the_PROJECTED_last_period_answers_on_its_projected_end(self):
+        """The last period's end comes from the cadence, and it still bounds.
+
+        A consumer holding one period cannot tell a fact-derived end from a
+        cadence-projected one, which is why this method does not ask: a
+        purchase is in or out of its own paycheck's span either way.
+        """
+        cal = calendar()
+        last = cal.periods[-1]
+
+        assert last.end_is_projected is True
+        assert last.covers(last.end_date) is True
+        assert last.covers(last.end_date + timedelta(days=1)) is False
+
+    def test_it_does_NOT_ask_whether_the_period_is_SAVED(self):
+        """An unsaved candidate covers its span; the SEARCH still skips it.
+
+        The two questions are different and this pins the difference rather
+        than leaving the search's filter to look like part of the containment
+        rule.  ``period_containing`` answers a period a ``NOT NULL``
+        ``pay_period_id`` can point at, so it filters to the materialised
+        subset first (plan step C2-f2b); ``covers`` is asked OF a period a
+        caller is already holding and answers about its span alone.
+        """
+        cal = calendar(WITH_UNSAVED)
+        candidate = next(p for p in cal.periods if p.period_id is None)
+
+        assert candidate.covers(candidate.start_date) is True
+        assert cal.period_containing(candidate.start_date) is None
+
+    @pytest.mark.parametrize(
+        "name,paydays,cadence", SHAPES, ids=[s[0][:40] for s in SHAPES],
+    )
+    def test_it_equals_the_predicate_it_replaced_on_every_day_of_every_shape(
+        self, name, paydays, cadence,
+    ):
+        """The method and the open-coded pair agree, day by day, everywhere.
+
+        ``TestTheFilingRuleEqualsTheChainItDeletes``' shape, one rule smaller:
+        the expectation is the comparison the three retired sites wrote out,
+        SPELLED HERE, so the two sides come from two places.  That matters
+        because the arm a reader would reach for first cannot work --
+        ``_searches.containing_index`` now DELEGATES to this method, so an
+        assertion that the search and ``covers`` agree has one producer behind
+        both sides and stays green through any mutation of the rule (measured:
+        flipping the upper bound to ``<`` left exactly that arm passing).
+
+        Walked from a fortnight below the opening payday to a fortnight past
+        the horizon, over every shape the payday model can express, so the
+        one-day period and the cadence-projected last end are both in range.
+        """
+        cal = calendar(paydays, cadence)
+        first = min(day for _pid, day in paydays)
+        last = max(period.end_date for period in cal.periods)
+
+        day = first - timedelta(days=14)
+        while day <= last + timedelta(days=14):
+            for period in cal.periods:
+                expected = period.start_date <= day <= period.end_date
+                assert period.covers(day) is expected, (
+                    f"{name}: period {period.period_index} "
+                    f"({period.start_date}..{period.end_date}) answered "
+                    f"{period.covers(day)} for {day}"
+                )
+            day += timedelta(days=1)
+
+
+class TestTheAttributionClamp:
+    """Pin the shared BUDGET-attribution rule (plan step **C4-a-2**).
+
+    ``DerivedPeriod.attribution_day`` is the one rule the calendar's day cells,
+    the balance seam's planned tier and the reconcile panel's offer bound all
+    use, so no two of them can place one row on different days.  An item lands
+    on its ``due_date`` (fallback: the period's ``start_date``), clamped into
+    the period's inclusive span so a period's flows always sum by its
+    ``end_date`` -- the calendar/grid reconciliation invariant.
+
+    **It was ``utils.dates.attribution_date(preferred, start, end)`` and these
+    cases came with it**, unchanged in what they assert and rewritten to ask
+    the period rather than to pass its two dates.  That is the whole point of
+    the move: the three-argument form let a caller pair one period's item with
+    another period's bounds, which is not a crash but a row rendered on the
+    wrong day.  The pairing is asserted directly below rather than left as
+    prose, since the signature is now the only thing enforcing it.
+
+    Asserted on the SPAN a calendar derives, never on a hand-built pair: the
+    projected last period is included for exactly that reason -- its end comes
+    from the cadence rather than from a following payday, and a consumer
+    holding one cannot tell the difference.
+    """
+
+    def test_a_due_date_inside_the_period_is_the_landing_day_verbatim(self):
+        """No clamp applies, so the item lands where it is dated."""
+        period = calendar().periods[0]
+
+        assert period.start_date == date(2026, 1, 2)
+        assert period.end_date == date(2026, 1, 15)
+        assert period.attribution_day(date(2026, 1, 6)) == date(2026, 1, 6)
+
+    def test_no_due_date_falls_back_to_the_PAYDAY(self):
+        """A row with no ``due_date`` is budgeted on the day money arrived."""
+        period = calendar().periods[0]
+
+        assert period.attribution_day(None) == date(2026, 1, 2)
+
+    def test_a_due_date_BEFORE_the_period_clamps_up_to_the_payday(self):
+        """A stray early date does not escape onto the previous paycheck.
+
+        The recurrence engine can date a row just outside its own period's
+        range; pulling it back is what keeps that period's running balance
+        summing to the period-end figure the grid shows.
+        """
+        period = calendar().periods[1]
+
+        assert period.start_date == date(2026, 1, 16)
+        assert period.attribution_day(date(2026, 1, 9)) == date(2026, 1, 16)
+
+    def test_a_due_date_AFTER_the_period_clamps_down_to_its_last_day(self):
+        """The same rule at the other boundary, which is the load-bearing one.
+
+        Every contributing item must fall on or before ``end_date`` or the
+        period's daily sum stops equalling its period-end balance.
+        """
+        period = calendar().periods[1]
+
+        assert period.end_date == date(2026, 1, 29)
+        assert period.attribution_day(date(2026, 2, 4)) == date(2026, 1, 29)
+
+    def test_both_boundary_days_are_THEMSELVES_valid_landing_days(self):
+        """The clamp is inclusive at both ends, so neither boundary moves."""
+        period = calendar().periods[1]
+
+        assert period.attribution_day(date(2026, 1, 16)) == date(2026, 1, 16)
+        assert period.attribution_day(date(2026, 1, 29)) == date(2026, 1, 29)
+
+    def test_the_PROJECTED_last_period_clamps_to_its_projected_end(self):
+        """A cadence-derived end bounds the clamp as a fact-derived one does.
+
+        The one span whose end no payday dictates, and the one a caller reading
+        ``pay_periods.end_date`` would have answered differently the moment the
+        stored cadence moved (plan finding **P12**).
+        """
+        period = calendar().periods[-1]
+
+        assert period.end_is_projected is True
+        assert period.end_date == date(2026, 2, 26)
+        assert period.attribution_day(date(2026, 3, 20)) == date(2026, 2, 26)
+
+    def test_the_SPAN_it_clamps_against_is_THIS_periods_and_no_other(self):
+        """The mis-pairing the deleted three-argument signature allowed.
+
+        One date, asked of three adjacent periods of one calendar, answers
+        three different days -- and each answer is inside the period that was
+        asked.  A caller that could supply the bounds separately could produce
+        the WRONG one of these with no error, which is why the rule moved onto
+        the value that carries the span.
+        """
+        cal = calendar()
+        stray = date(2026, 1, 20)
+
+        assert cal.periods[0].attribution_day(stray) == date(2026, 1, 15)
+        assert cal.periods[1].attribution_day(stray) == date(2026, 1, 20)
+        assert cal.periods[2].attribution_day(stray) == date(2026, 1, 30)
+
+
+class TestTheLabelIsTheDERIVEDSpan:
+    """``DerivedPeriod.label`` names the span this value derives, not a column.
+
+    Pay-calendar plan step **C4-a-5**, and the reason it is graded on an
+    OFF-CADENCE shape: on a contiguous biweekly schedule ``lead(start) - 1``
+    and ``start + cadence - 1`` agree, so a label asserted there passes against
+    the stored-column reader this step deletes.  ``OFF_CADENCE``'s second
+    period is the shape that tells them apart.
+
+    The FORMAT itself is ``utils.dates.pay_period_label``'s and is graded in
+    ``tests/test_utils/test_dates.py``; what is graded here is which two dates
+    reach it.
+    """
+
+    def test_the_end_is_the_next_paydays_eve_not_the_cadence_projection(self):
+        """The middle period of ``OFF_CADENCE``, where the two rules differ.
+
+        Paydays 01-02, 01-16, 01-20 at a 14-day cadence.  The second period
+        ends 01-19 -- the day before the NEXT payday -- where a cadence
+        projection off its own start would say 01-29.  The label carries the
+        first.
+        """
+        cal = calendar(paydays=OFF_CADENCE)
+
+        assert cal.periods[1].label == "01/16 - 01/19"
+        assert cal.periods[1].label != "01/16 - 01/29"
+
+    def test_the_LAST_periods_label_follows_its_projection(self):
+        """The one end that IS a projection, so the label moves with it.
+
+        The last period has no RECORDED next payday, so its end is the day
+        before the PROJECTED one and :attr:`end_is_projected` says so.
+        Asserted because it is the end the STORED column disagreed with most
+        often -- plan findings **P12** and **P28** both move this one and only
+        this one.  *It read ``start + cadence - 1`` until plan step
+        ``pay_calendar:C14-c`` made both ends one rule; the VALUE asserted
+        below is unchanged, because a projected payday is displaced only once
+        ``C14-e`` turns the convention on.*
+        """
+        cal = calendar(paydays=OFF_CADENCE)
+
+        assert cal.periods[-1].end_is_projected is True
+        assert cal.periods[-1].label == "01/20 - 02/02"
+
+    def test_a_period_straddling_a_year_carries_the_year(self):
+        """The shared rule reaches this type too, not just the format string."""
+        cal = calendar(
+            paydays=((1, date(2026, 12, 26)), (2, date(2027, 1, 9))),
+        )
+
+        assert cal.periods[0].label == "12/26/26 - 01/08/27"
+
+
+class TestTheRaisingTwinOfTheIdentityLookup:
+    """``require_period`` REFUSES where ``period_by_id`` answers ``None``.
+
+    Pay-calendar plan step **C4-a-1**.  The two methods answer the same
+    question for two different callers, and only prose separates them: a
+    caller holding an id a user typed or a nullable column holds gets ``None``,
+    because "no such period of yours" is a real answer there; a caller holding
+    a STORED row's ``pay_period_id`` -- NOT NULL, ``ON DELETE CASCADE`` -- gets
+    a refusal, because for that caller ``None`` is never "not found" and
+    answering it hands a money surface a decision with no basis.
+
+    Graded HERE, on the value, rather than only through a caller.  It was
+    reachable only through the cash fold's plan load when it shipped, so one of
+    its two documented states -- a row filed in another owner's pay period --
+    had no direct exercise at all; an adversarial review named that, and the
+    tests below are the answer.
+    """
+
+    def test_it_answers_the_period_where_the_twin_does(self):
+        """The precondition: on a period the calendar holds, the two agree."""
+        cal = calendar()
+        held = cal.periods[1].period_id
+
+        assert cal.require_period(
+            _filed(period_id=held),
+        ) == cal.period_by_id(held)
+
+    def test_a_period_this_calendar_does_not_hold_RAISES(self):
+        """The twin answers ``None`` for the same id; this refuses.
+
+        Both halves are asserted, because the refusal is only meaningful
+        against a lookup that would otherwise have answered quietly.
+        """
+        cal = calendar()
+        foreign = 9_999
+
+        assert cal.period_by_id(foreign) is None
+        with pytest.raises(RuntimeError):
+            cal.require_period(_filed(period_id=foreign))
+
+    def test_the_message_names_the_ROW_the_PERIOD_and_the_OWNER(self):
+        """All four, because they are what identifies the broken pairing.
+
+        A refusal naming only the period cannot tell an investigator WHICH row
+        is filed against it, and one naming neither owner cannot distinguish
+        the two states the method documents -- a cross-owner filing from two
+        reads taken at different moments.  **The TABLE joined them at plan step
+        C4-a-5**: ``budget.transactions``, ``budget.transfers`` and
+        ``budget.journal_entries`` all carry a ``pay_period_id`` and their id
+        spaces overlap, so "id=77" alone sends a reader to whichever row of
+        that number they happen to look at.
+        """
+        cal = calendar(user_id=42)
+
+        with pytest.raises(RuntimeError) as raised:
+            cal.require_period(_filed(period_id=9_999))
+
+        message = str(raised.value)
+        assert "budget.transactions id=77 " in message
+        assert "pay period id=9999," in message
+        assert "user 42's pay calendar" in message
+
+    def test_the_message_names_the_TABLE_the_row_came_from(self):
+        """A TRANSFER's refusal says transfer, which is C4-a-5's own reason.
+
+        The message was ``f"transaction id={...}"`` outright until that step
+        gave the recurrence conflict chooser -- which builds rows for
+        transactions AND transfers -- its first non-transaction caller.  A
+        transfer described as a transaction sends an investigator to
+        ``budget.transactions`` id=77, a DIFFERENT row that very likely exists.
+        """
+        cal = calendar(user_id=42)
+
+        with pytest.raises(RuntimeError) as raised:
+            cal.require_period(
+                _filed(table="budget.transfers", period_id=9_999),
+            )
+
+        assert "budget.transfers id=77 " in str(raised.value)
+
+    def test_it_refuses_ANOTHER_owners_period_by_the_same_rule(self):
+        """The second documented state, which had no direct exercise.
+
+        ``budget.transactions`` carries no ``user_id`` -- its owner IS its pay
+        period's, and nothing in the schema requires that owner to be its
+        ACCOUNT's -- so a row can name a period this owner legitimately does
+        not hold.  Two calendars over DISJOINT payday sets is that state on the
+        value: each answers for its own ids and refuses the other's.
+        """
+        mine = calendar(paydays=((1, date(2026, 1, 2)), (2, date(2026, 1, 16))))
+        theirs = calendar(
+            paydays=((81, date(2026, 1, 9)), (82, date(2026, 1, 23))),
+            user_id=2,
+        )
+
+        assert mine.require_period(_filed(period_id=1)).period_id == 1
+        assert theirs.require_period(
+            _filed(row_id=78, period_id=81),
+        ).period_id == 81
+        with pytest.raises(RuntimeError):
+            mine.require_period(_filed(row_id=78, period_id=81))
+        with pytest.raises(RuntimeError):
+            theirs.require_period(_filed(period_id=1))
+
+
+class TestTheFiledRowCannotBeMispaired:
+    """``FiledRow`` is the pair ``require_period`` used to take loose.
+
+    Pay-calendar plan step **C4-a-5**.  The signature was
+    ``require_period(period_id, transaction_id)`` -- two ``int``s in a fixed
+    order, held to one row by nothing.  A crossed pair does not raise: it finds
+    a DIFFERENT period, and ``balance_at._cash_fold._cash_plan`` dates the
+    daily balance line with the answer.  These grade the two properties that
+    replace the old signature's inspection: it cannot be built positionally,
+    and the constructor every entity-holding caller uses reads both ids off ONE
+    object.
+    """
+
+    def test_two_bare_integers_do_not_construct_one(self):
+        """``FiledRow(1, 2)`` is a ``TypeError``, not a filed row.
+
+        The keyword-only fields ARE the guarantee.  Without them the value
+        would be a rename of the defect: a caller could still write the two
+        ids in the wrong order and get an object back.
+        """
+        with pytest.raises(TypeError):
+            FiledRow("budget.transactions", 1, 2)  # pylint: disable=too-many-function-args  # noqa: E501  # the refusal under test
+
+    def test_for_row_reads_both_ids_off_ONE_object(self):
+        """The constructor a caller holding a mapped row uses.
+
+        It takes the row, so there is no second object whose id could be
+        substituted -- which is the whole difference from the two-argument
+        call it replaces.  Driven with a stand-in carrying the three attributes
+        a mapped row has, because this value is in the model-free half of the
+        package and the property under test is that it reads rather than
+        imports.
+        """
+        class _Row:  # pylint: disable=too-few-public-methods  # a stand-in row
+            __table__ = SimpleNamespace(fullname="budget.transfers")
+            id = 501
+            pay_period_id = 88
+
+        filed = FiledRow.for_row(_Row())
+
+        assert filed == FiledRow(
+            table="budget.transfers", row_id=501, period_id=88,
+        )
+
+    def test_it_is_frozen_so_a_holder_cannot_re_point_it(self):
+        """One value, one row: rebinding a field would restore the crossing."""
+        filed = FiledRow(
+            table="budget.transactions", row_id=1, period_id=2,
+        )
+
+        with pytest.raises(FrozenInstanceError):
+            filed.period_id = 3

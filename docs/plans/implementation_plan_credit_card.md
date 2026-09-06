@@ -38,53 +38,13 @@ A seeded "Credit Card" account type already exists (`app/ref_seeds.py:59`,
 reserves the hook: `app/services/balance_at/_liability.py:104` ("When revolving debt one day gets a
 real forward model, this is the ONE place that changes").
 
-## Locked developer rulings (2026-07-19; do not reopen)
+## The rulings
 
-1. **Re-account model.** Marking a purchase "Credit" MOVES the transaction to the card account and
-   settles it there: real category, real date/period, real liability. The phantom payback dies.
-   Paying the card is a transfer checking -> card. Undo moves it back, reverts to Projected.
-2. **Full statement cycle.** Card params carry statement-close day + payment-due day + min-payment
-   rule. A statement is a DERIVED snapshot, never stored. Grace: prior statement paid in full by its
-   due date -> zero interest; otherwise a finance charge from the event stream.
-3. **Derived statement payment.** ONE auto-maintained projected transfer checking -> card per
-   statement on the due date; amount live-derived = statement balance minus reward redemptions
-   posted since close (floor 0). Mirrors `derive_from_loan`. Underpayment fires a C7-style warning
-   plus a projected finance charge.
-4. **Cash back: flat rate; redemptions are events.** `cashback_rate` on card params; rewards ACCRUE
-   derived; REDEMPTIONS are real recorded credit events. Manual at any amount, or auto-redeem at
-   `auto_redeem_threshold` (nullable, e.g. $25).
-5. **Migration: freeze history, migrate live rows.** Settled historical Credit pairs untouched. LIVE
-   pairs converted inside the Alembic migration to settled card purchases (real category, original
-   period) + payback deleted. Credit status becomes historical-only (terminal `credit: {credit}`);
-   old workflow code deleted. Entry-level `is_credit` follows the same rule (split tender).
-6. **Zero-card owners at migration time:** the migration creates a $0-anchor "Credit Card" account
-   inline (account row + origination anchor history + linked/anchor-equity ledger rows, the
-   account-factory invariant satisfied by hand; params-less = dormant plain liability until
-   configured). Deploy never bricks.
-7. **Renames ship in-arc at CC3c** (approval granted; add `Review:` lines):
-   `credit_payback_for_id -> card_charge_for_id`,
-   `TransactionEntry.credit_payback_id -> card_charge_id`, `is_credit -> is_card_tender` (+
-   index/constraint renames), in the same commit that changes their semantics.
-8. **Finance-charge math: APR/365 daily periodic rate x average daily balance;** when grace is lost,
-   new purchases enter the ADB from their settle date. All Decimal; `round_money` at the boundary
-   only.
-
-### Grid / companion hard requirements (developer, 2026-07-19)
-
-- **A charged expense stays visible in place** on the source account's grid for its period: a
-  display-only ghost row derived from `charged_from_account_id` provenance (CC badge, $0 balance
-  effect, uncharge affordance) -- never a second stored row.
-- **The derived statement payment renders on the CHECKING grid as a payable** and deducts from the
-  projected balance in its due-date period (structural: it is a real projected transfer with an
-  expense shadow on checking).
-- **The companion flow survives intact:** a companion user recording a card-tender entry on an
-  envelope row (`app/routes/companion.py` + the entries blueprint's accessible-transaction path)
-  feeds the card-side transaction end to end while the envelope row + entries stay on the owner's
-  checking grid. Pinned by a companion-access test at CC3c.
-- Timing shift to expect (accepted): the payment deducts in the DUE-DATE period, which can be later
-  than the old next-period payback; the current period's end balance excluded card activity in BOTH
-  models. A conservative deduct-at-close placement option is a possible later addition; correct
-  timing ships first.
+**This arc's rulings are in `rulings.md`, rows whose `arc` is `credit_card`.** The key is
+`(arc, id)` and no arc document states a ruling; cite one as `credit_card:R-CCnn` wherever the bare
+id could be another arc's (`conventions.md` rules 9 and 10).
+**The eight LOCKED rulings of 2026-07-19 are `R-CC1`-`R-CC8`**, in the order that list numbered
+them, and the four `Grid / companion hard requirements` taken the same day are `R-CC9`-`R-CC12`.
 
 ## Architecture (decided during planning)
 
@@ -182,8 +142,8 @@ real forward model, this is the ONE place that changes").
 - [ ] **CC2b** `feat(cards): the finance charge folds the daily balance` --
       `finance_charge(events, cycle, rate_records)`: day-by-day balance, APR segments
       effective-dated, DPR = APR/365, average daily balance, purchases join the ADB on grace loss
-      (ruling 8); grace kept => `0.00`. Oracles: hand-computed ADB with a mid-cycle purchase; APR
-      change mid-cycle; boundary days of the closed-open cycle window.
+      (ruling **R-CC8**); grace kept => `0.00`. Oracles: hand-computed ADB with a mid-cycle
+      purchase; APR change mid-cycle; boundary days of the closed-open cycle window.
 - [ ] **CC2c** `feat(cards): card APR history rides rate_history` -- card-gated write route + schema
       + `load_card_rate_records`; docstring updates; double-submit uniqueness test; pin that the
       loan loaders' account set (LoanParams-driven) never contains the card.
@@ -203,23 +163,25 @@ real forward model, this is the ONE place that changes").
       concurrency, guard controls fire. Hazard checks: `template_id` partial unique unaffected;
       regeneration skips settled.
 - [ ] **CC3b**
-      `feat(cards)!: mark-credit is charge-to-card -- transaction-level cutover + live-pair migration`
-      -- delete mark/unmark routes + PATCH revert path; state machine: Projected loses `credit`,
+      `feat(cards)!: mark-credit is charge-to-card -- transaction-level cutover + live-pair migration` -- <!-- MD013 kept: the backticked commit SUBJECT is 96 characters on its own, so at this list's 6-space continuation indent no wrap reaches 100; the real fix is a shorter subject, which is CC3b's to decide. --> <!-- rumdl-disable-line MD013 -->
+      delete mark/unmark routes + PATCH revert path; state machine: Projected loses `credit`,
       `credit: {credit}` terminal; minimal template/JS cutover (`data-can-charge`, `c` key, palette,
       badges' predicates); Alembic migration with in-migration backfill: per LIVE pair -- resolve
       target card (single; multiple -> lowest sort_order; zero -> CREATE the card inline per ruling
-      6), set provenance, retarget, status Paid + documented `paid_at` derivation, emit balanced
+      **R-CC6**), set provenance, retarget, status Paid + documented `paid_at` derivation, emit balanced
       settled postings in-migration (loan-backfill precedent), delete payback; frozen settled pairs
-      untouched; downgrade restores via provenance. Rework `test_credit_workflow.py` +
+      untouched; downgrade restores via provenance. **With `CC3c` it owns `credit_card:N-351`** (re-filed from
+      `balance:N-243` 2026-09-03): a payback's amount is a stored derivation at both levels and
+      carries neither pricing link, and both die with the payback shape. Rework `test_credit_workflow.py` +
       `test_c19_credit_payback_unique.py` (port lock/concurrency shapes). Reports move (settled
       spending now sees real categories at charge time) -- explained in-commit.
 - [ ] **CC3c** `feat(cards)!: envelope split tender + renames` -- rewrite `entry_credit_workflow.py`
       -> `entry_card_charge.py`: maintains ONE settled card-side EXPENSE = credit-entry sum (same
       period/scenario/category, provenance set), linked via the RENAMED `card_charge_for_id` +
       partial unique index + `TransactionEntry.card_charge_id`; `is_credit -> is_card_tender`
-      (ruling 7; `Review:` lines; index/constraint renames in the same migration). The 2x2 sync
-      matrix carries over under the shared lock; sum==0 reverse-and-delete. `_signed_cash_leg` /
-      `_credit_entry_sum` semantics unchanged (docstrings updated). Migrate live entry paybacks;
+      (ruling **R-CC7**; `Review:` lines; index/constraint renames in the same migration). The 2x2
+      sync matrix carries over under the shared lock; sum==0 reverse-and-delete. `_signed_cash_leg`
+      / `_credit_entry_sum` semantics unchanged (docstrings updated). Migrate live entry paybacks;
       delete `credit_workflow.py` whole. Oracles: hand-computed $500/$120 split tender (checking leg
       $380, card row $120 at the entries' settle instant), toggle shrink/grow, last-entry deletion
       reversal, migration up+down. HARD REQUIREMENT: the companion flow survives intact (see the
@@ -245,7 +207,10 @@ real forward model, this is the ONE place that changes").
       CC2a's minimum; fixed mode is a template amount the card owns. The card row stores no amount,
       so nothing can hold a figure the derivation contradicts. Oracles: derived amount renders
       identically on grid/card/checking; redemption after close reduces, before close does not (both
-      controls); floor-0.
+      controls); floor-0. **It owns `N-311`** (re-filed from `balance` 2026-09-03): the CC payback
+      rows do not reconcile to what was actually paid to the card -- one ACH per real payment
+      against one payback per purchase, `$280.21` unexplained -- and the payment as a CARD rule is
+      the remedy.
 - [ ] **CC4c** `feat(cards): underpayment warns and projects its finance charge` -- C7-style warning
       (payment < minimum due) + one-click "pay statement balance" (flips mode);
       `card_recurrence_sync` maintains ONE projected finance-charge expense
@@ -253,6 +218,15 @@ real forward model, this is the ONE place that changes").
       on write-path triggers only (transfer settle/revert, params/APR change); never touches settled
       rows. Oracles: hand-computed charge appears/disappears; settled charge untouched (control);
       confirming the charge posts + folds at its instant.
+- [ ] **CC4d** `feat(cards): a finance charge names the relation that prices it` -- give CC4c's
+      projected charge its OWN pricing link, a typed FK that `ck_transactions_one_pricing_link`
+      counts, so it declares its relation the way every other derived row does.
+      **It is this arc's half of `balance:X-au-l`**, which deletes `amount_source_id` on the ground
+      that the relation is derivable from the link a row carries (**balance:R-IY**, `CLAUDE.md` rule
+      14). **N-264** was written as the reason that column must SURVIVE --
+      *a derived row that no pricing link can reach* -- and the developer ruled its other reading:
+      the arc is missing a leg, not short a discriminator. Closes **N-264**, and `balance:X-au-l` is
+      gated on this.
 
 ### Phase 5 -- Rewards
 

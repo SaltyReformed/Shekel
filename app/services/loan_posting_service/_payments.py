@@ -209,7 +209,10 @@ def _loan_payment_target(
             chart-of-accounts pairing).
     """
     shadow = split.income_shadow
-    owner_id = shadow.pay_period.user_id
+    # The shadow's OWN owner column (plan step ``pay_calendar:C13-b``); it
+    # walked ``shadow.pay_period.user_id`` until then, and a shadow states its
+    # parent transfer's owner directly since ``C13-a``.
+    owner_id = shadow.user_id
     loan_account_id = shadow.account_id
     target: dict[int, tuple[Decimal, int]] = {}
 
@@ -309,7 +312,7 @@ def _reconcile_loan_payment(
     return emit_keyed_delta_entries(
         legs_by_key,
         source_entry_builder(
-            user_id=shadow.pay_period.user_id,
+            user_id=shadow.user_id,
             scenario_id=shadow.scenario_id,
             source_kind_id=ref_cache.posting_source_id(
                 PostingSourceEnum.LOAN_PAYMENT
@@ -503,6 +506,6 @@ def reverse_loan_payment_postings_for_shadow(income_shadow: Transaction) -> None
             deleted.  Must still be flushed (``id`` set) so the reversal links
             by ``transaction_id`` and reads the posted legs back.
     """
-    owner_id = income_shadow.pay_period.user_id
+    owner_id = income_shadow.user_id
     lock_user_writes(owner_id)
     _reconcile_loan_payment(income_shadow, {})

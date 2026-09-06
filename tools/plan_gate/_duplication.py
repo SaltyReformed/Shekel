@@ -73,6 +73,7 @@ def live_docs() -> dict[str, Path]:
         "ledger": registry.LEDGER,
         "steps": registry.STEPS,
         "conventions": registry.CONVENTIONS,
+        "rulings": registry.PLANS / "rulings.md",
         "verification": registry.PLANS / "verification.md",
         "lessons": registry.PLANS / "lessons.md",
         **registry.ARC_DOCS,

@@ -25,7 +25,6 @@ from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
 from app.extensions import db
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.account import Account
@@ -35,11 +34,11 @@ from app.services import (
     account_service,
     category_service,
     loan_loaders,
-    pay_period_service,
     template_amount_service,
     transfer_recurrence,
     transfer_service,
 )
+from app.services.pay_calendar import calendar_for
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     STALE_ACTION_MESSAGE,
@@ -61,7 +60,8 @@ from app.routes._recurrence_conflict_chooser import (
 )
 from app.routes._recurrence_form_helpers import (
     RecurrenceFormContext,
-    build_recurrence_rule_for_create,
+    author_recurrence_for_create,
+    recurrence_spec_for_create,
     resolve_recurrence_rule_for_update,
 )
 from app.routes._recurrence_form_render import recurrence_form_state
@@ -75,9 +75,7 @@ from app.routes._transfer_creation_helpers import (
 )
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._instances import (
-    NON_REPEATING_ACCOUNTS_ARE_FIXED,
     materialize_initial_transfers,
-    non_repeating_live_transfers,
     propagate_to_non_repeating_transfers,
 )
 from app.routes.transfers._helpers import (
@@ -130,11 +128,32 @@ def list_transfer_templates():
 @login_required
 @require_owner
 def new_transfer_template():
-    """Display the transfer template creation form."""
+    """Display the transfer template creation form.
+
+    **The start-period ``<select>`` and its preselection come off ONE calendar
+    derivation** (plan step C2-f3a).  They were
+    ``pay_period_service.get_all_periods`` and ``get_current_period`` -- two
+    reads of ``budget.pay_periods`` for one form, the second of them SQL with
+    no ``ORDER BY`` (ledger row **P19**) resolved against the process clock
+    (row **P49**).  The day is ``display_today()``, the owner's civil day and
+    the one ``routes/_period_options.period_move_options`` already reads for
+    the sibling ``<select>`` on the edit popover; a create form and an edit
+    popover disagreeing about which paycheck is current would be visible on
+    consecutive clicks.
+
+    **The offer set is still EVERY saved period, closed ones included**, which
+    is deliberately NOT ``period_move_options``' narrowed rule: this form
+    places the first occurrence of a definition being created, and back-dating
+    a one-time transfer into a closed paycheck is a legitimate thing to author
+    where MOVING an existing row backwards is the workflow ledger row **P46**
+    is about.  Stated because the two ``<select>``s now sit one derivation
+    apart and the difference is a policy rather than an oversight.
+    """
     accounts = account_service.list_active_accounts(current_user.id)
     categories = category_service.list_active_categories(current_user.id)
-    periods = pay_period_service.get_all_periods(current_user.id)
-    current_period = pay_period_service.get_current_period(current_user.id)
+    calendar = calendar_for(current_user.id)
+    periods = calendar.saved()
+    current_period = calendar.period_containing(display_today())
 
     # Pre-fill account selection from query params (for quick-action links).
     prefill_from = request.args.get("from_account", type=int)
@@ -187,18 +206,26 @@ def _settle_create_references(data, start_period_id):
     1. **Every user-scoped FK is the owner's** (commit C-27 / F-043).  A
        single-return loop so a future FK adds a row rather than an arm; the
        message-per-FK detail rides on the label.
-    2. **The pay period a NON-REPEATING transfer lands in** is the owner's too.
+    2. **The pay period a NON-REPEATING transfer lands in** is the owner's too,
+       and this is the ONE place the request asks (plan step
+       ``pay_calendar:C13-b``).  It was ``_user_owns(PayPeriod, ...)`` -- fetch
+       the row by primary key, compare its ``user_id`` -- and
+       ``_materialize_one_time_transfer`` then did the same again on the row
+       this one had already cleared.  Now the owner's derived CALENDAR is
+       asked once, where an id another user holds is simply ABSENT, and the
+       RESOLVED period is threaded to that materializer, which re-fetches
+       nothing.  ``transfer_service`` still asks its own tier's question, which
+       is the guarantee a caller skipping this route cannot escape.
        Owner-checked at the route since plan step R7b-4: the check used to live
-       inside ``build_recurrence_rule_from_form``, because the same ``<select>``
+       inside the recurrence-form helper (``recurrence_spec_from_form``
+       since plan step R-F6), because the same ``<select>``
        was ALSO the recurrence's "First paycheck" and a cross-user period would
        have shifted this owner's generation timing.  The recurrence takes a
        DATE now, so the field has one job and one owner.  Guarded on presence
        rather than folded into the loop, because it is OPTIONAL: a repeating
-       transfer submits no period at all and ``_user_owns`` reads ``None`` as
-       "no row".  Checked unconditionally when present, so a crafted POST
-       pairing a foreign period with a repeating cadence is refused rather than
-       ignored; ``_materialize_one_time_transfer`` re-checks as defence in
-       depth.
+       transfer submits no period at all.  Resolved unconditionally when
+       present, so a crafted POST pairing a foreign period with a repeating
+       cadence is refused rather than ignored.
     3. **A loan destination's first occurrence is DERIVED**, and it must be
        settled before the rule is built so nothing is authored that
        ``bind_rule_to_loan`` then replaces (plan step R7c-b, developer ruling
@@ -212,8 +239,18 @@ def _settle_create_references(data, start_period_id):
             by the caller, or ``None``.
 
     Returns:
-        * ``None`` -- every reference checks out and *data* is ready to build.
-        * :class:`Response` -- the refusal redirect, returned verbatim.
+        ``(start_period, refusal)``.  *start_period* is the resolved
+        :class:`~app.services.pay_calendar.DerivedPeriod` the caller threads to
+        :func:`~._instances.materialize_initial_transfers`, or ``None`` when
+        the submission named no period.  *refusal* is ``None`` when every
+        reference checks out and *data* is ready to build, else the redirect
+        the caller returns verbatim.
+
+    Raises:
+        PayCalendarError: When the owner holds no pay schedule, from the
+            calendar this resolves against.  Uncaught, as at every other
+            caller: the form that posts here rendered the owner's periods to
+            choose from (ruling **R-PC42** supplies the handler).
     """
     for model, pk, label in (
         (Account, data.get("from_account_id"), "source account"),
@@ -222,13 +259,18 @@ def _settle_create_references(data, start_period_id):
     ):
         if not _user_owns(model, pk):
             flash(f"Invalid {label}.", "danger")
-            return redirect(url_for("transfers.new_transfer_template"))
+            return None, redirect(url_for("transfers.new_transfer_template"))
 
-    if start_period_id is not None and not _user_owns(PayPeriod, start_period_id):
-        flash("Invalid start period.", "danger")
-        return redirect(url_for("transfers.new_transfer_template"))
+    start_period = None
+    if start_period_id is not None:
+        start_period = calendar_for(current_user.id).period_by_id(
+            start_period_id,
+        )
+        if start_period is None:
+            flash("Invalid start period.", "danger")
+            return None, redirect(url_for("transfers.new_transfer_template"))
 
-    return settle_first_occurrence(
+    return start_period, settle_first_occurrence(
         data, redirect=RedirectTarget("transfers.new_transfer_template"),
     )
 
@@ -247,9 +289,10 @@ def create_transfer_template():
     :func:`_settle_create_references`.  That helper also settles a LOAN
     destination's derived first occurrence, which is why the three steps are
     one call: it reads the destination it has just proved is the owner's.  The
-    follow-up branch (:func:`_materialize_one_time_transfer`) re-fetches the
-    period and verifies ownership a second time, so a malicious
-    ``start_period_id`` cannot leak into the transfer service.  The flash +
+    period is resolved THERE and threaded down, so
+    :func:`~._instances.materialize_initial_transfers` re-fetches nothing --
+    it re-verified the same row a second time until plan step
+    ``pay_calendar:C13-b``.  The flash +
     redirect UX matches the existing template-form pattern; the security
     response rule (404 for both not-found and not-yours) is preserved
     indirectly by re-rendering the same form page rather than confirming
@@ -263,7 +306,7 @@ def create_transfer_template():
     data = payload
 
     start_period_id = data.pop("start_period_id", None)
-    refusal = _settle_create_references(data, start_period_id)
+    start_period, refusal = _settle_create_references(data, start_period_id)
     if refusal is not None:
         return refusal
 
@@ -278,7 +321,7 @@ def create_transfer_template():
     # ``allow_none``, so any POST omitting or emptying it reached
     # ``AttributeError: 'NoneType' object has no attribute 'id'`` -- a 500
     # (defect **D13**), measured on both the absent and the empty spelling.
-    rule = build_recurrence_rule_for_create(
+    spec = recurrence_spec_for_create(
         data,
         user_id=current_user.id,
         redirect=RedirectTarget("transfers.new_transfer_template"),
@@ -287,7 +330,6 @@ def create_transfer_template():
 
     template = TransferTemplate(
         user_id=current_user.id,
-        recurrence_rule_id=rule.id if rule is not None else None,
         **data,
     )
     db.session.add(template)
@@ -298,6 +340,15 @@ def create_transfer_template():
     )
     if namedup_redirect is not None:
         return namedup_redirect
+
+    # **The definition comes FIRST and the rule is authored onto it** (plan
+    # step R-F6): a recurrence rule carries its owner's FK now, so it cannot be
+    # written before there is an owner.  AFTER the name-collision flush
+    # specifically -- the helper flushes, and a flush before
+    # ``flush_template_or_namedup_redirect``'s ``try`` would surface
+    # ``uq_transfer_templates_user_name`` as an unhandled ``IntegrityError``
+    # where the user gets a "name already exists" redirect today.
+    rule = author_recurrence_for_create(spec, template)
 
     # Open the amount's dated series at today (plan step X-au-a).  The
     # constructor above also carries the figure because the column is NOT NULL;
@@ -312,7 +363,7 @@ def create_transfer_template():
     # does.  Returns a redirect Response on a missing / invalid period or a
     # service rejection, which is propagated verbatim.
     materialize_redirect = materialize_initial_transfers(
-        template, rule, start_period_id,
+        template, rule, start_period,
     )
     if materialize_redirect is not None:
         return materialize_redirect
@@ -377,6 +428,11 @@ _TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
     regenerate_fn=transfer_recurrence.regenerate_for_template,
     resolve_fn=transfer_recurrence.resolve_conflicts,
     update_endpoint="transfers.update_transfer_template",
+    # A generated TRANSFER still stores its amount (``transfers.amount``), so
+    # "use" hands this kind's row a figure -- unchanged behaviour.  Plan step
+    # balance:X-au-f is what empties that column and makes this False, at
+    # which point the field and its branch go (ruling **R-JD**).
+    use_states_a_figure=True,
 )
 
 
@@ -456,7 +512,7 @@ def update_transfer_template(template_id):
     # rule-less (defect D16).
     before = PreEditTemplateState(
         amount=template.default_amount,
-        had_recurrence_rule=template.recurrence_rule_id is not None,
+        had_recurrence_rule=template.recurrence_rule is not None,
     )
 
     # Re-point, rebuild, or clear the recurrence rule from the update payload
@@ -479,13 +535,24 @@ def update_transfer_template(template_id):
     if redirect_response is not None:
         return redirect_response
 
-    # Every reason this update may be refused, asked once and BEFORE the
-    # field loop below writes anything: route-boundary FK ownership (commit
-    # C-27 / F-043) and, for a template that does not repeat, an account
-    # change its already-created Transfer could not follow (plan step R2e-3).
-    refusal = _reject_transfer_template_update(template, data, before)
-    if refusal is not None:
-        flash(refusal, "danger")
+    # Route-boundary FK ownership (commit C-27 / F-043), asked BEFORE the field
+    # loop below writes anything.
+    #
+    # **A second refusal stood here until plan step R10-b**: a template that
+    # neither had nor has a recurrence rule could not change its source or
+    # destination ACCOUNT while the Transfer it created was still live, because
+    # the shadow-safe propagation door accepted amount, name and category and
+    # not the two account columns (plan step R2e-3).  That was a limit of the
+    # door rather than a rule about transfers -- a RECURRING template with the
+    # identical edit had it applied, by a sweep that destroyed and rebuilt every
+    # generated row -- so one edit meant two different things depending on
+    # whether the transfer repeated.  ``transfer_service.update_transfer`` moves
+    # a transfer between accounts now, carrying both shadows, so the refusal has
+    # no cause left and :func:`propagate_to_non_repeating_transfers` states the
+    # accounts with the rest of the definition.
+    unowned = _first_unowned_template_fk(data)
+    if unowned is not None:
+        flash(f"Invalid {unowned}.", "danger")
         return redirect(url_for(
             "transfers.edit_transfer_template", template_id=template_id,
         ))
@@ -686,7 +753,7 @@ def hard_delete_transfer_template(template_id):
          deletion, shadow transactions no longer exist in the table.
 
     Two-path logic:
-      - History exists (Paid/Settled transfers): permanent deletion is
+      - History exists (Paid transfers): permanent deletion is
         blocked.  Template is archived instead (if not already) and the
         user is warned.
       - No history: linked transfers are hard-deleted through the
@@ -699,7 +766,7 @@ def hard_delete_transfer_template(template_id):
     after CRIT-05.  Even if the guard predicate above regresses, is
     bypassed, or races a concurrent mark-done that lands between the
     guard check and the loop, settled transfers (Paid, Received,
-    Settled) and their two-shadow pairs cannot be physically destroyed
+    Received) and their two-shadow pairs cannot be physically destroyed
     by this route.  Survivors retain their ``transfer_template_id``;
     the column's FK is ``ON DELETE SET NULL`` so they become detached
     settled history when the parent template is removed.
@@ -757,7 +824,7 @@ def hard_delete_transfer_template(template_id):
     # Even if ``transfer_template_has_paid_history`` regresses, is
     # bypassed, or races a concurrent mark-done that lands between the
     # guard check and the loop below, settled transfers (Paid,
-    # Received, Settled) and their two-shadow pairs cannot be
+    # Received) and their two-shadow pairs cannot be
     # physically destroyed by this route.  Survivors retain their
     # ``transfer_template_id``; the column's FK is ``ON DELETE SET
     # NULL`` (see ``app/models/transfer.py``) so they become detached
@@ -798,61 +865,6 @@ def hard_delete_transfer_template(template_id):
 
 
 
-
-
-
-
-def _reject_transfer_template_update(template, data, before):
-    """Return why this update must be refused, or ``None`` to proceed.
-
-    Two rules, asked together so the route has ONE refusal branch rather than
-    one per rule (which would push it past pylint's ``too-many-returns``):
-
-    * every user-scoped FK in the payload is owned by this user
-      (:func:`_first_unowned_template_fk`);
-    * a template that neither has nor had a recurrence rule may not change
-      its source or destination ACCOUNT while the Transfer it already created
-      is still live.
-
-    **Why the second rule exists.**  A non-repeating template does not
-    regenerate -- that is what stops a rename from destroying its single
-    Transfer (defect D16) -- so an edit reaches that Transfer only through
-    :func:`propagate_to_non_repeating_transfers`, and the shadow-safe door
-    it uses (``transfer_service.update_transfer``) accepts amount, name and
-    category but NOT the two account columns: a shadow's ``account_id`` is
-    derived from them when the pair is created, and moving it is a different
-    operation from updating it.  Rather than let the template claim accounts
-    its own Transfer does not use, the change is refused and the user is told
-    what to do instead.  Scoped to a LIVE Transfer, because the rule is about
-    that row: a template with none (one whose recurrence was cleared, say)
-    has nothing to disagree with and is re-pointed freely.
-
-    Args:
-        template: The ``TransferTemplate`` being updated, still holding its
-            PRE-edit field values -- the caller's ``setattr`` loop runs after
-            this returns, which is what makes the comparison below meaningful.
-        data: The loaded update payload.
-        before: The template's pre-edit state
-            (:class:`~app.routes._recurrence_conflict_chooser.PreEditTemplateState`).
-
-    Returns:
-        The refusal message to flash, or ``None`` when the update may proceed.
-    """
-    unowned = _first_unowned_template_fk(data)
-    if unowned is not None:
-        return f"Invalid {unowned}."
-
-    if before.had_recurrence_rule or template.recurrence_rule is not None:
-        return None
-    moved = any(
-        field in data
-        and data[field] is not None
-        and data[field] != getattr(template, field)
-        for field in ("from_account_id", "to_account_id")
-    )
-    if moved and non_repeating_live_transfers(template):
-        return NON_REPEATING_ACCOUNTS_ARE_FIXED
-    return None
 
 
 
@@ -954,13 +966,23 @@ def _regenerate_and_commit_template(
         db.session.rollback()
         flash("A recurring transfer with that name already exists.", "warning")
         return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
-    # An edit that ended the recurrence deleted this template's upcoming
+    # An edit that ended the recurrence removed this template's upcoming
     # projected transfers (and their shadow pairs); "updated." alone would
     # report a destructive change as a routine one.
-    if before.had_recurrence_rule and template.recurrence_rule_id is None:
+    #
+    # **"were removed" was unqualified until plan step R10-b**, and an
+    # adversarial review of that step caught it: the maintain pass RETAINS a
+    # projected transfer carrying the owner's own records, and flashes its own
+    # notice beside this one -- so the two sentences contradicted each other on
+    # a single save.  This one now says what it can promise, and the retained
+    # notice says which rows it did not reach.  (``routes/templates/crud.py``
+    # carries the same wording on the transaction side, stale since plan step
+    # R10-a; reported, not fixed here.)
+    if before.had_recurrence_rule and template.recurrence_rule is None:
         flash(
             f"'{template.name}' no longer repeats. Its upcoming projected "
-            "transfers were removed; settled and hand-edited ones were kept.",
+            "transfers were removed, except any you have records against; "
+            "settled and hand-edited ones were kept.",
             "success",
         )
     else:

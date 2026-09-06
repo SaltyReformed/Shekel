@@ -24,6 +24,7 @@ from app.schemas.validation import (
     InlineTransactionCreateSchema,
     TransactionCreateSchema,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 class TestTransactionTransferId:
@@ -41,7 +42,7 @@ class TestTransactionTransferId:
             scenario_id=data["scenario"].id,
             status_id=projected.id,
             name="Test Transfer",
-            amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
         )
         db.session.add(xfer)
         db.session.flush()
@@ -57,6 +58,7 @@ class TestTransactionTransferId:
             else data["savings_account"].id
         )
         txn = Transaction(
+            user_id=data['periods'][0].user_id,
             pay_period_id=data["periods"][0].id,
             scenario_id=data["scenario"].id,
             account_id=account_id,
@@ -64,7 +66,7 @@ class TestTransactionTransferId:
             name=f"Shadow: {transfer.name}",
             category_id=data["categories"]["Rent"].id,
             transaction_type_id=txn_type.id,
-            estimated_amount=transfer.amount,
+            amount_ownership=AmountOwnership.own(transfer.amount),
             transfer_id=transfer.id,
         )
         db.session.add(txn)
@@ -88,6 +90,7 @@ class TestTransactionTransferId:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             data = seed_full_user_data
             txn = Transaction(
+                user_id=data['periods'][0].user_id,
                 pay_period_id=data["periods"][0].id,
                 scenario_id=data["scenario"].id,
                 account_id=data["account"].id,
@@ -95,7 +98,7 @@ class TestTransactionTransferId:
                 name="Regular Txn",
                 category_id=data["categories"]["Groceries"].id,
                 transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
+                amount_ownership=AmountOwnership.own(Decimal("50.00")),
                 transfer_id=None,
             )
             db.session.add(txn)
@@ -158,7 +161,7 @@ class TestTransferCategoryId:
                 scenario_id=data["scenario"].id,
                 status_id=projected.id,
                 name="Categorized Transfer",
-                amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 category_id=category.id,
             )
             db.session.add(xfer)
@@ -182,7 +185,7 @@ class TestTransferCategoryId:
                 scenario_id=data["scenario"].id,
                 status_id=projected.id,
                 name="No Category Transfer",
-                amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
                 category_id=None,
             )
             db.session.add(xfer)

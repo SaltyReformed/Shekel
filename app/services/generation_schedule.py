@@ -3,7 +3,8 @@ Shekel Budget App -- The schedule a recurrence generate pass runs against
 (plan step R4b-1)
 
 One value, :class:`GenerationSchedule`, carrying the two facts a generate pass
-needs about pay periods -- and keeping them apart, which is the whole point.
+needs -- the READ PASS it runs inside, and the periods it may write into -- and
+keeping them apart, which is the whole point.
 
 Its own public module rather than a class inside either engine, because three
 different layers construct one: both recurrence engines consume it, the
@@ -12,26 +13,41 @@ the extend / regenerate / reset paths, and four route handlers build it for the
 create / unarchive / salary / template-edit paths.  It cannot live in
 ``app.services._recurrence_common`` -- that module is package-private
 (``shekel-private-module-import``) and a type the route layer must name by
-hand may not be -- and it cannot live in ``app.services.recurrence``, whose
-modules are deliberately free of Flask, the ORM, the clock and the database,
-all of which this needs.
+hand may not be -- and it cannot live in ``app.services.pay_calendar``, whose
+public surface is the derivation itself and which must not learn what a
+recurrence pass is.
 
-Flask-isolated (plain values in, no ``request`` / ``session`` reads); it reads
-the database through ``pay_period_service`` and never writes.
+**It takes the READ PASS since plan step R7d-c-1, where it took a bare
+:class:`~app.services.pay_calendar.PayCalendar`.**  A generate pass needs a
+:class:`~app.services.balance_at.BalanceContext` -- plan step R7d-c-2 bounds a
+loan payment by asking the loan rather than by reading
+``budget.recurrence_rules.end_date`` -- and the 2026-08-16 ruling forbids a
+producer below the route building one, so it is TAKEN.  Carrying it HERE rather
+than as a sixth argument on ``resolve_generation_plan`` is what keeps "the
+schedule this pass resolves against" and "the pass it resolves in" from being
+two spellings of one owner's schedule with nothing reconciling them: the
+calendar is now DERIVED from the pass (:attr:`GenerationSchedule.calendar`),
+so a mismatched pair is unconstructible rather than merely discouraged.  It
+also collapsed the pairs the eight construction sites were already holding --
+every one of them resolved ``calendar_for(user)`` and the baseline scenario
+side by side, which is exactly the two facts a pass pins.
+
+**So it reads, where until R7d-c-1 it read nothing** -- lazily, through the
+pass's own memo, which is the one read the whole request shares.  What that
+costs is an ORDERING rule the write paths must keep, and the rule is stated at
+:meth:`GenerationSchedule.calendar`.
 """
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
-from types import MappingProxyType
 
 from app.exceptions import RecurrenceWindowError
-from app.models.pay_period import PayPeriod
-from app.services import pay_period_service
-from app.services.pay_calendar import PayCalendar, calendar_for
+from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import PayCalendar
 
 
 @dataclass(frozen=True)
 class GenerationSchedule:
-    """The OWNER's whole pay-period schedule, and the slice a pass writes into.
+    """The OWNER's read pass, and the slice of their schedule a pass writes into.
 
     **The value that separates two facts one argument used to carry**, which
     is plan step R4b-1's whole subject.  Both recurrence engines took a single
@@ -54,224 +70,270 @@ class GenerationSchedule:
       lands a new period in a covered month (plan ledger row **D22**);
     * the paycheck calculator received the same truncated list as its
       ``all_periods``, so third-paycheck detection, the first-paycheck-of-month
-      deductions, the annual rounding reconciliation and the FICA wage-base
+      deductions, the annual rounding reconciliation (DELETED at plan step
+      balance:X-aw; the other three still read the list) and the FICA wage-base
       cumulative all read 1-3 periods instead of 61.  One salary row was STORED
       $502.45 below its true net pay (plan ledger row **D25**); the read-time
       recompute kept that off every surface, which is measured rather than
-      assumed in ``recurrence_engine._get_transaction_amount``;
+      assumed in ``income_service.SalaryPricing._breakdown_by_period``;
     * a rule's chosen start period could not be found in the window, so the
       opening bound it states was dropped entirely (plan ledger row **D2**).
 
-    Naming the two facts separately is the fix, and **the separation is
-    enforced rather than conventional**.  Both classmethods load the whole
-    schedule from the database themselves, so a caller states the window and
-    has no way to state the schedule; and :meth:`__post_init__` refuses any
-    value whose ``calendar`` is not exactly its ``periods``, so the D22 shape
-    -- a narrowed calendar beside a matching window -- cannot be built through
-    the public constructor either.  An adversarial review found the first
-    draft's claim was carried by the docstring alone: the generated
-    ``__init__`` accepted a batch as all three fields and every check passed.
+    Naming the two facts separately is the fix.  **What this class GUARANTEED
+    about it changed at plan step C2-f3c, and the honest statement is weaker
+    than the one a first draft made** (adversarial design review, 2026-08-19).
 
-    Measured direction of the change, over every contiguous window of the
+    Before that step this class LOADED both halves itself, so a caller could
+    state the window and had no way to state the schedule: D22 was
+    unconstructible through the public constructors, full stop.  It then TOOK
+    the calendar, because the alternative is deriving a second one per render
+    (ledger row **P68**).  Since plan step R7d-c-1 it takes the READ PASS and
+    DERIVES the calendar from it, which restores the stronger property by a
+    different route: no constructor here accepts a calendar at all, so the
+    schedule a rule resolves against is always ``calendar_for(ctx.user_id)``
+    and a caller cannot substitute one.
+
+    **What is still NOT claimed**, because
+    :class:`~app.services.pay_calendar.PeriodWindow`'s own docstring measured
+    it false: that a calendar cannot be rebuilt from a window.
+    ``PayCalendar.from_paydays([(p.period_id, p.start_date) for p in window],
+    ...)`` is one line over the public iterator.  What R7d-c-1 changes is that
+    such a value can no longer be handed to THIS class -- the pass derives its
+    own -- so reproducing D22 now takes a caller who reaches past the pass's
+    memo, rather than one who simply passes the wrong argument here.
+
+    **Until C2-f3c the schedule was read HERE, twice.**  This class loaded
+    ``pay_period_service.get_all_periods`` for a tuple of ORM rows and
+    :func:`~app.services.pay_calendar.calendar_for` for the calendar, and
+    ``__post_init__`` refused any value whose two halves disagreed -- a real
+    check, because they were separate statements under READ COMMITTED and
+    because a stored ``period_index`` out of payday order made them differ.
+    Both reasons are gone with the second read: there is one statement, its
+    order is payday order by construction, and no part of the generation seam
+    reads a stored ordinal or a stored end at all.  What replaced the check is
+    the absence of the thing it reconciled.
+
+    One state it refused went unrefused anywhere for a span, and it is worth
+    naming because plan step **C4-b-2** is what ended it: an owner with a
+    scrambled stored ``period_index`` AND no ``budget.pay_schedule`` row.
+    ``pay_schedule_service.resolve_cadence``'s legacy fallback found "the last
+    period" with ``ORDER BY period_index DESC``, so a scrambled ordinal gave it
+    the wrong row's length and the calendar's projected last end was wrong --
+    which this class used to make loud and then did not.  Both halves were
+    legacy-only (registration writes the schedule row since
+    ``balance:X-ad-a``; the writer derives the ordinal since
+    ``pay_calendar:C3-b``), and the second half is now unstorable:
+    ``fk_pay_periods_schedule`` requires the row, so no cadence is read off an
+    ordinal any more.  That closes ledger row **P8**, and it retires one of
+    row **P70**'s query-position reads with it -- the fallback's own
+    ``ORDER BY period_index DESC``.  The rest of P70 went with plan step
+    ``C4-c``, which dropped both columns.
+
+    Measured direction of the R4b-1 change, over every contiguous window of the
     production schedule -- 86,986 ``(rule, window)`` pairs: the whole-schedule
     reading NEVER names a period the window reading does not.  It named fewer
-    in 1,008 of them and the same set in the rest, so on live data this can
+    in 1,008 of them and the same set in the rest, so on live data it can
     only ever remove a row that no occurrence justified.
 
     Attributes:
-        periods: The owner's whole schedule as ORM rows, in ``period_index``
-            order -- what the GENERATE pass writes into, since a written row
-            needs the id a ``pay_period_id`` points at.  It was also what the
-            paycheck calculator meant by ``all_periods`` until pay-calendar
-            plan step C2-f2d-3 moved that engine onto :attr:`calendar`; the two
-            halves describe the same periods in the same order, which
-            :meth:`__post_init__` refuses any value that breaks.
-        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
-            loaded through that package's one door.  It USED to be built from
-            *periods* rather than loaded, on the ground that two reads could
-            describe different schedules; plan step **C2-b2** inverted that,
-            because the door takes no window argument and so cannot be handed
-            a slice at all.  What was a construction rule is now a property of
-            the only way to get one, and :meth:`__post_init__`'s first check
-            became the cross-read consistency assert it describes.
-        write_periods: The periods this pass may write into, keyed by
-            ``budget.pay_periods.id``.  A read-only mapping, and always a
-            subset of *periods*.  Keyed by id rather than held as a list
-            because the generation seam asks exactly one question of it --
-            "is the period this occurrence placed on one I may write into,
-            and if so which ORM row is it" -- and a mapping answers both at
-            once.
+        ctx: The read pass this generation runs inside -- the owner, the
+            pinned ``as_of``, the baseline scenario, and the memos every
+            derivation on the pass shares.  It answers what the schedule
+            half of a pass needs (:attr:`calendar`) and, from plan step
+            R7d-c-2, what a loan payment's DERIVED closing bound is.  It is
+            TAKEN and never built here: the 2026-08-16 ruling and ruling
+            **R-R38** together make the ROUTE the only layer that opens a
+            GENERATE pass, including on a write path -- the doors that create
+            pay periods split so the route can open it between their write and
+            the generation.  That is narrower than "only the route calls
+            ``BalanceContext.build``", which is ``pay_calendar:C11``'s end
+            state and not true yet: five modules under ``app/services/`` still
+            call it, one of them (``loan_recurrence_sync``) as C11's own
+            carve-out.
+        write_period_ids: The ``budget.pay_periods.id`` values this pass may
+            write into, and always a subset of :attr:`calendar`'s materialised
+            periods.  Ids rather than periods because that is the only question
+            the seam asks of the window -- "is the period this occurrence was
+            placed on one I may write into" -- and because the ANSWER a write
+            needs, the period itself, already rode in on the placement.
     """
 
-    periods: tuple[PayPeriod, ...]
-    calendar: PayCalendar
-    write_periods: Mapping[int, PayPeriod]
+    ctx: BalanceContext
+    write_period_ids: frozenset[int]
 
-    def __post_init__(self) -> None:
-        """Refuse any value whose three fields do not describe ONE schedule.
+    @property
+    def calendar(self) -> PayCalendar:
+        """The owner's whole pay calendar, derived once for the whole pass.
 
-        Two checks, and between them they make the defect this class exists to
-        end unconstructible rather than merely discouraged:
+        It answers both halves of what a pass needs about the schedule: which
+        periods a rule fires in (the occurrence walk reads it) and what each of
+        those periods IS (its payday, its last covered day, its id).  It is the
+        OWNER's, never the window's; see
+        ``income_service.SalaryPricing._breakdown_by_period`` for the $502.45 that
+        distinction was worth.
 
-        1. **The calendar IS the schedule.**  ``calendar`` must carry exactly
-           ``periods``, in the same order.  It was written for the D22 shape
-           -- resolving against a NARROWED calendar beside a matching window,
-           which made an extend re-read every rule as though the owner's pay
-           history began at the new batch -- and since plan step **C2-b2**
-           that shape is unconstructible: the calendar comes from
-           :func:`~app.services.pay_calendar.calendar_for`, which has no
-           window argument.  What the check still catches is real and is why
-           it stays: the two reads are separate statements under READ
-           COMMITTED, so a concurrent schedule write between them is visible
-           here, and a STORED ``period_index`` whose order disagrees with its
-           own payday order (legacy data, which the derived ordinal cannot
-           reproduce) is refused rather than silently re-phasing every
-           ``Every N Periods`` rule.
-        2. **The window is part of the schedule.**  A row written into a
-           period the rule was never resolved against is a row placed by
-           nothing: the occurrence walk cannot have named it.  The only ways
-           in are a caller pairing one user's template with another user's
-           period, or a period id that no longer exists -- and both would
-           otherwise be SILENT, because the intersection in
-           ``recurrence_engine.resolve_generation_plan`` would simply match
-           nothing and the pass would report "generated 0 rows" for a
-           definition that fires every paycheck.
+        **A property over :attr:`ctx` rather than a field, since plan step
+        R7d-c-1.**  A field took a value the caller derived, so a pass and a
+        schedule were two spellings of one owner's calendar and nothing
+        reconciled them; ``ctx.calendar()`` is the memo the rest of the request
+        already reads, so there is one derivation and one answer.
+
+        **The ORDERING rule a write path owes, and it is LOUD for one
+        constructor and SILENT for the other.**  The pass's calendar memo is
+        filled at its FIRST call and kept for the pass's life, so a caller that
+        creates pay periods and then generates into them must not have asked
+        the pass for a calendar BEFORE that write: it would answer the
+        pre-write schedule, which does not hold the new periods.
+
+        :meth:`for_period_ids` catches that, because its window comes from
+        somewhere else -- the new ids are not in the stale calendar, so
+        :meth:`__post_init__` refuses the value with
+        :class:`~app.exceptions.RecurrenceWindowError` before a single row is
+        generated.  The repopulation paths are the ones this matters for, and
+        the pass they run in is opened by
+        :func:`app.routes._period_population.populate_new_periods` -- after
+        the door that recorded the periods has returned (ruling **R-R38**).
+
+        **:meth:`for_pass` CANNOT catch it, and an adversarial review of plan
+        step R7d-c-1 measured that after a first draft of this paragraph
+        claimed otherwise.**  Its window IS
+        ``ctx.calendar().saved()``, so the window is a subset of the calendar
+        by construction and the refusal has nothing to compare.  A stale pass
+        there UNDER-GENERATES in silence: measured on the review's probe, a
+        pass resolved before two periods were recorded generated 10 rows and
+        left both new paychecks empty, with no exception.  What keeps that
+        unreachable today is not this type -- it is that none of the six
+        ``for_pass`` callers creates a pay period, and all six build the pass
+        and use it in the same breath.  A caller that ever does both owes
+        itself a pass opened after its write, exactly as the repopulation
+        paths take one from
+        :func:`app.routes._period_population.populate_new_periods`.
+
+        Returns:
+            The owner's :class:`~app.services.pay_calendar.PayCalendar`.
 
         Raises:
-            RecurrenceWindowError: When the calendar is not the schedule, when
-                a period is unsaved, or when a write-window period is absent
-                from the schedule.
+            PayCalendarError: The owner has paydays that cannot define a
+                calendar; see
+                :meth:`~app.services.balance_at.BalanceContext.calendar`.
         """
-        schedule_ids = tuple(period.id for period in self.periods)
-        if any(period_id is None for period_id in schedule_ids):
-            raise RecurrenceWindowError(
-                f"user {self.calendar.user_id}'s schedule contains an UNSAVED "
-                f"pay period, which has no id to match a window against.  A "
-                f"generate pass resolves and writes by pay-period id, so a "
-                f"schedule read back from the database is the only kind it "
-                f"can use."
-            )
-        calendar_ids = tuple(
-            period.period_id for period in self.calendar.periods
-        )
-        if calendar_ids != schedule_ids:
-            raise RecurrenceWindowError(
-                f"the calendar describes {len(calendar_ids)} pay period(s) and "
-                f"the schedule {len(schedule_ids)}, or they are not the same "
-                f"periods in the same order.  These are two reads of "
-                f"budget.pay_periods -- one ordered by the stored "
-                f"period_index, one by payday -- so they disagree when a "
-                f"concurrent write lands between them, or when a stored "
-                f"ordinal's order disagrees with its own payday order.  The "
-                f"second would silently re-phase every Every N Periods rule "
-                f"for this owner, so it is refused rather than answered.  "
-                f"Rebuild the schedule with the pay-period reset, which "
-                f"refuses when any transaction is already settled -- an owner "
-                f"with settled history needs the budget.pay_periods rows "
-                f"corrected directly."
-            )
-        owned = set(schedule_ids)
+        return self.ctx.calendar()
+
+    def __post_init__(self) -> None:
+        """Refuse a window naming a period this owner's calendar does not hold.
+
+        **The window is part of the schedule.**  A row written into a period
+        the rule was never resolved against is a row placed by nothing: the
+        occurrence walk cannot have named it.  The ways in are a caller pairing
+        one user's template with another user's period, a period id that no
+        longer exists, and -- since plan step R7d-c-1 -- a pass whose calendar
+        memo was filled before the write that created the ids.  All three would
+        otherwise be SILENT, because the intersection in
+        ``recurrence_engine.resolve_generation_plan`` would simply match
+        nothing and the pass would report "generated 0 rows" for a definition
+        that fires every paycheck.
+
+        **It is the only refusal left here** (plan step C2-f3c).  Both windows
+        in ``app/`` are derived from the same calendar this value carries --
+        ``period_population`` narrows to the periods a write just recorded and
+        then builds this value, and ``carry_forward_service`` narrows to a
+        period it looked up ON the pass's calendar -- so a stray id names a
+        caller that assembled the pair by hand or asked the pass too early.
+        Two sibling checks went with the second read C2-f3c deleted: one
+        reconciled the calendar against a tuple of ORM rows, and one refused an
+        UNSAVED period, which had an id of ``None``.  A window of ids cannot
+        carry an unsaved period, so that state has no spelling here any more.
+
+        Raises:
+            RecurrenceWindowError: A write-window id is not one of this
+                owner's materialised periods.
+        """
+        owned = {period.period_id for period in self.calendar.saved()}
+        # Sorted by REPR, not by value: a hand-assembled window can hold
+        # ``None`` beside an int -- an unsaved period's id -- and ``sorted``
+        # over a mixed set raises ``TypeError`` from inside the refusal, which
+        # is the wrong failure for a caller this message exists to inform
+        # (adversarial review of plan step C2-f3c).  Every window in ``app/``
+        # is a set of ints; this is for the caller that is not.
         stray = sorted(
-            period_id for period_id in self.write_periods
-            if period_id not in owned
+            (
+                period_id for period_id in self.write_period_ids
+                if period_id not in owned
+            ),
+            key=repr,
         )
         if stray:
             raise RecurrenceWindowError(
-                f"pay period id(s) {stray} are not in this owner's schedule of "
-                f"{len(self.periods)} periods, so a rule resolved against that "
-                f"schedule can never place a row in them.  Generating into a "
-                f"period the recurrence was not resolved against would write a "
-                f"row nothing selected."
+                f"pay period id(s) {stray} are not in user "
+                f"{self.ctx.user_id}'s calendar of {len(owned)} saved "
+                f"period(s), so a rule resolved against that calendar can "
+                f"never place a row in them.  Generating into a period the "
+                f"recurrence was not resolved against would write a row "
+                f"nothing selected.  A read pass whose calendar was resolved "
+                f"BEFORE the write that created these periods reads this way."
             )
 
     @classmethod
-    def _load(cls, user_id: int, choose_window) -> "GenerationSchedule":
-        """Build the value from the owner's OWN schedule and a chosen window.
-
-        The single body both public constructors call.  They differ only in
-        which window they choose, and their agreement on everything else is
-        what the class's guarantee rests on -- so it is one function rather
-        than two that happen to match.  ONE schedule read, whichever door was
-        used.
-
-        Args:
-            user_id: The owning user.  The schedule is read for them here, and
-                nowhere else, which is what stops a caller supplying one.
-            choose_window: Called with the loaded periods; returns
-                ``{pay_periods.id: PayPeriod}`` for what this pass may write
-                into.
-
-        Returns:
-            The frozen :class:`GenerationSchedule`.
-
-        Raises:
-            RecurrenceWindowError: See :meth:`__post_init__`.
-        """
-        periods = tuple(pay_period_service.get_all_periods(user_id))
-        return cls(
-            periods=periods,
-            calendar=calendar_for(user_id),
-            write_periods=MappingProxyType(choose_window(periods)),
-        )
-
-    @classmethod
-    def for_user(cls, user_id: int) -> "GenerationSchedule":
-        """Load the owner's schedule with EVERY period open for writing.
+    def for_pass(cls, ctx: BalanceContext) -> "GenerationSchedule":
+        """Open EVERY period of *ctx*'s calendar for writing.
 
         What the create, unarchive, salary and template-edit paths mean: they
         re-drive a template across the whole schedule and let the per-period
-        skip predicate (``_recurrence_common.should_skip_period``) decide what
+        claim predicate (``_recurrence_common.OccurrenceClaims``) decide what
         is already there.
 
+        Delegates to :meth:`for_period_ids` rather than building the value
+        itself, so "the window is a set of THIS calendar's saved ids" is
+        stated once (adversarial review of plan step C2-f3c: the two bodies
+        were one construction spelled twice).
+
+        Named for the PASS rather than the calendar since plan step R7d-c-1,
+        which is what it now takes; the old spelling would have named an
+        argument this constructor no longer accepts.
+
         Args:
-            user_id: The owning user.
+            ctx: The read pass this generation runs inside.
 
         Returns:
-            The schedule, its window covering every period.
+            The schedule, its window covering every materialised period.
+
+        Raises:
+            PayCalendarError: *ctx*'s saved periods do not cover an unbroken
+                span (:meth:`~app.services.pay_calendar.PayCalendar.saved`).
+                Unreachable through
+                :func:`~app.services.pay_calendar.calendar_for`, whose periods
+                come from the table and are therefore all materialised.
         """
-        return cls._load(
-            user_id,
-            lambda periods: {period.id: period for period in periods},
+        return cls.for_period_ids(
+            ctx, (period.period_id for period in ctx.calendar().saved()),
         )
 
     @classmethod
-    def for_periods(
-        cls, user_id: int, write_periods: Iterable[PayPeriod],
+    def for_period_ids(
+        cls, ctx: BalanceContext, period_ids: Iterable[int],
     ) -> "GenerationSchedule":
-        """Load the owner's schedule, opening only *write_periods* for writing.
+        """Open only *period_ids* of *ctx*'s calendar for writing.
 
         What the extend / regenerate / reset repopulation means (write into
-        the periods just created) and what the carry-forward generate branch
-        means (write into exactly this one period).  **The schedule is loaded
-        here rather than taken from the caller**, which is the whole point: the
-        caller states the window and cannot state the schedule, so the window
-        can no longer stand in for it.
+        the periods just recorded) and what the carry-forward generate branch
+        means (write into exactly this one period).
 
         Args:
-            user_id: The owning user.
-            write_periods: The periods this pass may write into.  Must already
-                be flushed -- an unsaved period has no id to match against a
-                schedule read back from the database.
-                ``pay_period_write.record_paydays`` flushes before returning,
-                so every repopulation caller already satisfies this.
+            ctx: The read pass this generation runs inside.
+            period_ids: The ``budget.pay_periods.id`` values this pass may
+                write into.  Must all be periods of *ctx*'s calendar; see
+                :meth:`__post_init__`.
 
         Returns:
-            The schedule, its window covering exactly *write_periods*.
+            The schedule, its window covering exactly *period_ids*.
 
         Raises:
-            RecurrenceWindowError: When a write period is unsaved, or is not
-                one of this owner's (see :meth:`__post_init__`).
+            RecurrenceWindowError: An id is not one of this owner's
+                materialised periods (see :meth:`__post_init__`).
+            PayCalendarError: *ctx*'s saved periods do not cover an unbroken
+                span; see :meth:`for_pass`.
         """
-        window = {}
-        for period in write_periods:
-            if period.id is None:
-                raise RecurrenceWindowError(
-                    f"pay period at index {period.period_index} has no id, so "
-                    f"it cannot be matched against the owner's loaded "
-                    f"schedule.  Flush new periods before populating them."
-                )
-            window[period.id] = period
-        return cls._load(user_id, lambda _periods: window)
+        return cls(ctx=ctx, write_period_ids=frozenset(period_ids))
 
 
 __all__ = ["GenerationSchedule"]

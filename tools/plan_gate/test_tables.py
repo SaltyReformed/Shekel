@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 import _registry as registry
+from _staging import stage_a_fork
 
 
 class TestATableIsFoundByItsHeader:
@@ -36,6 +37,7 @@ class TestATableIsFoundByItsHeader:
         is planted at the FOOT of the file so it lands after the real forks
         table -- which is where the width-keyed reader would have picked it up.
         """
+        stage_a_fork(stage)
         before = len(registry.forks())
         assert before, "the premise: the corpus states forks to be diluted"
         anchor = "## Cross-arc forks"

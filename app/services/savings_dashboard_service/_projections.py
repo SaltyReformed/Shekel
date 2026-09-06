@@ -335,9 +335,13 @@ def _project_one_account(acct, ctx, batches):
         # The horizon window is the pass's OWN reporting domain -- the same
         # window ``build_maps`` keyed ``balances`` by (pay-calendar plan step
         # C2-f2d-3), so a horizon period and its balance column cannot come
-        # from two reads of the schedule.
+        # from two reads of the schedule.  The OFFSETS ride on the context
+        # rather than being derived here (plan step R-F17): they are a function
+        # of the owner's cadence alone, so deriving them inside this
+        # per-account branch would re-answer one question once per tile.
         projected = project_balance_horizons(
             ctx.current_period, ctx.balance_ctx.reported_periods(), balances,
+            ctx.horizon_offsets,
         )
 
     # "Does this account still need its params row" is a DIFFERENT question

@@ -35,9 +35,10 @@ from app.services import (
     recurrence_engine,
     template_amount_service,
 )
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.payroll_basis import PayrollBasis
 from app.services.pay_calendar import calendar_for
-from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.schemas.validation import (
     CalibrationConfirmSchema,
@@ -60,7 +61,7 @@ logger = logging.getLogger(__name__)
 # each set is built once per process rather than on every request.
 _PROFILE_UPDATE_FIELDS = {
     "name", "annual_salary", "filing_status_id", "state_code",
-    "pay_periods_per_year", "qualifying_children", "other_dependents",
+    "qualifying_children", "other_dependents",
     "additional_income", "additional_deductions", "extra_withholding",
 }
 _RAISE_UPDATE_FIELDS = {
@@ -158,21 +159,23 @@ def _regenerate_salary_transactions(profile):
     if not profile.template:
         return
 
-    scenario = get_baseline_scenario(current_user.id)
-    if not scenario:
+    # ONE read pass for the whole regeneration (plan step R7d-c-1): it pins the
+    # owner, the day and the baseline scenario, and its calendar serves both
+    # the paycheck recompute below and the regeneration's own resolution (plan
+    # step R4b-1).  The paycheck engine and the recurrence seam both read the
+    # CALENDAR (pay-calendar plan steps C2-f2d-3 and C2-f3c), so there is one
+    # value and no second read to reconcile it against.  It replaces a
+    # ``get_baseline_scenario`` beside a ``calendar_for`` -- the two facts a
+    # pass already pins.
+    ctx = BalanceContext.build(current_user.id)
+    if ctx.scenario is None:
         return
 
-    # One load of the owner's schedule serves both the paycheck recompute
-    # below and the regeneration's own resolution (plan step R4b-1).  The
-    # paycheck engine reads the schedule's DERIVED half (pay-calendar plan step
-    # C2-f2d-3); ``GenerationSchedule.__post_init__`` proves the two halves are
-    # the same periods in the same order, so this is the schedule the
-    # regeneration below resolves against and not a second read of it.
-    schedule = GenerationSchedule.for_user(current_user.id)
-    periods = schedule.calendar.saved()
+    schedule = GenerationSchedule.for_pass(ctx)
+    calendar = ctx.calendar()
 
     # Update the template's default_amount to the current net pay
-    current_period = schedule.calendar.period_containing(date.today())
+    current_period = calendar.period_containing(date.today())
     if current_period:
         # The configs are resolved for the PERIOD's own tax year, not the
         # clock's: a period straddling New Year belongs to the year it starts
@@ -182,7 +185,7 @@ def _regenerate_salary_transactions(profile):
             current_user.id, profile, current_period.start_date.year,
         )
         pay_breakdown = paycheck_calculator.calculate_paycheck(
-            profile, current_period, periods, tax_configs,
+            PayrollBasis(profile, calendar), current_period, tax_configs,
             calibration=profile.calibration,
         )
         # Through the amount's one write door (plan step X-au-a).  The profile
@@ -197,7 +200,7 @@ def _regenerate_salary_transactions(profile):
     # Regenerate transactions
     try:
         recurrence_engine.regenerate_for_template(
-            profile.template, schedule, scenario.id,
+            profile.template, schedule, ctx.scenario_id,
             effective_from=date.today(),
         )
     except RecurrenceConflict as e:
@@ -209,7 +212,7 @@ def _regenerate_salary_transactions(profile):
         # decide -- but a retained row means this pass declined to apply the
         # profile's change to a row carrying their own records, which is a
         # silent no-op unless it is said out loud.
-        flash_retained_notice(e)
+        flash_retained_notice(e.retained)
     except SQLAlchemyError:
         # Narrow catch (C-46 / F-145): logging hook that re-raises.
         # SQLAlchemy errors from the regenerate flush get the
@@ -249,19 +252,18 @@ def _compute_total_pre_tax(profile):
     mirroring the original inline behaviour in both handlers.
     """
     # A plain calendar read: this helper recomputes ONE paycheck and
-    # regenerates nothing, so it needs the period window the calculator reads
-    # as ``all_periods`` and none of the rest of a GenerationSchedule.  ONE
-    # derivation answers both questions (pay-calendar plan step C2-f2d-3).
+    # regenerates nothing, so it needs the calendar the engine prices against
+    # and none of the rest of a GenerationSchedule.  ONE derivation answers
+    # both questions (pay-calendar plan step C2-f2d-3).
     calendar = calendar_for(current_user.id)
     current_period = calendar.period_containing(date.today())
     if not current_period:
         return Decimal("0")
-    periods = calendar.saved()
     tax_configs = load_tax_configs_for_year(
         current_user.id, profile, current_period.start_date.year,
     )
     pay_breakdown = paycheck_calculator.calculate_paycheck(
-        profile, current_period, periods, tax_configs,
+        PayrollBasis(profile, calendar), current_period, tax_configs,
     )
     return pay_breakdown.deductions.total_pre_tax
 

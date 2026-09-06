@@ -102,7 +102,6 @@ _REF_TABLE_SEEDS = (
         {"name": "Received",  "is_settled": True,  "is_immutable": True,  "excludes_from_balance": False},
         {"name": "Credit",    "is_settled": False, "is_immutable": True,  "excludes_from_balance": True},
         {"name": "Cancelled", "is_settled": False, "is_immutable": True,  "excludes_from_balance": True},
-        {"name": "Settled",   "is_settled": True,  "is_immutable": True,  "excludes_from_balance": False},
     ]),
     ("FilingStatus", [
         "single", "married_jointly", "married_separately",
@@ -125,6 +124,17 @@ _REF_TABLE_SEEDS = (
     # DB resolves the enum before this idempotent reseed runs).  Same
     # idempotent upsert semantics as the other reference tables.
     ("LoanAnchorSource", ["origination", "user_trueup", "tracking_start"]),
+    # ``AccountOpeningSource`` -- the provenance tag carried by every row in
+    # ``budget.account_openings`` (plan step X-f3c-2a, ruling R-HE).
+    # ``user_declared`` is what ``account_service.create_account`` writes from
+    # the balance its owner typed; ``migration_derived`` marks the rows the
+    # X-f3c-2a migration computed for accounts that already existed, and two of
+    # those are already known wrong (N-275, N-379) -- which is why the split is
+    # a financial statement rather than a label.  Seeded HERE as well as in the
+    # migration for the reason the twin above is: the create_all path never
+    # runs a migration, and ``ref_cache.init()`` treats a missing row in an
+    # existing table as fatal.
+    ("AccountOpeningSource", ["user_declared", "migration_derived"]),
     # ``EmployerContributionType`` / ``CompoundingFrequency`` (#38) --
     # the two logic-bearing enums promoted off free-string columns to
     # ref tables so the growth/interest engines branch on IDs.  Names
@@ -236,9 +246,16 @@ _REF_TABLE_SEEDS = (
     # table present and the row absent and raises, refusing to boot.  A dict
     # entry rather than a bare name because this table carries a display label
     # the upload form reads.
+    # **The label names the FORMAT and not a column it may not have** (plan
+    # step ``bank_import:X-gc``).  It read "CSV with running balance" until
+    # then, on the one control that chooses a parser -- while the help text
+    # directly beneath it says the column is optional, and while SECU had
+    # stopped offering it altogether.  Migration ``a1f4c7e0b839`` updates the
+    # row an existing database already carries, because this seeder INSERTS
+    # missing rows and leaves present ones alone.
     ("StatementSource", [
         {"name": "secu_checking_csv",
-         "display_name": "SECU checking -- CSV with running balance"},
+         "display_name": "SECU checking -- CSV export"},
     ]),
     # The settlement record's discriminator (balance arc, plan step X-au-c3).
     # HOW a settled row's recorded figure is known: ``derived`` is the app's own
@@ -253,6 +270,42 @@ _REF_TABLE_SEEDS = (
     # posting and recurrence refs use.  Names match the enum ``.value`` strings
     # in ``app/enums.py`` exactly.
     ("SettlementBasis", ["derived", "corrected", "purchases"]),
+    # The settle DAY's discriminator (balance arc, plan step X-az).  HOW a
+    # settled row's ``settled_on`` is known: ``observed`` is a day a bank
+    # statement showed the money posting on, ``asserted`` is the day the owner
+    # asserted a BALANCE for -- an UPPER BOUND on the true posting day, not a
+    # point -- and ``entered`` is the app's own record with no bank document
+    # behind it.  A row that carries no settle day carries no basis, so there is
+    # deliberately no ``not_settled`` row here; each table's pairing CHECK is a
+    # BICONDITIONAL over the two NULL-nesses -- see
+    # :class:`app.enums.SettledDayBasisEnum`.  The migration ``c7d31f9a45e8``
+    # inline-seeds the identical rows so a freshly upgraded DB resolves the enum
+    # before this idempotent reseed runs -- the same dual-seed pattern the
+    # settlement-record, amount-model, posting and recurrence refs use.  Names
+    # match the enum ``.value`` strings in ``app/enums.py`` exactly.
+    ("SettledDayBasis", ["observed", "asserted", "entered"]),
+    # How strongly an imported statement's balance is EVIDENCED (bank_import
+    # arc, plan step X-f6e-1, ruling R-GF): ``file_chain`` is a file stating a
+    # balance beside every line, so it proves itself; ``corroborated`` is that
+    # figure agreeing with a balance the app already holds which is itself
+    # evidenced; ``uncorroborated`` is nothing confirming it.  It is the
+    # WEAKEST LINK in the chain behind the figure -- a day solved against an
+    # uncorroborated opening is uncorroborated -- which is what stops a
+    # re-upload of one file from checking an assumption against itself.
+    # An import that placed no figure on a day carries no evidence, so there
+    # is deliberately no ``unknown`` row here; the pairing CHECK is a
+    # BICONDITIONAL over the two NULL-nesses -- see
+    # :class:`app.enums.StatementBalanceEvidenceEnum`.  **Their ORDER here
+    # carries no meaning**: the ladder is stated once, on the enum, and an
+    # early draft that read it off these row ids was measured backwards.  The
+    # migration ``4c1f8b7e2a90`` inline-seeds the identical rows so a freshly
+    # upgraded DB resolves the enum before this idempotent reseed runs -- the
+    # same dual-seed pattern every ref above uses.  Names match the enum
+    # ``.value`` strings in ``app/enums.py`` exactly.
+    (
+        "StatementBalanceEvidence",
+        ["file_chain", "corroborated", "uncorroborated"],
+    ),
 )
 # pylint: enable=line-too-long
 # fmt: on
@@ -410,11 +463,21 @@ def _seed_other_ref_tables(
 ) -> None:
     """Insert any missing rows in the non-AccountType ref tables.
 
-    Driven by ``_REF_TABLE_SEEDS``.  Existing rows are left untouched
-    (these tables carry only ``name`` plus, for ``Status``, three
-    migration-managed runtime booleans -- so there is no in-place
-    metadata refresh as in step 2).  Dict entries carry the non-name
-    columns (``Status``); every other entry is name-only.
+    Driven by ``_REF_TABLE_SEEDS``.  Existing rows are left untouched, so
+    there is no in-place metadata refresh as in step 2.  Dict entries
+    carry the non-name columns -- ``Status``'s three migration-managed
+    runtime booleans, and ``StatementSource``'s ``display_name``, which
+    the statement upload form renders; every other entry is name-only.
+
+    **The consequence of "left untouched" is a real seam and it is
+    graded rather than trusted**: editing a non-name value here changes
+    what a FRESH bootstrap says and NOTHING about a database that
+    already holds the row, so the two halves are changed together (the
+    dual-seed pattern -- a migration for the databases that exist, this
+    file for the ones yet to be born) and
+    ``tests/test_services/test_statement_import/test_reads.py::
+    test_the_SEEDER_and_the_DATABASE_agree_about_that_label`` compares
+    them.  Migration ``a1f4c7e0b839`` is the worked example.
 
     Args:
         session: SQLAlchemy session bound to the target database.

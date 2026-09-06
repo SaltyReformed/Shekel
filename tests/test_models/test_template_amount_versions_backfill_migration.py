@@ -5,7 +5,7 @@ The migration creates ``budget.template_amount_versions`` and reconstructs each
 recurring definition's price history from the rows it already generated.  Which
 rows are trustworthy EVIDENCE is not a judgement call -- it falls out of what
 regeneration does to each one
-(``app/services/_recurrence_common.py::partition_regeneration_rows``):
+(``app/services/_recurrence_common.py::classify_maintain_work``):
 
   * an **overridden or soft-deleted** row is a CONFLICT the sweep leaves alone,
     so its amount is a per-row figure the user typed or a price that has gone
@@ -50,6 +50,7 @@ from tests._test_helpers import (
     load_migration_module,
     make_salary_profile,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 _MIGRATION = load_migration_module(
@@ -100,13 +101,14 @@ def _row(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     txn = Transaction(
         account_id=template.account_id,
         template_id=template.id,
+        user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=(seed_user["scenario"] if scenario is None else scenario).id,
         status_id=ref_cache.status_id(status),
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=Decimal(amount),
+        amount_ownership=AmountOwnership.own(Decimal(amount)),
         is_override=is_override,
         is_deleted=is_deleted,
         due_date=due_date,

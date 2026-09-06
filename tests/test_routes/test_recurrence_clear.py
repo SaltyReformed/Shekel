@@ -52,17 +52,25 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services import (
     account_service,
-    pay_period_service,
     recurrence_engine,
     recurring_transfer_query,
     transfer_recurrence,
     transfer_service,
 )
-from tests._test_helpers import create_loan_account, make_cadence_rule
+from tests._test_helpers import (
+    all_periods,
+    create_loan_account,
+    derived_span,
+    make_cadence_rule,
+    shadow_amount,
+)
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import state_own_amount
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -73,29 +81,40 @@ def _projected_id():
     return ref_cache.status_id(StatusEnum.PROJECTED)
 
 
-def _every_period_rule(seed_user):
-    """Build and flush an every-paycheck rule for the seed user."""
-    return make_cadence_rule(seed_user["user"].id, EVERY_PERIOD)
+def _every_period_rule(template):
+    """Author and flush an every-paycheck rule ONTO *template*.
+
+    It takes the owning definition since plan step R-F6: the owning FK is on
+    ``budget.recurrence_rules``, so a rule cannot be written before there is a
+    definition for it to belong to.
+    """
+    return make_cadence_rule(template, EVERY_PERIOD)
 
 
-def _recurring_txn_template(seed_user, rule=None):
-    """Create an expense template, optionally recurring, and generate its rows."""
+def _recurring_txn_template(seed_user, recurs=True):
+    """Create an expense template, optionally recurring, and generate its rows.
+
+    It AUTHORS the cadence rather than taking a pre-built rule (plan step
+    R-F6); a caller that needs the rule reads ``template.recurrence_rule``.
+    """
     expense = db.session.query(TransactionType).filter_by(name="Expense").one()
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=expense.id,
-        recurrence_rule_id=rule.id if rule is not None else None,
         name="Streaming",
         default_amount=Decimal("15.99"),
     )
     db.session.add(template)
     db.session.flush()
+    rule = _every_period_rule(template) if recurs else None
     if rule is not None:
         recurrence_engine.generate_for_template(
             template,
-            GenerationSchedule.for_periods(template.user_id, pay_period_service.get_all_periods(seed_user["user"].id)),
+            GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
+            ),
             seed_user["scenario"].id,
         )
     db.session.commit()
@@ -118,23 +137,29 @@ def _savings_account(seed_user):
     return acct
 
 
-def _recurring_transfer_template(seed_user, savings, rule=None):
-    """Create a transfer template, optionally recurring, and generate its rows."""
+def _recurring_transfer_template(seed_user, savings, recurs=True):
+    """Create a transfer template, optionally recurring, and generate its rows.
+
+    Authors the cadence itself, for the reason
+    :func:`_recurring_txn_template` gives.
+    """
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=savings.id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id if rule is not None else None,
         name="Sweep to savings",
         default_amount=Decimal("50.00"),
     )
     db.session.add(template)
     db.session.flush()
+    rule = _every_period_rule(template) if recurs else None
     if rule is not None:
         transfer_recurrence.generate_for_template(
             template,
-            GenerationSchedule.for_periods(template.user_id, pay_period_service.get_all_periods(seed_user["user"].id)),
+            GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
+            ),
             seed_user["scenario"].id,
         )
     db.session.commit()
@@ -143,7 +168,7 @@ def _recurring_transfer_template(seed_user, savings, rule=None):
 
 def _period_indices(rows, periods):
     """Return the sorted period indices the given rows occupy."""
-    by_id = {p.id: p.period_index for p in periods}
+    by_id = {p.id: derived_span(p).period_index for p in periods}
     return sorted(by_id[row.pay_period_id] for row in rows)
 
 
@@ -164,9 +189,8 @@ class TestClearingATransactionTemplatesRecurrence:
         swept and 0-3 survive.  Nothing is regenerated, because the rule the
         rows came from no longer exists.
         """
-        rule = _every_period_rule(seed_user)
-        rule_id = rule.id
-        template = _recurring_txn_template(seed_user, rule)
+        template = _recurring_txn_template(seed_user)
+        rule_id = template.recurrence_rule.id
         rows = db.session.query(Transaction).filter_by(
             template_id=template.id,
         ).all()
@@ -181,7 +205,7 @@ class TestClearingATransactionTemplatesRecurrence:
 
         db.session.expire_all()
         template = db.session.get(TransactionTemplate, template.id)
-        assert template.recurrence_rule_id is None
+        assert template.recurrence_rule is None
         # Detached is not enough -- the row itself must be gone, or the edit
         # form becomes a second producer of finding F-6's orphaned rules.
         assert db.session.get(RecurrenceRule, rule_id) is None
@@ -201,15 +225,14 @@ class TestClearingATransactionTemplatesRecurrence:
         hand stays at its own amount while the untouched auto-generated rows
         around it are removed.
         """
-        rule = _every_period_rule(seed_user)
-        template = _recurring_txn_template(seed_user, rule)
+        template = _recurring_txn_template(seed_user)
         overridden = (
             db.session.query(Transaction)
             .filter_by(template_id=template.id, pay_period_id=seed_periods[6].id)
             .one()
         )
         overridden.is_override = True
-        overridden.estimated_amount = Decimal("17.99")
+        state_own_amount(overridden, Decimal("17.99"))
         overridden_id = overridden.id
         db.session.commit()
 
@@ -241,8 +264,7 @@ class TestClearingATransactionTemplatesRecurrence:
         periods 5 and 7 -- past ``effective_from`` -- so the sweep has to
         decline them rather than merely not reach them.
         """
-        rule = _every_period_rule(seed_user)
-        template = _recurring_txn_template(seed_user, rule)
+        template = _recurring_txn_template(seed_user)
         settled = (
             db.session.query(Transaction)
             .filter_by(template_id=template.id, pay_period_id=seed_periods[5].id)
@@ -290,15 +312,14 @@ class TestClearingATransactionTemplatesRecurrence:
         $99.99" over rows the same request was deleting.  The edit must instead
         complete, sweeping the untouched rows and leaving the override alone.
         """
-        rule = _every_period_rule(seed_user)
-        template = _recurring_txn_template(seed_user, rule)
+        template = _recurring_txn_template(seed_user)
         overridden = (
             db.session.query(Transaction)
             .filter_by(template_id=template.id, pay_period_id=seed_periods[6].id)
             .one()
         )
         overridden.is_override = True
-        overridden.estimated_amount = Decimal("17.99")
+        state_own_amount(overridden, Decimal("17.99"))
         overridden_id = overridden.id
         db.session.commit()
 
@@ -313,7 +334,7 @@ class TestClearingATransactionTemplatesRecurrence:
 
         db.session.expire_all()
         template = db.session.get(TransactionTemplate, template.id)
-        assert template.recurrence_rule_id is None
+        assert template.recurrence_rule is None
         kept = db.session.get(Transaction, overridden_id)
         assert kept.estimated_amount == Decimal("17.99")
         assert kept.is_override is True
@@ -330,9 +351,8 @@ class TestClearingATransactionTemplatesRecurrence:
         The clear path DELETES a row, so the security-response rule is checked
         on it directly rather than assumed from the shared ``get_or_404``.
         """
-        rule = _every_period_rule(seed_user)
-        rule_id = rule.id
-        template = _recurring_txn_template(seed_user, rule)
+        template = _recurring_txn_template(seed_user)
+        rule_id = template.recurrence_rule.id
 
         resp = second_auth_client.post(f"/templates/{template.id}", data={
             "recurrence_unit": "",
@@ -344,7 +364,7 @@ class TestClearingATransactionTemplatesRecurrence:
         assert db.session.get(RecurrenceRule, rule_id) is not None
         assert db.session.get(
             TransactionTemplate, template.id,
-        ).recurrence_rule_id == rule_id
+        ).recurrence_rule.id == rule_id
 
     def test_an_edit_that_submits_no_pattern_at_all_leaves_the_rule(
         self, app, auth_client, seed_user, seed_periods,
@@ -357,9 +377,8 @@ class TestClearingATransactionTemplatesRecurrence:
         a present ``None`` -- means "stop recurring".  Collapsing the two would
         make every partial update silently delete the template's cadence.
         """
-        rule = _every_period_rule(seed_user)
-        rule_id = rule.id
-        template = _recurring_txn_template(seed_user, rule)
+        template = _recurring_txn_template(seed_user)
+        rule_id = template.recurrence_rule.id
 
         resp = auth_client.post(f"/templates/{template.id}", data={
             "default_amount": "19.99",
@@ -370,7 +389,7 @@ class TestClearingATransactionTemplatesRecurrence:
         db.session.expire_all()
         template = db.session.get(TransactionTemplate, template.id)
         assert template.default_amount == Decimal("19.99")
-        assert template.recurrence_rule_id == rule_id
+        assert template.recurrence_rule.id == rule_id
         assert db.session.get(RecurrenceRule, rule_id) is not None
         rows = db.session.query(Transaction).filter_by(
             template_id=template.id,
@@ -391,18 +410,19 @@ class TestATemplateThatNeverRecurredIsNotSwept:
         one-time transfer's single Transfer is exactly that shape -- and an
         unrelated edit must not touch them.
         """
-        template = _recurring_txn_template(seed_user, rule=None)
-        assert template.recurrence_rule_id is None
+        template = _recurring_txn_template(seed_user, recurs=False)
+        assert template.recurrence_rule is None
         manual = Transaction(
             account_id=seed_user["account"].id,
             template_id=template.id,
+            user_id=seed_periods[6].user_id,
             pay_period_id=seed_periods[6].id,
             scenario_id=seed_user["scenario"].id,
             status_id=_projected_id(),
             name="Streaming",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=template.transaction_type_id,
-            estimated_amount=Decimal("15.99"),
+            amount_ownership=AmountOwnership.own(Decimal("15.99")),
             is_override=False,
             is_deleted=False,
             due_date=seed_periods[6].start_date,
@@ -444,9 +464,8 @@ class TestClearingATransferTemplatesRecurrence:
         (transfer invariant 1).
         """
         savings = _savings_account(seed_user)
-        rule = _every_period_rule(seed_user)
-        rule_id = rule.id
-        template = _recurring_transfer_template(seed_user, savings, rule)
+        template = _recurring_transfer_template(seed_user, savings)
+        rule_id = template.recurrence_rule.id
         rows = db.session.query(Transfer).filter_by(
             transfer_template_id=template.id,
         ).all()
@@ -461,7 +480,7 @@ class TestClearingATransferTemplatesRecurrence:
 
         db.session.expire_all()
         template = db.session.get(TransferTemplate, template.id)
-        assert template.recurrence_rule_id is None
+        assert template.recurrence_rule is None
         assert db.session.get(RecurrenceRule, rule_id) is None
 
         survivors = db.session.query(Transfer).filter_by(
@@ -481,7 +500,7 @@ class TestClearingATransferTemplatesRecurrence:
             ).all()
             assert len(pair) == 2
             assert {t.transaction_type_id for t in pair} == {income_id, expense_id}
-            assert all(t.estimated_amount == xfer.amount for t in pair)
+            assert all(shadow_amount(t) == xfer.amount for t in pair)
             assert all(t.pay_period_id == xfer.pay_period_id for t in pair)
         # 4 survivors x 2 legs; the 6 swept transfers took 12 shadows with them.
         assert db.session.query(Transaction).filter(
@@ -494,7 +513,7 @@ class TestClearingATransferTemplatesRecurrence:
         """A loan payment's cadence cannot be cleared, and the reason is money.
 
         ``recurring_transfer_query.active_recurring_transfer_template`` finds a
-        loan's payment by ``recurrence_rule_id IS NOT NULL``, and the balance
+        loan's payment by whether a rule names it, and the balance
         seam threads that template's ``extra_principal`` into every projected
         loan trajectory.  Clearing the rule nulls the column, so the standing
         overpayment silently drops to zero and the projected payoff moves --
@@ -502,14 +521,11 @@ class TestClearingATransferTemplatesRecurrence:
         before the refusal: 250.00 -> 0.00 with the settings row unchanged.
         """
         loan = create_loan_account(seed_user, db.session)
-        rule = _every_period_rule(seed_user)
-        rule_id = rule.id
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=loan.id,
             category_id=seed_user["categories"]["Rent"].id,
-            recurrence_rule_id=rule.id,
             name="Mortgage payment",
             default_amount=Decimal("1000.00"),
         )
@@ -517,6 +533,9 @@ class TestClearingATransferTemplatesRecurrence:
             extra_principal=Decimal("250.00"),
         )
         db.session.add(template)
+        db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule_id = _every_period_rule(template).id
         db.session.commit()
         extra_before = recurring_transfer_query.loan_standing_extra(
             loan.id, seed_user["user"].id,
@@ -534,7 +553,7 @@ class TestClearingATransferTemplatesRecurrence:
         db.session.expire_all()
         assert db.session.get(
             TransferTemplate, template.id,
-        ).recurrence_rule_id == rule_id
+        ).recurrence_rule.id == rule_id
         assert db.session.get(RecurrenceRule, rule_id) is not None
         assert recurring_transfer_query.loan_standing_extra(
             loan.id, seed_user["user"].id,
@@ -552,7 +571,7 @@ class TestClearingATransferTemplatesRecurrence:
         through the create form, which is what now produces this shape.
         """
         savings = _savings_account(seed_user)
-        template = _recurring_transfer_template(seed_user, savings, rule=None)
+        template = _recurring_transfer_template(seed_user, savings, recurs=False)
         xfer = transfer_service.create_transfer(
             transfer_service.TransferSpec(
                 user_id=seed_user["user"].id,

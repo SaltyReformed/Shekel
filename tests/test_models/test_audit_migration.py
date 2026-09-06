@@ -22,9 +22,12 @@ environment skips them cleanly instead of failing.
 # pylint: disable=redefined-outer-name  -- pytest fixture pattern
 from __future__ import annotations
 
+import os
+import time
 from datetime import date
 from decimal import Decimal
 
+import psycopg2
 import pytest
 from sqlalchemy.exc import ProgrammingError
 
@@ -48,6 +51,7 @@ from tests._test_helpers import (
     ledger_accounts_for_account,
     make_balanced_entry,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 # Module-level xdist_group marker pins every test in this module to
@@ -68,6 +72,102 @@ from tests._test_helpers import (
 # Pinning the entire module sidesteps that race; other test files
 # continue to fan out across workers normally.
 pytestmark = pytest.mark.xdist_group("shekel_app_role")
+
+#: Where ``conftest`` connects to create and drop each worker's database,
+#: and therefore the one place every test process on this postmaster
+#: shares.  Same default and same environment variable, so the lock cannot
+#: end up in a different cluster from the databases it is guarding.
+_DEFAULT_ADMIN_URL = "postgresql:///postgres"
+
+
+#: The advisory-lock key that serialises the ``shekel_app`` role ACROSS
+#: PROCESSES.  Any 64-bit constant works; this one is arbitrary and stable.
+#:
+#: **``xdist_group`` above is not enough, and the gap is a whole class of
+#: shared state the project's isolation knobs cannot reach** (measured
+#: 2026-08-22).  That marker pins this module to one worker WITHIN a run.  A
+#: PostgreSQL role is a CLUSTER object, so it is shared by every database on the
+#: postmaster -- and ``TEST_DB_PREFIX``, which is how two checkouts isolate
+#: themselves, renames DATABASES.  Two suites running side by side therefore
+#: tear this role out from under each other whatever prefix they use.
+#:
+#: Reproduced deterministically: two prefixed runs of this one module in
+#: parallel produce 2-4 setup ERRORS on each side, every one an
+#: ``@shekel_app_role`` fixture.  In a full-suite run it surfaces as a single
+#: unexplained ``ERROR`` that passes on re-run alone -- which reads exactly like
+#: a code regression and cost a session an hour.  It reproduces identically on
+#: commits either side of plan step X-az, so it is not that step's.
+#:
+#: **The role may not simply be renamed per process**, and that is why the lock
+#: is the fix rather than a suffix: ``app.posting_infrastructure`` names
+#: ``shekel_app`` as a LITERAL in the GRANT / REVOKE SQL the fixture itself runs
+#: (``apply_ledger_append_only_privileges``), so a renamed role would make the
+#: app's own posture SQL a silent no-op and every privilege assertion below
+#: would grade nothing.  The resource is cluster-scoped, so the mutex has to be.
+_ROLE_LOCK_KEY = 782_301_559_004_115
+
+
+def _take_the_role_lock(timeout_seconds: int = 30):
+    """Take the cross-process lock guarding the ``shekel_app`` role.
+
+    **On the ADMIN database, and that is the whole mechanism** (measured
+    2026-08-22, twice).  Two earlier shapes did not work and each was wrong in
+    an instructive way:
+
+    * a lock taken through ``db.session`` is lost at the fixture's first
+      ``commit()``, because a session-level advisory lock is held by a
+      CONNECTION and the session returns its connection to the pool there;
+    * a lock taken on the test's OWN database excludes nobody, because
+      **PostgreSQL advisory locks are namespaced per DATABASE**.  Two suites
+      isolated by ``TEST_DB_PREFIX`` sit in different databases by
+      construction, so they take the same key in two different lock spaces and
+      both win.
+
+    The role is a CLUSTER object, so the mutex has to live somewhere every
+    process on the postmaster shares.  ``TEST_ADMIN_DATABASE_URL`` is that
+    place -- it is the connection ``conftest`` already uses to create and drop
+    each worker's database, so it is guaranteed reachable wherever the suite
+    runs.  A dedicated connection held for the fixture's whole span makes the
+    create-use-drop sequence atomic; closing it releases the lock, so no unlock
+    statement can be skipped by an exception.
+
+    **It polls with a deadline rather than blocking**, so a peer that holds the
+    lock produces a sentence naming the cause instead of the suite's 30-second
+    per-test timeout naming nothing.
+
+    Args:
+        timeout_seconds: How long to wait before giving up.
+
+    Returns:
+        The open ``psycopg2`` connection holding the lock.  The caller MUST
+        close it.
+
+    Raises:
+        RuntimeError: When another process on this postmaster still holds it.
+    """
+    connection = psycopg2.connect(
+        os.environ.get("TEST_ADMIN_DATABASE_URL", _DEFAULT_ADMIN_URL),
+    )
+    connection.autocommit = True
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_try_advisory_lock(%s)", (_ROLE_LOCK_KEY,),
+            )
+            if cursor.fetchone()[0]:
+                return connection
+        if time.monotonic() >= deadline:
+            connection.close()
+            raise RuntimeError(
+                "another test process on this postmaster holds the "
+                "cluster-wide 'shekel_app' role. A PostgreSQL role is a "
+                "CLUSTER object, so TEST_DB_PREFIX cannot isolate it and two "
+                "suites running side by side drop it out from under each "
+                "other. Wait for the peer run to finish, or run this module "
+                "alone."
+            )
+        time.sleep(0.2)
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +408,7 @@ class TestUserIdCapture:
         )
 
         txn = Transaction(
+            user_id=seed_periods[0].user_id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
@@ -315,7 +416,7 @@ class TestUserIdCapture:
             name="UID Capture Test",
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=expense.id,
-            estimated_amount=Decimal("12.00"),
+            amount_ownership=AmountOwnership.own(Decimal("12.00")),
         )
         db.session.add(txn)
         db.session.flush()
@@ -349,6 +450,11 @@ def shekel_app_role(db):
             "Test requires CREATEROLE/SUPERUSER on the test database "
             "user.  Skipped automatically on hardened CI environments."
         )
+
+    # CLUSTER-WIDE, so the mutex is too (see :data:`_ROLE_LOCK_KEY`).  Taken
+    # before the DROP below, which is the statement that takes a peer's role
+    # away mid-test, and released only after this fixture's own DROP.
+    lock_connection = _take_the_role_lock()
 
     role_name = "shekel_app"
     password = "test-shekel-app-password"
@@ -428,6 +534,12 @@ def shekel_app_role(db):
         db.session.execute(db.text(f"DROP OWNED BY {role_name} CASCADE"))
         db.session.execute(db.text(f"DROP ROLE IF EXISTS {role_name}"))
         db.session.commit()
+        # LAST, and after the commit: the lock is what makes the whole
+        # create-use-drop span atomic against another process, so releasing it
+        # before the role is actually gone would reopen the window it closes.
+        # Closing releases it, which is why there is no unlock statement to
+        # skip if anything above raises.
+        lock_connection.close()
 
 
 class TestLeastPrivilegeRole:
@@ -740,8 +852,6 @@ class TestLedgerAppendOnlyPrivileges:
             fresh_period = PayPeriod(
                 user_id=seed_user["user"].id,
                 start_date=date(2027, 6, 4),
-                end_date=date(2027, 6, 17),
-                period_index=1,
             )
             db.session.add(fresh_period)
             db.session.flush()

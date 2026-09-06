@@ -4,10 +4,13 @@
 
    Expected context:
      category            -- Category object
-     period              -- PayPeriod object
+     period_id           -- int; budget.pay_periods.id of this column's paycheck
      account_id          -- Account ID for the viewed account
      scenario_id         -- baseline scenario ID
      transaction_type_id -- income or expense type ID
+
+   It took the whole `period` object until plan step C2-f3e -- see
+   `_transaction_quick_create.html`, its sibling, for the whole argument.
 #}
 <div class="txn-full-edit-content">
   <div class="d-flex justify-content-between align-items-center mb-2">
@@ -25,7 +28,7 @@
         hx-disabled-elt="find button[type=submit]">
     <input type="hidden" name="account_id" value="{{ account_id }}">
     <input type="hidden" name="category_id" value="{{ category.id }}">
-    <input type="hidden" name="pay_period_id" value="{{ period.id }}">
+    <input type="hidden" name="pay_period_id" value="{{ period_id }}">
     <input type="hidden" name="scenario_id" value="{{ scenario_id }}">
     <input type="hidden" name="transaction_type_id" value="{{ transaction_type_id }}">
 

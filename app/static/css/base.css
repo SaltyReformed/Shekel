@@ -187,6 +187,16 @@
   --bs-table-color: var(--shekel-header-text);
 }
 
+/* The shared confirmation dialog's body carries a DISCLOSURE, and app.js
+   writes it with textContent so its sentences arrive as real newlines.  HTML
+   would collapse those, running four sentences into a wall; pre-line keeps the
+   breaks while still wrapping each sentence normally.  Plan step
+   bank_import:X-gb, where the grid's Delete control began naming the bank
+   lines a delete puts back among the unexplained. */
+.confirm-modal-body {
+  white-space: pre-line;
+}
+
 [data-bs-theme="dark"] .modal-content {
   background-color: var(--shekel-surface);
   border-color: var(--shekel-border-subtle);

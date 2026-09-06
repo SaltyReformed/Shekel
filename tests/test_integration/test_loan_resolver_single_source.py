@@ -46,6 +46,7 @@ from app.services.loan_resolver._periods import _replay_from_anchor
 from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    amount_basis_for_scenario,
     create_loan_account,
     create_settled_transfer,
     loan_params_for,
@@ -159,6 +160,12 @@ def _settle_one_payment(seed_user, loan_account, period, auth_client):
         seed_user, db.session, seed_user["account"], loan_account, period,
         amount=FIXED_PI, settled_on=period.start_date,
     )
+    # COMMITTED before the surfaces are read (plan step balance:X-i3).  The
+    # whole point of this test is that the loan CARD -- rendered by a request
+    # -- reports the same balance the replay does, and a request cannot see a
+    # settle this fixture never committed.  ``expire_all`` alone dropped the
+    # identity map without making the rows visible to anyone else.
+    db.session.commit()
     db.session.expire_all()
 
 
@@ -268,7 +275,8 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
         )
 
         ctx = loan_payment_service.load_loan_context(
-            account.id, seed_user["scenario"].id, loan_params,
+            account.id, amount_basis_for_scenario(seed_user["scenario"].id),
+            loan_params,
         )
         replayed = _replay_window(account.id, loan_params, ctx)
         assert replayed == FIXED_PRINCIPAL, (
@@ -316,7 +324,7 @@ def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
 
         scenario_id = seed_user["scenario"].id
         ctx = loan_payment_service.load_loan_context(
-            account.id, scenario_id, loan_params,
+            account.id, amount_basis_for_scenario(scenario_id), loan_params,
         )
         assert _replay_window(
             account.id, loan_params, ctx,
@@ -375,7 +383,8 @@ def test_arm_monthly_payment_card_equals_resolver_constant(  # C15-2
         )
 
         ctx = loan_payment_service.load_loan_context(
-            account.id, seed_user["scenario"].id, loan_params,
+            account.id, amount_basis_for_scenario(seed_user["scenario"].id),
+            loan_params,
         )
         resolver_state = loan_resolver.resolve_loan(
             loan_resolver.LoanInputs(

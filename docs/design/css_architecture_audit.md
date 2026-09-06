@@ -87,8 +87,8 @@ Classification of every selector family by grep over templates + JS (2026-06-11)
   `.canvas-max-h-*`, `.mw-px-*`, `.w-px-*`, `.w-pct-40`, `.min-w-px-60`.
 - **Shared (every page via base.html):** Steel Ink token blocks + themed Bootstrap skins,
   `#theme-toggle`, `.font-mono`, body font, `.logo-img`, `.text-accent`, focus-ring rules,
-  `.skip-link`, `.htmx-indicator`/`.htmx-loading` (CSP workaround for HTMX's blocked injected styles
-  -- must stay on every page), `.toast-container`, `.breadcrumb`, offcanvas drawer rules,
+  `.skip-link`, `.htmx-indicator`/`.htmx-loading` (CSP workaround for HTMX's blocked injected
+  styles -- must stay on every page), `.toast-container`, `.breadcrumb`, offcanvas drawer rules,
   `.welcome-banner`, pulse-warning animation.
 
 Note: JS does NOT track screens -- base.html loads `app.js`, `grid_edit.js`, `command_palette.js`,

@@ -18,6 +18,7 @@ from app.services.balance_at import BalanceContext
 from ._cards import (
     _compute_contribution_prompt,
     _compute_default_horizon,
+    _compute_employer_funding,
     _compute_employer_per_period,
     _compute_limit_info,
 )
@@ -73,7 +74,7 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
         "anchor_as_of": ctx.anchor_as_of,
         "periodic_contribution": ctx.inputs.periodic_contribution,
         "employer_contribution_per_period": _compute_employer_per_period(
-            ctx.inputs,
+            ctx.inputs, ctx.feed, ctx.current_period,
         ),
         "employer_params": ctx.inputs.employer_params,
         "limit_info": _compute_limit_info(params, ctx.inputs.ytd_contributions),
@@ -82,6 +83,9 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
         "growth_since_anchor_contributed": growth[1] if growth else None,
         **chart_context,  # projection + history + Today/retirement markers (C2)
         **_compute_contribution_prompt(user_id, account, ctx),  # + funding, hints
+        # R-SAL5's selector options, and the notice for a configured employer
+        # contribution whose funding job is not set (salary:R14-b).
+        **_compute_employer_funding(ctx),
     }
 
 

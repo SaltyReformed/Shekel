@@ -1,7 +1,9 @@
 """Shekel Budget App -- the cash ledger WALK (plan step X-a).
 
 Grades ``app.services.cash_ledger.walk_cash_ledger`` and its visible-day re-key
-``dated_deltas`` -- the leaf a cash account's balance will fold over (step X-b)
+``dated_deltas``, and the fold-side assertion replay that left it at plan step
+X-f3c-1 (``balance_at._assertions.assertion_corrections``) -- the facts a cash
+account's balance folds over (step X-b)
 and the posting writer will project (step X-d).  The walk is ADDITIVE at X-a: no
 production surface reads it yet, so nothing here can move a shipped balance.
 
@@ -26,7 +28,6 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.account import AccountAnchorHistory
 from app.services.cash_ledger import (
     ReconciledThrough,
     cash_anchor_facts,
@@ -35,23 +36,30 @@ from app.services.cash_ledger import (
     settled_cash_facts,
     walk_cash_ledger,
 )
-from app.services.balance_at._cash_fold import fold_cash_balances
+from app.services.balance_at._assertions import assertion_corrections
+from app.services.balance_at._cash_fold import assembled_fold, balances_at
 from app.services import transaction_service
 from app.services.row_valuation import purchases_total, settled_figure
 from app.enums import StatusEnum
-from app.exceptions import UndatedSettleError
+from app.exceptions import UndatedSettleError, ValidationError
 from app.utils.dates import DISPLAY_TIMEZONE, display_today, to_display_date
 from tests._test_helpers import (
-    settlement_if_settling,
+    open_books_before_the_first_assertion,
+    account_never_asserted,
     add_txn,
+    an_entered_day,
     append_balance_assertion,
-    basis_for,
+    read_pass,
     create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
     freeze_today,
-    restamp_opening_assertion,
+    reassert_balance_on,
+    restate_account_opening,
+    settle_day_columns,
 )
+from app.services.settle_day import record_settle_day
+from app.models.amount_ownership import AmountOwnership
 
 
 def _instant(year, month, day, hour=0, minute=0, second=0):
@@ -76,12 +84,44 @@ def _instant(year, month, day, hour=0, minute=0, second=0):
     ).astimezone(timezone.utc)
 
 
-def _restamp_opening(account, at):
-    """Pin the factory-written opening assertion's instant (shared builder)."""
-    return restamp_opening_assertion(db.session, account, at)
+def _opened_at(account, at, books_open_on=None):
+    """Open the account's books and assert its balance on *at*'s day (builder).
+
+    **TWO acts, and they are spelled as two** (plan step X-f3c-2c).  It used to
+    be one, because ``restamp_opening_assertion`` re-dated the stored
+    origination assertion and restated the opening as a side effect.  An
+    assertion is append-only, so a fixture has the pair a production owner has:
+    say what the balance was on a day, and say when the books opened.
+
+    **The books move BACKWARD BY DEFAULT, and the first draft of this helper
+    moved them forward unconditionally.**  It restated them to the day before
+    *at* whatever else stood, which shoved them two years FORWARD past the
+    seeded account's own origination at ~25 sites that had asked for no such
+    thing.  Found by the adversarial review of this step.
+
+    Args:
+        account: The account to open.
+        at: The aware-UTC instant of the assertion.
+        books_open_on: The civil day the books open.  ``None``, the default,
+            bounds them before every day a row could land on
+            (``open_books_before_the_first_assertion``), which is
+            backward-only.  A case whose SUBJECT is the books' own day names
+            it -- the two below that grade a movement dated on or before them
+            do, because the day is the thing under test rather than a
+            by-product.
+
+    Returns:
+        The appended assertion row.
+    """
+    row = reassert_balance_on(db.session, account, at)
+    if books_open_on is None:
+        open_books_before_the_first_assertion(db.session, account)
+    else:
+        restate_account_opening(db.session, account, books_open_on)
+    return row
 
 
-def _assert_balance(account, period, balance, at, recorded_at=None):
+def _assert_balance(account, balance, at, recorded_at=None):
     """Append one balance ASSERTION (true-up) at a pinned instant (shared).
 
     *recorded_at* separates the two clocks: *at* supplies the BUSINESS day,
@@ -89,34 +129,68 @@ def _assert_balance(account, period, balance, at, recorded_at=None):
     exercising a back-dated assertion.
     """
     return append_balance_assertion(
-        db.session, account, period, balance, at, recorded_at=recorded_at,
+        db.session, account, balance, at, recorded_at=recorded_at,
     )
 
 
 def _corrections(account, scenario):
-    """Return ``{asserted_at: (balance_before, delta)}`` for readable asserts."""
+    """Return ``{asserted_at: (balance_before, delta)}`` for readable asserts.
+
+    Through ``balance_at._assertions.assertion_corrections``, which owns the
+    RESET replay since plan step X-f3c-1 -- the walk states the facts and the
+    fold states what an assertion does to a running total (ruling R-FO gives
+    the modelled kinds one answer and plan step X-f3c gives the PLAIN ones
+    another, so a kind-blind walk could state neither).  Every figure below is
+    unchanged by that move, which is what makes it a move.
+    """
     walk = walk_cash_ledger(account.id, scenario.id)
     return {
         correction.anchor.asserted_at: (
             correction.balance_before,
             correction.anchor.anchor_balance - correction.balance_before,
         )
-        for correction in walk.anchor_corrections
+        for correction in assertion_corrections(walk)
     }
 
 
 def _running_balance(account, scenario):
-    """Return the walk's final running balance by summing :func:`dated_deltas`.
+    """Return the replay's final running balance from the fold's own three tiers.
 
-    :class:`TestDatedDeltasReconstructTheWalk` proves this equals the replay's
-    own terminal balance by reconstructing that balance INDEPENDENTLY from
-    ``anchor_corrections`` + the post-assertion ``source_facts``, so this helper
+    The account's stored OPENING EQUITY, plus ``dated_deltas`` (the SOURCE
+    facts), plus the assertion corrections -- which is exactly what
+    ``_cash_fold._actual_steps`` merges.  It was ``dated_deltas`` alone until
+    plan step X-f3c-1, when the assertion steps left the leaf because applying
+    them is a policy an account's KIND decides (see :func:`_corrections`).
+
+    **The SEED term arrived at plan step X-f3c-2a and its absence before then
+    was not an omission**: the fold seeded at the opening's own correction and
+    booked an equal-and-opposite compensator, so the two cancelled and the
+    total equalled the zero-seeded walk.  With opening equity a stored fact
+    there is no compensator, so the seed is a real term and a reconstruction
+    that drops it is short by the whole of it.
+
+    **This total is INVARIANT in the opening equity, and saying so is the
+    honest version of a claim an earlier draft got wrong.**  The first
+    assertion's delta is ``A - E - cleared``, so the leading ``E`` cancels
+    against the ``-E`` inside it: perturb the stored equity by any amount and
+    every figure here is unchanged.  That is a real property of the REPLAY --
+    an assertion resets the total, so what preceded it cannot survive -- and it
+    is exactly why "the figures did not move" is NOT evidence that this step
+    moved no money.  A control on the SEED has to read a date BEFORE the first
+    assertion, which is what ``test_cash_fold.py``'s
+    :class:`TestTheOpeningEquityIsTheSeed` does.
+
+    :class:`TestTheStepsReconstructTheReplay` proves this equals the replay's
+    own terminal balance by reconstructing that balance INDEPENDENTLY from the
+    last assertion FACT + the post-assertion ``source_facts``, so this helper
     is a convenience rather than the only statement of the total.
     """
-    return sum(
-        (delta for _day, delta in dated_deltas(
-            walk_cash_ledger(account.id, scenario.id),
-        )),
+    walk = walk_cash_ledger(account.id, scenario.id)
+    return walk.opening.opening_equity + sum(
+        (delta for _day, delta in dated_deltas(walk)),
+        Decimal("0.00"),
+    ) + sum(
+        (correction.delta for correction in assertion_corrections(walk)),
         Decimal("0.00"),
     )
 
@@ -124,8 +198,9 @@ def _running_balance(account, scenario):
 def _fold_at(account, scenario, day):
     """Return the balance a SCREEN renders for *account* on *day*.
 
-    The real producer (``balance_at._cash_fold.fold_cash_balances``), not a
-    hand-rolled prefix sum, because the property under test is what a user sees
+    The real producer (the pass's own ``assembled_fold``, sampled by
+    ``balances_at``), not a hand-rolled prefix sum, because the property under
+    test is what a user sees
     and a replay written beside the thing it grades can agree with a wrong
     answer.
 
@@ -146,7 +221,8 @@ def _fold_at(account, scenario, day):
     Returns:
         The folded balance as a ``Decimal``.
     """
-    return fold_cash_balances(account, basis_for(account, scenario), day, [day])[day]
+    ctx = read_pass(account, scenario, day)
+    return balances_at(assembled_fold(account, ctx), [day])[day]
 
 
 def _replay_terminal_balance(account, scenario):
@@ -155,18 +231,18 @@ def _replay_terminal_balance(account, scenario):
     The independent reference: take the LAST assertion's asserted balance and
     add every source dated strictly AFTER the day that assertion closes.  That
     is the replay's definition (ruling R-DH (a)) read off
-    :class:`CashLedgerWalk`'s two lists directly, so comparing it against the
-    summed dated deltas is a real cross-check rather than a producer graded on
-    itself.
+    :class:`CashLedgerWalk`'s two FACT lists directly -- no correction, no step
+    list -- so comparing it against the summed steps is a real cross-check
+    rather than a producer graded on itself.
 
     The comparison is ``>`` on the civil DAY, not on an instant: a source
     sharing the assertion's day is inside the closing balance, so only a
     strictly later day rides on top.
     """
     walk = walk_cash_ledger(account.id, scenario.id)
-    if not walk.anchor_corrections:
+    if not walk.anchor_facts:
         return Decimal("0.00")
-    last = walk.anchor_corrections[-1].anchor
+    last = walk.anchor_facts[-1]
     return last.anchor_balance + sum(
         (
             fact.delta for fact in walk.source_facts
@@ -260,9 +336,9 @@ class TestTheClosingBalancePartition:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[6]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         _assert_balance(
-            account, period, Decimal("2932.41"),
+            account, Decimal("2932.41"),
             _instant(2026, 7, 24, 12, 57, 8),
         )
         # Both were RECORDED minutes after the assertion and both carry its own
@@ -289,9 +365,9 @@ class TestTheClosingBalancePartition:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[6]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         asserted_at = _instant(2026, 7, 24, 12, 57, 8)
-        _assert_balance(account, period, Decimal("2932.41"), asserted_at)
+        _assert_balance(account, Decimal("2932.41"), asserted_at)
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("50.00"),
             settled_on=date(2026, 7, 24),
@@ -315,9 +391,9 @@ class TestTheClosingBalancePartition:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[6]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         asserted_at = _instant(2026, 7, 24, 12, 57, 8)
-        _assert_balance(account, period, Decimal("2932.41"), asserted_at)
+        _assert_balance(account, Decimal("2932.41"), asserted_at)
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("77.00"),
             settled_on=asserted_at.astimezone(DISPLAY_TIMEZONE).date(),
@@ -349,9 +425,9 @@ class TestTheClosingBalancePartition:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[6]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         asserted_at = _instant(2026, 7, 24, 12, 57, 8)
-        _assert_balance(account, period, Decimal("2932.41"), asserted_at)
+        _assert_balance(account, Decimal("2932.41"), asserted_at)
         earlier = create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("40.00"),
             settled_on=date(2026, 7, 24), name="before",
@@ -385,49 +461,65 @@ class TestEveryAssertionIsReplayed:
     ):  # pylint: disable=unused-argument
         """Hand-computed corrections and a per-date fold across the history.
 
-        Stream: opening $1,000.00 (2026-01-01); -$200.00 (2026-02-01);
-        assert $900.00 (2026-03-01); -$300.00 (2026-04-01); assert $500.00
-        (2026-05-01).
+        Stream: the account's own origination assertion, $1,000.00 on the
+        2024 bootstrap day the seeded Checking was opened on; -$200.00
+        (2026-02-01); assert $900.00 (2026-03-01); -$300.00 (2026-04-01);
+        assert $500.00 (2026-05-01).  Five events, and the origination is the
+        first of them since plan step X-f3c-2c -- the case used to re-stamp it
+        onto 2026-01-01, which an append-only table has no act for.
 
         ``balance_before`` at the March assertion is ``1000 - 200 = 800``, so its
         correction is ``+100.00``; at the May assertion it is ``900 - 300 = 600``,
-        so its correction is ``-100.00``.  Prefix-summing the dated deltas
-        therefore reads 1000 / 800 / 900 / 600 / 500 across the five event days --
-        the balance the user actually asserted at each point, where the shipping
-        scalar answers today's $500.00 for every one of them (finding B-18).
+        so its correction is ``-100.00``.  The account therefore reads
+        1000 / 800 / 900 / 600 / 500 across the five event days -- the balance
+        the user actually asserted at each point, where the shipping scalar
+        answers today's $500.00 for every one of them (finding B-18).
+
+        **Graded through the FOLD rather than by prefix-summing the leaf's dated
+        deltas**, which is where plan step X-f3c-1 left the question: the
+        assertion steps are the fold's to apply (ruling R-FO gives the modelled
+        kinds one answer and plan step X-f3c gives the PLAIN ones another), so
+        the five figures live in the producer a screen reads and not in the
+        leaf.  The instrument is stronger for it -- ``_fold_at``'s own docstring
+        records the review that caught a walk-graded clearing test passing while
+        the rendered balance was $500.00 short.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("200.00"),
             settled_on=date(2026, 2, 1), name="feb spend",
         )
         march = _instant(2026, 3, 1)
-        _assert_balance(account, period, Decimal("900.00"), march)
+        _assert_balance(account, Decimal("900.00"), march)
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("300.00"),
             settled_on=date(2026, 4, 1), name="apr spend",
         )
         may = _instant(2026, 5, 1)
-        _assert_balance(account, period, Decimal("500.00"), may)
+        _assert_balance(account, Decimal("500.00"), may)
         db.session.commit()
 
         corrections = _corrections(account, scenario)
         assert corrections[march] == (Decimal("800.00"), Decimal("100.00"))
         assert corrections[may] == (Decimal("600.00"), Decimal("-100.00"))
 
-        running = Decimal("0.00")
-        seen = []
-        for _day, delta in dated_deltas(
-            walk_cash_ledger(account.id, scenario.id),
-        ):
-            running += delta
-            seen.append(running)
-        assert seen == [
+        event_days = [
+            date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 1),
+            date(2026, 4, 1), date(2026, 5, 1),
+        ]
+        assert [
+            _fold_at(account, scenario, day) for day in event_days
+        ] == [
             Decimal("1000.00"), Decimal("800.00"), Decimal("900.00"),
             Decimal("600.00"), Decimal("500.00"),
         ]
+        # Sampling five NAMED dates cannot see a spurious step on a sixth day,
+        # which the prefix-sum this replaced did see.  The count and the total
+        # are what restore it.
+        walk = walk_cash_ledger(account.id, scenario.id)
+        assert len(dated_deltas(walk)) + len(assertion_corrections(walk)) == 5
+        assert _running_balance(account, scenario) == Decimal("500.00")
 
 
 class TestSourceFactValuation:
@@ -439,7 +531,7 @@ class TestSourceFactValuation:
         """+$250.00 income and -$75.00 expense: 1000 + 250 - 75 = 1175.00."""
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("250.00"),
             is_income=True, settled_on=date(2026, 2, 1), name="pay",
@@ -462,7 +554,7 @@ class TestSourceFactValuation:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("100.00"),
             settled_amount=Decimal("84.20"),
@@ -488,15 +580,16 @@ class TestSourceFactValuation:
 
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         db.session.add(Transaction(
             account_id=account.id,
+            user_id=period.user_id,
             pay_period_id=period.id,
             scenario_id=scenario.id,
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             name="unpaid bill",
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            estimated_amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
         ))
         db.session.commit()
 
@@ -539,7 +632,7 @@ class TestSourceFactValuation:
 
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         txn = create_envelope_txn(
             seed_user, db.session, period, "Groceries", Decimal("200.00"),
         )
@@ -554,7 +647,7 @@ class TestSourceFactValuation:
                 description="purchase",
                 purchased_on=day,
                 is_credit=is_credit,
-                settled_on=day,
+                **settle_day_columns(day),
             ))
         db.session.flush()
         # Settled through PRODUCTION's own verb rather than hand-set: the
@@ -568,7 +661,7 @@ class TestSourceFactValuation:
         transaction_service.settle_transaction(txn)
         assert settled_figure(txn) == Decimal("200.00")
         assert purchases_total(list(txn.entries)) == Decimal("200.00")
-        txn.settled_on = date(2026, 2, 1)
+        record_settle_day(txn, an_entered_day(date(2026, 2, 1)))
         posting_service.sync_transaction_postings(txn, settled=True)
         db.session.commit()
 
@@ -602,7 +695,7 @@ class TestSourceFactValuation:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         savings = create_savings_account(
             seed_user, db.session, "Savings", Decimal("0.00"),
         )
@@ -646,7 +739,7 @@ class TestAttributionIsOneKey:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[3]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         txn = add_txn(
             db.session, seed_user, period, "legacy settle", "12.34",
             status_enum=StatusEnum.DONE, settled_on=None,
@@ -682,7 +775,7 @@ class TestAttributionIsOneKey:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[2]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         # 01:00 UTC on the 4th is 20:00 Eastern on the 3rd.
         freeze_today(monkeypatch, date(2026, 3, 4), at_time=time(1, 0))
         assert display_today() == date(2026, 3, 3)
@@ -721,7 +814,7 @@ class TestTheWalkSeesOnlyItsOwnRows:
 
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         txn = create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("80.00"),
             settled_on=date(2026, 2, 1), name="deleted envelope",
@@ -733,7 +826,7 @@ class TestTheWalkSeesOnlyItsOwnRows:
             description="credit purchase",
             purchased_on=date(2026, 2, 1),
             is_credit=True,
-            settled_on=date(2026, 2, 1),
+            **settle_day_columns(date(2026, 2, 1)),
         ))
         txn.is_deleted = True
         db.session.commit()
@@ -755,7 +848,7 @@ class TestTheWalkSeesOnlyItsOwnRows:
 
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         other = Scenario(
             user_id=seed_user["user"].id, name="What if", is_baseline=False,
         )
@@ -779,7 +872,7 @@ class TestTheWalkSeesOnlyItsOwnRows:
         """A settled row on a sibling account of the same user is excluded."""
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         savings = create_savings_account(
             seed_user, db.session, "Savings", Decimal("50.00"),
         )
@@ -807,10 +900,16 @@ class TestTheWalkSeesOnlyItsOwnRows:
 
         _account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
+        # **The card is OPENED on the calendar's first day** (plan step
+        # X-f3c-2c).  ``create_account_of_type`` otherwise asserts the day
+        # before today -- the frozen 2026-03-20 -- and the charge below settles
+        # 2026-02-01, which would be inside that assertion rather than after
+        # it.  Stated at creation because an assertion is append-only: where
+        # the origination goes is decided when it is written.
         card = create_account_of_type(
             seed_user, db.session, "Credit Card", "Visa", Decimal("-300.00"),
+            observed_on=seed_periods[0].start_date,
         )
-        _restamp_opening(card, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("75.00"),
             account=card, settled_on=date(2026, 2, 1), name="charge",
@@ -820,83 +919,102 @@ class TestTheWalkSeesOnlyItsOwnRows:
         assert _running_balance(card, scenario) == Decimal("-375.00")
 
 
-class TestPreOpeningSources:
-    """A settle attributed BEFORE the account's first assertion (finding N-37).
+class TestASourceCannotPredateTheBooks:
+    """A settle dated at or before the account's opening is UNSTORABLE.
 
-    Live on production 2026-07-25: two accounts carry the shape (Fidelity
-    Savings 1 row, the Money Market 4).  The behaviour was pinned here so plan
-    step X-b's ruling had something to flip, exactly as finding N-34 was gated
-    before C2b fixed it.
+    **This class replaced ``TestPreOpeningSources``, which pinned the opposite**
+    (plan step X-f3c-2b, ruling **R-HG**).  That class graded a walk carrying a
+    source dated BEFORE the books opened, and said so deliberately: ruling R-I
+    had put the reader's answer in the fold and left the leaf emitting the row
+    at its own day, "so the leaf does not unilaterally re-key it".
 
-    **RULED 2026-07-25 (R-I), and the ruling did NOT change this leaf.**  The
-    fold back-projects the first assertion over the records it already contains;
-    ``dated_deltas`` keeps emitting a pre-opening row at its own day, because the
-    posted ledger holds the same partial sum there and re-keying it would break
-    the walk-vs-ledger equality plan step X-d rests on.  So both assertions below
-    stand as WALK contracts, and the READER's answer -- the one the ruling is
-    about -- is graded in ``test_cash_fold.py``'s ``TestTheOpeningMovesIntoTheSeed``.
+    What changed is not the leaf's re-keying rule -- it is unchanged -- but
+    whether the state it re-keys can exist.  An opening equity is the CLOSING
+    balance for its own day, so such a row is already inside the level the fold
+    seeds at, and carrying it twice is finding **N-378**.  The fixture below is
+    the one the old class used, and the point is that it no longer builds.
+
+    **The walk is therefore free of a filter, and its absence is the property.**
+    A leaf that screened its own inputs would be a second statement of a rule
+    the database holds, and the two would drift -- which is this arc's own root
+    cause 1.
     """
 
-    def test_it_is_absorbed_into_the_opening_and_the_total_is_right(
+    def test_the_fixture_the_old_contract_rested_on_is_REFUSED(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """At and after the opening the answer is correct, and that is the half
-        the walk owes.
+        """Books opened 2026-02-01; a $500.00 expense settling 2026-01-15 raises.
 
-        Hand-computed: a $500.00 expense attributed 2026-01-15, an opening
-        asserting $1,000.00 on 2026-02-01.  ``balance_before`` is -$500.00, so
-        the opening's correction is $1,500.00 and the total lands on $1,000.00
-        -- the asserted balance, with the pre-opening row absorbed exactly as
-        the posted ledger absorbs it.
+        The exact shape ``TestPreOpeningSources`` built, refused at the one
+        settle-day writer with a message naming both days.
+        """
+        account = seed_user["account"]
+        period = seed_periods[0]
+        # The books' own day is the subject here, so the case names it rather
+        # than inheriting the backward-only default (plan step X-f3c-2c).
+        _opened_at(
+            account, _instant(2026, 2, 1), books_open_on=date(2026, 1, 31),
+        )
+        db.session.flush()
+        with pytest.raises(ValidationError) as exc:
+            create_settled_cash_transaction(
+                seed_user, db.session, period, Decimal("500.00"),
+                settled_on=date(2026, 1, 15), name="pre-opening",
+            )
+        assert "2026-01-15" in str(exc.value)
+        db.session.rollback()
+
+    def test_the_walk_yields_each_source_at_its_OWN_day_and_adds_none(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The whole source list, by day and amount, hand-computed.
+
+        **This replaces an assertion that could not fail.**  Its first version
+        checked that every source the walk yields is dated after the opening --
+        over rows read from a database the constraint will not let hold a
+        violating one, using the same governing-row rule the constraint uses.
+        It could only have failed if the SQL and Python lookups disagreed,
+        which is graded properly and from both sides by
+        ``test_books_boundary.TestTheTwoGoverningLookupsElectTheSameRow``.  As
+        a control over what the walk EMITS, which is what its name promised, it
+        was a tautology (found by adversarial review, 2026-08-28).
+
+        So this computes instead.  Books open 2026-01-31 (one day before the
+        2026-02-01 opening assertion), a ``$500.00`` expense settles 2026-02-05
+        and a ``$120.00`` one settles 2026-02-20.  Hand-computed: the walk
+        yields exactly two sources, ``-$500.00`` on 02-05 and ``-$120.00`` on
+        02-20, each at its OWN day.  A leaf that filtered its inputs, re-keyed
+        one onto the opening, folded the two together or emitted a third would
+        fail on the exact pair rather than on a predicate that is true of any
+        list.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        opening_at = _instant(2026, 2, 1)
-        _restamp_opening(account, opening_at)
+        # The books open 2026-01-31, which this case asserts below and which
+        # the sources are then dated after -- so the day is named rather than
+        # inherited (plan step X-f3c-2c).
+        _opened_at(
+            account, _instant(2026, 2, 1), books_open_on=date(2026, 1, 31),
+        )
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("500.00"),
-            settled_on=date(2026, 1, 15), name="pre-opening",
+            settled_on=date(2026, 2, 5), name="after-the-books",
+        )
+        create_settled_cash_transaction(
+            seed_user, db.session, period, Decimal("120.00"),
+            settled_on=date(2026, 2, 20), name="later-still",
         )
         db.session.commit()
 
-        before, delta = _corrections(account, scenario)[opening_at]
-        assert before == Decimal("-500.00")
-        assert delta == Decimal("1500.00")
-        assert _running_balance(account, scenario) == Decimal("1000.00")
+        walk = walk_cash_ledger(account.id, scenario.id)
+        assert walk.opening.opened_on == date(2026, 1, 31)
+        assert sorted(
+            (fact.settled_on, fact.delta) for fact in walk.source_facts
+        ) == [
+            (date(2026, 2, 5), Decimal("-500.00")),
+            (date(2026, 2, 20), Decimal("-120.00")),
+        ]
 
-    def test_the_prefix_before_the_opening_is_the_un_absorbed_partial_sum(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """PINNED as a LEAF contract, and deliberately not a balance.
-
-        ``dated_deltas`` emits the pre-opening source at its OWN day, so a
-        prefix taken before the opening reads -$500.00: a balance the account
-        never had.  It is faithful to the POSTED ledger, which holds the same
-        partial sum there, so the leaf does not unilaterally re-key it.
-
-        Ruling R-I (2026-07-25) settled what a READER answers there -- the first
-        assertion back-projected over these records, ``$1,500.00`` on this shape
-        -- and put it in the FOLD, which is why this stayed green through X-b
-        rather than flipping.  The pairing is the point: the leaf's partial sum
-        keeps X-d's walk-vs-ledger equality, and the fold's seed keeps the
-        balance honest.  ``test_cash_fold.py`` asserts the $1,500.00 against this
-        same fixture shape.
-        """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 2, 1))
-        create_settled_cash_transaction(
-            seed_user, db.session, period, Decimal("500.00"),
-            settled_on=date(2026, 1, 15), name="pre-opening",
-        )
-        db.session.commit()
-
-        steps = dated_deltas(walk_cash_ledger(account.id, scenario.id))
-        prefix = sum(
-            (delta for day, delta in steps if day <= date(2026, 1, 20)),
-            Decimal("0.00"),
-        )
-        assert prefix == Decimal("-500.00")
 
 
 class TestTheWalkReadsNoClock:
@@ -913,7 +1031,7 @@ class TestTheWalkReadsNoClock:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("42.00"),
             settled_on=date(2026, 2, 1),
@@ -938,36 +1056,61 @@ class TestDegenerateShapes:
         A caller that must distinguish "no account" asks the account row, never
         this emptiness -- the totality rule the loan fold already follows.
         """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        db.session.query(AccountAnchorHistory).filter_by(
-            account_id=account.id,
-        ).delete()
+        # **Built rather than emptied** (plan step X-f3c-2c).  An assertion
+        # is append-only at the database tier, so nothing may delete one while
+        # its account stands; the only honest route to an account that has
+        # asserted nothing is one the assertion factory never touched.
+        scenario = seed_user["scenario"]
+        account = account_never_asserted(
+            seed_user, db.session, name="Silent",
+            opening_equity=Decimal("0.00"),
+        )
         db.session.commit()
 
         walk = walk_cash_ledger(account.id, scenario.id)
         assert walk.source_facts == []
-        assert walk.anchor_corrections == []
+        assert walk.anchor_facts == []
         assert dated_deltas(walk) == []
 
-    def test_an_opening_with_no_prior_activity_corrects_from_zero(
+    def test_an_opening_that_agrees_with_the_books_corrects_NOTHING(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The first assertion's ``balance_before`` is the empty prefix, 0.00."""
+        """The first assertion's ``balance_before`` is the account's OPENING EQUITY.
+
+        With no activity at all, the books read exactly what they opened with,
+        so the owner's first assertion moves them by nothing.  That ``$0.00``
+        is the healthy steady state for EVERY assertion, and since plan step
+        X-f3c-2a the first one is not exempt from it.
+
+        *It asserted ``before == 0.00`` and ``delta == 1000.00`` until then,
+        because the replay seeded at zero and the first assertion's delta had
+        to carry the whole of what the account held before its records began.
+        That quantity is ``budget.account_openings`` now, so the correction is
+        a correction.*
+        """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        opening = _restamp_opening(account, _instant(2026, 1, 1))
-        db.session.commit()
 
         facts = cash_anchor_facts(account.id)
+        # **The account's OWN origination is the first assertion, and this case
+        # reads it rather than adding one** (plan step X-f3c-2c).  It used to
+        # re-stamp that row onto 2026-01-01 and read the re-stamped copy; the
+        # table is append-only, and the row ``account_service.create_account``
+        # wrote IS the first assertion the claim is about.
         assert [fact.is_opening for fact in facts] == [True]
         before, delta = _corrections(account, scenario)[
-            opening.created_at.astimezone(timezone.utc)
+            facts[0].asserted_at
         ]
-        assert before == Decimal("0.00")
-        assert delta == Decimal("1000.00")
+        assert before == Decimal("1000.00")
+        assert delta == Decimal("0.00")
 
 
-class TestDatedDeltasReconstructTheWalk:
-    """The re-key preserves the walk's total and its within-day chronology."""
+class TestTheStepsReconstructTheReplay:
+    """``dated_deltas`` plus the corrections preserve the replay's own total.
+
+    Named for what it grades since plan step X-f3c-1: the two tiers travel in
+    separate lists now, so what is pinned is that MERGING them reproduces the
+    replay's terminal balance, and that both land on the day the fold samples.
+    """
 
     def test_the_deltas_sum_to_the_walks_final_running_balance(
         self, db, seed_user, seed_periods,
@@ -985,13 +1128,13 @@ class TestDatedDeltasReconstructTheWalk:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("100.00"),
             settled_on=date(2026, 2, 1), name="pre",
         )
         _assert_balance(
-            account, period, Decimal("2000.00"), _instant(2026, 3, 1),
+            account, Decimal("2000.00"), _instant(2026, 3, 1),
         )
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("250.00"),
@@ -1017,11 +1160,9 @@ class TestDatedDeltasReconstructTheWalk:
         wins and the walk ends on $800.00, not $700.00.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
         same = _instant(2026, 3, 1, 9, 0, 0)
-        _assert_balance(account, period, Decimal("700.00"), same)
-        _assert_balance(account, period, Decimal("800.00"), same)
+        _assert_balance(account, Decimal("700.00"), same)
+        _assert_balance(account, Decimal("800.00"), same)
         db.session.commit()
 
         facts = cash_anchor_facts(account.id)
@@ -1030,35 +1171,48 @@ class TestDatedDeltasReconstructTheWalk:
         ]
         assert _running_balance(account, scenario) == Decimal("800.00")
 
-    def test_a_source_reads_before_an_assertion_sharing_its_day(
+    def test_a_source_and_an_assertion_sharing_a_day_both_land_on_it(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The re-key mirrors the walk's own tie-break, so both read alike.
+        """The two tiers key on the same civil DAY, so the assertion closes it.
 
-        Immaterial to the prefix sum (addition commutes), and pinned so the two
-        chronologies cannot silently diverge.
+        The source and the assertion travel in different lists since plan step
+        X-f3c-1 -- ``dated_deltas`` carries the movement and
+        ``assertion_corrections`` carries the reset -- so what has to be pinned
+        is that both land on the day the fold samples, which is ruling R-DH (a):
+        an assertion is the CLOSING balance for its civil day, whatever order
+        the two were recorded in.  Keying one of them by instant instead is what
+        cost production ``$4,001.42`` on 2026-07-31.
+
+        Graded at the balance as well as at the steps, because the step-level
+        assertion alone cannot see a day boundary drawn between them.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("30.00"),
             settled_on=date(2026, 3, 1), name="morning",
         )
         _assert_balance(
-            account, period, Decimal("5000.00"), _instant(2026, 3, 1, 17, 0, 0),
+            account, Decimal("5000.00"), _instant(2026, 3, 1, 17, 0, 0),
         )
         db.session.commit()
 
-        same_day = [
-            delta for day, delta in dated_deltas(
-                walk_cash_ledger(account.id, scenario.id),
-            )
-            if day == date(2026, 3, 1)
-        ]
-        # The source (-30.00) first, then the assertion's correction
-        # (5000.00 - 970.00 = 4030.00).
-        assert same_day == [Decimal("-30.00"), Decimal("4030.00")]
+        walk = walk_cash_ledger(account.id, scenario.id)
+        shared = date(2026, 3, 1)
+        assert [
+            delta for day, delta in dated_deltas(walk) if day == shared
+        ] == [Decimal("-30.00")]
+        # The assertion's correction on the same day: 5000.00 - 970.00.
+        assert [
+            (correction.observed_on, correction.delta)
+            for correction in assertion_corrections(walk)
+            if correction.observed_on == shared
+        ] == [(shared, Decimal("4030.00"))]
+        # And the day closes on what the user asserted, which is the property
+        # the within-day ordering existed to protect.
+        assert _fold_at(account, scenario, shared) == Decimal("5000.00")
 
 
 class TestTheTwoStatementsOfTheLatestAssertedDay:
@@ -1093,20 +1247,21 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
     ):  # pylint: disable=unused-argument
         """Three assertions on three different days -- both answer the last.
 
-        Hand-computed: the opening on 2026-01-01 plus true-ups on 02-15 and
-        03-20, so the latest asserted day is 2026-03-20.  The figure is
+        Hand-computed: the account's own origination, a re-assertion on
+        2026-01-01 and true-ups on 02-15 and 03-20, so the latest asserted day
+        is 2026-03-20.  The figure is
         asserted absolutely as well as for equality: two implementations that
         both returned the OPENING would agree with each other and be wrong
         together, which equality alone cannot catch.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         _assert_balance(
-            account, seed_periods[0], Decimal("1200.00"),
+            account, Decimal("1200.00"),
             _instant(2026, 2, 15, 9, 0, 0),
         )
         _assert_balance(
-            account, seed_periods[0], Decimal("1400.00"),
+            account, Decimal("1400.00"),
             _instant(2026, 3, 20, 9, 0, 0),
         )
         db.session.commit()
@@ -1137,10 +1292,10 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
         the recording clock without failing.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         # Recorded FIRST, for the LATER business day.
         _assert_balance(
-            account, seed_periods[0], Decimal("1400.00"),
+            account, Decimal("1400.00"),
             _instant(2026, 3, 20, 9, 0, 0),
         )
         # Recorded SECOND, for an EARLIER business day -- the back-fill.  The
@@ -1150,7 +1305,7 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
         # so a loader ordering by ``created_at`` answered the same thing and
         # the test could not fail).
         _assert_balance(
-            account, seed_periods[0], Decimal("1200.00"),
+            account, Decimal("1200.00"),
             _instant(2026, 2, 15, 9, 0, 0),
             recorded_at=_instant(2026, 4, 1, 9, 0, 0),
         )
@@ -1173,10 +1328,12 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
         that raised, or returned a sentinel date, would make every caller carry
         a precondition -- and one of them would forget.
         """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        db.session.query(AccountAnchorHistory).filter_by(
-            account_id=account.id,
-        ).delete()
+        # Built rather than emptied, for the reason the case above states.
+        scenario = seed_user["scenario"]
+        account = account_never_asserted(
+            seed_user, db.session, name="Never asserted",
+            opening_equity=Decimal("0.00"),
+        )
         db.session.commit()
 
         walk = walk_cash_ledger(account.id, scenario.id)
@@ -1209,16 +1366,16 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
         cover a purchase posted 2026-09-09.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         _assert_balance(
-            account, seed_periods[0], Decimal("1000.00"),
+            account, Decimal("1000.00"),
             _instant(2026, 3, 1, 9, 0, 0),
         )
         other = create_savings_account(
             seed_user, db.session, "Other", Decimal("5000.00"),
         )
         _assert_balance(
-            other, seed_periods[0], Decimal("5000.00"),
+            other, Decimal("5000.00"),
             _instant(2026, 9, 9, 9, 0, 0),
         )
         db.session.commit()
@@ -1281,17 +1438,17 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         screen showing that account, reached by an ordinary act.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         txn = create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("100.00"),
             settled_on=date(2026, 2, 10), name="late-posting debit",
         )
         first_at = _instant(2026, 2, 15, 9, 0, 0)
         _assert_balance(
-            account, seed_periods[0], Decimal("2000.00"), first_at,
+            account, Decimal("2000.00"), first_at,
         )
         later = _assert_balance(
-            account, seed_periods[0], Decimal("3000.00"),
+            account, Decimal("3000.00"),
             _instant(2026, 2, 28, 9, 0, 0),
         )
         db.session.commit()
@@ -1326,13 +1483,13 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         in-app repair, after two acts the app invites.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         txn = create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("100.00"),
             settled_on=date(2026, 2, 10), name="ticked on the 28th",
         )
         ticked = _assert_balance(
-            account, seed_periods[0], Decimal("3000.00"),
+            account, Decimal("3000.00"),
             _instant(2026, 2, 28, 9, 0, 0),
         )
         txn.reconciled_by_id = ticked.id
@@ -1343,7 +1500,7 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         )
 
         _assert_balance(
-            account, seed_periods[0], Decimal("2500.00"),
+            account, Decimal("2500.00"),
             _instant(2026, 2, 20, 9, 0, 0),
         )
         db.session.commit()
@@ -1379,7 +1536,7 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         balance.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         txn = create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("100.00"),
             settled_on=date(2026, 2, 10), name="ticked on the second reading",
@@ -1387,10 +1544,10 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         first_at = _instant(2026, 2, 15, 9, 0, 0)
         second_at = _instant(2026, 2, 15, 17, 0, 0)
         _assert_balance(
-            account, seed_periods[0], Decimal("2000.00"), first_at,
+            account, Decimal("2000.00"), first_at,
         )
         governing = _assert_balance(
-            account, seed_periods[0], Decimal("2500.00"), second_at,
+            account, Decimal("2500.00"), second_at,
         )
         db.session.commit()
 
@@ -1449,7 +1606,7 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         from tests._test_helpers import create_envelope_txn  # pylint: disable=import-outside-toplevel
 
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         txn = create_envelope_txn(
             seed_user, db.session, seed_periods[0], "Groceries",
             Decimal("500.00"),
@@ -1460,7 +1617,7 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
             amount=Decimal("100.00"),
             description="ticked on the second reading",
             purchased_on=date(2026, 2, 10),
-            settled_on=date(2026, 2, 10),
+            **settle_day_columns(date(2026, 2, 10)),
             is_credit=False,
         )
         db.session.add(entry)
@@ -1468,10 +1625,10 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         first_at = _instant(2026, 2, 15, 9, 0, 0)
         second_at = _instant(2026, 2, 15, 17, 0, 0)
         _assert_balance(
-            account, seed_periods[0], Decimal("2000.00"), first_at,
+            account, Decimal("2000.00"), first_at,
         )
         governing = _assert_balance(
-            account, seed_periods[0], Decimal("2500.00"), second_at,
+            account, Decimal("2500.00"), second_at,
         )
         db.session.commit()
 
@@ -1569,7 +1726,7 @@ class TestTheSourceOrderIsLoadBearing:
         keeping it.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _restamp_opening(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("50.00"),
             settled_on=date(2026, 2, 20), name="recorded first",
@@ -1580,7 +1737,7 @@ class TestTheSourceOrderIsLoadBearing:
         )
         asserted_at = _instant(2026, 2, 15, 9, 0, 0)
         _assert_balance(
-            account, seed_periods[0], Decimal("2000.00"), asserted_at,
+            account, Decimal("2000.00"), asserted_at,
         )
         db.session.commit()
 

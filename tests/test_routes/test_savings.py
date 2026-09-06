@@ -36,10 +36,13 @@ from app.services import balance_at, pay_period_write, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
-    make_cadence_rule,
+    rhythm_of,
+    create_account_of_type,
     create_hysa_account,
     create_loan_account,
     freeze_today,
+    make_cadence_rule,
+    settle_day_columns,
     settlement_columns,
     transient_cadence_rule,
 )
@@ -67,8 +70,8 @@ def _freeze_today_inside_seed_range(monkeypatch):
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services import account_service, obligations_aggregator
-from app.services.pay_calendar import calendar_for
 from app.services.auth_service import hash_password
+from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -98,19 +101,23 @@ def _create_savings_account(
             user's earliest pay period at create time).
 
     Returns:
-        Account: the new savings account.
+        Account: the new savings account, COMMITTED.  Committed rather than
+        flushed (plan step balance:X-i3): the callers that go on to issue a
+        request need the account to exist as far as that request is concerned,
+        and a request holds a transaction of its own in which an uncommitted
+        row does not.
     """
-    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name=name,
-            anchor_balance=anchor_balance,
-        ),
+    # Through the shared factory rather than the ``AccountType`` lookup +
+    # ``AccountSpec`` block spelled by hand, which is the same four lines it
+    # is.  It also opens the account's BOOKS before anything a fixture dates
+    # (plan step X-f3c-2b, ruling **R-HG**) -- what the expenses below need,
+    # since they settle in the seeded periods rather than on the day
+    # ``create_account`` would otherwise open the books.
+    acct = create_account_of_type(
+        seed_user, db.session, "Savings", name,
+        anchor_balance=anchor_balance,
     )
-    db.session.add(acct)
-    db.session.flush()
+    db.session.commit()
     return acct
 
 
@@ -148,19 +155,12 @@ def _create_other_user_with_goal():
     db.session.flush()
 
 
-    # Bootstrap pay period (E-19, Commit 3): the
-    # account_service factory requires the user to have at
-    # least one pay period to anchor against.
-    from datetime import date as _date, timedelta as _td
-    from app.models.pay_period import PayPeriod as _PayPeriod
-    _bootstrap = _PayPeriod(
-        user_id=other_user.id,
-        start_date=_date(2024, 1, 5),
-        end_date=_date(2024, 1, 5) + _td(days=13),
-        period_index=0,
-    )
-    db.session.add(_bootstrap)
-    db.session.flush()
+    # The account_service factory requires the user to have at least one pay
+    # period to anchor against.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    from datetime import date as _date
+    from tests._test_helpers import open_owner_calendar as _open_calendar
+    _bootstrap = _open_calendar(other_user.id, _date(2024, 1, 5))[0]
     settings = UserSettings(user_id=other_user.id)
     db.session.add(settings)
 
@@ -260,7 +260,6 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
         filing_status_id=filing_status.id,
         name="Test Salary",
         annual_salary=Decimal("100000.00"),
-        pay_periods_per_year=26,
         state_code="NC",
     )
     db.session.add(profile)
@@ -281,35 +280,25 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
     return acct, params, profile, deduction
 
 
-def _create_recurrence_rule(seed_user, cadence, interval_n=1):
-    """Create a recurrence rule for the test user.
-
-    Args:
-        seed_user: The seed user fixture dict.
-        cadence: A ``tests.oracles.recurrence_baseline`` cadence
-            constant.
-        interval_n: Interval for the every-N-paychecks cadence
-            (default 1).
-
-    Returns:
-        RecurrenceRule: the new rule, flushed for id assignment.
-    """
-    return make_cadence_rule(
-        seed_user["user"].id, cadence, interval_n=interval_n,
-    )
-
-
-def _create_expense_template(seed_user, rule, amount, name="Test Expense",
-                             is_active=True):
+def _create_expense_template(seed_user, cadence, amount, name="Test Expense",
+                             is_active=True, interval_n=1):
     """Create an expense template on the seed user's checking account.
 
+    **It takes the CADENCE rather than a pre-built rule, since plan step
+    R-F6**, and authors it here: a rule carries its owning template's FK, so it
+    cannot exist before the template does.  The two calls a caller used to make
+    -- build the rule, then pass it in -- collapse into this one, and the
+    separate ``_create_recurrence_rule`` helper is deleted.
+
     Args:
         seed_user: The seed user fixture dict.
-        rule: RecurrenceRule object, or ``None`` for a template that does not
-            repeat (plan step R2e-3's shape).
+        cadence: A ``tests.oracles.recurrence_baseline`` cadence constant, or
+            ``None`` for a template that does not repeat (plan step R2e-3's
+            shape).
         amount: Decimal default amount.
         name: Template display name.
         is_active: Whether the template is active (default True).
+        interval_n: Interval for the every-N-paychecks cadence (default 1).
 
     Returns:
         TransactionTemplate: the new template, flushed for id assignment.
@@ -318,7 +307,6 @@ def _create_expense_template(seed_user, rule, amount, name="Test Expense",
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id if rule is not None else None,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
         default_amount=amount,
@@ -326,17 +314,22 @@ def _create_expense_template(seed_user, rule, amount, name="Test Expense",
     )
     db.session.add(tmpl)
     db.session.flush()
+    if cadence is not None:
+        make_cadence_rule(tmpl, cadence, interval_n=interval_n)
     return tmpl
 
 
-def _create_test_transfer_template(seed_user, to_account, rule, amount,
+def _create_test_transfer_template(seed_user, to_account, cadence, amount,
                                    name="Test Transfer", is_active=True):
     """Create a transfer template from checking to another account.
+
+    Takes the CADENCE rather than a pre-built rule, for the reason
+    :func:`_create_expense_template` gives.
 
     Args:
         seed_user: The seed user fixture dict (checking is the source).
         to_account: Destination Account object.
-        rule: RecurrenceRule object.
+        cadence: A ``tests.oracles.recurrence_baseline`` cadence constant.
         amount: Decimal default amount.
         name: Template display name.
         is_active: Whether the template is active (default True).
@@ -348,13 +341,13 @@ def _create_test_transfer_template(seed_user, to_account, rule, amount,
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=to_account.id,
-        recurrence_rule_id=rule.id,
         name=name,
         default_amount=amount,
         is_active=is_active,
     )
     db.session.add(tmpl)
     db.session.flush()
+    make_cadence_rule(tmpl, cadence)
     return tmpl
 
 
@@ -423,7 +416,7 @@ class TestDashboard:
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -471,7 +464,7 @@ class TestDashboard:
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -520,7 +513,7 @@ class TestDashboard:
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,
-                cadence_days=14,
+                rhythm=rhythm_of(14),
             )
             db.session.flush()
 
@@ -547,7 +540,14 @@ class TestDashboard:
             )
             db.session.add(params)
 
-            # Create salary profile (no deduction targeting the 401k).
+            # Create salary profile (no deduction targeting the 401k), and
+            # NAME it as the account's funding job -- ruling R-SAL5, applied
+            # at plan step salary:R14-b.  This is precisely the shape that
+            # column exists for: an employer contribution with no deduction
+            # naming the account had no link to any profile at all, so the
+            # basis fell to an owner-level unordered lookup.  Without the
+            # link the ruling of 2026-09-04 models no employer money, and the
+            # projection this case asserts would collapse to growth-only.
             filing_status = db.session.query(FilingStatus).first()
             profile = SalaryProfile(
                 user_id=seed_user["user"].id,
@@ -555,10 +555,11 @@ class TestDashboard:
                 filing_status_id=filing_status.id,
                 name="Main Job",
                 annual_salary=Decimal("100000.00"),
-                pay_periods_per_year=26,
                 state_code="NC",
             )
             db.session.add(profile)
+            db.session.flush()
+            params.salary_profile_id = profile.id
             db.session.commit()
 
             resp = auth_client.get("/savings")
@@ -1285,11 +1286,8 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             # Transfer template: checking -> savings, every period.
-            rule = _create_recurrence_rule(
-                seed_user, EVERY_PERIOD,
-            )
             _create_test_transfer_template(
-                seed_user, savings, rule, Decimal("1500.00"),
+                seed_user, savings, EVERY_PERIOD, Decimal("1500.00"),
                 name="Mortgage Payment",
             )
             db.session.commit()
@@ -1326,25 +1324,26 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             # Create small settled expenses across 6 recent periods.
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            settled_id = ref_cache.status_id(StatusEnum.DONE)
             expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
             category_id = seed_user["categories"]["Rent"].id
 
             for period in seed_periods[1:7]:
                 txn = Transaction(
                     account_id=seed_user["account"].id,
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
                     status_id=settled_id,
                     name="Small Expense",
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
-                    estimated_amount=Decimal("10.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("10.00")),
                     # A settled row carries the day its money moved AND the
                     # record of what moved -- one fact in three columns (plan
                     # steps X-f1 / X-au-c3), resolved by the one door a
                     # bare-built fixture uses.
-                    settled_on=period.start_date,
+                    **settle_day_columns(period.start_date),
                     **settlement_columns(
                         period.start_date, Decimal("10.00"),
                     ),
@@ -1352,11 +1351,8 @@ class TestEmergencyFundCommittedBaseline:
                 db.session.add(txn)
 
             # Transfer template with higher committed amount.
-            rule = _create_recurrence_rule(
-                seed_user, EVERY_PERIOD,
-            )
             _create_test_transfer_template(
-                seed_user, savings, rule, Decimal("1500.00"),
+                seed_user, savings, EVERY_PERIOD, Decimal("1500.00"),
                 name="Mortgage Payment",
             )
             db.session.commit()
@@ -1397,7 +1393,7 @@ class TestEmergencyFundCommittedBaseline:
                 anchor_balance=Decimal("10000.00"),
             )
 
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            settled_id = ref_cache.status_id(StatusEnum.DONE)
             expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
             category_id = seed_user["categories"]["Rent"].id
 
@@ -1408,28 +1404,30 @@ class TestEmergencyFundCommittedBaseline:
             for period in seed_periods[0:6]:
                 db.session.add(Transaction(
                     account_id=seed_user["account"].id,
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
                     status_id=settled_id,
                     name="Checking Expense",
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
-                    estimated_amount=Decimal("120.00"),
-                    settled_on=period.start_date,
+                    amount_ownership=AmountOwnership.own(Decimal("120.00")),
+                    **settle_day_columns(period.start_date),
                     **settlement_columns(
                         period.start_date, Decimal("120.00"),
                     ),
                 ))
                 db.session.add(Transaction(
                     account_id=savings.id,
+                    user_id=period.user_id,
                     pay_period_id=period.id,
                     scenario_id=seed_user["scenario"].id,
                     status_id=settled_id,
                     name="Savings Expense",
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
-                    estimated_amount=Decimal("300.00"),
-                    settled_on=period.start_date,
+                    amount_ownership=AmountOwnership.own(Decimal("300.00")),
+                    **settle_day_columns(period.start_date),
                     **settlement_columns(
                         period.start_date, Decimal("300.00"),
                     ),
@@ -1473,11 +1471,8 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             # Monthly expense template = $2,000/month.
-            rule = _create_recurrence_rule(
-                seed_user, MONTHLY,
-            )
             _create_expense_template(
-                seed_user, rule, Decimal("2000.00"),
+                seed_user, MONTHLY, Decimal("2000.00"),
                 name="Monthly Bills",
             )
             db.session.commit()
@@ -1526,17 +1521,14 @@ class TestEmergencyFundCommittedBaseline:
         monthly equivalent -- NOT multiplied by 26/12.
         """
         with app.app_context():
-            rule = _create_recurrence_rule(
-                seed_user, MONTHLY,
-            )
             tmpl = _create_expense_template(
-                seed_user, rule, Decimal("500.00"),
+                seed_user, MONTHLY, Decimal("500.00"),
                 name="Monthly Subscription",
             )
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(), calendar_for(seed_user["user"].id),
+                [tmpl], BalanceContext.build(seed_user["user"].id),
             )
             assert result == Decimal("500.00"), (
                 f"Monthly template should contribute exactly $500, got {result}"
@@ -1557,18 +1549,15 @@ class TestEmergencyFundCommittedBaseline:
                 name="One-Time Purchase",
             )
 
-            every_rule = _create_recurrence_rule(
-                seed_user, EVERY_PERIOD,
-            )
             recurring_tmpl = _create_expense_template(
-                seed_user, every_rule, Decimal("100.00"),
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
                 name="Recurring Bill",
             )
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [once_tmpl, recurring_tmpl], date.today(),
-                calendar_for(seed_user["user"].id),
+                [once_tmpl, recurring_tmpl],
+                BalanceContext.build(seed_user["user"].id),
             )
             # Only recurring: 100 * 26/12 = 216.67
             expected = (Decimal("100") * Decimal("26") / Decimal("12")).quantize(
@@ -1598,20 +1587,14 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             # Inactive template -- excluded by route query.
-            rule1 = _create_recurrence_rule(
-                seed_user, EVERY_PERIOD,
-            )
             _create_expense_template(
-                seed_user, rule1, Decimal("999.00"),
+                seed_user, EVERY_PERIOD, Decimal("999.00"),
                 name="Inactive Bill", is_active=False,
             )
 
             # Active template -- included.
-            rule2 = _create_recurrence_rule(
-                seed_user, EVERY_PERIOD,
-            )
             _create_expense_template(
-                seed_user, rule2, Decimal("1500.00"),
+                seed_user, EVERY_PERIOD, Decimal("1500.00"),
                 name="Active Bill",
             )
             db.session.commit()
@@ -1662,8 +1645,7 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             result = obligations_aggregator.committed_monthly(
-                [template], date.today(),
-                calendar_for(seed_user["user"].id),
+                [template], BalanceContext.build(seed_user["user"].id),
             )
             assert result == Decimal("0.00"), (
                 f"Expected 0.00 when template has None amount, got {result}"
@@ -1676,18 +1658,14 @@ class TestEmergencyFundCommittedBaseline:
         $600 * (26/2) / 12 = $650.00 per month.
         """
         with app.app_context():
-            rule = _create_recurrence_rule(
-                seed_user, EVERY_N_PERIODS,
-                interval_n=2,
-            )
             tmpl = _create_expense_template(
-                seed_user, rule, Decimal("600.00"),
-                name="Biweekly Alternating",
+                seed_user, EVERY_N_PERIODS, Decimal("600.00"),
+                name="Biweekly Alternating", interval_n=2,
             )
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(), calendar_for(seed_user["user"].id),
+                [tmpl], BalanceContext.build(seed_user["user"].id),
             )
             assert result == Decimal("650.00"), (
                 f"Expected 650.00 for every-2-periods template, got {result}"
@@ -1698,17 +1676,14 @@ class TestEmergencyFundCommittedBaseline:
     ):
         """An annual template with $1,200 contributes $100.00 per month."""
         with app.app_context():
-            rule = _create_recurrence_rule(
-                seed_user, ANNUAL,
-            )
             tmpl = _create_expense_template(
-                seed_user, rule, Decimal("1200.00"),
+                seed_user, ANNUAL, Decimal("1200.00"),
                 name="Annual Insurance",
             )
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(), calendar_for(seed_user["user"].id),
+                [tmpl], BalanceContext.build(seed_user["user"].id),
             )
             assert result == Decimal("100.00"), (
                 f"Expected 100.00 for annual template, got {result}"
@@ -1717,10 +1692,10 @@ class TestEmergencyFundCommittedBaseline:
     def test_committed_monthly_empty_iterable(
         self, app, seed_user,
     ):
-        """obligations_aggregator.committed_monthly([], today) returns zero."""
+        """obligations_aggregator.committed_monthly([], pass) returns zero."""
         with app.app_context():
             result = obligations_aggregator.committed_monthly(
-                [], date.today(), calendar_for(seed_user["user"].id),
+                [], BalanceContext.build(seed_user["user"].id),
             )
             assert result == Decimal("0.00"), (
                 f"Expected 0.00 for empty iterable, got {result}"
@@ -2441,6 +2416,106 @@ class TestAccountArchivalDashboard:
             assert "Closed Savings" in archived_section
             assert "unarchive" in archived_section
 
+    def test_each_archived_card_links_to_its_OWN_edit_page(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Finding **N-430**, closed by plan step ``balance:X-f3c-2b-2d``.
+
+        The archived card emitted no ``href`` naming its account at all, so the
+        account edit page -- the surface carrying rename, re-type, hard-delete
+        and the books-opening restatement form, but NOT archive, which lives
+        only on the live cell's kebab -- was reachable for an archived account
+        only by typing its URL.  It carries the live cell's kebab *Edit*
+        item now, promoted to the card face by the same rule that put
+        hard-delete there.
+
+        **TWO accounts, because one cannot grade a per-card link.**  The drawer
+        is a loop, and every other case in this class archives a single account
+        -- so a template emitting the FIRST row's id and name on every card
+        would pass all of them.  That is also the whole content of the
+        accessible name: N cards otherwise give a screen reader N identical
+        "Edit" entries with nothing to tell them apart, and the visible word
+        leads the label (WCAG 2.5.3 Label in Name) so voice control still
+        matches it.
+
+        The ``href`` is matched WHOLE, closing quote included: a
+        ``#books-opening`` fragment on this link would name an anchor a loan's
+        edit page does not render, and a substring match on the path would pass
+        with it there.
+        """
+        with app.app_context():
+            first = create_account_of_type(
+                seed_user, db.session, "Savings", "Closed Alpha",
+            )
+            second = create_account_of_type(
+                seed_user, db.session, "Savings", "Closed Beta",
+            )
+            first.is_active = False
+            second.is_active = False
+            db.session.commit()
+            first_id, second_id = first.id, second.id
+            # The ids must DIFFER, or the two assertions below are one.
+            assert first_id != second_id
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            archived_section = resp.data.decode().split(
+                'id="archivedAccounts"',
+            )[1]
+
+            assert f'href="/accounts/{first_id}/edit"' in archived_section
+            assert f'href="/accounts/{second_id}/edit"' in archived_section
+            assert 'aria-label="Edit Closed Alpha"' in archived_section
+            assert 'aria-label="Edit Closed Beta"' in archived_section
+            # The VISIBLE word, which is the half of WCAG 2.5.3 the two
+            # assertions above cannot see: they pin the accessible name, and an
+            # icon-only link with no text node at all satisfies both while
+            # voiding the claim that the visible label LEADS that name.  The
+            # docstring above and the template's own comment each state it; this
+            # is what grades it.
+            assert archived_section.count("</i> Edit") == 2
+
+    def test_an_archived_LOANS_card_links_to_its_edit_page_TOO(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The link is UNGATED, and a loan is the kind that proves it.
+
+        A version of this link that carried the ``#books-opening`` fragment
+        would have to ask whether the account has a books-opening card and be
+        withheld from an amortizing one, whose edit page renders none -- and
+        that gate would take an archived loan's ONLY reach to the page that can
+        rename or re-type it, on a cockpit that badges a paid-off loan and
+        offers Archive on every live cell's kebab.  The plain *Edit* link needs
+        no such question, so this case asserts the loan is offered it.
+
+        Its destination is graded where it belongs: that a loan's edit page
+        carries no books-opening card is
+        ``test_books_opening.py::TestTheCardIsRendered::
+        test_a_LOAN_edit_page_carries_no_card``, and that the page itself
+        answers is asserted here.
+        """
+        with app.app_context():
+            loan = create_account_of_type(
+                seed_user, db.session, "Mortgage", "Closed Mortgage",
+                anchor_balance=Decimal("-1000.00"),
+            )
+            loan.is_active = False
+            db.session.commit()
+            loan_id = loan.id
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            archived_section = resp.data.decode().split(
+                'id="archivedAccounts"',
+            )[1]
+
+            assert "Closed Mortgage" in archived_section
+            assert f'href="/accounts/{loan_id}/edit"' in archived_section
+            assert 'aria-label="Edit Closed Mortgage"' in archived_section
+
+            landed = auth_client.get(f"/accounts/{loan_id}/edit")
+            assert landed.status_code == 200
+
     def test_unarchive_from_dashboard(
         self, app, auth_client, seed_user, seed_periods,
     ):
@@ -2915,20 +2990,18 @@ class TestTrajectoryDisplay:
         with app.app_context():
             acct = _create_savings_account(seed_user)
 
-            rule = make_cadence_rule(
-                seed_user["user"].id, MONTHLY,
-            )
-
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
                 to_account_id=acct.id,
                 name="Monthly Savings",
                 default_amount=Decimal("500.00"),
-                recurrence_rule_id=rule.id,
                 is_active=True,
             )
             db.session.add(template)
+            db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            make_cadence_rule(template, MONTHLY)
 
             goal = _create_goal(seed_user, acct, name="Trajectory Goal")
             db.session.commit()
@@ -3031,20 +3104,18 @@ class TestTrajectoryDisplay:
         with app.app_context():
             acct = _create_savings_account(seed_user)
 
-            rule = make_cadence_rule(
-                seed_user["user"].id, EVERY_PERIOD,
-            )
-
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
                 to_account_id=acct.id,
                 name="Biweekly Savings",
                 default_amount=Decimal("500.00"),
-                recurrence_rule_id=rule.id,
                 is_active=True,
             )
             db.session.add(template)
+            db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            make_cadence_rule(template, EVERY_PERIOD)
 
             goal = _create_goal(seed_user, acct, name="Biweekly Goal")
             db.session.commit()

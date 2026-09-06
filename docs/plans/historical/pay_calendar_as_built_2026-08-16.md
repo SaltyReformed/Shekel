@@ -46,3 +46,30 @@ archive is not load-bearing for either:
   ORM-row reads into it rather than beside it, and `C4` changes that one file plus the readers.
 
 **P33** remains OPEN and is carried on `ledger.md`, not here.
+
+## P38, closed at C4-a-1 (`8962e073`, 2026-08-27)
+
+**The finding.** `_cash_fold` sampled a column at its DERIVED end while `_cash_plan`, one module
+over, clamped a projected row against the STORED span it read off `txn.pay_period` -- one module,
+two ends. Its stated MECHANISM was refuted the day it was written (ruling R-K's identity does NOT
+break, because the fold's steps and the period view's grouping read the same `day_nets`); what
+survived is that a row could RENDER in a column its budget period is not, reported as
+`period_timing`.
+
+**Why it closed here rather than at `C4-c`, which owned it.** The row listed three sites and two had
+already moved: `grid/_mobile_plan.html` renders a `PeriodWindow` and
+`savings_dashboard_service._net_worth` a `list[DerivedPeriod]`, both since `C2-f2`. All three were
+re-grepped against the row's OWN predicate before it was closed, not just the site this step
+touched.
+
+**What it cost.** `$0.00`, measured on production and on both dev clones: 62 periods, 0 stored ends
+disagreeing with the derivation, 0 of 699 still-projected rows whose landing day moves.
+`tests/manual/verify_c4a1_cash_fold_equality.py` produces byte-identical documents on the branch and
+on its merge base against one clone, and planting one corrupted stored end makes those two arms
+disagree on 9 rows -- so the equality is a measurement rather than a blind instrument.
+
+**Its pin moved and was renamed.** The row cited
+`test_cash_period_view.test_a_PROJECTED_row_clamped_against_the_stored_span_still_reconciles`, which
+pinned the refutation while the split existed. It is now
+`test_a_corrupted_stored_end_moves_no_PROJECTED_figure_either`, asserting the opposite figures: the
+row lands INSIDE the column that budgeted it, so `period_timing` is `$0.00` where it was `+$250.00`.

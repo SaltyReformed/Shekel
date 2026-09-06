@@ -29,6 +29,23 @@ standards: "Construct Decimals from strings").
 ``MONTHS_PER_YEAR`` is the calendar-month denominator, and it belongs here
 because 12 is a property of the calendar rather than of any owner.
 
+**The two halves of a loan payment's arithmetic BOTH live here, and plan step
+X-au-g-2c-3a is why the second one moved.** A loan payment is one CHARGE
+(:func:`accrue_monthly_interest`, what time has cost) and one ALLOCATION
+(:func:`apply_payment_cash`, how the cash covers it), and every walk over a
+loan needs both. The charge has been shared from this leaf since E-24 and its
+docstring already claims the property that buys -- "byte-identical by
+construction". The allocation was NOT shared: it sat in
+``loan_ledger._split``, whose import closure is 23 modules, ABOVE two of the
+four walks that need it. ``amortization_engine`` (closure 2) and
+``rate_period_engine`` (closure 3) structurally COULD NOT call it -- reaching
+up is the cycle ``loan_ledger._split -> rate_period_engine ->
+amortization_engine`` -- so each restated the rule inline, and a fourth
+statement (``loan_payment_service._engine_prep``'s escrow floor) disagreed
+with the other three. That was finding **N-409**: a short payment read as
+exactly on schedule. The duplication was FORCED BY THE LAYERING rather than
+chosen, which is why the remedy is a move and not a convention.
+
 **Its partner ``PAY_PERIODS_PER_YEAR = Decimal("26")`` LEFT at the recurrence
 arc's plan step R7a-2a, and it was never a constant.** It stood for how often
 the owner is paid, which is ``budget.pay_schedule.cadence_days`` and is
@@ -42,6 +59,7 @@ that produced this paragraph still stands and is stronger: the biweekly-to-
 monthly factor has one home, and it is no longer a number this module can
 state.
 """
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 
 CENTS = Decimal("0.01")
@@ -49,6 +67,22 @@ ZERO = Decimal("0")
 HUNDRED = Decimal("100")
 
 MONTHS_PER_YEAR = Decimal("12")
+
+
+#: The largest magnitude any of this app's money columns can hold.  Every one
+#: of them is ``Numeric(12, 2)``, so ten integer digits and two decimal places,
+#: and a figure at or above this is UNSTORABLE rather than merely large.
+#:
+#: **Named because a DERIVED figure can exceed it where an entered one cannot.**
+#: A schema bound keeps a typed figure inside the domain (see
+#: ``app.schemas.validation._helpers._NON_NEGATIVE_MONETARY``, and plan step
+#: X-f2-c3 for what omitting one cost), but a door that SUMS stored columns is
+#: bounded by the count of terms rather than by any one of them -- so the sum,
+#: and anything derived from it, needs the domain stated somewhere it can be
+#: compared against.  Reaching the database with a larger figure is
+#: ``psycopg2.errors.NumericValueOutOfRange``, which is an unhandled 500 and,
+#: inside a batch, one that discards every item applied beside it.
+MONEY_COLUMN_MAX: Decimal = Decimal("9999999999.99")
 
 
 def round_money(value: Decimal) -> Decimal:
@@ -180,7 +214,7 @@ def accrue_monthly_interest(balance: Decimal, annual_rate: Decimal) -> Decimal:
     """Return one month's interest on ``balance`` at ``annual_rate``.
 
     The single monthly-accrual primitive every amortization surface shares:
-    ``round_money(balance * annual_rate / 12)`` with a zero-rate guard.  The
+    ``round_money(balance * (annual_rate / 12))`` with a zero-rate guard.  The
     historical replay (``rate_period_engine._replay_payment_row``), the forward
     projection (``amortization_engine`` schedule), the contractual balance walk
     (``rate_period_engine._amortize_forward``), and the posting-ledger loan-payment
@@ -191,6 +225,21 @@ def accrue_monthly_interest(balance: Decimal, annual_rate: Decimal) -> Decimal:
     via :func:`round_money` is the project's only rounding boundary; the
     intermediate ``balance * (annual_rate / 12)`` stays at full Decimal precision
     and rounds exactly once.
+
+    **The parenthesisation is load-bearing and this docstring stated it wrongly
+    until plan step X-au-g-2c-3a** -- it read ``balance * annual_rate / 12``,
+    which is ``(balance * annual_rate) / 12``, the OTHER association.  The code
+    was right and the description was wrong, so nothing moved; what it cost is
+    that the canonical reference for five spellings of one formula described a
+    different formula.  ``debt_strategy_service._accrue_interest`` computes
+    ``(balance * rate) / 12`` under a docstring claiming ``balance * (rate /
+    12)`` -- the two descriptions are exactly SWAPPED, so an auditor comparing
+    them by docstring concludes the copy is canonical.  The two associations are
+    NOT the same function: measured 2026-09-02 over 500,000 randomised draws
+    they differ on one, ``$271,375.20`` at ``0.025`` giving ``$565.37`` against
+    ``$565.36``.  Finding **D52** owns the duplicate; this paragraph exists so
+    the surviving statement of the rule cannot be re-inverted by someone
+    "simplifying" the brackets.
 
     Args:
         balance: The outstanding balance before this month's payment.  ``float``
@@ -206,3 +255,112 @@ def accrue_monthly_interest(balance: Decimal, annual_rate: Decimal) -> Decimal:
     if annual_rate <= 0:
         return Decimal("0.00")
     return round_money(balance * (annual_rate / MONTHS_PER_YEAR))
+
+
+@dataclass(frozen=True)
+class PaymentCashSplit:
+    """The four economic parts one payment's cash divides into, plus the balance after.
+
+    The pure result of :func:`apply_payment_cash`, carrying NO source record --
+    so the same arithmetic serves a settled shadow, a projected shadow, a
+    synthesized contractual installment and a schedule row.
+
+    Attributes:
+        interest: The interest this payment cleared -- an Expense leg (``>= 0``).
+            Echoed back from the charge the caller supplied; never re-derived
+            here.
+        escrow: The escrow this payment cleared, NO inflation -- an Expense leg
+            (``>= 0``).  Echoed back from the charge the caller supplied.
+        principal: The real debt paid down, ``cash - interest - escrow``, capped
+            at the outstanding balance.  May be NEGATIVE (an underpayment that
+            grows the balance) -- surfaced, never clamped (plan D5).
+        excess: A payoff overpayment routed to a Refund Receivable (Asset) leg
+            (``>= 0``): cash beyond what closes the loan (plan D4).
+        balance_after: The outstanding balance after this payment
+            (``balance_before - principal``).
+    """
+
+    interest: Decimal
+    escrow: Decimal
+    principal: Decimal
+    excess: Decimal
+    balance_after: Decimal
+
+
+def apply_payment_cash(
+    cash: Decimal,
+    balance: Decimal,
+    charged_interest: Decimal,
+    charged_escrow: Decimal,
+) -> PaymentCashSplit:
+    """Allocate one payment's *cash* against charges ALREADY standing.
+
+    **The ONE allocation rule in the application** (plan steps **R16-a** and
+    **X-au-g-2c-3a**).  A loan payment's cash covers what the loan has charged
+    -- the escrow it impounds and the interest it has accrued -- and only the
+    remainder pays the debt down.  That rule is a function of the CASH and the
+    CHARGES and of nothing else.  WHICH charges stand is a different question,
+    answered by how much time has passed and at what rate.
+
+    **Fused, the two made the payment COUNT the clock.**  Measured on a
+    production clone: 30 payments of ``$531.94`` fourteen days apart charged the
+    same 30 months of interest as 30 a month apart -- ``$1,096.34`` either way,
+    split for split -- so the Van Loan paid off in half the time modelled the
+    identical interest.
+    With the accrual lifted out, a second payment inside one accrual period
+    arrives here with ``charged_interest = 0.00`` and pays pure principal, which
+    is what it does.
+
+    **It lives at this leaf so that every walk can reach it**, which two of the
+    four could not while it sat in ``loan_ledger`` -- see the module docstring.
+
+    Two regimes (plan Section 6):
+
+    * **Loan already closed** (``balance <= 0``): nothing is owed, so the entire
+      cash is an overpayment routed to ``excess`` (a Refund) whatever the caller
+      computed, and the balance does not move.  This keeps every post-payoff cash
+      entry matched by a correction instead of a phantom paydown.
+    * **Open loan**: ``principal = cash - charged_interest - charged_escrow``; a
+      principal that would overrun the balance caps to it, the remainder going to
+      ``excess``.
+
+    Args:
+        cash: The cash this payment moved (settled actual, live planned, or
+            synthesized contractual).
+        balance: The outstanding balance before this payment.
+        charged_interest: The interest standing against the loan for this payment
+            to clear.  ``0.00`` for a payment that follows another inside one
+            accrual period.  Never re-derived here.
+        charged_escrow: The escrow standing against the loan for this payment to
+            clear -- ``0.00`` when the loan escrows nothing, or when an earlier
+            payment in the same accrual period already covered it.
+
+    Returns:
+        The :class:`PaymentCashSplit` for this payment.
+    """
+    if balance <= 0:
+        # Already paid off: a further payment is pure overpayment (refund), with no
+        # interest and no escrow due, and the balance does not move.
+        return PaymentCashSplit(
+            interest=Decimal("0.00"),
+            escrow=Decimal("0.00"),
+            principal=Decimal("0.00"),
+            excess=cash,
+            balance_after=balance,
+        )
+    principal = cash - charged_interest - charged_escrow
+    if principal > balance:
+        # Payoff overpayment: principal caps at the remaining balance; the surplus
+        # is a refund the lender owes back (plan D4), never absorbed into principal
+        # or escrow.
+        excess = principal - balance
+        principal = balance
+    else:
+        excess = Decimal("0.00")
+    return PaymentCashSplit(
+        interest=charged_interest,
+        escrow=charged_escrow,
+        principal=principal,
+        excess=excess,
+        balance_after=balance - principal,
+    )

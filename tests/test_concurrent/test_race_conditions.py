@@ -30,9 +30,23 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
-from app.services import account_service, pay_period_admin, pay_schedule_service
-from tests._test_helpers import assert_pay_period_invariants, linked_ledger_total
+from app.services import (
+    account_service,
+    pay_period_admin,
+    pay_period_rolling,
+    pay_schedule_service,
+)
+from tests._test_helpers import (
+    rhythm_of,
+    assert_pay_period_invariants,
+    last_covered_day,
+    linked_ledger_total,
+    open_books_before_the_first_assertion,
+    open_owner_calendar,
+)
 from app.services import cash_ledger
+from app.utils.dates import display_today
+from app.models.amount_ownership import AmountOwnership
 
 
 # ---------------------------------------------------------------------------
@@ -137,22 +151,28 @@ def _create_user_with_data(db_session):
     # Pay periods must exist before the account so the E-19 factory
     # has an anchor to assign.  Three periods: past, current
     # (containing today), and future.
-    today = date.today()
+    #
+    # **The APP's civil day, never the process's.**  ``pay_period_admin
+    # .top_up_rolling_window`` defaults ``as_of`` to ``display_today()``, so a
+    # fixture built from ``date.today()`` places its period boundaries on a
+    # DIFFERENT day whenever the process timezone has already rolled over and
+    # the display one has not.  CI pins ``TZ=Pacific/Kiritimati`` (UTC+14)
+    # exactly to catch that, and on 2026-08-23 it did: the process read Monday
+    # 08-24 while the app read Sunday 08-23, so the "past" period still ended
+    # ON the app's today, counted INSIDE the rolling window, and the deficit
+    # came out 3 where the test expected 4.  It fires only when the two clocks
+    # straddle a Sunday/Monday boundary, which is why it took until the first
+    # CI run inside that window to appear.
+    today = display_today()
     current_start = today - timedelta(days=today.weekday())  # Monday this week
-    past_period = PayPeriod(
-        user_id=user.id,
-        start_date=current_start - timedelta(days=14),
-        end_date=current_start - timedelta(days=1),
-        period_index=0,
+    # TWO periods from one batch, through the writer that owns the table.
+    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+    # A two-payday batch at a fortnightly cadence derives exactly the pair
+    # this built by hand: the first ends the day before the second opens, and
+    # the second ends its own payday plus thirteen.
+    past_period, current_period = open_owner_calendar(
+        user.id, current_start - timedelta(days=14), num_periods=2,
     )
-    current_period = PayPeriod(
-        user_id=user.id,
-        start_date=current_start,
-        end_date=current_start + timedelta(days=13),
-        period_index=1,
-    )
-    db_session.add_all([past_period, current_period])
-    db_session.flush()
 
     checking_type = (
         db_session.query(AccountType).filter_by(name="Checking").one()
@@ -165,6 +185,10 @@ def _create_user_with_data(db_session):
             anchor_balance=Decimal("5000.00"),
         ),
     )
+    # Its BOOKS open before anything this fixture dates (plan step
+    # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day it
+    # asserts -- the owner's today -- and this suite settles on or before it.
+    open_books_before_the_first_assertion(db_session, account)
 
     scenario = Scenario(
         user_id=user.id,
@@ -219,13 +243,14 @@ class TestConcurrentMarkDone:
 
         txn = Transaction(
             account_id=data["account"].id,
+            user_id=data['past_period'].user_id,
             pay_period_id=data["past_period"].id,
             scenario_id=data["scenario"].id,
             status_id=projected.id,
             name="Rent",
             category_id=data["category"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("1500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("1500.00")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -273,13 +298,14 @@ class TestConcurrentMarkDone:
 
         txn = Transaction(
             account_id=data["account"].id,
+            user_id=data['past_period'].user_id,
             pay_period_id=data["past_period"].id,
             scenario_id=data["scenario"].id,
             status_id=projected.id,
             name="Paycheck",
             category_id=data["category"].id,
             transaction_type_id=income_type.id,
-            estimated_amount=Decimal("3000.00"),
+            amount_ownership=AmountOwnership.own(Decimal("3000.00")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -337,13 +363,14 @@ class TestConcurrentCarryForwardAndEdit:
 
         txn = Transaction(
             account_id=data["account"].id,
+            user_id=data['past_period'].user_id,
             pay_period_id=data["past_period"].id,
             scenario_id=data["scenario"].id,
             status_id=projected.id,
             name="Groceries",
             category_id=data["category"].id,
             transaction_type_id=expense_type.id,
-            estimated_amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
         )
         db.session.add(txn)
         db.session.commit()
@@ -546,7 +573,7 @@ class TestConcurrentRollingTopUp:
     @staticmethod
     def _enable_rolling(db_session, user_id, target):
         """Give the user a schedule row with rolling on at ``target``."""
-        pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
+        pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
         pay_schedule_service.set_rolling(
             user_id, enabled=True, target_periods=target,
         )
@@ -566,9 +593,9 @@ class TestConcurrentRollingTopUp:
         self._enable_rolling(db.session, user_id, target=5)
 
         def _topup():
-            created = pay_period_admin.top_up_rolling_window(user_id)
+            created = pay_period_rolling.top_up_rolling_window(user_id)
             db.session.commit()
-            return created
+            return len(created)
 
         created_a, created_b = _run_concurrent(app, _topup, _topup)
 
@@ -580,11 +607,36 @@ class TestConcurrentRollingTopUp:
 
         db.session.expire_all()
         periods = db.session.query(PayPeriod).filter_by(user_id=user_id).all()
-        indices = [p.period_index for p in periods]
-        assert len(indices) == len(set(indices)), (
-            f"duplicate period_index landed: {sorted(indices)}"
+        # **Keyed on the PAYDAY, which is the only thing a race can duplicate
+        # since plan step ``pay_calendar:C4-c``.**  This asserted that the
+        # ORDINALS were distinct, and that became a theorem the moment the
+        # ordinal stopped being a column: it is the row's position in the
+        # owner's sorted payday set, so over an owner's COMPLETE set it is
+        # exactly ``0..n-1`` and the assertion could not fail for any database
+        # state -- including one where two appenders had both landed.  The
+        # payday is what ``uq_pay_periods_user_start`` protects and what a
+        # racing append can really collide on (adversarial review, 2026-09-01).
+        paydays = [period.start_date for period in periods]
+        assert len(paydays) == len(set(paydays)), (
+            f"two appends landed the same payday: {sorted(paydays)}"
         )
-        future = [p for p in periods if p.end_date >= date.today()]
+        # And the schedule the race leaves behind is still ON CADENCE -- a
+        # second appender computing its floor from a stale read would append at
+        # some other spacing, which distinct paydays alone would not catch.
+        gaps = {
+            (later - earlier).days
+            for earlier, later in zip(sorted(paydays), sorted(paydays)[1:])
+        }
+        # The OWNER's own stored cadence, not a constant restated here: it is
+        # what the top-up appends at and what the derivation projects the last
+        # period from, so this cannot go stale if the fixture's cadence moves.
+        cadence = pay_schedule_service.resolve_cadence(user_id)
+        assert gaps == {cadence}, (
+            f"the race left an off-cadence schedule: gaps {sorted(gaps)} "
+            f"against a stored cadence of {cadence}"
+        )
+        # The same clock the door counted with; see ``_create_user_with_data``.
+        future = [p for p in periods if last_covered_day(p) >= display_today()]
         assert len(future) == 5, (
             f"window should hold exactly the target of 5, found {len(future)}"
         )
@@ -604,7 +656,7 @@ class TestConcurrentRollingTopUp:
         self._enable_rolling(db.session, user_id, target=5)
 
         def _topup():
-            pay_period_admin.top_up_rolling_window(user_id)
+            pay_period_rolling.top_up_rolling_window(user_id)
             db.session.commit()
 
         def _extend():
@@ -615,11 +667,36 @@ class TestConcurrentRollingTopUp:
 
         db.session.expire_all()
         periods = db.session.query(PayPeriod).filter_by(user_id=user_id).all()
-        indices = [p.period_index for p in periods]
-        assert len(indices) == len(set(indices)), (
-            f"duplicate period_index landed: {sorted(indices)}"
+        # **Keyed on the PAYDAY, which is the only thing a race can duplicate
+        # since plan step ``pay_calendar:C4-c``.**  This asserted that the
+        # ORDINALS were distinct, and that became a theorem the moment the
+        # ordinal stopped being a column: it is the row's position in the
+        # owner's sorted payday set, so over an owner's COMPLETE set it is
+        # exactly ``0..n-1`` and the assertion could not fail for any database
+        # state -- including one where two appenders had both landed.  The
+        # payday is what ``uq_pay_periods_user_start`` protects and what a
+        # racing append can really collide on (adversarial review, 2026-09-01).
+        paydays = [period.start_date for period in periods]
+        assert len(paydays) == len(set(paydays)), (
+            f"two appends landed the same payday: {sorted(paydays)}"
         )
-        future = [p for p in periods if p.end_date >= date.today()]
+        # And the schedule the race leaves behind is still ON CADENCE -- a
+        # second appender computing its floor from a stale read would append at
+        # some other spacing, which distinct paydays alone would not catch.
+        gaps = {
+            (later - earlier).days
+            for earlier, later in zip(sorted(paydays), sorted(paydays)[1:])
+        }
+        # The OWNER's own stored cadence, not a constant restated here: it is
+        # what the top-up appends at and what the derivation projects the last
+        # period from, so this cannot go stale if the fixture's cadence moves.
+        cadence = pay_schedule_service.resolve_cadence(user_id)
+        assert gaps == {cadence}, (
+            f"the race left an off-cadence schedule: gaps {sorted(gaps)} "
+            f"against a stored cadence of {cadence}"
+        )
+        # The same clock the door counted with; see ``_create_user_with_data``.
+        future = [p for p in periods if last_covered_day(p) >= display_today()]
         assert len(future) >= 5, (
             f"window should be filled to at least the target of 5, "
             f"found {len(future)}"

@@ -1,7 +1,9 @@
 {# Mobile "Plan" partial -- read-only multi-period summary accordion.
 
-   Renders the next `PLAN_WINDOW_PERIODS` (13 ~= 6 months biweekly)
-   pay periods starting at `current_period` as a vertical stack of
+   Renders every pay period inside the next `PLAN_WINDOW_MONTHS` (6)
+   months -- however many of THIS owner's paychecks that is, derived from
+   their cadence rather than the hardcoded 13 this said until recurrence
+   plan step R-F17 -- starting at `current_period` as a vertical stack of
    collapsible cards.  Each card's collapsed state shows the period's
    projected end balance prominently with smaller income / expense /
    net stats; expanding the card reveals static line-item lists for
@@ -25,8 +27,9 @@
 
    Expected Jinja context (* required):
      plan_periods *            -- a `PeriodWindow` in period-index
-                                  order, up to PLAN_WINDOW_PERIODS
-                                  long, starting at `current_period`.
+                                  order, covering PLAN_WINDOW_MONTHS
+                                  months of the owner's paychecks,
+                                  starting at `current_period`.
      plan_income_row_keys *    -- list[RowKey] for income across the
                                   plan window.
      plan_expense_row_keys *   -- list[RowKey] for expense across the

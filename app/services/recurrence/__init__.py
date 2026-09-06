@@ -156,6 +156,7 @@ under it; what changes above the door then is the two surfaces that still read
 ``obligations_aggregator``, both through :func:`cadence_of`).
 """
 from app.services.recurrence._authoring import (
+    RecurrenceOwner,
     author_rule,
     build_transient_rule,
     reauthor_rule,
@@ -184,6 +185,16 @@ from app.services.recurrence._frequency import (
     emits_period_starts,
     has_day_of_month_coordinate,
     is_authorable,
+)
+from app.services.recurrence._closing import (
+    DERIVED_STOP_KINDS,
+    EMPTY,
+    INDEFINITE,
+    ClosesOn,
+    Closing,
+    DerivedStop,
+    Empty,
+    Indefinite,
 )
 from app.services.recurrence._describe import (
     RecurrenceDescription,
@@ -236,7 +247,10 @@ from app.services.recurrence._vocabulary import (
 )
 
 __all__ = [
+    "DERIVED_STOP_KINDS",
+    "EMPTY",
     "END_BOUND_KINDS",
+    "INDEFINITE",
     "NEVER_ENDS",
     "UNREADABLE_CADENCE_MESSAGE",
     "AuthorableCadence",
@@ -244,12 +258,17 @@ __all__ = [
     "Cadence",
     "CadenceOption",
     "CadenceReading",
+    "ClosesOn",
+    "Closing",
+    "DerivedStop",
     "EndBound",
     "EndBoundColumns",
     "EndBoundInputError",
     "EndBoundOption",
+    "Empty",
     "EndsAfterOccurrences",
     "EndsOnDate",
+    "Indefinite",
     "NeverEnds",
     "OccurrencePlacement",
     "PickerModel",
@@ -257,6 +276,7 @@ __all__ = [
     "RecurrenceDescriptionError",
     "RecurrenceFrequencyError",
     "RecurrenceGenerationError",
+    "RecurrenceOwner",
     "RecurrenceResolutionError",
     "RecurrenceSpec",
     "ResolvedRecurrence",

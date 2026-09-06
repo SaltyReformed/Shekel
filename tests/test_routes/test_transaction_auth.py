@@ -21,15 +21,18 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
-from app.services import pay_period_service, pay_period_write
+from app.services import pay_period_write
 from app.services import account_service
+from tests._test_helpers import pay_periods_hydrated, rhythm_of
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_other_user_with_txn(seed_user, seed_periods_today):
     """Create a second user with their own period and transaction.
 
     Returns:
-        dict with keys: user, period, transaction.
+        dict with keys: user, period, transaction, scenario, category,
+        account.
     """
     other_user = User(
         email="other@shekel.local",
@@ -48,7 +51,7 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
         user_id=other_user.id,
         first_payday=date(2026, 1, 2),
         num_periods=3,
-        cadence_days=14,
+        rhythm=rhythm_of(14),
     )
     db.session.flush()
 
@@ -83,6 +86,7 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
     txn = Transaction(
+        user_id=other_periods[0].user_id,
         pay_period_id=other_periods[0].id,
         scenario_id=scenario.id,
         account_id=account.id,
@@ -90,7 +94,7 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
         name="Other User Rent",
         category_id=category.id,
         transaction_type_id=expense_type.id,
-        estimated_amount=Decimal("1500.00"),
+        amount_ownership=AmountOwnership.own(Decimal("1500.00")),
     )
     db.session.add(txn)
     db.session.commit()
@@ -101,6 +105,9 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
         "transaction": txn,
         "scenario": scenario,
         "category": category,
+        # The account is the fourth user-scoped id the cell fragments read and
+        # the one no ownership test named until plan step C2-f3e.
+        "account": account,
     }
 
 
@@ -641,6 +648,179 @@ class TestFormRenderingOwnership:
             assert resp.status_code == 200
 
 
+class TestCellFragmentsResolveOwnershipStructurally:
+    """The three empty-cell fragments prove ownership without loading a row.
+
+    Plan step **C2-f3e**, closing ledger row **P51**'s second half.  All
+    three answered a submitted ``period_id`` by fetching
+    ``budget.pay_periods`` by primary key and comparing ``row.user_id``
+    against the requester -- correct, but a guard a later edit can drop with
+    no test able to see the difference.  They ask the owner's derived pay
+    calendar now: it holds ONE owner's whole schedule and nothing else, so
+    another user's id is simply ABSENT and there is no comparison left to
+    forget.  Same shape as ``grid.partials.mobile_this_period_summary``
+    (C2-f2b) and ``transactions._resolve_carry_forward_context`` (C2-f3c).
+
+    ``TestFormRenderingOwnership`` above still owns the three foreign-period
+    refusals themselves; what is asserted here is the axes it left open -- an
+    absent id, the identity of the three refusals' responses, and the account
+    probe none of them covered -- plus the ONE structural property that says
+    the check is the calendar: no ORM row is loaded.
+
+    **"Derives the calendar exactly once" is asserted in the architecture
+    gate, not here**, and a first draft of this class had its own copy.
+    ``tests/_test_helpers.counting_calls`` is by its own docstring "the ONE
+    instrument" for that question and
+    ``test_one_read_pass_per_render.TestOneCalendarDerivationPerRender`` is
+    where every other render is graded; the copy counted raw SQL text instead,
+    which an adversarial review measured would break the moment plan step
+    ``balance:X-x3`` -- ready NOW -- rewrites a neighbouring query to mention
+    ``start_date``.
+
+    **The property below is TRUE of an owner holding a ``budget.pay_schedule``
+    row, which is every owner a live door has created since plan step
+    X-ad-a.** A legacy owner without one (plan finding **P8**) makes
+    ``pay_schedule_service.resolve_cadence`` fall back to
+    ``db.session.query(PayPeriod)...first()``, a full entity load -- so these
+    fragments hydrate one for such an owner, measured, and that read is C4's
+    to delete with the column it orders by.  Stated because the guard would
+    otherwise read as unconditional.
+    """
+
+    ENDPOINTS = (
+        "/transactions/new/quick",
+        "/transactions/new/full",
+        "/transactions/empty-cell",
+    )
+
+    @staticmethod
+    def _own_cell(seed_user, seed_periods_today):
+        """Return the query string naming a real cell of the owner's grid."""
+        expense_type = db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one()
+        return {
+            "category_id": seed_user["categories"]["Groceries"].id,
+            "period_id": seed_periods_today[0].id,
+            "transaction_type_id": expense_type.id,
+            "account_id": seed_user["account"].id,
+        }
+
+    @pytest.mark.parametrize("endpoint", ENDPOINTS)
+    def test_rejects_other_users_account(
+        self, app, auth_client, seed_user, seed_periods_today, endpoint,
+    ):
+        """A foreign account_id returns 404 on every cell fragment.
+
+        The account is the axis the original H1 tests never probed on these
+        three routes -- they covered the category and the period.  It is a
+        real read: the account id rides into the create form's hidden fields
+        and decides which account the row is booked against.
+        """
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods_today)
+            args = self._own_cell(seed_user, seed_periods_today)
+            args["account_id"] = other["account"].id
+            resp = auth_client.get(endpoint, query_string=args)
+            assert resp.status_code == 404
+
+    @pytest.mark.parametrize("endpoint", ENDPOINTS)
+    def test_rejects_absent_period_id(
+        self, app, auth_client, seed_user, seed_periods_today, endpoint,
+    ):
+        """An omitted period_id returns 404 rather than rendering a blank cell.
+
+        These routes read their ids straight off the query string, so ``None``
+        is reachable in a way it is not on the schema-validated create POSTs.
+        ``PayCalendar.period_by_id`` answers ``None`` for ``None`` by
+        contract, which is the refusal -- and the reason this case is asserted
+        rather than assumed is that the alternative renders a form whose
+        ``pay_period_id`` is the empty string.
+        """
+        with app.app_context():
+            args = self._own_cell(seed_user, seed_periods_today)
+            del args["period_id"]
+            resp = auth_client.get(endpoint, query_string=args)
+            assert resp.status_code == 404
+
+    @pytest.mark.parametrize("endpoint", ENDPOINTS)
+    def test_the_three_period_refusals_are_indistinguishable(
+        self, app, auth_client, seed_user, seed_periods_today, endpoint,
+    ):
+        """A foreign, an unknown and an absent period_id answer IDENTICALLY.
+
+        **The security response rule is about the RESPONSE, and every other
+        test here checks only the status code.**  "404 for both not found and
+        not yours" is a statement that an attacker cannot tell the two apart,
+        which a matching status with a differing body does not deliver -- and
+        the three ids travel three different code paths to get here (a
+        calendar miss on a real row, a calendar miss on no row, and the
+        ``None``-in-``None``-out contract), so their agreement is a property
+        rather than a tautology.
+
+        A first draft of this case asserted only that an unknown id 404s.  An
+        adversarial test-quality review measured that no single-line mutation
+        could make it fail on its own -- under the calendar design "belongs to
+        nobody" and "belongs to someone else" are the SAME branch -- so it was
+        replaced with the assertion that branch is actually there to make.
+        """
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods_today)
+            base = self._own_cell(seed_user, seed_periods_today)
+
+            foreign = dict(base, period_id=other["period"].id)
+            unknown = dict(base, period_id=999999)
+            absent = {k: v for k, v in base.items() if k != "period_id"}
+
+            answers = [
+                auth_client.get(endpoint, query_string=args)
+                for args in (foreign, unknown, absent)
+            ]
+            statuses = {r.status_code for r in answers}
+            bodies = {r.get_data() for r in answers}
+            assert statuses == {404}, statuses
+            assert len(bodies) == 1, bodies
+
+    @pytest.mark.parametrize("endpoint", ENDPOINTS)
+    def test_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today, endpoint,
+    ):
+        """No ORM ``PayPeriod`` is loaded while the fragment renders.
+
+        The structural claim itself: an ownership check written as
+        ``row.user_id != current_user.id`` needs the ROW, so an empty
+        hydration count is the property that cannot hold while the old guard
+        exists.  It fails on the pre-C2-f3e routes, which is what makes it a
+        firing control rather than a restatement.
+
+        A statement counter could not make this measurement -- a
+        ``db.session.get`` served from the identity map issues none -- and
+        counting identity-map survivors could not either, because the map is
+        weak.  See :func:`tests._test_helpers.pay_periods_hydrated`.
+
+        ``expunge_all`` FIRST, and it is what keeps the probe honest rather
+        than a tidy-up: the fixture hands back live ORM ``PayPeriod`` rows, and
+        an id already in the identity map is returned by ``session.get``
+        without a load, so the event this counts would never fire and the
+        guard would pass on the very code it exists to refuse.  It does fire
+        without this line today (measured against the pre-step routes), so
+        this pins a property the fixture currently supplies by accident.
+
+        See the class docstring for the one owner shape this is NOT true of.
+        """
+        with app.app_context():
+            args = self._own_cell(seed_user, seed_periods_today)
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.get(endpoint, query_string=args)
+            assert resp.status_code == 200
+            assert hydrated == [], (
+                f"{endpoint} hydrated {len(hydrated)} PayPeriod row(s); it "
+                f"resolves the submitted id against the owner's derived "
+                f"calendar, which is loaded as a column tuple"
+            )
+
+
 class TestCarryForwardOwnership:
     """Verify carry-forward rejects another user's period."""
 
@@ -650,3 +830,190 @@ class TestCarryForwardOwnership:
             other = _create_other_user_with_txn(seed_user, seed_periods_today)
             resp = auth_client.post(f"/pay-periods/{other['period'].id}/carry-forward")
             assert resp.status_code == 404
+
+
+class TestWriteDoorsResolveOwnershipStructurally:
+    """The WRITE doors prove a submitted paycheck's owner without loading it.
+
+    Plan step **pay_calendar:C13-b**, closing ledger row **P75**'s second
+    half.  ``TestCellFragmentsResolveOwnershipStructurally`` above asserts the
+    same property for the three READ fragments C2-f3e moved; these are the
+    transaction doors it left behind -- the two creates and the PATCH.  Each
+    fetched ``budget.pay_periods`` by primary key and compared ``row.user_id``
+    against the requester, through
+    ``transactions._helpers._resolve_owned_fks``.  The transfer family's three
+    are graded the same way in ``test_transfers``.
+
+    **Why the property is a hydration count and not a status code.**  The
+    404s themselves are ``TestCreateOwnership``'s already, and they pass
+    either way: plan step ``C13-a``'s ``fk_transactions_owner_period`` would
+    refuse the same write with the guard deleted.  What tells a calendar
+    lookup apart from a primary-key compare is that the calendar loads COLUMN
+    TUPLES and never an entity, so an empty hydration list is the one
+    assertion that cannot hold while the old guard exists.
+
+    **The REFUSAL path, deliberately.**  A successful create renders the grid
+    cell, and ``_render_helpers.render_transaction_cell`` reads
+    ``pay_period.start_date`` for its due caption -- one hydration this step
+    did not remove, only MOVED (see that function's docstring).  Asking the
+    question on the refusal keeps the measurement about the ownership door.
+
+    ``expunge_all`` FIRST, for the reason
+    :func:`tests._test_helpers.pay_periods_hydrated` gives: the fixture hands
+    back live ORM rows, and a ``session.get`` served from the identity map
+    fires nothing, so without it the probe would read zero on the very code it
+    exists to refuse.
+
+    The same caveat ``TestCellFragmentsResolveOwnershipStructurally`` states
+    applies: an owner with no ``budget.pay_schedule`` row makes
+    ``pay_schedule_service.resolve_cadence`` fall back to a full entity load.
+    Every owner these fixtures build has one.
+    """
+
+    @staticmethod
+    def _expense_type_id():
+        """Return the Expense transaction-type id."""
+        return db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one().id
+
+    def test_inline_create_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /transactions/inline refuses a foreign period, loading none."""
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods_today)
+            payload = {
+                "estimated_amount": "50.00",
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "pay_period_id": other["period"].id,
+                "transaction_type_id": self._expense_type_id(),
+                "scenario_id": seed_user["scenario"].id,
+                "account_id": str(seed_user["account"].id),
+            }
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.post("/transactions/inline", data=payload)
+            assert resp.status_code == 404
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )
+
+    def test_adhoc_create_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /transactions refuses a foreign period, loading none."""
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods_today)
+            payload = {
+                "name": "Sneaky Expense",
+                "estimated_amount": "50.00",
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "pay_period_id": other["period"].id,
+                "transaction_type_id": self._expense_type_id(),
+                "scenario_id": seed_user["scenario"].id,
+                "account_id": str(seed_user["account"].id),
+            }
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.post("/transactions", data=payload)
+            assert resp.status_code == 404
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )
+
+    def test_patch_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """PATCH /transactions/<id> refuses a foreign period, loading none.
+
+        The row is the REQUESTER'S own, so the refusal can only come from the
+        submitted ``pay_period_id``: a foreign row would 404 at the ownership
+        door above and never reach the FK probe at all.
+        """
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods_today)
+            mine = Transaction(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=db.session.query(Status).filter_by(
+                    name="Projected",
+                ).one().id,
+                name="Mine",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=self._expense_type_id(),
+                amount_ownership=AmountOwnership.own(Decimal("10.00")),
+            )
+            db.session.add(mine)
+            db.session.commit()
+            txn_id, foreign_period_id = mine.id, other["period"].id
+
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.patch(
+                    f"/transactions/{txn_id}",
+                    data={"pay_period_id": str(foreign_period_id)},
+                )
+            assert resp.status_code == 404
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the door resolves "
+                f"the submitted id against the owner's derived calendar"
+            )
+
+
+class TestTheOwnerIsReadOffTheRow:
+    """The route-boundary door reads ``user_id``, not the paycheck.
+
+    Plan step **pay_calendar:C13-b**, closing ledger row **P75**'s first half:
+    ELEVEN reads walked ``X.pay_period.user_id`` to learn a value the row has
+    carried since ``C13-a``.  ``utils.auth_helpers.get_accessible_transaction``
+    is the canonical one, reached from eight route sites.
+
+    ``GET /transactions/<id>/entries`` is the door that grades it: it proves
+    ownership through that helper and then renders a purchase list whose
+    every span comes from the owner's DERIVED calendar (column tuples), so
+    after this step the whole request touches no ORM ``PayPeriod`` at all.
+    Before it the ownership walk hydrated exactly one.
+
+    The refusal half -- a foreign row answering 404 -- is
+    ``TestTransactionOwnership``'s and is unchanged by this step; what is
+    asserted here is that the answer no longer costs a relationship.
+    """
+
+    def test_entry_list_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /transactions/<id>/entries loads no ORM PayPeriod."""
+        with app.app_context():
+            txn = Transaction(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=db.session.query(Status).filter_by(
+                    name="Projected",
+                ).one().id,
+                name="Groceries envelope",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=db.session.query(TransactionType)
+                .filter_by(name="Expense").one().id,
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
+                is_envelope=True,
+            )
+            db.session.add(txn)
+            db.session.commit()
+            txn_id = txn.id
+
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.get(f"/transactions/{txn_id}/entries")
+            assert resp.status_code == 200
+            assert hydrated == [], (
+                f"hydrated {len(hydrated)} PayPeriod row(s); the ownership "
+                f"door reads txn.user_id and the spans come from the derived "
+                f"calendar"
+            )

@@ -26,7 +26,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.utils.dates import add_months
-from app.utils.money import MONTHS_PER_YEAR, round_money
+from app.utils.money import accrue_monthly_interest, round_money
 
 # Constants for Decimal arithmetic -- avoids constructing these per call.
 ZERO = Decimal("0.00")
@@ -469,9 +469,33 @@ def _accrue_interest(state: _SimulationState) -> None:
 
     Modifies state.balances and state.interest_totals in place.
 
-    Monthly interest = balance * (annual_rate / 12), quantized to 2
-    decimal places with ROUND_HALF_UP.  Matches the amortization
-    engine's interest calculation convention.
+    Charges through :func:`~app.utils.money.accrue_monthly_interest`, the ONE
+    monthly-accrual primitive -- the same call
+    ``amortization_engine._projection``, ``rate_period_engine`` and the loan
+    fold make, so this simulation and the loan surfaces accrue byte-identically
+    by construction.
+
+    **It was a FIFTH inline spelling until this step, and the two were not the
+    same function.**  It computed ``round_money(balance * rate / 12)``, which
+    associates as ``(balance * rate) / 12``, against the primitive's
+    ``balance * (rate / 12)``: measured over 500,000 randomised draws they
+    differ on one, ``$271,375.20`` at ``0.025`` giving ``$565.37`` against
+    ``$565.36`` (2026-09-02).  Finding **D52** recorded the duplicate with the
+    evidence *"the two orderings agree on 200,000 randomised draws"*, and that
+    sentence is what this refutes -- an agreement measured at one sample size
+    and quoted as a reason.
+
+    **Its docstring also claimed "Matches the amortization engine's interest
+    calculation convention", and that was FALSE about a named component**: that
+    engine calls the primitive (``_projection.py`` imports and calls
+    ``accrue_monthly_interest``), so the copy asserted conformance to a
+    convention it did not implement.  A misstated formula is caught by reading
+    the code beside it; a false conformance claim tells the reader the question
+    is already settled, which is why five spellings of one rule survived review.
+
+    Moves ``$0.00`` on production: walked over both live debts' full
+    amortization at their own rates (Mortgage 6.875%, Van Loan 5.668%) the two
+    spellings never part, so lifetime interest is identical to the cent.
 
     Args:
         state: The simulation working state; balances and interest_totals
@@ -480,8 +504,8 @@ def _accrue_interest(state: _SimulationState) -> None:
     for i, debt in enumerate(state.sorted_debts):
         if state.balances[i] <= ZERO:
             continue
-        interest = round_money(
-            state.balances[i] * debt.interest_rate / MONTHS_PER_YEAR,
+        interest = accrue_monthly_interest(
+            state.balances[i], debt.interest_rate,
         )
         state.balances[i] += interest
         state.interest_totals[i] += interest
