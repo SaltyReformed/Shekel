@@ -852,6 +852,17 @@ _FENCED_MODULE_RULINGS = {
         # it carries no balance-at-T either, and ``None`` is the ABSENCE of a
         # derivation rather than a figure.
         "amounts_or_none",
+        # The read pass's PAYCHECK PRICER (plan step salary:S3-d).  A
+        # NON-producer on exactly the ground ``amounts`` stands on: it hands
+        # back an ``income_service.PaycheckPricing``, which prices one
+        # profile's PAYCHECKS per payday and carries no balance-at-T of any
+        # kind -- a paycheck's ``net_pay`` is what a job pays on a day, not
+        # what an account holds at one -- and
+        # ``income_service.paycheck_pricing`` is a public leaf BELOW this seam
+        # that any consumer may call directly for the identical value.  What
+        # this adds is that the seam and its caller cannot end up pricing one
+        # render's paychecks twice.
+        "paychecks",
     })),
     # The loan-payment LOADER module (:data:`_LOAN_PAYMENT_SEAM_MODULES`).  It
     # was "the one reader-allowlisted module outside the defining package" until

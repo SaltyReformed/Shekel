@@ -63,6 +63,7 @@ from app.exceptions import BaselineMissingError, ForeignAccountError
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.services.cash_ledger import AmountBasis, amount_basis
+from app.services.income_service import PaycheckPricing, paycheck_pricing
 from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
 from app.services.pay_calendar import PayCalendar, PeriodWindow, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
@@ -223,35 +224,42 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             sibling's.
         _amount_bases: The pass's amount-model memo, keyed by ``scenario_id``
             and filled by :meth:`amounts`.  Private for the same reason.
-        payroll_breakdowns: The pass's paycheck-PROJECTION memo, keyed by
-            ``salary_profiles.id`` and filled by
-            :func:`~app.services.projection_inputs.load_payroll_feeds` (plan
-            step **salary:R14-b**).  **PUBLIC**, beside ``loans`` / ``plans``
-            / ``payoffs`` and not beside ``_cash_folds``, and the paragraph
-            above is the test it was put to: exposing it hands out no balance
-            the fence must guard.  A
-            :class:`~app.services.paycheck_calculator.PaycheckBreakdown` does
-            carry ``net_pay`` -- but the SAME projection for the same owner is
-            already reachable through :meth:`amounts`, whose
-            :class:`~app.services.income_service.SalaryPricing` memoizes it
-            and publishes the net through the amount model by design.  A
-            private field here would guard a figure the pass beside it
-            already answers, which is a fence rather than a boundary.  *An
-            earlier build of this step made it private on the ``_cash_folds``
-            argument without checking that second half; two of its four
-            callers then had to reach past the underscore, and an adversarial
-            review measured them bypassing the memo entirely.*
-            **It exists because a projection is expensive and the seam asks
-            for one per ACCOUNT.**  ``_contribution_inputs_for_account`` is
-            the batch loader over a one-element set, so four seam entries
-            calling it once per account re-ran the engine over the owner's
-            WHOLE saved window each time: measured at 61
-            ``calculate_paycheck`` calls on a 3-account, 10-period fixture
-            against ~7 before that step, the multiplier being exactly the
-            saved-period count.  The calendar memo two fields up exists for
-            the same shape one tier cheaper, and its own docstring reasons
-            about avoiding a repeated derivation -- which is how a far more
-            expensive one came to be added in the same edit that cited it.
+        _paycheck_pricing: The pass's PAYCHECK PRICER, keyed by ``user_id``
+            and filled by :meth:`paychecks` (plan step **salary:S3-d**).
+
+            **It replaced a public ``payroll_breakdowns`` dict, and the change
+            of shape is the fix.**  That field was a raw
+            ``{profile_id: {payday: PaycheckBreakdown}}`` memo that
+            :func:`~app.services.projection_inputs.load_payroll_feeds` FILLED
+            and that :class:`~app.services.income_service.SalaryPricing` did
+            not read.  It was also OPTIONAL at that loader
+            (``breakdowns=None`` meant "no memo"), which is how two of its
+            four callers came to bypass it inside the step that added it.  A
+            :class:`~app.services.income_service.PaycheckPricing` closes the
+            second hole outright -- a consumer is handed one, so there is no
+            argument to omit -- and memoizes per profile AND per payday, so
+            two consumers asking overlapping spans pay for the union.
+
+            **It does not close the first, and ledger row P63 is why.**
+            :class:`~app.services.income_service.SalaryPricing` still derives
+            a pricer of its own; that finding's argument is stated once, at
+            :class:`~app.services.income_service.PaycheckPricing`.
+
+            **It exists because a paycheck is expensive and the seam asks for
+            one per ACCOUNT.**  ``_contribution_inputs_for_account`` is the
+            batch loader over a one-element set, so four seam entries calling
+            it once per account re-ran the engine over the owner's WHOLE saved
+            window each time: measured at 61 ``calculate_paycheck`` calls on a
+            3-account, 10-period fixture against ~7 before ``salary:R14-b``,
+            the multiplier being exactly the saved-period count.  The calendar
+            memo two fields up exists for the same shape one tier cheaper.
+
+            **PRIVATE, where its predecessor was public**, and the argument
+            that made that one public has expired rather than been overruled:
+            it was exposed because two callers had to be handed the dict, and
+            nothing is handed a dict now -- :meth:`paychecks` is the accessor,
+            exactly as :meth:`calendar` and :meth:`amounts` are for the two
+            memos above.
     """
 
     user_id: int
@@ -278,7 +286,7 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     _amount_bases: "dict[int, AmountBasis]" = field(
         default_factory=dict, repr=False, compare=False,
     )
-    payroll_breakdowns: "dict[int, dict]" = field(
+    _paycheck_pricing: "dict[int, PaycheckPricing]" = field(
         default_factory=dict, repr=False, compare=False,
     )
 
@@ -612,10 +620,50 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         """
         scenario_id = self.scenario_id
         if scenario_id not in self._amount_bases:
+            # **The basis is NOT handed this pass's pricer, and ledger row
+            # P63 is why** -- the argument is at ``income_service
+            # .PaycheckPricing``; this is the line that does it.
             self._amount_bases[scenario_id] = amount_basis(
                 self.user_id, scenario_id,
             )
         return self._amount_bases[scenario_id]
+
+    def paychecks(self) -> PaycheckPricing:
+        """Return the pass's paycheck pricer, building it once.
+
+        **The pass's source of a paycheck** (plan step **salary:S3-d**): the
+        payroll feeds take it
+        (:func:`~app.services.projection_inputs.load_payroll_feeds`) and so do
+        the two salary route renders.  The amount model does NOT -- it derives
+        its own, which is ledger row **P63** and is stated at the field above
+        and at :meth:`amounts`.
+
+        **Nothing is resolved until something asks.**  The pricer holds no
+        profile and issues no query until a caller names one, so a pass that
+        prices no paycheck pays nothing for holding this.
+
+        *Its per-payday memo means a caller CAN ask for a subset and pay for
+        only that; no consumer of this accessor does.*  All three -- the
+        payroll feeds and the two salary routes -- ask for
+        ``calendar.saved()``, the owner's whole saved schedule, because that
+        is the domain each of them reports over.  The place a subset is
+        actually asked for is
+        :meth:`~app.services.income_service.SalaryPricing.net_for`, which
+        prices the ONE period a row names; it reads its own pricer rather than
+        this one (ledger row **P63**).
+
+        It is keyed by ``user_id`` for the reason :meth:`calendar` is, and it
+        is built over that same memoized calendar so a pass cannot hold
+        paydays from one derivation and paychecks priced against another.
+
+        Returns:
+            The pass's :class:`~app.services.income_service.PaycheckPricing`.
+        """
+        if self.user_id not in self._paycheck_pricing:
+            self._paycheck_pricing[self.user_id] = paycheck_pricing(
+                self.calendar(),
+            )
+        return self._paycheck_pricing[self.user_id]
 
     def amounts_or_none(self) -> "AmountBasis | None":
         """The pass's amount basis, or ``None`` -- for a rule that HAS an answer.

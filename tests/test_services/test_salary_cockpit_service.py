@@ -68,7 +68,10 @@ def _pair(
     """
     period = _fake_period(pid, start, end)
     breakdown = PaycheckBreakdown(
-        period=PeriodInfo(pid, is_third_paycheck=is_third, raise_event=raise_event),
+        period=PeriodInfo(
+            period.start_date, pid,
+            is_third_paycheck=is_third, raise_event=raise_event,
+        ),
         earnings=Earnings(
             annual_salary=Decimal(annual),
             gross_biweekly=Decimal(gross),

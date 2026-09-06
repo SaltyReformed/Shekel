@@ -549,7 +549,6 @@ def load_projection_batch(
     Returns:
         A :class:`ProjectionBatch` with all shared inputs.
     """
-    user_id = ctx.balance_ctx.user_id
     account_ids = [a.id for a in ctx.accounts]
     period_ids = [p.period_id for p in _periods(ctx)]
 
@@ -581,13 +580,12 @@ def load_projection_batch(
     # defaulted to ``date.today()``, so C2-f2d-1 had to thread the pass's
     # ``as_of`` to stop it reading a clock of its own twice per render; the
     # feed reads no clock at all, because the PERIOD is the clock.
+    # The PASS's paycheck pricer -- shared with every balance-seam read this
+    # render makes, so a payday is priced once per profile rather than once
+    # per reader.  The P2b retire-later probes reuse this batch across
+    # candidate horizons, so it is read many times per render.
     feeds = load_payroll_feeds(
-        user_id, ctx.balance_ctx.calendar(), account_ids, params_by_account,
-        # The PASS's projection memo -- shared with every balance-seam read
-        # this render makes, so the engine runs once per profile rather than
-        # once per reader.  The P2b retire-later probes reuse this batch
-        # across candidate horizons, so it is read many times per render.
-        ctx.balance_ctx.payroll_breakdowns,
+        ctx.balance_ctx.paychecks(), account_ids, params_by_account,
     )
 
     # The displayed per-account balance is the model-from-anchor value at the
