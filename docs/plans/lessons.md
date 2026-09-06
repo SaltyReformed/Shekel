@@ -231,3 +231,21 @@ rationale, where a reader meets it at the moment it fires.
   writer that step DELETES emits, against the measured `[13, 28, 42]`. Both were added to satisfy a
   review finding about unauthorised future failures, so the review that caught one ungraded claim
   was the vector for the next.
+- **A stated count that CONFLICTS is not a menu.** `bank_import:X-gi-1` merging a registry PR: its
+  branch said 334 rulings, `dev` said 336, the merged truth was **337** -- a value on neither side.
+  Every other instance here is a counter merging SILENTLY, and those drills end
+  *"a conflict is a lucky signal"*; this is the other half, where the marker fires and is itself
+  what invites picking a side. The row conflict beside it kept ALL THREE rulings. A marker is a
+  prompt to DERIVE.
+- **A pylint score is a RATIO, so widening the denominator hides the message.** `bank_import:X-gi-1`
+  graded `app/routes/` at 10.00/10 with a real `line-too-long` in the one file it had edited; that
+  file alone scores **9.44/10**. With a hand count of 163 against `crowded_ledger_rows()`'s 160, one
+  mistake twice: asking a SUMMARY, or a tool you built, not the producer that owns the answer.
+- **A count is not a measurement unless something in the same stream is known to be NON-ZERO**, and
+  an absence assertion needs a control that fails if the FEATURE is dead, not if the PAGE is empty.
+  `salary:S3-c`'s lane, worktree deleted underneath it, found `grep -c` over a FAILED command
+  returns `0` -- indistinguishable from absent. Not the *ask the producer* rule: here you ARE asking
+  it and it never ran. `balance:X-bu`'s lane re-ran two claims with a positive control and found it
+  had been right *for a reason it had not checked*. `bank_import:X-gi-1` MEASURED the cost by
+  killing `?open=`: **8 of 10 no-script cases failed, 2 passed**, both survivors asserting absences
+  over `status_code == 200` -- which proves a page rendered, not that the feature lives.
