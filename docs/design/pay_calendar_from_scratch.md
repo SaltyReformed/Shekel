@@ -433,8 +433,26 @@ owner `C14-f` sits at #13.
 **7.5 -- what records that a paycheck HAPPENED**, if the rows go (Section 3.2). `history_opens_on`
 answers the backward bound; nothing answers the forward one today because the last row is the
 boundary. **This is a hole in Section 3, not a detail of it**, and `balance:R-IA` forbids the
-obvious shortcut of letting an absence mean the claim. No version of this design should be ruled on
-until it is answered.
+obvious shortcut of letting an absence mean the claim. Three options:
+
+- **(i) An explicit forward bound on the record**, beside `history_opens_on`. Symmetrical, and it
+  makes both ends stated facts rather than one stated and one implied by row count.
+- **(ii) MATERIALISE THE PAST, DERIVE THE FUTURE.** A row exists if and only if that paycheck
+  happened, and nothing else is a row. The 51 cache rows go; the 12 records stay.
+- **(iii) Infer it from settled transactions filing against the period.** Rejected: it makes a real
+  paycheck with nothing settled in it indistinguishable from a projection, which is guessing of the
+  kind `R-IA` exists to stop.
+
+**Recommendation: (ii).** It is the smallest change that makes the answer STRUCTURAL rather than
+conventional -- "is there a row" stops being a question about materialisation policy and becomes a
+question about the world -- and it preserves exactly the record semantics `R-IA` protects.
+**It is NOT measured and is not proposed as work**; it is here because fork 7.3 cannot be ruled
+without an answer to this one, and because a departures table (Section 3) silently assumes an answer
+it does not state.
+
+*Note what (ii) does NOT solve: 699 of 928 live transactions file against FUTURE periods, so the
+filing key of Section 4a still has to be designed before the future stops being rows. (ii) answers
+what a row MEANS, not what a transaction points at.*
 
 ---
 
