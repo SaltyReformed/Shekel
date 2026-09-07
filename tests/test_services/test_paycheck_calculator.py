@@ -4425,7 +4425,6 @@ class TestTheGrossContractIsDocumented:
         ("rulings.md", "| balance | R-IA |"),
         ("rulings.md", "| balance | R-IF |"),
         ("ledger.md", "| salary | N-391 "),
-        ("ledger.md", "| pay_calendar | N-398 "),
         ("ledger.md", "| recurrence | N-399 "),
     ])
     def test_the_plan_identifiers_this_step_cites_actually_exist(
@@ -4455,8 +4454,11 @@ class TestTheGrossContractIsDocumented:
         closed finding leaves `ledger.md` by design -- `ledger.md`'s own
         preamble says a row leaves when its fix SHIPS -- so pinning a closed id
         here would assert the opposite of the convention and fail forever. What
-        replaces it is what that step LEFT live: `N-398`, `N-399` and the
-        ruling pair `R-IA` / `R-IF`, all four cited from `app/` today.
+        replaced it was what that step LEFT live: `N-398`, `N-399` and the
+        ruling pair `R-IA` / `R-IF`.  **`N-398` then LEFT it the same way at
+        plan step `pay_calendar:C14-e-3`** (`ed267298`), which closed it: the
+        removal is this arm working, and N-398's four `app/` citations stay put
+        exactly as `N-390`'s five did.
 
         *It caught a real defect on the way out.* X-bh-2 committed its code and
         its plan documents separately, and the full suite ran against the

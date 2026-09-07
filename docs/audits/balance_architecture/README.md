@@ -1031,13 +1031,19 @@ section 4, under their unchanged ids.*
   row while the estimate half resolved, so it asks the resolver now. Its obligation on `X-bx` --
   inherit the last copy of `own_figure(txn.estimated_amount, ...)` -- was DISCHARGED there
   (`f7b9e094`) by deleting that copy rather than routing it.
-* [ ] **X-bv** `fix(migrations): a per-kind cutover cannot ship a bare declare` -- owns **BAL-463**.
-  `c8f3a5d2e714` refuses to declare unless `rows_the_declare_would_strand` is empty;
-  `d7b2e6c1a483` defines the equivalent `settled_rows_whose_plan_is_not_recoverable` and calls it
-  ONLY from `downgrade()`, its `upgrade()` running `_DECLARE_SQL` bare. **Both patterns are in the
-  tree, so the next per-kind cutover inherits whichever it copies** -- and `X-au-f` and `X-au-m` are
-  the two that remain, which is why this ranks ahead of them. A guard wired only to the downgrade
-  looks like a control in every reading except the one that matters.
+* [x] **X-bv** `66ff070b` -- closed the STRAND at its producer: a leftover now carries
+  `compute_due_date`'s answer, so `declare_derived` cannot leave a template-linked row amount rule 3
+  must price on a due date it has not got. **Its written remedy aimed at the wrong tier.**
+* [ ] **X-bv-2** `fix(models): the CHECK the producer fix makes unreachable` -- owns **BAL-463**.
+  `template_id IS NULL OR due_date IS NOT NULL`, replacing `b4d9e1c7a052`'s three-term predicate,
+  which admitted the undated leftover and refused only the TRANSITION, turning the declare into a
+  500. The two-term form needs NO guard: nothing can reach the state.
+* [x] **X-bz** `8e5c3ea5` -- retired the one-time `occurs_on` backfill, its `entrypoint.sh` block,
+  sentinel and tests; `occurs_on IS NULL` meant two things and the filter fenced that conflation.
+  **The sentinel is LEFT**: a rollback restores the old image and it alone then stops the script.
+* [x] **X-ca** `e1cc26b6` -- moved `__table_args__` out to `_transaction_table_args.py`, 997 lines
+  to 667, off the 1000 ceiling so `X-bv-2` can add its constraint. **A COUNTING ORACLE IS NOT AN
+  EQUIVALENCE ORACLE**: purity rests on an AST comparison run out of git, not on a census.
 * [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
   `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
   so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43
