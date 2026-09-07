@@ -323,6 +323,12 @@ class TestRegenerateRoute:
                     "num_periods": "3",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
+                    # Plan step C14-f: this rebuild reopens the tail more than
+                    # a paycheck after the last kept payday, so the gap gate
+                    # asks.  These cases are about the REDIRECT and the tail
+                    # being populated, not about holes -- and posting the field
+                    # is what a browser does once the banner has been shown.
+                    "confirm_gap": "true",
                 },
             )
             assert resp.status_code == 302
@@ -1170,6 +1176,12 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
                     "num_periods": "3",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
+                    # Plan step C14-f: this rebuild reopens the tail more than
+                    # a paycheck after the last kept payday, so the gap gate
+                    # asks.  These cases are about the REDIRECT and the tail
+                    # being populated, not about holes -- and posting the field
+                    # is what a browser does once the banner has been shown.
+                    "confirm_gap": "true",
                 },
             )
             assert resp.status_code == 302

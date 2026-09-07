@@ -30,6 +30,7 @@ import pytest
 
 from app.exceptions import (
     PayPeriodDiscardRequired,
+    PayPeriodGapRequired,
     PayPeriodLocked,
     ValidationError,
 )
@@ -39,6 +40,7 @@ from app.models.transaction import Transaction
 from app.routes._period_population import populate_new_periods
 from app.services import (
     pay_period_admin,
+    pay_period_gates,
     pay_period_write,
     pay_schedule_service,
 )
@@ -110,15 +112,31 @@ def _regenerate_and_populate(user_id, **kwargs):
     Ruling **R-R38**: the pass may only be opened above the service layer, and
     only after the write.
 
+    **It CONFIRMS the gap gate by default, and that is a statement about these
+    FIXTURES rather than about the door** (plan step ``pay_calendar:C14-f``).
+    ``seed_periods`` anchors its schedule in 2024 while most cases here rebuild
+    from a 2026 date, so the batch skips years of paychecks -- one case
+    measured **847 days** between the last kept payday and the new start.  Real
+    usage keeps a prefix up to about today and restarts within a cadence or
+    two, which the gate never asks about.  These cases are about cadence
+    persistence, lock classification and repopulation, not about holes, so they
+    answer the question and move on.
+    **The gate's OWN cases deliberately do not use this helper** -- they call
+    the service directly, so nothing here can disarm them.
+    *That the corpus rebuilds across multi-year gaps at all is worth a look on
+    its own; it is `P78`'s shape and it is not this step's to fix.*
+
     Args:
         user_id: The owning user's id.
         **kwargs: Forwarded to
             :func:`~app.services.pay_period_admin.regenerate_pay_periods`.
+            A ``confirms`` here REPLACES the default, gap answer included.
 
     Returns:
         The rebuilt periods, now populated.
     """
-    new_periods = pay_period_admin.regenerate_pay_periods(user_id, **kwargs)
+    new_periods = pay_period_admin.regenerate_pay_periods(user_id, **kwargs,
+                  )
     populate_new_periods(user_id, new_periods)
     return new_periods
 
@@ -177,7 +195,7 @@ class TestRegenerateHappyPath:
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=3,
                 rhythm=rhythm_of(14),
-            )
+                          )
             db.session.commit()
 
             # Bootstrap (0) + retained 1..4 + freshly built 5..7.
@@ -209,7 +227,7 @@ class TestRegenerateHappyPath:
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=3,
                 rhythm=rhythm_of(14),
-            )
+                          )
             db.session.commit()
             for period in new_periods:
                 assert db.session.query(Transaction).filter_by(
@@ -248,7 +266,7 @@ class TestRegenerateHappyPath:
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=2,
                 rhythm=rhythm_of(7),
-            )
+                          )
             db.session.commit()
 
             schedule = pay_schedule_service.get_schedule(user_id)
@@ -341,7 +359,7 @@ class TestRegenerateWhenTheWholeScheduleIsRebuildable:
 
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, date(2026, 8, 7), 3, rhythm_of(14),
-            )
+                          )
             db.session.commit()
 
             # Not one original row survived, and the count is exactly the
@@ -377,7 +395,7 @@ class TestRegenerateWhenTheWholeScheduleIsRebuildable:
 
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, date(2026, 7, 3), 2, rhythm_of(14),
-            )
+                          )
             db.session.commit()
 
             surviving = all_periods(user_id)
@@ -432,7 +450,8 @@ class TestRegenerateRefusals:
             # With confirmation it rebuilds the tail (discarding the row).
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=3,
-                rhythm=rhythm_of(14), confirm_discard=True,
+                rhythm=rhythm_of(14),
+                confirms=pay_period_gates.Confirmations(discard=True),
             )
             db.session.commit()
             assert [derived_span(p).period_index for p in new_periods] == [5, 6, 7]
@@ -523,9 +542,15 @@ class TestRegenerateResolvesItsFactsOnce:
             expected_ids = {period.id for period in periods}
             expected_ids.add(seed_user["bootstrap_period"].id)
 
+            # ``gap=True`` because this rebuild reopens the tail exactly one
+            # paycheck later than it stood, which plan step C14-f's gate asks
+            # about.  This case counts CLASSIFICATIONS, not holes, so it
+            # answers the question and carries on; the gate's own cases are
+            # below.
             pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=date(2026, 7, 10), num_periods=3,
                 rhythm=rhythm_of(14),
+                confirms=pay_period_gates.Confirmations(gap=True),
             )
             db.session.commit()
 
@@ -573,3 +598,88 @@ class TestRegenerateResolvesItsFactsOnce:
             )
             db.session.commit()
             assert seen == [owner_day]
+
+
+def _paydays(session, user_id):
+    """The owner's recorded paydays, ascending."""
+    return [
+        period.start_date
+        for period in session.query(PayPeriod)
+        .filter_by(user_id=user_id).order_by(PayPeriod.start_date).all()
+    ]
+
+
+class TestTheGapGateAsksBeforeItSkipsAPaycheck:
+    """Plan step ``pay_calendar:C14-f``, developer ruling 2026-09-07.
+
+    ``regenerate`` is the only door that can write ledger row **P80**'s state:
+    it KEEPS a prefix of the owner's history and states an unrelated start for
+    the new batch, so the two can be any distance apart.  Generate and extend
+    derive their start, and reset retires every period, so neither can gap.
+
+    The gate ASKS rather than refuses because the app cannot tell a typo from a
+    true record: P80's own example meant ``2026-01-30`` and typed
+    ``2026-07-31``, but five weeks of unpaid leave is a real 35-day gap and
+    that record is correct.
+    """
+
+    def test_a_batch_that_skips_a_paycheck_is_refused_until_confirmed(
+        self, app, db, seed_user,
+    ):
+        """The unconfirmed call raises and writes NOTHING."""
+        with app.app_context():
+            _spanning_periods(db.session, seed_user, count=8)
+            user_id = seed_user["user"].id
+            before = _paydays(db.session, user_id)
+
+            with pytest.raises(PayPeriodGapRequired) as caught:
+                pay_period_admin.regenerate_pay_periods(
+                    user_id, new_start_date=date(2026, 7, 10), num_periods=3,
+                    rhythm=rhythm_of(14),
+                )
+            db.session.rollback()
+
+            assert caught.value.resumes == date(2026, 7, 10)
+            # Nothing written: the paydays are exactly as they were.
+            assert _paydays(db.session, user_id) == before
+
+    def test_the_same_batch_goes_through_once_the_owner_confirms(
+        self, app, db, seed_user,
+    ):
+        """A CONFIRMED gap is recorded -- unpaid leave is a real fact."""
+        with app.app_context():
+            _spanning_periods(db.session, seed_user, count=8)
+            user_id = seed_user["user"].id
+
+            pay_period_admin.regenerate_pay_periods(
+                user_id, new_start_date=date(2026, 7, 10), num_periods=3,
+                rhythm=rhythm_of(14),
+                confirms=pay_period_gates.Confirmations(gap=True),
+            )
+            db.session.commit()
+
+            assert date(2026, 7, 10) in _paydays(db.session, user_id)
+
+    def test_a_re_phase_of_a_few_days_is_NEVER_asked_about(
+        self, app, db, seed_user,
+    ):
+        """The unquestioned window is exactly one paycheck wide.
+
+        The floor is the first projected payday past the last kept one and the
+        gate is the SECOND, so correcting a phase by a day or two -- the thing
+        this door exists for -- raises nothing.  Without this case the gate
+        could be tightened to any tolerance and stay green.
+        """
+        with app.app_context():
+            _spanning_periods(db.session, seed_user, count=8)
+            user_id = seed_user["user"].id
+
+            # The tail reopens exactly where it stood, which is the ordinary
+            # correction this door exists for.  No confirmation is passed, so
+            # a gate that asked here would fail this case.
+            pay_period_admin.regenerate_pay_periods(
+                user_id, new_start_date=date(2026, 6, 26), num_periods=3,
+                rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+            assert date(2026, 6, 26) in _paydays(db.session, user_id)

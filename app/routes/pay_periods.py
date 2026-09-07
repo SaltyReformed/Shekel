@@ -18,6 +18,7 @@ from app.utils.auth_helpers import require_owner
 from app.extensions import db
 from app.exceptions import (
     PayPeriodDiscardRequired,
+    PayPeriodGapRequired,
     PayPeriodLocked,
     PayPeriodResetBlocked,
     PayPeriodUnresolved,
@@ -37,6 +38,7 @@ from app.schemas.validation import (
 from app import ref_cache
 from app.services import (
     pay_period_admin,
+    pay_period_gates,
     pay_period_write,
     pay_rhythm,
     pay_schedule_service,
@@ -413,6 +415,7 @@ def truncate():
     except PayPeriodDiscardRequired as exc:
         db.session.rollback()
         return render_settings_dashboard("pay-periods", extra={"pp_confirm": {
+            "kind": "discard",
             "op": "truncate",
             "count": exc.count,
             "params": {
@@ -442,7 +445,9 @@ def regenerate():
             pay_rhythm.Rhythm(
                 cadence_days=data["cadence_days"], shift=data["shift"],
             ),
-            confirm_discard=data["confirm_discard"],
+            confirms=pay_period_gates.Confirmations(
+                discard=data["confirm_discard"], gap=data["confirm_gap"],
+            ),
         )
         # The rebuilt tail comes back EMPTY; this fills it.  See the extend
         # route for why the pass may only be opened here (ruling R-R38).
@@ -457,6 +462,34 @@ def regenerate():
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()
+    except PayPeriodGapRequired as exc:
+        # **The SECOND confirmation, and it raises AFTER the delete is staged**
+        # (plan step ``pay_calendar:C14-f``, ledger row **P80**).  Unlike the
+        # discard gate below, this one fires inside ``record_paydays``, which
+        # ``regenerate_pay_periods`` reaches only after ``_gate_deletable_tail``
+        # has handed it the doomed ids -- so the rollback here is load-bearing
+        # rather than tidy, exactly as the ValidationError arm above states.
+        #
+        # ``confirm_discard`` rides forward in the params: an owner who has
+        # already answered that question must not be asked it again by the
+        # banner this renders, and dropping it would loop the two gates against
+        # each other forever.
+        db.session.rollback()
+        return render_settings_dashboard("pay-periods", extra={"pp_confirm": {
+            "kind": "gap",
+            "op": "regenerate",
+            "gap_days": exc.gap_days,
+            "after": exc.after.isoformat(),
+            "resumes": exc.resumes.isoformat(),
+            "params": {
+                "new_start_date": data["new_start_date"].isoformat(),
+                "num_periods": data["num_periods"],
+                "cadence_days": data["cadence_days"],
+                # The WIRE spelling, for the discard banner's own reason below.
+                "shift": ref_cache.business_day_shift_id(data["shift"]),
+                "confirm_discard": str(data["confirm_discard"]).lower(),
+            },
+        }}, status=422)
     except PayPeriodDiscardRequired as exc:
         # The discard gate raises BEFORE the delete, so nothing is staged --
         # but this response re-renders the settings dashboard, which reads the
@@ -464,6 +497,7 @@ def regenerate():
         # rather than a session the service may have flushed into.
         db.session.rollback()
         return render_settings_dashboard("pay-periods", extra={"pp_confirm": {
+            "kind": "discard",
             "op": "regenerate",
             "count": exc.count,
             "params": {
