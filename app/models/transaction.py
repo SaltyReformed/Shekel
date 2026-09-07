@@ -14,6 +14,7 @@ from app.extensions import db
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.models.amount_ownership import from_columns
+from app.models._transaction_table_args import transaction_table_args
 from app.models.mixins import (
     OptimisticLockMixin,
     SettleDatedMixin,
@@ -169,354 +170,21 @@ class Transaction(
     """
 
     __tablename__ = "transactions"
-    __table_args__ = (
-        db.Index(
-            "idx_transactions_period_scenario",
-            "pay_period_id", "scenario_id",
-        ),
-        db.Index("idx_transactions_template", "template_id"),
-        db.Index("idx_transactions_credit_payback", "credit_payback_for_id"),
-        # At most one *active* CC Payback row per source transaction.
-        # Backstops the SELECT-FOR-UPDATE serialisation in
-        # ``credit_workflow.mark_as_credit`` and
-        # ``entry_credit_workflow.sync_entry_payback`` so any future
-        # caller that bypasses the service layer fails loudly with an
-        # IntegrityError on this index instead of silently doubling the
-        # user's projected debt.  ``is_deleted = FALSE`` keeps soft-
-        # deleted paybacks out of the index so a re-mark of the same
-        # source row after a soft-delete remains legal.  See commit C-19
-        # of the 2026-04-15 security remediation plan.
-        db.Index(
-            "uq_transactions_credit_payback_unique",
-            "credit_payback_for_id",
-            unique=True,
-            postgresql_where=db.text(
-                "credit_payback_for_id IS NOT NULL "
-                "AND is_deleted = FALSE"
-            ),
-        ),
-        db.Index("idx_transactions_account", "account_id"),
-        db.Index(
-            "idx_transactions_transfer",
-            "transfer_id",
-            postgresql_where=db.text("transfer_id IS NOT NULL"),
-        ),
-        # At most one *active* expense shadow and one *active* income
-        # shadow per transfer.  Database-level backstop for the
-        # service-layer invariant (CLAUDE.md "Transfer Invariants" #1)
-        # that every transfer has exactly two linked shadow
-        # transactions.  Without this index a defective caller -- or
-        # a hypothetical script that bypasses ``transfer_service`` --
-        # could insert a third shadow row and silently double-charge
-        # the user's projection.  ``is_deleted = FALSE`` keeps soft-
-        # deleted shadows out of the index so the soft-delete +
-        # restore round trip remains legal, mirroring the predicate
-        # on ``uq_transactions_credit_payback_unique``.  Audit
-        # reference: F-046 / commit C-21 of the 2026-04-15 security
-        # remediation plan.
-        db.Index(
-            "uq_transactions_transfer_type_active",
-            "transfer_id", "transaction_type_id",
-            unique=True,
-            postgresql_where=db.text(
-                "transfer_id IS NOT NULL "
-                "AND is_deleted = FALSE"
-            ),
-        ),
-        db.Index(
-            "idx_transactions_due_date",
-            "due_date",
-            postgresql_where=db.text("due_date IS NOT NULL"),
-        ),
-        # WHAT A GENERATED ROW IS, stated as storage (plan step **R17**).  A
-        # row answers ONE occurrence of its template's cadence; the pay period
-        # is where that occurrence's money lands, which is a DERIVED placement
-        # and not the row's identity -- the owner may move it, and moving it is
-        # exactly what ledger row **D57** was.  Keyed on the paycheck, this
-        # index made a moved row vacate its own occurrence, so the next
-        # generate pass answered it a second time: 8 rows, $1,482.93, measured
-        # on a production clone 2026-08-28.
-        #
-        # TWO indexes rather than one, because ``occurs_on`` is NULLABLE and
-        # PostgreSQL treats NULLs as distinct -- a single index over it would
-        # let a template hold unlimited undated rows in one paycheck, which is
-        # the "one row per template per paycheck" rule this table has always
-        # had.  A row that answers NO occurrence therefore keeps the OLD key,
-        # and that split is the same rule
-        # ``_recurrence_common.OccurrenceClaims`` applies in Python: identity is
-        # the occurrence where it is known, and the paycheck where it is not.
-        # Letting an undated row claim nothing was measured at 41 phantom
-        # transfers / $20,500 at the unarchive door.
-        #
-        # **The two predicates DIVERGED at plan step X-au-h** (ruling
-        # **R-JR**): this one dropped ``is_override = FALSE`` and the undated
-        # one below kept it.  The exemption guarded a PAYCHECK-key collision,
-        # R17 re-keyed this index onto ``occurs_on`` which a move never
-        # changes, and X-au-h then raised the flag on a RE-PRICE -- so keeping
-        # it would have dropped merely-re-priced rows out of a guarantee they
-        # never used to lose.  Migration ``e7c3a1f9b482`` carries the full
-        # argument, the measurement and why the undated index differs.
-        db.Index(
-            "idx_transactions_template_scenario_occurrence",
-            "template_id", "scenario_id", "occurs_on",
-            unique=True,
-            postgresql_where=db.text(
-                "template_id IS NOT NULL "
-                "AND occurs_on IS NOT NULL "
-                "AND is_deleted = FALSE"
-            ),
-        ),
-        db.Index(
-            "idx_transactions_template_scenario_undated",
-            "template_id", "scenario_id", "pay_period_id",
-            unique=True,
-            postgresql_where=db.text(
-                "template_id IS NOT NULL "
-                "AND occurs_on IS NULL "
-                "AND is_deleted = FALSE "
-                "AND is_override = FALSE"
-            ),
-        ),
-        db.CheckConstraint(
-            "estimated_amount >= 0",
-            name="ck_transactions_estimated_amount",
-        ),
-        db.CheckConstraint(
-            "settled_amount IS NULL OR settled_amount >= 0",
-            name="ck_transactions_settled_amount",
-        ),
-        # A FIGURE CARRIES ITS PROVENANCE (plan step **X-au-c3**): a stored
-        # ``settled_amount`` always says HOW it is known.  The converse is
-        # deliberately NOT asserted here, and the gap is exactly one basis:
-        # ``purchases`` stores no figure, because the row's own entries state it
-        # and a stored copy would need a reconciler
-        # (:class:`app.enums.SettlementBasisEnum`).  Saying "``purchases`` if and
-        # only if ``settled_amount IS NULL``" needs the constraint to name a ref
-        # id, which is the one thing the project's ref convention forbids putting
-        # in a schema -- so that half is a write-door rule with its own negative
-        # control (``tests/test_models/test_settlement_record.py``) rather than a
-        # constraint, and saying which is which is the point: a safety that is
-        # not a predicate is not a safety.
-        db.CheckConstraint(
-            "settled_amount IS NULL OR settled_basis_id IS NOT NULL",
-            name="ck_transactions_settled_amount_needs_basis",
-        ),
-        # AN ASSERTION NAMES WHAT IT ASSERTS (plan step **X-au-c3**): a row
-        # carrying the day its money moved always records WHAT moved.  It is the
-        # half of the settlement pairing a CHECK can state, and it is stated
-        # here because the two tiers that answer "what did this row settle at"
-        # disagree without it -- :func:`app.services.row_valuation.settled_figure`
-        # RAISES for a settled row recording nothing, while
-        # ``posting_reads.settled_figure_clause`` answers ``0`` for the same row
-        # through its entry sum's ``COALESCE``, and the SQL side is what writes
-        # the ledger.  A disagreement between a refusal and a zero is money
-        # leaving a balance in silence; a constraint is what makes the row
-        # neither tier can see.
-        #
-        # **It was named ``ck_transactions_settle_day_needs_basis`` until plan
-        # step X-az** (developer approval 2026-08-22), and the rename is a
-        # correction rather than tidying: this constraint is about the FIGURE's
-        # basis, and beside X-az's ``ck_transactions_settle_day_basis_pairing``
-        # the old name read as though it were about the DAY's.  Two live
-        # comments already read it that way.  The name it has now is what its
-        # predicate says, and it is the name of the service-tier refusal that
-        # mirrors it -- ``reject_settle_day_without_a_record``.
-        #
-        # **It is an IMPLICATION, and a first version of this step made it a
-        # BICONDITIONAL** (``ck_transactions_settlement_recorded``,
-        # ``(settled_on IS NULL) = (settled_basis_id IS NULL)``).  The ``<-``
-        # direction is what was wrong, and the way it was wrong is worth
-        # keeping: it welded two facts with different lifetimes into one record.
-        # ``settled_on`` and ``reconciled_by_id`` are the ASSERTION that this
-        # money moved on a named day and a named statement showed it -- a revert
-        # withdraws that.  ``settled_amount`` and ``settled_basis_id`` are WHAT
-        # MOVED, which is a fact about the row.  Because that direction made them
-        # share a lifetime, releasing the assertion had to destroy the figure --
-        # so following the full-edit popover's own instruction ("set Status to
-        # Projected to edit the amounts") silently deleted a number the user had
-        # read off their bank statement.  That is finding **N-241**'s shape --
-        # one thing answering two questions -- rebuilt one level up, in a step
-        # whose whole purpose was to remove it.  Every reconciliation system this
-        # was checked against separates them: an amount belongs to the
-        # transaction and cleared-ness is metadata over it, so un-clearing never
-        # touches the amount (developer, 2026-08-17).
-        #
-        # The ``->`` direction below survives that argument untouched: a
-        # RETAINED record is ``settled_on IS NULL`` with a basis, which this
-        # admits.  What keeps such a figure out of a balance is still the
-        # STATUS, asked by ``row_valuation.settled_figure``, and not this.
-        db.CheckConstraint(
-            "settled_on IS NULL OR settled_basis_id IS NOT NULL",
-            name="ck_transactions_settle_day_needs_a_record",
-        ),
-        # A SETTLE DAY SAYS HOW IT IS KNOWN (plan step **X-az**, finding
-        # **N-332**): a row carrying the day its money moved always records
-        # which KIND of day it is -- a day the bank showed, a day a balance was
-        # asserted for, or the owner's own entry
-        # (:class:`app.enums.SettledDayBasisEnum`).
-        #
-        # **It is a BICONDITIONAL where the figure's pairing above is an
-        # IMPLICATION, and the asymmetry is the point** (developer,
-        # 2026-08-22).  ``settled_amount`` outlives the assertion that recorded
-        # it -- a revert releases the day and KEEPS what moved -- so a figure
-        # with no day is the legal RETAINED state and the ``<-`` direction had
-        # to go.  The day and ITS basis have no such split lifetime: the basis
-        # describes the day, so the two are born and released together, and
-        # forbidding a basis left behind with no day costs nothing and removes
-        # the only residue a revert could leave.  ``settled_day_basis_id`` is
-        # written only through
-        # :func:`app.services.settle_day.record_settle_day`, which assigns or
-        # clears both columns in one statement; this is the storage tier that
-        # makes that door's discipline a property of the table.
-        #
-        # Written as two NULL tests rather than against a basis VALUE, so no
-        # ``ref.settled_day_bases`` id is frozen into the schema -- the same
-        # reason ``ck_transactions_amount_ownership`` is written that way.
-        db.CheckConstraint(
-            "(settled_on IS NULL) = (settled_day_basis_id IS NULL)",
-            name="ck_transactions_settle_day_basis_pairing",
-        ),
-        # THE AMOUNT MODEL'S ONE CONSTRAINT (ruling **R-FI**, plan step
-        # X-au-c1): a row's amount is either its OWN or it is DERIVED, and a
-        # derived amount is not stored at all.  ``amount_source_id`` names the
-        # relation that prices a derived row and is NULL when the row owns its
-        # figure, so the two states pair exactly one-to-one with the presence of
-        # a figure -- which makes a stale derived amount UNREPRESENTABLE rather
-        # than merely unlikely.
-        #
-        # **WHAT THIS CONSTRAINT NOW CATCHES, restated at plan step X-au-k
-        # because the paragraph here described a world that has ended.**  It
-        # used to say that every private repair mechanism R-FI names writes the
-        # amount column ALONE, so a writer stamping a figure onto a derived row
-        # was an ``IntegrityError`` at flush.  Two of those mechanisms were
-        # converted at X-au-k and ``transfer_service``'s copy and drift
-        # corrector were deleted at X-au-g-2c-2, so no writer in this
-        # application writes one column any more: the pair is ONE mapped
-        # attribute over a type that has no member for the illegal shape, and
-        # the ORM spelling raises ``AttributeError`` before a flush is reached.
-        #
-        # This CHECK is therefore the backstop rather than the catcher, and it
-        # is not redundant.  It refuses the EMPTY pair, which the type does not
-        # represent and a half-built row passes through legitimately in memory;
-        # and it refuses a writer that is not this application at all -- a
-        # migration, a ``psql`` session, a trigger, a bulk ``UPDATE`` that
-        # names the column rather than the attribute.  A reader that skips the
-        # resolver still gets ``None`` rather than a plausible wrong figure.
-        #
-        # **Written as two NULL tests rather than against a source VALUE**, so no
-        # ``ref.amount_sources`` id is frozen into the schema: the OWN state is
-        # the ABSENCE of a source (``app.enums.AmountSourceEnum`` states why),
-        # and a constraint cannot join to a ref table to learn which id means
-        # what.  ``ck_transactions_estimated_amount`` (``>= 0``) is UNCHANGED and
-        # still admits the NULL -- a comparison with NULL is UNKNOWN, which a
-        # CHECK passes -- so this constraint is the only thing deciding when the
-        # column may be empty.
-        db.CheckConstraint(
-            "(amount_source_id IS NULL) = (estimated_amount IS NOT NULL)",
-            name="ck_transactions_amount_ownership",
-        ),
-        # A row is priced through AT MOST ONE relation, so the source names an
-        # unambiguous one.  The balance README states this exclusivity as a
-        # CONVENTION with nothing enforcing it ("``template_id`` and
-        # ``transfer_id`` are mutually exclusive across every row -- by
-        # CONVENTION, with no constraint enforcing it"); ``credit_payback_for_id``
-        # is the third link and carries the same convention.  Measured before it
-        # was imposed: 0 of 997 rows on the 2026-08-12 production clone set two
-        # of the three (606 template, 342 transfer, 21 payback, 28 with none).
-        #
-        # It is the amount model's own precondition rather than tidiness: a
-        # derived row's source names a relation, and a row holding two links has
-        # two candidate answers with only dispatch ORDER to separate them.
-        db.CheckConstraint(
-            "(template_id IS NOT NULL)::int "
-            "+ (transfer_id IS NOT NULL)::int "
-            "+ (credit_payback_for_id IS NOT NULL)::int <= 1",
-            name="ck_transactions_one_pricing_link",
-        ),
-        db.CheckConstraint(
-            "version_id > 0",
-            name="ck_transactions_version_id_positive",
-        ),
-        # The SUPERKEY ``transaction_entries`` names to prove its own
-        # ``account_id`` is its parent's (plan step X-f3a-1).  It constrains
-        # nothing -- ``id`` is already the primary key, so this key can reject no
-        # row -- and exists only because PostgreSQL requires a UNIQUE over
-        # exactly the referenced columns before a composite foreign key may
-        # target them.
-        db.UniqueConstraint("id", "account_id", name="uq_transactions_id_account"),
-        # WHICH STATEMENT showed this line, as a COMPOSITE key over the account
-        # (ruling **R-FL**, plan step X-f3a-1).  A single-column
-        # ``REFERENCES account_anchor_history (id)`` could not say "an assertion
-        # of THIS row's account", so a writer that forgot the account scope would
-        # produce a link that is silently wrong about whose statement showed the
-        # money -- and clearing is a per-account question: a checking statement
-        # shows a transfer's outgoing leg, the savings statement shows the
-        # incoming one.  ``MATCH SIMPLE`` (PostgreSQL's default) is what lets it
-        # sit beside a nullable link: a row with ``reconciled_by_id IS NULL``
-        # satisfies it whatever ``account_id`` says.
-        db.ForeignKeyConstraint(
-            ["account_id", "reconciled_by_id"],
-            ["budget.account_anchor_history.account_id",
-             "budget.account_anchor_history.id"],
-            name="fk_transactions_reconciled_by",
-            ondelete="RESTRICT",
-        ),
-        db.Index("idx_transactions_reconciled_by", "reconciled_by_id"),
-        # **THIS ROW'S OWNER IS ITS ACCOUNT'S, guaranteed rather than
-        # maintained** (plan step ``pay_calendar:C13-a``, ruling **R-PC32**).
-        # The pair keys straight onto ``uq_accounts_id_user``, the superkey
-        # ``fk_account_external_identities_owner`` and
-        # ``fk_statement_matches_owner`` already target the same way.
-        #
-        # ``ON DELETE RESTRICT`` matches the single-column ``account_id`` key
-        # beside it, which stays as the ``account`` relationship's declared
-        # join path: that key is about the ACCOUNT'S EXISTENCE and this one is
-        # about AGREEMENT, and two keys over the same column deleting
-        # differently would make an account delete's outcome depend on which
-        # PostgreSQL evaluated.  The reason RESTRICT is the right action is
-        # unchanged and is stated on ``account_id`` itself: a transaction must
-        # not silently vanish with its account.
-        db.ForeignKeyConstraint(
-            ["account_id", "user_id"],
-            ["budget.accounts.id", "budget.accounts.user_id"],
-            name="fk_transactions_owner_account",
-            ondelete="RESTRICT",
-        ),
-        # **...AND IT IS ITS PAYCHECK'S**, which is the half that makes the
-        # two-parent disagreement unrepresentable: either key alone leaves the
-        # OTHER parent free to belong to someone else.  Keyed onto
-        # ``uq_pay_periods_id_user``, added for exactly this.
-        #
-        # ``ON DELETE CASCADE`` matches the single-column ``pay_period_id`` key
-        # beside it, for the reason its sibling above states.  A pay period is
-        # the container a row is FILED in, and deleting one has always taken
-        # its rows with it.
-        db.ForeignKeyConstraint(
-            ["pay_period_id", "user_id"],
-            ["budget.pay_periods.id", "budget.pay_periods.user_id"],
-            name="fk_transactions_owner_period",
-            ondelete="CASCADE",
-        ),
-        # No index is added over ``user_id``; that argument sits on the
-        # column itself, with the rest of what the column is for.
-        # A statement cannot have shown money that never moved.  The link and
-        # the settle day are one fact in two columns, and every door that moves
-        # or clears the day releases the link (``status_seam`` on a revert and
-        # on a correction); this refuses the pair a third writer would leave
-        # behind.  ``settled_on`` is itself NULL exactly when the row is not in
-        # the settled band, so it also says a linked row has settled.
-        db.CheckConstraint(
-            "reconciled_by_id IS NULL OR settled_on IS NOT NULL",
-            name="ck_transactions_cleared_needs_settle_day",
-        ),
-        {"schema": "budget"},
-    )
+    # **MOVED WHOLE to :mod:`app.models._transaction_table_args`** (developer
+    # 2026-09-06, under ruling **balance:R-IR** -- the ceiling stays and the
+    # session that breaks a module is the one that splits it).  This module
+    # stood at 997 of pylint's 1000-line ceiling, so the next constraint the
+    # balance arc adds had nowhere to go.  The value is UNCHANGED, and the
+    # evidence is an AST comparison rather than a count: all 25 members are
+    # identical in kind, in order and in every keyword argument.  The argument
+    # for each index and constraint travelled with it.
+    __table_args__ = transaction_table_args
 
     id = db.Column(db.Integer, primary_key=True)
     # WHO THIS ROW BELONGS TO (plan step ``pay_calendar:C13-a``, ruling
     # **R-PC32**).  Held equal to BOTH parents' owner by the two composite keys
-    # above; see the class docstring for why that is a co-located key and not
-    # the cached copy CLAUDE.md rule 14 forbids.
+    # in :mod:`app.models._transaction_table_args`; see the class docstring for
+    # why that is a co-located key and not the cached copy rule 14 forbids.
     #
     # **It does NOT use :class:`~app.models.mixins.UserScopedMixin`, and the
     # difference is the ``ondelete``** -- the mixin's is ``CASCADE`` and this
@@ -773,8 +441,9 @@ class Transaction(
     # for why that half is not a CHECK constraint and why the day has no bounds.
     #
     # ``settled_day_basis_id`` says WHICH KIND of day it is, and
-    # ``ck_transactions_settle_day_basis_pairing`` above welds the two
-    # NULL-nesses (plan step **X-az**, finding **N-332**).
+    # ``ck_transactions_settle_day_basis_pairing``, in
+    # :mod:`app.models._transaction_table_args`, welds the two NULL-nesses
+    # (plan step **X-az**, finding **N-332**).
     #
     # ``reconciled_by_id`` names WHICH statement showed this line -- the
     # ``account_anchor_history`` row whose balance the user (or, from plan step
@@ -794,8 +463,9 @@ class Transaction(
     # it would launder that guess into an observation nobody made, and no later
     # reader could tell the two apart.  History is filled from the BANK at plan
     # step X-f6a.  Its foreign key is COMPOSITE over ``account_id``; see
-    # ``fk_transactions_reconciled_by`` above for why a single-column one cannot
-    # express the rule.
+    # ``fk_transactions_reconciled_by``, in
+    # :mod:`app.models._transaction_table_args`, for why a single-column one
+    # cannot express the rule.
     # is_envelope and companion_visible are provided by
     # TrackingVisibilityMixin.  On an ad-hoc (template_id IS NULL) row
     # they carry the row's own setting; on a template-generated row they
