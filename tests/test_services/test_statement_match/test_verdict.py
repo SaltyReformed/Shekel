@@ -590,8 +590,10 @@ class TestTheSentenceTheScreenPrintsIsComposedHERE:
         # It named no DIRECTION either since plan step
         # ``bank_import:X-gj-2b-3``, for the reason
         # :meth:`test_a_gap_WITHHELD_from_a_rule_reads_as_the_rule_s` states --
-        # and this exact string is what ``_queue._notes_for`` composes for a
-        # parked line and an inflow, through the same function since that step.
+        # and this exact string is what the retired queue's ``_notes_for``
+        # composed for a parked line and an inflow, through the same function
+        # since that step; the sentence outlived it at
+        # ``bank_import:X-gi-3`` because the CARD prints it now.
         assert item.warning == (
             f"Before recording this, match it against rows "
             f"you already hold: {gap}."

@@ -808,15 +808,15 @@ def blocked_by_violations() -> list[str]:
 #: first row that is not done" the answer however long the table grows.  Nobody
 #: reads this file end to end; they read row one.
 REGISTRY_CAPS = {
-    "conventions.md": 280,
+    # **RAISED by the developer 2026-09-05 on rule 4's terms**: lessons.md
+    # 200 -> 280, conventions.md 280 -> 320.  Each had come to REST on its own
+    # headroom floor -- lessons.md at 179-180 since 2026-08-16 after growing
+    # 143 -> 180 in five days, conventions.md at 256 of a 260 ceiling -- and a
+    # file pinned at its floor reads here exactly like one that has STOPPED
+    # growing, so an edit there DISPLACES a rule or a lesson rather than adds
+    # one.  Rule 5 answers neither: a rule and a lesson have no span to end.
+    "conventions.md": 320,
     "verification.md": 120,
-    # **RAISED 200 -> 280 by the developer, 2026-09-05**, on rule 4's terms
-    # and on a measurement: the file sat at 179-180 from 2026-08-16 to
-    # 2026-09-05, EXACTLY its old headroom floor, having grown 143 -> 180 in
-    # the five days before.  A file pinned at its floor and one that has
-    # stopped growing look identical to every arm here, so each edit in that
-    # window DISPLACED a lesson rather than adding one, invisibly.  Rule 5
-    # cannot apply: a lesson has no span to complete.
     "lessons.md": 280,
 }
 

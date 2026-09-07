@@ -22,12 +22,16 @@ they can be asked in:
 4. no edit may leave the rule stopping before it starts
    (:func:`refuse_inverted_window`).
 
-**It takes the closing bound and the redirect rather than the
-:class:`~app.routes._recurrence_form_helpers.RecurrenceFormContext` that
-carries them**, and that is what keeps the split a boundary rather than a pair
-of modules that need each other: the context is a parameter object for the
-AUTHORING helpers, so importing it here would close a cycle.  These two values
-are all a refusal reads of it.
+**:class:`RecurrenceFormContext` is DEFINED here**, one layer below the
+authoring helpers that also take it, and that is what keeps the split a
+boundary rather than a pair of modules that need each other.  Until plan step
+R7d-f the two refusal entries took the closing bound and the redirect as bare
+arguments, because the context lived in the authoring module and importing it
+here would have closed a cycle; the inverted-window refusal then came to need
+a THIRD value of the caller's -- the read pass -- and three bare copies of a
+parameter object's fields is the shape the object exists to remove.  So the
+leaf moved (``CLAUDE.md`` rule 14's placement clause): the helpers import the
+context from here, and every refusal reads it whole beside the pass.
 
 Route-layer module rather than service because every refusal ``flash``es and
 redirects (the latter via
@@ -35,6 +39,7 @@ redirects (the latter via
 ``CLAUDE.md::Architecture`` keeps services isolated from Flask globals.  The
 leading underscore marks the module as route-internal.
 """
+from dataclasses import dataclass
 from typing import Any
 
 from flask import Response, flash
@@ -44,12 +49,14 @@ from app.schemas.validation import (
     RECURRENCE_STARTS_ON_KEY,
     end_bound_before_start_message,
 )
-from app.services.loan_recurrence_sync import owns_validity_window
+from app.services.balance_at import BalanceContext
+from app.services.loan_recurrence_sync import is_standing_loan_payment
 from app.services.recurrence import (
     EndBound,
     end_bound_from_columns,
     stored_cadence,
 )
+from app.services.recurring_definition import authored_closing
 
 LOAN_PAYMENT_CANNOT_BE_ONE_TIME: str = (
     "A loan payment repeats for the life of the loan, so it cannot be made "
@@ -96,14 +103,20 @@ LOAN_PAYMENT_BOUND_IS_DERIVED: str = (
 halves for the reason ``UNREPAIRED_CADENCE_CANNOT_BE_CLEARED`` does: disabling
 is an affordance, and a client may post whatever it likes.
 
-``loan_recurrence_sync.sync_recurring_payment_bounds`` owns BOTH of a loan
-payment's validity bounds -- the opening one is the loan's first contractual
-installment, the closing one its projected payoff, and it rewrites them on
-every payoff-affecting edit -- so a bound accepted here would be silently
-discarded by the next such edit, which is worse than refusing it.  The OPENING
-half is worse still: it is what keeps a payment from generating before the
-loan originates, measured at $3,220.92 of phantom cash debits on a mortgage
-closing one month out.
+``loan_recurrence_sync`` owns BOTH of the loan's standing payment's validity
+bounds, each in its own way since ruling **R-R29**: the OPENING bound is
+WRITTEN -- the loan's first contractual installment, re-synced on every
+payoff-affecting edit -- and the CLOSING bound is DERIVED, the loan's payoff
+resolved through the composed door on every read.  A start accepted here
+would be silently discarded by the next such edit, which is worse than
+refusing it, and the OPENING half is worse still: it is what keeps a payment
+from generating before the loan originates, measured at $3,220.92 of phantom
+cash debits on a mortgage closing one month out.  A stop accepted here would
+be discarded the same way until plan step R7d-g stops the syncs, and after it
+would state a plan the loan does not know about -- so the loan's own payment
+runs to the payoff and archiving is the door to stop it early (ruling
+**R-R59**, developer 2026-09-05, taken at plan step R7d-f: the control stays
+locked).
 
 Refusing also keeps the two shapes of "a rule stops" from ever meeting on one
 row: a submitted COUNT beside the sync's DATE is the pair
@@ -112,21 +125,84 @@ row: a submitted COUNT beside the sync's DATE is the pair
 stops the user's stated bound being thrown away without a word.
 
 **Which definitions it fires for is
-``loan_recurrence_sync.owns_validity_window``, not
-:func:`is_loan_payment`** (plan step R7b-4).  Those are different questions and
-asking the second was a defect an adversarial review of plan step R7b-3 found:
-a template can carry loan-payment SETTINGS without being the template that
-module writes bounds for, and its form then locked a control for a value
-nothing wrote.  See that predicate's docstring.
+``loan_recurrence_sync.is_standing_loan_payment``, not
+:func:`is_loan_payment`** (plan step R7b-4; read off the pass since R7d-f).
+Those are different questions and asking the second was a defect an
+adversarial review of plan step R7b-3 found: a template can carry loan-payment
+SETTINGS without being the loan's standing payment, and its form then locked a
+control for a value nothing wrote.  See that predicate's docstring.
 """
+
+
+@dataclass(frozen=True)
+class RecurrenceFormContext:
+    """Recurrence-form processing options shared across the F-24 helpers.
+
+    A parameter object, not a single domain concept: it groups the three
+    otherwise-independent knobs the helpers read so the verbatim-triplicated
+    signature tail collapses to one argument (and ``resolve`` forwards it
+    unchanged).
+
+    Bundles the three inputs that
+    :func:`~app.routes._recurrence_form_helpers.recurrence_spec_from_form`,
+    :func:`~app.routes._recurrence_form_helpers.update_recurrence_rule_from_form`,
+    :func:`~app.routes._recurrence_form_helpers.resolve_recurrence_rule_for_update`
+    and the two refusal entries below share verbatim: the form's closing
+    bound, the validation-error redirect target, and whether the submitting
+    schema exposes ``due_day_of_month`` (transaction templates) or not
+    (transfer templates).  Collapsing the formerly-triplicated
+    ``end_bound`` / ``redirect_endpoint`` / ``redirect_endpoint_kwargs``
+    / ``include_due_day_of_month`` signature tail into one object both
+    removes the duplication and clears the per-helper
+    ``too-many-arguments`` count.
+
+    **Defined in THIS module since plan step R7d-f**, having lived in the
+    authoring helpers: the refusals read two of its fields and could not
+    import it across the one-way seam, so they took those two as bare
+    arguments until the inverted-window door needed the read pass beside
+    them.  See the module docstring.
+
+    **It does NOT carry the read pass**, and the omission is deliberate: the
+    create preamble builds this context with no stored definition to read and
+    no pass in hand, and a field half the constructors leave empty is an
+    optional the other half must remember to check.  The pass is the UPDATE
+    path's own argument (``pass_ctx``), passed beside this object by the two
+    entries that judge a stored definition.
+
+    Attributes:
+        end_bound: When the recurrence STOPS, as the ONE value the submission
+            composed (:class:`~app.services.recurrence.EndBound`), or ``None``
+            when the form STATED NOTHING about it.
+
+            The two are different requests and the helpers act on them
+            differently -- a stated bound REPLACES the rule's, an absent one
+            leaves it alone -- which is the same present-versus-absent
+            distinction ``recurrence_unit`` turns on, and it is what lets a
+            form whose bound is derived (a loan payment) render the control
+            disabled and have the save mean "not mine to state" rather than
+            "ends never".  It carried the raw ``end_date`` until plan step
+            R7b-3, where a date was the only bound a form could state and the
+            distinction had nothing to express.
+        redirect: Where to redirect on a recoverable validation failure
+            (a start period that is not this user's).
+        include_due_day_of_month: ``True`` for transaction templates,
+            ``False`` for transfer templates.  Transfer-template schemas
+            do not expose ``due_day_of_month``; passing ``True`` for a
+            transfer payload would silently set the column from a key
+            the schema never validated.
+    """
+
+    end_bound: EndBound | None
+    redirect: RedirectTarget
+    include_due_day_of_month: bool = False
 
 
 def refuse_inverted_window(
     template: Any,
     data: dict[str, Any],
     *,
-    end_bound: EndBound | None,
-    redirect: RedirectTarget,
+    ctx: RecurrenceFormContext,
+    pass_ctx: BalanceContext,
 ) -> Response | None:
     """Refuse an UPDATE that would leave the rule stopping before it starts.
 
@@ -155,33 +231,43 @@ def refuse_inverted_window(
     it, stored where it did not -- which is the same present-versus-absent rule
     :func:`update_recurrence_rule_from_form` applies when it writes them.
 
-    **A definition whose window the APP derives is skipped, and that is the
-    same ruling one level down** (plan step ``recurrence:R7d-h``).  The CHECK
-    was held back because a derived empty window is correct at nought
-    occurrences; this door reads the identical stored pair, so refusing on it
-    makes the door the constraint the ruling declined to add.  It became
-    reachable when a retired loan's closing bound stopped being the read pass's
-    own now -- which drifted PAST ``starts_on`` and healed itself -- and became
-    the day the loan actually closed, which for a loan cleared before its first
-    installment is permanently earlier than the start the sync writes.  Without
-    this skip the owner is refused on an ordinary cadence edit, is told "ends
-    before it starts", and has no control to fix it: the form locks the start
-    and the "Ends" bound for a loan payment but not the "Repeats" select.
-    :func:`~app.services.loan_recurrence_sync.owns_validity_window` is the same
-    predicate the form's LOCK asks, so the control set and this refusal cannot
-    disagree about who owns the pair.  Plan step ``recurrence:R7d-f`` moves the
-    rest of this module's loan-payment reads off the column.
+    **The stored half of the pair is read through the composed door's own
+    arm, never off the column** (plan step ``recurrence:R7d-f``).  Until then
+    this read ``rule.end_date`` directly and carried a SKIP for the definition
+    whose window the app derives: a loan cleared before its first installment
+    stores an inverted pair through the sync's own production door (plan step
+    ``recurrence:R7d-h``), and refusing on it made this door the constraint
+    the developer declined to add -- on an edit whose only unlocked control is
+    the "Repeats" select, so the owner was told "ends before it starts" with
+    nothing to fix it.
+    :func:`~app.services.recurring_definition.authored_closing` answers
+    ``NEVER_ENDS`` for that definition -- its column is the chokepoints' cache
+    of the payoff and not the owner's word (ruling **R-R56**) -- so its stored
+    pair cannot invert here, and the skip is DELETED rather than kept: the
+    refusal and the door read one arm, and the fence is structurally
+    unnecessary.  Every other definition's stored bound is its owner's and is
+    graded exactly as before, a second recurring transfer into the same loan
+    included.
+
+    The stored rule is NOT resolved here, deliberately.  The arm needs the
+    loan's identity and the two bound columns, neither of which decodes the
+    cadence, so a rule whose stored pattern the application no longer models
+    still reaches its repair save without this door raising on the way -- the
+    same property the render side states for its own read of the bound.  And
+    the arm is asked only once the columns already read inverted: an
+    adversarial review of this step found the first cut asking it on every
+    edit, which resolved the destination loan for one boolean on a rename.
 
     Args:
         template: The template being updated.  A template with no rule is
             skipped: the create branch authors from a submission the schema has
-            already compared.  A template whose validity window the app derives
-            is skipped too, per the paragraph above.
+            already compared.
         data: The validated payload, NOT mutated -- the delegated helper pops
             the recurrence keys afterwards and must still see them.
-        end_bound: The submitted closing bound, or ``None`` when the form
-            stated none.
-        redirect: Where to send the user when the submission is refused.
+        ctx: The form context, read for the submitted closing bound (``None``
+            when the form stated none) and for where a refusal sends the user.
+        pass_ctx: The read pass the standing-payment identity is read from
+            (:func:`~app.services.recurring_definition.authored_closing`).
 
     Returns:
         * ``None`` -- the window is well-formed, or nothing this edit states
@@ -191,22 +277,32 @@ def refuse_inverted_window(
     rule = template.recurrence_rule
     if rule is None or data.get("recurrence_unit") is None:
         return None
-    if owns_validity_window(template):
-        # The app WRITES this pair from the loan's own facts, so an inverted
-        # one is its answer and not the owner's mistake (see the docstring).
-        return None
     starts_on = (
         data[RECURRENCE_STARTS_ON_KEY] if RECURRENCE_STARTS_ON_KEY in data else rule.starts_on
     )
     bound = (
-        end_bound if end_bound is not None
+        ctx.end_bound if ctx.end_bound is not None
         else end_bound_from_columns(rule.end_date, rule.max_occurrences)
     )
     end_date = bound.columns().end_date
     if starts_on is None or end_date is None or end_date >= starts_on:
         return None
+    # The pair reads INVERTED off the columns.  A stored bound is read as the
+    # DOOR reads it before it is refused back at the owner: for the loan's
+    # standing payment that column is the cache and not the owner's word, so
+    # the arm answers ``NEVER_ENDS`` and there is nothing to refuse.  Asked
+    # only here -- an ordinary edit of any definition never reaches this line
+    # and never resolves the loan for one boolean; a STATED bound was already
+    # refused for the standing payment one rule up, so the arm is asked only
+    # about a stored one.  The arm can only REMOVE an inversion, never make
+    # one, so asking it after the column test answers exactly what asking it
+    # before would.
+    if ctx.end_bound is None:
+        end_date = authored_closing(template, bound, pass_ctx).columns().end_date
+        if end_date is None:
+            return None
     flash(end_bound_before_start_message(end_date, starts_on), "danger")
-    return redirect.to_response()
+    return ctx.redirect.to_response()
 
 
 def is_loan_payment(template: Any) -> bool:
@@ -244,8 +340,8 @@ def refuse_recurrence_update(
     template: Any,
     data: dict[str, Any],
     *,
-    end_bound: EndBound | None,
-    redirect: RedirectTarget,
+    ctx: RecurrenceFormContext,
+    pass_ctx: BalanceContext,
     recurrence_submitted: bool,
 ) -> Response | None:
     """Return why this update's recurrence may not be applied, or ``None``.
@@ -273,9 +369,17 @@ def refuse_recurrence_update(
         template: The template being updated.  Read only; not mutated.
         data: The validated payload.  Read for PRESENCE before the delegated
             helpers pop the recurrence keys; not mutated.
-        end_bound: The submitted closing bound, or ``None`` when the form
-            stated none.
-        redirect: Where a refusal sends the user.
+        ctx: The form context: the submitted closing bound (``None`` when the
+            form stated none) and where a refusal sends the user.
+        pass_ctx: The read pass.  Read for ONE fact, whether *template* is
+            the standing payment of the loan it pays into
+            (:func:`~app.services.loan_recurrence_sync.is_standing_loan_payment`),
+            which two of the four rules turn on and the fourth reads through
+            the composed door's arm -- and read only when one of them can
+            fire, because answering it resolves the loan.  Built by the route BEFORE any write, as
+            the 2026-08-16 ruling has it (a producer below the route takes the
+            pass and never builds one); regeneration afterwards builds its own,
+            as a writer must.
         recurrence_submitted: Whether ``recurrence_unit`` is present at all,
             read by the caller before this runs because the two of them share
             it and a second ``in`` test is a second statement of "did the form
@@ -290,6 +394,22 @@ def refuse_recurrence_update(
         and data.get("recurrence_unit") is None
         and template.recurrence_rule is not None
     )
+    states_a_bound = (
+        ctx.end_bound is not None or RECURRENCE_STARTS_ON_KEY in data
+    )
+    # ONE identity for the two rules that turn on it (plan step R7d-f): is
+    # this the standing payment of the loan it pays into.  Asked ONLY when a
+    # submission clears the recurrence or states a bound -- the identity is
+    # read off the pass's loan resolution, and on this pre-write pass nothing
+    # else has resolved the loan yet, so asking it on every edit would resolve
+    # the loan for one boolean on an amount-only PATCH (an adversarial review
+    # of this step measured the first cut doing exactly that).  The
+    # inverted-window door below reads the same memo through the composed
+    # door's arm, and only once a stored pair already reads inverted.
+    standing_payment = (
+        (clearing or states_a_bound)
+        and is_standing_loan_payment(template, pass_ctx)
+    )
     # A loan payment may not be made one-time, and WHICH definitions that
     # covers is the UNION of two questions rather than either alone (developer
     # ruling 2026-08-14, taken on the measurement below).
@@ -297,9 +417,9 @@ def refuse_recurrence_update(
     # ``is_loan_payment`` asks whether the template carries
     # ``LoanPaymentSettings``, which is the right question for the standing
     # ``extra_principal`` half of the harm this refusal names.
-    # ``owns_validity_window`` asks whether ``loan_recurrence_sync`` writes
-    # this template's bounds, which is the right question for the rest of it:
-    # clearing the recurrence DELETES the rule row, and its existence is how
+    # ``is_standing_loan_payment`` asks whether this template IS the loan's
+    # payment, which is the right question for the rest of it: clearing the
+    # recurrence DELETES the rule row, and its existence is how
     # ``recurring_transfer_query.active_recurring_transfer_template`` FINDS a
     # loan's payment -- so the loan goes on amortizing with nothing projecting
     # a payment against it.
@@ -311,22 +431,22 @@ def refuse_recurrence_update(
     # named this predicate read it as too BROAD; it is too NARROW where it
     # matters, and the union is what makes the refusal cover the set the harm
     # is measured on without giving up the set it was written for.
-    if clearing and (
-        is_loan_payment(template) or owns_validity_window(template)
-    ):
+    if clearing and (is_loan_payment(template) or standing_payment):
         flash(LOAN_PAYMENT_CANNOT_BE_ONE_TIME, "danger")
-        return redirect.to_response()
-    # A loan payment's validity bounds are DERIVED -- the opening one from the
-    # loan's first contractual installment, the closing one from its projected
-    # payoff -- so a submission stating EITHER is refused rather than accepted
-    # and then discarded by the next payoff-affecting edit.  The form renders
-    # both controls disabled, which is why this is reachable only by a crafted
-    # POST -- and why it is checked anyway: disabling is the affordance, the
-    # refusal is the rule.  See LOAN_PAYMENT_BOUND_IS_DERIVED.
+        return ctx.redirect.to_response()
+    # The loan's standing payment's validity bounds are the app's -- the
+    # opening one WRITTEN from the loan's first contractual installment, the
+    # closing one DERIVED from its payoff with no authored stop (ruling
+    # **R-R59**) -- so a submission stating EITHER is refused rather
+    # than accepted and then discarded by the next payoff-affecting edit.  The
+    # form renders both controls disabled, which is why this is reachable only
+    # by a crafted POST -- and why it is checked anyway: disabling is the
+    # affordance, the refusal is the rule.  See LOAN_PAYMENT_BOUND_IS_DERIVED.
     #
-    # ONE guard over both bounds because ONE writer owns both, and asking
-    # ``owns_validity_window`` is what keeps this refusal and that writer on
-    # the same set (plan step R7b-4).
+    # ONE guard over both bounds because ONE identity decides both (plan step
+    # R7d-f split what each bound's rule MEANS without splitting the set it
+    # applies to), and reading it off the pass is what keeps this refusal, the
+    # form's two locks and the composed door on one producer.
     #
     # **ABSENCE is the signal, for BOTH halves** (developer ruling
     # 2026-08-15).  Each locked control renders ``disabled`` and a disabled
@@ -345,10 +465,9 @@ def refuse_recurrence_update(
     # innocent rename on a stale echo.  The schema rule moved to CREATE instead
     # (``RecurrenceFormFieldsMixin.validate_recurrence_states_a_start``), which
     # is where the money it guards actually is.
-    states_a_bound = end_bound is not None or RECURRENCE_STARTS_ON_KEY in data
-    if states_a_bound and owns_validity_window(template):
+    if states_a_bound and standing_payment:
         flash(LOAN_PAYMENT_BOUND_IS_DERIVED, "danger")
-        return redirect.to_response()
+        return ctx.redirect.to_response()
     # **The SAME question ``edit_form_cadence`` renders unset on** (plan step
     # R7c-b).  ``UNREPAIRED_CADENCE_CANNOT_BE_CLEARED`` is the server half of a
     # promise the form makes, so the two must be one predicate: a rule the form
@@ -360,10 +479,10 @@ def refuse_recurrence_update(
     # exists to fix.  ``stored_cadence`` is that one predicate.
     if clearing and stored_cadence(template.recurrence_rule) is None:
         flash(UNREPAIRED_CADENCE_CANNOT_BE_CLEARED, "danger")
-        return redirect.to_response()
+        return ctx.redirect.to_response()
 
     inverted = refuse_inverted_window(
-        template, data, end_bound=end_bound, redirect=redirect,
+        template, data, ctx=ctx, pass_ctx=pass_ctx,
     )
     if inverted is not None:
         return inverted
@@ -374,6 +493,7 @@ __all__ = [
     "LOAN_PAYMENT_BOUND_IS_DERIVED",
     "LOAN_PAYMENT_CANNOT_BE_ONE_TIME",
     "UNREPAIRED_CADENCE_CANNOT_BE_CLEARED",
+    "RecurrenceFormContext",
     "is_loan_payment",
     "refuse_inverted_window",
     "refuse_recurrence_update",

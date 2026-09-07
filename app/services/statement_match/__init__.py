@@ -18,27 +18,38 @@ The public surface, and what each piece is for:
   derived the account again for itself, at 3.593 s a time over the 215 acts the
   developer's own statement offers -- 12.88 minutes of derivation to work one
   statement, against 5.80 s for the whole pass now.
-* :func:`review_set` -- everything the review screen shows for one account:
-  what the app proposes, what it could not explain, and what is out of reach.
-  **It is the EXCEPTION QUEUE and nothing else** since plan step
-  ``bank_import:X-gf-2`` (ruling **bank_import:R-GX**).
-* :func:`accepted_register` and :func:`answered_merchants` -- what has already
-  been DECIDED, which is the register: the acts accepted (with the undo, and
-  every act that no longer holds first) and the merchant answers already
-  given.  **Neither needs a** :class:`ReviewScope`, which is the point of the
-  split as much as the page weight was: they were folded into the review
-  screen's own derivation, so rendering the queue valued all 221 of the
-  developer's accepted acts and re-asked 29 answers he was not looking at --
-  442,109 bytes of a 578,523-byte page.
+* :func:`review_set` -- everything the Reconcile page's INBOX shows for one
+  account: what the app proposes, what it could not explain, and what is out
+  of reach.  **It is the pass and nothing else** since plan step
+  ``bank_import:X-gf-2`` (ruling **bank_import:R-GX**) took the settled acts
+  off it.  *It said "the review screen" and "the EXCEPTION QUEUE" until plan
+  step ``bank_import:X-gi-3``: ``bank_import:X-gi-2`` deleted that screen and
+  this step deleted its MODEL.  It has FOUR readers, counted rather than
+  assumed (adversarial review 2026-09-06 measured a first draft of this
+  sentence claiming one): :func:`reconcile_page`, :func:`file_new_swipes` --
+  the import door, published in this same list -- and the Reconcile route's
+  Apply and MATCH doors.*
+* :func:`accepted_register` -- what has already been DECIDED: the acts
+  accepted, with the undo, and every act that no longer holds first.  **It
+  needs no** :class:`ReviewScope`, which is the point of the split as much as
+  the page weight was: it was folded into the review screen's own derivation,
+  so rendering it valued all 221 of the developer's accepted acts and re-asked
+  29 answers he was not looking at -- 442,109 bytes of a 578,523-byte page.
+  *The ANSWERS half was ``_section.answered_merchants``, assembled beside this
+  one into ``_register.register_set`` for the register screen.  Plan step
+  ``bank_import:X-gi-3`` deleted the assembly AND that half with the screen's
+  model: :func:`merchant_directory` is the durable home for an answer
+  (**R-IC**), and the Reconcile page reads the acts on the tab that needs
+  them.*
 * :func:`merchant_directory` -- every merchant this account has ever seen and
   what the owner said about each, which is the DURABLE home for that answer
   (plan step ``bank_import:X-gk``, ruling **bank_import:R-IC**).  The three
-  surfaces above it are each PARTIAL -- the queue asks only where a line is
-  waiting AND nobody has answered, the register shows only the answered, and
+  surfaces above it are each PARTIAL -- the INBOX asks only where a line is
+  waiting AND nobody has answered, the SETTLED TABS show only the answered, and
   the receipt offers only what a pass just filed -- and measured on a clone of
   the developer's own database 2026-08-31 that left **32 of his 62 merchants on
   no surface at all**.  It needs no :class:`ReviewScope`, for the reason
-  :func:`register_set` needs none.
+  :func:`accepted_register` needs none.
 * :func:`apply_reviewed` -- the batch door, and the one the screen posts to.
   **It MOVES MONEY.**  It applies every act the owner ticked, each in its own
   SAVEPOINT so a refused item leaves nothing behind and the rest still land,
@@ -235,14 +246,6 @@ from ._submission import (
 from ._near import NEAR_MISS_BOUND
 from ._pairing import DAY_WINDOW
 from ._propose import ProposedMatches, propose
-from ._queue import (
-    Evidence,
-    QueueAct,
-    QueueGroup,
-    QueueRow,
-    QueueSweep,
-    StatementQueue,
-)
 from ._accepted_view import (
     REGISTER_LIMIT,
     AcceptedGroup,
@@ -271,21 +274,13 @@ from ._stating import (
 from ._gaps import BooksBound, ReviewBounds
 from ._reads import (
     ReviewSet,
-    RowsNeverShown,
     review_set,
 )
 from ._verdict import RuleVerdict
 from ._section import (
-    MerchantRegister,
     MerchantSection,
     MerchantSummary,
     WaitingMerchant,
-    answered_merchants,
-)
-from ._register import (
-    StatementRegister,
-    merchant_register,
-    register_set,
 )
 from ._directory import (
     DIRECTORY_LIMIT,
@@ -303,6 +298,14 @@ from ._skipping import (
 )
 from ._undisposed import awaiting_review_count
 from ._panel import AddAct, AddTab, MatchCandidates, VerbPanel
+from ._opened import (
+    MatchAsk,
+    MatchReach,
+    OpenedMatch,
+    opened_match,
+    proposed_submission,
+    refused_match,
+)
 from ._verbs import Verb, VerbOffer
 from ._reconcile import Tab, reconcile_page
 from ._filing import (
@@ -341,7 +344,6 @@ __all__ = [
     "NEAR_MISS_BOUND",
     "MatchDays",
     "StandingRule",
-    "MerchantRegister",
     "MerchantSection",
     "MintedEnvelopes",
     "MerchantSummary",
@@ -366,21 +368,13 @@ __all__ = [
     "RecordedIncome",
     "PurchaseDestination",
     "ReleasedMatch",
-    "Evidence",
-    "QueueAct",
-    "QueueGroup",
-    "QueueRow",
-    "QueueSweep",
     "BooksBound",
     "ReviewBounds",
     "ReviewScope",
     "ReviewSet",
-    "RowsNeverShown",
-    "StatementQueue",
     "ReviewedBatch",
     "ReviewedRow",
     "SkippedLine",
-    "StatementRegister",
     "DirectoryAsk",
     "MerchantDirectory",
     "MerchantWanted",
@@ -388,6 +382,9 @@ __all__ = [
     "AddAct",
     "AddTab",
     "MatchCandidates",
+    "MatchAsk",
+    "MatchReach",
+    "OpenedMatch",
     "VerbPanel",
     "Verb",
     "VerbOffer",
@@ -400,7 +397,6 @@ __all__ = [
     "accept_match",
     "account_merchants",
     "accepted_register",
-    "answered_merchants",
     "apply_reviewed",
     "as_reviewed",
     "awaiting_review_count",
@@ -414,15 +410,16 @@ __all__ = [
     "file_new_swipes",
     "matched_subjects",
     "merchant_directory",
-    "merchant_register",
     "parse_figure",
     "merchant_label",
+    "opened_match",
     "preview_hand_build",
+    "proposed_submission",
+    "refused_match",
     "propose",
     "reconcile_page",
     "release_match",
     "removals_by_match",
-    "register_set",
     "review_set",
     "SkipRequest",
     "skip_line",

@@ -38,7 +38,7 @@ from app.services import (
     savings_dashboard_service,
 )
 from app.services.balance_at import BalanceContext
-from app.services.loan_recurrence_sync import owns_validity_window
+from app.services.loan_recurrence_sync import is_standing_loan_payment
 from app.services.recurrence import EndsOnDate, reauthor_rule, recurrence_spec
 from tests._test_helpers import (
     create_loan_account,
@@ -88,7 +88,7 @@ def _live_loan_payment(seed_user):
     return loan, template
 
 
-def _cache_the_bound(template, bound: date, calendar) -> None:
+def _cache_the_bound(template, bound: date, ctx) -> None:
     """Write *bound* into the rule's column the way a chokepoint's sync does.
 
     Through the real write door, so the column holds exactly what a sync
@@ -97,7 +97,9 @@ def _cache_the_bound(template, bound: date, calendar) -> None:
     Args:
         template: The loan payment whose rule takes the cached bound.
         bound: The date to cache.
-        calendar: The owner's calendar the write door re-authors against.
+        ctx: The owner's read pass: its calendar is what the write door
+            re-authors against, and its loan-resolution memo is what the
+            standing-payment identity is read off.
     """
     reauthor_rule(
         template.recurrence_rule,
@@ -105,13 +107,13 @@ def _cache_the_bound(template, bound: date, calendar) -> None:
             recurrence_spec(template.recurrence_rule),
             end_bound=EndsOnDate(on=bound),
         ),
-        calendar,
+        ctx.calendar(),
     )
     db.session.commit()
     assert template.recurrence_rule.end_date == bound, (
         "precondition: the column holds the cached bound"
     )
-    assert owns_validity_window(template), (
+    assert is_standing_loan_payment(template, ctx), (
         "precondition: this is the definition whose bound the app writes"
     )
 
@@ -181,7 +183,7 @@ class TestADerivedStopLeavesTheObligationsTotal:
                 origination_date=_ORIGINATED, cleared_on=_CLEARED,
             )
             today = BalanceContext.build(seed_user["user"].id, _TODAY)
-            _cache_the_bound(tpl, date(2028, 5, 1), today.calendar())
+            _cache_the_bound(tpl, date(2028, 5, 1), today)
 
             assert obligations_aggregator.template_monthly_or_none(
                 tpl, today,
@@ -210,9 +212,7 @@ class TestADerivedStopLeavesTheObligationsTotal:
             loan, tpl = _live_loan_payment(seed_user)
             owner = seed_user["user"].id
             stale = date(2026, 7, 15)
-            _cache_the_bound(
-                tpl, stale, BalanceContext.build(owner, _TODAY).calendar(),
-            )
+            _cache_the_bound(tpl, stale, BalanceContext.build(owner, _TODAY))
             after_the_cache = BalanceContext.build(owner, date(2026, 7, 20))
             closing = balance_at.loan_figures(loan, after_the_cache).closing_date
             assert closing is not None and closing > stale, (

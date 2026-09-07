@@ -91,6 +91,12 @@ from ._card_sections import (
 )
 from ._cards import CardKind, CardSection, LineCard, parked_card
 from ._last_import import last_import
+from ._opened import (
+    MatchAsk,
+    MatchReach,
+    opened_match,
+    proposed_submission,
+)
 from ._reads import review_set
 from ._skipping import skipped_acts, skipped_count
 
@@ -102,6 +108,7 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from app.services.bank_agreement import BankAgreement
 
     from ._last_import import LastImport
+    from ._opened import OpenedMatch
     from ._reads import ReviewSet
     from ._scope import ReviewScope
 
@@ -155,13 +162,14 @@ _TAB_LABELS: "dict[Tab, str]" = {
 #: accepting changes, day effects before amount effects, and creating an
 #: envelope last because it is the one act an undo cannot fully reverse.
 #:
-#: **The review screen still counts these in JINJA**
-#: (``_statement_review_body.html``'s ``selectattr | length``) and stays live
-#: until ``X-gi`` retires it, which is the shape
-#: :func:`~._queue._sweeps_for` exists to refuse: a caption may not promise a
-#: number a template counted.  This page counts them in the service; the two
-#: copies of the LABELS, here and in :data:`~._queue._SWEEP_LABELS`, go with
-#: that retirement and had already drifted by a word on arrival.
+#: **The review screen counted these in JINJA** (its body's
+#: ``selectattr | length``) until plan step ``bank_import:X-gi-2`` deleted it,
+#: which is the shape
+#: the retired queue's ``_sweeps_for`` existed to refuse: a caption may not
+#: promise a number a template counted.  This page counts them in the service;
+#: the second copy of the LABELS, ``_SWEEP_LABELS``, outlived its only reader
+#: by that deletion and WENT at ``bank_import:X-gi-3`` with the module holding
+#: it -- the two had already drifted by a word on arrival.
 SWEEP_LABELS: "tuple[tuple[str, str], ...]" = (
     ("confirm", "that only confirm a day you already had"),
     ("correct", "that move a day onto the bank's"),
@@ -260,8 +268,8 @@ class HoldingChip:
 class Sweep:
     """One risk class of cards, and the one click that OKs them.
 
-    Ruling **R-FZ(c)**, and the same value :class:`~._queue.QueueSweep` is,
-    over the new screen's two partitions.
+    Ruling **R-FZ(c)**, and the same value the retired queue's ``QueueSweep``
+    was, over this screen's two partitions.
 
     Attributes:
         css_class: The class key, which is the value a card carries in
@@ -292,19 +300,21 @@ class TabCount:
 class ReconcilePage:  # pylint: disable=too-many-instance-attributes
     """Everything the Reconcile page renders, for ONE of its five tabs.
 
-    Pylint: ``too-many-instance-attributes`` (10/7) -- **ten because the page
-    renders ten distinct things**: which tab is open, WHICH KIND of card it
-    holds, the hero, what the last import did, the holding chips, the tab bar,
-    the cards, the sweeps, the footer's disclosure and what the account's
-    opening already accounts for.
+    Pylint: ``too-many-instance-attributes`` (11/7) -- **eleven because the
+    page renders eleven distinct things**: which tab is open, WHICH KIND of
+    card it holds, the hero, what the last import did, the holding chips, the
+    tab bar, the cards, the sweeps, the footer's disclosure, what the
+    account's opening already accounts for, and the ONE card a scriptless
+    request asked to open.
     Every one of them is read by ``_statement_reconcile_body.html``, so the
     count is re-derivable rather than asserted; folding any pair would be the
     speculative nesting ``CLAUDE.md`` rule 13 forbids, and
     :class:`~._reads.ReviewSet` carries the same disable for the same reason.
-    *It read (8/7) until plan step balance:X-f3c-2b-2b added the ninth, and
-    (9/7) until ``bank_import:X-gj-4c-2`` added the tenth* -- a count in a
-    rationale is a measurement, and the first of those went stale in the same
-    commit that made it stale.
+    *It read (8/7) until plan step balance:X-f3c-2b-2b added the ninth, (9/7)
+    until ``bank_import:X-gj-4c-2`` added the tenth, and (10/7) until
+    ``bank_import:X-gi-1`` added the eleventh* -- a count in a rationale is a
+    measurement, and the first of those went stale in the same commit that
+    made it stale.
 
     **It carried an ``account_id`` until plan step ``bank_import:X-gj-1b``,
     and NOTHING read it** -- not a template, not the route, not a test.  Every
@@ -356,6 +366,21 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             this one ends in an ACT, and the template has to render that act
             as a link -- which is the one fact a service may not build
             (:attr:`~._bars.BarredLine.answer_door`).
+        opened: The MATCH pane of the ONE card ``?open=<line_id>`` named
+            (:class:`~._opened.OpenedMatch`), or ``None`` -- which is every
+            render whose URL carries no ``open``, and every render that holds
+            no card for the line it names.  **NOT "every render but a
+            scriptless one"**, which is what this said until adversarial review
+            2026-09-05: a scripted browser reaches ``?open=`` through a shared
+            or bookmarked URL, and every Apply POST from an opened card carries
+            it in the form's action.  Ruling
+            **bank_import:R-KA**: the pane is a fragment htmx fetches, so with
+            scripting off it never arrives at all, and this is what puts the
+            rows in the document instead.  **Derived for ONE card and never
+            for the tab**, which is the whole of the ruling's cost argument:
+            :class:`~._panel.VerbPanel` carried a ``MatchTab`` holding every
+            card's rows until plan step ``bank_import:X-gj-1b`` deleted it for
+            deriving 248 cards' worth of a value nobody read.
     """
 
     tab: Tab
@@ -368,6 +393,7 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
     sweeps: "tuple[Sweep, ...]"
     unexamined: "tuple[str, ...]"
     books_bound: "BooksBound | None"
+    opened: "OpenedMatch | None"
 
     @property
     def is_done(self) -> bool:
@@ -395,7 +421,7 @@ def _sweeps(sections: "tuple[CardSection, ...]") -> "tuple[Sweep, ...]":
 
     **Counted over the cards that will actually be rendered**, so a caption
     cannot promise a number the control does not deliver -- which is the rule
-    :func:`~._queue._sweeps_for` states and the review screen broke by
+    the retired queue's ``_sweeps_for`` stated and the review screen broke by
     counting in Jinja.
 
     Args:
@@ -466,7 +492,7 @@ def _chips(
     which renders every accepted act; once the two settled TABS exist that
     total is the union of two tabs, so the chip would have promised a number
     neither of the tabs it could link to delivers -- the caption-over-a-count
-    defect :func:`~._queue._sweeps_for` exists to refuse.  The tab bar states
+    defect the retired queue's ``_sweeps_for`` existed to refuse.  The tab bar states
     both halves with their own counts, which is the same fact said once per
     place it is true rather than twice.
 
@@ -476,7 +502,8 @@ def _chips(
     all three three lines later.  That is the clutter :func:`_unexamined` one
     function down says this rebuild removed.  It renders as
     :attr:`ReconcilePage.books_bound` instead -- once, with the act as a link,
-    the way the review body and the workbench already render the same value.
+    the way the review body and the workbench rendered the same value before
+    plan step ``bank_import:X-gi-2`` deleted them.
 
     **The two paragraphs above removed DIFFERENT chips and both removals
     stand** (merge of ``balance:X-f3c-2b-2b`` into ``bank_import:X-gj-1c``,
@@ -565,11 +592,79 @@ def _unexamined(review: "ReviewSet") -> "tuple[str, ...]":
     return tuple(said)
 
 
+def _opened_pane(
+    scope: "ReviewScope",
+    review: "ReviewSet",
+    sections: "tuple[CardSection, ...]",
+    opened_line: "int | None",
+) -> "OpenedMatch | None":
+    """Return the MATCH pane of the one card ``?open=`` named, or ``None``.
+
+    Plan step ``bank_import:X-gi-1``, ruling **bank_import:R-KA**.
+
+    **It reaches EVERY unexplained row and not the line's own pay period**
+    (developer, 2026-09-05).  The period is what the live fragment opens on,
+    because the SEARCH widens it and 67 rows a keystroke is what finding
+    **N-374** is about; this render has no search at all, so the period would
+    be a bound the owner cannot widen -- which is the cap **N-374** refused --
+    and :mod:`._panel` measures the class it would strand: all 9 of the 9 card
+    payments on the developer's own Checking have payback rows their own
+    period does NOT hold (2026-08-30), and a hand-built group against those
+    paybacks is the ONLY act ruling **R-GJ** leaves such a line.
+
+    **Nothing is derived unless THIS RENDER holds that card**, and the test is
+    membership of the sections actually built rather than the tab's KIND
+    (adversarial review 2026-09-05).  ``card_subject`` searches the whole pass,
+    so asking it alone answered a live pane for
+    ``?tab=to_explain&open=<a parked card payment>`` -- two database reads and
+    a full ``preview_hand_build`` for a value the template then rendered
+    nowhere, because the card is on Transfers.  A settled tab, a bounded-out
+    act and a card on another tab are now one answer and one absence.
+
+    Args:
+        scope: The pass's scope, which prices the pane.
+        review: The pass, which resolves the line to its card.
+        sections: The cards this render actually holds
+            (:class:`~._cards.CardSection`).
+        opened_line: The bank line asked for, or ``None``.
+
+    Returns:
+        The :class:`~._opened.OpenedMatch`, or ``None`` where nothing was
+        asked for, or where this render holds no card for the line named --
+        which is a stale ``?open=`` rather than an error.
+    """
+    if opened_line is None:
+        return None
+    if not any(
+        getattr(card, "line", None) is not None
+        and card.line.line_id == opened_line
+        for section in sections for card in section.cards
+    ):
+        return None
+    subject = review.card_subject(opened_line)
+    if subject is None:
+        return None
+    return opened_match(
+        scope, review,
+        MatchAsk(
+            subject=subject,
+            # **Priced against the proposal the card already offers**, which
+            # is what the unopened card's hidden fields carry: a pane that
+            # opened with `$0.00` over a proposal stating a correction would
+            # be reporting a different act from the one the card is offering.
+            submitted=proposed_submission(subject),
+            query="",
+            reach=MatchReach.EVERY_ROW,
+        ),
+    )
+
+
 def reconcile_page(
     scope: "ReviewScope",
     agreement: "BankAgreement | None",
     tab: Tab,
     limit: "int | None" = REGISTER_LIMIT,
+    opened_line: "int | None" = None,
 ) -> ReconcilePage:
     """Return everything the Reconcile page renders, for ONE of its tabs.
 
@@ -618,6 +713,20 @@ def reconcile_page(
             the developer's own account it reaches 171 of his 221 acts, so
             dropping it would put them out of reach rather than merely
             unlisted.
+        opened_line: The bank line whose MATCH pane renders IN the document
+            rather than behind a fetch, or ``None``.  Ruling
+            **bank_import:R-KA**, plan step ``bank_import:X-gi-1``: the pane is
+            htmx's, so with scripting off it never arrives, and
+            ``?open=<line_id>`` is the path that puts one card's rows on the
+            page.  **ONE card, and only where this tab holds bank lines**:
+            deriving it for a tab of settled acts would price a pane no card
+            here could render, and deriving it for every card is the 1.2 MB
+            plan step ``bank_import:X-gj-1b`` measured out.
+
+            A line this pass renders no card for yields ``None`` rather than
+            an error, because that is what a STALE ``?open=`` is: the owner
+            applied the card and the door answered with the query string it
+            was pressed under.
 
     Returns:
         The :class:`ReconcilePage`.
@@ -714,9 +823,11 @@ def reconcile_page(
     # fixture or the alarm will not fire.  Counting distinct proposal LINES
     # here instead would restore the arithmetic and hide the missing card,
     # which is the trade plan step ``bank_import:X-gm`` exists to refuse; the
-    # opposite reading of the same premise is argued at
-    # :attr:`~._reads.ReviewSet.explained_by_a_proposal`, which counts lines
-    # for a value that is a REPORT rather than a caption over cards.
+    # opposite reading of the same premise was argued at the retired
+    # ``ReviewSet.explained_by_a_proposal``, which counted lines for a value
+    # that was a REPORT rather than a caption over cards; it went with the
+    # queue at ``bank_import:X-gi-3``, and the premise is recorded here
+    # because THIS figure still turns on it.
     inbox = to_explain_sections(review)
     to_explain = sum(len(section.cards) for section in inbox)
 
@@ -741,6 +852,7 @@ def reconcile_page(
         # deleted (**R-HU**), whose count is the union of two tabs.
         chips=_chips(review, transfers),
         books_bound=review.bounds.books,
+        opened=_opened_pane(scope, review, sections, opened_line),
         counts=(
             TabCount(tab=Tab.TO_EXPLAIN, count=to_explain),
             TabCount(tab=Tab.EXPLAINED, count=counts.by_hand),

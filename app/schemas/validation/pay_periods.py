@@ -41,7 +41,7 @@ from app.schemas.validation._helpers import (
     _RefEnumField,
     _normalize_empty_inputs,
 )
-from app.services import pay_schedule_service
+from app.services import pay_rhythm, pay_schedule_service
 from app.services.pay_period_write import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
@@ -212,7 +212,7 @@ def validate_derivable_rhythm(data):
         return
     try:
         pay_schedule_service.reject_shift_on_short_cadence(
-            pay_schedule_service.Rhythm(cadence_days=cadence_days, shift=shift),
+            pay_rhythm.Rhythm(cadence_days=cadence_days, shift=shift),
         )
     except AppValidationError as exc:
         raise ValidationError(str(exc), "shift") from exc

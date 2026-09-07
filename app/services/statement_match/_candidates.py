@@ -238,7 +238,7 @@ def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | Non
     The one branch in this module, and it is the settled / projected split
     rather than a money rule of its own:
 
-    * a SETTLED row owns its figure, which
+    * a SETTLED row RECORDED its figure, which
       :func:`~app.services.cash_ledger.settled_cash_leg` reads;
     * a PROJECTED row is worth what settling it would book, which is its own
       arm's ``settle_amount`` -- the transfer service's for a shadow leg and
@@ -256,9 +256,9 @@ def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | Non
     swallowed or raised, and BOTH branches are inside the guard.**  A first
     draft put the settled branch outside it, which is the defect the paragraph
     below describes happening anyway: ``settled_cash_leg`` reaches
-    ``owned_contribution``, which RAISES for a derived row, so the first
-    per-kind cutover would have taken the whole review screen down for one
-    settled row.  Found by adversarial security review 2026-08-17.
+    ``settled_contribution``, which RAISES for a derived row (since plan step
+    X-bx, for ANY unsettled row), so the first per-kind cutover would have taken
+    the whole review screen down for one settled row.  Adversarial review 2026-08-17.
 
     It means the amount model had no rule for the row
     -- latent today, because every production row still owns its figure, and

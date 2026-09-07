@@ -52,15 +52,6 @@ _DEFAULT_SWR_PCT = Decimal("4.00")
 # percent.  Named so the conversion direction is explicit at its one site.
 _PCT_SCALE = Decimal("100")
 
-# Default merit-raise horizon (years) when the user has no
-# ``UserSettings`` row (Gate A ruling 3 / fork F4).  Matches the
-# ``merit_raise_horizon_years`` column's server default (5) so a
-# settings-less user projects the same horizon a freshly-created
-# settings row would.  The column is NOT NULL, so a present settings row
-# always supplies a concrete int; only ``settings is None`` falls back
-# here.
-_DEFAULT_MERIT_HORIZON_YEARS = 5
-
 
 # ── Result and context bundles ───────────────────────────────────
 
@@ -144,7 +135,6 @@ class GapInputs:
         pensions: The user's active :class:`PensionProfile` rows.
         salary_profiles: The user's active :class:`SalaryProfile` rows.
         pay: The current-period pay snapshot (:class:`_CurrentPay`).
-        merit_horizon_years: The resolved merit-raise horizon.
         pay_cadence: How often the owner is paid
             (:class:`~app.services.pay_calendar.PayCadence`), loaded here at
             plan step R7a-2a so the gap analysis and every lever probe measure
@@ -157,7 +147,6 @@ class GapInputs:
     pensions: list[PensionProfile]
     salary_profiles: list[SalaryProfile]
     pay: _CurrentPay
-    merit_horizon_years: int
     pay_cadence: PayCadence
 
 
@@ -182,8 +171,8 @@ def load_gap_inputs(balance_ctx):
 
     Returns:
         A :class:`GapInputs` bundle (settings, active pensions, active
-        salary profiles, the current-pay snapshot, the resolved merit
-        horizon, and the owner's pay cadence).
+        salary profiles, the current-pay snapshot, and the owner's pay
+        cadence).
 
     Raises:
         PayCalendarError: The owner has no resolvable pay cadence -- no
@@ -216,7 +205,6 @@ def load_gap_inputs(balance_ctx):
         pensions=pensions,
         salary_profiles=salary_profiles,
         pay=_compute_current_pay(balance_ctx, salary_profiles),
-        merit_horizon_years=_resolve_merit_horizon(settings),
         # Resolved once here (plan step R7a-2a): the retire-later solver
         # probes this bundle dozens of times per request and the cadence does
         # not move with a candidate retirement date.
@@ -268,35 +256,11 @@ def resolve_swr_fraction(settings):
     return Decimal(str(settings.safe_withdrawal_rate))
 
 
-def _resolve_merit_horizon(settings):
-    """Resolve the merit-raise horizon (years) from user settings.
-
-    The retirement salary projection's Gate A ruling 3 / fork F4 knob:
-    how many years from the current year (inclusive) merit-type and
-    custom-type raises keep applying before they stop (cola-type
-    recurring raises still extrapolate to the retirement date).
-
-    Args:
-        settings: the user's :class:`~app.models.user.UserSettings` row,
-            or ``None`` when the user has not yet created one.
-
-    Returns:
-        int -- the stored ``merit_raise_horizon_years`` (a NOT NULL
-        column, so always a concrete int when ``settings`` is present),
-        or :data:`_DEFAULT_MERIT_HORIZON_YEARS` when ``settings`` is
-        ``None``.
-    """
-    if settings is None:
-        return _DEFAULT_MERIT_HORIZON_YEARS
-    return settings.merit_raise_horizon_years
-
-
 # ── The picture's per-point derivations ──────────────────────────
 
 
 def compute_pension_summary(
     pensions: list[PensionProfile],
-    merit_horizon_years: int,
     as_of: date,
     month_offset: int = 0,
 ) -> PensionSummary:
@@ -310,9 +274,6 @@ def compute_pension_summary(
 
     Args:
         pensions: The user's active :class:`PensionProfile` rows.
-        merit_horizon_years: The merit-raise horizon (years) forwarded to
-            :func:`~app.services.pension_calculator.project_salaries_by_year`
-            so merit/custom raises stop applying after the cutoff.
         as_of: The read pass's pinned day, whose YEAR opens the salary path.
             It was ``date.today()`` here until pay-calendar plan step C2-f2e
             (ledger row **P55**): one of the last three producers on
@@ -351,7 +312,6 @@ def compute_pension_summary(
                 profile,
                 as_of.year,
                 planned.year,
-                merit_horizon_years,
             )
             benefit = pension_calculator.calculate_benefit(
                 benefit_multiplier=pension.benefit_multiplier,
@@ -436,6 +396,67 @@ def _compute_current_pay(
     return _CurrentPay(net_biweekly, current_breakdown)
 
 
+def resolve_recurring_raise_assumptions(
+    salary_profiles: list[SalaryProfile],
+) -> list[dict]:
+    """The end-year assumption every recurring raise contributes to the page.
+
+    The assumptions rail's counterpart to
+    :func:`resolve_retirement_date_provenance`, and it exists for the same
+    reason: the rail has TWO render sites -- the dashboard's include and
+    ``retirement.update_settings``'s re-render after a save -- so a list
+    assembled in the template would be assembled twice, in Jinja, which is
+    where this project does not compute.
+
+    **Recurring raises only, and that is the whole membership rule.**  An end
+    year answers how long a FORECAST is believed; a one-time raise is a
+    recorded fact that happens once, which is why
+    ``ck_salary_raises_terminal_year_only_on_a_recurring_raise`` forbids the
+    column a value there at all (developer ruling 2026-09-05, plan step
+    salary:S3-b).  So a one-time raise has no assumption to state
+    and contributes no row.
+
+    Args:
+        salary_profiles: The owner's active
+            :class:`~app.models.salary_profile.SalaryProfile` rows.
+
+    **It lists every ACTIVE profile's recurring raises, which is not the
+    same set as the raises the page PROJECTS**, and an adversarial review of
+    plan step salary:S3-c is why that is said here rather than implied.  The
+    projections read ``salary_profiles[0]`` and each pension's own
+    ``salary_profile``; an owner with two active profiles therefore sees rows
+    for raises that feed no figure.  Listing what the owner has RECORDED is
+    the honest claim and the useful one -- the rail links each row to the
+    page that edits it -- but it is a weaker claim than "what this page
+    projects from", and only the first is true.
+
+    Returns:
+        One dict per recurring raise, in profile then row order, carrying
+        ``raise_id``, ``profile_id``, ``profile_name``, ``raise_type`` (the
+        DISPLAY name, or ``None``), ``percentage``, ``flat_amount``,
+        ``effective_month``, ``effective_year`` and ``terminal_year`` (the
+        last year it is believed, ``None`` for indefinitely).
+    """
+    return [
+        {
+            "raise_id": raise_obj.id,
+            "profile_id": profile.id,
+            "profile_name": profile.name,
+            "raise_type": (
+                raise_obj.raise_type.name if raise_obj.raise_type else None
+            ),
+            "percentage": raise_obj.percentage,
+            "flat_amount": raise_obj.flat_amount,
+            "effective_month": raise_obj.effective_month,
+            "effective_year": raise_obj.effective_year,
+            "terminal_year": raise_obj.terminal_year,
+        }
+        for profile in salary_profiles
+        for raise_obj in profile.raises
+        if raise_obj.is_recurring
+    ]
+
+
 def resolve_retirement_date_provenance(
     pensions: list[PensionProfile], settings: UserSettings | None,
 ) -> dict:
@@ -512,7 +533,6 @@ def compute_gap_net_biweekly(
     gap: GapInputs,
     planned_retirement_date: date | None,
     salary_by_year: list[tuple[int, Decimal]] | None,
-    merit_horizon_years: int,
     as_of: date,
 ) -> Decimal:
     """Project the final-year net biweekly pay for the gap comparison.
@@ -533,18 +553,10 @@ def compute_gap_net_biweekly(
             C2-f2e: they arrive together, from one loader, at the single
             production call site, and taking them apart is what put this
             function one argument over the design threshold when the read
-            pass's day joined it.  Its ``merit_horizon_years`` is deliberately
-            NOT read here -- see the argument of that name below.
+            pass's day joined it.
         planned_retirement_date: The projection horizon, or ``None``.
         salary_by_year: The pension-derived salary projection if one was
             already built, else ``None`` (recomputed here when needed).
-        merit_horizon_years: The merit-raise horizon (years) forwarded to
-            :func:`~app.services.pension_calculator.project_salaries_by_year`
-            when the salary series is recomputed here.  **The PLAN POINT's
-            horizon, which equals ``gap.merit_horizon_years`` only for the
-            stored plan**: the what-if panel and the lever solver both probe
-            other values, so the bundle's stored figure would silently ignore
-            the override the user is looking at.
         as_of: The read pass's pinned day, whose YEAR opens the salary path.
             It was ``date.today()`` here until pay-calendar plan step C2-f2e
             (ledger row **P55**): one of the last three producers on
@@ -588,7 +600,6 @@ def compute_gap_net_biweekly(
     if salary_by_year is None:
         salary_by_year = pension_calculator.project_profile_salaries(
             profile, as_of.year, planned_retirement_date.year,
-            merit_horizon_years,
         )
     if not salary_by_year:
         return pay.net_biweekly

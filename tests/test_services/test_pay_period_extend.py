@@ -29,7 +29,9 @@ from decimal import Decimal
 
 import pytest
 
+from app.enums import BusinessDayShiftEnum
 from app.exceptions import ValidationError
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.routes._period_population import populate_new_periods
@@ -38,6 +40,8 @@ from app.services import (
     pay_period_write,
     pay_schedule_service,
 )
+from app.services import pay_calendar
+from app.services.pay_calendar import calendar_for
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
@@ -47,6 +51,7 @@ from tests._test_helpers import (
     assert_pay_period_invariants,
     create_savings_account,
     derived_span,
+    displace_paydays_under,
     last_covered_day,
     make_expense_template,
     make_transfer_template,
@@ -91,6 +96,481 @@ def _extend_andpopulate_in_a_fresh_pass(user_id, num_periods):
 def _period_length(period):
     """Inclusive day-span of a period == its cadence."""
     return (last_covered_day(period) - period.start_date).days + 1
+
+
+#: The last recorded payday :class:`TestTheExtendAnchorIsTheNOMINALGrid` builds
+#: from, and the closed day its rhythm walks into.
+#:
+#: 2030-11-14 is an ordinary Thursday and sits on the grid; one cadence later
+#: is 2030-11-28, the fourth Thursday of November and therefore Thanksgiving.
+#: So the owner's next NOMINAL payday is a day no money moves on, which is the
+#: only shape in which this door's two candidate answers differ at all.
+_ON_GRID_PAYDAY = date(2030, 11, 14)
+_CLOSED_NEXT_PAYDAY = date(2030, 11, 28)
+
+
+class TestTheExtendAnchorIsTheNOMINALGrid:
+    """Plan step **C14-d**: extend continues the rhythm, it does not read the cash day.
+
+    ``extend_pay_periods`` asked
+    :meth:`~app.services.pay_calendar.PayCalendar.span_containing` for the day
+    past the horizon and handed it to
+    :func:`~app.services.pay_period_write.record_paydays`, which spaces the
+    whole batch by flat cadence arithmetic from whatever day it is given.  That
+    is one answer while nothing can move a payday.  From ``C14-e`` the
+    calendar's answer is the CASH day -- the nominal day displaced onto a
+    business day -- so the batch would carry the displacement on every payday
+    in it AND into the anchor the next extend reads.  **R-PC54** calls that
+    feeding a cash date back into the rhythm.
+
+    These cases drive the substitution ``C14-e`` ships
+    (:func:`~tests._test_helpers.displace_paydays_under`).  Without it the grid
+    and the projection agree on every day, so the door cannot be shown reading
+    the right one -- which is the same reason ``C14-c``'s probe is graded that
+    way, and why this step is ``$0.00``.
+    """
+
+    def _last_payday_before_a_holiday(
+        self, db_session, user_id, shift=BusinessDayShiftEnum.NONE,
+    ):
+        """Record 2030-11-14 alone under *shift*; the next nominal day is Thanksgiving.
+
+        The convention is STORED and not merely simulated, which an adversarial
+        review of this step required: ``extend_pay_periods`` builds its rhythm
+        from the owner's stored row, and the producer ``C14-e`` ships reads
+        that same row.  A case that displaced globally while the row said
+        ``none`` would pin a world the shipped step cannot reproduce.
+        *It read the convention through* ``pay_schedule_service.resolve_shift``
+        *until plan step* ``C14-e-1``, *which put the pair on the*
+        :class:`~app.services.pay_calendar.PayCalendar` *the door already
+        builds and deleted that function with its duplicate query.*
+        The recorded rows are identical either way -- ``_requested_paydays`` is
+        shift-blind -- so this costs nothing and removes the discrepancy.
+        """
+        pay_period_write.record_paydays(
+            user_id=user_id, first_payday=_ON_GRID_PAYDAY,
+            num_periods=1, rhythm=rhythm_of(14, shift),
+        )
+        db_session.commit()
+
+    def test_the_appended_paydays_stay_on_the_grid(
+        self, app, db, bare_user, monkeypatch,
+    ):
+        """Three appended paydays, hand-computed from the grid, under ``prior``.
+
+        2030-11-14 + 14, + 28, + 42.  The calendar would have answered
+        2030-11-27 for the first of them, which the case asserts directly
+        rather than trusting the description: an anchor a day earlier makes all
+        THREE wrong, and the next extend would read the third as its own
+        anchor, so the error is permanent rather than confined to the batch.
+
+        **These dates are the NOMINAL grid, and a correct ``C14-e`` moves ONE
+        of them** -- to 2030-11-27 / 12-12 / 12-26 under this convention, once
+        the writer records each element displaced (ledger row **PC-497**).  Only
+        the first, because 2030-12-12 and 2030-12-26 are ordinary Thursdays and
+        displace to themselves: measured 2026-09-05, and stated because a first
+        draft of this paragraph said all three moved, which is what a writer
+        anchored on the CASH day would produce -- the behaviour this step
+        deletes.  Said here at all because rule 5 is that a failing test means
+        the CODE is wrong: the exception is a behaviour the developer has
+        confirmed changed, and this is that confirmation, written in advance.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._last_payday_before_a_holiday(
+                db.session, user_id, BusinessDayShiftEnum.PRIOR,
+            )
+            displace_paydays_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
+
+            calendar = calendar_for(user_id)
+            cash_day = calendar.span_containing(
+                calendar.horizon() + timedelta(days=1),
+            ).start_date
+            assert cash_day == date(2030, 11, 27), (
+                "the door's OLD expression must answer a different day here, "
+                "or this case grades the two spellings agreeing"
+            )
+
+            new_periods = pay_period_admin.extend_pay_periods(user_id, 3)
+            db.session.commit()
+
+            assert [period.start_date for period in new_periods] == [
+                _CLOSED_NEXT_PAYDAY, date(2030, 12, 12), date(2030, 12, 26),
+            ]
+
+    def test_the_batch_does_not_inherit_a_displacement(
+        self, app, db, bare_user, monkeypatch,
+    ):
+        """Every appended payday is a whole number of cadences off the anchor.
+
+        The property rather than the three dates: a batch anchored on a cash
+        day is still evenly spaced, so spacing alone proves nothing -- what
+        this asserts is that the spacing runs from the RECORDED payday the
+        owner already had, which is what makes the rhythm reproducible from the
+        table.  A cash anchor fails it by exactly the displacement.
+
+        **It opens by checking that the substitution is LIVE**, because on the
+        nominal path the deleted expression produces these same offsets: all of
+        this case's discriminating power rests on the projection having moved,
+        and an adversarial review of this step found it the one new case that
+        would go quiet rather than red if the patch ever stopped reaching the
+        producer.
+
+        **The offsets are the NOMINAL grid and a correct ``C14-e`` moves the
+        FIRST**, to ``[13, 28, 42, 56, 70, 84]`` under ``prior`` once the
+        writer records each element displaced (ledger row **PC-497**) -- stated
+        for rule 5's reason, as in the case above.  ``[13, 27, 41, 55, 69,
+        83]``, which a first draft wrote here, is what a batch anchored on the
+        CASH day gives: the whole progression shifted, which is the defect this
+        case exists to refuse rather than a future the step authorises.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._last_payday_before_a_holiday(
+                db.session, user_id, BusinessDayShiftEnum.PRIOR,
+            )
+            displace_paydays_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
+            assert pay_calendar.projected_payday(
+                _ON_GRID_PAYDAY, rhythm_of(14), 1,
+            ) == date(2030, 11, 27), (
+                "the projection must have MOVED here, or these offsets are the "
+                "nominal path and grade nothing"
+            )
+
+            new_periods = pay_period_admin.extend_pay_periods(user_id, 6)
+            db.session.commit()
+
+            offsets = [
+                (period.start_date - _ON_GRID_PAYDAY).days
+                for period in new_periods
+            ]
+            assert offsets == [14, 28, 42, 56, 70, 84]
+
+    def test_a_SECOND_extend_reads_an_anchor_the_first_left_on_the_grid(
+        self, app, db, bare_user, monkeypatch,
+    ):
+        """"Permanently" is a claim about the NEXT extend, so it takes two.
+
+        Each extend anchors on the last recorded payday, so a batch that ended
+        off the grid hands the next one an off-grid anchor and the error never
+        washes out.  Every other case here runs ONE extend and therefore grades
+        the batch rather than the compounding; an adversarial review of this
+        step named that gap.  Two extends of three, and the sixth appended
+        payday is still a whole number of cadences from the payday the owner
+        started with.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._last_payday_before_a_holiday(
+                db.session, user_id, BusinessDayShiftEnum.PRIOR,
+            )
+            displace_paydays_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
+
+            pay_period_admin.extend_pay_periods(user_id, 3)
+            db.session.commit()
+            second = pay_period_admin.extend_pay_periods(user_id, 3)
+            db.session.commit()
+
+            assert [
+                (period.start_date - _ON_GRID_PAYDAY).days for period in second
+            ] == [56, 70, 84]
+
+    def test_a_FORWARD_convention_refuses_the_extend_and_that_is_PC_497(
+        self, app, db, bare_user, monkeypatch,
+    ):
+        """What ``C14-e`` still owes, pinned so it cannot ship unnoticed.
+
+        The anchor is right and the WRITER is not yet.  ``record_paydays``
+        records the days it is handed, and it spaces them nominally, so under a
+        displacing convention it writes NOMINAL paydays where the projection
+        shows CASH ones.  Under ``next`` the projection puts the 2030-11-14
+        paycheck's end on the nominal day itself -- payroll pays 2030-11-29, so
+        that paycheck runs through 2030-11-28 -- and the floor this same step
+        corrected then refuses the write, because a payday on 2030-11-28 really
+        would split the paycheck the calendar derives.
+
+        **Both halves of C14-d are right and the pair is incomplete**: the
+        remedy is ``record_paydays`` running its progression on the grid and
+        recording each element DISPLACED (``projected_payday`` per payday),
+        which lands 2030-11-29 and is accepted.  That is switching the shift on
+        in the writer, which is ``C14-e``'s and moves money, so this step
+        reports it instead.
+
+        ``$0.00`` and unreachable today, STRUCTURALLY rather than by data:
+        nothing in the pay-calendar package reads a convention until ``C14-e``,
+        so the grid and the projection are one function, the floor and the
+        anchor are the same day, and this refusal has no producer.  **What
+        would make this case FAIL is C14-e landing without the writer's half**
+        -- the extend is accepted and no ``ValidationError`` is raised -- which
+        is what makes it a pin rather than a green case nobody re-reads.
+
+        **Where the refusal would land if it shipped**: ``top_up_rolling_window``
+        reaches this door from ``/grid`` and ``/dashboard`` with no handler,
+        and ``app/error_handlers.py`` registers none for this exception, so it
+        is a 500 on both -- ledger row **N-494**'s shape through a second
+        trigger.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._last_payday_before_a_holiday(
+                db.session, user_id, BusinessDayShiftEnum.NEXT,
+            )
+            displace_paydays_under(monkeypatch, BusinessDayShiftEnum.NEXT)
+
+            with pytest.raises(ValidationError, match="on or after 2030-11-29"):
+                pay_period_admin.extend_pay_periods(user_id, 3)
+            db.session.rollback()
+
+    def test_it_is_ZERO_DOLLARS_while_the_convention_displaces_nothing(
+        self, app, db, bare_user,
+    ):
+        """The shipped path: no substitution, so the two producers agree.
+
+        The control for every case above, and the step's own ``$0.00`` claim.
+        Run against the REAL producer, the door appends exactly the days the
+        deleted expression would have -- so nothing an owner can reach today
+        moved.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._last_payday_before_a_holiday(db.session, user_id)
+
+            calendar = calendar_for(user_id)
+            assert calendar.span_containing(
+                calendar.horizon() + timedelta(days=1),
+            ).start_date == _CLOSED_NEXT_PAYDAY
+
+            new_periods = pay_period_admin.extend_pay_periods(user_id, 3)
+            db.session.commit()
+            assert [period.start_date for period in new_periods] == [
+                _CLOSED_NEXT_PAYDAY, date(2030, 12, 12), date(2030, 12, 26),
+            ]
+
+
+class TestTheGridIsSteppedFromTheSTOREDPHASE:
+    """Plan step **C14-e-2**: extend continues the SCHEDULE's grid, not its own output.
+
+    ``extend_pay_periods`` stepped one cadence from the owner's LAST RECORDED
+    payday.  That is exact only while every recorded payday sits on the
+    arithmetic grid, which is true while no convention displaces one.  From
+    ``C14-e-3`` the writer records the DISPLACED day, so the anchor becomes a
+    cash date and each batch re-phases the rhythm by that displacement --
+    permanently, because the next extend reads THIS batch's last cash day.
+    Measured over production's cadence and opening payday at a batch of one,
+    the rolling top-up's steady state: **178 of 301** recorded paydays wrong
+    under ``prior`` with **8 days** of final drift, against **0 of 301**
+    anchored on ``budget.pay_schedule.nominal_anchor`` (ledger row **PC-497**
+    fault 2, developer direction **R-PC61**).
+
+    These cases drive the substitution ``C14-e-3`` ships
+    (:func:`~tests._test_helpers.displace_paydays_under`) AND hand the writer a
+    displaced recorded payday by hand, because at this step the writer still
+    records nominal days -- the state under test is the one the NEXT step
+    produces.  Building it directly is what ``pay_period_write``'s own module
+    docstring reserves the test suite the right to do.
+    """
+
+    def _owner_anchored_at(self, db_session, user_id, shift):
+        """Record 2030-11-14 alone, which stores it as the owner's grid phase."""
+        pay_period_write.record_paydays(
+            user_id=user_id, first_payday=_ON_GRID_PAYDAY,
+            num_periods=1, rhythm=rhythm_of(14, shift),
+        )
+        db_session.commit()
+
+    def test_the_writer_co_writes_the_phase_with_the_cadence(
+        self, app, db, bare_user,
+    ):
+        """The batch's own first payday IS the phase, and one statement writes both.
+
+        Everything below rests on this: the anchor is DERIVED from the batch
+        rather than accepted from a door, so a phase that is not on the batch's
+        grid is unrepresentable rather than refused.  It is also what keeps the
+        anchor meaningful when the CADENCE changes -- the two columns are
+        written together or not at all, which is the property
+        ``budget.pay_schedule`` can state and ledger row **N-492** is that it
+        cannot state per ERA (``R-PC58``, ``C17``).
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._owner_anchored_at(db.session, user_id, BusinessDayShiftEnum.NONE)
+
+            facts = pay_schedule_service.resolve_schedule(user_id)
+
+            assert facts.nominal_anchor == _ON_GRID_PAYDAY
+            assert facts.rhythm.cadence_days == 14
+
+    def test_a_DISPLACED_recorded_payday_does_not_move_the_grid(
+        self, app, db, bare_user, monkeypatch,
+    ):
+        """The batch continues the stored grid, not the cash day it was handed.
+
+        2030-11-14 is the stored phase.  The owner's next nominal payday,
+        2030-11-28, is Thanksgiving, so under ``prior`` payroll pays 11-27 and
+        ``C14-e-3``'s writer records that.  Anchored on the RECORD the next
+        payday would be ``11-27 + 14 = 2030-12-11``, which is off the grid and
+        would take every later payday with it.  Anchored on the stored phase it
+        is 2030-12-12 -- an ordinary Thursday, and the day payroll really pays.
+
+        **The case is the discriminator rather than an example**: the two
+        answers differ by exactly the displacement, and 12-11 against 12-12 is
+        what the whole column buys.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._owner_anchored_at(db.session, user_id, BusinessDayShiftEnum.PRIOR)
+            # What C14-e-3's writer will record: the displaced cash day.  Built
+            # directly because at THIS step the writer still records nominal
+            # days, so no door produces it yet.
+            db.session.add(
+                PayPeriod(user_id=user_id, start_date=date(2030, 11, 27)),
+            )
+            db.session.commit()
+            displace_paydays_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
+
+            new_periods = pay_period_admin.extend_pay_periods(user_id, 2)
+            db.session.commit()
+
+            assert [p.start_date for p in new_periods] == [
+                date(2030, 12, 12), date(2030, 12, 26),
+            ]
+
+    def test_it_skips_a_grid_INDEX_the_owner_already_holds(
+        self, app, db, bare_user, monkeypatch,
+    ):
+        """Which index is next is a CASH question, and the search asks it.
+
+        The estimate is the last grid day at or before the last recorded
+        payday: from the 2030-11-14 phase, the recorded cash day 2030-11-27
+        gives step 0 (11-14 is 13 days below it).  Steps 0 and 1 are both
+        already paid -- 11-14 as itself and 11-28 as the 11-27 the owner holds
+        -- so the answer is step 2, and a search that stopped at the estimate
+        or at estimate + 1 would offer a payday the owner already has.
+
+        Asserted as the STEP COUNT rather than as the date, because the date is
+        the case above; what this pins is that the loop advanced twice, which
+        is the arm ``C14-e-3`` makes reachable.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._owner_anchored_at(db.session, user_id, BusinessDayShiftEnum.PRIOR)
+            db.session.add(
+                PayPeriod(user_id=user_id, start_date=date(2030, 11, 27)),
+            )
+            db.session.commit()
+            displace_paydays_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
+
+            new_periods = pay_period_admin.extend_pay_periods(user_id, 1)
+            db.session.commit()
+
+            assert (
+                new_periods[0].start_date - _ON_GRID_PAYDAY
+            ).days == 28, "the search must advance TWO steps past the estimate"
+
+    def test_a_schedule_that_states_no_phase_is_REFUSED(
+        self, app, db, bare_user,
+    ):
+        """A NULL anchor and an empty schedule are one owner and one refusal.
+
+        The migration backfilled every owner holding a payday and
+        ``record_paydays`` writes the column on every batch, so the only rows
+        left NULL hold no paydays at all -- and that owner is already refused
+        for having nothing to extend.  Built here by clearing the column
+        underneath a schedule that HAS paydays, which no door can do: the point
+        is that the door refuses rather than inventing a phase, because an
+        invented phase generates wrong paydays silently where a refusal is
+        read.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._owner_anchored_at(db.session, user_id, BusinessDayShiftEnum.NONE)
+            pay_schedule_service.get_schedule(user_id).nominal_anchor = None
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="Generate your first"):
+                pay_period_admin.extend_pay_periods(user_id, 1)
+
+    def test_a_PIECEWISE_owner_whose_tail_was_truncated_can_still_extend(
+        self, app, db, bare_user,
+    ):
+        """The state an adversarial review of this step built, through real doors.
+
+        A stored phase describes the grid of the batch that WROTE it, which is
+        not always the grid the owner's surviving last payday sits on.  Three
+        shipped doors reach that state together: record at one cadence, record
+        again at another (*correct my cadence going forward*, which
+        ``record_paydays`` permits and ledger row **N-492** records), then
+        truncate back across the change so the surviving latest payday belongs
+        to the FIRST era while the stored phase belongs to the second.
+
+        Asked against the last recorded PAYDAY the door answers 2030-01-18,
+        which falls inside the paycheck the owner still holds and which
+        ``_reject_backward_payday`` refuses -- permanently, and on a read path
+        with no handler, because ``top_up_rolling_window`` reaches this door
+        from ``/grid`` and ``/dashboard``.  Asked against the paycheck's END,
+        which is the floor's own subject, it answers 2030-01-25 and the write
+        is accepted.  **The case is the discriminator**: the two answers differ
+        and only one of them is a day this app can record.
+
+        **2030-01-25 is EIGHT days on and not seven, and that is the intended
+        behaviour rather than an arbitrary date** (adversarial review, second
+        pass).  The stored grid runs through 2030-02-22 at a 7-day cadence, so
+        its days near the horizon are 01-18 and 01-25; the first is below the
+        floor, so the door SKIPS that slot and the owner gets one long
+        paycheck.  It is bounded strictly below two cadences, always accepted,
+        and :func:`~app.services.pay_calendar.derive_periods` closes it with no
+        gap and no overlap -- which is what "the stored pair is the CURRENT
+        era's rhythm and older rows are history" means for an owner ``C17``'s
+        eras do not describe yet.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2030, 1, 3),
+                num_periods=2, rhythm=rhythm_of(14),
+            )
+            # A second era, deliberately OFF the first grid: 2030-02-22 is 36
+            # days after 2030-01-17, and 36 is not a multiple of 7.
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2030, 2, 22),
+                num_periods=2, rhythm=rhythm_of(7),
+            )
+            db.session.commit()
+            keep = next(
+                period for period in calendar_for(user_id).saved()
+                if period.start_date == date(2030, 1, 17)
+            )
+            pay_period_admin.truncate_pay_periods(user_id, keep.period_id)
+            db.session.commit()
+
+            new_periods = pay_period_admin.extend_pay_periods(user_id, 1)
+            db.session.commit()
+
+            assert [p.start_date for p in new_periods] == [date(2030, 1, 25)]
+
+    def test_it_is_ZERO_DOLLARS_while_nothing_displaces(
+        self, app, db, bare_user,
+    ):
+        """The shipped path: the stored phase and the record agree exactly.
+
+        This step's own ``$0.00`` claim, and it is structural rather than a
+        fact about stored data: with no displacement live every recorded payday
+        IS a grid day, so stepping from the phase and stepping from the record
+        name the same day.  Two extends, because the drift the column deletes
+        only shows across batches.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._owner_anchored_at(db.session, user_id, BusinessDayShiftEnum.NONE)
+
+            first = pay_period_admin.extend_pay_periods(user_id, 2)
+            db.session.commit()
+            second = pay_period_admin.extend_pay_periods(user_id, 2)
+            db.session.commit()
+
+            assert [
+                (p.start_date - _ON_GRID_PAYDAY).days for p in first + second
+            ] == [14, 28, 42, 56]
 
 
 class TestPopulateFromActiveTemplates:
@@ -248,6 +728,11 @@ class TestExtendPayPeriods:
             _future_periods(db.session, seed_user, count=2)
             pay_schedule_service.upsert_schedule(
                 seed_user["user"].id, rhythm=rhythm_of(7),
+                # "Correct my cadence going forward" restates the cadence and
+                # NOT the phase, so the stored anchor is handed back.
+                nominal_anchor=pay_schedule_service.resolve_schedule(
+                    seed_user["user"].id,
+                ).nominal_anchor,
             )
             db.session.commit()
             new_periods = pay_period_admin.extend_pay_periods(

@@ -43,7 +43,9 @@ The helpers:
 The first three helpers share a verbatim trio of inputs -- the form's
 closing bound, the validation-error redirect target, and the
 transaction-vs-transfer ``due_day_of_month`` flag -- bundled into the
-frozen :class:`RecurrenceFormContext`.
+frozen :class:`~app.routes._recurrence_form_refusals.RecurrenceFormContext`,
+which is DEFINED in the refusals module since plan step R7d-f (see there for
+why the leaf moved) and imported here.
 
 **Everything about OPTIMISTIC LOCKING left at plan step R7c-b**, which is the
 third time this module met the 1,000-line cap and the first time the cut was
@@ -63,8 +65,11 @@ fourth one and the module met the cap again:
 :func:`~app.routes._recurrence_form_refusals.refuse_recurrence_update`
 dispatcher that asks them in order.  The seam is "may this submission be
 applied at all" against "apply it", and it runs ONE way -- that module imports
-nothing from this one, which is why its two entry points take the closing bound
-and the redirect rather than the :class:`RecurrenceFormContext` carrying them.
+nothing from this one.  Since plan step R7d-f the context both sides read is
+defined THERE, so each refusal entry takes it whole, with the READ PASS beside
+it: the update path judges a stored definition against the pass the route
+built before any write (``pass_ctx``), and the calendar every re-author here
+resolves against is taken from that pass rather than loaded by the helper.
 
 Route-layer module rather than service because these helpers consume
 Flask ``flash`` / ``redirect`` / ``url_for`` (the last two via
@@ -72,7 +77,7 @@ Flask ``flash`` / ``redirect`` / ``url_for`` (the last two via
 ``CLAUDE.md::Architecture`` keeps services isolated from Flask globals.
 The leading underscore marks the module as route-internal.
 """
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any
 
 from flask import Response, flash
@@ -80,17 +85,20 @@ from flask import Response, flash
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
 from app.routes._redirect_target import RedirectTarget
-from app.routes._recurrence_form_refusals import refuse_recurrence_update
+from app.routes._recurrence_form_refusals import (
+    RecurrenceFormContext,
+    refuse_recurrence_update,
+)
 from app.schemas.validation import (
     RECURRENCE_END_BOUND_KEY,
     RECURRENCE_NEEDS_A_START,
     RECURRENCE_NOMINAL_DAY_KEY,
     RECURRENCE_STARTS_ON_KEY,
 )
-from app.services.pay_calendar import calendar_for
+from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.recurrence import (
     NEVER_ENDS,
-    EndBound,
     RecurrenceOwner,
     RecurrenceSpec,
     author_rule,
@@ -139,55 +147,6 @@ def _pop_end_bound_keys(data: dict[str, Any]) -> None:
         data.pop(key, None)
 
 _DUE_DAY_KEY: str = "due_day_of_month"
-
-
-@dataclass(frozen=True)
-class RecurrenceFormContext:
-    """Recurrence-form processing options shared across the F-24 helpers.
-
-    A parameter object, not a single domain concept: it groups the three
-    otherwise-independent knobs the helpers read so the verbatim-triplicated
-    signature tail collapses to one argument (and ``resolve`` forwards it
-    unchanged).
-
-    Bundles the three inputs that :func:`recurrence_spec_from_form`,
-    :func:`update_recurrence_rule_from_form`, and
-    :func:`resolve_recurrence_rule_for_update` share verbatim and that
-    ``resolve`` forwards unchanged: the form's closing bound, the
-    validation-error redirect target, and whether the submitting schema
-    exposes ``due_day_of_month`` (transaction templates) or not
-    (transfer templates).  Collapsing the formerly-triplicated
-    ``end_bound`` / ``redirect_endpoint`` / ``redirect_endpoint_kwargs``
-    / ``include_due_day_of_month`` signature tail into one object both
-    removes the duplication and clears the per-helper
-    ``too-many-arguments`` count.
-
-    Attributes:
-        end_bound: When the recurrence STOPS, as the ONE value the submission
-            composed (:class:`~app.services.recurrence.EndBound`), or ``None``
-            when the form STATED NOTHING about it.
-
-            The two are different requests and the helpers act on them
-            differently -- a stated bound REPLACES the rule's, an absent one
-            leaves it alone -- which is the same present-versus-absent
-            distinction ``recurrence_unit`` turns on, and it is what lets a
-            form whose bound is derived (a loan payment) render the control
-            disabled and have the save mean "not mine to state" rather than
-            "ends never".  It carried the raw ``end_date`` until plan step
-            R7b-3, where a date was the only bound a form could state and the
-            distinction had nothing to express.
-        redirect: Where to redirect on a recoverable validation failure
-            (a start period that is not this user's).
-        include_due_day_of_month: ``True`` for transaction templates,
-            ``False`` for transfer templates.  Transfer-template schemas
-            do not expose ``due_day_of_month``; passing ``True`` for a
-            transfer payload would silently set the column from a key
-            the schema never validated.
-    """
-
-    end_bound: EndBound | None
-    redirect: RedirectTarget
-    include_due_day_of_month: bool = False
 
 
 def recurrence_spec_for_create(
@@ -461,6 +420,7 @@ def update_recurrence_rule_from_form(
     data: dict[str, Any],
     *,
     ctx: RecurrenceFormContext,
+    calendar: PayCalendar,
 ) -> None:
     """Re-point an existing :class:`RecurrenceRule` from a form payload.
 
@@ -505,6 +465,13 @@ def update_recurrence_rule_from_form(
             alone when ``None``) and the ``include_due_day_of_month``
             transaction-vs-transfer flag.  Its ``redirect`` is unused here and
             kept only because the three helpers share one context object.
+        calendar: The OWNER's pay calendar the re-author resolves against.
+            TAKEN since plan step R7d-f rather than loaded here: the update
+            route builds one read pass for the refusals that precede this
+            write, and its ``calendar()`` memo is that schedule already
+            derived, so the pre-write side of an update derives it once.
+            (Regeneration afterwards builds a fresh pass and derives its own,
+            as it did before; this step removed no load from that side.)
 
     Returns:
         ``None``.  **It cannot fail on user input**, which is what plan step
@@ -660,11 +627,20 @@ def update_recurrence_rule_from_form(
             # ``current`` already carries it.  That is what a loan payment's
             # disabled control produces, and what an amount-only PATCH
             # produces, and neither may be read as "ends never".
+            # For the loan's STANDING payment the stored bound rides through
+            # here too, and it is the chokepoints' CACHE of the payoff rather
+            # than the owner's word (ruling **R-R56**) -- the form locks the
+            # control and a stated bound is refused before this runs, so this
+            # line re-writes the cache unchanged on every unrelated edit.  It
+            # is the one reader of that column a NULL-the-column census cannot
+            # see (plan step R7d's roll-call), stated here so R7d-g finds it:
+            # once the column is NULL this writes ``NEVER_ENDS`` back, which
+            # is the same no-op.
             end_bound=(
                 current.end_bound if ctx.end_bound is None else ctx.end_bound
             ),
         ),
-        calendar_for(rule.user_id),
+        calendar,
     )
 
 
@@ -714,6 +690,7 @@ def resolve_recurrence_rule_for_update(
     data: dict[str, Any],
     *,
     ctx: RecurrenceFormContext,
+    pass_ctx: BalanceContext,
 ) -> Response | None:
     """Re-point, rebuild, or CLEAR a template's recurrence rule for an update.
 
@@ -793,6 +770,14 @@ def resolve_recurrence_rule_for_update(
         ctx: The :class:`RecurrenceFormContext` forwarded unchanged to
             the delegated builder / updater (its ``end_bound``,
             ``redirect`` target, and ``include_due_day_of_month`` flag).
+        pass_ctx: The read pass the route built BEFORE this write (plan step
+            R7d-f).  The refusals judge the stored definition against it --
+            the loan's standing payment is read off its loan-resolution memo,
+            and only when a rule can turn on it -- and the calendar every
+            branch below authors against is its ``calendar()``, so the
+            pre-write side derives the owner's schedule once.  Regeneration
+            afterwards builds a FRESH pass, as a writer must: a pass built
+            here would memoise the loan as it stood before the re-author.
 
     Returns:
         * ``None`` -- the rule was resolved; the caller continues to
@@ -805,7 +790,7 @@ def resolve_recurrence_rule_for_update(
     recurrence_submitted = "recurrence_unit" in data
     refusal = refuse_recurrence_update(
         template, data,
-        end_bound=ctx.end_bound, redirect=ctx.redirect,
+        ctx=ctx, pass_ctx=pass_ctx,
         recurrence_submitted=recurrence_submitted,
     )
     if refusal is not None:
@@ -819,6 +804,7 @@ def resolve_recurrence_rule_for_update(
             template.recurrence_rule,
             data,
             ctx=ctx,
+            calendar=pass_ctx.calendar(),
         )
         return None
 
@@ -853,14 +839,13 @@ def resolve_recurrence_rule_for_update(
         # the rule carries the owning FK now, so there is no ``recurrence_rule_id``
         # left for this branch to assign and no window in which a written rule
         # belongs to nothing.
-        author_rule(spec, calendar_for(template.user_id), template)
+        author_rule(spec, pass_ctx.calendar(), template)
     elif recurrence_submitted:
         _clear_recurrence_rule(template)
     return None
 
 
 __all__ = [
-    "RecurrenceFormContext",
     "author_recurrence_for_create",
     "recurrence_spec_for_create",
     "recurrence_spec_from_form",

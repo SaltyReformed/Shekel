@@ -39,12 +39,13 @@ from app.routes._commit_helpers import (
     handle_stale_form_conflict,
 )
 from app.routes._recurrence_form_helpers import (
-    RecurrenceFormContext,
     recurrence_spec_from_form,
     resolve_recurrence_rule_for_update,
     update_recurrence_rule_from_form,
 )
+from app.routes._recurrence_form_refusals import RecurrenceFormContext
 from app.routes._redirect_target import RedirectTarget
+from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     NEVER_ENDS,
@@ -387,6 +388,7 @@ class TestAnEditCannotRePhaseARule:
                     ),
                     include_due_day_of_month=True,
                 ),
+                calendar=calendar_for(seed_user["user"].id),
             )
             assert _phase_of(rule) == 3, (
                 "the edit re-phased a rule whose phase nothing else states"
@@ -436,6 +438,7 @@ class TestAnEditCannotRePhaseARule:
                     ),
                     include_due_day_of_month=True,
                 ),
+                calendar=calendar_for(seed_user["user"].id),
             )
             assert _phase_of(rule) == 3
             assert data == {"offset_periods": 0}
@@ -481,6 +484,7 @@ class TestAnEditCannotRePhaseARule:
                     ),
                     include_due_day_of_month=True,
                 ),
+                pass_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert result is None
             assert _phase_of(rule) == 2
@@ -562,6 +566,7 @@ class TestUpdateKeepsTheStatedStartsPhase:
                     ),
                     include_due_day_of_month=True,
                 ),
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert _phase_of(rule) == 2
@@ -771,6 +776,7 @@ class TestTheColumnSaysWhatTheCadenceSays:
                     ),
                     include_due_day_of_month=True,
                 ),
+                calendar=calendar_for(seed_user["user"].id),
             )
             assert "interval_n" not in data, (
                 "interval_n must be popped whether or not it is written, so "
@@ -908,6 +914,7 @@ class TestTheColumnSaysWhatTheCadenceSays:
                         ),
                         include_due_day_of_month=True,
                     ),
+                    calendar=calendar_for(seed_user["user"].id),
                 )
             assert "not one this application can author" in str(excinfo.value)
             assert rule.unit_id == before, (
@@ -1068,9 +1075,9 @@ class TestAnUpdateMayNotInvertTheWindow:
                 "precondition: the sync must have written an INVERTED pair, "
                 f"got starts_on={rule.starts_on} end_date={rule.end_date}"
             )
-            assert loan_recurrence_sync.owns_validity_window(tpl), (
-                "precondition: the app must own this definition's window"
-            )
+            assert loan_recurrence_sync.is_standing_loan_payment(
+                tpl, BalanceContext.build(seed_user["user"].id),
+            ), "precondition: the app must own this definition's window"
 
             with app.test_request_context():
                 refusal = resolve_recurrence_rule_for_update(
@@ -1083,6 +1090,7 @@ class TestAnUpdateMayNotInvertTheWindow:
                         "due_day_of_month": None,
                     },
                     ctx=self._ctx(None),
+                    pass_ctx=BalanceContext.build(seed_user["user"].id),
                 )
 
             assert refusal is None, (
@@ -1113,6 +1121,7 @@ class TestAnUpdateMayNotInvertTheWindow:
                     "due_day_of_month": None,
                 },
                 ctx=self._ctx(EndsOnDate(on=date(2026, 5, 31))),
+                pass_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert isinstance(refusal, Response)
@@ -1145,6 +1154,7 @@ class TestAnUpdateMayNotInvertTheWindow:
                     "starts_on": date(2026, 9, 1),
                 },
                 ctx=self._ctx(None),
+                pass_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert isinstance(refusal, Response)
@@ -1175,6 +1185,7 @@ class TestAnUpdateMayNotInvertTheWindow:
                     "starts_on": date(2026, 6, 1),
                 },
                 ctx=self._ctx(EndsOnDate(on=date(2026, 6, 1))),
+                pass_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert outcome is None
@@ -1199,6 +1210,7 @@ class TestAnUpdateMayNotInvertTheWindow:
                 self._template_with(rule, seed_user["user"].id),
                 {"default_amount": Decimal("10.00")},
                 ctx=self._ctx(None),
+                pass_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert outcome is None
@@ -1273,6 +1285,7 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
                     ),
                     include_due_day_of_month=True,
                 ),
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert rule.nominal_day is None
@@ -1375,6 +1388,7 @@ class TestSwitchingToACadenceWithNoDayOfMonth:
                     ),
                     include_due_day_of_month=True,
                 ),
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert rule.nominal_day == 31

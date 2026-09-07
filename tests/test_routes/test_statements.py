@@ -29,12 +29,16 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from app.services import auth_service, entry_service, statement_match
+from app.services.statement_match import NEW_ENVELOPE, Verb
 from tests._test_helpers import create_settled_cash_transaction
 from tests.test_services.test_statement_import import _csv_builder as build
 from tests.test_services.test_statement_match._builders import (
     a_rule,
     a_submission,
     a_transaction,
+    an_envelope,
+    an_unexplained_outflow,
+    filed_by,
 )
 
 _ENTRIES = [
@@ -131,6 +135,52 @@ def _upload(client, account_id, payload, source="secu_checking_csv",
         content_type="multipart/form-data",
         follow_redirects=True,
     )
+
+
+def _record_in_a_new_envelope(client, account_id, line, category_id,
+                              name="Coffee"):
+    """Record one bank line as a purchase in a new envelope, as a browser does.
+
+    **Through the RECONCILE door**, which since plan step
+    ``bank_import:X-gi-2`` is the only one there is: the review queue this
+    posted to until then was deleted with the register and the workbench.  The
+    body is the one that page's cards emit -- the OK checkbox consents to a
+    line, the verb radio names the act, and the three ADD controls carry the
+    destination -- rather than the queue's, which keyed everything off the
+    destination select alone.
+
+    **It is a SETUP step and it asserts its own success**, because both cases
+    using it are about what the import DELETE then destroys: a recording that
+    silently did not happen would leave them asserting a receipt over nothing.
+    The 200 is the whole check, the door answering a refusal with its own
+    designed 400.
+
+    Args:
+        client: The logged-in client.
+        account_id: The account being reconciled.
+        line: The bank line row to record.
+        category_id: The category the new envelope is filed under.
+        name: What to call the new envelope.
+
+    Returns:
+        The response.
+    """
+    response = client.post(
+        f"/accounts/{account_id}/statements/reconcile",
+        data={
+            "ok": str(line.id),
+            f"verb-{line.id}": Verb.ADD.value,
+            f"destination-{line.id}": NEW_ENVELOPE,
+            f"envelope_name-{line.id}": name,
+            f"category_id-{line.id}": str(category_id),
+        },
+    )
+    assert response.status_code == 200, (
+        f"the Reconcile door refused this recording ({response.status_code}), "
+        f"so nothing was created and the delete under test would have "
+        f"nothing to destroy"
+    )
+    return response
 
 
 class TestThePageReadsForItsOwner:
@@ -1335,15 +1385,9 @@ class TestTheDeletePost:
         line = db.session.query(BankStatementLine).filter(
             BankStatementLine.amount < 0,
         ).one()
-        auth_client.post(
-            f"/accounts/{seed_user['account'].id}/statements/review",
-            data={
-                f"destination-{line.id}": "new",
-                f"envelope_name-{line.id}": "Coffee",
-                f"category_id-{line.id}": str(
-                    seed_user["categories"]["Groceries"].id,
-                ),
-            },
+        _record_in_a_new_envelope(
+            auth_client, seed_user["account"].id, line,
+            seed_user["categories"]["Groceries"].id,
         )
         db.session.expire_all()
         assert db.session.query(TransactionEntry).count() == 1, (
@@ -1391,15 +1435,9 @@ class TestTheDeletePost:
             (inside, "-25.00", "POINT OF SALE DEBIT L340 COFFEE"),
         ]))
         line = db.session.query(BankStatementLine).one()
-        auth_client.post(
-            f"/accounts/{seed_user['account'].id}/statements/review",
-            data={
-                f"destination-{line.id}": "new",
-                f"envelope_name-{line.id}": "Coffee",
-                f"category_id-{line.id}": str(
-                    seed_user["categories"]["Groceries"].id,
-                ),
-            },
+        _record_in_a_new_envelope(
+            auth_client, seed_user["account"].id, line,
+            seed_user["categories"]["Groceries"].id,
         )
         db.session.expire_all()
         entry_service.update_entry(
@@ -1607,3 +1645,100 @@ class TestTheDeletePost:
 
         assert db.session.query(AccountExternalIdentity).count() == 1
         assert db.session.query(BankStatementLine).count() == 2
+
+
+class TestNoLinkHereReachesTheRetiringQueue:
+    """Plan step ``bank_import:X-gi-1``.
+
+    Three links on this page opened ``accounts.review_statements``, and plan
+    step ``bank_import:X-gi-2`` deletes that endpoint.  **The URL is what is
+    asserted and not the link TEXT**, because a repoint that left one
+    ``url_for`` behind would raise ``BuildError`` at render time on the day
+    that step lands -- a 500 on the import screen, found by a person rather
+    than by this suite.
+
+    **Asserted over a page with acts staged on it**, because two of the three
+    links are inside sections that render only where the account has something
+    to show: an absence assertion over a bare page is satisfied by rendering
+    neither the link nor the section it lives in, which is why the first case
+    here grades the staging.
+    """
+
+    def _a_page_with_the_filed_section_rendered(
+        self, auth_client, db, seed_user,
+    ):
+        """Return the statements page with its rule-filed section populated.
+
+        Returns:
+            The rendered page, as text.
+        """
+        envelope = an_envelope(seed_user)
+        line = an_unexplained_outflow(seed_user, merchant="Amazon")
+        db.session.commit()
+        filed_by(seed_user, line, envelope, by_rule=True)
+        db.session.commit()
+
+        response = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        )
+        assert response.status_code == 200
+        return response.get_data(as_text=True)
+
+    def test_the_rule_filed_section_really_rendered(
+        self, auth_client, db, seed_user,
+    ):
+        """The staging the absence assertions below are quantified over."""
+        page = self._a_page_with_the_filed_section_rendered(
+            auth_client, db, seed_user,
+        )
+
+        assert "Undoing one removes the" in page, (
+            "the rule-filed footer did not render, so this class's absence "
+            "assertions would be quantified over a page without it"
+        )
+
+    def test_no_url_on_the_page_names_the_review_queue(
+        self, auth_client, db, seed_user,
+    ):
+        """The repoint, read off the URLs the page actually emits."""
+        page = self._a_page_with_the_filed_section_rendered(
+            auth_client, db, seed_user,
+        )
+        queue = f"/accounts/{seed_user['account'].id}/statements/review"
+
+        assert f'href="{queue}"' not in page, (
+            "a link on the statements page still opens the review queue, "
+            "which bank_import:X-gi-2 deletes"
+        )
+
+    def test_the_three_of_them_lead_to_the_reconcile_page(
+        self, auth_client, db, seed_user,
+    ):
+        """Where they go now, and how many there are.
+
+        The header's *Review matches* button was DELETED rather than
+        repointed: the queue's job is this page's inbox tab, which the primary
+        button beside it already opened, so a repoint would have put two
+        controls on one header leading to one URL.  The banner's *waits on ...
+        for you to accept it* and the rule-filed footer's *puts the bank line
+        back among the unexplained on ...* are the two that were repointed.
+        **A COUNT and not three presence checks**, because a presence check
+        passes just as well against the duplicate button the deletion exists
+        to prevent.
+        """
+        page = self._a_page_with_the_filed_section_rendered(
+            auth_client, db, seed_user,
+        )
+        reconcile = f"/accounts/{seed_user['account'].id}/statements/reconcile"
+        bare = page.count(f'href="{reconcile}"')
+
+        assert bare == 3, (
+            f"expected the Reconcile button and the two repointed sentences "
+            f"pointing at the untabbed page; found {bare}"
+        )
+        assert re.search(
+            r"Reconcile\s+page</a> for you to accept it", page,
+        ), "the import banner's sentence does not lead to Reconcile"
+        assert re.search(
+            r"Reconcile\s+page</a>; the Undo itself leaves you here", page,
+        ), "the rule-filed footer's sentence does not lead to Reconcile"

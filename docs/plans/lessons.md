@@ -165,6 +165,37 @@ rationale, where a reader meets it at the moment it fires.
   from prose; and COUNT THE CALL GRAPH, NOT THE CALL SITES -- one finding said four spellings, the
   tree held 18. A census and a gate can be blind the same way, and then they confirm each other.
 - **A CENSUS THAT IS NOT COMMITTED IS AN UNCITED CLAIM.**
+- **"IS THIS NAME LIVE?" IS A CLASSIFICATION, AND A REGEX IS A SAMPLER OVER IT.** Six ways one
+  question gave a wrong answer in one night: prose on the line; a dict key WRITING the variable for
+  a subprocess; an expression spanning two lines; a private constant that REPLACED it and shares its
+  spelling; a substring of a different identifier --
+  **a name is not a read, and a name is not even always a name** -- and a METHOD NAME attached to a
+  number, which suppresses the re-derivation that would have caught it rather than causing the
+  error. Seven derivations, five answers, and the only two that held were the two where somebody
+  ENUMERATED AND READ. **No figure is recorded here on purpose**: the count moved every time it was
+  quoted.
+- **A NEGATIVE TEST CANNOT DISTINGUISH *past this change* FROM *before its predecessor*.** Auditing
+  which worktrees had adopted a new wrapper by the ABSENCE of a file read as adopted for any tree
+  older than the file itself. Census by a string the new thing INTRODUCES, never by what it removes.
+- **THE FORMATTER'S CLAIM ABOUT ITSELF IS UNGRADED.** `rumdl fmt` corrupts inline `#NN` refs, and
+  "it only re-wraps" is exactly the sentence a tool writes about itself. The procedure is cheap:
+  snapshot, fmt, check the corruption signature, confirm a known ref survives BY NAME, then diff the
+  whitespace-collapsed WORD STREAM. That is the difference between trusting a formatter and grading
+  one, and it ran four times tonight without a single false pass.
+- **A PROBE MUST BREAK ON A STATE IT OBSERVED, NEVER ON THE ABSENCE OF ONE.** FIVE instruments in
+  one day turned *I failed to measure* into a confident, plausible answer, three of them arriving as
+  a GREEN exit: a swallow reporting a fault as a stale image, fixtures reporting a broken container
+  as a skip (**N-460**), a mutation harness reporting a mutation it never applied, a PR watcher
+  breaking on `!= OPEN` when an API error yields no state at all, and a second one grepping for the
+  BUSY string an error message does not contain. A rule about `!= OPEN` catches one and misses the
+  other; only OBSERVED catches both, and the three that are not poll loops. Give UNREACHABLE and
+  ABSENT separate arms: an API that answers and omits the check is PERMANENT rather than transient,
+  and settles green forever the day a job is renamed.
+- **A ROUTE SWEEP WITHOUT THE HTMX HEADER CANNOT SEE AN HTMX-ONLY DEFECT, and reads as a clean bill
+  of health.** 292 routes returned zero 5xx on a release candidate; the same sweep WITH `HX-Request`
+  over 323 returned one. A plain GET of `/analytics/spending` serves the page SHELL and answers
+  200 -- the 500 is the FRAGMENT. This app is htmx-first, so every route sweep inherits it, and the
+  corrected sweep finding exactly ONE regression is what made it a bound.
 - **A COUNT IN A DOCSTRING IS A CLAIM, AND THIS ARC KEEPS WRITING IT WRONG.**
 - **BEFORE READING A CLEAN DIFF, CHECK THE FIGURE THE STEP IS ABOUT IS NOT NULL IN IT.** C2-f2c's
   harness was byte-identical over 39,939 lines while `retirement_marker_index` (**P48**) was `None`
@@ -193,4 +224,36 @@ rationale, where a reader meets it at the moment it fires.
   fourth instance was written WHILE fixing the third, and two more surfaced only because a line
   ceiling forced a docstring to be re-read. A fix's claims about its own correctness are written
   LAST, under post-measurement confidence, and are the one thing its own tests cannot grade. **Grade
-  them separately, and never let the pass that fixes them also be the pass that wrote them.**
+  them separately, and never let the pass that fixes them also be the pass that wrote them.** **The
+  mechanism, measured again 2026-09-05 (`pay_calendar:C14-d`): the sentence is written by the part
+  of the reasoning the fix has not yet updated**, so the wrong answer is the SPECIFIC wrong answer
+  the old model produces -- two docstrings predicted `[13, 27, 41]`, which is what the CASH-anchored
+  writer that step DELETES emits, against the measured `[13, 28, 42]`. Both were added to satisfy a
+  review finding about unauthorised future failures, so the review that caught one ungraded claim
+  was the vector for the next.
+- **A stated count that CONFLICTS is not a menu.** `bank_import:X-gi-1` merging a registry PR: its
+  branch said 334 rulings, `dev` said 336, the merged truth was **337** -- a value on neither side.
+  Every other instance here is a counter merging SILENTLY, and those drills end
+  *"a conflict is a lucky signal"*; this is the other half, where the marker fires and is itself
+  what invites picking a side. The row conflict beside it kept ALL THREE rulings. A marker is a
+  prompt to DERIVE.
+- **And two sides AGREEING is not evidence either, which is where the instinct hides last.**
+  `balance:X-f3c-2b-2c`'s THIRD merge in one night, TWICE in one tree: branch and `dev` both said
+  **305 steps** where the merged table held **306**, and both said **132 balance rulings** where it
+  held **133**. The conflict arm cannot fire when the sides agree, so agreement carries no signal at
+  all while reading as corroboration. Neither side had counted the merged table because neither
+  could: it did not exist until the merge made it. **Nor does conflict predict a third value**: of
+  nine counters some landed where neither side stood (ledger 302/297 -> **301**) and two landed on a
+  side's (ready 75/76 -> **75**). DERIVE every count from its own producer, every time.
+- **A pylint score is a RATIO, so widening the denominator hides the message.** `bank_import:X-gi-1`
+  graded `app/routes/` at 10.00/10 with a real `line-too-long` in the one file it had edited; that
+  file alone scores **9.44/10**. With a hand count of 163 against `crowded_ledger_rows()`'s 160, one
+  mistake twice: asking a SUMMARY, or a tool you built, not the producer that owns the answer.
+- **A count is not a measurement unless something in the same stream is known to be NON-ZERO**, and
+  an absence assertion needs a control that fails if the FEATURE is dead, not if the PAGE is empty.
+  `salary:S3-c`'s lane, worktree deleted underneath it, found `grep -c` over a FAILED command
+  returns `0` -- indistinguishable from absent. Not the *ask the producer* rule: here you ARE asking
+  it and it never ran. `balance:X-bu`'s lane re-ran two claims with a positive control and found it
+  had been right *for a reason it had not checked*. `bank_import:X-gi-1` MEASURED the cost by
+  killing `?open=`: **8 of 10 no-script cases failed, 2 passed**, both survivors asserting absences
+  over `status_code == 200` -- which proves a page rendered, not that the feature lives.

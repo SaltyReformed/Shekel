@@ -39,7 +39,7 @@ class AccountPayrollFeed:
     and the ``AdaptedDeduction`` adapter that flattened them (plan step
     **salary:R14-b**, ruling **R-SAL2**).  Both series are folds of the
     :class:`~app.services.paycheck_calculator.PaycheckBreakdown`\\ s
-    :func:`~app.services.income_service.project_profile` already produces, so
+    :class:`~app.services.income_service.ProfilePaychecks` already produces, so
     what a deduction takes from a paycheck is answered ONCE, by the engine
     that computes the paycheck.
 
@@ -53,17 +53,24 @@ class AccountPayrollFeed:
 
     **Past the last payday the calendar reaches, both series HOLD** -- the
     interim rule the developer ruled on 2026-09-04, shipped with its successor
-    already named.  The engine can only price a paycheck against a salary
-    path, and the app has TWO that disagree past the owner's schedule:
-    ``salary_raises.apply_raises`` compounds every recurring raise forever,
-    while ``pension_calculator.project_salaries_by_year`` stops merit and
-    custom raises at ``auth.user_settings.merit_raise_horizon_years`` and
-    keeps only recurring COLA.  Unifying them is its own step and its own
-    ruling; until it lands, a projection past the schedule states the last
-    real paycheck rather than picking one of the two models inside a step that
-    was ruled about something else.  The hold is a CLAIM the consumer surfaces
-    make, not an arithmetic accident, and it is why the two hold sources
-    differ, and each attribute below states its own.
+    already named.  **Its original reason is GONE and the hold is not**, which
+    is worth separating because the two were stated as one sentence here.  The
+    reason was that the app had TWO salary paths disagreeing past the owner's
+    schedule -- ``salary_raises.apply_raises`` compounding every recurring
+    raise forever against ``pension_calculator.project_salaries_by_year``
+    stopping merit and custom raises at
+    ``auth.user_settings.merit_raise_horizon_years`` -- so holding refused to
+    pick one inside a step ruled about something else.  Plan step
+    **salary:S3-c** retired the TERMINATION half of that disagreement (ruling
+    **R-SAL11**): both read each raise's stored ``terminal_year`` and neither
+    invents a cutoff.  *They still differ on AS-OF -- payday-priced against
+    December-of-year -- so a choice remains, and plan step salary:S3 is what
+    ends it.*  What survives is the other half: this
+    feed prices PAYDAYS, the saved calendar runs out, and there is no payday
+    past it to price.  Extending that is plan step **salary:S3**'s, which
+    makes the engine price the whole projected horizon.  The hold is a CLAIM
+    the consumer surfaces make, not an arithmetic accident, and it is why the
+    two hold sources differ; each attribute below states its own.
 
     Attributes:
         employee_by_payday: payday -> what this account received from payroll
@@ -444,8 +451,8 @@ class AccountPayrollFeed:
         Args:
             beyond: An optional ``period -> Decimal`` model for a payday the
                 owner's calendar does not reach, which REPLACES the hold rule
-                there.  ``/retirement`` supplies one -- the merit-horizon
-                salary path ``retirement_projection.build_employer_salary_basis``
+                there.  ``/retirement`` supplies one -- the projected salary
+                path ``retirement_projection.build_employer_salary_basis``
                 already projected its employer base on -- so that page keeps
                 the long-horizon model it had rather than being flattened to
                 a held paycheck by a step ruled about something else.  It is

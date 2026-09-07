@@ -40,7 +40,7 @@ from app.services.recurrence import (
 from app.services.recurrence import _reading
 from app.services.loan_recurrence_sync import (
     bind_rule_to_loan,
-    owns_validity_window,
+    is_standing_loan_payment,
 )
 from app.services.recurring_definition import (
     read_definition,
@@ -109,8 +109,8 @@ def _loan(seed_user, db_session, **kwargs):
 def _second_transfer_into(seed_user, db_session, loan):
     """Return ``(first, second)``: two recurring transfers paying *loan*.
 
-    The FIRST is the definition the app bounds -- ``owns_validity_window`` names
-    the account's active recurring transfer, tie-broken on id -- so its column
+    The FIRST is the definition the app bounds -- ``is_standing_loan_payment``
+    names the account's active recurring transfer, tie-broken on id -- so its column
     is the chokepoints' cache and the door reads it as such (ruling **R-R56**).
     The SECOND's column is not written by the app while the first is active:
     whatever bound it carries is the owner's word, which makes it the subject
@@ -257,7 +257,7 @@ class TestWhatTheDoorComposes:
             resolved = resolved_definition(tpl, _ctx(seed_user))
 
             assert rule.end_date == stale, "precondition: the column is stale"
-            assert owns_validity_window(tpl), (
+            assert is_standing_loan_payment(tpl, _ctx(seed_user)), (
                 "precondition: this is the definition whose bound the app writes"
             )
             assert resolved.closing.derived == ClosesOn(on=date(2028, 7, 1))
@@ -379,11 +379,14 @@ class TestTheNarrowingReachesTheWalk:
                 tpl.recurrence_rule, EndsOnDate(on=authored), _ctx(seed_user),
             )
             db.session.commit()
-            assert owns_validity_window(first) and not owns_validity_window(tpl), (
-                "precondition: the app bounds the first transfer, not this one"
+            ctx = _ctx(seed_user)
+            assert is_standing_loan_payment(first, ctx), (
+                "precondition: the app bounds the first transfer"
+            )
+            assert not is_standing_loan_payment(tpl, ctx), (
+                "precondition: the app does not bound this one"
             )
 
-            ctx = _ctx(seed_user)
             resolved = resolved_definition(tpl, ctx)
             # Walked PAST the fixture's horizon, as the truncation case above
             # is.  ``read_definition``'s placements reach only as far as the
@@ -605,11 +608,12 @@ class TestTheDoorAgreesWithItsOwnParts:
                 _ctx(seed_user),
             )
             db.session.commit()
-            assert not owns_validity_window(tpl), (
+            ctx = _ctx(seed_user)
+            assert not is_standing_loan_payment(tpl, ctx), (
                 "precondition: the app does not write this transfer's bound"
             )
 
-            resolved = resolved_definition(tpl, _ctx(seed_user))
+            resolved = resolved_definition(tpl, ctx)
 
             assert resolved.closing.authored == recurrence_spec(
                 tpl.recurrence_rule,

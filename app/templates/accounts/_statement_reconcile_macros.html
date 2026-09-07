@@ -62,7 +62,7 @@
 {%- endif %}{% endfor %}
 {%- endmacro %}
 
-{% macro verb_pane(account, card, categories, offer) %}
+{% macro verb_pane(account, card, categories, offer, tab, opened) %}
 {#- What ONE of the four verb tabs renders for this line.
 
     A SHUT verb renders its explanation and nothing else, which is R-HW's
@@ -85,6 +85,18 @@
      content nobody had looked at, which is finding N-374's shape.
      `hx-include` carries the whole card, so a proposal's own ticked rows
      above are priced by the very first load. #}
+  {# EITHER THE PLACEHOLDER OR THE PANE ITSELF, NEVER BOTH (plan step
+     bank_import:X-gi-1, ruling R-KA).  `?open=<line_id>` puts this one card's
+     rows in the document, which is the only way the MATCH tab is reachable
+     with scripting off -- `intersect once` below never fires without it, and
+     a parked card payment has no other act at all.  The two arms are
+     exclusive because they carry the same fields: the placeholder holds a
+     proposal's rows as HIDDEN inputs and the pane holds them as tickboxes, so
+     rendering both would put two `rows-<line>` copies in one form. #}
+  {% if opened %}
+  {% set refusal = none %}
+  {% include "accounts/_statement_reconcile_match.html" %}
+  {% else %}
   <div class="rec-match rec-match-waiting"
        hx-post="{{ url_for('accounts.statement_reconcile_match', account_id=account.id, line_id=card.line.line_id) }}"
        hx-trigger="intersect once"
@@ -131,15 +143,30 @@
       <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
       Finding the rows this could be...
     </p>
+    {# THE SCRIPTLESS WAY IN (ruling R-KA).  It pointed at the hand-build
+       workbench until plan step bank_import:X-gi-1, and X-gi-2 deletes that
+       page -- so this link is what keeps the act reachable rather than a
+       courtesy beside it.  It names the TAB as well as the line, because a
+       parked card payment is on Transfers and landing on the inbox would
+       open a page its card is not on.
+
+       WHAT DEGRADES IS THE RUNNING DIFFERENCE AND NOT THE ACT, which is the
+       same degradation the retired workbench's own panel documented: nothing
+       re-prices
+       as you tick, so a group whose two sides disagree is refused at the door
+       with both sums named, and a group that balances records exactly as it
+       does with scripting on. #}
     <noscript>
       <p class="small mb-0">
-        Picking rows here needs JavaScript, because the difference a group
-        comes to is worked out by the server as you tick. Without it, use
-        <a href="{{ url_for('accounts.statement_workbench', account_id=account.id, line=card.line.line_id) }}">Build
-        a match by hand</a>, which opens with this line already ticked.
+        <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab=tab.value, open=card.line.line_id, _anchor='rec-card-' ~ card.line.line_id) }}">Show
+        the rows this could be</a>, which reopens this card here on its MATCH
+        tab with every unexplained row on the account listed. Ticking them does
+        not re-price without JavaScript: tick the rows that come to the same
+        total as the bank, and OK records the match.
       </p>
     </noscript>
   </div>
+  {% endif %}
 
   {% elif offer.is_add and card.panel.add.records_a_purchase %}
   {# TWO sentences, one per DIRECTION, and no ``else`` -- the predicates
@@ -282,9 +309,20 @@
 </section>
 {% endmacro %}
 
-{% macro line_card(account, card, categories) %}
+{% macro line_card(account, card, categories, tab, opened) %}
 {#- ONE bank line, as one card. -#}
+{# THE CARD `?open=` NAMED RENDERS OPEN, ON MATCH, AND CARRIES AN ANCHOR
+   (plan step bank_import:X-gi-1, ruling R-KA).  The scriptless link says it
+   "opens this card on the page"; a details element with no `open`, no id and
+   no fragment landed the owner at the top of a fresh page with every card
+   shut, including that one -- so the link showed nothing until two more
+   clicks (adversarial review 2026-09-05).  The id is rendered on every card so the
+   anchor the link builds cannot name an element that is only sometimes
+   there. #}
+{% set mine = opened if opened and opened.line.line_id == card.line.line_id else none %}
 <details class="rec-card"
+         id="rec-card-{{ card.line.line_id }}"
+         {% if mine %}open{% endif %}
          {% if card.sweep_class %}data-sweep-class="{{ card.sweep_class }}"{% endif %}
          data-rec-card>
   <summary class="rec-summary">
@@ -369,11 +407,19 @@
        verb it is OK'd with -- one fact, on the wire, rather than script state
        the server has to infer from which parameters happen to be present.
        The panel opens on the service's own `opens_on`. #}
+    {# THE OPENED CARD OPENS ON MATCH, and that is the same fact as `?open=`
+       rather than a second one: the link exists so a scriptless owner can
+       build a match, and the checked radio is BOTH which pane CSS shows and
+       which verb the card is OK'd with.  Left on `opens_on`, a parked card
+       payment opened on TRANSFER -- a verb with no door -- so the rows were
+       rendered but hidden, and OK plus Apply recorded nothing and said
+       "you pressed OK without choosing what to do with them" (adversarial
+       review 2026-09-05, which reproduced both halves against the door). #}
     {% for offer in card.panel.offers %}
     <input class="rec-verb" type="radio" autocomplete="off"
            id="verb-{{ card.line.line_id }}-{{ offer.verb.value }}"
            name="verb-{{ card.line.line_id }}" value="{{ offer.verb.value }}"
-           {% if offer.verb == card.opens_on %}checked{% endif %}>
+           {% if offer.verb == card.opens_on and not mine %}checked{% elif mine and offer.is_match %}checked{% endif %}>
     {% endfor %}
     <div class="rec-verb-strip" role="group"
          aria-label="What is this line?">
@@ -385,8 +431,12 @@
       {% endfor %}
     </div>
     <div class="rec-panes">
+      {# `mine` is this card's pane or nothing, set once at the top of the
+         macro because the card element, the verb group and this loop all ask
+         the same question -- and it keeps the include inside `verb_pane` free
+         of a condition. #}
       {% for offer in card.panel.offers %}
-      {{ verb_pane(account, card, categories, offer) }}
+      {{ verb_pane(account, card, categories, offer, tab, mine) }}
       {% endfor %}
     </div>
 

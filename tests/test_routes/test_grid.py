@@ -70,7 +70,7 @@ from tests._test_helpers import (
     settlement_columns,
     settlement_if_settling,
 )
-from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.row_valuation import settled_contribution, settled_figure
 from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import state_own_amount
 
@@ -1284,7 +1284,7 @@ class TestTransactionCRUD:
 
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
     def test_mark_credit_creates_payback(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-credit creates payback in next period."""

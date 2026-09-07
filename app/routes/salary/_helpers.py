@@ -66,7 +66,7 @@ _PROFILE_UPDATE_FIELDS = {
 }
 _RAISE_UPDATE_FIELDS = {
     "raise_type_id", "effective_month", "effective_year",
-    "percentage", "flat_amount", "is_recurring", "notes",
+    "percentage", "flat_amount", "is_recurring", "terminal_year", "notes",
 }
 _DEDUCTION_UPDATE_FIELDS = {
     "name", "deduction_timing_id", "calc_method_id", "amount",
@@ -179,7 +179,7 @@ def _regenerate_salary_transactions(profile):
     if current_period:
         # The configs are resolved for the PERIOD's own tax year, not the
         # clock's: a period straddling New Year belongs to the year it starts
-        # in, which is the key ``load_tax_configs_for_periods`` uses for every
+        # in, which is the key ``configs_by_year`` uses for every
         # other paycheck this profile computes.
         tax_configs = load_tax_configs_for_year(
             current_user.id, profile, current_period.start_date.year,

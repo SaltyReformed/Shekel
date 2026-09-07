@@ -42,7 +42,7 @@ For trying visual directions on a screen before touching real templates.
 
 For building the chosen direction into the real grid.
 
-1. Dev database: `docker compose -f docker-compose.dev.yml up -d db test-db`.
+1. Dev database: `docker compose -f docker-compose.dev.yml up -d db`.
 2. Start the dev app the way the manual harness expects it. The harness base URL is
    `http://172.32.0.1:5000` (see `tests/manual/save_dev_session.py`); the app must be reachable
    there. Confirm your normal dev-run command serves on that address.

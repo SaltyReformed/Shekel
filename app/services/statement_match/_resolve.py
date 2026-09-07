@@ -125,12 +125,17 @@ def load_lines(
             ``REPEATABLE READ, READ ONLY`` transaction
             (:mod:`app.db_transaction`), where PostgreSQL refuses every row-lock
             strength -- ``FOR NO KEY UPDATE`` included -- at executor start,
-            whether or not the query matches a row.  The workbench reaches this
-            on an ordinary ``GET .../statements/match?line=N``, which is the
-            link ruling **R-HC** puts on every queue row, so a lock taken
-            unconditionally here is a 500 on that page.  Named by adversarial
-            design review 2026-09-02, which found it in this step's own first
-            draft.
+            whether or not the query matches a row.  **The caller that reaches
+            it that way is the Reconcile page's own render**: ``?open=<line>``
+            builds the card's MATCH pane through
+            :func:`~._opened.opened_match`, which is an ordinary GET, so a lock
+            taken unconditionally here is a 500 on that page.  Named by
+            adversarial design review 2026-09-02, which found it in this step's
+            own first draft, on the workbench's ``GET
+            .../statements/match?line=N``; plan step ``bank_import:X-gi-2``
+            deleted that page and the constraint is unchanged, which is why the
+            caller is NAMED here rather than left as a page a reader can no
+            longer open.
 
     Returns:
         The lines, ascending by posted day then id.

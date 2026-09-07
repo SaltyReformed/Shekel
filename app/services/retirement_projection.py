@@ -234,7 +234,6 @@ class _AccountProjectionResult:
 def build_employer_salary_basis(
     salary_profiles: list[SalaryProfile],
     planned_retirement_date: date | None,
-    merit_horizon_years: int,
     as_of: date,
     cadence: PayCadence,
 ) -> Callable | None:
@@ -262,8 +261,6 @@ def build_employer_salary_basis(
         salary_profiles: The user's active salary profiles (the first is
             the primary profile whose gross drives the employer base).
         planned_retirement_date: The projection horizon, or ``None``.
-        merit_horizon_years: The merit-raise horizon forwarded to the
-            salary projection.
         as_of: The read pass's pinned day, whose YEAR opens the salary path.
             It was ``date.today()`` here until pay-calendar plan step C2-f2e
             (ledger row **P55**): one of the last three producers on
@@ -288,7 +285,6 @@ def build_employer_salary_basis(
     profile = salary_profiles[0]
     salary_by_year = pension_calculator.project_profile_salaries(
         profile, as_of.year, planned_retirement_date.year,
-        merit_horizon_years,
     )
     if not salary_by_year:
         return None
@@ -553,7 +549,6 @@ def load_projection_batch(
     Returns:
         A :class:`ProjectionBatch` with all shared inputs.
     """
-    user_id = ctx.balance_ctx.user_id
     account_ids = [a.id for a in ctx.accounts]
     period_ids = [p.period_id for p in _periods(ctx)]
 
@@ -585,13 +580,12 @@ def load_projection_batch(
     # defaulted to ``date.today()``, so C2-f2d-1 had to thread the pass's
     # ``as_of`` to stop it reading a clock of its own twice per render; the
     # feed reads no clock at all, because the PERIOD is the clock.
+    # The PASS's paycheck pricer -- shared with every balance-seam read this
+    # render makes, so a payday is priced once per profile rather than once
+    # per reader.  The P2b retire-later probes reuse this batch across
+    # candidate horizons, so it is read many times per render.
     feeds = load_payroll_feeds(
-        user_id, ctx.balance_ctx.calendar(), account_ids, params_by_account,
-        # The PASS's projection memo -- shared with every balance-seam read
-        # this render makes, so the engine runs once per profile rather than
-        # once per reader.  The P2b retire-later probes reuse this batch
-        # across candidate horizons, so it is read many times per render.
-        ctx.balance_ctx.payroll_breakdowns,
+        ctx.balance_ctx.paychecks(), account_ids, params_by_account,
     )
 
     # The displayed per-account balance is the model-from-anchor value at the
@@ -846,10 +840,13 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
     )
     # **The employer basis is COMPOSED since plan step salary:R14-b**: the
     # engine's own gross for every payday the calendar reaches, and past it
-    # this page's merit-horizon path (:func:`build_employer_salary_basis`)
+    # this page's projected salary path (:func:`build_employer_salary_basis`)
     # where supplied.  Composing rather than replacing is what keeps this step
-    # from REGRESSING the one surface that already grew its base; which of the
-    # app's two long-horizon salary models wins is a separate ruling.
+    # from REGRESSING the one surface that already grew its base.  The two
+    # models it bridges share one TERMINATION rule as of plan step salary:S3-c
+    # (**R-SAL11**) -- both read each raise's stored ``terminal_year`` -- but
+    # still differ on AS-OF: the engine prices a payday on its own date, this
+    # path evaluates each year at December 1.  Plan step salary:S3 closes it.
     proj = growth_engine.project_balance(
         current_balance=seed,
         assumed_annual_return=annual_return,

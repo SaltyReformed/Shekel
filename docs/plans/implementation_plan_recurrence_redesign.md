@@ -433,13 +433,26 @@ on -- Van Loan, 24 projected rows, stamped clone 2026-08-31: unedited `2029-02-2
 
 - [ ] **R7d-f -- the FORM's "Ends" control, its refusals and its preview.**
 
-`owns_validity_window` SPLITS per bound (see above), the locked control renders the resolved answer,
-the inverted-window refusal stops reading the column, and R-R30 decides what a baseline-less owner
-sees. **`update_recurrence_rule_from_form` READS THE BOUND AND WRITES IT BACK** on every unrelated
-edit of the template (`_recurrence_form_helpers.py:617` into `reauthor_rule`) -- invisible to any
-NULL-the-column census, because the difference is in what the next save persists. Owes
-`tests/manual/verify_recurrence_form.py` a browser pass.
+The DECOMPOSED parent, split into three leaves 2026-09-05 (**R-R61**).
+**Its own text above was inexact and `R7d-f-1` measured it**: `owns_validity_window` splits no
+SET -- one renamed identity serves both rows -- and the live preview never read the column at all,
+so **R-R34**'s census of `_recurrence_preview` as a sixth reader is inexact too.
+**`update_recurrence_rule_from_form` READS THE BOUND AND WRITES IT BACK** on every unrelated edit of
+the template (`_recurrence_form_helpers.py:617` into `reauthor_rule`) -- invisible to any
+NULL-the-column census, because the difference is in what the next save persists.
 
+- [x] **R7d-f-1** `6af50d53` -- the locked *Ends* row reads the RESOLVER and the locks read the
+      pass, through one renamed identity and per-ROW lock flags. Closed **N-511**, opened
+      **REC-515**. **A LATER LEAF MUST OBEY**: the identity serves the form's locks and the door's
+      **R-R56** arm ONLY, never the resolver (**R-R35** stands); and the BROWSER PASS did not run,
+      because `shekel-dev-app` bind-mounts the main checkout rather than a worktree, so
+      `tests/manual/verify_recurrence_form.py` is still owed.
+- [ ] **R7d-f-2** -- memo the readings on the pass, put the horizon on `RuleReading`, and bound the
+      form's live preview by the loan's own closing date. Closes **N-513**, **N-514**, **REC-515**.
+- [ ] **R7d-f-3** -- refuse a stated closing bound AT CREATE where the destination loan holds no
+      active payment (**R-R60**), the JS lock demoted to an affordance. The refusal lands in
+      `_transfer_creation_helpers` because `app/routes/transfers/templates.py` is at 997 of 1000.
+      Closes **N-512**.
 - [ ] **R7d-g -- the column stops being WRITTEN, and the CHECK lands.**
 
 Nine of the ten call sites go, `end_date` goes NULL for every loan payment in a migration, and

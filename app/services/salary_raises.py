@@ -12,66 +12,19 @@ computes no paycheck and reads no cadence, so it never belonged to the
 engine's own file.
 
 Pure: plain inputs, plain outputs, no Flask, no ORM, no clock, no database.
-The ``raises`` argument is an iterable of duck-typed raise objects rather than
-``SalaryRaise`` rows, which is what lets the pension projector extrapolate over
-fabricated ones (deep-hunt #83).
+
+**Every caller passes real ``SalaryRaise`` rows as of plan step salary:S3-c.**
+The ``raises`` argument was duck-typed so the pension projector could
+extrapolate over FABRICATED values (deep-hunt #83) -- it built a
+``TerminatedRaise`` per row to carry a terminal year invented from
+``auth.user_settings.merit_raise_horizon_years``.  Ruling **R-SAL11** made
+that year a stored column on the row, so the fabrication, the value class it
+produced and the setting it read are all deleted; the reads below are plain
+attribute access on a row rather than defended lookups.
 """
-from dataclasses import dataclass
 from decimal import Decimal
 
 from app.utils.money import round_money
-
-
-@dataclass(frozen=True)
-class TerminatedRaise:
-    """A raise-like value carrying the last year it is believed to happen.
-
-    A recorded raise is a FACT; a raise marked recurring is partly a
-    FORECAST, and a forecast decays -- nobody should assert a merit raise
-    forty years out.  ``terminal_year`` is where that decay is expressed,
-    and it travels ON the raise so :func:`apply_raises` can apply it in the
-    same pass as everything else, instead of a consumer running a second
-    projection beside it.
-
-    It carries the five fields :func:`apply_raises` already reads plus
-    :attr:`terminal_year`, so it satisfies that function's duck-typed
-    contract with no adapter.  It replaced
-    ``pension_calculator._HorizonRaise``, which expressed the same idea by
-    RE-ANCHORING a raise's effective year past a cutoff -- a trick that
-    needed a floor to stop a future-scheduled COLA being pulled backward
-    into years before it existed (finding H1).  Nothing here moves an
-    effective year, so that floor has no subject.
-
-    **What this does NOT do**, stated because an earlier draft of this
-    class claimed otherwise: it does not give the application one horizon.
-    :func:`get_raise_event` in this module walks the same rows to badge a
-    raise on the salary surfaces and knows nothing about termination, so a
-    stored ``terminal_year`` would have to teach it too; and the paycheck
-    engine's callers pass ORM rows, which carry no such column, so the
-    engine and the pension projection still answer differently past a
-    cutoff.  Closing that is the model-election question, which is unruled.
-
-    Attributes:
-        effective_year: The year the raise first applies.
-        effective_month: The month within that year it first applies.
-        is_recurring: Whether it compounds once a year from
-            :attr:`effective_year` onward, as opposed to applying once.
-        percentage: The fractional rate, e.g. ``Decimal("0.03")`` for 3%.
-        flat_amount: The flat addition, for a raise that is not a
-            percentage.  A raise is exactly one method
-            (``ck_salary_raises_one_method``).
-        terminal_year: The LAST year the raise is believed to happen, or
-            ``None`` for indefinitely.  A recurring raise stops accruing
-            applications after it; a one-time raise dated beyond it never
-            applies at all.
-    """
-
-    effective_year: int
-    effective_month: int
-    is_recurring: bool
-    percentage: "Decimal | None"
-    flat_amount: "Decimal | None"
-    terminal_year: "int | None" = None
 
 
 def apply_raises(base_salary, raises, as_of):
@@ -124,16 +77,13 @@ def apply_raises(base_salary, raises, as_of):
     Args:
         base_salary: The pre-raise annual salary -- a Decimal, or any
             value ``Decimal(str(...))`` accepts.
-        raises: An iterable of raise objects, each exposing
-            ``effective_year``, ``effective_month``, ``is_recurring``,
-            ``percentage``, and ``flat_amount``, and OPTIONALLY
+        raises: An iterable of :class:`~app.models.salary_raise.SalaryRaise`
+            rows, each exposing ``effective_year``, ``effective_month``,
+            ``is_recurring``, ``percentage``, ``flat_amount`` and
             ``terminal_year`` -- the last year the raise is believed to
-            happen, ``None`` or absent meaning indefinitely.
-            :class:`TerminatedRaise` is the value that carries one; a plain
-            :class:`~app.models.salary_raise.SalaryRaise` row has no such
-            column, so every caller that predates it is unchanged.  A
-            falsy/empty value returns ``base_salary`` unchanged
-            (unquantized, matching the prior behavior).
+            happen, ``None`` meaning indefinitely.  A falsy/empty *raises*
+            returns ``base_salary`` unchanged (unquantized, matching the
+            prior behavior).
         as_of: The :class:`datetime.date` the salary is evaluated at;
             only its ``year`` and ``month`` are consulted (day ignored).
 
@@ -167,6 +117,33 @@ def apply_raises(base_salary, raises, as_of):
     return round_money(salary)
 
 
+def _is_believed_in(raise_obj, year):
+    """Whether *raise_obj* is believed to happen in *year*.
+
+    **The one place this project answers that question.**  It was answered
+    twice until an adversarial review of plan step salary:S3-c -- once as a
+    clamp inside :func:`_applications` and once as a comparison inside
+    :func:`get_raise_event`, sixty lines apart, agreeing because they were
+    read together rather than because anything held them to each other.  Two
+    spellings of one rule are two spellings whether or not they agree today
+    (CLAUDE.md rule 14), and the money either side of a disagreement is a
+    projected paycheck against the banner announcing it.
+
+    Args:
+        raise_obj: A raise exposing ``effective_year`` and ``terminal_year``.
+        year: The calendar year being asked about.
+
+    Returns:
+        ``True`` when *year* falls on or after the raise's effective year and
+        on or before the last year it is believed -- ``terminal_year`` of
+        ``None`` meaning there is no last year.
+    """
+    if year < raise_obj.effective_year:
+        return False
+    terminal_year = raise_obj.terminal_year
+    return terminal_year is None or year <= terminal_year
+
+
 def _applications(raises, period_year, period_month):
     """Yield one entry per raise APPLICATION, with the date it lands on.
 
@@ -194,27 +171,23 @@ def _applications(raises, period_year, period_month):
         eff_year = raise_obj.effective_year
         eff_month = raise_obj.effective_month
         method_rank = 0 if raise_obj.flat_amount else 1
-        # ``None`` (or absent) means the raise is believed indefinitely,
-        # which is what a plain SalaryRaise row gets -- it carries no such
-        # column, so the paycheck engine's own callers are unaffected.
-        terminal_year = getattr(raise_obj, "terminal_year", None)
 
         if raise_obj.is_recurring:
             # Recurring raises compound each year at the specified month.
-            # The last year that has landed is the caller's own, unless the
-            # effective month has not been reached in it yet -- and never
-            # past the last year the raise is believed to happen.
+            # The last year that has LANDED is the caller's own, unless the
+            # effective month has not been reached in it yet; whether each of
+            # those years is still BELIEVED is :func:`_is_believed_in`'s
+            # question, asked here rather than answered a second time.
             last_year = (
                 period_year if period_month >= eff_month else period_year - 1
             )
-            if terminal_year is not None:
-                last_year = min(last_year, terminal_year)
             for year in range(eff_year, last_year + 1):
-                yield year, eff_month, method_rank, raise_obj
+                if _is_believed_in(raise_obj, year):
+                    yield year, eff_month, method_rank, raise_obj
         elif (
             (period_year > eff_year)
             or (period_year == eff_year and period_month >= eff_month)
-        ) and (terminal_year is None or eff_year <= terminal_year):
+        ) and _is_believed_in(raise_obj, eff_year):
             # One-time raise: it lands once, on its own effective date, and
             # only if that date falls within the years it is believed for.
             yield eff_year, eff_month, method_rank, raise_obj
@@ -240,6 +213,17 @@ def get_raise_event(profile, period):
     predecessor's to collapse the raise banner to one paycheck per run
     (P-SA1) without projecting every period.  Pure over ``profile.raises``
     and ``period.start_date`` -- no breakdown, no DB, no ``float``.
+
+    **It honours ``terminal_year`` as of plan step salary:S3-c**, which is an
+    obligation that step INHERITED rather than created: plan step salary:S3-a
+    added the field and named this function as the walk that did not know
+    about it, so a recurring raise went on badging an event every year after
+    its last believed one -- a banner on a paycheck whose gross the same field
+    had already stopped moving.  **Both walks go through
+    :func:`_is_believed_in`**, so they agree by construction rather than by
+    being read together -- a draft of this paragraph claimed the weaker thing,
+    and an adversarial review of this step took that admission as the finding
+    it was.
     """
     if not profile.raises:
         return ""
@@ -254,13 +238,21 @@ def get_raise_event(profile, period):
 
         is_match = False
         if (raise_obj.is_recurring and period_month == eff_month
-                and period_year >= eff_year):
+                and _is_believed_in(raise_obj, period_year)):
             # A recurring raise recurs at eff_month every year from
-            # eff_year onward, matching apply_raises' application gate --
-            # so it must not badge an event in a calendar year before it
-            # takes effect (deep-hunt #13).
+            # eff_year onward and stops after the last year it is believed,
+            # matching apply_raises' application gate at BOTH ends -- so it
+            # must not badge an event in a calendar year before it takes
+            # effect (deep-hunt #13) or after it is over (salary:S3-c).
             is_match = True
         elif eff_year == period_year and eff_month == period_month:
+            # The one-time arm, which a terminated recurring raise cannot
+            # fall through into: reaching here needs ``period_year ==
+            # eff_year``, and ``ck_salary_raises_terminal_year_not_before_
+            # effective`` guarantees a raise is still believed in its own
+            # effective year.  A one-time raise carries no terminal year at
+            # all (``ck_salary_raises_terminal_year_only_on_a_recurring_
+            # raise``), so there is nothing to test here.
             is_match = True
 
         if is_match:
@@ -273,4 +265,4 @@ def get_raise_event(profile, period):
 
     return ", ".join(events)
 
-__all__ = ["TerminatedRaise", "apply_raises", "get_raise_event"]
+__all__ = ["apply_raises", "get_raise_event"]

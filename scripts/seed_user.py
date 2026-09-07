@@ -84,7 +84,7 @@ from app.enums import BusinessDayShiftEnum
 from app.exceptions import ConflictError, ValidationError
 from app.extensions import db
 from app.models.user import User
-from app.services import auth_service, pay_schedule_service
+from app.services import auth_service, pay_rhythm
 # pylint: enable=wrong-import-position
 
 
@@ -256,7 +256,7 @@ def seed_user():
             # owner is one nobody has asked, so stating anything else would be
             # a claim made on their behalf.  The owner answers on the
             # pay-periods settings card.
-            rhythm=pay_schedule_service.Rhythm(
+            rhythm=pay_rhythm.Rhythm(
                 cadence_days=_read_int_env(
                     "SEED_USER_CADENCE_DAYS",
                     BaseConfig.DEFAULT_PAY_CADENCE_DAYS,

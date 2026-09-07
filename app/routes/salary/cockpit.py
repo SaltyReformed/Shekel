@@ -25,7 +25,7 @@ from flask_login import current_user, login_required
 from app.utils.auth_helpers import get_or_404, require_owner, log_refused_lookup
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
-from app.services import income_service
+from app.services.balance_at import BalanceContext
 from app.services import paycheck_calculator
 from app.services import salary_cockpit_service
 from app.services.payroll_basis import PayrollBasis
@@ -282,7 +282,14 @@ def cockpit():
     # both period questions this page asks, where two SQL readers could answer
     # from two reads.
     today = date.today()
-    calendar = calendar_for(current_user.id)
+    # The render's ONE read pass (plan step salary:S3-d): its calendar is the
+    # one this page's three period questions are answered from, and its
+    # pricer is what the projection below reads.  One extra
+    # ``get_baseline_scenario`` query on a page that reads no balance, which
+    # is what buys the pricer a single source per render; see the sibling
+    # comment in ``views.projection``.
+    ctx = BalanceContext.build(current_user.id, as_of=today)
+    calendar = ctx.calendar()
     periods = calendar.saved()
     current_period = calendar.period_containing(today)
     requested_period_id = request.args.get("period", type=int)
@@ -304,7 +311,7 @@ def cockpit():
     # ONE spelling of the projection, shared with the projection view and with
     # the amount model's own derivation (plan step salary:R14-a, ledger row
     # N-443).
-    breakdowns = income_service.project_profile(profile, calendar)
+    breakdowns = ctx.paychecks().for_profile(profile).over(periods)
     pairs = list(zip(periods, breakdowns))
     focused_breakdown = breakdowns[
         [p.period_id for p in periods].index(focused_period.period_id)

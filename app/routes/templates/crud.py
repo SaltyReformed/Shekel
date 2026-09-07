@@ -61,12 +61,15 @@ from app.routes._recurrence_conflict_chooser import (
     regenerate_or_conflict_chooser,
 )
 from app.routes._recurrence_form_helpers import (
-    RecurrenceFormContext,
     author_recurrence_for_create,
     recurrence_spec_for_create,
     resolve_recurrence_rule_for_update,
 )
-from app.routes._recurrence_form_render import recurrence_form_state
+from app.routes._recurrence_form_refusals import RecurrenceFormContext
+from app.routes._recurrence_form_render import (
+    create_form_recurrence_state,
+    edit_form_recurrence_state,
+)
 from app.routes._form_errors import load_form_or_redirect
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import RECURRENCE_END_BOUND_KEY
@@ -172,9 +175,9 @@ def new_template():
         accounts=accounts,
         # Every recurrence control's starting state as ONE value, so this
         # form and the transfer form cannot come to disagree about what the
-        # same rule means.  A create form passes ``None`` and gets the
-        # unbounded shape at both ends with no cadence selected.
-        recurrence=recurrence_form_state(None),
+        # same rule means.  A create form opens with no cadence selected, the
+        # unbounded closing shape and neither bound locked.
+        recurrence=create_form_recurrence_state(),
         txn_types=txn_types,
         default_txn_type_id=default_txn_type_id,
         # A template that does not exist yet has no amount history; passed so
@@ -298,7 +301,10 @@ def edit_template(template_id):
         # ``edit_form_cadence`` flashes why -- rather than to a stale selection
         # the browser would silently replace with the first option, the empty
         # "Does not repeat" entry whose save DELETES the rule (R2e-1).
-        recurrence=recurrence_form_state(template),
+        # The pass is the form's one read pass (plan step R7d-f).
+        recurrence=edit_form_recurrence_state(
+            template, BalanceContext.build(current_user.id),
+        ),
         txn_types=txn_types,
         # Unused when editing (the form reads the template's own type), but
         # passed so the shared template never references an undefined value.
@@ -436,7 +442,8 @@ def update_template(template_id):
     # (F-24).  The helper dispatches the existing-rule (mutate in place)
     # vs no-existing-rule (build + link) branches and pops every
     # recurrence key from ``data`` so the field-update loop below sees
-    # none.
+    # none.  The pass is the PRE-WRITE one the refusals read (plan step
+    # R7d-f); regeneration below builds its own after the write.
     redirect_response = resolve_recurrence_rule_for_update(
         template,
         data,
@@ -448,6 +455,7 @@ def update_template(template_id):
             ),
             include_due_day_of_month=True,
         ),
+        pass_ctx=BalanceContext.build(current_user.id),
     )
     if redirect_response is not None:
         return redirect_response

@@ -55,7 +55,7 @@ names the loan TERM primitives (``loan_loaders``, ``loan_resolver``,
 and the loan READING tier may import this package, which plan step X-au-g-2c-1
 SPENT: ``loan_payment_service.get_payment_history`` prices its feed through
 :func:`contributions_by_id` rather than through
-``row_valuation.owned_contribution``.  ``balance_at._plan._planned_from_shadows``
+``row_valuation.settled_contribution``.  ``balance_at._plan._planned_from_shadows``
 -- the SECOND unrouted reader, which a census at that step found where the
 finding had named one -- went through in the same commit, so no reader of an
 unsettled loan-payment row is left outside the model.
@@ -135,7 +135,7 @@ in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 # (:mod:`app.services.row_valuation`), because the loan stack needs it and can
 # never name this package.  Re-exported here so a consumer asking what a row's
 # money DID names the same module it asks what the row's amount IS -- the same
-# reason ``_amounts`` re-exports ``owned_contribution``.
+# reason ``_amounts`` re-exports ``settled_contribution``.
 from app.services.row_valuation import (
     recorded_amounts_by_id,
     settled_amounts_by_id,
@@ -174,8 +174,7 @@ from ._amounts import (
     contributed_amount,
     contribution_of,
     contributions_by_id,
-    owned_amount,
-    owned_contribution,
+    settled_contribution,
 )
 from ._cash_leg import (
     cash_leg_of,
@@ -259,8 +258,7 @@ __all__ = [
     "loan_pricing",
     "cash_leg_of",
     "off_statement_sum",
-    "owned_amount",
-    "owned_contribution",
+    "settled_contribution",
     "planned_cash_rows",
     "posted_purchase_sum",
     "reconciled_through",

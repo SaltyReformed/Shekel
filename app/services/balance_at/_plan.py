@@ -256,7 +256,7 @@ def _planned_from_shadows(
     what the amount model RESOLVES for it
     (:func:`~app.services.cash_ledger.amounts_by_id`).
 
-    **It read ``owned_contribution`` with the live map laid over it by hand
+    **It read ``settled_contribution`` with the live map laid over it by hand
     until plan step X-au-g-2c-1**, and that was the SECOND unrouted reader of a
     projected loan-side shadow -- the same row class, the same accessor, the
     same refusal.  The first was
@@ -290,8 +290,9 @@ def _planned_from_shadows(
     the payment feed.  Plan step X-au-g-1 deleted that path, leaving the
     conclusion standing on something smaller -- ``get_payment_history`` priced
     each row through
-    :func:`~app.services.row_valuation.owned_contribution`, which REFUSES a row
-    whose plan is derived -- and the row was restated as **"ONE unrouted
+    :func:`~app.services.row_valuation.settled_contribution`, which refused a row
+    whose plan was derived (since plan step X-bx it refuses any row that has not
+    settled, whatever prices it) -- and the row was restated as **"ONE unrouted
     reader"**.  That count was itself unmeasured, and an adversarial review of
     X-au-g-2c-1 censused the accessor: there were **TWO**, and the second is
     this function.  Both are routed now, so the loan-side INCOME leg is

@@ -250,6 +250,7 @@ from ._loan_figures import (
     LoanTerms,
     loan_closing_date,
     loan_figures,
+    loan_standing_payment,
     loan_terms,
 )
 from ._loan_interest import (
@@ -344,6 +345,7 @@ __all__ = [
     "liability_owed_at_dates",
     "loan_closing_date",
     "loan_figures",
+    "loan_standing_payment",
     "loan_terms",
     "loan_interest_in_year",
     "loan_interest_paid_in_year",

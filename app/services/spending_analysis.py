@@ -27,8 +27,8 @@ defined once rather than re-implemented per surface (coding-standards rule
   not overlap M.
 * :func:`resolved_actual_amount` -- the settled-surprises kernel's
   plan-at-entry vs recorded-at-settle rule (a settled row is worth what it
-  RECORDED as having moved; an unsettled row has recorded nothing, so it reads
-  back its own plan and shows zero variance).
+  RECORDED as having moved; an unsettled row has recorded nothing, so it asks
+  the amount model for its plan and shows zero variance BY CONSTRUCTION).
 * :func:`signed_pct` -- the guarded "signed value as a percentage of a
   base" helper (``None`` when the base is zero), shared by the surprises
   figures and the Spending hero's vs-prior / vs-average chips.
@@ -53,7 +53,8 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services.pay_calendar import DerivedPeriod
-from app.services.row_valuation import owned_amount, settled_figure
+from app.services.cash_ledger import AmountBasis, resolve_transaction_amount
+from app.services.row_valuation import settled_figure
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import pay_period_range_label
 from app.utils.money import CENTS, HUNDRED, ZERO
@@ -121,7 +122,7 @@ def query_settled_expenses(
     ``compute_spending_report`` found no read of ``txn.pay_period`` anywhere.
     The period IS the window on this path, so its identity is already resolved
     (:func:`._window._resolve_window`), and neither the breakdown, the hero nor
-    ``owned_contribution`` asks a row which paycheck it sits in.  The load's
+    ``settled_contribution`` asks a row which paycheck it sits in.  The load's
     stated reason was that a caller "attributes by period", which no caller
     does.
 
@@ -263,7 +264,7 @@ def query_settled_expenses_in_span(
     )
 
 
-def resolved_actual_amount(txn: Transaction) -> Decimal:
+def resolved_actual_amount(txn: Transaction, basis: AmountBasis) -> Decimal:
     """Return the 'actual' amount for an estimate-vs-actual comparison.
 
     The Variance/surprises kernel's rule: a settled transaction is worth what it
@@ -283,31 +284,57 @@ def resolved_actual_amount(txn: Transaction) -> Decimal:
     the question the list is named for.  Whether the figure came from a human is
     a separate fact and has its own column (``settled_basis_id``).
 
-    **The fall-through goes through
-    :func:`~app.services.row_valuation.owned_amount` since plan step
-    X-au-c2b**, where it read ``estimated_amount`` directly.  Its one caller
-    (``spending_report_service._build_surprises``) queries settled expenses only,
-    so the fall-through is unreachable from it; the accessor REFUSES rather than
-    handing a ``None`` into a subtraction on the day some later reader points an
-    unsettled derived row at this kernel.
+    **THE FALL-THROUGH ASKS THE AMOUNT MODEL since plan step X-bu, and that is
+    what makes the zero variance STRUCTURAL rather than an agreement between two
+    producers.**  It read the row's own ``estimated_amount`` column -- through
+    an ``owned_amount`` accessor from plan step X-au-c2b, and directly before
+    that -- so an unsettled row whose plan a cutover had declared DERIVED
+    carries no figure and this REFUSED, while the estimate half beside it in
+    ``_build_surprises`` resolved. That is finding **BAL-462**'s failure mode
+    exactly, on the unsettled population instead of the settled one: same
+    exception, same page, same class of row. It was unreachable only because
+    this kernel's one caller filters to settled rows in SQL -- a caller
+    convention, which is what BAL-462 already paid for trusting.
+
+    Both halves are now the SAME CALL on the same row and the same basis, so an
+    unsettled row's delta is zero because there is nothing for it to be
+    different from. **BAL-462's remedy said this reader "is correct and
+    stays"**; two neutral adversarial reviews of X-bu measured the surviving
+    refusal, and the developer superseded that clause on 2026-09-05 rather than
+    close the finding with the obligation recorded in prose -- which is the very
+    thing BAL-462 exists to name.
+
+    **It takes the BASIS rather than building one**, the pattern every reader of
+    a possibly-derived row follows: the plan may be a live derivation, so a
+    basis is REQUIRED and not optional, and its one caller already holds the one
+    it built for the estimate half. Passing a second basis would resolve the
+    same row against a different pass.
 
     Args:
         txn: The transaction to resolve.  Its settlement record is read, and
             ``txn.status`` is declared ``lazy="joined"`` so nothing here needs an
             explicit load.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`, built once by the
+            caller.  REQUIRED rather than optional for the same reason
+            ``_build_surprises`` states it: a row whose plan is derived cannot
+            be priced without one, and an optional basis would put the refusal
+            back one branch later.
 
     Returns:
         The comparison actual as a ``Decimal``.
 
     Raises:
-        AmountUnresolvable: When the row has NOT settled and its plan is
-            DERIVED, so it stores no figure either way.  Unreachable from this
-            kernel's only caller, which is settled-only.
+        AmountUnresolvable: When a SETTLED row records a settlement whose basis
+            stores a figure and stores none -- a row written around the status
+            seam -- or when the amount model cannot price an UNSETTLED row.
+            Neither is the derived-plan refusal this function used to carry:
+            that is what plan step X-bu removed from here.
     """
     recorded = settled_figure(txn)
     if recorded is not None:
         return recorded
-    return owned_amount(txn)
+    return resolve_transaction_amount(txn, basis)
 
 
 def calendar_window_bounds(

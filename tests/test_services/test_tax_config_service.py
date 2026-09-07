@@ -13,8 +13,8 @@ from app.models.ref import FilingStatus, TaxType
 from app.models.salary_profile import SalaryProfile
 from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracketSet
 from app.services.tax_config_service import (
+    configs_by_year,
     load_tax_configs,
-    load_tax_configs_for_periods,
     load_tax_configs_for_year,
     profile_tax_series,
     resolve_tax_year,
@@ -519,8 +519,16 @@ class TestLoadTaxConfigsForYear:
                 assert result["state_config"].tax_year == 2026, requested
 
 
-class TestLoadTaxConfigsForPeriods:
-    """load_tax_configs_for_periods: one resolved config set per distinct year (DH-#30)."""
+class TestConfigsByYear:
+    """configs_by_year: one resolved config set per distinct year (DH-#30).
+
+    **The door was ``load_tax_configs_for_periods(user_id, profile, periods)``
+    until plan step salary:S3-d**, which split the SERIES load from the year
+    resolution so a caller that prices a payday on demand pays the three
+    queries once rather than per payday.  These cases grade the same rule
+    through the surviving half: each builds the series explicitly, where the
+    deleted function built it for them.
+    """
 
     def test_maps_each_distinct_period_year(self, app, db, seed_user):
         """Returns {year: configs} for every distinct year present in periods."""
@@ -536,8 +544,9 @@ class TestLoadTaxConfigsForPeriods:
                 _FakePeriod(date(current_year, 7, 1)),  # same year, deduped
                 _FakePeriod(date(future_year, 1, 1)),
             ]
-            result = load_tax_configs_for_periods(
-                seed_user["user"].id, profile, periods,
+            result = configs_by_year(
+                profile_tax_series(seed_user["user"].id, profile),
+                {period.start_date.year for period in periods},
             )
 
             assert set(result.keys()) == {current_year, future_year}
@@ -561,18 +570,19 @@ class TestLoadTaxConfigsForPeriods:
                 _FakePeriod(date(2026, 6, 1)),
                 _FakePeriod(date(2030, 1, 1)),  # no configs for this year
             ]
-            result = load_tax_configs_for_periods(
-                seed_user["user"].id, profile, periods,
+            result = configs_by_year(
+                profile_tax_series(seed_user["user"].id, profile),
+                {period.start_date.year for period in periods},
             )
 
             assert set(result.keys()) == {2026, 2030}
             assert result[2030]["state_config"].flat_rate == Decimal("0.0399")
             assert result[2030]["state_config"].tax_year == 2026
 
-    def test_empty_periods_returns_empty_mapping(self, app, db, seed_user):
-        """No periods -> empty mapping."""
+    def test_empty_years_returns_empty_mapping(self, app, db, seed_user):
+        """No years -> empty mapping, and no resolution attempted."""
         with app.app_context():
             profile = _make_profile(seed_user)
-            assert load_tax_configs_for_periods(
-                seed_user["user"].id, profile, [],
+            assert configs_by_year(
+                profile_tax_series(seed_user["user"].id, profile), set(),
             ) == {}

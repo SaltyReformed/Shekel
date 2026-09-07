@@ -48,7 +48,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service, balance_at, recurring_view
 from app.services.balance_at import BalanceContext
-from app.services.loan_recurrence_sync import owns_validity_window
+from app.services.loan_recurrence_sync import is_standing_loan_payment
 from app.services.obligations_aggregator import committed_monthly
 from app.services.pay_calendar import (
     PayCadence,
@@ -870,7 +870,7 @@ class TestTheDestinationsStopReachesTheRow:
         )
         db.session.commit()
         assert tpl.recurrence_rule.end_date == stale, "precondition: stale"
-        assert owns_validity_window(tpl), (
+        assert is_standing_loan_payment(tpl, ctx), (
             "precondition: this is the definition whose bound the app writes"
         )
         assert balance_at.loan_figures(loan, ctx).closing_date == (
@@ -921,7 +921,7 @@ class TestTheDestinationsStopReachesTheRow:
         )
         tpl.is_active = False
         db.session.commit()
-        assert not owns_validity_window(tpl), (
+        assert not is_standing_loan_payment(tpl, ctx), (
             "precondition: an archived payment is not the account's active one"
         )
 
@@ -1008,10 +1008,10 @@ class TestTheDestinationsStopReachesTheRow:
         )
         db.session.commit()
         assert tpl.recurrence_rule.end_date == stale, "precondition: stale"
-        assert owns_validity_window(tpl), (
+        ctx = _ctx(seed_user, date(2026, 7, 20))
+        assert is_standing_loan_payment(tpl, ctx), (
             "precondition: this is the definition whose bound the app writes"
         )
-        ctx = _ctx(seed_user, date(2026, 7, 20))
         assert balance_at.loan_figures(loan, ctx).closing_date == (
             date(2028, 7, 1)
         ), "precondition: the loan's own stop is LATER than the cache"

@@ -196,12 +196,13 @@ def _gap_inputs(profile, pay, cadence_days=14):
     :class:`~app.services.retirement_dashboard_service.GapInputs` since
     pay-calendar plan step C2-f2e, so the pure-unit cases build the bundle the
     one production caller builds rather than handing the two values in loose.
-    Three fields are inert: the producer reads neither the settings, the
-    pensions, nor the bundle's STORED merit horizon (the argument carries the
-    plan point's).  **The pay cadence is NOT one of them since plan step
-    R-F16**, which is what divides the projected final-year salary into a
-    paycheck -- it read a ``pay_periods_per_year`` column off the profile
-    until then, and this docstring said the field was inert.
+    Two fields are inert: the producer reads neither the settings nor the
+    pensions.  **The pay cadence is NOT one of them since plan step R-F16**,
+    which is what divides the projected final-year salary into a paycheck --
+    it read a ``pay_periods_per_year`` column off the profile until then, and
+    this docstring said the field was inert.  *A third inert field, the
+    bundle's STORED merit horizon, went with the setting at plan step
+    salary:S3-c.*
 
     Args:
         profile: The owner's primary :class:`SalaryProfile`.
@@ -218,7 +219,6 @@ def _gap_inputs(profile, pay, cadence_days=14):
         pensions=[],
         salary_profiles=[profile],
         pay=pay,
-        merit_horizon_years=5,
         pay_cadence=PayCadence(cadence_days=cadence_days),
     )
 
@@ -261,7 +261,7 @@ class TestComputeGapNetBiweekly:
         pay = retirement_dashboard_service._CurrentPay(
             net_biweekly=Decimal("2000.00"),
             current_breakdown=paycheck_calculator.PaycheckBreakdown(
-                period=paycheck_calculator.PeriodInfo(period_id=1),
+                period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
                 earnings=paycheck_calculator.Earnings(
                     annual_salary=Decimal("65000.00"),
                     gross_biweekly=Decimal("2500.00"),
@@ -276,7 +276,7 @@ class TestComputeGapNetBiweekly:
         # so the helper never recomputes it (the horizon only affects the
         # internal project_salaries_by_year call on the None branch).
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            _gap_inputs(profile, pay), date(2055, 1, 1), salary_by_year, 5,
+            _gap_inputs(profile, pay), date(2055, 1, 1), salary_by_year,
             _AS_OF,
         )
         assert result == Decimal("4030.77")
@@ -296,7 +296,7 @@ class TestComputeGapNetBiweekly:
         )
         result = retirement_dashboard_service.compute_gap_net_biweekly(
             _gap_inputs(profile, pay), None,
-            [(2026, Decimal("120000.00"))], 5, _AS_OF,
+            [(2026, Decimal("120000.00"))], _AS_OF,
         )
         assert result == Decimal("1800.00")
 
@@ -316,7 +316,7 @@ class TestComputeGapNetBiweekly:
         )
         result = retirement_dashboard_service.compute_gap_net_biweekly(
             _gap_inputs(profile, pay), date(2055, 1, 1),
-            [(2055, Decimal("131000.00"))], 5, _AS_OF,
+            [(2055, Decimal("131000.00"))], _AS_OF,
         )
         assert result == Decimal("1500.00")
 
@@ -369,10 +369,10 @@ class TestTheRenderDayOpensTheSalaryPath:
         )
 
         early = retirement_dashboard_service.compute_pension_summary(
-            [pension], 5, date(2027, 3, 20),
+            [pension], date(2027, 3, 20),
         )
         late = retirement_dashboard_service.compute_pension_summary(
-            [pension], 5, date(2028, 3, 20),
+            [pension], date(2028, 3, 20),
         )
 
         assert [year for year, _ in early.salary_by_year] == [
@@ -396,7 +396,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         pay = retirement_dashboard_service._CurrentPay(
             net_biweekly=Decimal("2000.00"),
             current_breakdown=paycheck_calculator.PaycheckBreakdown(
-                period=paycheck_calculator.PeriodInfo(period_id=1),
+                period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
                 earnings=paycheck_calculator.Earnings(
                     annual_salary=Decimal("100000.00"),
                     gross_biweekly=Decimal("2500.00"),
@@ -409,7 +409,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         # gross ($100,000.00 / 26 = $3,846.15) is scaled by the take-home rate
         # (2000 / 2500 = 0.80) -> $3,076.92.
         before = retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, date(2030, 6, 30), None, 5, date(2027, 3, 20),
+            gap, date(2030, 6, 30), None, date(2027, 3, 20),
         )
         assert before == Decimal("3076.92")
 
@@ -417,7 +417,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         # to the current net.  A producer reading its own clock would answer
         # the line above for both.
         after = retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, date(2030, 6, 30), None, 5, date(2032, 3, 20),
+            gap, date(2030, 6, 30), None, date(2032, 3, 20),
         )
         assert after == Decimal("2000.00")
 
@@ -436,7 +436,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         pay = retirement_dashboard_service._CurrentPay(
             net_biweekly=Decimal("2000.00"),
             current_breakdown=paycheck_calculator.PaycheckBreakdown(
-                period=paycheck_calculator.PeriodInfo(period_id=1),
+                period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
                 earnings=paycheck_calculator.Earnings(
                     annual_salary=Decimal("100000.00"),
                     gross_biweekly=Decimal("2500.00"),
@@ -448,7 +448,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         # $100,000 / 52 = $1,923.0769 -> $1,923.08; x 0.80 -> $1,538.464 ->
         # $1,538.46.
         assert retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, date(2030, 6, 30), None, 5, date(2027, 3, 20),
+            gap, date(2030, 6, 30), None, date(2027, 3, 20),
         ) == Decimal("1538.46")
 
     def test_the_employer_basis_opens_at_the_pass_year(self):
@@ -464,10 +464,10 @@ class TestTheRenderDayOpensTheSalaryPath:
         cadence = PayCadence(cadence_days=14)
 
         assert retirement_projection.build_employer_salary_basis(
-            [profile], date(2030, 6, 30), 5, date(2027, 3, 20), cadence,
+            [profile], date(2030, 6, 30), date(2027, 3, 20), cadence,
         ) is not None
         assert retirement_projection.build_employer_salary_basis(
-            [profile], date(2030, 6, 30), 5, date(2032, 3, 20), cadence,
+            [profile], date(2030, 6, 30), date(2032, 3, 20), cadence,
         ) is None
 
     def test_the_employer_basis_divides_by_the_OWNERS_paychecks(self):
@@ -491,11 +491,11 @@ class TestTheRenderDayOpensTheSalaryPath:
         period = _Period()
 
         biweekly = retirement_projection.build_employer_salary_basis(
-            [profile], date(2030, 6, 30), 5, date(2027, 3, 20),
+            [profile], date(2030, 6, 30), date(2027, 3, 20),
             PayCadence(cadence_days=14),
         )
         weekly = retirement_projection.build_employer_salary_basis(
-            [profile], date(2030, 6, 30), 5, date(2027, 3, 20),
+            [profile], date(2030, 6, 30), date(2027, 3, 20),
             PayCadence(cadence_days=7),
         )
 

@@ -661,8 +661,8 @@ def _one_creatable(
         pay_period_id=period_id,
         destinations=tuple(offered),
         # **No placement where the door would refuse**, which is the pairing
-        # the ``Returns`` above argues for: a placement is what
-        # :func:`~._queue._sweeps_for` counts and what a one-click sweep
+        # the ``Returns`` above argues for: a placement is what the inbox's
+        # sweep counts and what a one-click sweep
         # presses, so a refused line carrying one is a bulk control that
         # cannot succeed.
         placement=(
@@ -931,8 +931,8 @@ def leftovers(
         # and :func:`~._section.merchant_section` emits only merchants
         # ``not in view.rules`` -- so the term could not have produced a row on
         # any input a database can hold.  That is ruling **R-GX** holding
-        # structurally: an ANSWERED merchant is on the register, and *never a
-        # purchase* is an answer.  Stated rather than kept, because a term no
+        # structurally: an ANSWERED merchant is on the merchants list, and
+        # *never a purchase* is an answer.  Stated rather than kept, because a term no
         # input can reach is a fence, and one nothing grades is a fence that
         # reads as coverage.
         merchants=merchant_section(

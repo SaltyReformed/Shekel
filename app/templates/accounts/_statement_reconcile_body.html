@@ -320,7 +320,7 @@
      rebuild removed, found by adversarial design review 2026-08-31.  Both
      halves are composed in the SERVICE; the anchor is the one fact a service
      may not build, and it is the same URL the review body and the workbench
-     render for the same value. #}
+     rendered for the same value before bank_import:X-gi-2 deleted them. #}
   {% if page.books_bound %}
   <p class="rec-books-bound small text-body-secondary">
     {{ page.books_bound.said }}
@@ -473,9 +473,18 @@
   {% endif %}
 
   {% if page.kind.is_line %}
+  {# THE OPEN CARD TRAVELS IN THE ACTION'S QUERY STRING, which is the shape
+     the *show the other N* bound already uses on the Undo forms and is why
+     neither needs a hidden field: `?open=` is read off `request.args`, which
+     a POST carries as readily as a GET.  Without it a REFUSED press would
+     answer with the pane collapsed, taking the owner out of the card they
+     were working in -- and with scripting off, re-opening it is a second
+     navigation.  `url_for` drops a None argument, so the ordinary render
+     posts the plain URL. #}
+  {% set open_line = page.opened.line.line_id if page.opened else none %}
   <form method="post"
-        action="{{ url_for('accounts.apply_statement_reconcile', account_id=account.id) }}"
-        hx-post="{{ url_for('accounts.apply_statement_reconcile', account_id=account.id) }}"
+        action="{{ url_for('accounts.apply_statement_reconcile', account_id=account.id, open=open_line) }}"
+        hx-post="{{ url_for('accounts.apply_statement_reconcile', account_id=account.id, open=open_line) }}"
         hx-target="#statement-reconcile-body"
         hx-swap="outerHTML show:top"
         hx-disabled-elt="find button[type=submit]"
@@ -494,7 +503,7 @@
     </div>
     {% endif %}
     {% for card in section.cards %}
-    {{ line_card(account, card, categories) }}
+    {{ line_card(account, card, categories, page.tab, page.opened) }}
     {% endfor %}
     {% if section.withheld %}
     <p class="small text-body-secondary">

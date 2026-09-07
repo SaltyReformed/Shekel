@@ -11,16 +11,19 @@ about this account's MERCHANTS*, which is a question with its own grain -- one
 row per merchant, not one per line -- and its own door
 (:func:`~._stating.state_rules`, which moves no money).
 
-**There are TWO controls since plan step ``bank_import:X-gf-2``, and the
-difference between them is a difference in KIND** (ruling
-**bank_import:R-GX**).  :class:`MerchantSection` is the QUEUE's: the merchants
-this pass has an unexplained outflow for and the owner has never answered
-about, which is a decision they OWE.  :class:`MerchantRegister` is the
-REGISTER's: every answer they have already GIVEN, shown so it can be restated.
-They share a row (:class:`MerchantSummary`) and an option list
-(:func:`offered_answers`), because *which merchant, and what did they say* is one
-question wherever it is asked; what they do not share is this pass's waiting
-lines, which only the queue measures and only the queue states
+**There were TWO controls from plan step ``bank_import:X-gf-2`` to
+``bank_import:X-gi-3``, and the difference between them was a difference in
+KIND** (ruling **bank_import:R-GX**).  :class:`MerchantSection` is the inbox's:
+the merchants this pass has an unexplained outflow for and the owner has never
+answered about, which is a decision they OWE.  ``MerchantRegister`` was the
+REGISTER's: every answer they had already GIVEN, shown so it could be
+restated.  **Only the first survives.**  ``bank_import:X-gi-2`` deleted the
+register screen and ``X-gi-3`` its model, and the answer's durable home is
+:func:`~._directory.merchant_directory` (ruling **bank_import:R-IC**) -- which
+reads :class:`MerchantSummary` and :func:`offered_answers`, the row and the
+option list the two controls used to share, because *which merchant, and what
+did they say* is one question wherever it is asked.  What the inbox does not
+share with it is this pass's waiting lines, which only a pass can measure
 (:class:`WaitingMerchant`).
 
 **A THIRD control reads both of those since plan step ``bank_import:X-gk``**
@@ -173,10 +176,13 @@ class MerchantSection:
     **An ANSWERED merchant is not here, and that is the ruling rather than a
     filter.**  The review screen shows what is still being decided; a merchant
     the owner has answered for is a decision already made, and it is rendered
-    -- and RESTATED -- on the register (:class:`MerchantRegister`).  Measured
+    -- and RESTATED -- on the merchants list (ruling **bank_import:R-IC**).
+    Measured
     on the developer's own data 2026-08-27: this control was 30 rows and
     225,472 bytes, of which 29 rows were answers he had already given, on a
-    review body of 578,523 bytes.
+    review body of 578,523 bytes.  *That home was the REGISTER until plan step
+    ``bank_import:X-gi-2`` deleted it, which is why R-IC ruled the merchants
+    list ships first.*
 
     **Stating a rule here MOVES NO MONEY**, which is why it is a separate
     control posting to a separate door: the placements it produces are
@@ -232,46 +238,6 @@ class MerchantSection:
 
 
 @dataclass(frozen=True)
-class MerchantRegister:
-    """The REGISTER's rule control: every answer the owner has given.
-
-    Plan step ``bank_import:X-gf-2``, ruling **bank_import:R-GX**.  The other
-    half of :class:`MerchantSection`, and the difference between them is a
-    difference in KIND: that one asks a question, and this one shows an
-    answer and lets it be changed.
-
-    **Its membership is ONE TABLE READ and not a union** (plan step
-    ``bank_import:X-gd-1`` is what made that true).  An answered
-    :class:`~app.models.merchant.Merchant` row OUTLIVES its lines, so *every
-    merchant the owner has answered for* is exactly ``merchant_rules`` joined
-    to ``merchants`` (:func:`~._rules.rules_for`) -- there is no second half to
-    add, and this surface needs no pass, no candidate derivation and no
-    calendar.
-
-    **It carries no count of waiting lines**, and the absence is deliberate:
-    counting them is the PASS's work, this surface does not run one, and a
-    column reading *none right now* over nine parked lines would be false.
-    The queue counts lines; the register holds answers.
-
-    **A rule is RESTATED and never UN-STATED** (ruling **R-GS**), so nothing
-    here offers *I have not said*: it is the opening state of a control that
-    has never been answered, and every row here has been.
-
-    Attributes:
-        merchants: One :class:`MerchantSummary` per stated answer, ascending
-            BY NAME -- the order a list of merchants is read in, where the
-            surrogate id would sort by when the bank first showed each one
-            (plan step ``bank_import:X-gd-1``).
-        templates: The option list, exactly as :class:`MerchantSection` holds
-            it: the same set the door checks a submission against, so the
-            control cannot offer what the door refuses.
-    """
-
-    merchants: "tuple[MerchantSummary, ...]"
-    templates: "tuple[tuple[int, str], ...]"
-
-
-@dataclass(frozen=True)
 class _Waiting:
     """How much of THIS pass one merchant's unexplained outflows come to.
 
@@ -303,11 +269,13 @@ def merchant_summary(
 ) -> MerchantSummary:
     """Return one merchant and what the owner has said about it.
 
-    **Shared by all THREE controls** (plan step ``bank_import:X-gf-2``; the
-    third arrived at ``bank_import:X-gk``): the queue asks about a merchant
-    with no answer, the register shows one with an answer, and the DIRECTORY
-    lists every merchant this account has seen whether or not either is true.
-    *Which merchant, and what did they say* is the same question on all three.
+    **Shared by BOTH surviving controls** (plan step ``bank_import:X-gf-2``;
+    the second arrived at ``bank_import:X-gk``): the inbox asks about a
+    merchant with no answer, and the DIRECTORY lists every merchant this
+    account has seen whether or not that is true.  *Which merchant, and what
+    did they say* is the same question on both.  *It said THREE until plan step
+    ``bank_import:X-gi-3`` deleted the register's control; the module docstring
+    above carries the same count and the two must not drift.*
     What differs is only what surrounds it -- this pass's waiting lines on one
     side (:class:`WaitingMerchant`), this account's whole statement record on
     another (:class:`~._directory.MerchantEntry`), nothing on the third.
@@ -396,9 +364,9 @@ def merchant_section(
     Returns:
         The :class:`MerchantSection` -- every merchant this pass has an
         unexplained outflow for and the owner has NOT answered for, ascending
-        by name.  An answered merchant is on the register instead (ruling
-        **bank_import:R-GX**), where its answer is shown and restated whether
-        or not any of its lines are still waiting.
+        by name.  An answered merchant is on the merchants list instead
+        (rulings **bank_import:R-GX** and **R-IC**), where its answer is shown
+        and restated whether or not any of its lines are still waiting.
     """
     waiting: "dict[int, _Waiting]" = {}
     names: "dict[int, str]" = {}
@@ -440,40 +408,6 @@ def merchant_section(
                     if row_id not in view.rules
                 ),
                 key=lambda pair: names[pair[0]],
-            )
-        ),
-        templates=offered_answers(view),
-    )
-
-
-def answered_merchants(
-    view: RuleView, bars: CreationBars,
-) -> MerchantRegister:
-    """Return the REGISTER's rule control: every answer the owner has given.
-
-    Plan step ``bank_import:X-gf-2``, ruling **bank_import:R-GX**.  **One
-    table read** -- the answers themselves, which already carry the merchant's
-    name (:func:`~._rules.rules_for`) -- so this surface costs no pass, no
-    candidate derivation and no calendar, and the page that renders it is not
-    the 3.6-second one.
-
-    Args:
-        view: What the owner has said and what it can resolve against.
-        bars: Which merchants may not become purchases, and why.  Read even
-            here, because the register is where an answer is CHANGED: a
-            merchant a source files as a payment to an account the owner holds
-            has two of its four options refused by the door, and a control that
-            did not say so would be the *chooser whose submission can never
-            succeed* this package has closed four times.
-
-    Returns:
-        The :class:`MerchantRegister`, ascending by merchant name.
-    """
-    return MerchantRegister(
-        merchants=tuple(
-            merchant_summary(rule.merchant_id, rule.merchant, view, bars)
-            for rule in sorted(
-                view.rules.values(), key=lambda rule: rule.merchant,
             )
         ),
         templates=offered_answers(view),

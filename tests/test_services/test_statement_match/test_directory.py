@@ -30,7 +30,6 @@ from app.services.statement_match import (
     DirectoryAsk,
     MerchantWanted,
     RuleAnswer,
-    answered_merchants,
     merchant_directory,
     review_set,
 )
@@ -132,12 +131,17 @@ def _says(directory, merchant: str) -> str:
 class TestTheMerchantsNoOtherSurfaceShows:
     """The defect X-gk closes: a merchant with no answer AND no waiting line.
 
-    **This is the union of the three partial surfaces, measured.**  The queue
+    **This is the union of the partial surfaces, measured.**  The inbox
     asks about a merchant only while this pass has an unexplained outflow for
     it AND nobody has answered (:class:`~._section.MerchantSection`); the
-    register shows only the answered (:class:`~._section.MerchantRegister`);
-    the receipt offers only what a pass just filed.  A merchant that is
-    unanswered and whose lines are all explained is on NONE of them.
+    register showed only the answered; the receipt offers only what a pass just
+    filed.  A merchant that is unanswered and whose lines are all explained is
+    on NONE of them.
+
+    *The REGISTER went at plan step ``bank_import:X-gi-2`` (the screen) and
+    ``X-gi-3`` (its model, ``answered_merchants``), so its case here went with
+    it: an absence cannot be asserted of a surface that does not exist.  Two
+    partial surfaces are left and this page is still the union.*
     """
 
     @pytest.fixture()
@@ -164,7 +168,7 @@ class TestTheMerchantsNoOtherSurfaceShows:
     def test_the_QUEUE_does_not_ask_about_it(
         self, app, db, seed_user, _a_merchant_off_every_surface,
     ):
-        """Surface one of three: the exception queue asks nothing.
+        """Surface one of two: the inbox asks nothing.
 
         **PAIRED with a merchant the queue DOES ask about**, without which the
         assertion passes on an empty set -- i.e. on a queue that asks about
@@ -184,35 +188,6 @@ class TestTheMerchantsNoOtherSurfaceShows:
                 "the queue asks about nothing, so this proves nothing"
             )
             assert _a_merchant_off_every_surface not in asked_about
-
-    def test_the_REGISTER_does_not_show_it(
-        self, app, db, seed_user, _a_merchant_off_every_surface,
-    ):
-        """Surface two of three: the register holds answers, and it has none.
-
-        **PAIRED with a merchant the register DOES show**, for the reason the
-        case above is: `not in` over an empty register is true of every string
-        ever written.
-        """
-        with app.app_context():
-            a_rule(seed_user, "Angier - Thank Angier", always_ask=True)
-            db.session.commit()
-
-            view = RuleView.build(seed_user["user"].id, seed_user["account"].id)
-            shown = {
-                row.merchant for row in answered_merchants(
-                    view,
-                    CreationBars.build(
-                        seed_user["user"].id, seed_user["account"].id,
-                        view.rules,
-                    ),
-                ).merchants
-            }
-
-            assert "Angier - Thank Angier" in shown, (
-                "the register shows nothing, so this proves nothing"
-            )
-            assert _a_merchant_off_every_surface not in shown
 
     def test_the_DIRECTORY_shows_it_and_says_nothing_was_said(
         self, app, db, seed_user, _a_merchant_off_every_surface,

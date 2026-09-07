@@ -47,7 +47,7 @@ from tests._test_helpers import (
     state_template_price,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -238,7 +238,7 @@ class TestCreditPaybackBalance:
 
             # Original transaction is credit status → effective_amount is 0.
             assert txn.status.name == "Credit"
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
             # Payback exists in next period with matching amount.
             assert payback.pay_period_id == seed_periods[1].id
@@ -740,7 +740,7 @@ class TestCreditWorkflowEdgeCases:
 
             # Original transaction status changed to credit.
             assert txn.status.name == "Credit"
-            assert owned_contribution(txn) == Decimal("0")
+            assert settled_contribution(txn) == Decimal("0")
 
             # Payback transaction created in next period.
             assert payback.pay_period_id == seed_periods[1].id
@@ -1060,7 +1060,7 @@ class TestFullBudgetWorkflow:
             assert by_name_p0["Rent"].settled_amount == Decimal("1195.00")
             assert by_name_p0["Dining Out"].status.name == "Credit"
             assert by_name_p0["Dining Out"].estimated_amount == Decimal("75.00")
-            assert owned_contribution(by_name_p0["Dining Out"]) == Decimal("0")
+            assert settled_contribution(by_name_p0["Dining Out"]) == Decimal("0")
 
             # Period 0 has no projected transactions remaining.
             p0_projected = [t for t in period0_txns if t.status.name == "Projected"]

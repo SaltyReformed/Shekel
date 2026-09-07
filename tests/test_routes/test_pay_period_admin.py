@@ -235,9 +235,9 @@ class TestTruncateRoute:
 
             assert resp.status_code == 302
             db.session.expire_all()
-            assert pay_schedule_service.resolve_shift(
+            assert pay_schedule_service.resolve_schedule(
                 seed_user["user"].id,
-            ) is BusinessDayShiftEnum.PRIOR
+            ).rhythm.shift is BusinessDayShiftEnum.PRIOR
 
     def test_confirm_discard_proceeds(self, app, db, auth_client, seed_user):
         """Re-posting what the confirm PANEL rendered completes the truncate.
@@ -362,7 +362,7 @@ class TestScheduleRoute:
         """A valid post enables rolling and stores the target on the row."""
         with app.app_context():
             # A schedule row must exist first (generation captures cadence).
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
             db.session.commit()
             resp = auth_client.post(
                 "/pay-periods/schedule",
@@ -382,7 +382,7 @@ class TestScheduleRoute:
     ):
         """target_periods = 0 fails validation; the row stays unchanged."""
         with app.app_context():
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
             db.session.commit()
             resp = auth_client.post(
                 "/pay-periods/schedule",
@@ -476,7 +476,7 @@ class TestHistoryRoute:
         from a flush -- in a new instance.
         """
         with app.app_context():
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
             db.session.commit()
 
             resp = auth_client.post(
@@ -504,7 +504,7 @@ class TestHistoryRoute:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(14))
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(14), None)
             pay_schedule_service.set_history_opening(user_id, date(2023, 6, 3))
             db.session.commit()
 
@@ -530,7 +530,7 @@ class TestHistoryRoute:
         from an ordinary browser rather than from a crafted post.
         """
         with app.app_context():
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
             db.session.commit()
 
             resp = auth_client.post(
@@ -763,7 +763,7 @@ class TestRollingTriggerHooks:
             user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
             num_periods=2, rhythm=rhythm_of(14),
         )
-        pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+        pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
         pay_schedule_service.set_rolling(
             seed_user["user"].id, enabled=True, target_periods=target,
         )
@@ -796,7 +796,7 @@ class TestRollingTriggerHooks:
                 user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
                 num_periods=2, rhythm=rhythm_of(14),
             )
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
             db.session.commit()
             before = _period_count(db.session, seed_user["user"].id)
             resp = auth_client.get("/grid")
@@ -913,7 +913,7 @@ class TestOwnerOnlyAndUi:
         """The rolling controls reflect the saved schedule (checked + target)."""
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
             pay_schedule_service.set_rolling(
                 seed_user["user"].id, enabled=True, target_periods=40,
             )
@@ -1249,7 +1249,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
             num_periods=2, rhythm=rhythm_of(14),
         )
         make_expense_template(db_session, seed_user, amount="1200.00")
-        pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14))
+        pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
         pay_schedule_service.set_rolling(
             seed_user["user"].id, enabled=True, target_periods=target,
         )

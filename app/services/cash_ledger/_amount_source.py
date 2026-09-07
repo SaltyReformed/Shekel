@@ -17,9 +17,14 @@ that amount with an entered actual, an excluded status and an envelope's
 purchases.  Splitting them by question is what the package already does
 (:mod:`app.services.cash_ledger` docstring's table).  **It is a separate module
 rather than more of ``_amounts``, and that was a developer decision**
-(2026-08-12): the two questions are different tiers, and ``_amounts`` is 690
-lines against a live ``too-many-lines`` ceiling of 1000 that nothing in ``app/``
-exceeds.  A module INSIDE this package rather than a new top-level service,
+(2026-08-12): the two questions are different tiers, and ``_amounts`` was 690
+lines against a live ``too-many-lines`` ceiling of 1000.  *Re-derived at plan
+step X-bx, because a figure quoted as a REASON decays invisibly: ``_amounts``
+reads 664.  The clause that followed -- "a ceiling nothing in ``app/`` exceeds"
+-- is DELETED rather than tensed.  It is still true and it implied room that is
+gone: three modules now sit exactly ON 1000 and two more at 999, so the ceiling
+binds this tree generally and a module needing space must SPLIT, never shave.*
+A module INSIDE this package rather than a new top-level service,
 because the W9909 completeness fence is keyed on the package and prefix-matched,
 so a sibling module is scoped the day it is written -- where a new top-level
 module would escape it, which is finding N-28's shape.
@@ -139,7 +144,6 @@ from app.enums import AmountSourceEnum
 from app.exceptions import AmountUnresolvable
 from app.services import template_amount_service
 from app.services.recurring_transfer_query import loan_payment_config
-from app.services.row_valuation import own_figure, owned_amount
 from app.utils.money import round_money
 
 from ._amount_basis import AmountBasis
@@ -508,7 +512,7 @@ def resolve_transfer_amount(xfer) -> Decimal:
             definition states no price for its due date.
     """
     if xfer.amount_source_id is None:
-        return own_figure(xfer.amount, "transfer", xfer.id)
+        return _own_figure(xfer.amount, "transfer", xfer.id)
     relation = _declared_relation(xfer.amount_source_id)
     if relation is not AmountSourceEnum.TEMPLATE:
         raise AmountUnresolvable(
@@ -545,6 +549,66 @@ def _is_loan_payment(xfer) -> bool:
     if xfer is None or xfer.template is None:
         return False
     return xfer.template.settings is not None
+
+
+def _own_figure(amount, kind: str, row_id: int) -> Decimal:
+    """Return a row's OWN stored figure, refusing a row that carries none.
+
+    The OWN arm shared by rule 1 (:func:`_own_answer`) and by
+    :func:`resolve_transfer_amount`, exactly as :func:`_stated_amount` below is
+    the shared SERIES arm -- one per column the two tables carry, so neither
+    pair can come to disagree about what "the row's own figure" means.
+
+    The refusal in it is the amount model's TOTALITY contract rather than
+    defensive padding: a resolver that can answer ``None`` for a row is not
+    total, and every other rule beside it raises rather than returning one.  It
+    is unreachable on today's DATA -- no row's amount column is NULL yet -- and
+    what keeps it that way is ``ck_transactions_amount_ownership`` (plan step
+    X-au-c1): a row that owns its amount must store one.  A row that reaches
+    here with no figure has that CHECK broken, and substituting a zero would
+    remove real money from a balance in silence.
+
+    **IT LIVED IN :mod:`app.services.row_valuation` UNTIL PLAN STEP X-bx, AND
+    IT MOVED HERE BECAUSE THAT IS WHERE ITS CALLERS ENDED UP.**  Two steps took
+    it there, and this is the one home for both, because they are one story
+    about one leaf.  It was public in that producer-free module to serve two
+    accessors that answered "what is this row's plan" from the
+    ``estimated_amount`` column, each a SECOND spelling of the question this
+    module answers: X-bu deleted ``owned_amount``, whose refusal parted from the
+    resolver on a row a cutover had declared DERIVED and returned 500 from
+    ``/analytics/spending`` on production-shaped data (**BAL-462**), and X-bx
+    deleted the fall-through of ``owned_contribution`` -- now
+    :func:`~app.services.row_valuation.settled_contribution`, renamed for the
+    assertion that survived (**BAL-465**).  That left both remaining callers
+    inside this file, so the leaf follows them and is PRIVATE -- which also
+    takes a public name out of the balance fence rather than moving it to a
+    second ruling (``shekel_checkers/_fence_rulings``).  X-bu's entry in
+    :func:`_own_answer` said this refusal was not unrepresentable, only
+    unexposed; what X-bx made unrepresentable is a public one-token answer to
+    the plan question anywhere below this module.  What it still refuses is a
+    broken CHECK, never a reader.
+
+    Args:
+        amount: The row's stored amount column.
+        kind: ``"transaction"`` or ``"transfer"``, for the refusal message.
+        row_id: The row's id, named in the refusal.
+
+    Returns:
+        The stored figure.
+
+    Raises:
+        AmountUnresolvable: When the row owns its amount and stores none.
+    """
+    if amount is None:
+        raise AmountUnresolvable(
+            f"{kind.capitalize()} {row_id} owns its amount and carries none. "
+            "A row whose amount is its OWN must store it -- that pairing is "
+            "ck_transactions_amount_ownership -- so this row was written "
+            "around the CHECK. There is deliberately no substitute figure: "
+            "answering zero would take real money out of a balance without "
+            "saying so."
+        )
+    return amount
 
 
 def _stated_amount(template, on_date: date | None, kind: str, row_id: int) -> Decimal:
@@ -641,13 +705,28 @@ def _own_answer(txn, _basis: AmountBasis) -> Decimal:
     signature -- which is what lets the dispatch below be a mapping keyed on the
     rule rather than five special cases.
 
+    **NO READER OUTSIDE THE AMOUNT MODEL ASKS THE PLAN COLUMN**, and plan steps
+    X-bu and X-bx are jointly what made that true; :func:`_own_figure` carries
+    the account of how, because it is the leaf both steps were about.  What
+    belongs here is the consequence: this arm is the ONE place a transaction's
+    plan column is read, :func:`resolve_transfer_amount` above is the one place
+    the transfer column is, and the two spell it identically so the tables read
+    alike.  X-bu's entry here recorded the arm as one of TWO copies with nothing
+    holding them in step; X-bx deleted the other rather than re-pointing it, so
+    the caveat is discharged rather than merely restated.
+
     Args:
         txn: The transaction being priced.
 
     Returns:
         The row's stored ``estimated_amount``.
+
+    Raises:
+        AmountUnresolvable: When the row owns its amount and carries none, which
+            is ``ck_transactions_amount_ownership`` broken rather than a state
+            the model represents.  See :func:`_own_figure`.
     """
-    return owned_amount(txn)
+    return _own_figure(txn.estimated_amount, "transaction", txn.id)
 
 
 def _salary_answer(txn, basis: AmountBasis) -> Decimal:
@@ -666,7 +745,7 @@ def _salary_answer(txn, basis: AmountBasis) -> Decimal:
     the same calendar to render their own breakdowns, so the derivation was
     written three times.  **That was finding N-443 and plan step salary:R14-a
     closed it**: all three now call
-    :func:`app.services.income_service.project_profile`.  The wider claim
+    :class:`app.services.income_service.ProfilePaychecks`.  The wider claim
     is still NOT true and a second adversarial review caught this sentence
     making it: ``tax_withholding_service`` and ``tax_report_service``
     derive breakdowns of their own over a single tax YEAR.  What R14-a

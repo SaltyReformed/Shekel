@@ -567,9 +567,12 @@ def order_token_key(raw: str) -> tuple:
     **The non-numeric arm is a SECURITY guard and not a feature of any form.**
     It read as both while the hand-build form submitted the reserved index
     ``"hand"``; plan step ``bank_import:X-gf-3b`` moved that form to a surface
-    of its own whose door carries no ordering token at all
-    (:func:`~app.schemas.validation.statements.hand_match_payload`), so no
-    control this app renders emits a non-numeric one any more.  The arm stays
+    of its own whose door carries no ordering token at all (the retired
+    ``hand_match_payload``), so no control this app renders emits a
+    non-numeric one any more.  *That surface went at plan step
+    ``bank_import:X-gi-2`` and its reader at ``X-gi-3``; the LIVE reader with
+    no ordering token is
+    :func:`~app.schemas.validation.statement_reconcile.reconcile_match_payload`.*  The arm stays
     because what it exists for is the CRAFTED token above, which no control
     ever emitted either.
 

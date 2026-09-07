@@ -503,18 +503,29 @@ class TestComputeReadinessWhatif:
             )
             assert deltas["shortfall_dollars"] < 0
 
-    def test_merit_horizon_override_moves_the_target(
+    def test_a_stored_end_year_moves_the_target(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """Horizon 0 (vs stored 5) freezes a merit raise sooner.
+        """A raise's OWN end year reaches the readiness verdict end to end.
 
-        With a 5% recurring January MERIT raise, the stored horizon 5
-        compounds it through cutoff = current year + 5 (6 applications:
-        salary x 1.05^6) before freezing; the override horizon 0 freezes
-        it after this year's single application (salary x 1.05^1).  A
-        smaller final-year salary means a smaller net income target, a
-        smaller requirement, and therefore a HIGHER funded ratio -- the
-        delta signs pin the override path end to end.
+        **The wire this cutover has to prove** (plan step salary:S3-c,
+        ruling **R-SAL11**).  A 5% recurring January raise is stored twice
+        over: once believed indefinitely, once ending in its own effective
+        year.  Believed indefinitely it compounds every projected year, so
+        the final-year salary is larger, the net income target is larger,
+        and the requirement is larger; ending immediately it applies once
+        and stops.  A SMALLER requirement is therefore the ended one, and
+        the inequality pins the column against the verdict rather than
+        against the walk -- through ``project_profile_salaries``,
+        ``compute_pension_summary``, ``compute_gap_net_biweekly`` and the
+        gap calculator, none of which this test names.
+
+        *It was ``test_merit_horizon_override_moves_the_target`` and drove
+        the same figures through ``plan_with(merit_horizon_override=0)``.
+        That axis was a SETTING on the owner; there is no plan-point axis
+        over the salary path until plan step salary:S3-f adds a per-raise
+        probe, so the case drives the stored fact instead -- which is the
+        thing S3-c actually changed, and the what-if was never the subject.*
         """
         with app.app_context():
             _build_scenario(db, seed_user)
@@ -523,29 +534,48 @@ class TestComputeReadinessWhatif:
                 .filter_by(user_id=seed_user["user"].id)
                 .one()
             )
-            db.session.add(SalaryRaise(
+            effective_year = date.today().year
+            raise_row = SalaryRaise(
                 salary_profile_id=profile.id,
                 raise_type_id=ref_cache.raise_type_id(RaiseTypeEnum.MERIT),
                 effective_month=1,
-                effective_year=date.today().year,
+                effective_year=effective_year,
                 percentage=Decimal("0.0500"),
                 is_recurring=True,
-            ))
+            )
+            db.session.add(raise_row)
             db.session.commit()
 
-            inputs = load_retirement_inputs(
-                BalanceContext.build(seed_user["user"].id),
-            )
-            result = retirement_readiness.compute_readiness_whatif(
-                inputs, inputs.plan_with(merit_horizon_override=0),
-            )
-            baseline = result["baseline"]
-            override = result["readiness"]
-            deltas = result["deltas"]
+            believed_forever = retirement_readiness.compute_readiness_whatif(
+                load_retirement_inputs(
+                    BalanceContext.build(seed_user["user"].id),
+                ),
+            )["baseline"]
 
-            assert override["required_savings"] < baseline["required_savings"]
-            assert deltas["funded_ratio_points"] > 0
-            assert deltas["shortfall_dollars"] > 0
+            # The SAME raise, now believed only through the year it starts.
+            raise_row.terminal_year = effective_year
+            db.session.commit()
+
+            ends_at_once = retirement_readiness.compute_readiness_whatif(
+                load_retirement_inputs(
+                    BalanceContext.build(seed_user["user"].id),
+                ),
+            )["baseline"]
+
+            assert (
+                ends_at_once["required_savings"]
+                < believed_forever["required_savings"]
+            ), (
+                "the stored terminal_year did not reach the readiness "
+                "verdict: a raise believed only through "
+                f"{effective_year} produced the same requirement as one "
+                "believed forever, so some producer on the path is still "
+                "projecting a salary the raise rows do not describe"
+            )
+            assert (
+                ends_at_once["funded_ratio"]
+                > believed_forever["funded_ratio"]
+            )
 
 
 def _net_for_meter(*, target, pension_net, after_tax_projected):

@@ -33,7 +33,7 @@ from app.services.savings_dashboard_service._debt_line import (
     loan_payoff_outlook,
 )
 from app.services.pay_calendar import PayCadence, PayCalendar, PeriodWindow
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.services.savings_dashboard_service._types import (
     AccountProjection,
     _DashboardCoreData,
@@ -400,7 +400,7 @@ def _recent_settled_expenses_monthly(
     # the row set was every status: the loop's guard was what kept a Projected
     # row away from the amount read, so the accessor's precondition rested on a
     # conditional a later edit could reorder rather than on the query.  Asking
-    # here makes it structural -- ``owned_contribution`` below can only ever see
+    # here makes it structural -- ``settled_contribution`` below can only ever see
     # a row that has SETTLED, which answers from the settlement it RECORDED
     # (plan step X-au-c3) rather than from its plan -- and loads only the rows
     # that are summed.  ``settled_status_ids()`` is exactly the ``is_settled``
@@ -417,7 +417,7 @@ def _recent_settled_expenses_monthly(
             ),
             Transaction.status_id.in_(settled_status_ids()),
         )
-        # ``owned_contribution`` resolves through
+        # ``settled_contribution`` resolves through
         # ``row_valuation.settled_figure``, which sums a ``purchases``-basis
         # row's OWN entries rather than reading a stored copy (plan step
         # X-au-c3).  Without this the metric issues one SELECT per settled
@@ -427,7 +427,7 @@ def _recent_settled_expenses_monthly(
     )
 
     total_expenses = sum(
-        (owned_contribution(txn) for txn in recent_txns), Decimal("0.00"),
+        (settled_contribution(txn) for txn in recent_txns), Decimal("0.00"),
     )
 
     per_period = total_expenses / len(recent_periods)

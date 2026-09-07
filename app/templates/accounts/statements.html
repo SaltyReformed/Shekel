@@ -33,17 +33,24 @@
   </div>
   <div class="d-flex align-items-center gap-2">
     {# THE WAY IN TO THE NEW SCREEN (plan step bank_import:X-gj-1b).  One page
-       on four verbs replaces the review queue, the register and the
-       workbench; the three stay alive and linked beside it until
-       bank_import:X-gi's census deletes them, which is ruling R-HU's own
-       sequencing -- nothing is removed on the way in. #}
+       on four verbs replaced the review queue, the register and the
+       workbench, and plan step bank_import:X-gi-2 deleted all three.  A *Review matches* button stood beside this one and opened
+       the QUEUE, which is ruling R-HU's own sequencing -- nothing removed on
+       the way in -- and plan step bank_import:X-gi-1 DELETED it rather than
+       repointing it, because its destination is this button's: the queue's
+       work is reached from here, so a repoint puts two controls on one header
+       leading to one URL.
+
+       IT IS NOT "the queue IS the inbox tab", which is what this comment said
+       until adversarial review 2026-09-05 measured it against ruling R-KB of
+       the same day: the queue rendered 27, the inbox tab renders 18, and the
+       9 between them are the parked card payments on the Transfers tab. The
+       queue's work is the inbox tab PLUS Transfers, and both are one click
+       from here on the tab bar -- which is why the deletion still stands and
+       the sentence justifying it does not. #}
     <a class="btn btn-sm btn-primary"
        href="{{ url_for('accounts.statement_reconcile', account_id=account.id) }}">
       <i class="bi bi-list-check"></i> Reconcile
-    </a>
-    <a class="btn btn-sm btn-outline-secondary"
-       href="{{ url_for('accounts.review_statements', account_id=account.id) }}">
-      <i class="bi bi-link-45deg"></i> Review matches
     </a>
     {# IT SAYS "EXPLAINED" BECAUSE THAT IS THE TAB IT OPENS (plan step
        bank_import:X-gj-1c, ruling R-HU).  It read "Already decided" and
@@ -85,8 +92,8 @@
     -- listed below, and undoable one at a time. Anything that would change a
     row you made yourself -- its date, its amount, marking it paid -- is never
     done for you: it waits on the
-    <a href="{{ url_for('accounts.review_statements', account_id=account.id) }}">review
-    screen</a> for you to accept it.
+    <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id) }}">Reconcile
+    page</a> for you to accept it.
   </div>
 </div>
 
@@ -372,8 +379,8 @@
     already said where that merchant's spending goes. Undoing one removes the
     purchase it created and puts the bank line back among the unexplained on
     the
-    <a href="{{ url_for('accounts.review_statements', account_id=account.id) }}">review
-    screen</a>; the Undo itself leaves you here. To stop a merchant filing
+    <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id) }}">Reconcile
+    page</a>; the Undo itself leaves you here. To stop a merchant filing
     itself, change its answer to <em>ask me every time</em> on
     <a href="{{ url_for('accounts.statement_merchants', account_id=account.id) }}#merchant-rules">where
     your merchants go</a>.

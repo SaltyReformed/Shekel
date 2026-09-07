@@ -528,7 +528,7 @@ def _calendar(periods, cadence_days=_CADENCE_DAYS):
     """
     return PayCalendar.from_paydays(
         paydays=[(period.id, period.start_date) for period in periods],
-        cadence_days=cadence_days,
+        rhythm=rhythm_of(cadence_days),
         user_id=_MATCH_USER_ID,
         history_opens_on=None,
     )

@@ -52,10 +52,11 @@ Deferred or corrected:
 
 ## Background — what the harness is
 
-- Test entrypoint: `scripts/test.sh` → execs `pytest`; restarts the test-db container first only
-  when `RESTART_TEST_DB` is set to `1`/`true`/`yes`/`on` (opt-in since 2026-09-04; an unrecognised
-  value is refused rather than guessed). `pytest.ini` sets `addopts = ... --dist=loadgroup -n 12`,
-  so **every** local run fans out across 12 pytest-xdist workers.
+- Test entrypoint: `scripts/test.sh` → starts a throwaway postgres container for the run on the
+  rootless daemon, exports the test DSNs at its unix socket, runs `pytest` as a child and removes
+  the container afterwards (`balance:X-br-4`; before it, the wrapper restarted a long-lived shared
+  container on request instead). `pytest.ini` sets `addopts = ... --dist=loadgroup -n 12`, so
+  **every** local run fans out across 12 pytest-xdist workers.
 - Most tests are pure Python / static config assertions. **Eight classes across six files** touch
   the docker daemon (all gated by `_docker_available()`, all now `@pytest.mark.docker`). Of those:
   - **Three actually spawn containers.**
@@ -196,8 +197,10 @@ without mounting over the directory whose cleanup fails. It runs once per image 
 once per run.
 
 **Wire the suite to it**: IMPLEMENTED in `scripts/test.sh` at `balance:X-br-3`, inside the
-`TEST_DB_PER_RUN` branch. When `DOCKER_HOST` is unset and a rootless socket exists it is selected
-automatically; then the wrapper asks the daemon what it IS and refuses a non-rootless one:
+wrapper -- unconditionally since `balance:X-br-4`, which deleted the opt-in `TEST_DB_PER_RUN` flag
+along with the shared-container path it chose between. When `DOCKER_HOST` is unset and a rootless
+socket exists it is selected automatically; then the wrapper asks the daemon what it IS and refuses
+a non-rootless one:
 
 ```bash
 # Only when DOCKER_HOST is unset AND that socket actually exists; the wrapper
@@ -312,8 +315,8 @@ Work happens in **this repo** (`/home/josh/projects/Shekel`), branch `dev`.
       checklist used to carry were refuted; see "One-time host setup" above, which is the one home
       for them. Do not restore them here: they named `pacman` for an AUR package, a setup tool that
       package does not ship, and a `slirp4netns` prerequisite that is not installed and not needed.
-  - [x] `scripts/test.sh` selects the daemon itself in per-run mode and refuses a non-rootless one;
-        no manual `export` is required.
+  - [x] `scripts/test.sh` selects the daemon itself and refuses a non-rootless one; no manual
+        `export` is required.
   - [x] Verified with `SHEKEL_ALLOW_HOST_DOCKER` unset:
         `DOCKER_HOST=unix:///run/user/1000/docker.sock PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy`
         gave **25 passed, 3 skipped** against **28 skipped** on the system daemon, and zero

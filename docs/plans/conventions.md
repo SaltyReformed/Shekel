@@ -126,12 +126,32 @@ end.
    `(arc, id)`, so two arcs may hold one bare id and a citation of an ambiguous one MUST name its
    arc (rule 10). Since `balance:X-ao-2a` no arc document DECLARES one; each points.
 
-10. **The arc is a COLUMN, never a prefix.** The key is `(arc, id)` and it is unique across the
-    corpus. Bare ids keep their exact spelling, because a rename would orphan every citation in
-    commit messages (immutable), code comments and the archived as-built records.
+10. **The arc is a COLUMN and the KEY is `(arc, id)`**, unique across the corpus. Bare ids keep
+    their exact spelling, because a rename would orphan every citation in commit messages
+    (immutable), code comments and the archived as-built records.
     **Where a bare id is ambiguous the citation must name its arc**: `D4` alone names three
     different findings -- `loan_arc_as_built_2026-07-26.md:564`,
     `implementation_plan_posting_ledger_loan_payments.md:353` and the recurrence arc's live row.
+    **A NEW finding id CARRIES ITS ARC'S PREFIX** (developer, 2026-09-05), continuing that arc's own
+    count: balance BAL-462, bank_import BI-477, pay_calendar PC-497, recurrence REC-515, salary
+    SAL-547, credit_card CC-352. This does not change the KEY; it makes the id self-describing where
+    the COLUMN cannot follow it -- a commit message, a code comment, an archived record -- so the
+    ambiguity above becomes unrepresentable for everything minted from here, rather than a rule the
+    writer must remember. Nothing already filed is renamed, and the seven families that predate this
+    (`N-`, `P`, `D`, `F-`, `FU-`, `E`, `X`) are correct as they stand. Rejected: reserved numeric
+    RANGES, which encode the arc unreadably and run out -- balance's would have held about 24 of its
+    88 open steps.
+
+    **A NEW RULING id CARRIES ITS ARC'S PREFIX TOO** (developer, 2026-09-05), extending the
+    paragraph above from `ledger.md` to `rulings.md` for the reason it already gives: a ruling id
+    travels into commit messages and code docstrings, where the `arc` COLUMN cannot follow it.
+    `pay_calendar`, `recurrence` and `salary` already spell ids this way and CONTINUE their runs
+    (`R-PC61`, `R-R62`, `R-SAL12`); `balance` and `bank_import` drew from the shared LETTER
+    sequence, which is no numeric run to continue, so theirs START at `R-BAL1` and `R-BI1`. Ruled
+    the night `R-KE` was drafted twice within the hour -- by `bank_import` for the scriptless match
+    pane and by `balance` for the test-slot pair, on two unmerged branches, which is the blindness
+    that minted `R-GW` twice on 2026-08-27. Nothing already filed is renamed, so the 13 ids two arcs
+    hold at once stand and a bare citation of one still owes its arc.
 
 11. **An identity class shares a tick state, and a fork binds both its remedies and its row.** `C2`,
     `X-l` and `R-F12` are ONE step under three names; ticking one without the others is a failure.

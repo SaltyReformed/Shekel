@@ -239,8 +239,9 @@ def look_first(gap: str) -> str:
     for the reason :data:`_LOOK_FIRST` states: since ruling
     **bank_import:R-II** a line this composes for may be a refund.
 
-    **PUBLIC since that step, and it is the SAME sentence** :mod:`._queue`
-    composed for a parked line and an inflow.  Its note there said in as many
+    **PUBLIC since that step, and it is the SAME sentence** the retired
+    queue composed for a parked line and an inflow (its model went at plan step
+    ``bank_import:X-gi-3``; the CARD prints this now).  Its note there said in as many
     words that an inflow's gap *carries the same framing verb an outflow's
     does*, citing this module -- while spelling the sentence a second time,
     which is how the two came to differ by the clause this step has just had to

@@ -22,47 +22,75 @@ must-knows; a fact lives in one tier and the other tiers point at it.
 
 ## Test Run Guidelines
 
-- **Invoke via `./scripts/test.sh`, not bare `pytest`.** The wrapper resolves the test DSNs out of
-  `.env`, defaults the marker expression, and forwards all arguments verbatim.
-  **It restarts `shekel-dev-test-db` only when `RESTART_TEST_DB` is truthy** --
-  `1`/`true`/`yes`/`on` restart, `0`/`false`/`no`/`off` and unset do not, and anything else exits 2
-  rather than being guessed at. See "Catalog fragmentation and the test-runner wrapper" below for
-  what the restart buys and why it is opt-in. The wrapper falls through to plain pytest when the
-  container is absent (CI, fresh checkout).
+- **Invoke via `./scripts/test.sh`, not bare `pytest`.**
+  **The wrapper gives the run a POSTGRES CLUSTER OF ITS OWN** (`balance:X-br-4`, 2026-09-05): a
+  container started from the image `scripts/build_test_db_image.py` bakes -- the template already
+  inside it -- on a rootless docker daemon, reached over a unix socket in a per-run directory,
+  removed on every exit path including Ctrl-C. It exports `TEST_DATABASE_URL` and
+  `TEST_ADMIN_DATABASE_URL` at that socket rather than reading them from `.env`, defaults the marker
+  expression, and forwards all arguments verbatim.
+  **There is no shared-container path and no flag to select one**; a run that cannot reach a
+  rootless daemon exits 2 with instructions rather than falling back to the daemon that serves
+  production. CI is unaffected -- it invokes `pytest` directly against its own service container.
+- **What the private cluster costs.** Measured 2026-09-05 on `tests/test_utils/` (385 tests), same
+  host, back to back: 12.7 s against the shared cluster, 14.1 s in a private one with the image
+  built and its layers warm, 22.0 s on the first run after a rebuild. The fixed part is the image
+  verification (1.4 s, and it runs on EVERY invocation rather than trusting the tag) plus the
+  container's whole life -- start, readiness and removal -- at 0.33 s. Quote none of these without
+  the date.
 - **Container-spawning deploy tests are excluded by default.** The `tests/test_deploy` integration
   tests that drive a real `docker` daemon are marked `@pytest.mark.docker`, and `./scripts/test.sh`
   defaults to `-m "not docker"` so a routine local run never spawns containers on the host's
   production Docker daemon (which the homelab `wud`/`cadvisor`/`alloy` stack watches). CI runs bare
   `pytest`, so it still executes them. A `tests/test_deploy/conftest.py` guard also skips them if a
-  bare `pytest` reaches the system daemon outside CI. Opt in locally with
-  `SHEKEL_ALLOW_HOST_DOCKER=1 PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy/...`.
-  Full rationale and the daemon-isolation plan: `docs/test-harness-isolation.md`.
+  bare `pytest` reaches the system daemon outside CI. Since the wrapper selects and exports an
+  isolated `DOCKER_HOST` itself, the local opt-in is now just
+  `PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy/...` --
+  `SHEKEL_ALLOW_HOST_DOCKER=1` is no longer part of it and means "accept the churn on the production
+  daemon". Measured 2026-09-05: 25 passed, 3 skipped on the rootless daemon against 28 skipped on
+  the system one; the 3 are a published-port collision in the nginx fixtures, and they SKIP rather
+  than fail, so that defect thins a green suite silently. Full rationale and the daemon-isolation
+  plan: `docs/test-harness-isolation.md`.
 - **Full suite:** ~13,000 tests, roughly 5-8 min at the default `-n 12` parallelism (set in
   `pytest.ini` `addopts`). Measured 2026-08-30: 11,788 passed in 278-296 s over four runs, ~18 s
-  run-to-run variance. Measured 2026-09-04 on `chore/test-restart-default`, all three under the
-  suite slot with `RESTART_TEST_DB=1`: 13,019 passed in 477 s, 13,019 in 370 s, and 13,020 in 325 s.
-  **Do not quote any of these without their date** -- seven runs across six days spread from 278 s
-  to 477 s, so a bare number is not evidence, and the count moves with the branch (the third figure
-  differs because the commit that produced it adds a test). Contention explains none of the three:
-  each held the slot alone. The wrapper's own output is the current measurement.
-- **Concurrent invocations are serialized by the suite slot** (`scripts/suite_slot.sh`, PR #199,
-  2026-09-02): `acquire <name>` before a gating run, `release <name>` after, `status` to inspect.
-  The postmaster is SHARED. A `RESTART_TEST_DB=1` run attempts a hygiene restart first, and its
-  live-backend probe skips the restart when another run's connections are visible -- but the probe
-  is a race (probe, then restart), it is blind to a run whose only connections sit on the excluded
-  admin database (observed 2026-09-04: it read ZERO backends while a 756 s full-suite run was live,
-  and the restart that followed voided that run with 155 setup errors), and even a correctly skipped
-  restart leaves two suites contending (the slot script's header carries the measurement: 859 s
-  against 304 s alone, both results void). A probe is not a lock, which is why the slot is mandatory
-  rather than advisory. Semantics, exemptions and the staleness rules live in
-  `.claude/rules/testing.md` and the script's own header. What the slot does not cover, the worker
-  databases do: the per-worker DB name is the stable form `shekel_test_{worker_id}` (no PID suffix),
-  so two unslotted invocations against one cluster collide with a clear "database already exists"
-  failure rather than silent corruption -- isolate a second checkout with `TEST_DB_PREFIX` and
-  `TEST_TEMPLATE_DATABASE` ("Two checkouts against one cluster" below). Orphan cleanup at session
-  start drops any leftover DB from a previous crashed run.
-- **First-time setup:** build the template once with `python scripts/build_test_template.py`; see
-  "Building the test template" below for when to rebuild.
+  run-to-run variance. Measured 2026-09-04 on `chore/test-restart-default`, all three on the shared
+  cluster under the (now deleted) suite slot with `RESTART_TEST_DB=1`: 13,019 passed in 477 s,
+  13,019 in 370 s, and 13,020 in 325 s. Measured 2026-09-05 on `refactor/test-delete-fences`, the
+  first figures from a PRIVATE cluster and nothing else running: 13,238 passed in 349 s.
+  **Do not quote any of these without their date** -- eight runs across seven days spread from 278 s
+  to 477 s, so a bare number is not evidence, and the count moves with the branch (the 2026-09-04
+  third figure differs because the commit that produced it adds a test). None of them is a
+  contention measurement: each ran alone. The wrapper's own output is the current measurement.
+- **Concurrent invocations need no coordination, and the slot that provided it is deleted.**
+  `scripts/suite_slot.sh` (PR #199, 2026-09-02) was a mandatory mkdir-based mutex; `balance:X-br-4`
+  removed it with the shared postmaster it protected. Its header named TWO hazards and only one of
+  them was about shared state:
+  - **Correctness is now structural.** No run can restart another's backends (there is no shared
+    container to restart) and none can collide on a per-worker database name (there is no shared
+    name space). The measured incident that made the slot mandatory -- the live-backend probe
+    reading ZERO while a 756 s full-suite run was live on 2026-09-04, and the restart that followed
+    voiding it with 155 setup errors -- is unrepresentable rather than mitigated. That finding is
+    **N-457** and this is its closure.
+  - **Contention survives, because the cores do not multiply.** The slot's own header carried 859 s
+    contended against 304 s alone, measured on ONE postmaster where the cluster-wide `pg_database`
+    catalog lock was the serialised resource; that serialiser is gone, so the figure does not carry
+    over and was re-measured. **2026-09-05, 24-core host:** one suite alone, 349 s; with THREE
+    running (two private clusters plus a peer's gating run on the shared one), two of them reached
+    ~38% in 13 minutes, at a run-queue of 32, ~950,000 context switches/sec and 28% iowait.
+    **Neither produced a failing test**, and the slowest single test is 2.58 s against
+    `pytest.ini`'s 30 s per-test timeout -- about 11x of headroom, which this measurement was
+    sitting on. A fourth concurrent suite is roughly where a timeout would start failing a test that
+    is not broken; that has not been measured.
+
+  So what remains is a resource fact rather than a defect, and the instrument is information: the
+  wrapper prints any other live pytest it can see, with its worktree, and proceeds.
+  **The cwd locates a peer and the argv does not** -- every worktree on this host shares one venv,
+  so a peer's command line names the main checkout whatever tree it is testing.
+- **First-time setup: none, and a migration needs no manual rebuild.** The template is baked into a
+  tagged image whose cache key is derived from every input the build reads, and the wrapper
+  re-verifies that image on EVERY invocation rather than trusting the tag -- so a stale or damaged
+  one is rebuilt at the door instead of being cloned from for the whole run. See "Building the test
+  template" below for the two callers that still run `scripts/build_test_template.py` directly.
 - **Before reporting done:** every batch (or the single full- suite invocation) must end in
   `<N> passed`; any `failed`, `errors`, or `xfailed` lines block the "done" report.
 - **During development:** run only relevant test files; targeted runs typically finish in seconds.
@@ -76,133 +104,52 @@ must-knows; a fact lives in one tier and the other tiers point at it.
   slowest-test figure once quoted here was measured stale and is dropped rather than re-pinned;
   re-measure with `--durations` when the tail matters.)
 
-## Catalog fragmentation and the test-runner wrapper
+## Why the cluster is per-run, not shared
 
-Phase 3b's per-test drop+reclone gives strict isolation but exposes a PostgreSQL behaviour worth
-naming explicitly so future "is the suite slowing down?" investigations land on the answer
-immediately.
+Phase 3b's per-test drop+reclone gives strict isolation at a price PostgreSQL only charges a
+LONG-LIVED postmaster, and the price is why `scripts/test.sh` now throws its cluster away after
+every run.
 
-**Symptom.** Over many back-to-back suite runs on a long-lived test-db container, full-suite
-wall-clock drifts linearly. Measured progression starting from a freshly-restarted container:
+**The behaviour.** Over many back-to-back suite runs on one container, full-suite wall clock drifts
+linearly -- measured from a freshly restarted container as 71 s, 72 s, 76 s, 81 s over four runs and
+220 s at ~50 runs / 37 h uptime, entirely inside `DROP DATABASE WITH (FORCE)`. It is not on-disk
+bloat: `VACUUM`, `VACUUM (FULL)` on `pg_database` / `pg_shdepend` / `pg_shseclabel` /
+`pg_db_role_setting` and `CHECKPOINT` moved DROP time not at all, and the catalogs are 1 page with 5
+live rows even in the degraded state. The accumulation is in shared memory -- the `sinval` queue,
+syscache and relcache invalidations every DDL broadcasts, consumed slowly by the long-lived backends
+an xdist worker pool holds. Verified by the negative: 5,000 CREATE/DROP cycles through fresh `psql`
+connections do NOT fragment (DROP stays ~3 ms), so it takes both halves, many long-lived backends
+AND heavy DDL. Only restarting the postmaster resets it.
 
-| Run | Wall (s) | Single CREATE/DROP (ms) |
-|---:|---:|---:|
-| 1 | 71 | 14.6 |
-| 2 | 72 | 15.6 |
-| 3 | 76 | 18.3 |
-| 4 | 81 | 20.9 |
-| ~50 (37 h uptime) | 220 | 128 |
+**Which is why a cluster that lives for one run cannot accumulate any of it.** The wrapper used to
+carry a `RESTART_TEST_DB` hygiene restart for this, plus a live-backend probe so the restart did not
+kill a peer worktree's run; `balance:X-br-4` deleted both along with the shared container. Do not
+restore a shared cluster without restoring the restart, and do not quote the figures above as
+current: they were taken at `c1e9c775` (2026-05-20) against ~5,504 tests under `STRATEGY FILE_COPY`,
+and the clone now uses `STRATEGY WAL_LOG`. One companion figure is not merely stale but
+self-refuting and is WITHDRAWN rather than re-pinned: a CREATE/DROP round-trip "past ~15 ms" was
+once offered as the signal to restart, and the same table read 14.6 ms on a freshly restarted
+container and 15.6 ms after ONE run -- a cutoff inside one run's worth of movement, which is
+"restart every time" wearing the clothes of a measurement.
 
-The slowdown is entirely in `DROP DATABASE WITH (FORCE)`; the fixture profile harness
-(`SHEKEL_TEST_FIXTURE_PROFILE=1`) shows DROP dominating ~80 % of per-test fixture cost in the
-degraded state. `CREATE DATABASE ... TEMPLATE` stays roughly constant, independent of catalog state.
-
-The figures above were measured when the clone used `STRATEGY FILE_COPY`. The clone now uses
-`STRATEGY WAL_LOG`; see `tests/conftest.py::_clone_worker_database` for the measurements that forced
-the change. `FILE_COPY` forces three cluster-wide checkpoints per drop+create cycle against one for
-`WAL_LOG`, which costs nothing on this cluster (`fsync=off`) and 20x on any cluster with durability
-on, including CI until 2026-08-18.
-
-**Cause.** Not on-disk bloat. Verified with `VACUUM`, `VACUUM (FULL)` on `pg_database` /
-`pg_shdepend` / `pg_shseclabel` / `pg_db_role_setting`, and `CHECKPOINT` -- none of them moved DROP
-time at all. The catalog tables are small (1 page, 5 live rows, 0 dead) even in the degraded state.
-
-The accumulation is in PG's in-memory shared state: the shared invalidation (`sinval`) queue,
-syscache, and relcache invalidations broadcast by every DDL operation. Long-lived backends (Python
-xdist worker pools held by SQLAlchemy) consume these invalidations slowly, and over thousands of
-CREATE/DROP DATABASE cycles the postmaster's bookkeeping degrades. Only restarting the postmaster
-resets it.
-
-Verified by the negative: 5,000 CREATE/DROP cycles through fresh `psql` connections (each command
-exits, no long-lived backend) does **not** fragment -- DROP stays at ~3 ms. Only the workload
-pattern of "many long-lived backends + heavy DDL" triggers the drift.
-
-**Fix.** `RESTART_TEST_DB=1 ./scripts/test.sh` restarts `shekel-dev-test-db`, waits for
-`pg_isready`, then execs into pytest with whatever arguments were passed. It was unconditional until
-2026-09-04; the "Escape hatches" list below carries why it is now opt-in and what replaced the
-always-on reset as the drift signal.
-
-Escape hatches:
-
-- **The restart is OPT-IN: `RESTART_TEST_DB=1 ./scripts/test.sh ...`** (inverted 2026-09-04; the
-  previous opt-out spelling `SKIP_DB_RESTART` was deleted rather than kept as a second way to say
-  the same thing). Ask for it before a gating full-suite run. Two reasons the default is no-restart,
-  and only the second is a shared-cluster artifact: the cost is fixed while the benefit is
-  proportional to how much DDL the run does, so a targeted run paid the whole restart for drift it
-  did not cause; and the restart terminates every backend on a container every worktree shares,
-  which made an ordinary targeted run a hazard to a peer's in-flight suite.
-- **What tells you when to ask.** A run that skips the restart reports the container's state,
-  because with the restart opt-in there is otherwise no instrument for the drift anywhere in the
-  repo. When the container is up that is its uptime, observed:
-
-  ```text
-  [test.sh] not restarting shekel-dev-test-db (Up 14 minutes (healthy)) -- set RESTART_TEST_DB=1 to force the hygiene restart
-  ```
-
-  It is not printed on every run. There are **five** states and the wrapper names which one it
-  found: docker absent, container absent, container paused, container up, or container present but
-  not running. Paused is split out of **up**, not out of not-running: docker reports a paused
-  container as `Up 5 minutes (Paused)`, so it would otherwise read as healthy. The two failure modes
-  differ and the messages say which -- a not-running container makes pytest fail to connect, while a
-  PAUSED one makes it HANG against a SIGSTOPped postmaster. Neither is started for you; the old
-  opt-out default used to start a stopped one silently. The classifier is held to real docker status
-  strings, arm ORDER included, by `tests/test_scripts/test_test_runner_container_states.py` -- that
-  order is the whole of the paused fix, and nothing else would catch its reversal.
-  **The `~15 ms` CREATE/DROP cutoff this section named as the trigger is WITHDRAWN, not moved**: the
-  table above reads 14.6 ms on a FRESHLY restarted container and 15.6 ms after ONE run, so the
-  threshold fired after a single run and meant "restart every time" in the clothes of a
-  measurement -- and those figures were taken under `STRATEGY FILE_COPY`, which the clone no longer
-  uses. No replacement threshold is offered here, because re-deriving one under `WAL_LOG` belongs to
-  the work that removes the shared cluster rather than to this wrapper: until then uptime is the
-  signal and a gating run is the occasion.
-- `TEST_DB_CONTAINER=other-container-name ./scripts/test.sh` -- point at a different test-db
-  container (e.g. when running against a staging cluster on a different port). The wrapper answered
-  to the bare `DB_CONTAINER` until 2026-09-04, which is the same environment variable
-  `scripts/backup.sh`, `restore.sh` and `verify_backup.sh` read to name the PRODUCTION container --
-  so one export aimed a hygiene restart at production, or a `restore.sh` DROP at a test container.
-  `deploy/shekel-deploy.sh` had already avoided the clash with `SHEKEL_DB_CONTAINER`; the test
-  runner now follows it. `DB_CONTAINER` is no longer read by the test runner at all.
-- Wrapper is a no-op when the container does not exist, so CI (which spins up its own postgres
-  service) is unaffected.
-- **A requested restart is still SKIPPED, loudly, when another run is using the container.** It
-  terminates every backend, so performing it while a second checkout's suite is live kills that run
-  with `server closed the connection unexpectedly` -- measured 2026-08-08 as 208 setup errors, which
-  read exactly like a code regression at the point where they surface. The wrapper first counts
-  backends in `pg_stat_activity` on any database other than `postgres` / `template0` / `template1`.
-  It does NOT match on the name `%test%`: plan step R7b-2 measured that predicate blind to exactly
-  the runs it existed to protect, because the per-worker databases are named from `TEST_DB_PREFIX`
-  (values like `r7a2`, `xf2c3`) and not from the word "test". This container is dedicated to the
-  suite, so any non-admin database on it belongs to a run. The restart is shared-memory hygiene, not
-  a correctness gate, so skipping it costs drift and nothing else.
-
-### Two checkouts against one cluster
-
-A worktree or second clone sharing `shekel-dev-test-db` needs BOTH halves isolated, and each has its
-own environment variable (read from the environment, or from `.env` via the wrapper):
-
-- `TEST_TEMPLATE_DATABASE=<name>` -- what the run clones FROM. Set it when the checkout's migration
-  head differs from the other's, and build it with
-  `TEST_TEMPLATE_DATABASE=<name> python scripts/build_test_template.py`.
-- `TEST_DB_PREFIX=<name>` -- what the run clones INTO. The per-worker databases are
-  `{prefix}_{worker_id}`, default prefix `shekel_test`. Without it
-  **both checkouts default to `-n 12` and both claim `shekel_test_gw0..gw11`**; the loser dies with
-  `DuplicateDatabase: database "shekel_test_gwN" already exists`, en masse, at fixture setup.
-
-Tell the two failure signatures apart: `DuplicateDatabase` is a worker-name collision
-(`TEST_DB_PREFIX`), `server closed the connection unexpectedly` is someone restarting the container
-mid-run (the guard above). Setting `PYTEST_XDIST_WORKER` by hand isolates a serial `-n 0` run but
-NOT `-n 12`, where xdist overwrites it per worker.
-
-**Why not just VACUUM the shared catalogs from a pytest sessionstart hook?** Tried; does not help.
-See "Cause" above. The fragmentation is in PG shared memory, not on-disk pages.
+**Why not just VACUUM the shared catalogs from a sessionstart hook?** Tried; does not help, for the
+reason above -- the fragmentation is in shared memory, not on-disk pages.
 
 **Why not switch back to TRUNCATE-based reset?** The Phase 3b move to drop+reclone was driven by
 audit-trigger and DDL-state isolation requirements (see
 `docs/audits/test_improvements/per-worker-database-plan.md`). Reverting would re-introduce the bugs
-Phase 3b fixed. Paying for the occasional hygiene restart is a better tradeoff than test isolation
-gaps.
+Phase 3b fixed.
 
-### Optional per-directory batching (historical)
+**The clone strategy is `WAL_LOG`, not `FILE_COPY`** -- see
+`tests/conftest.py::_clone_worker_database` for the measurements that forced the change. `FILE_COPY`
+forces three cluster-wide checkpoints per drop+create cycle against one for `WAL_LOG`, which costs
+nothing on a cluster with `fsync=off` and 20x on any cluster with durability on, including CI until
+2026-08-18. The private cluster is started with `fsync=off`, `synchronous_commit=off` and
+`full_page_writes=off` copied from the compose file's shared test-db, and that is what makes it
+affordable: with docker's default durability the same suite took 753 s against 356 s, because one
+drop+create cycle is 1618 ms with fsync on and 31 ms with it off.
+
+## Optional per-directory batching (historical)
 
 The 8-batch split below was required when the suite was ~28 min sequentially and the 10-min CI
 timeout forced sub-batches. At the `-n 12` default (the dated full-suite measurement is under Test
@@ -238,39 +185,38 @@ populated template is roughly two orders of magnitude faster than running migrat
 infrastructure + reference seed per session, which is what unlocks the parallel and concurrent-safe
 test runs documented above.
 
-**First-time build:**
+**Two callers run it, and neither of them is you.** `scripts/build_test_db_image.py` runs it inside
+a bake container and commits the result as a tagged image, and CI runs it against its own postgres
+service. A local `./scripts/test.sh` clones from the baked image, so there is no first-time build to
+remember and no rebuild step after a migration: the image's cache key is derived from every input
+the build reads, and the wrapper re-verifies the image on EVERY invocation, so a key that moved
+rebuilds at the door.
 
-```bash
-python scripts/build_test_template.py
-```
+**The key is not a function of the migrations alone**, which is why it covers more than
+`migrations/`: `_populate_template` re-applies the in-code trigger definitions AFTER
+`alembic upgrade`, deliberately, so the latest definition wins over the migration-frozen one.
+Editing `app/audit_infrastructure.py`, `app/posting_infrastructure.py` or
+`app/opening_infrastructure/` changes the template without touching a migration at all. A key that
+hashed only the migrations would go stale silently, which is the one failure mode that corrupts
+results rather than merely slowing them -- and the verification, not the key, is the correctness
+argument.
 
-The script is idempotent: it drops and recreates the template on every run, so re-running is the
-recovery path for any template- corruption symptom. Three steps print progress: drop+create,
-populate (Alembic chain to `head` + audit infrastructure + reference seed +
-`TRUNCATE system.audit_log`), verify (account- type count, audit trigger count, `system.audit_log`
-row count).
+**Running it by hand** is still the recovery path if you want to inspect the build: it is
+idempotent, dropping and recreating `shekel_test_template` on every run, and prints three steps --
+drop+create, populate (Alembic chain to `head` + audit infrastructure + reference seed +
+`TRUNCATE system.audit_log`), verify (account-type count, audit trigger count, `system.audit_log`
+row count). It reads `TEST_ADMIN_DATABASE_URL` for the admin DSN (default `postgresql:///postgres`);
+CI uses `postgresql://shekel_test:shekel_test@localhost:5432/postgres`. `SECRET_KEY` is defaulted by
+the script -- the template DB is never reachable through Gunicorn so the value is purely scaffolding
+for app construction. **The template's NAME is a constant, not a knob**: it was resolved from
+`TEST_TEMPLATE_DATABASE` so two checkouts on one postmaster could name their templates apart, and
+`balance:X-br-4` deleted that override with the shared postmaster. `tests/conftest.py` and this
+script now spell the same literal and MUST agree.
 
-**When to rebuild:**
-
-- **After a migration** (`flask db migrate` + `flask db upgrade`). The template runs
-  `alembic.command.upgrade(..., 'head')` at build time; per-test clones do not pick up new
-  migrations without a template rebuild.
-- **After editing `app/ref_seeds.py`.** Reference data lives in the template; per-test fixtures
-  re-seed against the existing schema but do not pick up new ref tables or changed seed contents
-  without a rebuild.
-- **After editing `app/audit_infrastructure.py`,** particularly additions to `AUDITED_TABLES`. The
-  template carries the audit triggers; new triggers attach only after a rebuild.
-- **If the bootstrap raises `RuntimeError`** complaining the template is missing or has the wrong
-  row/trigger count. The error message names the offending count and the most likely root cause.
-
-**Environment:**
-
-The script reads `TEST_ADMIN_DATABASE_URL` for the admin DSN (default `postgresql:///postgres`).
-Local development convention is `postgresql://shekel_user:shekel_pass@localhost:5433/postgres`
-(matching the local PG container); CI uses
-`postgresql://shekel_test:shekel_test@localhost:5432/postgres`. `SECRET_KEY` is defaulted by the
-script -- the template DB is never reachable through Gunicorn so the value is purely scaffolding for
-app construction.
+**If the bootstrap raises `RuntimeError`** complaining the template is missing or has the wrong
+row/trigger count, the error message names the offending count and the likely root cause. Under the
+wrapper that should be unreachable -- the image is verified before pytest starts -- so reaching it
+means something else supplied the cluster.
 
 ## Cluster-state tests and `xdist_group`
 

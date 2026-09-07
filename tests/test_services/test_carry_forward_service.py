@@ -50,8 +50,10 @@ from app.services import (
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.cash_ledger import contribution_of
+from app.services.row_valuation import settled_contribution, settled_figure
 from tests._test_helpers import (
+    amount_basis_for,
     create_account_of_type,
     default_settle_day,
     settle_day_columns,
@@ -2629,15 +2631,22 @@ class TestCarryForwardEnvelopeBalanceInvariant:
                 - balances[seed_periods[1].id]
             ) == Decimal("135.00")
 
-            # Period subtotal: sum effective_amount for projected rows
-            # in period 1.  Same projected-only filter, same answer.
+            # Period subtotal: sum what the PROJECTED rows in period 1
+            # contribute.  Same projected-only filter, same answer.
+            #
+            # Asked of the amount model since plan step X-bx: every row in this
+            # sum is Projected by the filter one line down, and
+            # ``row_valuation.settled_contribution`` refuses a row that has not
+            # settled rather than reading its plan column (finding BAL-465).
+            # ``contribution_of`` is the producer for a row that may not have
+            # settled, and it always was.
             period_1_txns = [
                 t for t in txns
                 if t.pay_period_id == seed_periods[1].id
             ]
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             subtotal = sum(
-                (owned_contribution(t) for t in period_1_txns
+                (contribution_of(t, amount_basis_for(t)) for t in period_1_txns
                  if t.status_id == projected_id),
                 Decimal("0"),
             )

@@ -69,6 +69,7 @@ class TestUpsertSchedule:
         with app.app_context():
             schedule = pay_schedule_service.upsert_schedule(
                 bare_user["user"].id, rhythm=rhythm_of(14),
+                nominal_anchor=None,
             )
             assert schedule.id is not None
             assert schedule.cadence_days == 14
@@ -89,6 +90,7 @@ class TestUpsertSchedule:
         with app.app_context():
             schedule = pay_schedule_service.upsert_schedule(
                 user_id, rhythm=rhythm_of(14),
+                nominal_anchor=None,
             )
             # Simulate a user having turned rolling on with a custom target.
             schedule.rolling_enabled = True
@@ -97,6 +99,7 @@ class TestUpsertSchedule:
 
             updated = pay_schedule_service.upsert_schedule(
                 user_id, rhythm=rhythm_of(7),
+                nominal_anchor=None,
             )
 
             # Same row, new cadence, rolling config untouched.
@@ -133,7 +136,7 @@ class TestUpsertScheduleRefusesAnUnstorableCadence:
         user_id = bare_user["user"].id
         with app.app_context():
             with pytest.raises(ValidationError, match="between 1 and 365"):
-                pay_schedule_service.upsert_schedule(user_id, rhythm_of(cadence))
+                pay_schedule_service.upsert_schedule(user_id, rhythm_of(cadence), None)
             assert pay_schedule_service.get_schedule(user_id) is None
 
     def test_message_names_the_offending_value(self, app, bare_user):
@@ -142,6 +145,7 @@ class TestUpsertScheduleRefusesAnUnstorableCadence:
             with pytest.raises(ValidationError) as exc:
                 pay_schedule_service.upsert_schedule(
                     bare_user["user"].id, rhythm_of(400),
+                    nominal_anchor=None,
                 )
             assert "got 400" in str(exc.value)
 
@@ -156,6 +160,7 @@ class TestUpsertScheduleRefusesAnUnstorableCadence:
         with app.app_context():
             schedule = pay_schedule_service.upsert_schedule(
                 bare_user["user"].id, rhythm_of(cadence),
+                nominal_anchor=None,
             )
             assert schedule.cadence_days == cadence
 
@@ -171,7 +176,7 @@ class TestSetRolling:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
             updated = pay_schedule_service.set_rolling(
                 user_id, enabled=True, target_periods=30,
             )
@@ -183,7 +188,7 @@ class TestSetRolling:
         """Disabling flips the flag off while leaving the stored target."""
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
             pay_schedule_service.set_rolling(
                 user_id, enabled=True, target_periods=26,
             )
@@ -215,12 +220,13 @@ class TestSetRolling:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
             pay_schedule_service.set_rolling(
                 user_id, enabled=True, target_periods=40,
             )
             updated = pay_schedule_service.upsert_schedule(
                 user_id, rhythm=rhythm_of(7),
+                nominal_anchor=None,
             )
             assert updated.cadence_days == 7
             assert updated.rolling_enabled is True
@@ -245,7 +251,7 @@ class TestResolveCadence:
         """
         user_id = bare_periods[0].user_id
         with app.app_context():
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(10))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(10), nominal_anchor=None)
             assert pay_schedule_service.resolve_cadence(user_id) == 10
 
     def test_an_owner_with_paydays_cannot_lose_their_cadence(
@@ -316,14 +322,14 @@ class TestResolveSchedule:
         """The stored pair comes back as the stored pair."""
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(10))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(10), nominal_anchor=None)
             pay_schedule_service.set_history_opening(
                 user_id, date(2024, 3, 1),
             )
 
             facts = pay_schedule_service.resolve_schedule(user_id)
 
-            assert facts.cadence_days == 10
+            assert facts.rhythm.cadence_days == 10
             assert facts.history_opens_on == date(2024, 3, 1)
 
     def test_resolve_cadence_is_its_HALF_and_not_a_second_answer(
@@ -337,11 +343,11 @@ class TestResolveSchedule:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(7))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(7), nominal_anchor=None)
 
             assert (
                 pay_schedule_service.resolve_cadence(user_id)
-                == pay_schedule_service.resolve_schedule(user_id).cadence_days
+                == pay_schedule_service.resolve_schedule(user_id).rhythm.cadence_days
                 == 7
             )
 
@@ -379,7 +385,7 @@ class TestResolveSchedule:
 
             facts = pay_schedule_service.resolve_schedule(user_id)
 
-            assert facts.cadence_days == 9
+            assert facts.rhythm.cadence_days == 9
             assert facts.history_opens_on is None
 
     def test_no_row_answers_NO_FACTS_rather_than_a_pair_of_nones(
@@ -426,13 +432,14 @@ class TestResolveSchedule:
         preconditions used to stand in for.
         """
         impossible = pay_schedule_service.ScheduleFacts(
-            cadence_days=None, history_opens_on=date(2020, 6, 1),
+            rhythm=rhythm_of(None), history_opens_on=date(2020, 6, 1),
+            nominal_anchor=None,
         )
 
         with pytest.raises(PayCalendarError, match="must be a plain int"):
             PayCalendar.from_paydays(
                 paydays=[(1, date(2026, 1, 2))],
-                cadence_days=impossible.cadence_days,
+                rhythm=impossible.rhythm,
                 user_id=1,
                 history_opens_on=impossible.history_opens_on,
             )
@@ -447,7 +454,7 @@ class TestResolveSchedule:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
             pay_schedule_service.set_rolling(
                 user_id, enabled=True, target_periods=7,
             )
@@ -455,7 +462,7 @@ class TestResolveSchedule:
 
             facts = pay_schedule_service.ScheduleFacts.of(row)
 
-            assert facts == pay_schedule_service.ScheduleFacts(14, None)
+            assert facts == pay_schedule_service.ScheduleFacts(rhythm_of(14), None, None)
             assert not hasattr(facts, "rolling_enabled")
 
 
@@ -466,7 +473,7 @@ class TestSetHistoryOpening:
         """The ordinary write, and the CONTROL for the refusals below."""
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
 
             row = pay_schedule_service.set_history_opening(
                 user_id, date(2024, 6, 1),
@@ -487,7 +494,7 @@ class TestSetHistoryOpening:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
             pay_schedule_service.set_history_opening(user_id, date(2024, 6, 1))
 
             pay_schedule_service.set_history_opening(user_id, None)
@@ -502,7 +509,7 @@ class TestSetHistoryOpening:
         """A door of its own, so saving one fact never restates another."""
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(9))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(9), nominal_anchor=None)
             pay_schedule_service.set_rolling(
                 user_id, enabled=True, target_periods=13,
             )
@@ -534,7 +541,7 @@ class TestSetHistoryOpening:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14))
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
 
             with pytest.raises(ValidationError, match="2100-12-31"):
                 pay_schedule_service.set_history_opening(
@@ -801,6 +808,7 @@ class TestTheRhythmIsAPairAndIsJudgedAsOne:
             schedule = pay_schedule_service.upsert_schedule(
                 bare_user["user"].id,
                 rhythm=rhythm_of(CADENCE_DAYS_MIN, BusinessDayShiftEnum.NONE),
+                nominal_anchor=None,
             )
             assert schedule.cadence_days == CADENCE_DAYS_MIN
 
@@ -824,6 +832,7 @@ class TestTheRhythmIsAPairAndIsJudgedAsOne:
                     pay_schedule_service.upsert_schedule(
                         bare_user["user"].id,
                         rhythm=rhythm_of(cadence, shift),
+                        nominal_anchor=None,
                     )
             assert pay_schedule_service.get_schedule(
                 bare_user["user"].id,
@@ -845,6 +854,7 @@ class TestTheRhythmIsAPairAndIsJudgedAsOne:
             schedule = pay_schedule_service.upsert_schedule(
                 bare_user["user"].id,
                 rhythm=rhythm_of(shortest_collision_free_cadence(), shift),
+                nominal_anchor=None,
             )
             assert schedule.shift_id == ref_cache.business_day_shift_id(shift)
 
@@ -869,11 +879,13 @@ class TestTheRhythmIsAPairAndIsJudgedAsOne:
         with app.app_context():
             pay_schedule_service.upsert_schedule(
                 user_id, rhythm=rhythm_of(14, BusinessDayShiftEnum.PRIOR),
+                nominal_anchor=None,
             )
             db.session.flush()
 
             updated = pay_schedule_service.upsert_schedule(
                 user_id, rhythm=rhythm_of(2, BusinessDayShiftEnum.NONE),
+                nominal_anchor=None,
             )
 
             assert updated.cadence_days == 2
@@ -894,11 +906,13 @@ class TestTheRhythmIsAPairAndIsJudgedAsOne:
         with app.app_context():
             pay_schedule_service.upsert_schedule(
                 user_id, rhythm=rhythm_of(2, BusinessDayShiftEnum.NONE),
+                nominal_anchor=None,
             )
             db.session.flush()
 
             updated = pay_schedule_service.upsert_schedule(
                 user_id, rhythm=rhythm_of(14, BusinessDayShiftEnum.NEXT),
+                nominal_anchor=None,
             )
 
             assert updated.cadence_days == 14
@@ -919,12 +933,14 @@ class TestTheRhythmIsAPairAndIsJudgedAsOne:
         with app.app_context():
             pay_schedule_service.upsert_schedule(
                 user_id, rhythm=rhythm_of(14, BusinessDayShiftEnum.NONE),
+                nominal_anchor=None,
             )
             db.session.flush()
 
             with pytest.raises(ValidationError):
                 pay_schedule_service.upsert_schedule(
                     user_id, rhythm=rhythm_of(2, BusinessDayShiftEnum.PRIOR),
+                    nominal_anchor=None,
                 )
 
             stored = pay_schedule_service.get_schedule(user_id)
@@ -949,14 +965,90 @@ class TestTheRhythmIsAPairAndIsJudgedAsOne:
                 pay_schedule_service.upsert_schedule(
                     bare_user["user"].id,
                     rhythm=rhythm_of(2, BusinessDayShiftEnum.PRIOR),
+                    nominal_anchor=None,
                 )
             message = str(excinfo.value)
             assert f"at least {floor}" in message
             assert "got 2" in message
 
 
-class TestResolveShift:
-    """``resolve_shift`` answers the stored convention as its enum member."""
+class TestAWriteThatStatesNoPhaseLeavesTheStoredOne:
+    """Plan step **C14-e-2**: `nominal_anchor` is preserved, never cleared by omission.
+
+    ``upsert_schedule`` writes the whole rhythm in ONE statement and gives its
+    two halves no "leave this alone" argument, because a cadence and a
+    convention carry a joint rule and half a pair is not a statement.  The
+    PHASE is a third fact with no joint rule, and a caller that is not
+    recording a batch is not restating where the grid runs -- so the statement
+    ``COALESCE``s it.
+
+    **This is a fix found by FAILURE rather than by design, and the case says
+    so.**  Written the other way, six cases across three modules went red at
+    once: each set up an owner through ``record_paydays`` and then called
+    ``upsert_schedule`` to change the cadence or enable rolling, which cleared
+    the phase and left the owner's next extend refused with "Generate your
+    first pay-period schedule". ``app/`` has ONE caller of this door and it
+    always states a phase, so the defect was one door away rather than live --
+    which is exactly the distance at which a footgun is worth removing rather
+    than documenting.
+    """
+
+    def test_a_phase_less_write_preserves_the_stored_phase(
+        self, app, db, bare_user,
+    ):
+        """Change the cadence alone; the grid's phase survives it."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 6, 8),
+                num_periods=2, rhythm=rhythm_of(14),
+            )
+            db.session.flush()
+
+            pay_schedule_service.upsert_schedule(user_id, rhythm_of(7))
+
+            facts = pay_schedule_service.resolve_schedule(user_id)
+            assert facts.nominal_anchor == date(2026, 6, 8)
+            assert facts.rhythm.cadence_days == 7, (
+                "the cadence must still have been written, or this case "
+                "passes by doing nothing at all"
+            )
+
+    def test_a_write_that_STATES_a_phase_replaces_it(self, app, db, bare_user):
+        """The control: `None` means 'not stated', not 'never writable'.
+
+        Without this the case above is satisfied by a door that ignores the
+        argument entirely, which is the same green for the opposite defect --
+        a phase that can never be corrected once written.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 6, 8),
+                num_periods=2, rhythm=rhythm_of(14),
+            )
+            db.session.flush()
+
+            pay_schedule_service.upsert_schedule(
+                user_id, rhythm_of(14), date(2026, 6, 15),
+            )
+
+            assert pay_schedule_service.resolve_schedule(
+                user_id,
+            ).nominal_anchor == date(2026, 6, 15)
+
+
+class TestTheStoredConventionReachesTheCalendar:
+    """The stored ``shift_id`` becomes a member on :class:`ScheduleFacts`.
+
+    **This class replaced ``TestResolveShift`` at plan step ``C14-e-1``**,
+    which deleted that function.  The three properties it graded are the three
+    graded here, each through the door that now owns it: a stored id round
+    trips to its member, an id the application does not model is REFUSED
+    rather than read as ``none``, and an owner with no schedule row reaches a
+    refusal on the way to a calendar.  Re-pointed rather than deleted --
+    coverage that stops having a subject is coverage that stops being read.
+    """
 
     @pytest.mark.parametrize(
         "shift",
@@ -977,19 +1069,67 @@ class TestResolveShift:
         with app.app_context():
             pay_schedule_service.upsert_schedule(
                 user_id, rhythm=rhythm_of(14, shift),
+                nominal_anchor=None,
             )
             db.session.flush()
 
-            assert pay_schedule_service.resolve_shift(user_id) is shift
+            facts = pay_schedule_service.resolve_schedule(user_id)
 
-    def test_it_refuses_an_owner_with_no_schedule_row(self, app, bare_user):
+            assert facts.rhythm.shift is shift
+            # The property plan step ``C14-e-1`` actually adds, and asserting
+            # only the line above would leave it ungraded: the pair reaches
+            # the PAY CALENDAR, which is what ``C14-e-3``'s producer reads and
+            # what ``extend_pay_periods`` takes its rhythm from now that
+            # ``resolve_shift`` is gone.  One read answers both, so this is
+            # also the reconciler for the two doors.
+            assert calendar_for(user_id).rhythm == facts.rhythm
+
+    def test_an_UNMODELLED_id_is_refused_rather_than_read_as_none(
+        self, app, db, bare_user,
+    ):
+        """A convention this application cannot name is an error, not ``none``.
+
+        ``fk_pay_schedule_shift_id`` admits only seeded ids, so the row is
+        built through the writer and then the COLUMN is moved underneath it --
+        the state a change to ``ref.business_day_shifts`` outside the
+        application would leave.  Reading it as ``none`` would silently
+        un-displace every projected payday for that owner, which is a wrong
+        date rather than an error; the refusal names the schedule.
+
+        **It is the one behaviour of ``resolve_shift`` that had nowhere else
+        to go**, so ``C14-e-1`` moved it into
+        :meth:`~app.services.pay_schedule_service.ScheduleFacts.of` -- the one
+        place a stored id becomes a member -- and this case follows it.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
+            db.session.flush()
+            schedule = pay_schedule_service.get_schedule(user_id)
+            # Past every seeded id, so ``business_day_shift_member`` answers
+            # ``None``.  Set on the instance rather than through the writer,
+            # which is the point: no door can produce this.
+            schedule.shift_id = 9999
+
+            with pytest.raises(ValidationError, match="does not model"):
+                pay_schedule_service.ScheduleFacts.of(schedule)
+
+    def test_an_owner_with_no_schedule_row_reaches_a_refusal(
+        self, app, bare_user,
+    ):
         """No fallback, because a fallback would INVENT a convention.
 
-        Its one caller has already built a calendar for this owner, which
-        refuses an owner without a schedule, so reaching this means the row
-        was removed outside the application.  Answering ``none`` there would
-        quietly re-state a rhythm rather than report a broken one.
+        ``resolve_shift`` raised here for its one caller, the extend door.
+        That caller reads the convention off the
+        :class:`~app.services.pay_calendar.PayCalendar` it already built since
+        ``C14-e-1``, and ``calendar_for`` refuses an owner with no schedule row
+        -- so the refusal did not disappear, it moved to the HARD door, and
+        this SOFT one keeps answering ``None`` as it always has.  Both halves
+        are asserted, because "the refusal moved" is only true if it arrived.
         """
+        user_id = bare_user["user"].id
         with app.app_context():
-            with pytest.raises(ValidationError, match="no budget.pay_schedule"):
-                pay_schedule_service.resolve_shift(bare_user["user"].id)
+            assert pay_schedule_service.resolve_schedule(user_id) is None
+
+            with pytest.raises(PayCalendarError, match="has no pay calendar"):
+                calendar_for(user_id)

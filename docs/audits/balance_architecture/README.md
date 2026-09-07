@@ -18,12 +18,12 @@ migration head are MEASUREMENTS, named by their command rather than copied.
 | | | detail |
 |---|---|---|
 | **just landed** | **X-f3c-3 -- the app says what it cannot explain.** An account's OUTSTANDING DIFFERENCE: its latest asserted balance less its opening equity plus the postings through that day, which is ONE figure and not the per-assertion plug ruling **R-FN** refuses to book (the plugs telescope, so their net is a function of the LAST assertion alone). `_outstanding._books_balance_at` IS X-f3c-5's own balance function, evaluated early, so THE FLIP becomes a re-pointing rather than a rewrite. Beside it, whether an imported statement's LINES account for the span the figure accumulated over -- **R-GY**'s offer gate, reported and never enforced here. Checking reads `$2,370.02` on the dev clone at 2026-09-01, confirmed against the posted ledger's own `account_trueup` net on that account's linked ledger, a producer sharing no code with the seam. **The card says the evidence is NOT there**: 146 days, all imported and all compared, **40 disagreeing**. Two adversarial reviews found a required field breaking six shipped tests, a page about to publish two different money figures under one vocabulary, an unbounded day list off a user-supplied date, and a page assertion that measured nothing | Section 5, X-f3c-3 |
-| **in flight** | **X-f3c-2b-2c** (the account-10 repair), whose act 4b is OPEN -- the developer rejected booking a `$500.00` expense that never happened and neither alternative offered survives the same principle. **X-f3c-2b-3** was MINTED by X-f3c-3 and sequenced behind THE FLIP: nothing bounds an assertion at its account's `opened_on` (**N-400**), and after X-f3c-5 an assertion stops resetting a PLAIN account, so what the bound should refuse is decided against what an assertion then IS. It legalises nothing -- zero rows sit below their books on either database. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 / X-f3c-2b-3 |
+| **in flight** | **X-f3c-2b-2c** (the account-10 repair), RE-RULED 2026-09-05 by **R-BAL3**: act 4b is DELETED rather than answered, both accounts open 2026-03-25 at their banks own closes, and the step waits on `pay_calendar:C18`. **X-f3c-2b-3** was MINTED by X-f3c-3 and sequenced behind THE FLIP: nothing bounds an assertion at its account's `opened_on` (**N-400**), and after X-f3c-5 an assertion stops resetting a PLAIN account, so what the bound should refuse is decided against what an assertion then IS. It legalises nothing -- zero rows sit below their books on either database. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 / X-f3c-2b-3 |
 | **what changed the plan** | **The acceptance act's evidence is weaker than it reads, and X-f3c-3 measured why.** Ruling **R-GY** gates X-f3c-4 on "a span an imported statement reconciles", and the app cannot say which days a statement READ: `statement_imports.period_start` / `period_end` are written as `min`/`max` of the FILE'S LINE DAYS, and no adapter records the period a file declares (**N-434**). So the count is CONSERVATIVE -- it refuses spans the bank has in fact accounted for, never the reverse, which is the safe direction for a money-moving gate -- and every surface says "the LINES of every statement" rather than "every statement". Standing since 2026-08-28: **R-HJ**, a data repair goes through the app's own DOORS and never through a migration writing money rows | Section 4, balance:R-GY / R-HJ |
 | **blocked on you** | **One OPERATOR act gates the money-moving leaves: import the account's own statement history.** Production holds 0 statement imports, 0 bank lines and 0 matches, while the SECU exports the shipped adapter reads sit on disk covering 2026-01-02 to 2026-07-19 -- and X-f3c's correctness is measurable only against them (**N-368**). Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md, N-368 |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it: the recurrence redesign (block 9) and the pay calendar (block 10). **The pay calendar's `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, so whoever builds it must satisfy all three specifications | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md` |
 | **the live lesson** | **A test that passes for the wrong reason is indistinguishable from one that works, and only a mutation separates them.** X-f3c-3's `unchecked` control asserted the right verdict for the wrong term -- its one compared day had no row against its bank line, so `disagreeing` was 1 and the mutation deleting `unchecked` SURVIVED. The same pass caught a page assertion that measured nothing (every money string it looked for was published independently by the balance-history card on that same page, so it passed with the new card's whole figure block deleted) and a query that manufactured its own confirmation (summing BOTH legs of the posted ledger and printing `$0.00`, because both ledger accounts carry the same `account_id`). Three instruments, three green answers, none of them measuring its subject | Section 5, X-f3c-3 |
-| **resuming cold** | Branch from `dev`; whether it leads `main` is a MEASUREMENT (`git log --oneline origin/main..dev`). Read the repo's migration head from `alembic_version` rather than from prose, and rebuild the test template only if you add a migration. **Pass `TEST_DB_PREFIX=<name>` when another checkout may be running the suite**, put the venv on `PATH` (`scripts/test.sh` execs bare `pytest`) and keep it ACTIVE for `git commit` (pre-commit hooks are `language: system`). The registries have their own gate: `pytest tools/plan_gate -c /dev/null -q`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x) | `../../plans/verification.md` |
+| **resuming cold** | Branch from `dev`; whether it leads `main` is a MEASUREMENT (`git log --oneline origin/main..dev`). Read the repo's migration head from `alembic_version` rather than from prose, and and never rebuild the test template by hand -- since `X-br-4` the wrapper bakes it into an image and re-verifies that image on every invocation. **Nothing has to be passed when another checkout is running the suite**: each run gets its own throwaway cluster, so two suites cannot meet (the `TEST_DB_PREFIX` this row used to require is deleted). Put the venv on `PATH` (`scripts/test.sh` runs `pytest` as a backgrounded CHILD, so it needs one) and keep it ACTIVE for `git commit` (pre-commit hooks are `language: system`). The registries have their own gate: `pytest tools/plan_gate -c /dev/null -q`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x) | `../../plans/verification.md` |
 
 Section 5 is the work that remains and Section 4 the rulings that govern it; `archive/` is what
 already shipped. **Every open defect is a row in `../../plans/ledger.md` whose `arc` reads
@@ -263,20 +263,39 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
         * [ ] **X-f3c-2b-2c** the account-10 repair, performed through the app's own
           DOORS and never by a migration writing money rows (**R-HJ**). **It is an
           OPERATOR act, so this leaf is a rehearsed runbook and a re-measurement
-          rather than a code change**, and it cannot run before **X-f3c-2b-2a** has
-          DEPLOYED. **MOVES MONEY.** Its four acts, their figures and their ORDER are
-          ruled and stated ONCE in `../../plans/rulings.md` at **R-HJ**..**R-HM**
-          -- it restates account 10 from the **2026-04-05** `X-f3c-2b-1` left it on
-          to 2026-03-26 at `$5,350.21`; what the disposal of account 2 costs, and
-          why it is two door acts rather than a deletion, is **N-384**'s row.
-          Neither is restated here (`conventions.md` rule 16). What this adds is
-          the one fact neither holds, traced 2026-08-31: **transfer 1 is
-          template-linked** (`transfer_template_id = 1`), so only a SOFT delete is
-          reachable for it too -- the same limitation **N-386** already accepts for
-          transfer 102, now known to bind on both. **The procedure is `account_10_repair_runbook.md` beside this file** -- six acts, 32 door submissions, rehearsed 2026-09-01 and NOT performed.
-          **ACT 4b IS OPEN AND BLOCKS THE PROCEDURE**: the developer rejected booking a `$500.00` expense that never happened (2026-09-01, "I don't like faking or hiding money"), and neither alternative offered survives the same principle -- recording nothing hides the outflow in an equity correction, and **R-HK** rejected the earlier opening on its own grounds. The movement is Checking into another account's OPENING EQUITY, a shape the app cannot record; the from-scratch design is owed before this step can run.
-          **Acceptance is `$0.00` on the opening day the measurement prints SEPARATELY -- the figure act 3 exists to set -- plus ZERO mismatches on every SCORED day for the cash-fold and cutover arms**, rehearsed 14 of 14 on each. The RENDERED arm is excused at 13 of 14: its `$0.32` is **R-HM**'s one-day accrual, a standing `$20.49` over five accounts this step does not own.
-          Those 14 are ELEVEN bank days above the books plus THREE the owner asserted on that the bank never names. NOT the export's 17 stated days: five fall below the books and **R-HG** puts them inside the opening equity, and the opening day is scored by no arm because nothing asserts on it -- so a predicate naming 17 is one no run can meet.
+          rather than a code change.** **MOVES MONEY.**
+          **RE-RULED 2026-09-05 by R-BAL3, which DELETES act 4b rather than answering it.**
+          The `$500` ACH left Checking and reached Fidelity on 2026-03-26, the day BOTH
+          accounts' books opened, so under **R-HG** it was absorbed on both sides and had
+          nowhere true to live -- and Checking's `$689.16` opening is not a fact but the
+          PLUG absorbing that (`$2,746.58` asserted less `$2,057.42` of movements). So BOTH
+          accounts now open **2026-03-25** at their banks' own closes, `$1,234.04` and
+          `$4,850.21`, and the FOUR bank lines of 2026-03-26 are RECORDED on 2026-03-26:
+          the payroll, the Audible debit, the `$500` ACH as transfer 102 re-dated -- **KEPT**,
+          inverting **N-382** -- and a `-$108.87` line the app records nowhere (**BAL-468**).
+          Transfer 1, which points at the retired twin, is the row dropped, so **N-386**'s
+          exposure is `$500.00` rather than `$1,000.00`. The acts, figures and order are
+          stated ONCE in `../../plans/rulings.md` at **R-HJ**, **R-HL**, **R-HM** and
+          **R-BAL3**; account 2's disposal is **N-384**'s row. Neither is restated here
+          (`conventions.md` rule 16).
+          **Two preconditions, and the FIRST has cleared**: the restatement door is DEPLOYED
+          (production `9de30bce` contains `59b485df`, 2026-09-05); the second is
+          `pay_calendar:C18`, which the developer ruled ships first -- a SEQUENCING ruling and
+          not a refusal, since `opening_service` deliberately does not ask the calendar floor
+          and the door was measured accepting 2026-03-25 unextended.
+          **Acceptance is `$0.00` on the opening day the measurement prints SEPARATELY, plus
+          ZERO mismatches on every SCORED day for the cash-fold and cutover arms** -- rehearsed
+          **15 of 15** on each, with the RENDERED arm excused at 14 of 15 for **R-HM**'s
+          one-day accrual. Those 15 are TWELVE bank days above the books plus THREE the owner
+          asserted on that the bank never names.
+          **`account_10_repair_runbook.md` beside this file is SUPERSEDED and carries a banner
+          saying so**; its rewrite is this step's own work and waits on C18, because the
+          rehearsal must run against the calendar the repair is performed on. **Start the rewrite
+          from that banner and the section under it, *What the rewrite must encode*** -- the
+          ordered 36-act sequence as actually driven, the row ids (781, 865, 1069, transfers 1 and
+          102), the two points where the books boundary FORCES the order, the five obligations the
+          neutral review left, and the post-state to reproduce. Everything below that section is
+          the old design and is evidence, never instructions.
         * [x] **X-f3c-2b-2d** `1f0c1cd7` -- the archived drawer card carries the live cell's own **Edit** link, ungated and carrying no `#books-opening` fragment (**R-JT**), so the door **R-IE** gave two entrances has a click path once an account is archived. Closed **N-430**; opened **N-453**, **N-454**.
       * [ ] **X-f3c-2b-3** `feat(cash): a balance is not declared for a day the books
         did not exist on` -- the ASSERTION side of the books boundary, which is
@@ -987,7 +1006,7 @@ section 4, under their unchanged ids.*
   collapsed twelve sites in `routes/transactions/forms.py` into four; `url_converters.py`,
   `routes/transfers/_helpers.py` (which counts its own `request.form` site, so it says 35) and
   `steps.md` state the same number and were moved with it.
-* [ ] **X-br** `container` -- THE FRESH CONTAINER PER RUN (ruled 2026-09-04).
+* [x] **X-br** `6a3eb135` -- THE FRESH CONTAINER PER RUN (ruled 2026-09-04): all four leaves shipped.
   Every fence the suite carries -- the slot, `RESTART_TEST_DB`, the
   live-backend probe, `TEST_DB_PREFIX`, `TEST_TEMPLATE_DATABASE` -- exists
   because ONE postmaster serves every worktree. A cluster per run makes each
@@ -1000,17 +1019,58 @@ section 4, under their unchanged ids.*
   the cache key is an OPTIMISATION and verification runs on EVERY invocation,
   so a stale image is refused rather than trusted.
 * [x] **X-br-2** `7c739495` -- a run gets its own cluster, pytest as a CHILD so there is an after in which to remove it, INT and TERM trapped with EXIT. Opt-in behind `TEST_DB_PER_RUN` until **X-br-3**; measured FASTER than the shared cluster.
-* [ ] **X-br-3** `chore(test): the harness gets a daemon of its own` -- FIRST
-  ACT IS THE DEVELOPER'S and no session can do it: `sudo pacman -S
-  docker-rootless-extras`, since `docs/test-harness-isolation.md` records
-  those packages absent. Then `DOCKER_HOST` selects it, so per-run containers
-  stop landing on the daemon running production. Unblocks the 28
-  `tests/test_deploy` tests that run nowhere locally.
-* [ ] **X-br-4** `refactor(test): delete what the shared postmaster needed` --
-  the payoff: the slot, the probe, `RESTART_TEST_DB`, `TEST_DB_PREFIX`,
-  `TEST_TEMPLATE_DATABASE` and the catalog-fragmentation section all go.
-  Closes **N-457**, whose remedy was always deletion. After **X-br-2** AND
-  **X-br-3**.
+* [x] **X-br-3** `8ee74b95` -- the harness got a daemon of its own; `DOCKER_HOST` selects a rootless
+  one, so per-run containers stop landing on the daemon running production. **25 passed, 3 skipped**,
+  not the 28 predicted, and those 3 are **N-459**/**N-460**, which **X-bs** owns. FOUR of this
+  entry's pre-ship clauses were refuted by the ship -- the install is an AUR `yay -S`, it shipped as
+  `feat(test):`, and `slirp4netns` is absent AND unnecessary under `--network=none`; the corrections
+  are in `docs/test-harness-isolation.md`, which says "Do not restore them here."
+* [x] **X-bu** `142f64cb` -- closed **BAL-462**: deleted `row_valuation.owned_amount` and folded
+  its body into `_amount_source._own_answer`, the spelling the transfer arm has always used. **It
+  grew by one reader under R-BAL4**: the ACTUAL half's fall-through refused an unsettled DERIVED
+  row while the estimate half resolved, so it asks the resolver now. Its obligation on `X-bx` --
+  inherit the last copy of `own_figure(txn.estimated_amount, ...)` -- was DISCHARGED there
+  (`f7b9e094`) by deleting that copy rather than routing it.
+* [ ] **X-bv** `fix(migrations): a per-kind cutover cannot ship a bare declare` -- owns **BAL-463**.
+  `c8f3a5d2e714` refuses to declare unless `rows_the_declare_would_strand` is empty;
+  `d7b2e6c1a483` defines the equivalent `settled_rows_whose_plan_is_not_recoverable` and calls it
+  ONLY from `downgrade()`, its `upgrade()` running `_DECLARE_SQL` bare. **Both patterns are in the
+  tree, so the next per-kind cutover inherits whichever it copies** -- and `X-au-f` and `X-au-m` are
+  the two that remain, which is why this ranks ahead of them. A guard wired only to the downgrade
+  looks like a control in every reading except the one that matters.
+* [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
+  `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
+  so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43
+  future paychecks and destroying the raise and bonus schedule: **-$9,677.29** of projected income,
+  measured by diffing a downgraded clone against a pristine one, 1028 rows compared and 43 not
+  round-tripping. **The cost is GATE INTEGRITY, not rollback**: `shekel-deploy` never invokes
+  `flask db downgrade` -- it re-pins and REFUSES rather than making a second dead container, and a
+  genuine rollback is the automatic pre-deploy dump. What the broken arm actually breaks is
+  `CLAUDE.md` item 7, *migrations tested in both upgrade and downgrade directions*, which passes
+  over a round trip that loses data.
+* [x] **X-bx** `f7b9e094` -- closed **BAL-465**: deleted the fall-through by which
+  `owned_contribution` read `estimated_amount` by hand, renamed it `settled_contribution`, and moved
+  `own_figure` into `_amount_source` as the private `_own_figure`. **Ruling R-BAL5 superseded this
+  entry's own remedy** -- the fall-through is DELETED, not routed to the resolver, because these
+  readers ask what a row's money DID. **A LATER STEP MUST OBEY**: `_amount_source.py` is at 971 of
+  pylint's 1000-line cap, and three modules sit exactly ON it with two more at 999.
+* [ ] **X-bs** `fix(test): a failure must fail, and the last two ports go` -- owns **N-460** and
+  **N-459**, two defects in the same files that HIDE EACH OTHER. Seven `pytest.skip` calls in
+  `test_proxy_trust_and_headers.py` fire on something that RAN AND FAILED rather than on something
+  missing, and the predicate is **did the capability EXIST? skip. Did it exist and FAIL? FAIL** --
+  `:929` leads the row (a container started, then `docker port` unreadable), and `:470` proves it is
+  a PRINCIPLE and not a docker rule, since `shutil.which("openssl")` passed nineteen lines earlier.
+  Two published ports remain, `:911`'s `-p 0:443` and the builder's BAKE container, which needs a
+  host port because the entrypoint's bootstrap `psql` hardcodes `/var/run/postgresql`.
+  **THE ORDER IS LOAD-BEARING -- unmask FIRST, then the ports**: the three tests now skipping ARE
+  the collision and the only witnesses that the laundering arms are wrong, so fixing the ports first
+  leaves the laundering untested with its witnesses gone, which is strictly worse than today.
+* [x] **X-br-4** `6a3eb135` -- the slot, the probe, `RESTART_TEST_DB`, `TEST_DB_PREFIX` and the
+  `test-db` service are gone; the private cluster is the only path. Closed **N-457**, whose failure
+  mode is now unrepresentable. **Its own sentence was WRONG about one of the five fences**: the
+  slot's CONTENTION hazard survives a per-run cluster, so the LOCK went and a NOTE replaced it
+  (**R-BAL1**); the bake port became caller-chosen (**R-BAL2**). **A LATER STEP MUST OBEY**: N-459's
+  remaining site, the deploy fixtures' `-p 0:443`, stays with **X-bs**.
 * [ ] **X-bt** `refactor(test): one producer answers whether a daemon is safe to spawn on` --
   `scripts/test.sh` ASKS the daemon (`docker info`) while `tests/test_deploy/conftest.py` matches a
   PATH ALLOWLIST, and the conftest cannot read the wrapper's answer because in every case it exists
@@ -1019,6 +1079,21 @@ section 4, under their unchanged ids.*
   `conftest.py:69` still carries it. Build ONE predicate both reach and DELETE the allowlist; it must
   separate UNREACHABLE from NOT-ISOLATED (**X-br-3**'s M6) and read `CI` through a vocabulary.
   **Its rank risk**: on GitHub `docker info` says NOT ROOTLESS, throwing 28 tests onto the `CI` arm.
+  **N-461 OCCURRED 2026-09-05, during `X-br-4`**, which is this row's strongest evidence because
+  it is not hypothetical drift: `build_test_db_image.py --force` run BY HAND built and committed
+  its image on the SYSTEM daemon, the script reading no `DOCKER_HOST` while the wrapper sets one.
+  Six `shekel-test-db` images, 489 MB each, oldest 17 h, so it has recurred since `X-br-1`; the
+  bake CONTAINERS were cleaned up and the IMAGES were not, and nothing prunes them. **The session
+  that did it had read the finding an hour earlier.**
+* [ ] **X-by** `fix(test): a worktree's suite runs its own interpreter` -- owns **BAL-469**, the
+  half `X-br-4` did not reach: the per-run cluster made a DATABASE unshareable and the INTERPRETER
+  is still shared. Four of the seven worktrees hold no `.venv`, so `scripts/test.sh:114` falls
+  through to `command -v python3` and their pytest resolves to the main checkout's -- measured with
+  three full suites live at once, each correctly in its own cluster. **The comment is already
+  wrong**: `:259` states every worktree shares one venv, and `shekel-reg2` and `shekel-r7dd` do not,
+  so the step owes that line a correction as well as a fix. **The fence this deletes** is the
+  convention that `requirements.txt` is pinned; peer detection does not depend on the sharing, since
+  it reads `/proc/<pid>/cwd` precisely because argv would name the main checkout.
 * [ ] **X-bg** `feat(transfers): an occurrence that did not happen is not an archive` --
   closes **N-386**, whose row carries the measurement. **The door derives its own
   destructiveness from a link rather than from what the owner said**:

@@ -249,25 +249,35 @@ def get_payment_history(
 
     **It prices its rows through the AMOUNT MODEL, and routing this ONE reader
     is what finding N-266(a) was** (plan step X-au-g-2c).  Every other reader of
-    a loan payment already went through the resolver; this one read
-    :func:`~app.services.row_valuation.owned_contribution`, the accessor whose
-    NAME asserts the row owns its figure, and that accessor REFUSES a row whose
+    a loan payment already went through the resolver; this one read the
+    accessor now called
+    :func:`~app.services.row_valuation.settled_contribution` -- then
+    ``owned_contribution``, a name asserting the row owned its figure -- and
+    that accessor REFUSED a row whose
     plan is DERIVED.  So the loan-side INCOME leg could not be declared derived
     while this call stood -- not because anything was circular, but because one
     reader had never been routed.  The bound is deleted rather than worked
     around: this asks
     :func:`~app.services.cash_ledger.contributions_by_id`, which answers a
-    derived row from its producer and an OWN row from the very column
-    ``owned_contribution`` reads.
+    derived row from its producer and an OWN row from the plan column that
+    accessor then read.
 
     **It is BYTE-IDENTICAL on every row that exists today, and that is a
     measurement rather than an expectation.**  Both accessors gate on
     :func:`~app.services.row_valuation.fixed_contribution` first -- ``0`` for a
     row that does not contribute, the SETTLEMENT for a row whose money has moved
-    -- so they can differ only on an unsettled row, where one reads
-    ``owned_amount`` and the other dispatches.  A row carrying no
-    ``amount_source_id`` dispatches to ``AmountRule.OWN``, whose answer IS
-    ``owned_amount``.  Measured against production 2026-09-01 (stamp
+    -- so they could differ only on an unsettled row, where one read the row's
+    own column and the other dispatches.  A row carrying no
+    ``amount_source_id`` dispatches to ``AmountRule.OWN``, whose answer is that
+    same column read.  *Both sides CALLED ``owned_amount`` until plan step X-bu
+    deleted that accessor, and the identity was STRUCTURAL then -- one function,
+    two callers.  X-bu made it two textual copies over a shared leaf, a cost it
+    took knowingly and named; plan step **X-bx** discharged it by deleting the
+    accessor's copy outright, so the amount model's own arm is the one
+    statement again and the leaf is private to it (``_amount_source
+    ._own_figure``).  The unsettled row this paragraph turns on no longer has
+    two answers to compare: the accessor REFUSES it and only
+    ``contributions_by_id`` answers.*  Measured against production 2026-09-01 (stamp
     ``a4c6f1d92b73``): **all 58 loan-side income shadows** -- 29 Mortgage, 29
     Van Loan -- and all 175 transfers carry ``amount_source_id IS NULL``, so
     every row in this feed takes that arm.  What changes is only what a row the
@@ -295,7 +305,8 @@ def get_payment_history(
     route.**  The line here read *"Defensive: ensure Decimal even if the stored
     column somehow yields a non-Decimal"* -- padding around a raw column read.
     The amount model is TOTAL in its answer: every rule returns a ``Decimal`` or
-    raises, and :func:`~app.services.row_valuation.own_figure` refuses a missing
+    raises, and the OWN rule's leaf (``cash_ledger._amount_source._own_figure``,
+    which plan step X-bx moved there from ``row_valuation``) refuses a missing
     figure rather than substituting one.  A coercion after it would convert a
     state the model refuses into a silent number.
 

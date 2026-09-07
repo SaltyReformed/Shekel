@@ -138,7 +138,7 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from app.services import cash_ledger
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +400,7 @@ def _signed_cash_effect(txn: Transaction) -> Decimal:
         (entry.amount for entry in txn.entries if entry.is_credit),
         Decimal("0"),
     )
-    effect = owned_contribution(txn) - credit_sum
+    effect = settled_contribution(txn) - credit_sum
     return effect if txn.is_income else -effect
 
 

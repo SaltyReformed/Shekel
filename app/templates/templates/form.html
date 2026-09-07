@@ -97,18 +97,16 @@
              The pay-period <select> that used to sit here is gone: it was the
              recurrence's "First paycheck" and nothing else on this kind, since
              a transaction template that does not repeat materialises no row
-             and so needs no period to put one in.  ``bounds_are_derived`` is
-             always false here -- nothing derives a transaction template's
-             window -- and is passed rather than hardcoded so the two forms
-             ask one question. #}
+             and so needs no period to put one in.  Neither row ever locks
+             here -- nothing derives a transaction template's window -- and
+             each row carries its own ``locked`` flag rather than the form
+             hardcoding one, so the two forms ask one question. #}
           {{ recurrence_starts_on(recurrence.picker,
                                    recurrence.selected_start,
                                    recurrence.starts_on_min,
-                                   recurrence.starts_on_max,
-                                   locked=recurrence.bounds_are_derived) }}
+                                   recurrence.starts_on_max) }}
           {{ recurrence_detail_fields(template, include_due_day=true) }}
-          {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end_bound,
-                                     locked=recurrence.bounds_are_derived) }}
+          {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end) }}
           {{ recurrence_preview(url_for('templates.preview_recurrence')) }}
         </div>
       </div>

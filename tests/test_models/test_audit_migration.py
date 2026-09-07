@@ -84,12 +84,28 @@ _DEFAULT_ADMIN_URL = "postgresql:///postgres"
 #: PROCESSES.  Any 64-bit constant works; this one is arbitrary and stable.
 #:
 #: **``xdist_group`` above is not enough, and the gap is a whole class of
-#: shared state the project's isolation knobs cannot reach** (measured
+#: shared state the project's isolation knobs could not reach** (measured
 #: 2026-08-22).  That marker pins this module to one worker WITHIN a run.  A
 #: PostgreSQL role is a CLUSTER object, so it is shared by every database on the
-#: postmaster -- and ``TEST_DB_PREFIX``, which is how two checkouts isolate
-#: themselves, renames DATABASES.  Two suites running side by side therefore
-#: tear this role out from under each other whatever prefix they use.
+#: postmaster -- and the per-checkout prefix that was how two checkouts isolated
+#: themselves renamed DATABASES.  Two suites running side by side therefore
+#: tore this role out from under each other whatever prefix they used.
+#:
+#: **Since ``balance:X-br-4`` the lock guards a state the SANCTIONED DOOR can no
+#: longer reach.**  ``scripts/test.sh`` gives every run a private cluster, so two
+#: suites no longer share a postmaster and the role is per-run by construction;
+#: CI runs one suite on its own throwaway service.  Only a bare ``pytest``
+#: against some shared cluster still reaches the hazard.
+#:
+#: **It is kept on COST, and the distinction matters because the same step
+#: DELETED a fence on the opposite reasoning.**  ``TEST_DB_PREFIX`` went
+#: precisely because only a bare ``pytest`` could still want it, so "a bare
+#: pytest could still hit this" cannot by itself be why the lock stays.  What
+#: separates them is price: the prefix cost a live environment read in three
+#: files that had to agree, while this lock is one advisory acquisition on a
+#: connection the fixture opens anyway, and it fails with a sentence naming the
+#: cause instead of a bare 30-second timeout.  Deleting it is a reasonable
+#: follow-up; do not read its presence as evidence the hazard is live.
 #:
 #: Reproduced deterministically: two prefixed runs of this one module in
 #: parallel produce 2-4 setup ERRORS on each side, every one an
@@ -119,9 +135,9 @@ def _take_the_role_lock(timeout_seconds: int = 30):
       CONNECTION and the session returns its connection to the pool there;
     * a lock taken on the test's OWN database excludes nobody, because
       **PostgreSQL advisory locks are namespaced per DATABASE**.  Two suites
-      isolated by ``TEST_DB_PREFIX`` sit in different databases by
-      construction, so they take the same key in two different lock spaces and
-      both win.
+      sitting in differently-named databases on one postmaster -- which is what
+      the per-checkout prefix produced -- take the same key in two different
+      lock spaces and both win.
 
     The role is a CLUSTER object, so the mutex has to live somewhere every
     process on the postmaster shares.  ``TEST_ADMIN_DATABASE_URL`` is that
@@ -162,10 +178,12 @@ def _take_the_role_lock(timeout_seconds: int = 30):
             raise RuntimeError(
                 "another test process on this postmaster holds the "
                 "cluster-wide 'shekel_app' role. A PostgreSQL role is a "
-                "CLUSTER object, so TEST_DB_PREFIX cannot isolate it and two "
-                "suites running side by side drop it out from under each "
-                "other. Wait for the peer run to finish, or run this module "
-                "alone."
+                "CLUSTER object, so naming the DATABASES apart cannot isolate "
+                "it and two suites on one postmaster drop it out from under "
+                "each other. ./scripts/test.sh gives every run a private "
+                "cluster, so reaching this means something shares a "
+                "postmaster with you -- a bare pytest, most likely. Wait for "
+                "the peer run to finish, or run this module alone."
             )
         time.sleep(0.2)
 

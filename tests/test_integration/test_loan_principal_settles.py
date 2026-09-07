@@ -81,7 +81,7 @@ from tests._test_helpers import (
     create_loan_account,
     loan_params_for,
 )
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 
 
 # -- Hand-computed reference values -----------------------------------------
@@ -494,10 +494,10 @@ class TestLoanPrincipalSettles:
                 )
                 .one()
             )
-            assert owned_contribution(expense_shadow) == PITI_WITH_ESCROW, (
+            assert settled_contribution(expense_shadow) == PITI_WITH_ESCROW, (
                 f"Expected checking expense shadow = {PITI_WITH_ESCROW} "
                 f"(full PITI per E-01); got "
-                f"{owned_contribution(expense_shadow)}."
+                f"{settled_contribution(expense_shadow)}."
             )
 
             balance_after = _resolve_balance(

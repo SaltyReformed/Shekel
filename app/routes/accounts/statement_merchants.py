@@ -9,10 +9,13 @@ not said*, edited one merchant at a time.
 Measured 2026-08-31 on a migrated clone of the developer's own database,
 account 1: **62 merchants, 30 answered and 32 not**.  The review queue asks
 about a merchant only while a line is waiting AND nobody has answered -- 0 rows
-that day; the register shows the 30 answered; the Reconcile receipt offers a
+that day; the register showed the 30 answered; the Reconcile receipt offers a
 rule only for a merchant the pass just filed spending for.  So **32 of 62 --
-every unanswered one -- were on no surface at all**, and ``X-gj-1c`` retires
-the register, which would have taken the other 30 down with it.
+every unanswered one -- were on no surface at all**, and ``X-gj-1c`` retired
+the register, which would have taken the other 30 down with it.  *The queue
+and the register are GONE as of plan step ``bank_import:X-gi-2``, so this page
+and the receipt are the two homes that remain -- which is why R-IC ruled that
+it ships BEFORE the retirement rather than after.*
 
 **IT MOVES NO MONEY and can move none.**  A rule is read to SUGGEST a
 destination; the only thing that records a purchase is an explicit destination
@@ -21,16 +24,18 @@ submitted for one specific line (the developer's ruling of 2026-08-19, ruling
 a sentence saying what it recorded.
 
 **It opens NO door of its own.**  The act is
-:func:`~._statement_rules.record_submitted_rules`, which the review queue, the
-register and the Reconcile receipt already post to, reading the same
+:func:`~._statement_rules.record_submitted_rules`, which the Reconcile
+receipt also posts to, reading the same
 :class:`~app.schemas.validation.merchant_rules.MerchantRuleBatchSchema` off the
-same field names.  FOUR surfaces, one grader, one writer -- so an answer stated
+same field names.  TWO surfaces, one grader, one writer -- so an answer stated
 here cannot be validated differently from the identical answer stated from the
-receipt.
+receipt.  *It said FOUR -- the review queue and the register were the other
+two -- until plan step ``bank_import:X-gi-2`` deleted them.*
 
 **ONE MERCHANT IS ON THE WIRE PER PRESS, and that is the point of the page**
-(developer, 2026-08-31).  The register submits every merchant it renders, and
-this arc has paid three times for the blast radius that gives one press: a
+(developer, 2026-08-31).  The retired register submitted every merchant it
+rendered, and this arc has paid three times for the blast radius that gives
+one press: a
 deactivated template made a select fall onto *I have not said* and the next
 Save silently WITHDREW a rule; an archived category made another fall onto the
 empty option, so a Save aimed at one merchant printed a refusal for a second
@@ -41,9 +46,10 @@ class OUT OF REACH of the rendered page.
 **"Out of reach", not "unconstructible", and the difference was measured.**
 This paragraph claimed the stronger thing until an adversarial review built a
 body naming two merchants and watched one land while the other was refused
-(2026-08-31).  The door is shared with three surfaces that legitimately submit
-many merchants, so it reads every ``rule-<key>`` the body carries; what this
-page changes is what a BROWSER can send from it.  That is the honest claim, and
+(2026-08-31).  The door is shared with the Reconcile receipt, which
+legitimately submits many merchants, so it reads every ``rule-<key>`` the body
+carries; what this page changes is what a BROWSER can send from it.  That is
+the honest claim, and
 it is still the one that matters, because every one of the three defects above
 was reached from a rendered form.
 
@@ -88,7 +94,7 @@ _logger = logging.getLogger(__name__)
 
 #: The partial the page and the answer door both render.  ONE template, so what
 #: htmx swaps in after a POST cannot drift from what a reload shows -- the
-#: discipline all four sibling statement surfaces keep.
+#: discipline every sibling statement surface keeps.
 _BODY = "accounts/_statement_merchants_body.html"
 
 #: The query argument naming which filter is showing.
@@ -118,7 +124,7 @@ SEARCH_MAX_LENGTH: int = 200
 _EDIT_ARG = "edit"
 
 #: The query argument that lifts the row ceiling.  **A PRESENCE test and not a
-#: value one**, exactly as the register's own is: the link either carries the
+#: value one**, exactly as the retired register's own was: the link either carries the
 #: flag or it does not, so there is no spelling of it to parse and no value to
 #: refuse.  What a crafted request can ask for is the page it would get by
 #: following the link the page already renders.
@@ -142,7 +148,7 @@ def _asked() -> DirectoryAsk:
             control that produces it can send
             (:data:`SEARCH_MAX_LENGTH`).  **A 404 rather than a rendered
             apology**, which is the answer
-            :func:`~.statement_reconcile._requested_tab` already gives for the
+            :func:`~._reconcile_query.requested_tab` already gives for the
             same shape: nothing composes this URL by hand, so a value that does
             not resolve is a tampered or stale request rather than a person
             mid-edit.  A well-formed id this account has never seen 404s one
@@ -336,8 +342,8 @@ def _merchants_context(
 def _view_args(asked: DirectoryAsk) -> "dict[str, object]":
     """Return the query arguments that carry this view onto another URL.
 
-    **The view rides on every link and on the door's own action**, which is the
-    register's own rule for its ``all`` flag and is sharper here: without it a
+    **The view rides on every link and on the door's own action**, which was the
+    retired register's own rule for its ``all`` flag and is sharper here: without it a
     Save pressed under the *You have not said* filter answers with the whole
     list, and the page the owner was working reorganises under them.
     ``url_for`` drops a ``None`` argument, so an ordinary render composes the

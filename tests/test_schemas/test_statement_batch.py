@@ -16,10 +16,33 @@ that defect possible:
 * which arm was chosen is a fact the form has to STATE, never one a reader
   infers from an absence.
 
-:func:`~app.schemas.validation.statements.batch_payload` and
-:class:`~app.schemas.validation.statements.StatementBatchSchema` are the two
-halves: the first regroups a flat ``MultiDict`` into acts, and the second is
-the only thing that validates any of it.
+The SCHEMAS are live and this module grades them.  **The READERS beneath it
+changed twice.**  It drove ``batch_payload`` and ``hand_match_payload`` -- the
+review queue's and the workbench's -- until plan step ``bank_import:X-gi-2``
+deleted both pages, which left those two readers with no caller in ``app/``
+(finding **bank_import:BI-479**); ``bank_import:X-gi-3`` deleted them.  Every
+case here now drives the LIVE readers,
+:func:`~app.schemas.validation.statement_reconcile.reconcile_payload` and
+:func:`~app.schemas.validation.statement_reconcile.reconcile_match_payload`.
+
+**The split was not the deletion BI-479 prescribed, and the difference is
+measured.**  That row said the classes reaching the schemas THROUGH the two
+readers go with the readers.  Taken literally that drops live coverage: the
+three cases below on the NEW-ENVELOPE arm and on category optionality grade
+:class:`~app.schemas.validation.statements.StatementPurchaseSchema` loading a
+shape ``tests/test_schemas/test_statement_reconcile.py`` never loads, and they
+are the arc's most expensive defect.  What went is every class and case whose
+SUBJECT was the dead wire shape itself -- ``TestOnlyWhatWasTickedIsAnAct``,
+whose subject is the ``apply`` index, and four cases that file already covers
+through the live reader.
+
+*A first draft of this paragraph also claimed ``TestThePassIsBounded``, and
+both adversarial reviews of that draft measured the claim false: its subject is
+:data:`~app.schemas.validation.statements.MAX_BATCH_ITEMS`, a LIVE rule, and
+the reconcile file exceeds that ceiling with skips and incomes only -- so the
+matches and creations terms of its sum were left unmutated on a door that MOVES
+MONEY.  It is restored below, re-pointed.  The sentence was written last, about
+the author's own deletion, which is the one claim a green suite cannot check.*
 """
 
 from decimal import Decimal
@@ -27,8 +50,6 @@ from decimal import Decimal
 import pytest
 from marshmallow import ValidationError
 from werkzeug.datastructures import MultiDict
-
-from app.services.statement_match import ReviewedRow, RowKind
 
 from app.schemas.validation.merchant_rules import (  # pylint: disable=protected-access
     _MAX_RULE_ITEMS,
@@ -44,11 +65,12 @@ from app.schemas.validation.merchant_rules import (  # pylint: disable=protected
 from app.services.statement_match import RuleAnswer
 from app.schemas.validation.statements import (
     StatementMatchSchema,
-    hand_match_payload,
-    LEAVE_ALONE,
     NEW_ENVELOPE,
     StatementBatchSchema,
-    batch_payload,
+)
+from app.schemas.validation.statement_reconcile import (
+    reconcile_match_payload,
+    reconcile_payload,
 )
 
 
@@ -57,14 +79,20 @@ def _form(pairs):
     return MultiDict(pairs)
 
 
-def _load_hand(form):
-    """Regroup and validate the WORKBENCH's one-group submission.
+#: The bank line every one-card body below is about.  A card's MATCH fields are
+#: keyed by it, which is what makes them one card's rather than a position's.
+_LINE = "11"
 
-    Plan step ``bank_import:X-gf-3b``: the consent box moved to a surface with
-    a door of its own, so the body it rides in is read by
-    :func:`~app.schemas.validation.statements.hand_match_payload` and graded by
-    :class:`~app.schemas.validation.statements.StatementMatchSchema` directly --
-    there is no ordering index, so there is no list of items to index into.
+
+def _load_one_card(form):
+    """Regroup and validate ONE Reconcile card's MATCH tab.
+
+    Plan step ``bank_import:X-gi-3``.  **The live reader**: this went through
+    the workbench's ``hand_match_payload`` until that page's reader was
+    deleted, and through the review queue's ``batch_payload`` before
+    ``bank_import:X-gf-3b``.  The assertions are unchanged both times; what
+    changes is which reader receives the body, and a class grading a payload
+    nothing submits is one that has stopped testing what it names.
 
     Args:
         form: The request's ``MultiDict``.
@@ -75,185 +103,25 @@ def _load_hand(form):
     Raises:
         ValidationError: With marshmallow's own error structure.
     """
-    return StatementMatchSchema().load(hand_match_payload(form))
+    return StatementMatchSchema().load(reconcile_match_payload(form, _LINE))
 
 
 def _load(form):
-    """Regroup and validate one submitted form.
+    """Regroup and validate one submitted pass, through the live reader.
 
     Args:
         form: The request's ``MultiDict``.
 
     Returns:
-        The loaded payload.
+        The loaded payload.  The reader's second return value -- the OK'd
+        cards that named no act -- is
+        ``test_statement_reconcile.TestAPressIsNeverLeftUnanswered``'s subject
+        and is dropped here.
 
     Raises:
         ValidationError: With marshmallow's own error structure.
     """
-    return StatementBatchSchema().load(batch_payload(form))
-
-
-class TestOnlyWhatWasTickedIsAnAct:
-    """Ruling **R-FP** as a property of the PAYLOAD rather than of a click.
-
-    Every proposal on the page renders its ids, ticked or not, because a
-    browser has no way to render them conditionally.  What separates the two is
-    the checkbox, which a browser submits ONLY when it is ticked.
-    """
-
-    def test_an_unticked_proposal_contributes_no_act(self):
-        """Its ids are on the wire and it is still not applied."""
-        loaded = _load(_form([
-            ("csrf_token", "x"),
-            ("apply", "0"),
-            ("match-0-line_ids", "11"),
-            ("match-0-rows", "transaction:42:-180.00:1"),
-            # Rendered, submitted, NOT ticked.
-            ("match-1-line_ids", "12"),
-            ("match-1-rows", "transaction:43:-180.00:1"),
-        ]))
-
-        assert loaded["matches"] == [
-            {
-                "line_ids": [11],
-                "rows": [ReviewedRow(
-                    kind=RowKind.TRANSACTION, row_id=42,
-                    cash_amount=Decimal("-180.00"), version_id=1,
-                )],
-                # A proposal carries no accepted difference: the app's own
-                # tiers propose only where the two sides agree exactly (plan
-                # step bank_import:X-f6d-4).
-                "residual": None,
-                # ...and names no member for one either.  The batch form has
-                # no attribution control: only the Reconcile card's MATCH pane
-                # renders one, and only for a group (plan step
-                # bank_import:X-gj-3a).
-                "difference_on": None,
-            },
-        ]
-
-    def test_a_GROUP_keeps_every_id_it_submitted_twice(self):
-        """``request.form["k"]`` returns the FIRST value; a group has several.
-
-        A route handed the raw ``MultiDict`` refuses a two-row group as "not a
-        valid list", which is total in a browser and invisible to any test that
-        passes a real list.
-
-        **Both KINDS ride ONE repeated field since plan step
-        ``bank_import:X-f6d-3``**, which is what makes that the only place the
-        multi-value bug can hide: the two id lists it replaced could not
-        desynchronise from each other because neither carried the row's
-        reviewed state, and a state carried in a THIRD parallel list could.
-        """
-        loaded = _load(_form([
-            ("apply", "0"),
-            ("match-0-line_ids", "11"),
-            ("match-0-rows", "transaction:42:-180.00:1"),
-            ("match-0-rows", "transaction:43:-20.00:4"),
-            ("match-0-rows", "purchase:7:-11.50:2"),
-        ]))
-
-        assert loaded["matches"][0]["rows"] == [
-            ReviewedRow(
-                kind=RowKind.TRANSACTION, row_id=42,
-                cash_amount=Decimal("-180.00"), version_id=1,
-            ),
-            ReviewedRow(
-                kind=RowKind.TRANSACTION, row_id=43,
-                cash_amount=Decimal("-20.00"), version_id=4,
-            ),
-            ReviewedRow(
-                kind=RowKind.PURCHASE, row_id=7,
-                cash_amount=Decimal("-11.50"), version_id=2,
-            ),
-        ]
-
-    def test_items_arrive_in_the_order_the_screen_rendered_them(self):
-        """The receipt reads down the page, so the pass has to run down it.
-
-        The tick values are submitted in DOM order, but a crafted request need
-        not be -- and a sort that assumed numbers would raise on a token that
-        is not one.
-        """
-        loaded = _load(_form([
-            ("apply", "10"), ("apply", "2"), ("apply", "1"),
-            ("match-1-line_ids", "101"),
-            ("match-2-line_ids", "102"),
-            ("match-10-line_ids", "110"),
-        ]))
-
-        assert [item["line_ids"] for item in loaded["matches"]] == [
-            [101], [102], [110],
-        ]
-
-    def test_a_non_numeric_tick_does_not_raise(self):
-        """A crafted ``apply`` value is data, not a crash.
-
-        It names no rendered item, so it contributes an act naming nothing --
-        which the accept door's own ``_reject_empty_side`` refuses with a
-        sentence, where an exception inside a sort would be a 500 on a door an
-        ordinary crafted POST reaches.
-        """
-        loaded = _load(_form([("apply", "not-an-index")]))
-
-        assert loaded["matches"] == [
-            {
-                "line_ids": [], "rows": [],
-                "residual": None, "difference_on": None,
-            },
-        ]
-
-    @pytest.mark.parametrize("token, why", [
-        ("\N{SUPERSCRIPT TWO}", "isdigit() is True and int() raises"),
-        ("\N{ARABIC-INDIC DIGIT ONE}\N{ARABIC-INDIC DIGIT TWO}",
-         "a non-ASCII digit script int() DOES convert, to another id"),
-        ("9" * 4301, "past CPython's 4,300-digit conversion limit"),
-    ])
-    def test_a_tick_that_str_isdigit_ACCEPTS_does_not_raise(self, token, why):
-        """The branch the case above cannot reach, and it was a live 500.
-
-        ``"not-an-index"`` takes the LEXICAL branch, so it grades nothing about
-        the numeric one -- and the numeric one is where the defect was:
-        ``str.isdigit()`` is true for 888 characters, 128 of which make
-        ``int()`` raise, and true for a digit run longer than CPython will
-        convert.  ``app/error_handlers.py`` registers no ``ValueError`` arm, so
-        ``apply=%C2%B2`` was an unhandled 500 on the door that applies a whole
-        reviewed pass.  This project owns that fact in
-        :mod:`app.utils.digit_strings` and this function was not using it.
-        Found by adversarial security review 2026-08-19.
-
-        Args:
-            token: A spelling ``str.isdigit`` accepts.
-            why: What is wrong with it, for the failure message.
-        """
-        loaded = _load(_form([
-            ("apply", token), (f"match-{token}-line_ids", "5"),
-        ]))
-
-        assert loaded["matches"] == [
-            {
-                "line_ids": [5], "rows": [],
-                "residual": None, "difference_on": None,
-            },
-        ], why
-
-    def test_a_destination_KEY_that_isdigit_accepts_does_not_raise(self):
-        """The SECOND caller of the same sort key, asked its own question.
-
-        The creation half sorts the ``destination-`` suffixes, so a crafted
-        one reaches the identical branch -- and a fix applied to one caller
-        proves nothing about the other.  The key is refused as an id by the
-        schema, which is the designed answer; what must not happen is a raise
-        before any grading runs.
-        """
-        with pytest.raises(ValidationError) as raised:
-            _load(_form([
-                ("destination-\N{SUPERSCRIPT TWO}", NEW_ENVELOPE),
-                ("envelope_name-\N{SUPERSCRIPT TWO}", "X"),
-                ("category_id-\N{SUPERSCRIPT TWO}", "3"),
-            ]))
-
-        assert "line_id" in str(raised.value)
+    return StatementBatchSchema().load(reconcile_payload(form)[0])
 
 
 class TestTheDifferenceTheOwnerAccepted:
@@ -264,46 +132,43 @@ class TestTheDifferenceTheOwnerAccepted:
     all.  What this grades is that the three states are distinguishable on the
     wire and that a hostile spelling cannot reach the door as a figure.
 
-    **It grades ``hand_match_payload``, not ``batch_payload``, since plan step
-    ``bank_import:X-gf-3b``.**  Every case here used to send ``apply=hand`` and
-    ``match-hand-*`` -- a shape no rendered control emits any more, because the
-    consent box moved to the workbench and its door reads flat field names.
-    The assertions are unchanged; the reader beneath them is the one that now
-    receives this body.  A class grading a payload nothing submits is a class
-    that has stopped testing what it names, which is what an adversarial
-    test-quality review found on 2026-08-28.
+    **It grades ``reconcile_match_payload`` since plan step
+    ``bank_import:X-gi-3``**, and ``hand_match_payload`` before that, and
+    ``batch_payload``'s ``match-hand-*`` before that -- each time because the
+    surface that emitted the old shape was deleted.  The assertions are
+    unchanged every time; the reader beneath them is the one that now receives
+    this body.  A class grading a payload nothing submits is a class that has
+    stopped testing what it names, which is what an adversarial test-quality
+    review found on 2026-08-28.
     """
 
     def test_an_unticked_group_carries_NONE(self):
         """Absence is a state the SCHEMA names, not one the reader invents.
 
-        ``batch_payload`` omits the key rather than sending ``None``, so the
+        The reader omits the key rather than sending ``None``, so the
         default lives in exactly one place.
         """
-        loaded = _load_hand(_form([
-            ("line_ids", "11"),
-            ("rows", "transaction:42:-180.00:1"),
+        loaded = _load_one_card(_form([
+            ("rows-11", "transaction:42:-180.00:1"),
         ]))
 
         assert loaded["residual"] is None
 
     def test_a_ticked_group_carries_the_figure_it_showed(self):
         """A signed decimal, read into a ``Decimal`` for the door to compare."""
-        loaded = _load_hand(_form([
-            ("line_ids", "11"),
-            ("rows", "transaction:42:2473.38:1"),
-            ("rows", "transaction:43:100.00:1"),
-            ("residual", "0.05"),
+        loaded = _load_one_card(_form([
+            ("rows-11", "transaction:42:2473.38:1"),
+            ("rows-11", "transaction:43:100.00:1"),
+            ("residual-11", "0.05"),
         ]))
 
         assert loaded["residual"] == Decimal("0.05")
 
     def test_a_NEGATIVE_difference_is_read_as_one(self):
         """The bank took more than the rows say, which is the expense arm."""
-        loaded = _load_hand(_form([
-            ("line_ids", "11"),
-            ("rows", "transaction:42:-180.00:1"),
-            ("residual", "-0.06"),
+        loaded = _load_one_card(_form([
+            ("rows-11", "transaction:42:-180.00:1"),
+            ("residual-11", "-0.06"),
         ]))
 
         assert loaded["residual"] == Decimal("-0.06")
@@ -333,10 +198,9 @@ class TestTheDifferenceTheOwnerAccepted:
             why: What is wrong with it, for the failure message.
         """
         with pytest.raises(ValidationError) as caught:
-            _load_hand(_form([
-                    ("line_ids", "11"),
-                ("rows", "transaction:42:-180.00:1"),
-                ("residual", spelling),
+            _load_one_card(_form([
+                        ("rows-11", "transaction:42:-180.00:1"),
+                ("residual-11", spelling),
             ]))
 
         assert "residual" in caught.value.messages, why
@@ -352,10 +216,9 @@ class TestTheDifferenceTheOwnerAccepted:
         door's own figure, and the door says so
         (``test_residual.TestTheFigureTheOwnerAcceptedIsReconciled``).
         """
-        loaded = _load_hand(_form([
-            ("line_ids", "11"),
-            ("rows", "transaction:42:-180.00:1"),
-            ("residual", "0.054"),
+        loaded = _load_one_card(_form([
+            ("rows-11", "transaction:42:-180.00:1"),
+            ("residual-11", "0.054"),
         ]))
 
         assert loaded["residual"] == Decimal("0.054")
@@ -368,10 +231,9 @@ class TestTheDifferenceTheOwnerAccepted:
         ``disabled`` in lockstep so no browser sends this -- and a body that
         does would otherwise 400 the WHOLE pass over a field nobody filled in.
         """
-        loaded = _load_hand(_form([
-            ("line_ids", "11"),
-            ("rows", "transaction:42:-180.00:1"),
-            ("residual", ""),
+        loaded = _load_one_card(_form([
+            ("rows-11", "transaction:42:-180.00:1"),
+            ("residual-11", ""),
         ]))
 
         assert loaded["residual"] is None
@@ -384,43 +246,56 @@ class TestTheDifferenceTheOwnerAccepted:
         gets written -- which is why this reads with ``get`` rather than
         growing a list the schema would then have to reconcile.
         """
-        loaded = _load_hand(_form([
-            ("line_ids", "11"),
-            ("rows", "transaction:42:-180.00:1"),
-            ("residual", "0.05"),
-            ("residual", "-999.00"),
+        loaded = _load_one_card(_form([
+            ("rows-11", "transaction:42:-180.00:1"),
+            ("residual-11", "0.05"),
+            ("residual-11", "-999.00"),
         ]))
 
         assert loaded["residual"] == Decimal("0.05")
 
 
 
-class TestTheDestinationSelectIsTheTick:
+class TestWhatTheDestinationSelectNAMES:
     """The developer's ruling of 2026-08-19, and the X-f6a-3b defect's fix.
 
-    One control says which of three things the owner meant.  Its default is the
-    do-nothing arm, so a pass carrying forty untouched selects records nothing.
+    One control says which of three things the owner meant, and this grades
+    what :class:`~app.schemas.validation.statements.StatementPurchaseSchema`
+    loads for each: an existing envelope, the NEW arm named rather than
+    inferred, and a category that is the DOOR's question on one arm and absent
+    on the other.  ``grep -rn StatementPurchaseSchema tests/`` reaches this
+    class and nothing else.
+
+    **It was ``TestTheDestinationSelectIsTheTick`` until plan step
+    ``bank_import:X-gi-3``**, and the rename is a correction rather than
+    tidying: on the retired review queue the select WAS the tick, and on the
+    Reconcile page it is not -- the OK checkbox is
+    (:data:`~app.schemas.validation.statement_reconcile._OK_FIELD`).  The case
+    that graded the select-is-the-tick half went with that reader, because
+    ``test_statement_reconcile.TestNothingIsAnActWithoutItsOwnOK`` grades the
+    live spelling of it.  A class named for a rule its own subject no longer
+    implements is the shape adversarial review 2026-09-06 named.
     """
 
     @staticmethod
     def _line_fields(line_id, destination, name="Walmart", category="3"):
-        """Return exactly what one creatable row submits."""
+        """Return exactly what one OK'd ADD card submits.
+
+        **The OK checkbox and the VERB radio travel with it** since plan step
+        ``bank_import:X-gi-3`` re-pointed this class at the live reader: on the
+        Reconcile page the tick is the checkbox and the act is the radio, where
+        on the retired review queue the destination select was both.  That
+        difference is ``test_statement_reconcile``'s own subject; what this
+        class grades is what the SCHEMA does with the destination once a card
+        is OK'd, which is unchanged.
+        """
         return [
+            ("ok", str(line_id)),
+            (f"verb-{line_id}", "add"),
             (f"destination-{line_id}", destination),
             (f"envelope_name-{line_id}", name),
             (f"category_id-{line_id}", category),
         ]
-
-    def test_the_DEFAULT_records_nothing_even_though_it_submits(self):
-        """The whole point: an untouched line is not an act.
-
-        Its name box and its category select are both submitted -- the browser
-        renders them -- and neither may be read as a destination.  That reading
-        is exactly what made the existing-envelope arm unreachable.
-        """
-        loaded = _load(_form(self._line_fields(88, LEAVE_ALONE)))
-
-        assert loaded["creations"] == []
 
     def test_an_ENVELOPE_id_names_the_existing_arm(self):
         """The arm that was dead in a browser for one leaf."""
@@ -459,6 +334,32 @@ class TestTheDestinationSelectIsTheTick:
             "category_id": None,
         }]
 
+    def test_each_line_carries_its_OWN_fields_by_id(self):
+        """Two cards' fields may not cross, which is what keying by id buys.
+
+        **No counterpart anywhere in the suite**, measured by adversarial
+        review 2026-09-06: ``test_statement_reconcile`` stages three cards but
+        asserts only their ORDER, and asserts every field of exactly one card.
+        A reader that paired the two lists by position rather than by id would
+        pass both of those and fail this.
+        """
+        pairs = (
+            self._line_fields(88, "2225", name="Walmart", category="3")
+            + self._line_fields(9, NEW_ENVELOPE, name="Lowe's", category="4")
+        )
+
+        loaded = _load(_form(pairs))
+
+        by_line = {item["line_id"]: item for item in loaded["creations"]}
+        assert by_line[88] == {
+            "line_id": 88, "destination": 2225,
+            "envelope_name": "Walmart", "category_id": 3,
+        }
+        assert by_line[9] == {
+            "line_id": 9, "destination": NEW_ENVELOPE,
+            "envelope_name": "Lowe's", "category_id": 4,
+        }
+
     def test_an_EXISTING_envelope_needs_no_category_at_all(self):
         """The control for the rule above, and the defect it replaced.
 
@@ -470,48 +371,6 @@ class TestTheDestinationSelectIsTheTick:
 
         assert loaded["creations"][0]["category_id"] is None
 
-    def test_each_line_carries_its_OWN_fields_by_id(self):
-        """Not paired arrays, which depend on the document's own ordering.
-
-        ``reconcile.py``'s ``settled_amount-<id>`` boxes are keyed this way for
-        the reason its comment gives: two lists arriving in the same order is a
-        property of the page rather than of the form.
-        """
-        loaded = _load(_form(
-            self._line_fields(88, NEW_ENVELOPE, name="Lowes", category="3")
-            + self._line_fields(99, "2225", name="Target", category="4")
-        ))
-
-        by_line = {item["line_id"]: item for item in loaded["creations"]}
-        assert by_line[88]["envelope_name"] == "Lowes"
-        assert by_line[88]["destination"] == NEW_ENVELOPE
-        assert by_line[99]["envelope_name"] == "Target"
-        assert by_line[99]["destination"] == 2225
-
-    def test_the_lines_arrive_in_LINE_order_and_not_field_order(self):
-        """The receipt reads down the page, so the pass has to run down it.
-
-        Sorting the raw field names put line 100 between 10 and 2, because
-        ``destination-100`` sorts lexically -- and the screen renders these in
-        bank-line order.  Nothing about the money depends on it (two creations
-        never interact), which is exactly why a wrong order would have gone
-        unnoticed while the receipt claimed to read down the page.
-        """
-        pairs = []
-        for line_id in (2, 10, 9, 100):
-            pairs += self._line_fields(line_id, NEW_ENVELOPE, category="3")
-
-        loaded = _load(_form(pairs))
-
-        assert [item["line_id"] for item in loaded["creations"]] == [
-            2, 9, 10, 100,
-        ]
-
-    def test_a_destination_that_names_no_row_is_refused(self):
-        """The id half is as strict as :class:`RowId` (finding **N-141**)."""
-        with pytest.raises(ValidationError):
-            _load(_form(self._line_fields(88, "007")))
-
 
 class TestThePassIsBounded:
     """A crafted submission is bounded by nothing the screen is bounded by.
@@ -519,31 +378,79 @@ class TestThePassIsBounded:
     An import may carry 20,000 lines (``_secu_csv.MAX_LINES``), so an account
     can in principle offer more acts than one request has time for: measured,
     an item costs about 43 ms against a 120 s gunicorn timeout.
+
+    **It grades the MATCHES and CREATIONS terms of that ceiling**, and it is
+    here rather than beside the skip and income terms in
+    ``test_statement_reconcile.TestTheBOUNDCountsSkipsToo`` because those two
+    cases never exceed the bound with either of these kinds: delete
+    ``len(data.get("matches", ()))`` from
+    :meth:`~app.schemas.validation.statements.StatementBatchSchema
+    ._reject_oversized_pass`'s sum and that file stays green.  Both adversarial
+    reviews of plan step ``bank_import:X-gi-3`` measured that independently,
+    against a first draft of this step that deleted this class with the retired
+    ``batch_payload`` it used to drive.  Its SUBJECT is a live schema rule, so
+    it is re-pointed rather than deleted -- the same test the two classes above
+    are kept by.
     """
 
-    def test_a_pass_over_the_ceiling_is_REFUSED_and_says_so(self):
-        """Never silently truncated -- half a pass applied without a word is
-        worse than a refusal the owner can act on."""
-        pairs = [("apply", str(index)) for index in range(501)]
-        pairs += [
-            (f"match-{index}-line_ids", str(index + 1))
-            for index in range(501)
-        ]
+    @staticmethod
+    def _matches(count, first_line=1):
+        """Return *count* OK'd MATCH cards, as a browser submits them.
 
+        Args:
+            count: How many cards.
+            first_line: The bank line id the run starts at.
+
+        Returns:
+            The form pairs.
+        """
+        pairs = []
+        for index in range(count):
+            line = str(first_line + index)
+            pairs += [
+                ("ok", line),
+                (f"verb-{line}", "match"),
+                (f"rows-{line}", f"transaction:{first_line + index}:1.00:1"),
+            ]
+        return pairs
+
+    @staticmethod
+    def _creations(count, first_line):
+        """Return *count* OK'd ADD cards, as a browser submits them.
+
+        Args:
+            count: How many cards.
+            first_line: The bank line id the run starts at.
+
+        Returns:
+            The form pairs.
+        """
+        pairs = []
+        for index in range(count):
+            line = str(first_line + index)
+            pairs += [
+                ("ok", line),
+                (f"verb-{line}", "add"),
+                (f"destination-{line}", NEW_ENVELOPE),
+                (f"envelope_name-{line}", "X"),
+                (f"category_id-{line}", "3"),
+            ]
+        return pairs
+
+    def test_a_pass_over_the_ceiling_is_REFUSED_and_says_so(self):
+        """Never silently truncated.
+
+        Half a pass applied without a word is worse than a refusal the owner
+        can act on.
+        """
         with pytest.raises(ValidationError) as raised:
-            _load(_form(pairs))
+            _load(_form(self._matches(501)))
 
         assert "at most 500" in str(raised.value)
 
     def test_a_pass_at_the_ceiling_still_loads(self):
         """The control: the bound is a ceiling, not an off-by-one."""
-        pairs = [("apply", str(index)) for index in range(500)]
-        pairs += [
-            (f"match-{index}-line_ids", str(index + 1))
-            for index in range(500)
-        ]
-
-        loaded = _load(_form(pairs))
+        loaded = _load(_form(self._matches(500)))
 
         assert len(loaded["matches"]) == 500
 
@@ -551,19 +458,10 @@ class TestThePassIsBounded:
         """What a request's time budget cares about is the SUM.
 
         Two lists with their own ceilings would admit twice the work either
-        one allows.
+        one allows -- and this is the case that grades the CREATIONS term
+        beside the matches one.
         """
-        pairs = [("apply", str(index)) for index in range(300)]
-        pairs += [
-            (f"match-{index}-line_ids", str(index + 1))
-            for index in range(300)
-        ]
-        for line_id in range(1000, 1300):
-            pairs += [
-                (f"destination-{line_id}", NEW_ENVELOPE),
-                (f"envelope_name-{line_id}", "X"),
-                (f"category_id-{line_id}", "3"),
-            ]
+        pairs = self._matches(300) + self._creations(300, first_line=1000)
 
         with pytest.raises(ValidationError) as raised:
             _load(_form(pairs))
@@ -577,28 +475,22 @@ class TestTheBatchSchemaRefusesWhatItDoesNotDeclare:
     :class:`~app.schemas.validation._helpers.BaseSchema` drops unknown keys so
     a form's ``csrf_token`` does not have to be declared -- correct for a
     payload that comes straight off a form.  This one never sees a form:
-    :func:`batch_payload` has already turned one into two lists, so a key this
-    schema does not declare is a regrouper and a schema that disagree, on the
-    payload carrying every act in a pass.
+    :func:`~app.schemas.validation.statement_reconcile.reconcile_payload` has
+    already turned one into these lists, so a key this schema does not declare
+    is a regrouper and a schema that disagree, on the payload carrying every
+    act in a pass.
+
+    *Its second case went at plan step ``bank_import:X-gi-3``: it asserted that
+    the regrouper's own output loads, which
+    ``test_statement_reconcile.TestTheSKIPVerbReachesTheSchema
+    .test_the_batch_schema_LOADS_what_this_reader_produced`` already says of
+    the LIVE regrouper.*
     """
 
     def test_an_undeclared_key_is_refused(self):
+        """A key the schema does not declare is refused rather than dropped."""
         with pytest.raises(ValidationError):
             StatementBatchSchema().load({"matches": [], "smuggled": [1]})
-
-    def test_the_regroupers_own_output_is_accepted(self):
-        """The control: the two halves agree about the shape."""
-        loaded = StatementBatchSchema().load(batch_payload(_form([
-            ("csrf_token", "x"),
-        ])))
-
-        # SPELLED OUT rather than derived from the schema's own field list:
-        # deriving it would make this a tautology, and the whole point is that
-        # a THIRD kind of act (ruling **bank_import:R-GW**'s incomes) added on one side
-        # and not the other is caught here.
-        assert loaded == {
-            "matches": [], "creations": [], "incomes": [], "skips": [],
-        }
 
 
 class TestTheRuleSectionOnTheWire:
@@ -787,8 +679,11 @@ class TestTheRuleSectionOnTheWire:
     def test_a_submission_over_the_CEILING_is_refused_and_says_so(self):
         """The rule ceiling had no test at either tier.
 
-        Its sibling ``_MAX_BATCH_ITEMS`` is graded twice; this one could be
-        raised to a billion with the suite green.  It is a SEPARATE bound on
+        Its sibling :data:`~app.schemas.validation.statements.MAX_BATCH_ITEMS`
+        is graded by ``TestThePassIsBounded`` above and by
+        ``test_statement_reconcile.TestTheBOUNDCountsSkipsToo``, which between
+        them reach all four of its terms; this one could be raised to a billion
+        with the suite green.  It is a SEPARATE bound on
         purpose -- that one paces money acts, each running a settle door, and
         this one paces small writes over a set the account's own lines bound --
         so it needs its own control rather than inheriting that one's.

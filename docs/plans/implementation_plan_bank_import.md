@@ -137,25 +137,24 @@ what it leaves a LATER step is on that step's own entry.
 - [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the DECOMPOSED
       parent of the exception queue's retirement, split 2026-09-05 at its own census into five
       leaves. **The census may delete nothing it has not shown orphaned**, because a route that
-      reads dead is not one no door reaches (**N-112**'s shape). Measured on `cef75a42`: three route
-      modules over nine endpoints, seven templates, `statement_review.js`, `.stmt-pick-list`,
-      `_queue.py`, `_register.py`, four test modules -- and SIX live inbound links to repoint FIRST.
-      *It VOIDED its own headline*: 287 matches, none naming two bank lines, measures an import
-      feature the developer had abandoned, so no step may cite it.
-  - [ ] **X-gi-1** `feat(import): the links point at Reconcile, and MATCH works unscripted` -- the
-        FOUR repoints left, plus **R-KA**: `?open=<line_id>` renders ONE card's candidate rows
-        server-side. Rendering ALL of them is 143,298 bytes of a 238,645-byte page, which is
-        **N-374** re-opened; one card is at most 15 rows. `X-gm` took the grid pair.
-        **The parent's "SIX" was a count with no census under it and it enumerated FIVE.** The
-        census, 2026-09-05, over every `url_for` to the three retiring endpoints on a template
-        `X-gi-2` keeps: `statements.html` 45, 88, 375, and `_statement_reconcile_macros.html:138`.
-        JS carries none. **THE FOURTH IS R-KA, NOT A REPOINT**: it is the Reconcile page's own
-        `<noscript>` Build link, the scriptless path for the hand-built group match **R-GJ** leaves
-        as a parked card payment's ONLY arm (`$7,412.94`), pointing into the workbench `X-gi-2`
-        deletes -- so it becomes `?open=<line_id>` or the arm goes. Had `X-gi-2` shipped on the old
-        enumeration that class would have lost its only act and looked like a clean deletion.
-  - [ ] **X-gi-2** `refactor(import): review, register and workbench retire as pages` -- **R-HU**'s
-        deletion, once nothing links in. Closes **N-404**, whose remedy was always this.
+      reads dead is not one no door reaches (**N-112**'s shape). Its link and page counts are
+      SPENT -- `X-gi-1` repointed and `X-gi-2` deleted -- and its headline was VOIDED by **R-KC**,
+      so what survives is the rule, not the numbers; `X-gi-3`..`X-gi-5` carry their own.
+  - [x] **X-gi-1** `8543c80f` -- the four remaining links point at Reconcile and the MATCH pane
+        works unscripted behind `?open=<line_id>` (**R-KA**, **R-BI1**), offering EVERY unexplained
+        row because that render has no search. Both obligations it left `X-gi-2` are DISCHARGED:
+        that step pruned the macro and left the file, and re-owned **BI-478** to `X-gi-2a`.
+  - [x] **X-gi-2** `b462af07` -- **R-HU**'s deletion. Closed **N-404**; PRUNED `match_by_hand` per
+        `X-gi-1`'s obligation; moved the `not_shown_alone` render coverage onto the Reconcile pane;
+        filed **BI-479** and **BI-480**, both owned by `X-gi-3`.
+  - [ ] **X-gi-2a** `fix(import): a refused Apply keeps the owner's ticks` -- **BI-478**, which that
+        row measures; given its own leaf by the developer 2026-09-06 so `X-gi-2` stayed a pure
+        deletion. `reconcile_page`'s fifth parameter becomes the ASK rather than the line id, and
+        the route builds it through `reconcile_match_payload` when a body is present -- which is
+        what the live fragment already does, so this is ONE producer reaching a second caller rather
+        than a second spelling. **It moves no money**: the cost is RE-TICKING.
+        **X-gi-2 armed nothing here** -- the pane behaved this way before it -- but the workbench
+        whose identical defect made rule 6 defer this is gone, so the parity argument is spent.
   - [ ] **X-gi-3** `refactor(import): the queue's model has no reader` -- `_queue.py` whole
         (`_SAID`, `_notes_for`, the evidence grouping), `_register.py`, four `ReviewSet` members,
         their re-exports, `test_queue.py`, and `test_rules.py`'s queue half.
@@ -165,7 +164,11 @@ what it leaves a LATER step is on that step's own entry.
         `books_already_hold` -- but its `match_by_hand` does not, its sole importer being the review
         body `X-gi-2` deletes. A LIVE file holding a DEAD macro whose `url_for` names a deleted
         endpoint; Jinja never evaluates an uncalled macro, so nothing raises until someone calls it
-        and gets a `BuildError`.
+        and gets a `BuildError`. **DISCHARGED**: `X-gi-2` pruned that macro in the commit that
+        deleted its importer, and left this step **BI-479** and **BI-480** instead -- the two dead
+        form readers with their helpers and the half of `test_statement_batch.py` that reaches the
+        LIVE schemas only through them, and two `ReviewBounds` properties. Those rows carry the
+        census; the classes grading the schemas DIRECTLY stay.
   - [ ] **X-gi-4** `fix(import): three findings the deletion does not close` -- **N-470**'s two
         unrendered receipt figures, **N-405**'s CSP-dead inline style, **N-402**'s 12 uncovered
         route decorators. **N-405's ledger diagnosis was WRONG**: djlint H021 runs in pre-commit and
@@ -180,11 +183,9 @@ what it leaves a LATER step is on that step's own entry.
       `impossible_day_count` and two SQL restatements. **A LATER STEP OBEYS TWO**: the walk decides
       what the PROPOSER is given, so removing a line reprices another's row (**R-GD(a)**), and
       `to_explain` counts CARDS where the badge counts LINES -- `X-gn` keeps those equal.
-- [ ] **X-gn** `feat(import): a match may name a second bank line` -- **R-KC**. The workbench is the
-      only door to a multi-line group and `X-gi-2` deletes it; the developer accepted that gap. The
-      AXIS stays: `MatchSides.of` sums over lines, `MatchDays.posted_first` exists only for it,
-      `test_accept.py` covers it, **R-JY**'s model keeps `group_id`, and
-      `uq_statement_match_members_line` forbids faking it as two matches.
+- [ ] **X-gn** `feat(import): a match may name a second bank line` -- **R-KC**, which carries the
+      argument and the three facts keeping the AXIS. `X-gi-2` deleted the workbench, the only door
+      to a multi-line group, and the developer accepted that gap: this restores it card-side.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.

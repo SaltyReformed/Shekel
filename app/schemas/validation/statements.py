@@ -27,7 +27,6 @@ from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
     _normalize_empty_inputs,
-    order_token_key,
 )
 from app.services.statement_import import supported_sources
 from app.services.statement_match import (
@@ -107,15 +106,6 @@ _MAX_MATCH_MEMBERS: int = 100
 #: in two rather than having half of what they ticked dropped without a word.
 MAX_BATCH_ITEMS: int = 500
 
-#: The prefix a submitted match item carries.  Its INDEX is the rendered
-#: position of the proposal it came from, so the ids of the item the owner
-#: ticked travel with the tick rather than being re-derived server-side -- the
-#: POST records exactly the ids the form submitted (ruling **R-FP**), and a
-#: proposal re-derived after the fact could differ from the one that was
-#: reviewed.
-_MATCH_PREFIX = "match-"
-
-
 #: What the destination select submits when the owner picks "a new envelope".
 #: A NAMED arm rather than an absent id, and that is plan step X-f6a-3c-2's
 #: correction to the shape: the arm was "``transaction_id`` is missing" until
@@ -134,7 +124,9 @@ _MATCH_PREFIX = "match-"
 
 #: What that select submits when the owner has not picked anything, which is
 #: its DEFAULT.  The line is left alone: it is not an act, so it never reaches
-#: the schema -- :func:`batch_payload` drops it.  **The default is the
+#: the schema --
+#: :func:`~app.schemas.validation.statement_reconcile.reconcile_payload`
+#: drops it.  **The default is the
 #: do-nothing arm on purpose** (developer ruling, 2026-08-19): the select used
 #: to default to the first envelope in the line's pay period, which on the
 #: developer's own data has already CLOSED at a fixed figure on 78 of 91
@@ -583,8 +575,9 @@ class StatementBatchSchema(Schema):
     **It is a plain :class:`marshmallow.Schema`, not a
     :class:`~app.schemas.validation._helpers.BaseSchema`.**  That base exists to
     drop a FORM's ``csrf_token`` with ``unknown = EXCLUDE``; this schema never
-    sees a form, because :func:`batch_payload` has already turned one into
-    these two lists.  Inheriting it would silently swallow a key this schema
+    sees a form, because
+    :func:`~app.schemas.validation.statement_reconcile.reconcile_payload` has
+    already turned one into these lists.  Inheriting it would silently swallow a key this schema
     does not declare, on the one payload that carries every act in a pass.
 
     **The ceiling is on the SUM and is stated ONCE**
@@ -666,251 +659,21 @@ class StatementBatchSchema(Schema):
             )
 
 
-#: The prefix a submitted destination carries, keyed by its BANK LINE's id
-#: rather than by a position.  ``reconcile.py``'s ``settled_amount-<id>`` boxes
-#: are keyed the same way and for the same reason its comment gives: paired
-#: arrays would depend on the browser submitting several lists in the same
-#: order, which is a property of the document rather than of the form.
-#: What a line's RECORD-AS-INCOME checkbox is named with (ruling **bank_import:R-GW**,
-#: plan step ``bank_import:X-gf-1``).  A checkbox rather than a select, because
-#: there is nothing to choose between: an income row is filed against no
-#: container, so the only question is whether to record it.  **A browser
-#: submits a checkbox only when it is TICKED**, so an untouched control does
-#: not appear in the form at all -- which is what makes R-FP's "nothing is
-#: applied that the owner did not accept" structural here rather than a
-#: default that has to be got right, the way :data:`LEAVE_ALONE` is for the
-#: select beside it.
-_INCOME_PREFIX = "record_income-"
-
-#: What a submitted destination carries, keyed by its BANK LINE's id.  **Read
-#: by TWO surfaces' readers** -- the review queue's here and the Reconcile
-#: page's in :mod:`.statement_reconcile` -- so it is stated once rather than
-#: spelled twice, which is this package's own root cause 1.  Keyed
+#: What a submitted destination carries, keyed by its BANK LINE's id.  Keyed
 #: that way rather than by a rendered position because a destination names one
 #: LINE, and paired arrays would depend on the browser submitting several lists
 #: of equal length -- which a crafted body need not do.
+#:
+#: **It had TWO readers and now has ONE**, and the placement argument that put
+#: it here is spent: it was stated here rather than twice because the review
+#: queue's ``_creation_items`` read it beside the Reconcile page's
+#: :func:`~.statement_reconcile.reconcile_payload`, and plan step
+#: ``bank_import:X-gi-3`` deleted the first.  These three constants now have
+#: exactly one consumer and it is the OTHER module, so rule 14's *move the
+#: leaf* says they belong beside it.  **Not moved here**, because a constant
+#: move is a change to two modules' surfaces and this step is a deletion --
+#: adversarial review 2026-09-06 named it, and it is recorded rather than
+#: silently left.
 DESTINATION_PREFIX = "destination-"
 ENVELOPE_NAME_PREFIX = "envelope_name-"
 CATEGORY_PREFIX = "category_id-"
-
-
-def _match_items(form) -> list:
-    """Return the match items the form ticked, in rendered order.
-
-    A match item is applied only when its index appears in ``apply``, which is
-    what a ticked checkbox submits.
-
-    **Every index it reads is now a rendered POSITION**, and until plan step
-    ``bank_import:X-gf-3b`` one was not: the hand-build form shared this
-    screen and submitted the reserved index ``"hand"``.  That form is a surface
-    of its own now with a door of its own
-    (:func:`hand_match_payload`), so this function reads the reviewed pass and
-    nothing else.  :func:`~app.schemas.validation._helpers.order_token_key`
-    still tolerates a non-numeric token, and must: that is what stops a crafted
-    ``apply=%C2%B2`` raising inside the sort.
-
-    Args:
-        form: The request's ``MultiDict``.
-
-    Returns:
-        One ``{"line_ids": [...], "rows": [...]}`` per ticked index,
-        ascending, plus ``"residual"`` where that item submitted one.  Raw
-        strings: the schema is what reads them, and a ``rows`` member is one
-        token carrying a row's kind, id, reviewed figure and reviewed revision
-        together (plan step ``bank_import:X-f6d-3``) rather than two lists a
-        body could submit at different lengths.
-
-        **``residual`` is OMITTED rather than sent as ``None``** when the item
-        did not carry one, so the schema's own ``load_default`` decides what
-        absence means -- one statement of that default, in the schema, rather
-        than one here and one there.  It is read with ``get`` and not
-        ``getlist`` because it is ONE consent per item: a body sending two
-        keeps the first, and whichever it keeps still has to equal the
-        difference the door derives, so no repeated key can choose what gets
-        written.
-
-        **An EMPTY consent is untouched, not malformed**, which is this
-        module's own founding principle: a browser submits every control it
-        renders, so an untouched one must be recognisable as untouched.  A
-        body carrying one would otherwise 400 the WHOLE pass over a field
-        nobody filled in.  Found by adversarial security review 2026-08-23.
-
-        **The surfaces no longer render this field one way.**  Until plan step
-        ``bank_import:X-gj-1b`` every one of them rendered the box ``value=""``
-        and ``disabled`` in lockstep, so a browser could not send an empty
-        one.  That is now true only of the arm where nothing is ticked: a
-        proposal card carries the figure as a HIDDEN input, and a panel whose
-        sides agree carries ``"0.00"`` the same way.  The emptiness rule holds
-        for the same reason it always did -- it is about what a body may say,
-        not about which control said it.
-    """
-    getlist = form.getlist
-    items = []
-    for raw in sorted(set(getlist("apply")), key=order_token_key):
-        item = {
-            "line_ids": getlist(f"{_MATCH_PREFIX}{raw}-line_ids"),
-            "rows": getlist(f"{_MATCH_PREFIX}{raw}-rows"),
-        }
-        residual = form.get(f"{_MATCH_PREFIX}{raw}-residual")
-        if residual:
-            item["residual"] = residual
-        items.append(item)
-    return items
-
-
-def _creation_items(form) -> list:
-    """Return the destinations the form named, in bank-line order.
-
-    A line is an act only when its destination select names one: its default
-    is :data:`LEAVE_ALONE`, which is dropped here rather than reaching the
-    schema.  That is what makes "the select IS the tick" true -- there is no
-    state in which a line the owner did not choose a place for is recorded.
-
-    **The order is the LINE's, not the field name's.**  Sorting the raw field
-    names put line 100 between 10 and 2, because ``destination-100`` sorts
-    lexically -- and the receipt this order becomes is meant to read down the
-    page, which the screen renders in bank-line order.  So the KEY is what is
-    sorted, through the same
-    :func:`~app.schemas.validation._helpers.order_token_key` the ticks use.
-
-    Args:
-        form: The request's ``MultiDict``.
-
-    Returns:
-        One ``{"line_id": ..., "destination": ..., "envelope_name": ...,
-        "category_id": ...}`` per named line, ascending by its line key.  Raw
-        strings: the schema is what reads them.
-    """
-    keys = [
-        field[len(DESTINATION_PREFIX):] for field in form.keys()
-        if field.startswith(DESTINATION_PREFIX)
-    ]
-    items = []
-    for key in sorted(keys, key=order_token_key):
-        destination = form[f"{DESTINATION_PREFIX}{key}"]
-        if destination == LEAVE_ALONE:
-            continue
-        items.append({
-            "line_id": key,
-            "destination": destination,
-            "envelope_name": form.get(f"{ENVELOPE_NAME_PREFIX}{key}", ""),
-            "category_id": form.get(f"{CATEGORY_PREFIX}{key}", ""),
-        })
-    return items
-
-
-def _income_items(form) -> list:
-    """Return the inflow lines the form ticked, in bank-line order.
-
-    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  **Presence IS the
-    tick**: a browser submits a checkbox only when it is ticked, so an item
-    here exists exactly when the owner ticked one, and there is no do-nothing
-    value to drop the way :data:`LEAVE_ALONE` is dropped from the select
-    beside it.
-
-    **The VALUE is never read**, and that is deliberate rather than lax: the
-    only fact the wire carries is which line was ticked, which is in the field
-    NAME, so a submitted value has nothing to say and reading one would invent
-    a second thing a forged body could vary.
-
-    **The order is the LINE's**, through the same
-    :func:`~app.schemas.validation._helpers.order_token_key` the ticks and
-    the destinations use, because the receipt this order becomes is meant to
-    read down the page.
-
-    Args:
-        form: The request's ``MultiDict``.
-
-    Returns:
-        One ``{"line_id": ...}`` per ticked line, ascending by its line key.
-        A raw string: the schema is what reads it.
-    """
-    keys = [
-        field[len(_INCOME_PREFIX):] for field in form.keys()
-        if field.startswith(_INCOME_PREFIX)
-    ]
-    return [{"line_id": key} for key in sorted(keys, key=order_token_key)]
-
-
-def hand_match_payload(form) -> dict:
-    """Return one hand-built group as :class:`StatementMatchSchema` loads it.
-
-    Plan step ``bank_import:X-gf-3b``, ruling **bank_import:R-HC**.  The
-    workbench posts ONE group -- its whole submission IS the match -- so this
-    reads three flat keys and there is no ordering token to sort, no prefix to
-    strip and no list of items to build.
-
-    **THE ABSENT INDEX IS THE POINT, and it deletes a money-correctness hazard
-    rather than moving it.**  This group rode :func:`_match_items` while the
-    hand-build form shared a page with the reviewed pass, under the reserved
-    index ``"hand"``.  That index was never a label: proposal 0 emits
-    ``apply=0`` and ``match-0-line_ids``, this form emitted the same shape, and
-    the only thing keeping one submission's ticks out of the other's was that
-    they were separate ``<form>`` elements -- **a property of the document**.
-    Adding an ``hx-include``, or merging the two controls, would have unioned
-    proposal 0's hidden row ids with this group's ticks into ONE act naming
-    rows the owner never grouped.  Two surfaces posting to two doors share no
-    namespace, so there is nothing left for that hazard to be expressed in.
-
-    **It reuses :class:`StatementMatchSchema` rather than declaring a schema of
-    its own.**  A hand-built group and a ticked proposal are the same ACT -- a
-    correspondence between bank lines and rows, with an accepted difference --
-    and they reach the same door (``_accept.record_match``).  A second schema
-    would be a second statement of what a match submission is, free to grade
-    ``residual`` less strictly than the one beside it, which is exactly what
-    :attr:`StatementMatchSchema.residual` records having cost once.
-
-    **It carries no validation of its own**, for the reason
-    :func:`batch_payload` states: every value it moves is a raw submitted
-    string, so a forged id and an unparseable figure are the schema's to refuse.
-
-    Args:
-        form: The request's ``MultiDict``.
-
-    Returns:
-        ``{"line_ids": [...], "rows": [...]}``, plus ``"residual"`` where the
-        consent box carried one.  **Omitted rather than sent as ``None``** when
-        it did not, so the schema's own ``load_default`` is the one statement
-        of what absence means -- and an EMPTY consent is untouched rather than
-        malformed, which is :func:`_match_items`' own founding principle: a
-        body carrying an empty one must not 400 the act over a field nobody
-        filled in.  This surface still renders the box ``value=""`` and
-        ``disabled`` in lockstep when there is nothing ticked; since plan step
-        ``bank_import:X-gj-1b`` it renders a HIDDEN ``"0.00"`` where the two
-        sides agree, because the door checks the figure a match says it was
-        reviewed against whether or not there is anything to permit.
-    """
-    item = {
-        "line_ids": form.getlist("line_ids"),
-        "rows": form.getlist("rows"),
-    }
-    residual = form.get("residual")
-    if residual:
-        item["residual"] = residual
-    return item
-
-
-def batch_payload(form) -> dict:
-    """Return one reviewed pass as the payload :class:`StatementBatchSchema` loads.
-
-    **The form shape lives HERE, beside the schema that grades it**, for the
-    reason :func:`~app.schemas.validation._helpers.form_payload` gives: a route
-    that listed the field names itself is a route that can be extended with a
-    fourth kind of item and not updated.
-
-    **It carries no validation of its own.**  Every value it moves is a raw
-    submitted string, so a forged index, a forged id and an unparseable
-    destination are all the schema's to refuse -- one grader, in one place,
-    with one error structure the route already knows how to render.
-
-    Args:
-        form: The request's ``MultiDict``.
-
-    Returns:
-        ``{"matches": [...], "creations": [...], "incomes": [...]}``.
-    """
-    return {
-        "matches": _match_items(form),
-        "creations": _creation_items(form),
-        "incomes": _income_items(form),
-    }

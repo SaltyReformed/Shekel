@@ -28,8 +28,18 @@
 #      fail-closed against the redis service -- starting db alone
 #      would 500 every non-exempt request)
 #
-# Test database only (scripts/test.sh restarts it only on RESTART_TEST_DB=1):
-#   docker compose -f docker-compose.dev.yml up -d test-db
+# There is no test database here.  ``scripts/test.sh`` starts a throwaway
+# postgres container per run from the image ``scripts/build_test_db_image.py``
+# bakes, on a rootless docker daemon and reached over a unix socket, and
+# removes it afterwards (plan step ``balance:X-br-4``).  The long-lived
+# ``shekel-dev-test-db`` service that used to sit here was deleted with the
+# coordination machinery it required: a hygiene restart, a live-backend probe,
+# a per-worktree template name and a per-worktree worker-database prefix.  A
+# bare ``pytest`` therefore has no local database and fails at connect, which
+# is the intended fail-closed shape -- run the suite through the wrapper.
+# The btrfs subvolume that service mounted, ``/var/lib/shekel-test-pgdata``,
+# is now unreferenced; removing it is a host operation
+# (``sudo btrfs subvolume delete``) and is deliberately not automated here.
 
 name: shekel-dev
 
@@ -71,147 +81,13 @@ services:
       # the per-major-version subdirectory live inside the named
       # volume and stays correct across future major-version bumps
       # (PG 19, PG 20...) without another mount-path edit.  Mirrors
-      # the same migration applied to the ``test-db`` tmpfs in
-      # Phase 2a (see the test-db service comment block below).
+      # the same migration applied to the test-db cluster in Phase 2a
+      # (that service was deleted at ``balance:X-br-4``; its own comment
+      # block carried the fuller version of this note).
       - pgdata:/var/lib/postgresql
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shekel_user -d shekel"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  test-db:
-    # Same digest as the db service above (and prod) -- see the comment
-    # there.  The test template is built against this exact PG build.
-    image: postgres:18-alpine@sha256:96d56f7f57c6aacd1fcb908bc83b345ec5f83231ee486dd66a1baadce274db88
-    container_name: shekel-dev-test-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: shekel_user
-      POSTGRES_PASSWORD: shekel_pass
-      POSTGRES_DB: shekel_test
-    ports:
-      # Loopback-only bind (audit finding F-057 / Commit C-35).  See
-      # the db service above for the full rationale; the test DB has
-      # the same exposure profile and the same fix.
-      - "127.0.0.1:5433:5432"
-    # btrfs-backed PGDATA: the test cluster's data directory lives
-    # on a host btrfs subvolume bind-mounted into the container so
-    # PostgreSQL 18's ``CREATE DATABASE ... TEMPLATE ... STRATEGY
-    # FILE_COPY`` can use the kernel's ``FICLONE`` reflink ioctl to
-    # clone the template's data files as a constant-time metadata
-    # copy.  Pairs with the ``file_copy_method=clone`` GUC at the
-    # bottom of the command: list below; both must be in place for
-    # the reflink path to engage.  Replaces the Phase 1a tmpfs mount
-    # (Phase 3a of
-    # docs/audits/test_improvements/test-performance-implementation-plan.md);
-    # see boringSQL's instant-clone benchmark for the order-of-
-    # magnitude effect (6 GB clones in ~212 ms on a reflink
-    # filesystem vs ~67 s on PG 17 without the path):
-    # https://boringsql.com/posts/instant-database-clones/.
-    #
-    # The subvolume MUST be a btrfs subvolume (not a Docker named
-    # volume or a tmpfs).  Docker's overlay2 storage driver does
-    # NOT preserve ``FICLONE`` through its copy-on-write layer, so
-    # a named volume would silently fall back to byte-by-byte copy
-    # (seconds per clone, not milliseconds).  Verify the subvolume
-    # is on btrfs with ``stat -f /var/lib/shekel-test-pgdata``
-    # reporting ``Type: btrfs``.
-    #
-    # Operator setup (one-time, requires sudo on the host):
-    #
-    #   sudo btrfs subvolume create /var/lib/shekel-test-pgdata
-    #   sudo chown 70:70 /var/lib/shekel-test-pgdata
-    #
-    # ``uid=70``/``gid=70`` matches the ``postgres`` user inside the
-    # alpine image (verified via
-    # ``docker run --rm postgres:18-alpine id postgres``); postgres
-    # refuses to start when PGDATA is owned by anyone else.
-    #
-    # Trade-offs vs the Phase 1a tmpfs mount this replaces:
-    #
-    #   * Data persists across container restarts (and host reboots).
-    #     A developer can inspect ``pg_data`` after a crash without
-    #     losing it; removing the cluster's state requires
-    #     ``sudo btrfs subvolume delete /var/lib/shekel-test-pgdata``.
-    #   * Reads and writes go to disk rather than RAM, but the
-    #     reflink-backed ``CREATE DATABASE`` path is strictly faster
-    #     than the TRUNCATE+reseed cycle it supersedes (constant-
-    #     time clone vs O(catalog rewrite per table)).
-    #   * ``fsync=off`` / ``synchronous_commit=off`` /
-    #     ``full_page_writes=off`` remain correct -- the cluster is
-    #     still throwaway; a crash that loses the last committed
-    #     transactions is recovered by re-running the test, not by
-    #     replaying WAL.  DO NOT copy any of these settings to the
-    #     ``db`` service above; that cluster holds development data
-    #     that must survive a host reboot.
-    #
-    # Mount target is the PARENT directory ``/var/lib/postgresql``,
-    # not the legacy ``/var/lib/postgresql/data`` path used under
-    # PG 16.  PG 18+ docker-library images (docker-library/postgres
-    # PR #1259) switched to the pg_ctlcluster layout: PGDATA
-    # defaults to ``/var/lib/postgresql/$PG_MAJOR/docker`` (verified
-    # via ``docker run --rm postgres:18-alpine env | grep PGDATA``
-    # which prints ``/var/lib/postgresql/18/docker``) and the
-    # entrypoint actively refuses to start when a legacy mount
-    # exists at ``/var/lib/postgresql/data``.  Mounting the parent
-    # path lets the per-major-version subdirectory live inside the
-    # subvolume without the legacy-layout guard rail firing, and
-    # stays correct across future major-version bumps (PG 19, PG
-    # 20...) without another mount-path edit.
-    volumes:
-      - /var/lib/shekel-test-pgdata:/var/lib/postgresql
-      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-    # First triplet: kill zombie transactions from crashed test runs
-    # after 30s, prevent infinite lock/statement waits, and keep TCP
-    # connections alive so the OS detects dead clients.  Middle
-    # triplet (``fsync`` / ``synchronous_commit`` / ``full_page_writes``)
-    # are the non-durable knobs documented in the volumes comment
-    # above, and they are what makes the per-test drop+reclone cheap:
-    # each cycle forces cluster-wide checkpoints, and with ``fsync``
-    # on they are fsync'd (measured 1618 ms per cycle vs 31 ms here).
-    #
-    # **``file_copy_method=clone`` is currently INERT and kept only
-    # so this note is not silently lost.**  It is consumed by
-    # ``CREATE DATABASE ... STRATEGY FILE_COPY`` and nothing else,
-    # and ``tests/conftest.py`` stopped issuing that form on
-    # 2026-08-18: ``FILE_COPY`` forces three checkpoints per cycle
-    # against ``WAL_LOG``'s one, which cost this cluster nothing and
-    # cost CI's durable one 20x -- see
-    # ``_clone_worker_database``'s docstring for the measurements.
-    # The reflink saves the byte copy, not the checkpoints, and at
-    # this template's 12 MB it measured no faster than a plain copy
-    # even on btrfs.  Dropping this line (and, with it, the btrfs
-    # subvolume requirement in the volumes comment above) is a
-    # cleanup worth taking deliberately, not as a side effect.
-    # GUC is per-cluster -- adding it to the ``db`` service above
-    # would be inert (that cluster never invokes
-    # ``CREATE DATABASE TEMPLATE``) and is intentionally omitted.
-    command:
-      - postgres
-      - -c
-      - idle_in_transaction_session_timeout=30000
-      - -c
-      - lock_timeout=10000
-      - -c
-      - statement_timeout=30000
-      - -c
-      - tcp_keepalives_idle=60
-      - -c
-      - tcp_keepalives_interval=10
-      - -c
-      - tcp_keepalives_count=3
-      - -c
-      - fsync=off
-      - -c
-      - synchronous_commit=off
-      - -c
-      - full_page_writes=off
-      - -c
-      - file_copy_method=clone
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U shekel_user -d shekel_test"]
       interval: 10s
       timeout: 5s
       retries: 5

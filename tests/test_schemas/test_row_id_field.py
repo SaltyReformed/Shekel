@@ -416,7 +416,6 @@ _NON_ROW_ID_INTEGERS = frozenset({
     # ``ck_recurrence_rules_positive_max_occurrences``.
     "max_occurrences",
     "max_term_months",
-    "merit_raise_horizon_years",
     "months",
     "new_term_months",
     # ``nominal_day`` is the DAY a rule means when its first occurrence's own
@@ -440,6 +439,13 @@ _NON_ROW_ID_INTEGERS = frozenset({
     "sort_order",
     "tax_year",
     "term_months",
+    # ``terminal_year`` is a CALENDAR YEAR, not a row: the last year a
+    # recurring raise is believed to happen (plan step salary:S3-c, ruling
+    # R-SAL11).  2000-2100 here, mirroring
+    # ``ck_salary_raises_valid_terminal_year`` and its sibling on the
+    # effective year, and refused again by that pair plus
+    # ``ck_salary_raises_terminal_year_not_before_effective``.
+    "terminal_year",
 })
 
 

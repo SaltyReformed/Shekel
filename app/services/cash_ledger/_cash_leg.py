@@ -28,7 +28,7 @@ second time by its envelope's 08-13 close, reading the whole of that day
 `$12.79` low (finding **N-274**).
 
 **Where ``gross`` comes from is the CALLER'S, and it must be.**  A settled row
-owns its figure; a projected one is worth what settling it would book, which is
+RECORDED its figure; a projected one is worth what settling it would book, which is
 ``transaction_service.settle_amount`` for an ordinary row and
 ``transfer_service.settle_amount`` for a shadow leg.  Asking this module to
 choose between them would put the settle verbs' own partition in a third place,
@@ -43,7 +43,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from app.models.transaction import Transaction
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.utils.balance_predicates import is_balance_contributing
 
 
@@ -184,23 +184,54 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     writer resolves a target only on the settle side), which is exactly why it
     would have waited to be discovered by a third.  A function whose answer is
     correct only because every caller happens to pre-filter is a contract nobody
-    can see; this one is total instead.  **The same gate governs the row's
+    can see; this gate is stated here instead.  **The same gate governs the row's
     PURCHASES** (ruling R-FM): a non-contributing row's purchases post nothing
     either, in the walk (:func:`~._events.settled_cash_facts`) and in the ledger
     (``posting_service``), so the zero here is the whole family's zero rather
     than the parent leg's alone.
 
+    **IT IS NOT TOTAL OVER STATUS, AND SINCE PLAN STEP X-bx IT SAYS SO.**  The
+    paragraph above used to call this function total, and on the contributing
+    gate it is; on the SETTLED one it never was.  A row that contributes and has
+    not settled has no confirmed cash effect to report, and this used to answer
+    one anyway -- :func:`~app.services.row_valuation.settled_contribution` fell
+    through to the row's plan column, so a Projected bill was valued as a
+    movement that had not happened (finding **BAL-465**).  It refuses now.  The
+    guard below reads ``is_balance_contributing``, which does NOT test status,
+    so what makes this correct is the refusal one call down rather than a
+    pre-filter each caller remembers.  **Three of the six callers restrict the
+    row set**: the walk (:func:`~._events.settled_cash_facts`) loads settled
+    statuses in SQL; ``posting_service._settled_target`` is reached only when
+    ``sync_transaction_postings`` was passed ``settled=True``, and all FOURTEEN
+    of its call sites derive that flag from the row rather than assert it
+    (thirteen as ``txn.status.is_settled``, one as ``txn.status_id in
+    settled_ids``); and ``statement_match._candidates._price`` branches on
+    ``txn.status.is_settled``.  **The other three CATCH the refusal instead**
+    -- ``_accepted_view._accepted_row``, ``_release._subject_removal`` and
+    ``._container_removal`` -- because they render the review page, where a
+    raise would strand the account (finding **N-302**).  Catching is not
+    pre-filtering: on those three the refusal changes an ANSWER, and each is
+    graded by a case added at plan step X-bx.
+
     Args:
         txn: The transaction whose confirmed cash effect to value.  A
             non-contributing row (soft-deleted, Credit, or Cancelled) returns
-            ``0.00`` whatever entries it carries.
+            ``0.00`` whatever entries it carries; a CONTRIBUTING row must have
+            settled, or this refuses.
 
     Returns:
         The signed confirmed cash effect as a ``Decimal``.
+
+    Raises:
+        AmountUnresolvable: From
+            :func:`~app.services.row_valuation.settled_contribution`, when the
+            row contributes and has not settled -- so it recorded nothing and
+            there is no confirmed effect to report -- and when a settled row's
+            record is incomplete.
     """
     if not is_balance_contributing(txn):
         return Decimal("0.00")
-    return cash_leg_of(txn, owned_contribution(txn))
+    return cash_leg_of(txn, settled_contribution(txn))
 
 
 def off_statement_sum(txn) -> Decimal:
@@ -231,8 +262,9 @@ def cash_leg_of(txn, gross: Decimal) -> Decimal:
     TYPE* -- is stated once for a settled row and a projected one alike.
 
     **The two differ only in where ``gross`` comes from, and they must.**  A
-    settled row OWNS its figure (:func:`~app.services.row_valuation.owned_contribution`,
-    which REFUSES a derived row rather than answering ``None`` into a money
+    settled row RECORDED its figure
+    (:func:`~app.services.row_valuation.settled_contribution`, which REFUSES a
+    row that has not settled rather than pricing its PLAN into a money
     path); a projected row's is what settling it would book, which is
     ``transaction_service.settle_amount`` for an ordinary row and
     ``transfer_service.settle_amount`` for a shadow leg.  Asking this function

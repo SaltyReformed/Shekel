@@ -146,14 +146,24 @@ class TaxTypeEnum(enum.Enum):
 class RaiseTypeEnum(enum.Enum):
     """Salary-raise type values.
 
-    Selects how a scheduled salary raise is treated by the retirement
-    salary projection's merit horizon (Gate A ruling 3 / fork F4): a
-    ``cola`` recurring raise extrapolates all the way to the retirement
-    date (nominal-frame consistency), while ``merit`` and ``custom``
-    raises apply only through the merit-horizon cutoff and then stop
-    (their earned effect persists in the base).  The 2-year paycheck
-    pipeline never consults this discrimination -- it applies every raise
-    uniformly via ``salary_raises.apply_raises``.  Values match
+    **Display-only TO THE PROJECTIONS since plan step salary:S3-c**, which
+    is narrower than "display-only" and an adversarial review of that step is
+    why the sentence says so.  No projection branches on it -- every engine
+    applies every raise uniformly via ``salary_raises.apply_raises`` and
+    stops each one at its own stored ``salary.salary_raises.terminal_year``.
+    It is still LOGIC to the storage tier: ``raise_type_id`` is a member of
+    ``uq_salary_raises_profile_type_year_month``, so the type decides whether
+    a second raise on the same (profile, year, month) can be written at all,
+    and ``salary.add_raise`` has a whole duplicate-handling branch keyed on
+    that constraint.
+
+    It selected how the retirement salary projection treated a raise until
+    then (Gate A ruling 3 / fork F4): a ``cola`` recurring raise
+    extrapolated to the retirement date while ``merit`` and ``custom``
+    raises stopped at ``auth.user_settings.merit_raise_horizon_years``.
+    Ruling **R-SAL11** (developer, 2026-09-05) deleted that setting -- the
+    horizon a recurring raise decays over is a fact on the RAISE -- and with
+    it the last reader of this discrimination.  Values match
     ``ref.raise_types.name``; resolved to IDs via
     ``ref_cache.raise_type_id`` and compared by ID, never by name.
     """

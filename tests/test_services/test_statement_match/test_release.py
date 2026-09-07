@@ -33,7 +33,7 @@ from sqlalchemy import event
 
 from app import ref_cache
 from app.enums import SettlementBasisEnum, StatusEnum
-from app.exceptions import ValidationError
+from app.exceptions import AmountUnresolvable, ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -42,6 +42,7 @@ from app.services import (
     entry_service,
     posting_service,
     statement_match,
+    status_seam,
     transaction_service,
 )
 from app.services.balance_at import BalanceContext
@@ -640,8 +641,11 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         What the SCREEN does with that is ruling **bank_import:R-GY**'s and it
         changed at plan step ``bank_import:X-gf-2``: the press still confirms,
         because it still destroys the record of the correspondence, and the
-        dialog's wording is what varies (``test_statement_register
-        .TestEveryUndoPressConfirms``).  What is asserted here is the
+        dialog's wording is what varies (``test_statement_reconcile
+        .TestTheSettledTabsAreWhereAnActIsFoundAndUndone
+        .test_an_undo_the_door_would_REFUSE_says_so_and_offers_no_dialog``,
+        where that coverage sits now that plan step ``bank_import:X-gi-2`` has
+        deleted the register).  What is asserted here is the
         DERIVATION under it -- this undo would take back no row and move no
         money -- which is what that wording is chosen from.
         """
@@ -786,7 +790,7 @@ class TestTheAcceptedFoldDoesNotScaleWithTheAccount:
         listener = lambda *args, **kwargs: seen.append(1)  # noqa: E731
         event.listen(db.engine, "before_cursor_execute", listener)
         try:
-            statement_match.register_set(
+            statement_match.accepted_register(
                 seed_user["user"].id, seed_user["account"].id, None,
             )
         finally:
@@ -1057,12 +1061,12 @@ class TestTheRegisterBoundsWhatItRenders:
         for ordinal in range(3):
             self._an_act(seed_user, ordinal)
 
-        register = statement_match.register_set(
+        register = statement_match.accepted_register(
             seed_user["user"].id, seed_user["account"].id, 1,
         )
 
-        assert len(register.accepted.shown) == 1
-        assert register.accepted.withheld_count == 2
+        assert len(register.shown) == 1
+        assert register.withheld_count == 2
 
     def test_an_act_that_NO_LONGER_HOLDS_is_shown_however_old(
         self, app, db, seed_user,
@@ -1088,30 +1092,30 @@ class TestTheRegisterBoundsWhatItRenders:
         )
         db.session.flush()
 
-        register = statement_match.register_set(
+        register = statement_match.accepted_register(
             seed_user["user"].id, seed_user["account"].id, 1,
         )
 
-        shown = [group.match_id for group in register.accepted.shown]
+        shown = [group.match_id for group in register.shown]
         assert doomed.match_id in shown, (
             "the act that no longer holds was withheld by the bound"
         )
         assert shown[0] == doomed.match_id, (
             "an act that no longer holds must sort above the ones that do"
         )
-        assert register.accepted.withheld_count == 1
+        assert register.withheld_count == 1
 
     def test_NO_bound_renders_the_whole_record(self, app, db, seed_user):
         """What the *show everything* link asks for."""
         for ordinal in range(3):
             self._an_act(seed_user, ordinal)
 
-        register = statement_match.register_set(
+        register = statement_match.accepted_register(
             seed_user["user"].id, seed_user["account"].id, None,
         )
 
-        assert len(register.accepted.shown) == 3
-        assert register.accepted.withheld_count == 0
+        assert len(register.shown) == 3
+        assert register.withheld_count == 0
 
 
 class TestTheDeleteRemovesTheRowItWasHANDED:
@@ -1261,3 +1265,116 @@ class TestTheDeleteRemovesTheRowItWasHANDED:
         )
 
         assert first == replace(first, subject=other)
+
+
+class TestAnUnpriceableSubjectSaysWhyItIsUnpriceable:
+    """The three readers that CATCH the valuation's refusal, graded.
+
+    **Plan step balance:X-bx made these paths live, and nothing entered them
+    before it.**  That step widened
+    :func:`~app.services.row_valuation.settled_contribution` -- and through it
+    ``cash_ledger.settled_cash_leg`` -- to REFUSE a row that has not settled,
+    where it used to price the row's plan column.  Three readers in this
+    package admit a row of any status and catch that refusal, because they
+    render the review page and a raise there would strand the account with no
+    in-app repair (finding **N-302**).
+
+    So on those three the refusal changes an ANSWER rather than failing a test,
+    and a green suite cannot tell "never reached" from "reached and
+    re-answered".  Two adversarial reviews of X-bx made that point
+    independently, and `grep -rn AmountUnresolvable tests/test_services
+    /test_statement_match/` returned NOTHING before this class: the step's own
+    full-suite mutation probe could not have seen a defect here.  It had one.
+
+    The reachable shape is an ordinary REVERT.  A subject a match minted is
+    settled when the act records it, so reverting that row to Projected both
+    bumps ``version_id`` (the owner has edited it) and takes it out of the
+    settled band (it can no longer be priced).
+    """
+
+    def test_a_REVERTED_subject_is_refused_for_the_EDIT_not_for_the_price(
+        self, app, db, seed_user,
+    ):
+        """The message defect X-bx introduced, as its own control.
+
+        Both refusals are honest about refusing, so no money moves either way
+        and a test asserting "the undo refuses" would pass on the defect.  What
+        separates them is what the owner is TOLD: the price sentence says the
+        app cannot work out what the row is worth and offers no repair, which
+        is false here -- the row was reverted, and the edit sentence names that
+        and tells them what to do about it.
+
+        ``_subject_removal`` prices BEFORE it compares revisions, so once the
+        price started refusing, the price sentence won a race the edit sentence
+        used to win.  The fix states the revision test in the refusal path too.
+        """
+        subject = a_transaction(
+            seed_user, name="Residual", amount="41.00", template=False,
+            status=StatusEnum.DONE,
+            settled_on=seed_user["bootstrap_period"].start_date,
+        )
+        db.session.flush()
+        creation = StatementMatchCreation(
+            match_id=0, account_id=seed_user["account"].id,
+            transaction_id=subject.id, transaction_entry_id=None,
+            # The revision this act left the row at.
+            created_version_id=subject.version_id,
+        )
+
+        # The owner REVERTS it: out of the settled band, and a revision later.
+        status_seam.apply_status_change(
+            subject, ref_cache.status_id(StatusEnum.PROJECTED),
+        )
+        db.session.flush()
+        assert subject.version_id != creation.created_version_id
+        # The precondition the whole case rests on: the valuation now refuses.
+        with pytest.raises(AmountUnresolvable):
+            settled_cash_leg(subject)
+
+        row, refusal = statement_match._release._subject_removal(  # pylint: disable=protected-access
+            creation, subject,
+        )
+
+        assert refusal is not None
+        assert "you have edited that row since" in refusal
+        assert "can no longer work out what that row is worth" not in refusal
+        # A refused act reports nothing to remove, on this arm as on the other.
+        assert row.cash_amount == Decimal("0.00")
+
+    def test_an_UNEDITED_subject_the_model_cannot_price_still_says_so(
+        self, app, db, seed_user,
+    ):
+        """The other arm, so the fix above is a BRANCH and not a replacement.
+
+        A subject at its creation revision that the amount model cannot price
+        keeps the price sentence -- there is no edit to report, and the honest
+        answer is that the app cannot say what removing it would take out of
+        the books.  Without this case the fix could have replaced one sentence
+        with the other and stayed green.
+        """
+        subject = a_transaction(
+            seed_user, name="Residual", amount="41.00", template=False,
+            status=StatusEnum.DONE,
+            settled_on=seed_user["bootstrap_period"].start_date,
+        )
+        db.session.flush()
+        status_seam.apply_status_change(
+            subject, ref_cache.status_id(StatusEnum.PROJECTED),
+        )
+        db.session.flush()
+        # The creation record is written AFTER the revert, so the act's
+        # revision is the row's current one: unpriceable, and NOT edited.
+        creation = StatementMatchCreation(
+            match_id=0, account_id=seed_user["account"].id,
+            transaction_id=subject.id, transaction_entry_id=None,
+            created_version_id=subject.version_id,
+        )
+
+        row, refusal = statement_match._release._subject_removal(  # pylint: disable=protected-access
+            creation, subject,
+        )
+
+        assert refusal is not None
+        assert "can no longer work out what that row is worth" in refusal
+        assert "you have edited that row since" not in refusal
+        assert row.cash_amount == Decimal("0.00")

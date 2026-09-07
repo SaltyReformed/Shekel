@@ -15,7 +15,7 @@ from decimal import Decimal
 
 from app.models.transaction import Transaction
 from app.services import spending_analysis
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import settled_contribution
 from app.utils.money import ZERO
 
 from ._types import (
@@ -36,7 +36,9 @@ def _totals_by_category(txns: list[Transaction]) -> dict[int, _CategoryTotal]:
     labels are fixed by :func:`spending_analysis.category_names`.
 
     Args:
-        txns: One window's settled expenses -- every row owns its figure.
+        txns: One window's settled expenses -- every row has SETTLED, which is
+            what :func:`~app.services.row_valuation.settled_contribution`
+            requires and, since plan step X-bx, refuses without.
 
     Returns:
         ``category_id -> _CategoryTotal`` (labels + summed spend).  **A total
@@ -63,7 +65,7 @@ def _totals_by_category(txns: list[Transaction]) -> dict[int, _CategoryTotal]:
         # non-negative DISPLAY, if one is ever wanted, belongs at the render:
         # clamping here destroys the arithmetic the whole report is built on
         # (:func:`_share`'s denominator, every ``delta``, both group totals).
-        amounts[cat_id] += owned_contribution(txn)
+        amounts[cat_id] += settled_contribution(txn)
         if cat_id not in labels:
             labels[cat_id] = spending_analysis.category_names(txn)
     return {

@@ -415,12 +415,15 @@ class BarredLine:
     **N-325**, so the empty-collection shape is not what keeps a control from
     rendering -- the shut ADD offer is
     (:attr:`~._verbs.VerbOffer.waiting_for`).  **The separation still stands on
-    its other leg, and that leg is stronger**: ``_queue.py``'s ``_rows``
-    dispatches on WHICH LIST it drew a line from, so a barred line inside
-    ``creatable`` would render there as ``QueueAct.RECORD_PURCHASE`` -- a
-    destination chooser over a line :func:`reject_barred_line` refuses by name,
-    which is this ruling's own `$7,412.94` shape on a screen that stays live
-    until ``X-gi``.
+    its other leg, and that leg is stronger**: a builder that dispatches on
+    WHICH LIST it drew a line from renders a barred line inside ``creatable``
+    as a destination chooser over a line :func:`reject_barred_line` refuses by
+    name, which is this ruling's own `$7,412.94` shape.  *That builder was the
+    retired queue's ``_rows``, on "a screen that stays live until ``X-gi``";
+    the page went at ``bank_import:X-gi-2`` and the model at ``X-gi-3``.  The
+    separation is what keeps the same shape unbuildable in
+    :func:`~._card_sections.to_explain_sections`, which dispatches the same
+    way.*
 
     Attributes:
         line: The bank's own record of the movement.
@@ -479,9 +482,11 @@ class BarredLine:
 
         Plan step ``bank_import:X-gf-3a``.  **A parked line's only door is one
         it does not name**, which is what this closes: since ruling
-        **bank_import:R-GX** an ANSWERED merchant leaves the review screen's
-        own control and appears on the register, so a line parked by an answer
-        the owner now disagrees with had nowhere on this page to say so.
+        **bank_import:R-GX** an ANSWERED merchant leaves this control and is
+        found on the merchants list instead (ruling **bank_import:R-IC**), so a
+        line parked by an answer the owner now disagrees with had nowhere on
+        this page to say so.  *The register was that other home until plan step
+        ``bank_import:X-gi-2`` deleted it.*
 
         **It is ``None`` where changing the answer would change nothing**, and
         that is the whole reason it is derived here rather than being a link
@@ -498,8 +503,11 @@ class BarredLine:
 
         Returns:
             The sentence naming the act, which the template renders as a link
-            to the register -- the URL being the one fact a service may not
-            build -- or ``None`` where no answer would open this line.
+            to the MERCHANTS surface -- the URL being the one fact a service
+            may not build -- or ``None`` where no answer would open this line.
+            *It said "the register" until plan step ``bank_import:X-gi-3``;
+            the live link is ``accounts.statement_merchants``
+            (``_statement_reconcile_macros.html``).*
         """
         if self.barred_by is not CreationBar.NEVER_A_PURCHASE:
             return None

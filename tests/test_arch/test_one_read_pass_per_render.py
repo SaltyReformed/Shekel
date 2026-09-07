@@ -181,12 +181,20 @@ _PER_PLAN = ("app.services.retirement_projection", "project_accounts_with_batch"
 #: (``PayCalendar.__post_init__``), so counting it cannot be walked around.
 _CALENDAR_DOOR = ("app.services.pay_calendar._derive", "derive_periods")
 
-#: The PAYCHECK-PROJECTION door, as ``(module path, attribute)``.  One
-#: calendar-wide projection per salary profile per render is the budget
-#: (plan step **salary:R14-b**); see
-#: :class:`TestOnePaycheckProjectionPerProfilePerRender` for why this door
+#: The PAYCHECK-PRICER door, as ``(module path, attribute)``.  One
+#: :class:`~app.services.income_service.ProfilePaychecks` per salary profile
+#: per render is the budget (plan steps **salary:R14-b**, **salary:S3-d**);
+#: see :class:`TestOnePaycheckProjectionPerProfilePerRender` for why this door
 #: and not ``calculate_paycheck``.
-_PROJECTION_DOOR = ("app.services.income_service", "project_profile")
+#:
+#: **It was ``project_profile`` until plan step salary:S3-d deleted that
+#: function.**  Counting a CONSTRUCTION rather than a projection is the same
+#: question asked of the new shape: a pricer answers paydays on demand and
+#: memoizes them, so building a second one for a profile a render already has
+#: a pricer for is exactly the missed-memo defect this class was written
+#: after.  What it can no longer see -- because the shape removed it -- is a
+#: single producer re-projecting a window it had already projected.
+_PROJECTION_DOOR = ("app.services.income_service", "ProfilePaychecks")
 
 #: What the budget dashboard resolves about its own SUBJECT, as
 #: ``(module path, attribute)``.  A render answers "which account is this page
@@ -488,7 +496,7 @@ class TestOneReadPassPerRender:
         with counting_read_passes() as counter:
             resp = auth_client.get(
                 "/retirement/readiness"
-                "?merit_raise_horizon_years=7&months=24",
+                "?swr=3.5&months=24",
                 headers={"HX-Request": "true"},
             )
 
@@ -1222,20 +1230,36 @@ class TestOnePaycheckProjectionPerProfilePerRender:
     account, because ``_contribution_inputs_for_account`` is the batch loader
     over a one-element set and each call re-projected the whole window.
 
-    ``project_profile`` is the door counted rather than ``calculate_paycheck``
-    for two reasons: it is the ONE spelling of a calendar-wide projection
-    (ledger row **N-443**, closed at ``salary:R14-a``), and its per-paycheck
-    count is a property of the owner's schedule LENGTH, so counting the inner
-    call would make the assertion a function of the fixture's payday count
-    rather than of the code under test.
+    :class:`~app.services.income_service.ProfilePaychecks` is the door counted
+    rather than ``calculate_paycheck`` for two reasons: it is the ONE spelling
+    of a profile's projection (ledger row **N-443**, closed at
+    ``salary:R14-a``), and the inner call's count is a property of the owner's
+    schedule LENGTH, so counting it would make the assertion a function of the
+    fixture's payday count rather than of the code under test.
 
-    The budget is ONE per active salary profile: a profile's projection is a
-    function of the profile and the calendar alone, so a second run of the
-    same one is a memo that was missed.  ``BalanceContext.payroll_breakdowns``
-    is the memo, and this class is what keeps it load bearing -- without a
-    counting gate a future refactor can drop the argument at a call site and
-    no test would notice, which is how two of that memo's four callers came to
-    bypass it inside the step that added it.
+    The budget is ONE per active salary profile: a profile's paychecks are a
+    function of the profile and the calendar alone, so a second pricer for the
+    same one is a memo that was missed.
+    :meth:`~app.services.balance_at.BalanceContext.paychecks` is that memo.
+
+    **Plan step salary:S3-d moved the door and NARROWED what this class has
+    left to catch, and the narrowing is worth stating.**  It counted
+    ``project_profile`` calls against a ``payroll_breakdowns`` dict passed as
+    an OPTIONAL argument -- ``breakdowns=None`` meant "no memo", and two of
+    that argument's four callers passed it inside the step that added it,
+    which is what this class was written after.  Nothing is passed a dict now;
+    a consumer is handed the pricer, so that particular hole is closed by the
+    shape rather than by this assertion.
+
+    **What it still catches is a SECOND pricer**, and one exists on purpose:
+    :class:`~app.services.income_service.SalaryPricing` derives its own,
+    because ``cash_ledger.amount_basis`` is built from an owner and a scenario
+    alone and has nothing to hand it.  That is ledger row **P63**, owned by
+    plan step **C12** with ``balance:X-i1`` as the input tier, and S3-d did
+    not close it.  These three renders read ONE of the two paths each, which
+    is why the budget below is 1 rather than 2 -- and if a change makes one of
+    them read both, this class is where that shows up as a number.  It becomes
+    deletable when C12 or X-i1 collapses the two sources.
     """
 
     @staticmethod
@@ -1269,7 +1293,7 @@ class TestOnePaycheckProjectionPerProfilePerRender:
     def test_savings_projects_each_profile_once(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """GET /savings runs the paycheck engine once for the owner's profile."""
+        """GET /savings builds one paycheck pricer for the owner's profile."""
         with app.app_context():
             account = _seed_projecting_account(
                 db, seed_user, seed_periods_today,
@@ -1280,16 +1304,16 @@ class TestOnePaycheckProjectionPerProfilePerRender:
             resp = auth_client.get("/savings")
 
         assert resp.status_code == 200
-        assert counts["project_profile"] == 1, (
-            f"/savings projected the owner's paycheck "
-            f"{counts['project_profile']} times; every producer below the "
-            "route's one read pass must read that pass's projection memo"
+        assert counts["ProfilePaychecks"] == 1, (
+            f"/savings built the owner's paycheck pricer "
+            f"{counts['ProfilePaychecks']} times; every producer below the "
+            "route's one read pass must read that pass's pricer"
         )
 
     def test_retirement_projects_each_profile_once(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """GET /retirement runs the paycheck engine once for the profile.
+        """GET /retirement builds one paycheck pricer for the profile.
 
         The third of the memo's call sites (``retirement_projection
         .load_projection_batch``), which an adversarial review noted this
@@ -1305,17 +1329,17 @@ class TestOnePaycheckProjectionPerProfilePerRender:
             resp = auth_client.get("/retirement")
 
         assert resp.status_code == 200
-        assert counts["project_profile"] == 1, (
-            f"/retirement projected the owner's paycheck "
-            f"{counts['project_profile']} times; the page holds one read pass "
+        assert counts["ProfilePaychecks"] == 1, (
+            f"/retirement built the owner's paycheck pricer "
+            f"{counts['ProfilePaychecks']} times; the page holds one read pass "
             "and its batch load and its seam reads must share that pass's "
-            "projection memo"
+            "pricer"
         )
 
     def test_investment_projects_each_profile_once(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """GET the investment dashboard runs the engine once for the profile.
+        """GET the investment dashboard builds one pricer for the profile.
 
         The account carries an employer contribution and NAMES the job that
         funds it, so the feed actually prices a gross -- without the link the
@@ -1337,9 +1361,9 @@ class TestOnePaycheckProjectionPerProfilePerRender:
             "the dashboard did not render figures, so this count was taken "
             "over a producer that returned early"
         )
-        assert counts["project_profile"] == 1, (
-            f"/investment projected the owner's paycheck "
-            f"{counts['project_profile']} times; the page holds one read pass "
+        assert counts["ProfilePaychecks"] == 1, (
+            f"/investment built the owner's paycheck pricer "
+            f"{counts['ProfilePaychecks']} times; the page holds one read pass "
             "and both its seam reads and its own feed load must share that "
-            "pass's projection memo"
+            "pass's pricer"
         )
