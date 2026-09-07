@@ -23,7 +23,13 @@ deleted both pages, which left those two readers with no caller in ``app/``
 (finding **bank_import:BI-479**); ``bank_import:X-gi-3`` deleted them.  Every
 case here now drives the LIVE readers,
 :func:`~app.schemas.validation.statement_reconcile.reconcile_payload` and
-:func:`~app.schemas.validation.statement_reconcile.reconcile_match_payload`.
+:func:`~app.schemas.validation.statement_reconcile.reconcile_match_payload`
+-- with ONE declared exception, ``TestAMatchMayNameAsManyRowsAsThePassOFFERS
+.test_a_match_naming_more_than_a_hundred_LINES_loads_too``, which hand-builds
+its payload because no reader can produce it: ``reconcile_match_payload``
+emits exactly one ``line_ids`` member on every path there is.  It grades the
+shape ``bank_import:X-gn`` will make submittable, and it is named here rather
+than left to contradict this paragraph silently.
 
 **The split was not the deletion BI-479 prescribed, and the difference is
 measured.**  That row said the classes reaching the schemas THROUGH the two
@@ -467,6 +473,74 @@ class TestThePassIsBounded:
             _load(_form(pairs))
 
         assert "600 things to apply" in str(raised.value)
+
+
+class TestAMatchMayNameAsManyRowsAsThePassOFFERS:
+    """Plan step ``bank_import:X-go``: the schema stopped capping members.
+
+    **The FIRING CONTROL for that deletion.**  ``_MAX_MATCH_MEMBERS = 100``
+    stood on both of :class:`~app.schemas.validation.statements
+    .StatementMatchSchema`'s lists until the developer ruled it out on
+    2026-09-06, and nothing graded it -- so nothing would notice it being put
+    back, and nothing said why it should not be.
+
+    **What it was for is held by two bounds that already existed**, each where
+    its own truth lives, which is why deleting it removes no protection:
+
+    * the DOMAIN bound -- ``_resolve.resolve_rows`` looks every submitted row
+      up in the pass's own offer set and refuses anything else by name, and
+      ``load_lines`` does the same for lines.  Graded by
+      ``test_accept.TestEveryOtherRefusalFires`` (a cancelled row, a card
+      purchase, an unknown line, a row another match already claims);
+    * the RESOURCE bound -- ``MAX_FORM_MEMORY_SIZE`` (500,000, Flask's default,
+      which this app never sets) refuses the body before this schema sees it,
+      and :data:`MAX_BATCH_ITEMS` bounds the ACTS.  It is the BINDING one:
+      ``MAX_CONTENT_LENGTH`` is larger, so for a urlencoded body it never
+      fires.  Measured 2026-09-06 at the CRAFTED 22-byte tick: that budget
+      carries 22,727 ticks, costing 50-54 ms in one item and 57-132 ms spread
+      across the 500-item ceiling, all of which ``resolve_rows`` then refuses.
+      The schema's own docstring carries the two drafts this corrects.
+
+    **And the cap had begun to contradict the screen**, which is what made it
+    a defect rather than merely redundant: since plan step
+    ``bank_import:X-gi-1`` the scriptless MATCH pane offers EVERY unexplained
+    row on the account as a tickbox, so an account past 100 of them rendered
+    controls this schema would refuse -- ruling **R-HW**'s *a control that
+    cannot succeed*.
+    """
+
+    #: Comfortably past the deleted ceiling, and past any real group: ruling
+    #: **R-FS**'s largest measured shape is a payroll deposit against three.
+    _PAST_THE_OLD_CAP = 150
+
+    def test_a_match_naming_more_than_a_hundred_rows_LOADS(self):
+        """The ceiling is gone, asserted where it used to fire."""
+        form = _form([
+            (f"rows-{_LINE}", f"transaction:{index}:-1.00:1")
+            for index in range(1, self._PAST_THE_OLD_CAP + 1)
+        ])
+
+        loaded = _load_one_card(form)
+
+        assert len(loaded["rows"]) == self._PAST_THE_OLD_CAP
+
+    def test_a_match_naming_more_than_a_hundred_LINES_loads_too(self):
+        """Both lists carried the cap, so both are asserted.
+
+        ``line_ids`` is one member per card today, and
+        ``bank_import:X-gn`` is the step that lets a match name a second bank
+        line -- so a cap here would bound that step's own shape rather than
+        anything the wire carries now.
+        """
+        loaded = StatementBatchSchema().load({
+            "matches": [{
+                "line_ids": [str(index) for index in
+                             range(1, self._PAST_THE_OLD_CAP + 1)],
+                "rows": ["transaction:1:-1.00:1"],
+            }],
+        })
+
+        assert len(loaded["matches"][0]["line_ids"]) == self._PAST_THE_OLD_CAP
 
 
 class TestTheBatchSchemaRefusesWhatItDoesNotDeclare:
