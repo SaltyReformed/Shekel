@@ -1042,11 +1042,19 @@ class TestAFeedIsTheSameWhoeverItIsLoadedBeside:
             batched = _contribution_inputs_for_accounts([checking, roth], ctx)
 
             # Non-vacuity: the batch really did price a feed to hand out.
-            assert batched[roth.id].feed.models_employee is True
+            # Stated on the priced MAP since plan step salary:S3-e-1 deleted
+            # ``models_employee``.  It is the SAME claim that property made --
+            # it was ``any(amount > 0)`` over exactly this map -- and a
+            # stronger one than the surviving ``is_payroll_linked`` would
+            # make, which is why the map and not the flag is asserted here.
+            assert any(
+                amount > 0
+                for amount in batched[roth.id].feed.employee_by_payday.values()
+            )
             # The arm: the account that cannot consume one carries none, in
             # BOTH shapes -- so the two reads are the same object's worth of
             # facts, which is the Returns clause stated as an assertion.
-            assert batched[checking.id].feed.models_employee is False
+            assert batched[checking.id].feed == AccountPayrollFeed.absent()
             assert alone == batched[checking.id]
 
 
@@ -1962,8 +1970,13 @@ class TestInvestmentContributions:
                 ),
             )
             assert with_ded == expected
-            # Non-vacuity: the feed really did price the deduction.
-            assert feeds_for_inv.models_employee is True
+            # Non-vacuity: the feed really did price the deduction.  On the
+            # priced MAP since plan step salary:S3-e-1 deleted
+            # ``models_employee``; the property was this predicate.
+            assert any(
+                amount > 0
+                for amount in feeds_for_inv.employee_by_payday.values()
+            )
 
             # Scope: a non-investment account in the same batch is untouched.
             checking = seed_user["account"]

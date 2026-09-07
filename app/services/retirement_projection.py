@@ -860,6 +860,8 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
             contribution_transactions=acct_contributions,
             periods=projection_periods,
             as_of=ctx.balance_ctx.as_of,
+            # The SAVED end, which no probe moves (salary:S3-e-1).
+            saved_through=ctx.balance_ctx.calendar().horizon(),
         ),
         salary_basis=feed.salary_basis(beyond=ctx.employer_salary_basis),
     )

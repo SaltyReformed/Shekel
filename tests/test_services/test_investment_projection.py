@@ -74,6 +74,25 @@ def _periods(*paydays, cadence=14):
     ).saved()
 
 
+def _saved_through(window):
+    """Return *window*'s own :meth:`~app.services.pay_calendar.PayCalendar.horizon`.
+
+    The last day the schedule covers, which is what production hands
+    :func:`build_contribution_timeline` (plan step **salary:S3-e-1**).  Spelled
+    off the window rather than off the feed ON PURPOSE: the whole point of the
+    parameter is that the boundary is the CALENDAR's and not the feed's, so a
+    case that derived it from the feed would grade the identity this step
+    exists to break.
+
+    Raises:
+        IndexError: *window* is empty.  Deliberate, and it mirrors the
+            producer's own precondition: ``horizon()`` answers ``None`` only
+            for a calendar with no saved period, and every axis producer
+            returns an EMPTY window there, so the callee never sees one.
+    """
+    return window[-1].end_date
+
+
 def _feed(periods=(), *, employee=None, gross=None, linked=None):
     """Build an :class:`AccountPayrollFeed` over *periods*' paydays.
 
@@ -93,8 +112,9 @@ def _feed(periods=(), *, employee=None, gross=None, linked=None):
         employee: What payroll puts in per payday -- one figure for every
             payday, or a ``{payday: amount}`` map.  ``None`` means the account
             has no employee feed at all, which is the EMPTY map and not a map
-            of zeros; :attr:`AccountPayrollFeed.models_employee` tells them
-            apart and the two behave differently.
+            of zeros, and the two behave differently: an empty map holds
+            ``$0.00`` and defaults *linked* to ``False``, where a map of zeros
+            prices ``$0.00`` on a payday the owner really is paid.
         gross: The funding profile's gross per payday, same two forms.
             ``None`` means no funding profile is known, which is what
             :attr:`AccountPayrollFeed.funds_employer` reports ``False`` for.
@@ -313,7 +333,9 @@ class TestAccountPayrollFeed:
         periods = _periods(date(2026, 1, 2), date(2026, 1, 16))
         feed = _feed(periods, employee=Decimal("0"))
         assert feed.employee_at(date(2040, 1, 1)) == Decimal("0")
-        assert feed.models_employee is False
+        # The zeros are PRICED, not absent: every payday carries an explicit
+        # entry, which is what stops the hold reading a skip as a gap.
+        assert set(feed.employee_by_payday) == {p.start_date for p in periods}
 
     def test_no_funding_profile_refuses_a_gross_rather_than_answering_zero(self):
         """An unknown funding job answers ``None``, so no caller can spend it.
@@ -331,7 +353,7 @@ class TestAccountPayrollFeed:
     def test_absent_models_neither_half(self):
         """The explicit token for an account no payroll funds."""
         feed = AccountPayrollFeed.absent()
-        assert feed.models_employee is False
+        assert feed.is_payroll_linked is False
         assert feed.funds_employer is False
         assert feed.employee_at(date(2026, 1, 2)) == Decimal("0")
         assert feed.gross_at(date(2026, 1, 2)) is None
@@ -783,6 +805,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=_feed(periods, employee=Decimal("500.00")),
             contribution_transactions=[], periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert len(result) == 3
         for record in result:
@@ -808,6 +831,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=feed, contribution_transactions=[],
             periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert len(result) == 3
         assert result[2].amount == Decimal("0")
@@ -1009,11 +1033,100 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=feed, contribution_transactions=[],
             periods=axis, as_of=_AS_OF,
+            saved_through=_saved_through(priced),
         )
         assert len(result) == 27
         assert result[26].contribution_date == beyond
         # 26 x $500.00 over the year's 26 paydays.
         assert result[26].amount == Decimal("500.00")
+
+    def test_the_transfer_average_boundary_is_the_CALENDAR_not_the_feed(self):
+        """A PRICED payday past the schedule still takes the transfer average.
+
+        **The control plan step salary:S3-e-1 exists to install**, and it is
+        the one thing a suite green on both sides of that step could not
+        otherwise see.  The term was gated on ``feed.prices(payday)`` -- *did
+        the engine price this day* -- which answered the same days as *has the
+        schedule reached this day* only because the feed was built over
+        ``calendar.saved()`` and over nothing else.  Plan step
+        **salary:S3-e-2** lets a feed answer any payday it is asked, at which
+        point the old gate reads ``True`` everywhere and this term is never
+        added again: an account funded by BOTH a deduction and transfers
+        loses its whole recurring-transfer stream from the forward walk, for
+        the entire horizon, with no test failing.
+
+        So this case makes the two disagree ON PURPOSE -- the feed prices
+        every payday of the axis, and the schedule stops at the second -- and
+        asserts the SCHEDULE decides.
+
+        **Graded against three mutations 2026-09-06, and the two directions
+        come apart under two of them.**  Restoring the old gate outright fails
+        BOTH this case and its sibling.  A gate that adds the average when
+        EITHER rule says to fails the sibling alone; one that adds it only
+        when BOTH do fails this case alone.  So neither case is carrying the
+        other, and neither passes by accident on the identity this step
+        breaks.
+        """
+        paydays = [date(2020, 1, 3) + timedelta(days=14 * i) for i in range(4)]
+        axis = _periods(*paydays)
+        # PRICED over the whole axis: ``feed.prices()`` is True on every one.
+        feed = _feed(axis, employee=Decimal("500.00"))
+        # $300 and $100 over two distinct paydays averages $200.
+        txns = [
+            _priced(Decimal("300"), paydays[0], is_confirmed=True),
+            _priced(Decimal("100"), paydays[1], is_confirmed=True),
+        ]
+        result = build_contribution_timeline(
+            feed=feed, contribution_transactions=txns,
+            periods=axis, as_of=_AS_OF,
+            # The schedule ends at the SECOND payday, four of which are priced.
+            saved_through=_saved_through(_periods(*paydays[:2])),
+        )
+        payroll = {
+            record.contribution_date: record.amount
+            for record in result
+            if record.amount in (Decimal("500.00"), Decimal("700.00"))
+        }
+        assert payroll[paydays[0]] == Decimal("500.00"), "in-window: deduction alone"
+        assert payroll[paydays[1]] == Decimal("500.00"), "in-window: deduction alone"
+        assert payroll[paydays[2]] == Decimal("700.00"), (
+            "past the SCHEDULE the $200 transfer average is added, even "
+            "though the feed priced this payday"
+        )
+        assert payroll[paydays[3]] == Decimal("700.00")
+
+    def test_an_UNPRICED_payday_inside_the_schedule_takes_NO_average(self):
+        """The other direction: a gap in the feed is not a gap in the schedule.
+
+        The mirror of the case above, and it fails on the mutation that one
+        passes (both measured; see there): gating on ``feed.prices()`` would
+        add the average here, where the schedule plainly reaches this day.  A
+        held figure is a defect for plan step **salary:S3-e-2** to delete, not
+        a reason to pay a transfer the owner has no record of.
+        """
+        paydays = [date(2020, 1, 3) + timedelta(days=14 * i) for i in range(4)]
+        axis = _periods(*paydays)
+        # The feed prices the first TWO paydays; the schedule covers all four.
+        feed = _feed(_periods(*paydays[:2]), employee=Decimal("500.00"))
+        txns = [
+            _priced(Decimal("300"), paydays[0], is_confirmed=True),
+            _priced(Decimal("100"), paydays[1], is_confirmed=True),
+        ]
+        result = build_contribution_timeline(
+            feed=feed, contribution_transactions=txns,
+            periods=axis, as_of=_AS_OF,
+            saved_through=_saved_through(axis),
+        )
+        payroll = {
+            record.contribution_date: record.amount
+            for record in result
+            if record.amount in (Decimal("500.00"), Decimal("700.00"))
+        }
+        assert payroll[paydays[2]] == Decimal("500.00"), (
+            "inside the schedule, an unpriced payday takes the HELD figure "
+            "and no transfer average"
+        )
+        assert payroll[paydays[3]] == Decimal("500.00")
 
     def test_transfer_only(self):
         """Shadow income transactions with no payroll: one record per transaction."""
@@ -1025,6 +1138,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert len(result) == 2
         assert result[0].amount == Decimal("200")
@@ -1041,6 +1155,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=_feed(periods, employee=Decimal("0"), linked=False),
             contribution_transactions=[], periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert result == []
 
@@ -1066,6 +1181,7 @@ class TestBuildContributionTimeline:
                 _priced(Decimal("300"), periods[0].start_date),
             ],
             periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         payroll = [r for r in result if r.amount == Decimal("0")]
         assert len(payroll) == 2, (
@@ -1083,6 +1199,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=_feed(periods, employee=Decimal("500.00")),
             contribution_transactions=txns, periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         # One record from payroll, one from the transfer, same date.
         assert len(result) == 2
@@ -1096,6 +1213,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=_feed(periods, employee=Decimal("500")),
             contribution_transactions=[], periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert result[0].is_confirmed is True
 
@@ -1106,6 +1224,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=_feed(periods, employee=Decimal("500")),
             contribution_transactions=[], periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert result[0].is_confirmed is False
 
@@ -1116,6 +1235,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert result[0].is_confirmed is True
 
@@ -1126,6 +1246,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert result[0].is_confirmed is False
 
@@ -1142,6 +1263,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=_feed(periods, employee=Decimal("500")),
             contribution_transactions=txns, periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert len(result) == 2
         confirmed_flags = {r.is_confirmed for r in result}
@@ -1154,6 +1276,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=[],
             periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert result == []
 
@@ -1167,6 +1290,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         dates = [r.contribution_date for r in result]
         assert dates == sorted(dates)
@@ -1185,6 +1309,7 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert result[0].amount == Decimal("999.99")
 
@@ -1209,5 +1334,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
+            saved_through=_saved_through(periods),
         )
         assert result == []

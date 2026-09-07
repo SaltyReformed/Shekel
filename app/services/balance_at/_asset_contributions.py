@@ -209,11 +209,15 @@ def _plan_for(
 ) -> "_ContributionPlan | None":
     """Assemble *account*'s modelled contribution plan, or ``None`` if it has none.
 
-    ``None`` when nothing is modelled at all -- no deduction pays this account
-    on any payday AND no employer contribution can be sized -- which is what
+    ``None`` when nothing is modelled at all -- no active deduction NAMES
+    this account AND no employer contribution can be sized -- which is what
     keeps a plain IRA from paying for a period-calendar load it has no use
-    for.  Note that an employer FLAT percentage models money with a zero
-    employee feed (the real Empower 401(k) shape: 5% of a paycheck's own
+    for.  The employee half was *no deduction PAYS this account on any
+    priced payday* until plan step **salary:S3-e-1**, which is a question
+    about a window; the comment on the test below says what happened to
+    the window and why the answer is unmoved.  Note that an employer FLAT
+    percentage models money with a zero employee feed (the real Empower
+    401(k) shape: 5% of a paycheck's own
     gross, `$181.59` rising to `$202.40` across the paydays this walk actually
     reaches -- the earlier `$176.30` paydays fall at or before the account's
     assertion and ruling **R-Z** excludes them; see :func:`_dated_events`),
@@ -243,13 +247,23 @@ def _plan_for(
     models_employer = (
         employer_params is not None and inputs.feed.funds_employer
     )
-    # PRICE here, where :func:`build_contribution_timeline`'s gate is
-    # PRESENCE, and the asymmetry is deliberate: that one decides whether to
-    # emit records that SUPPRESS the growth engine's fallback, so it must ask
-    # whether a deduction is wired up; this one decides whether there is
-    # anything to model AT ALL, and a linked deduction that prices $0.00 on
-    # every payday of the window models nothing.
-    if not inputs.feed.models_employee and not models_employer:
+    # PRESENCE, the same question :func:`build_contribution_timeline` asks,
+    # and plan step **salary:S3-e-1** made the two one.  This asked a PRICE
+    # question -- *did any priced payday pay this account* -- on the argument
+    # that a linked deduction pricing $0.00 on every payday of the window
+    # models nothing.  It survives only while there IS a window: once a feed
+    # answers whatever payday it is asked (plan step **salary:S3-e-2**),
+    # "priced" means "whatever this caller asked for" and the gate answers
+    # differently for two readers of one account.  Deleting it moves no
+    # figure -- :func:`contribution_events` emits an event only for a
+    # NON-ZERO amount, and every payday of such an account contributes
+    # ``employee = 0`` (:func:`~app.services.growth_engine
+    # .cap_contribution_at_limit` of zero is zero) plus ``employer = 0``
+    # (:func:`~app.services.growth_engine.calculate_employer_contribution`
+    # returns ``ZERO`` for the ``None`` params ``models_employer`` False
+    # supplies below) -- and it costs one recorded-contribution query for an
+    # account that models nothing.
+    if not inputs.feed.is_payroll_linked and not models_employer:
         return None
     return _ContributionPlan(
         feed=inputs.feed,
