@@ -11,8 +11,9 @@ yet.  This is what computes it.
 **It runs the ACCEPT door's own reads and refusals, minus the writes.**  The
 body it takes is the body Apply would send -- the same line ids and the same
 reviewed row tokens, read through the same
-:func:`~app.schemas.validation.statements.hand_match_payload` -- so the panel
-is not a second opinion about the act, it is that act asked what it would do.
+:func:`~app.schemas.validation.statement_reconcile.reconcile_match_payload`
+-- so the panel is not a second opinion about the act, it is that act asked
+what it would do.
 A screen that summed differently from the door is finding **N-336** one tier
 up, and the surest way to have one number is to have one derivation.
 

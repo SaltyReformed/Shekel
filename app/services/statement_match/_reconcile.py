@@ -165,10 +165,10 @@ _TAB_LABELS: "dict[Tab, str]" = {
 #: **The review screen counted these in JINJA** (its body's
 #: ``selectattr | length``) until plan step ``bank_import:X-gi-2`` deleted it,
 #: which is the shape
-#: :func:`~._queue._sweeps_for` exists to refuse: a caption may not promise a
-#: number a template counted.  This page counts them in the service; the second
-#: copy of the LABELS, :data:`~._queue._SWEEP_LABELS`, outlived its only reader
-#: by that deletion and goes at ``bank_import:X-gi-3`` with the module holding
+#: the retired queue's ``_sweeps_for`` existed to refuse: a caption may not
+#: promise a number a template counted.  This page counts them in the service;
+#: the second copy of the LABELS, ``_SWEEP_LABELS``, outlived its only reader
+#: by that deletion and WENT at ``bank_import:X-gi-3`` with the module holding
 #: it -- the two had already drifted by a word on arrival.
 SWEEP_LABELS: "tuple[tuple[str, str], ...]" = (
     ("confirm", "that only confirm a day you already had"),
@@ -268,8 +268,8 @@ class HoldingChip:
 class Sweep:
     """One risk class of cards, and the one click that OKs them.
 
-    Ruling **R-FZ(c)**, and the same value :class:`~._queue.QueueSweep` is,
-    over the new screen's two partitions.
+    Ruling **R-FZ(c)**, and the same value the retired queue's ``QueueSweep``
+    was, over this screen's two partitions.
 
     Attributes:
         css_class: The class key, which is the value a card carries in
@@ -421,7 +421,7 @@ def _sweeps(sections: "tuple[CardSection, ...]") -> "tuple[Sweep, ...]":
 
     **Counted over the cards that will actually be rendered**, so a caption
     cannot promise a number the control does not deliver -- which is the rule
-    :func:`~._queue._sweeps_for` states and the review screen broke by
+    the retired queue's ``_sweeps_for`` stated and the review screen broke by
     counting in Jinja.
 
     Args:
@@ -492,7 +492,7 @@ def _chips(
     which renders every accepted act; once the two settled TABS exist that
     total is the union of two tabs, so the chip would have promised a number
     neither of the tabs it could link to delivers -- the caption-over-a-count
-    defect :func:`~._queue._sweeps_for` exists to refuse.  The tab bar states
+    defect the retired queue's ``_sweeps_for`` existed to refuse.  The tab bar states
     both halves with their own counts, which is the same fact said once per
     place it is true rather than twice.
 
@@ -823,9 +823,11 @@ def reconcile_page(
     # fixture or the alarm will not fire.  Counting distinct proposal LINES
     # here instead would restore the arithmetic and hide the missing card,
     # which is the trade plan step ``bank_import:X-gm`` exists to refuse; the
-    # opposite reading of the same premise is argued at
-    # :attr:`~._reads.ReviewSet.explained_by_a_proposal`, which counts lines
-    # for a value that is a REPORT rather than a caption over cards.
+    # opposite reading of the same premise was argued at the retired
+    # ``ReviewSet.explained_by_a_proposal``, which counted lines for a value
+    # that was a REPORT rather than a caption over cards; it went with the
+    # queue at ``bank_import:X-gi-3``, and the premise is recorded here
+    # because THIS figure still turns on it.
     inbox = to_explain_sections(review)
     to_explain = sum(len(section.cards) for section in inbox)
 

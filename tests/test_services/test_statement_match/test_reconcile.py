@@ -22,6 +22,7 @@ import pytest
 # the package's public surface for the tests alone, which is the
 # "surface nobody asked for" its ``__init__`` refuses in as many words.
 # pylint: disable=shekel-private-module-import
+from app.enums import StatusEnum
 from app.models.statement_line_skip import StatementLineSkip
 from app.services import statement_match
 from app.services.statement_match import Tab, reconcile_page, skip_line
@@ -166,6 +167,142 @@ class TestALineWithNoAvailableActNeverEntersTheInbox:
 
         assert card.panel.notes
         assert any("Capital One" in note for note in card.panel.notes)
+
+
+class TestEverySentenceALineIsOwedIsRENDERED:
+    """Ruling **R-HB**'s asymmetry, re-pinned on the CARD.
+
+    Each of the three cards this page replaced composed its own evidence
+    sentences in Jinja, so a line got whichever its own card knew about --
+    which is how a PARKED line came to be the one kind that never printed its
+    search gap.  Measured on the developer's own data 2026-08-28: his
+    `-$1,000.44` line of 2026-06-01, 1 of 9 parked, carried its bar reason on
+    the queue and its gap only on the workbench.
+
+    **It graded the retired queue's rows until plan step
+    ``bank_import:X-gi-3``**, and both adversarial reviews of that step
+    measured what deleting it cost: `_cards.parked_card` builds
+    ``notes=(barred.reason, gap)`` and NOTHING asserted the second term -- the
+    string "held too many rows for the app to search them" appeared nowhere in
+    the suite, so dropping ``gap`` from that tuple left it green.  The rule is
+    the card's now, so the guard is.
+    """
+
+    @staticmethod
+    def _a_crowded_day(seed_user):
+        """Stage a day too crowded for the group search to run.
+
+        Args:
+            seed_user: The seeded user bundle.
+        """
+        day = seed_user["bootstrap_period"].start_date
+        an_envelope(seed_user)
+        for index in range(33):
+            a_transaction(
+                seed_user, name=f"Bill {index}", amount=f"{index + 11}.00",
+                status=StatusEnum.DONE, settled_on=day,
+            )
+
+    def test_a_PARKED_card_prints_its_search_gap_BESIDE_its_bar(
+        self, app, db, seed_user,
+    ):
+        """Both sentences, on the card the parked line actually renders."""
+        self._a_crowded_day(seed_user)
+        an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        card = _cards(_page(seed_user, Tab.TRANSFERS))[0]
+
+        assert any(
+            "payment to an account you hold" in note
+            for note in card.panel.notes
+        ), "the parked card lost its BAR sentence"
+        assert any(
+            "held too many rows for the app to search them" in note
+            for note in card.panel.notes
+        ), "the parked card prints its bar but not its search gap (R-HB)"
+
+    def test_a_CREATABLE_card_states_that_gap_ONCE(
+        self, app, db, seed_user,
+    ):
+        """``ruled`` has already folded the gap into ``warning``.
+
+        The firing control for the arm above: asking again on THIS card would
+        print the same words twice on the one mechanism whose value already
+        carries them, and nothing else in the suite would notice.
+        """
+        self._a_crowded_day(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        db.session.commit()
+
+        card = _cards(_page(seed_user, Tab.TO_EXPLAIN))[0]
+
+        printed = sum(
+            note.count("held too many rows for the app to search them")
+            for note in card.panel.notes
+        )
+        assert printed == 1, (
+            f"the creatable card printed its search gap {printed} times"
+        )
+
+
+class TestEveryUnexplainedLineReachesExactlyOneCard:
+    """Every unexplained line reaches exactly ONE card, and none reaches none.
+
+    **The conservation invariant `_card_sections` states in prose**: the four
+    source lists are disjoint and together cover ``ReviewSet.unmatched``.  The
+    retired queue's ``TestEveryLineIsGroupedExactlyOnce`` was the only case
+    asserting it, over a pass staging several mechanisms at once; every
+    surviving case stages ONE line, and a partition cannot be graded one member
+    at a time.
+
+    **The failure it catches is one this codebase shipped**: finding **N-325**,
+    a line that fell out of every list and rendered on no tab at all, in no
+    count, with nothing able to notice.  Restored on the live producer at plan
+    step ``bank_import:X-gi-3`` after adversarial review measured its absence.
+    """
+
+    def test_every_unmatched_line_reaches_exactly_one_card(
+        self, app, db, seed_user,
+    ):
+        """Three mechanisms in one pass, so the sets can actually collide."""
+        an_envelope(seed_user)
+        # ...a line a rule can file (creatable).
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        # ...a line ruling R-GJ parks (a holding state, on Transfers).
+        an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT, sequence=1,
+        )
+        # ...money coming IN, which is the recordable-inflow arm.
+        an_unexplained_outflow(
+            seed_user, merchant="Town Of Clayton", amount="2573.42",
+            sequence=2,
+        )
+        db.session.commit()
+
+        review = statement_match.review_set(a_scope(seed_user))
+        drawn = [
+            card.line.line_id
+            for tab in (Tab.TO_EXPLAIN, Tab.TRANSFERS)
+            for card in _cards(_page(seed_user, tab))
+            if card.line is not None
+        ]
+
+        assert len(review.unmatched) == 3, (
+            "the fixture staged fewer than three unexplained lines, so this "
+            "grades one mechanism rather than the partition"
+        )
+        assert len(drawn) == len(set(drawn)), (
+            f"a line renders a card on more than one tab: {drawn}"
+        )
+        assert set(drawn) == {line.line_id for line in review.unmatched}, (
+            "a line the pass could not explain reaches no card at all, which "
+            "is finding N-325's shape"
+        )
 
 
 class TestALineTheBankDatesImpossiblyIsSTILLInboxWork:
@@ -826,6 +963,17 @@ class TestOnlyTheInboxSweeps:
 
         assert swept, "a swept card must exist or this grades nothing"
         assert withheld, "a withheld card must exist or this grades nothing"
+        # **The withheld card is one a sweep WOULD otherwise reach**, which is
+        # what makes the emptiness below a SUPPRESSION rather than an absence:
+        # without it a producer that swept nothing at all, or that withheld
+        # this card for an unrelated reason, satisfies the assertion.  The
+        # retired queue's own version carried this half
+        # (``test_it_is_swept_by_NOTHING``); adversarial review 2026-09-06
+        # found it missing here when that class was deleted.
+        assert any(card.sweep_class is None for card in withheld), (
+            "no withheld card is being kept out of a sweep, so the emptiness "
+            "below is an absence rather than a suppression"
+        )
         assert [card for card in swept if card.panel.notes] == []
 
     def test_the_sweep_COUNT_is_what_the_control_would_reach(
@@ -1533,7 +1681,8 @@ class TestTheChipsNameOnlyATabThatCanRenderThem:
     .AcceptedCounts.total` and led to the register, which lists every accepted
     act.  Once the two settled TABS exist that total is the union of two of
     them, so the chip would have promised a number neither tab delivers -- the
-    caption-over-a-count defect ``_queue._sweeps_for`` exists to refuse.
+    caption-over-a-count defect the retired queue's ``_sweeps_for`` existed
+    to refuse.
 
     What must hold now is the property the route rests on: every chip names a
     tab whose count it equals, or names no tab at all.

@@ -792,9 +792,12 @@ def accepted_acts(seed_user, account=None):
 
     Plan step ``bank_import:X-gf-2``.  These were ``review_set(scope).accepted``
     until the register took them off the review screen (ruling
-    **bank_import:R-GX**), and going through the register's own reader rather
-    than around it is the point: it is what the surface renders, bound and
-    ordered as the surface orders it.
+    **bank_import:R-GX**), and going through the settled tabs' own reader
+    rather than around it is the point: it is what the surface renders, bound
+    and ordered as the surface orders it.  *It went through
+    ``register_set(...).accepted`` until plan step ``bank_import:X-gi-3``
+    deleted that assembly with the register's model; ``accepted_register`` is
+    the half it was assembled from, and the value returned is unchanged.*
 
     **Unbounded on purpose.**  A case here stages two or three acts, so the
     bound could never fire -- and passing ``None`` says the assertion is about
@@ -814,9 +817,9 @@ def accepted_acts(seed_user, account=None):
         asking for a different one than it used to.  No case does today, and
         the register's order is the one the screen renders.
     """
-    return statement_match.register_set(
+    return statement_match.accepted_register(
         seed_user["user"].id, (account or seed_user["account"]).id, None,
-    ).accepted.shown
+    ).shown
 
 
 def a_bars(seed_user, account=None):

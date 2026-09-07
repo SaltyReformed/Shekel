@@ -32,9 +32,10 @@ class TestNothingIsAnActWithoutItsOwnOK:
     """Rulings **R-FP** and **R-HS**, at the grain of the reader."""
 
     def test_a_pre_filled_destination_alone_is_not_an_act(self):
-        """The whole reason this reader exists beside ``batch_payload``.
+        """The whole reason this reader exists beside the retired
+        ``batch_payload``.
 
-        On the review queue the destination select IS the tick, so a rule's
+        On the review queue the destination select WAS the tick, so a rule's
         remembered destination may not arrive selected.  Here it does, and
         the OK checkbox is the tick -- so a card nobody pressed contributes
         nothing.
@@ -164,14 +165,42 @@ class TestTheOrderIsTheBankLinesAndNotTheFieldNames:
 
         assert len(payload["creations"]) == 1
 
-    def test_a_non_numeric_OK_does_not_raise_inside_the_sort(self):
-        """The same tolerance ``order_token_key`` gives every other reader."""
-        payload, silent = reconcile_payload(_form([("ok", "²")]))
+    @pytest.mark.parametrize("token, why", [
+        ("\N{SUPERSCRIPT TWO}", "isdigit() is True and int() raises"),
+        ("\N{ARABIC-INDIC DIGIT ONE}\N{ARABIC-INDIC DIGIT TWO}",
+         "a non-ASCII digit script int() DOES convert, to another id"),
+        ("9" * 4301, "past CPython's 4,300-digit conversion limit"),
+    ])
+    def test_an_OK_that_str_isdigit_ACCEPTS_does_not_raise(self, token, why):
+        """The same tolerance ``order_token_key`` gives every other reader.
+
+        **All three arms, because only one of them reaches the length
+        clause.**  ``str.isdigit()`` is true for 888 characters, 128 of which
+        make ``int()`` raise, and true for a digit run longer than CPython will
+        convert -- so
+        :func:`~app.schemas.validation._helpers.order_token_key` guards on
+        ``is_ascii_digits(raw) and len(raw) <= MAX_ORDER_DIGITS``, and
+        ``app/error_handlers.py`` registers no ``ValueError`` arm.  A body
+        carrying ``ok=999...9`` past that limit would be an unhandled 500 on
+        the door that applies a whole pass.
+
+        *These three rode the retired ``batch_payload``'s ``apply`` key until
+        plan step ``bank_import:X-gi-3``, whose first draft deleted them with
+        it and left only the superscript arm covered -- so the LENGTH clause,
+        and the non-ASCII script ``int()`` silently converts to a DIFFERENT
+        id, were graded by nothing.  Adversarial review 2026-09-06.  This is
+        the live reader's own key, which is where the guard now has to hold.*
+
+        Args:
+            token: A spelling ``str.isdigit`` accepts.
+            why: What is wrong with it, for the failure message.
+        """
+        payload, silent = reconcile_payload(_form([("ok", token)]))
 
         assert payload == {
             "matches": [], "creations": [], "incomes": [], "skips": [],
-        }
-        assert silent == ("²",)
+        }, why
+        assert silent == (token,), why
 
 
 class TestWhatTheReadersHandTheSchemasIsWhatTheSchemasGrade:

@@ -495,8 +495,8 @@ def accepted_register(
             then drop the other half from them: with 60 hand acts and 10 rule
             acts the Explained tab would render about 43 rows under a tab
             captioned *60*, which is a caption promising a number the tab does
-            not deliver -- the defect :func:`~._queue._sweeps_for` exists to
-            refuse, one surface over.
+            not deliver -- the defect the retired queue's ``_sweeps_for``
+            existed to refuse, one surface over.
 
     Returns:
         The :class:`AcceptedRegister`.  Its :attr:`~AcceptedRegister

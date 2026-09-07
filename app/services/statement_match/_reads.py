@@ -1,4 +1,9 @@
-"""What the review screen shows: unmatched lines, proposals, and what agrees.
+"""What the Reconcile page's INBOX shows: unmatched lines, proposals, and what agrees.
+
+*It said "the review screen" until plan step ``bank_import:X-gi-3``.  That
+screen went at ``bank_import:X-gi-2`` and this step deleted its model; what
+this module produces is the pass, and :func:`~._reconcile.reconcile_page` is
+its principal reader.*
 
 Read-only, and separate from :mod:`._accept` for the reason every package here
 splits that way: the write door and the reader answer different questions, and
@@ -15,9 +20,10 @@ a clean sweep:
   (:attr:`~._propose.ProposedMatches.crowded_days`);
 * matches whose rows no longer carry the day the bank stated, which is what a
   later hand edit produces and what makes a match re-reviewable rather than
-  quietly stale -- reported by :mod:`._accepted_view` on the REGISTER since
-  plan step ``bank_import:X-gf-2``, this screen having stopped listing
-  accepted acts at all (ruling **bank_import:R-GX**).
+  quietly stale -- reported by :mod:`._accepted_view`, which the two SETTLED
+  TABS render, since plan step ``bank_import:X-gf-2`` took accepted acts off
+  this pass entirely (ruling **bank_import:R-GX**).  *That said "on the
+  REGISTER" until ``bank_import:X-gi-3`` deleted it.*
 
 Services-boundary discipline: reads only, plain data in, frozen dataclasses
 out, no Flask import.
@@ -50,119 +56,10 @@ from ._bars import BarredLine, MerchantAnswers
 from ._gaps import ReviewBounds, search_gap
 from ._leftovers import CreatableLine, RecordableInflow, leftovers
 from ._propose import propose
-from ._queue import StatementQueue, statement_queue
 from ._scope import ReviewScope
 from ._section import MerchantSection
 from ._undisposed import inbox_partition
 from ._verdict import ruled
-
-
-@dataclass(frozen=True)
-class ProposedAlready:
-    """How much of both pick lists this pass's own proposals account for.
-
-    :meth:`ReviewSet.explained_by_a_proposal`'s answer.  **A value rather than
-    a pair**, so the screen asks ``any`` rather than testing two integers with
-    an ``or`` -- the same reason :attr:`~._gaps.ReviewBounds.any_limit` exists,
-    and the same failure it prevents: a third count added later that a Jinja
-    condition silently does not include.
-
-    Attributes:
-        lines: Distinct bank lines a proposal explains, so absent from
-            :attr:`ReviewSet.unmatched`.
-        rows: Distinct row SUBJECTS a proposal names, so absent from
-            :attr:`ReviewSet.unmatched_rows`.
-    """
-
-    lines: int
-    rows: int
-
-    @property
-    def any(self) -> bool:
-        """Return whether the proposals take anything out of either list."""
-        return bool(self.lines or self.rows)
-
-
-@dataclass(frozen=True)
-class RowsNeverShown:
-    """The owner's own rows this statement never showed, BY DIRECTION.
-
-    Finding **bank_import:N-380**, plan step ``bank_import:X-gf-3b-2``.  The
-    other side of the reconciliation: :attr:`ReviewSet.unmatched` is every bank
-    line the owner's records do not explain, and this is every row of theirs no
-    bank line explains.  Both are leftovers of one pass and only one of them
-    was ever stated on the queue.
-
-    **The DIRECTION is the whole point of the value.**  The workbench captioned
-    the same list *a payment your records claim happened and your bank did not
-    make*, which is a claim about an OUTFLOW, while 17 of the developer's own
-    49 are DEPOSITS -- his `Data Manager` salary rows at `$2,473.38`, whose
-    matching payroll credits sit unexplained in the queue at `$2,573.42`
-    because the two differ by more than any tier's bound.  One caption over
-    both directions is wrong about one of them whichever way it is written.
-
-    **Measured 2026-08-28** through the real producer on a clone of the
-    developer's dev data at migration head ``a7c41f9d2b60``: 67 rows, of which
-    18 carry a :attr:`~._offers.CandidateRow.not_shown_alone` withdrawal and 49
-    do not -- 32 payments at `$3,815.64` and 17 deposits at `$18,132.28`.  The
-    signed net of those two is `$14,316.64` and is the misleading figure, since
-    it cancels income the bank never credited against payments it never made;
-    the queue states the two separately for exactly that reason.
-
-    Attributes:
-        payments: The bare OUTFLOW rows -- money the records say left and the
-            bank did not show leaving.
-        deposits: The bare INFLOW rows -- money the records say arrived and the
-            bank did not show arriving.
-
-    **A row whose** :attr:`~._offers.CandidateRow.not_shown_alone` **holds is
-    in NEITHER**, and that is the value's whole narrowing: the bank accounts
-    for its money through some OTHER row -- a ``CC Payback`` leaves inside one
-    lump payment to the card -- so the alarm is not true of it and stating it
-    here would be the claim plan step ``bank_import:X-gc`` withdrew.  They are
-    not carried as a third tuple: nothing reads one, and a field computed
-    every render for no reader is the speculative shape ``CLAUDE.md`` rule 13
-    refuses.
-    """
-
-    payments: "tuple[CandidateRow, ...]"
-    deposits: "tuple[CandidateRow, ...]"
-
-    @property
-    def payments_total(self) -> Decimal:
-        """Return what the unshown payments come to.
-
-        Returns:
-            The total as a POSITIVE figure, so the screen states it without
-            arithmetic in a template -- the rule
-            :attr:`ArrivalsAlreadyHeld.total` already sets.
-        """
-        return -sum(
-            (row.cash_amount for row in self.payments), Decimal("0.00"),
-        )
-
-    @property
-    def deposits_total(self) -> Decimal:
-        """Return what the unshown deposits come to.
-
-        Returns:
-            The total, already positive.
-        """
-        return sum(
-            (row.cash_amount for row in self.deposits), Decimal("0.00"),
-        )
-
-    @property
-    def any(self) -> bool:
-        """Return whether this statement failed to show any row at all.
-
-        The one question the queue asks before stating this, answered here
-        rather than as two truth tests a third direction would silently miss.
-
-        Returns:
-            Whether either direction holds a row.
-        """
-        return bool(self.payments or self.deposits)
 
 
 @dataclass(frozen=True)
@@ -463,113 +360,6 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
                     return CardSubject(line=line, proposal=proposal)
         return None
 
-    @property
-    def explained_by_a_proposal(self) -> "ProposedAlready":
-        """Return what this pass's own PROPOSALS take out of both pick lists.
-
-        **The FIFTH bound on the hand-build lists, and the only one that is not
-        a** :class:`~._gaps.ReviewBounds` **field** -- which is exactly why the
-        workbench's *what is not in these lists* panel could not name it and
-        why an adversarial design review 2026-08-28 found it missing. A line a
-        proposal explains is dropped by :func:`_unexplained` before
-        :attr:`unmatched` exists, and a row one names is dropped by
-        :func:`_rows_the_bank_never_showed`; measured on the developer's own
-        statement, this pass has proposed **124** matches, so it is a large
-        absence rather than a corner.
-
-        **It matters most when the proposal is WRONG.**  A proposal is a
-        suggestion the owner has not accepted, so a line the app paired
-        badly is absent from the very tool the owner would use to pair it
-        correctly -- and while the form stood on the review screen the
-        proposal card was beside it, so the line was at least on the page.
-        Plan step ``bank_import:X-gf-3b`` moved the form and that stopped
-        being true, which is what makes this the split's own debt rather than
-        an inherited one.
-
-        **A COUNT and a pointer, not a list**: these lines are not missing
-        work, they are work waiting on a decision one screen away, and the
-        remedy is to go and take it.  Counted here rather than in Jinja for
-        the reason :func:`~._queue._sweeps_for` counts in the service: a caption
-        may not promise a number a template computed.
-
-        Returns:
-            The :class:`ProposedAlready`.  Rows are counted over the SUBJECTS
-            a proposal names -- ``(kind, row_id)`` -- which is the same key
-            :func:`_rows_the_bank_never_showed` withholds on, so the number
-            and the absence cannot disagree.
-
-            **The two halves are not equally falsifiable, and the asymmetry is
-            recorded rather than papered over.**  Every proposal this app
-            builds names exactly ONE line: :func:`~._propose._one_to_one` and
-            :func:`~._propose._groups` and :func:`~._near.near_misses` all
-            construct ``lines=(line,)``.  So counting distinct line ids and
-            counting PROPOSALS give the same number for every input that
-            exists, and a mutation swapping one for the other survives as an
-            EQUIVALENT mutant -- measured 2026-08-28.  It is written the
-            distinct way anyway, because a multi-line tier would make the
-            other spelling wrong silently.  The ROWS half is genuinely
-            checkable: ``_groups`` sets ``rows=combo``, and
-            ``TestAGroupProposalTakesSEVERALRowsOutOfTheList`` is the case that
-            kills it.
-        """
-        return ProposedAlready(
-            lines=len({
-                line.line_id
-                for proposal in self.proposals for line in proposal.lines
-            }),
-            rows=len({
-                (row.kind, row.row_id)
-                for proposal in self.proposals for row in proposal.rows
-            }),
-        )
-
-    @property
-    def queue(self) -> "StatementQueue":
-        """Return the exception queue as ONE list grouped by the decision.
-
-        Ruling **bank_import:R-HB**, plan step ``bank_import:X-gf-3b-2``.  The
-        screen's spelling of :func:`~._queue.statement_queue`, which holds the
-        derivation and the whole argument for it -- delegated for the reason
-        :meth:`search_gap_for` delegates to :mod:`._gaps`: this value is what
-        the queue is assembled FROM, and a module that also assembled it would
-        be two subjects wearing one name.
-
-        **It replaced** ``placed_by_class``, which counted the sweep over every
-        creatable line whatever the evidence said about it.  The sweep belongs
-        to one group now (:class:`~._queue.QueueSweep`), so the count and the
-        control's reach are the same fact.
-
-        Returns:
-            The :class:`~._queue.StatementQueue`.
-        """
-        return statement_queue(self)
-
-    @property
-    def rows_never_shown(self) -> RowsNeverShown:
-        """Return the owner's own rows this statement never showed.
-
-        Finding **bank_import:N-380**, plan step ``bank_import:X-gf-3b-2``.
-        **A property over** :attr:`unmatched_rows` **rather than a field**, for
-        the reason :meth:`arrivals_already_held_in` is one: those rows are
-        derived after the leftovers are split, and a value built from a second
-        read of them could disagree with the list the workbench renders --
-        which is where this summary sends the owner.
-
-        Returns:
-            The :class:`RowsNeverShown`, partitioned by DIRECTION and with the
-            rows whose money the bank accounts for elsewhere counted apart.
-        """
-        return RowsNeverShown(
-            payments=tuple(
-                row for row in self.unmatched_rows
-                if row.not_shown_alone is None and row.cash_amount < 0
-            ),
-            deposits=tuple(
-                row for row in self.unmatched_rows
-                if row.not_shown_alone is None and row.cash_amount > 0
-            ),
-        )
-
     def arrivals_already_held_in(
         self, line: BankLine,
     ) -> ArrivalsAlreadyHeld | None:
@@ -813,7 +603,8 @@ def _already_held_by_line(
     outflow the schema allows.  No mutation could reach the branch.  This
     package has deleted exactly that shape three times by name
     (:meth:`~._bars.CreationBars.bar_for`'s ``merchant is None`` arm,
-    ``_queue._sweeps_for``'s ``or row.notes``, and :mod:`._income`'s zero arm),
+    the retired queue's ``_sweeps_for`` ``or row.notes``, and
+    :mod:`._income`'s zero arm),
     and the cost of not having it is one pass over ``never_shown`` per outflow
     -- 91 lines against 49 rows on the developer's own statement, arithmetic
     with no query in it.

@@ -36,15 +36,13 @@ from app.services.pay_calendar import calendar_for
 from app.services.statement_import import delete_import
 from app.services.statement_match import (
     account_merchants,
-    answered_merchants,
     CONTAINER_ANSWERS,
-    Evidence,
     LinePipeline,
+    merchant_directory,
     pipeline_for,
     Placement,
     PlacementKind,
     PurchaseDestination,
-    register_set,
     review_set,
     RuleAnswer,
     RuleSubmission,
@@ -57,6 +55,9 @@ from app.services.statement_match._placement import (  # pylint: disable=protect
 )
 from app.services.statement_match._bars import (  # pylint: disable=protected-access
     CreationBars,
+)
+from app.services.statement_match._section import (  # pylint: disable=protected-access
+    merchant_summary,
 )
 from app.services.statement_match._rules import (  # pylint: disable=protected-access
     _named_templates,
@@ -941,14 +942,22 @@ class TestWhatARuleMayNAME:
 
 
 class TestTheSectionTheScreenRenders:
-    """What each rule control lists, and what the queue's rows count.
+    """What each rule control lists, and what the inbox's rows count.
 
     **The membership rule changed at plan step ``bank_import:X-gf-2``** (ruling
     **bank_import:R-GX**): one control was every merchant with pending work
-    PLUS every merchant answered for, and it is now two -- the queue asks about
-    the merchants with no answer, and the register shows the answers.  These
-    grade both halves, because the defect the split can produce is a merchant
-    that reaches NEITHER.
+    PLUS every merchant answered for, and it became two -- the inbox asked
+    about the merchants with no answer, and the register showed the answers.
+
+    **Plan step ``bank_import:X-gi-3`` deleted the register's half**, and with
+    it the PARTITION these cases graded: the MERCHANTS surface
+    (:func:`~app.services.statement_match.merchant_directory`, ruling
+    **bank_import:R-IC**) lists every merchant the account has seen, answered
+    or not, so *reaches exactly one of the two* is no longer a property anyone
+    holds.  What survives is the half that is still a rule -- the inbox asks
+    only where there is work AND no answer -- plus the reach that mattered: an
+    answer whose lines are all explained is still editable, which is the case
+    below.
     """
 
     def test_the_queue_lists_only_the_merchants_with_no_answer(
@@ -980,15 +989,22 @@ class TestTheSectionTheScreenRenders:
             row.summary.merchant for row in review.merchants.merchants
         ] == ["Walmart"]
 
-    def test_the_register_lists_an_answer_whose_lines_are_all_explained(
+    def test_the_directory_lists_an_answer_whose_lines_are_all_explained(
         self, app, db, seed_user,
     ):
         """This is what makes an answer changeable once its work is done.
 
         Without it a rule could only be changed while there was still an
-        unexplained line for that merchant -- and the register's membership is
-        ONE TABLE READ (the answers themselves), so a merchant with no line at
-        all is in it exactly as one with ten is.
+        unexplained line for that merchant.
+
+        **It asked the REGISTER until plan step ``bank_import:X-gi-3``**, whose
+        membership was the answers themselves.  The register's model went with
+        the screen ``bank_import:X-gi-2`` deleted, and the reach survives
+        because :func:`~app.services.statement_match.account_merchants` IS that
+        union: an answered ``Merchant`` row outlives its lines, and deleting an
+        import sweeps only the merchants no line names AND no answer is about.
+        So a merchant with no line at all is in the directory exactly as one
+        with ten is, and this case is what says so.
         """
         envelope = a_transaction(
             seed_user, name="Groceries", is_envelope=True,
@@ -998,57 +1014,17 @@ class TestTheSectionTheScreenRenders:
         a_rule(seed_user, "Old Merchant", template_id=envelope.template_id)
         db.session.commit()
 
-        register = register_set(
-            seed_user["user"].id, seed_user["account"].id,
+        listed = {
+            entry.summary.merchant: entry.summary
+            for entry in merchant_directory(
+                seed_user["user"].id, seed_user["account"].id, {},
+            ).entries
+        }
+
+        assert "Old Merchant" in listed, (
+            "an answer whose merchant has no line left is out of reach"
         )
-
-        # ...and the merchant with work and no answer is NOT here: it is the
-        # queue's, which is the other half of the same partition.  ONE
-        # assertion, because an equality already says what is absent and a
-        # second test of the same set reads as a second subject.
-        assert [
-            row.merchant for row in register.merchants.merchants
-        ] == ["Old Merchant"]
-
-    def test_every_merchant_reaches_exactly_ONE_of_the_two_controls(
-        self, app, db, seed_user,
-    ):
-        """The partition itself, which is what a split can silently break.
-
-        Each of the two tests above could pass while a merchant fell through
-        the gap between them -- answered and pending is the shape that would --
-        so this asserts the two sets over one account are disjoint and cover
-        every merchant either of them could be about.
-        """
-        envelope = a_transaction(
-            seed_user, name="Groceries", is_envelope=True,
-        )
-        statement = an_import(seed_user)
-        a_bank_line(seed_user, statement, amount="-25.00", merchant="Amazon")
-        a_bank_line(
-            seed_user, statement, amount="-30.00", merchant="Walmart",
-            sequence_in_group=1,
-        )
-        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
-        a_rule(seed_user, "Old Merchant", template_id=envelope.template_id)
-        db.session.commit()
-
-        review = review_set(a_scope(seed_user))
-        register = register_set(
-            seed_user["user"].id, seed_user["account"].id,
-        )
-
-        asked = {row.summary.merchant for row in review.merchants.merchants}
-        answered = {row.merchant for row in register.merchants.merchants}
-        assert asked == {"Walmart"}
-        assert answered == {"Amazon", "Old Merchant"}
-        # ...and TOGETHER they are every merchant either control could be
-        # about -- one with a waiting line, one with an answer, one with both
-        # -- which is what "partition" claims and what neither equality above
-        # says on its own: a merchant dropped by BOTH would leave this union
-        # short while each equality still held.
-        assert asked | answered == {"Amazon", "Old Merchant", "Walmart"}
-        assert not asked & answered
+        assert listed["Old Merchant"].rule is not None
 
     def test_a_queue_row_carries_how_many_lines_and_how_much_money(
         self, app, db, seed_user,
@@ -1056,9 +1032,11 @@ class TestTheSectionTheScreenRenders:
         """The queue decides several lines at once, so it says how much.
 
         On the developer's own statement one row of it covers `-$7,412.94`.
-        **The register carries no such figure and must not**: it runs no pass,
-        so it has not measured one -- see
-        ``TestTheRegisterStatesNoFigureItHasNotMeasured``.
+        **A surface with no pass carries no such figure and must not**: it has
+        not measured one -- see
+        ``TestASurfaceWithNoPassStatesNoFigureItHasNotMeasured``, which this
+        step renamed from ``TestTheRegisterStatesNoFigureItHasNotMeasured``
+        when the register went.
         """
         statement = an_import(seed_user)
         a_bank_line(seed_user, statement, amount="-25.00", merchant="Amazon")
@@ -1119,44 +1097,28 @@ class TestTheSectionTheScreenRenders:
         # above a partition claim rather than a membership one: a line counted
         # twice would put it on a holding tab AND in the inbox.
         assert review.parked == ()
-        # **The sweep is counted on the GROUP that offers it** since plan step
-        # ``bank_import:X-gf-3b-2`` (developer ruling 2026-08-28), which is
-        # what keeps the caption's number and the control's reach one fact.
-        # The Amazon line has no counterpart evidence, so it groups under
-        # NOTHING_FOUND and its rule is swept there.
-        groups = {group.evidence: group for group in review.queue.groups}
-        assert groups[Evidence.NOTHING_FOUND].sweeps[0].css_class == "into_open"
-        assert groups[Evidence.NOTHING_FOUND].sweeps[0].count == 1
-        # **The parked line is in the other group**, which is what this case
-        # can say about the grouping.
+        # ...and the ANSWER that parked it is still reachable, on the MERCHANTS
+        # surface: both of these merchants have been answered for, so the inbox
+        # asks about neither and the directory shows both (rulings
+        # **bank_import:R-GX**, **R-IC**).  A parked line whose answer had no
+        # row anywhere would be ruling R-GJ's own dead end -- an act refused
+        # with the door that permits it hidden.
         #
-        # It asserted `groups[Evidence.ALREADY_HELD].sweeps == ()` until a
-        # mutation run measured that TAUTOLOGICAL: `_sweeps_for` skips every
-        # row that is not `records_a_purchase`, and this group's only member
-        # is a parked line, which is `NONE_OPEN` by construction -- so the
-        # assertion holds under EVERY possible grouping rule and graded
-        # nothing. Removing the group guard from `statement_queue` left it
-        # green. The reach invariant it was reaching for needs a group holding
-        # a CREATABLE row, and lives where it can fire:
-        # `test_queue.py::TestNoSweptRowCarriesASentence`.
-        assert [row.line.merchant for row
-                in groups[Evidence.ALREADY_HELD].rows] == ["Capital One"]
-        # ...and the ANSWER that parked it is still reachable, on the register:
-        # both of these merchants have been answered for, so the queue asks
-        # about neither and the register shows both (ruling
-        # **bank_import:R-GX**).  A parked line whose answer had no row
-        # anywhere would be ruling R-GJ's own dead end -- an act refused with
-        # the door that permits it hidden.
+        # *The sweep-per-evidence-group assertions that stood here went with
+        # the queue at plan step ``bank_import:X-gi-3``; the live coupling they
+        # were about -- no SWEPT card carries a sentence -- is
+        # ``test_reconcile.TestOnlyTheInboxSweeps``, which stages a non-empty
+        # swept set and a non-empty withheld set so it can fire.*
         assert review.merchants.merchants == ()
         assert {
-            row.merchant for row in register_set(
-                seed_user["user"].id, seed_user["account"].id,
-            ).merchants.merchants
+            entry.summary.merchant for entry in merchant_directory(
+                seed_user["user"].id, seed_user["account"].id, {},
+            ).entries
         } == {"Amazon", "Capital One"}
 
 
-class TestTheRegisterStatesNoFigureItHasNotMeasured:
-    """The register runs no pass, so it carries no count of waiting lines.
+class TestASurfaceWithNoPassStatesNoFigureItHasNotMeasured:
+    """The directory runs no pass, so it carries no count of waiting lines.
 
     Plan step ``bank_import:X-gf-2``.  ``line_count`` and ``total`` used to sit
     on :class:`~app.services.statement_match.MerchantSummary`, which both
@@ -1187,9 +1149,9 @@ class TestTheRegisterStatesNoFigureItHasNotMeasured:
         a_rule(seed_user, "Amazon", template_id=envelope.template_id)
         db.session.commit()
 
-        row = register_set(
-            seed_user["user"].id, seed_user["account"].id,
-        ).merchants.merchants[0]
+        row = merchant_directory(
+            seed_user["user"].id, seed_user["account"].id, {},
+        ).entries[0].summary
 
         assert row.merchant == "Amazon"
         assert not hasattr(row, "line_count")
@@ -1250,8 +1212,15 @@ class TestALineDatedMadeAfterItPosted:
         # the owner cannot check against their statement is not actionable.
         assert day.isoformat() in offered.withheld
         assert (day + timedelta(days=1)).isoformat() in offered.withheld
-        # It is not a BOUND: nothing here was left unexamined.
-        assert review.bounds.any_limit is False
+        # It is not a BOUND: nothing here was left unexamined.  *It asked
+        # ``bounds.any_limit`` until plan step ``bank_import:X-gi-3`` deleted
+        # that property with its last reader; these are the two bounds this
+        # fixture could set, and they are the two the page states for itself
+        # (``ReconcilePage.unexamined``).*
+        assert review.bounds.crowded_days == ()
+        assert review.bounds.unpriceable_count == 0
+        assert review.bounds.before_calendar_count == 0
+        assert review.bounds.books is None
 
     def test_a_line_dated_made_BEFORE_it_posted_keeps_its_placement(
         self, app, db, seed_user,
@@ -2460,18 +2429,18 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
             stale_categories={},
         )
 
-        # THE REGISTER'S control, because an answered merchant is where a
-        # stored answer can be stale and the queue asks about none (ruling
-        # **bank_import:R-GX**).
-        section = answered_merchants(
-            view,
+        # THE SHARED ROW, because an answered merchant is where a stored
+        # answer can be stale and the inbox asks about none (ruling
+        # **bank_import:R-GX**).  *It went through ``answered_merchants``, the
+        # register's control, until plan step ``bank_import:X-gi-3`` deleted
+        # it; ``merchant_summary`` is the producer that control and the
+        # MERCHANTS surface always shared, so the row graded is the same one.*
+        row = merchant_summary(
+            merchant.id, "Amazon", view,
             CreationBars(never=frozenset(), account_payments=frozenset()),
         )
 
-        assert len(section.merchants) == 1
-        assert section.merchants[0].unofferable.template == (
-            "a recurring envelope"
-        )
+        assert row.unofferable.template == "a recurring envelope"
 
     def test_an_OFFERABLE_template_gets_no_stale_label(
         self, app, db, seed_user,
@@ -2499,12 +2468,12 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
             stale_categories={},
         )
 
-        section = answered_merchants(
-            view,
+        row = merchant_summary(
+            merchant.id, "Amazon", view,
             CreationBars(never=frozenset(), account_payments=frozenset()),
         )
 
-        assert section.merchants[0].unofferable.template is None
+        assert row.unofferable.template is None
 
 
 class TestTheBanksSignConvention:

@@ -76,8 +76,8 @@ class OfferedAnswer:
             borrowing that label would promise a rule that expires.
         count: How many of this merchant's purchases this pass filed here.
             **The number the sentence promises**, counted in the service for
-            the reason :func:`~._queue._sweeps_for` counts there: a caption may
-            not promise a figure a template computed.
+            the reason the retired queue's ``_sweeps_for`` counted there: a
+            caption may not promise a figure a template computed.
         blocked: Why the rule door would REFUSE this answer, or ``None`` where
             it would take it.
 

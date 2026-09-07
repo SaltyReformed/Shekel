@@ -365,10 +365,12 @@ class LineCard:
         sweeps per risk class, and the developer's ruling of 2026-08-28 added
         the second half: a bulk click may not reach a line whose own card says
         the books may already hold it, or that the pass could not finish
-        checking.  :func:`~._queue._sweeps_for` kept that by giving sweeps to
-        one evidence group only -- a coupling that broke the moment the
-        grouping changed -- so it is stated here as the predicate it always
-        was.
+        checking.  The retired queue's ``_sweeps_for`` kept that by giving
+        sweeps to one evidence group only -- a coupling that broke the moment
+        the grouping changed -- so it is stated here as the predicate it
+        always was.  *That producer went with its model at plan step
+        ``bank_import:X-gi-3``; the coupling it is named for is the reason
+        this predicate did not go with it.*
 
         Returns:
             :attr:`risk_class` when this card carries a working verb, no
@@ -501,8 +503,8 @@ class CardSection:
             prevent.
 
     **An empty section is ABSENT rather than rendered empty**, which is the
-    rule :class:`~._queue.StatementQueue` already keeps: a heading over no
-    rows reads as work the owner has somewhere to do.
+    rule the retired queue's ``StatementQueue`` already kept: a heading over
+    no rows reads as work the owner has somewhere to do.
     """
 
     section: "Section | None"
