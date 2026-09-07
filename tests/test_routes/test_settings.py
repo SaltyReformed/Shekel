@@ -374,13 +374,41 @@ class TestSettingsDashboard:
             assert custom_type.has_interest is True
             assert custom_type.is_liquid is True
 
-    def test_settings_dashboard_pay_periods_section(self, app, auth_client, seed_user):
-        """GET /settings?section=pay-periods renders pay period generation form."""
+    def test_settings_dashboard_pay_periods_section(
+        self, app, bare_auth_client, bare_user,
+    ):
+        """GET /settings?section=pay-periods renders the generation form.
+
+        **Re-pointed from ``seed_user`` to ``bare_user`` at plan step
+        ``pay_calendar:C14-f``** (ruling **R-PC63**).  The generate card and
+        the manage card became EXCLUSIVE: the card asking for a First Payday is
+        offered only to an owner who has none, because offering it to one who
+        already holds a rhythm is how they could restate it (ledger row
+        **P80**).  The SUBJECT is unchanged -- this section still renders the
+        generation form -- and only the owner it is asked of moved.  The
+        exclusive half is the case below.
+        """
         with app.app_context():
-            resp = auth_client.get("/settings?section=pay-periods")
+            resp = bare_auth_client.get("/settings?section=pay-periods")
             assert resp.status_code == 200
             assert b"Generate Pay Periods" in resp.data
             assert b'name="start_date"' in resp.data
+
+    def test_settings_pay_periods_offers_a_rhythm_holder_the_manage_card(
+        self, app, auth_client, seed_user,
+    ):
+        """An owner who holds paydays is offered management, not generation.
+
+        The other half of the exclusivity (plan step ``pay_calendar:C14-f``).
+        Asserted as an ABSENCE as well as a presence: without the negative,
+        rendering both cards again would leave this case green.
+        """
+        with app.app_context():
+            resp = auth_client.get("/settings?section=pay-periods")
+            assert resp.status_code == 200
+            assert b"Generate Pay Periods" not in resp.data
+            assert b'name="start_date"' not in resp.data
+            assert b"/pay-periods/extend" in resp.data
 
     def test_settings_dashboard_invalid_section_defaults_to_general(self, app, auth_client, seed_user):
         """GET /settings?section=bogus defaults to the General section."""

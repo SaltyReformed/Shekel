@@ -135,7 +135,12 @@ from datetime import date, datetime
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.services import pay_calendar, pay_rhythm, pay_schedule_service
+from app.services import (
+    pay_calendar,
+    pay_period_gates,
+    pay_rhythm,
+    pay_schedule_service,
+)
 from app.utils.log_events import (
     BUSINESS,
     EVT_PAY_PERIODS_GENERATED,
@@ -205,12 +210,38 @@ def reject_out_of_range_batch_size(num_periods: int) -> None:
         )
 
 
+@dataclass(frozen=True)
+class SpanReplacement:
+    """What a door REPLACING A SPAN tells the writer about the act.
+
+    Plan step **pay_calendar:C14-f**.  ``regenerate`` and ``reset`` do not
+    merely extend a schedule -- they drop periods and record others in ONE
+    operation, the distinction ``retiring_ids`` already drew -- and this pairs
+    that with the owner's answer about the hole such a replacement can leave.
+    Both are facts the DOOR supplies about the ACT rather than parts of the
+    payday batch.  A parameter object per the project rule for a public
+    function past the argument bound, and the grouping is real: a door that
+    retires nothing can never need the second.
+
+    Attributes:
+        retiring_ids: ``budget.pay_periods.id`` values to DELETE in the same
+            operation.  The caller has already run the gates that decide they
+            may go; this carries them out, so the refusals see the operation's
+            final payday set.  An id that is not the owner's is inert.
+        gap_confirmed: The owner has been shown that the replacement skips at
+            least one whole paycheck, and accepted it.
+    """
+
+    retiring_ids: "frozenset[int] | set[int]" = frozenset()
+    gap_confirmed: bool = False
+
+
 def record_paydays(
     user_id: int,
     first_payday: date,
     num_periods: int,
     rhythm: pay_rhythm.Rhythm,
-    retiring_ids: "set[int] | None" = None,
+    replacing: "SpanReplacement | None" = None,
 ) -> "list[PayPeriod]":
     """Record a batch of paydays.
 
@@ -288,14 +319,10 @@ def record_paydays(
             which since plan step ``C14-e-1`` it reads off the
             :class:`~app.services.pay_calendar.PayCalendar` it already built
             rather than through a scalar query of its own.
-        retiring_ids: ``budget.pay_periods.id`` values to DELETE as part of the
-            same operation, for the two doors that replace a span rather than
-            extend one.  The caller has already run whatever gates decide they
-            may go; this only carries them out, so that the refusals below see
-            the operation's final payday set.  Any id that is not one of
-            *user_id*'s own periods is silently inert -- it names no row this
-            function can reach.  Defaults to retiring nothing.
-
+        replacing: What this batch REPLACES, when it replaces a span rather
+            than extending one (:class:`SpanReplacement`).  ``None`` -- every
+            door but regenerate and reset -- retires nothing and confirms
+            nothing.
     Returns:
         The newly created :class:`~app.models.pay_period.PayPeriod` objects,
         flushed so their ids are assigned, ``start_date`` ascending.  Empty when
@@ -329,10 +356,14 @@ def record_paydays(
     pay_schedule_service.reject_shift_on_short_cadence(rhythm)
 
     current = _owner_paydays(user_id)
-    doomed = retiring_ids or frozenset()
+    replacing = replacing or SpanReplacement()
+    doomed = replacing.retiring_ids or frozenset()
     retiring = [period_id for period_id, _payday in current if period_id in doomed]
     surviving_paydays = {
         payday for period_id, payday in current if period_id not in doomed
+    }
+    retired_paydays = {
+        payday for period_id, payday in current if period_id in doomed
     }
 
     new_paydays = [
@@ -356,9 +387,16 @@ def record_paydays(
     # list.  One read answers both halves (``resolve_schedule``), where the
     # cadence half alone used to.
     stored = pay_schedule_service.resolve_schedule(user_id)
-    _reject_backward_payday(
-        surviving_paydays, new_paydays,
-        None if stored is None else stored.rhythm,
+    stored_rhythm = None if stored is None else stored.rhythm
+    _reject_backward_payday(surviving_paydays, new_paydays, stored_rhythm)
+    # The floor's MIRROR at the other end, and it lives in the gates module
+    # while being called from HERE (plan step C14-f): it is an overridable,
+    # owner-answerable predicate, which is that module's subject -- and calling
+    # it from the one writer is what makes every door inherit it, which is the
+    # half P80 shows you cannot leave to the doors.
+    pay_period_gates.reject_unconfirmed_gap(
+        surviving_paydays, retired_paydays, new_paydays, stored_rhythm,
+        replacing.gap_confirmed,
     )
 
     created = _apply(

@@ -90,7 +90,7 @@ class TestTheControlIsRenderedOnAllFourDoors:
         assert response.status_code == 422
         assert b'name="shift"' in response.data
 
-    def test_the_settings_page_offers_it_on_all_three_of_its_forms(
+    def test_an_owner_with_a_rhythm_is_offered_it_on_regenerate_and_reset(
         self, auth_client,
     ):
         """Generate, regenerate and reset each carry the control.
@@ -106,9 +106,40 @@ class TestTheControlIsRenderedOnAllFourDoors:
         The page holds seven POST forms and only these three state a rhythm,
         which is the same distinction R-PC56's own first form got wrong when
         it named two doors and one of them was not one.
+
+        **The three are no longer on ONE page, and that is plan step
+        ``pay_calendar:C14-f``** (ruling **R-PC63**).  The generate card and
+        the manage card became EXCLUSIVE: an owner who holds no paydays is
+        offered generate and nothing else, and an owner who holds some is
+        offered regenerate and reset and never generate -- because generate is
+        where they could restate a phase they already had, which is ledger row
+        **P80**.  So the census splits across two owners, 2 here and 1 in the
+        case below, and each half stays counted EXACTLY for the reason above.
+
+        **It is two CASES and not one with two clients**: ``auth_client`` and
+        ``bare_auth_client`` both wrap the same ``client`` fixture and log in
+        over each other, so a case requesting both gets ONE session and
+        silently measures one owner twice.  A first draft of this pair did
+        exactly that and read 2 where it asserted 1.
         """
-        page = auth_client.get("/settings?section=pay-periods").data
-        assert page.count(b'name="shift"') == 3
+        continuing = auth_client.get("/settings?section=pay-periods").data
+        # Regenerate and reset -- and NOT generate, which is the change.
+        assert continuing.count(b'name="shift"') == 2
+        assert b"Generate Pay Periods" not in continuing
+
+    def test_an_owner_with_no_rhythm_is_offered_it_on_generate(
+        self, bare_auth_client,
+    ):
+        """The establishing half of the same census (plan step C14-f).
+
+        An owner holding no paydays is offered the generate card and no manage
+        card, so the control appears exactly once.  Counted exactly for the
+        reason the case above gives: a ``>=`` would let the card lose its
+        control and stay green.
+        """
+        establishing = bare_auth_client.get("/settings?section=pay-periods").data
+        assert establishing.count(b'name="shift"') == 1
+        assert b"Generate Pay Periods" in establishing
 
 
 class TestEachDoorPersistsTheAnswer:

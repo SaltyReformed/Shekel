@@ -14,7 +14,7 @@ from app.enums import StatusEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services import pay_period_write
+from app.services import pay_period_write, pay_schedule_service
 from tests._test_helpers import (
     shift_form_value,
     rhythm_of,
@@ -109,8 +109,30 @@ class TestPayPeriodGenerate:
             ).all()
             assert len(periods) == 1
 
-    def test_generate_double_submit_skips_duplicates(self, app, bare_auth_client, bare_user):
-        """Double-submit with same start_date skips overlapping periods."""
+    def test_generate_twice_CONTINUES_rather_than_restating_the_phase(
+        self, app, bare_auth_client, bare_user,
+    ):
+        """A second submit appends; it does not re-state the rhythm.
+
+        **This case asserted "duplicates skipped" until plan step
+        ``pay_calendar:C14-f``** (ruling **R-PC63**, ledger row **P80**), and
+        the inversion is that step in one property.  The old door took a
+        ``start_date`` from an owner who already had one, so a repeated post
+        landed on paydays that already existed and ``_apply`` skipped them --
+        the count stayed at 5 by COLLISION, not by design.  That same
+        indifference to the stored phase is what let three posts naming
+        unrelated days write paydays 196 days apart.
+
+        The door now asks an owner who holds a rhythm only HOW MANY MORE, so
+        the second post means "five more" and the count is 10.  The submitted
+        ``start_date`` and ``cadence_days`` are not consulted -- which is what
+        the next case pins.
+
+        **The idempotence is genuinely gone and that is a consequence worth
+        naming rather than hiding**: a stale page double-submitted now appends
+        instead of colliding.  It is the property the Extend door has always
+        had, and this door IS the Extend door for such an owner since R-PC63.
+        """
         with app.app_context():
             data = {
                 "start_date": "2026-05-01",
@@ -119,7 +141,7 @@ class TestPayPeriodGenerate:
                 "shift": shift_form_value(),
             }
 
-            # First submit.
+            # First submit ESTABLISHES: this owner holds no paydays.
             bare_auth_client.post("/pay-periods/generate", data=data,
                              follow_redirects=True)
             first_count = db.session.query(PayPeriod).filter_by(
@@ -127,57 +149,141 @@ class TestPayPeriodGenerate:
             ).count()
             assert first_count == 5
 
-            # Second submit with same data -- duplicates should be skipped.
+            # Second submit CONTINUES: five more, appended past the last.
             resp = bare_auth_client.post("/pay-periods/generate", data=data,
                                     follow_redirects=True)
             assert resp.status_code == 200
 
-            second_count = db.session.query(PayPeriod).filter_by(
-                user_id=bare_user["user"].id,
-            ).count()
-            # Should still be 5, not 10 (duplicates skipped).
-            assert second_count == 5
+            spans = _spans(db.session, bare_user["user"].id)
+            assert len(spans) == 10
+            # Every gap is the STORED cadence -- the batch continued the
+            # rhythm rather than re-opening it at the submitted 2026-05-01.
+            paydays = [start for start, _end in spans]
+            assert {(b - a).days for a, b in zip(paydays, paydays[1:])} == {14}
 
-    def test_generate_offset_start_rejected_422(self, app, bare_auth_client, bare_user):
-        """A payday between two existing ones returns 422 and creates nothing.
+    def test_P80s_irregular_payday_set_is_UNWRITABLE_through_this_door(
+        self, app, bare_auth_client, bare_user,
+    ):
+        """Ledger row **P80**'s own worked example cannot be written.
 
-        Ruling **R-PC1**'s forward-only rule, through the route.  The bound is
-        the latest PAYDAY plus ``MIN_MATERIALISABLE_CADENCE_DAYS`` since plan
-        step C3-b -- it was the latest ``end_date``, a column plan step C4-c
-        drops -- and what it now refuses is exactly the mid-schedule insert
-        plan step C6 defers.
+        Plan step ``pay_calendar:C14-f``, ruling **R-PC63**.  P80 is
+        *"no check anywhere sees an IRREGULAR payday set"*: this door accepted
+        any payday at or after the owner's floor, so three posts naming
+        unrelated days wrote ``[2026-01-02, 2026-01-16, 2026-07-31]`` at
+        cadence 14 and derived a **196-day paycheck** -- six months of rows
+        filing into one grid column, with ``scripts/integrity_check.py``
+        reporting green.
+
+        The step was originally specified as a CHECK for that state
+        (**R-PC55**).  A check is a reconciler for a duplication and rule 14
+        says delete a home instead, so the door stopped asking an owner who
+        already holds a rhythm to restate it.  The bad state is unrepresentable
+        **through this door**, which is why this asserts the SPACING rather
+        than a warning.
+
+        **IT DOES NOT CLOSE P80, and a first draft of this docstring said it
+        did.**  This step's adversarial review found ``regenerate`` still
+        renders a "Corrected first payday" with no ceiling, and the same
+        irregular set was then MEASURED through that route: a **140-day gap**,
+        HTTP 200.  P80's own predicate -- *no check anywhere sees an irregular
+        payday set* -- is still true after this change.  The row stays OPEN and
+        the remaining door is named in the route's own comment.
+
+        **Posted as a client would, not as the form emits.**  The card is not
+        rendered for an owner who holds paydays, so a browser cannot reach this
+        at all -- and that is exactly why the test must not go through one.
+        P80's write was a direct POST; the UI is an affordance and the route is
+        the control.
+
+        *What this case no longer covers, said out loud so its absence is not
+        read as a gap*: it asserted **R-PC1**'s forward-only floor and the 422
+        that renders it.  This door cannot reach that refusal any more, because
+        it no longer forwards a payday.  The rule itself is unmoved and is
+        covered at its own layer -- ``test_pay_period_write.py`` pins the
+        message in seven places, and the doors that still state a payday
+        (regenerate, reset) still meet it.
         """
         with app.app_context():
             user_id = bare_user["user"].id
-            # First schedule: Jun 1 biweekly x5 -> last period Jul 27 - Aug 9.
+            # P80's opening payday, at P80's cadence.
             bare_auth_client.post("/pay-periods/generate", data={
-                "start_date": "2026-06-01", "num_periods": "5",
+                "start_date": "2026-01-02", "num_periods": "2",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
             }, follow_redirects=True)
-            assert db.session.query(PayPeriod).filter_by(
-                user_id=user_id,
-            ).count() == 5
+            assert [start for start, _end in _spans(db.session, user_id)] == [
+                date(2026, 1, 2), date(2026, 1, 16),
+            ]
 
-            # Jun 8 lands between the Jun 1 and Jun 15 paydays, so it would
-            # split that paycheck in half -- rejected before anything is
-            # written.  The latest payday is 2026-07-27, so the floor is
-            # 2026-07-29.
+            # THE P80 POST: a payday 196 days past the last one, which the old
+            # door accepted because it sat above the floor.
             resp = bare_auth_client.post("/pay-periods/generate", data={
-                "start_date": "2026-06-08", "num_periods": "5",
+                "start_date": "2026-07-31", "num_periods": "1",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
-            })
-            assert resp.status_code == 422
-            # The message names the FLOOR and the payday it is measured
-            # from, both of which survive plan step C4.  The latest payday is
-            # 2026-07-27 and the cadence is 14, so the floor is 2026-08-10.
-            assert b"must fall on or after 2026-08-10" in resp.data
-            assert b"2026-07-27" in resp.data
-            # Nothing created -- still exactly the original 5.
-            assert db.session.query(PayPeriod).filter_by(
-                user_id=user_id,
-            ).count() == 5
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            paydays = [start for start, _end in _spans(db.session, user_id)]
+            # 2026-07-31 was IGNORED -- the appended payday continues the
+            # rhythm, so no 196-day gap exists to be warned about.
+            assert date(2026, 7, 31) not in paydays
+            assert paydays == [
+                date(2026, 1, 2), date(2026, 1, 16), date(2026, 1, 30),
+            ]
+            gaps = {(b - a).days for a, b in zip(paydays, paydays[1:])}
+            assert gaps == {14}, f"P80's irregular set became writable: {gaps}"
+
+    def test_an_owner_emptied_back_to_zero_paydays_may_ESTABLISH_again(
+        self, app, bare_auth_client, bare_user,
+    ):
+        """The dispatch asks the PAYDAYS, not the schedule row.
+
+        Plan step ``pay_calendar:C14-f``, ruling **R-PC63**.  It pins the
+        SEMANTICS of ``routes.pay_periods._holds_paydays``: it asks the
+        paydays, not the schedule row, so a row with no paydays still
+        ESTABLISHES.
+
+        **The state is built directly because NO DOOR PRODUCES IT, and that is
+        stated rather than hidden.**  A first draft of this docstring called
+        the owner "reachable" and named truncate and reset as the producers;
+        this step's adversarial review measured both false -- truncate always
+        keeps the named period ("THIS DOOR can never empty a schedule") and
+        reset re-records inside the same call.  So the raw ``delete()`` below
+        is not a shortcut to a real scenario, it is the only way to construct
+        one, and this case grades the predicate's meaning rather than a user
+        journey.  It earns its place by failing when ``_holds_paydays`` is
+        weakened to ``get_schedule() is not None`` -- verified by mutation,
+        and it is the ONLY case that fails under that mutation while the two
+        dispatch cases still pass.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            bare_auth_client.post("/pay-periods/generate", data={
+                "start_date": "2026-05-01", "num_periods": "3",
+                "cadence_days": "14",
+                "shift": shift_form_value(),
+            }, follow_redirects=True)
+            assert len(_spans(db.session, user_id)) == 3
+
+            # Empty the calendar, leaving the row and its stored phase behind.
+            db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
+            db.session.commit()
+            emptied = pay_schedule_service.get_schedule(user_id)
+            assert emptied is not None, "the row must survive for this to bite"
+            assert emptied.nominal_anchor is not None, "so must the phase"
+
+            # ESTABLISH again, at a wholly new phase.
+            resp = bare_auth_client.post("/pay-periods/generate", data={
+                "start_date": "2027-03-04", "num_periods": "2",
+                "cadence_days": "7",
+                "shift": shift_form_value(),
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            assert [start for start, _end in _spans(db.session, user_id)] == [
+                date(2027, 3, 4), date(2027, 3, 11),
+            ]
+            assert pay_schedule_service.get_schedule(user_id).cadence_days == 7
 
 
 # ── Negative Path Tests ─────────────────────────────────────────────
@@ -396,6 +502,14 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
 
         Driven at the SMALLEST cadence the schema admits, because that is where
         the margin is thinnest: one day.
+
+        **Since plan step ``pay_calendar:C14-f`` the property holds for a
+        STRONGER reason** (ruling **R-PC63**): this owner already has a rhythm,
+        so the door no longer forwards the submitted payday or cadence at all
+        -- it continues the stored one, and a tail-append cannot move an
+        existing end. The margin argument above is what protected the case
+        while the door could still state a cadence, and it is kept because the
+        doors that still can (regenerate, reset) rest on it.
         """
         freeze_today(monkeypatch, date(2025, 12, 1))
         with app.app_context():
@@ -409,8 +523,13 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
             # 2026-07-01 + 180 - 1.
             assert before_horizon == date(2026, 12, 27)
 
-            # The floor is the latest payday plus the STORED cadence, so this
-            # is the earliest day the door accepts.
+            # Since ``pay_calendar:C14-f`` this owner holds a rhythm, so the
+            # door CONTINUES it: both fields below are ignored and the appended
+            # payday is the stored 180-day cadence past the last one.  They are
+            # still POSTED, deliberately -- a cadence of 1 and a backward-ish
+            # payday are the strongest thing a client could send, and the
+            # property must hold against what a client sends rather than
+            # against what the form now offers.
             resp = auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-12-28", "num_periods": "1",
                 "cadence_days": "1",
@@ -419,5 +538,8 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
 
             assert resp.status_code == 302
             after_horizon = max(end for _start, end in _spans(db.session, user_id))
-            assert after_horizon == date(2026, 12, 28)
+            # 2026-07-01 + 180 (the appended payday) + 180 - 1.
+            assert after_horizon == date(2027, 6, 25)
             assert after_horizon > before_horizon
+            # The submitted cadence of 1 never reached the schedule.
+            assert pay_schedule_service.get_schedule(user_id).cadence_days == 180

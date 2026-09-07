@@ -30,7 +30,7 @@ from app.models.user import MfaConfig, User, UserSettings
 from app.services import (
     account_resolver,
     account_service,
-    pay_period_admin,
+    pay_period_gates,
     pay_period_locks,
     pay_schedule_service,
 )
@@ -292,7 +292,7 @@ def _load_pay_periods_context(user_id):
     return {
         "pp_periods": period_rows,
         "pp_schedule": schedule,
-        "pp_can_reset": pay_period_admin.can_reset_pay_periods(user_id),
+        "pp_can_reset": pay_period_gates.can_reset_pay_periods(user_id),
     }
 
 

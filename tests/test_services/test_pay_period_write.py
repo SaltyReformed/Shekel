@@ -51,6 +51,7 @@ from app.models.transfer import Transfer
 from app.services import (
     pay_calendar,
     pay_period_admin,
+    pay_period_gates,
     pay_period_rolling,
     pay_period_write,
     pay_schedule_service,
@@ -608,7 +609,7 @@ class TestTheFloorFollowsTheProducer:
                     user_id=user_id, first_payday=date(2025, 12, 17),
                     num_periods=1,
                     rhythm=rhythm_of(14, BusinessDayShiftEnum.PRIOR),
-                    retiring_ids=doomed,
+                    replacing=pay_period_write.SpanReplacement(retiring_ids=doomed),
                 )
             db.session.rollback()
 
@@ -616,7 +617,7 @@ class TestTheFloorFollowsTheProducer:
                 user_id=user_id, first_payday=date(2025, 12, 18),
                 num_periods=1,
                 rhythm=rhythm_of(14, BusinessDayShiftEnum.PRIOR),
-                retiring_ids=doomed,
+                replacing=pay_period_write.SpanReplacement(retiring_ids=doomed),
             )
             db.session.commit()
             assert [period.start_date for period in all_periods(user_id)] == [
@@ -1274,7 +1275,8 @@ class TestACoverageWithdrawalIsAccepted:
                 "WARNING", logger="app.services.pay_period_write",
             ):
                 pay_period_admin.regenerate_pay_periods(
-                    user_id, date(2026, 3, 27), 8, rhythm_of(14), confirm_discard=True,
+                    user_id, date(2026, 3, 27), 8, rhythm_of(14),
+                    confirms=pay_period_gates.Confirmations(discard=True),
                 )
             db.session.commit()
 
@@ -1838,7 +1840,7 @@ class TestTheWriterTakesIdsAndScopesThemToTheOwner:
 
             pay_period_write.record_paydays(
                 user_id, date(2026, 3, 6), 2, rhythm_of(14),
-                retiring_ids={foreign.id},
+                replacing=pay_period_write.SpanReplacement(retiring_ids={foreign.id}),
             )
             db.session.flush()
             assert db.session.get(PayPeriod, foreign.id) is not None
@@ -1980,7 +1982,15 @@ class TestTheRetiredCountIsTheIntersection:
 
             with caplog.at_level(logging.INFO):
                 pay_period_write.record_paydays(
-                    user_id, date(2026, 3, 6), 2, rhythm_of(14), retiring_ids=mixed,
+                    user_id, date(2026, 3, 6), 2, rhythm_of(14),
+                    replacing=pay_period_write.SpanReplacement(
+                        retiring_ids=mixed,
+                        # This batch reopens the tail 35 days after the last
+                        # kept payday, which plan step C14-f's gate asks about.
+                        # The case is about the retired COUNT in the emitted
+                        # event, not about holes, so it answers and moves on.
+                        gap_confirmed=True,
+                    ),
                 )
             retired = [
                 record.retired for record in caplog.records

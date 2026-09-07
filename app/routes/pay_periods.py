@@ -18,6 +18,7 @@ from app.utils.auth_helpers import require_owner
 from app.extensions import db
 from app.exceptions import (
     PayPeriodDiscardRequired,
+    PayPeriodGapRequired,
     PayPeriodLocked,
     PayPeriodResetBlocked,
     PayPeriodUnresolved,
@@ -37,10 +38,12 @@ from app.schemas.validation import (
 from app import ref_cache
 from app.services import (
     pay_period_admin,
+    pay_period_gates,
     pay_period_write,
     pay_rhythm,
     pay_schedule_service,
 )
+from app.services.pay_calendar import calendar_at_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +72,107 @@ def _summarize_errors(errors):
     return "Please correct the form: " + " | ".join(parts)
 
 
+def _holds_paydays(user_id: int) -> bool:
+    """Return whether this owner has a rhythm to CONTINUE rather than state.
+
+    Plan step **pay_calendar:C14-f**, ruling **R-PC63**.  The discriminator
+    between the two jobs ``POST /pay-periods/generate`` used to do at once:
+    ESTABLISH a rhythm, or CONTINUE one.
+
+    **It asks the PAYDAYS and not the schedule row, because that is the
+    question its name asks** -- not because the difference is reachable today.
+    ``get_schedule`` returning ``None`` implies no paydays
+    (``fk_pay_periods_schedule``, plan step C4-b-2); the converse does not
+    hold in the SCHEMA, since ``upsert_schedule`` writes ``nominal_anchor``
+    through a ``COALESCE`` that never clears it.
+
+    *A first draft justified this by naming ``truncate_pay_periods`` and
+    ``reset_pay_periods`` as producers of "a row with no paydays", and this
+    step's adversarial review measured BOTH false*: truncate's own docstring
+    records that the named period is always KEPT, "so THIS DOOR can never
+    empty a schedule", and reset retires and re-records inside one
+    ``record_paydays`` call.  **No door in ``app/`` produces that state.**  The
+    predicate is written this way because "does this owner hold paydays" is
+    the thing the dispatch actually turns on, and asking a proxy for it would
+    be the substitution rule 14 exists to refuse -- not because a caller was
+    censused and found.
+
+    **A DIVERGENCE worth naming rather than leaving implicit**:
+    ``extend_pay_periods`` refuses on ``not saved or nominal_anchor is None``
+    and this asks only the first half, so the same question now has three
+    homes -- the template's ``pp_periods``, this, and that service test.  They
+    agree while the anchor is backfilled for every owner holding a payday
+    (migration ``a1c7e5d20f43``); if the anchor half ever armed, such an owner
+    would be shown only the manage card and handed a refusal by both doors.
+    The rule-14 remedy is for the service to expose its own predicate so there
+    is ONE producer, which is a change to that module's surface and not this
+    step's.
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        ``True`` when the owner holds at least one recorded payday, so the
+        generate door CONTINUES their rhythm; ``False`` when it establishes
+        one.
+    """
+    # ``schedule_row`` and not ``schedule``: this module registers a view
+    # function of that name at ``POST /pay-periods/schedule`` (pylint W0621).
+    schedule_row = pay_schedule_service.get_schedule(user_id)
+    if schedule_row is None:
+        return False
+    facts = pay_schedule_service.ScheduleFacts.of(schedule_row)
+    return bool(calendar_at_schedule(user_id, facts).saved())
+
+
+def _append_periods(num_periods):
+    """Continue the owner's existing rhythm by *num_periods* paychecks.
+
+    **The ONE continue path, shared by both doors that reach it** (plan step
+    **pay_calendar:C14-f**, ruling **R-PC63**).  ``POST /pay-periods/extend``
+    is its obvious caller; ``POST /pay-periods/generate`` became the other
+    when that door stopped asking an owner who already holds a rhythm to
+    restate it.  Sharing the BODY rather than repeating it is what makes
+    "the days come from the producer Extend already uses" structural: there
+    is one call to :func:`~app.services.pay_period_admin.extend_pay_periods`,
+    so the two doors cannot drift into two spellings of appending a paycheck.
+
+    RECORD, then POPULATE, and the order is the whole of ruling **R-R38**:
+    the read pass the recurrence resolves in is opened by
+    :func:`~app.routes._period_population.populate_new_periods` AFTER the
+    paydays exist, because a pass resolved before them holds a calendar that
+    does not contain them and a loan whose payoff has not moved yet.  The
+    door leaves the periods EMPTY; dropping the second call ships paydays
+    with no rent, no paycheck and no recurring transfer in them.
+
+    Args:
+        num_periods: How many paychecks to append.
+
+    Returns:
+        A redirect to the settings pay-periods section, flashing either the
+        count appended or the refusal.
+    """
+    try:
+        new_periods = pay_period_admin.extend_pay_periods(
+            current_user.id, num_periods,
+        )
+        populate_new_periods(current_user.id, new_periods)
+    except ValidationError as exc:
+        # Rolled back before the redirect: ``extend_pay_periods`` takes the
+        # per-user advisory lock, and whichever of the two calls above ran
+        # before the refusal may have flushed -- the door's own refusals run
+        # before its first durable statement, the repopulation's do not. The
+        # page this redirects to reads the owner's schedule back, so it reads
+        # committed state either way.
+        db.session.rollback()
+        flash(str(exc), "danger")
+        return _pay_periods_redirect()
+
+    db.session.commit()
+    flash(f"Added {len(new_periods)} pay periods.", "success")
+    return _pay_periods_redirect()
+
+
 @pay_periods_bp.route("/pay-periods/generate", methods=["GET"])
 @login_required
 @require_owner
@@ -88,6 +192,56 @@ def generate():
 
     data = _generate_schema.load(request.form)
 
+    # **THE DOOR ASKS ONE JOB'S QUESTIONS, NOT TWO** (plan step
+    # ``pay_calendar:C14-f``, ruling **R-PC63**).  An owner who already holds a
+    # rhythm is asked only HOW MANY MORE paychecks, and the days come from
+    # ``nominal_payday_after`` by way of the shared continue path -- so
+    # ``start_date``, ``cadence_days`` and ``shift`` are not consulted for them.
+    #
+    # **P80's write is unrepresentable THROUGH THIS DOOR, and P80 IS NOT
+    # CLOSED.**  This door accepted any payday at or after the owner's floor,
+    # so three posts naming unrelated days wrote
+    # ``[2026-01-02, 2026-01-16, 2026-07-31]`` at cadence 14 and derived a
+    # 196-day paycheck -- six months of rows filing into one grid column, with
+    # ``scripts/integrity_check.py`` reporting green.  That is shut here.
+    #
+    # *A first draft of this comment claimed P80 became UNWRITABLE, and this
+    # step's own adversarial review measured that FALSE.*  ``regenerate``
+    # renders a "Corrected first payday" with no ceiling -- only
+    # ``pay_period_write._reject_backward_payday``'s FLOOR -- so the same
+    # irregular set is still writable in three form fields.  MEASURED through
+    # the real route on a clean owner: paydays
+    # ``[2026-01-02 .. 2026-03-13, 2026-07-31, ...]``, a **140-day gap**, HTTP
+    # 200.  The root remedy is a CEILING where the floor already is, which
+    # would close every door at once rather than one at a time; whether an
+    # owner may legitimately record a GAP is an era question (**C17**) and the
+    # developer's to rule.  Until he does, **P80 stays OPEN**.
+    #
+    # The step was originally specified as a CHECK for that state
+    # (**R-PC55**); a check is a reconciler for a duplication, and rule 14 says
+    # delete a home instead.  **R-PC55's supersession rides with R-PC63** --
+    # recorded in ``docs/plans/rulings.md``, not here; that registry commit is
+    # owed and this comment is not a substitute for it.
+    #
+    # **The submitted fields are IGNORED rather than refused, and that is this
+    # arc's own precedent rather than a shortcut.**  Plan step C3-b deleted
+    # ``cadence_days`` from the extend door at finding **P29**, and
+    # :class:`~app.schemas.validation.pay_periods.PayPeriodExtendSchema` states
+    # the disposition: an old client that still posts one "is not refused --
+    # the value is simply ignored, which is now what it means".  Same arc, same
+    # weld, opposite door.  **The analogy is not exact and the gap is stated
+    # rather than glossed**: P29 DELETED the field, while ``start_date`` here is
+    # still ``required=True``, so a client posting only ``num_periods`` is
+    # refused 422 for a field this branch discards.  Completing it means
+    # dispatching BEFORE schema validation, which is a shape change this step
+    # did not take.
+    #
+    # The card stops offering the three fields to such an owner
+    # (``settings/_pay_periods.html``) -- but the UI is not the control and a
+    # 422 re-render still hands them the full card, so this line is.
+    if _holds_paydays(current_user.id):
+        return _append_periods(data["num_periods"])
+
     try:
         # One call, because recording the paydays and capturing the cadence
         # extend / the rolling top-up continue from is ONE operation -- the
@@ -104,14 +258,20 @@ def generate():
             ),
         )
         # POPULATE, like every other door that creates a pay period (ruling
-        # **R-R38**), and this door needed saying out loud: it reads as
-        # first-time-only and is not.  ``record_paydays``' forward-only rule
-        # accepts any payday AFTER the owner's last, so on an owner who
-        # already has a schedule this behaved as an extend that skipped every
-        # template -- measured through this route at 3 appended periods
-        # holding 0 template rows, with "Generate pay periods" one click away
-        # in the main nav on every screen.  That was ledger row **D58**, found
-        # by censusing the five writers this step split and closed here.
+        # **R-R38**).
+        #
+        # **This branch READS as first-time-only and now IS, which is plan step
+        # C14-f's doing rather than something that was always true.**  Until
+        # ``R-PC63`` the dispatch above did not exist, so ``record_paydays``'
+        # forward-only rule let this door accept any payday AFTER the owner's
+        # last and it behaved as an extend that skipped every template --
+        # measured through this route at 3 appended periods holding 0 template
+        # rows, with "Generate pay periods" one click away in the main nav on
+        # every screen.  That was ledger row **D58**, closed by adding this
+        # call.  The call STAYS: D58's remedy was to populate, and C14-f moved
+        # the owner it was protecting onto the continue path, which populates
+        # too.  Deleting it here would re-open D58 for the only owner still
+        # reaching this line.
         #
         # A genuinely NEW owner is unaffected twice over: no template can
         # exist yet, and this route is reachable only once they have an
@@ -129,9 +289,19 @@ def generate():
         # ``PayPeriodGenerateSchema`` bounds the batch size and the cadence to
         # exactly the ranges the writer and the column accept AND asks the
         # cadence-convention pair through ``validate_derivable_rhythm``, so the
-        # schema's own 422 answers them first.  The floor is what is left.
-        # Widen any of those fields and this line starts rendering their
-        # message under the date box.
+        # schema's own 422 answers them first.
+        #
+        # **Since ``C14-f`` the FLOOR cannot reach this line either, and the
+        # enumeration above inverted rather than shrank** (found by this step's
+        # adversarial review).  The dispatch means this branch runs only for an
+        # owner holding ZERO paydays, so ``record_paydays`` computes an empty
+        # ``surviving_paydays`` and ``_reject_backward_payday`` has nothing to
+        # bound against.  What can still raise here is ``populate_new_periods``
+        # below -- whose message this then renders under the date box, which is
+        # exactly the misattribution the paragraph above warns about.  Narrowing
+        # that is a real fix and is NOT this step's: it needs its own case
+        # forcing the repopulation to raise, and no test covers this branch's
+        # 422 today.  Reported rather than silently left.
         #
         # *The FOURTH reason arrived at plan step ``pay_calendar:C14-b``, and
         # this comment's own warning is what caught it*: that step's first
@@ -179,32 +349,10 @@ def extend():
         return _pay_periods_redirect()
 
     data = _extend_schema.load(request.form)
-    try:
-        # RECORD, then POPULATE, and the order is the whole of ruling R-R38:
-        # the read pass the recurrence resolves in is opened by
-        # ``populate_new_periods`` AFTER the paydays exist, because a pass
-        # resolved before them holds a calendar that does not contain them and
-        # a loan whose payoff has not moved yet.  The door leaves the periods
-        # EMPTY; dropping this second call ships paydays with no rent, no
-        # paycheck and no recurring transfer in them.
-        new_periods = pay_period_admin.extend_pay_periods(
-            current_user.id, data["num_periods"],
-        )
-        populate_new_periods(current_user.id, new_periods)
-    except ValidationError as exc:
-        # Rolled back before the redirect: ``extend_pay_periods`` takes the
-        # per-user advisory lock, and whichever of the two calls above ran
-        # before the refusal may have flushed -- the door's own refusals run
-        # before its first durable statement, the repopulation's do not. The
-        # page this redirects to reads the owner's schedule back, so it reads
-        # committed state either way.
-        db.session.rollback()
-        flash(str(exc), "danger")
-        return _pay_periods_redirect()
-
-    db.session.commit()
-    flash(f"Added {len(new_periods)} pay periods.", "success")
-    return _pay_periods_redirect()
+    # The body moved to ``_append_periods`` at plan step ``pay_calendar:C14-f``
+    # so this door and the generate door share ONE continue path rather than
+    # two spellings of it.  Nothing about this door's behaviour changed.
+    return _append_periods(data["num_periods"])
 
 
 @pay_periods_bp.route("/pay-periods/truncate", methods=["POST"])
@@ -267,6 +415,7 @@ def truncate():
     except PayPeriodDiscardRequired as exc:
         db.session.rollback()
         return render_settings_dashboard("pay-periods", extra={"pp_confirm": {
+            "kind": "discard",
             "op": "truncate",
             "count": exc.count,
             "params": {
@@ -296,7 +445,9 @@ def regenerate():
             pay_rhythm.Rhythm(
                 cadence_days=data["cadence_days"], shift=data["shift"],
             ),
-            confirm_discard=data["confirm_discard"],
+            confirms=pay_period_gates.Confirmations(
+                discard=data["confirm_discard"], gap=data["confirm_gap"],
+            ),
         )
         # The rebuilt tail comes back EMPTY; this fills it.  See the extend
         # route for why the pass may only be opened here (ruling R-R38).
@@ -311,6 +462,34 @@ def regenerate():
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()
+    except PayPeriodGapRequired as exc:
+        # **The SECOND confirmation, and it raises AFTER the delete is staged**
+        # (plan step ``pay_calendar:C14-f``, ledger row **P80**).  Unlike the
+        # discard gate below, this one fires inside ``record_paydays``, which
+        # ``regenerate_pay_periods`` reaches only after ``_gate_deletable_tail``
+        # has handed it the doomed ids -- so the rollback here is load-bearing
+        # rather than tidy, exactly as the ValidationError arm above states.
+        #
+        # ``confirm_discard`` rides forward in the params: an owner who has
+        # already answered that question must not be asked it again by the
+        # banner this renders, and dropping it would loop the two gates against
+        # each other forever.
+        db.session.rollback()
+        return render_settings_dashboard("pay-periods", extra={"pp_confirm": {
+            "kind": "gap",
+            "op": "regenerate",
+            "gap_days": exc.gap_days,
+            "after": exc.after.isoformat(),
+            "resumes": exc.resumes.isoformat(),
+            "params": {
+                "new_start_date": data["new_start_date"].isoformat(),
+                "num_periods": data["num_periods"],
+                "cadence_days": data["cadence_days"],
+                # The WIRE spelling, for the discard banner's own reason below.
+                "shift": ref_cache.business_day_shift_id(data["shift"]),
+                "confirm_discard": str(data["confirm_discard"]).lower(),
+            },
+        }}, status=422)
     except PayPeriodDiscardRequired as exc:
         # The discard gate raises BEFORE the delete, so nothing is staged --
         # but this response re-renders the settings dashboard, which reads the
@@ -318,6 +497,7 @@ def regenerate():
         # rather than a session the service may have flushed into.
         db.session.rollback()
         return render_settings_dashboard("pay-periods", extra={"pp_confirm": {
+            "kind": "discard",
             "op": "regenerate",
             "count": exc.count,
             "params": {

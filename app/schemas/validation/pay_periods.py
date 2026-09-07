@@ -369,6 +369,14 @@ class PayPeriodRegenerateSchema(BaseSchema):
     and ``shift`` are required because regenerate establishes (and persists)
     the new rhythm, and a door that would silently restate one half on a
     missing input must not.
+
+    **``confirm_gap`` is a SECOND confirmation and deliberately not the first**
+    (plan step ``pay_calendar:C14-f``, developer ruling 2026-09-07 on ledger
+    row **P80**).  ``confirm_discard`` acknowledges rows being DESTROYED;
+    ``confirm_gap`` acknowledges a hole being CREATED -- a batch that skips at
+    least one whole paycheck, which this is the only door that can write.  They
+    are asked about different facts, so one Boolean carrying both would confirm
+    a 196-day gap the owner was never shown.
     """
 
     new_start_date = payday_field(required=True)
@@ -376,6 +384,7 @@ class PayPeriodRegenerateSchema(BaseSchema):
     cadence_days = cadence_days_field(required=True)
     shift = shift_field(required=True)
     confirm_discard = fields.Boolean(load_default=False)
+    confirm_gap = fields.Boolean(load_default=False)
 
     @validates_schema
     def validate_rhythm(self, data, **kwargs):
