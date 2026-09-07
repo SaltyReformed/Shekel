@@ -48,7 +48,7 @@ from ._offers import (
     corrected_purchase_day,
 )
 from ._scope import ReviewScope
-from ._variance import DifferenceLanding
+from ._landing import DifferenceLanding
 
 
 def _apply_day(

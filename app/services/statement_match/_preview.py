@@ -58,7 +58,8 @@ from ._resolve import load_lines, resolve_rows
 from ._scope import ReviewScope
 from ._submission import MatchSubmission, spell_figure
 from ._sides import MatchSides
-from ._variance import DifferenceLanding, reject_unrecordable
+from ._landing import DifferenceLanding
+from ._variance import reject_unrecordable
 
 #: What the panel is doing about the gap, as one word the template dispatches
 #: on.  A STRING rather than a ref-table id because it names a state of this
