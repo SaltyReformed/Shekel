@@ -194,10 +194,10 @@ def _reject_unstorable(sides: MatchSides) -> None:
     """Refuse a match whose figures are larger than this app can record.
 
     **A door that SUMS is not bounded by the columns it sums.**  Every figure
-    here descends from a ``Numeric(12, 2)`` column, but a match may name up to
-    ``_MAX_MATCH_MEMBERS`` of them on each side, so the total -- and the
-    difference derived from it -- can leave the domain that any one of them
-    lives in.  Both remedies this module offers then write an unstorable
+    here descends from a ``Numeric(12, 2)`` column, but a match may name ANY
+    NUMBER per side since ``bank_import:X-go`` deleted the schema's member cap,
+    so the total can leave the domain any one of them lives in and this is its
+    ONLY bound.  Both remedies this module offers then write an unstorable
     figure: :func:`corrected_figure` onto the row a match names, and
     :func:`mint` into a new one.
 

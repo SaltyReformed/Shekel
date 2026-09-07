@@ -72,15 +72,6 @@ class StatementUploadSchema(BaseSchema):
     )
 
 
-#: The most ids one match may name on a side.  A bound rather than a limit
-#: anyone will meet: ruling **R-FS**'s largest measured shape is a payroll
-#: deposit against three rows, and the hand-build form posts a checkbox per
-#: row it renders -- so without a ceiling a crafted submission could ask the
-#: accept door to re-derive and settle an account's whole history in one
-#: request.  Generous enough that a real statement's biggest group is nowhere
-#: near it.
-_MAX_MATCH_MEMBERS: int = 100
-
 #: The most acts ONE reviewed pass may ask for (plan step
 #: ``bank_import:X-f6a-3c-2``).  **Measured, not chosen**: applying the
 #: developer's own statement -- 124 proposals and 91 recordable lines -- takes
@@ -93,12 +84,16 @@ _MAX_MATCH_MEMBERS: int = 100
 #: offers.
 #:
 #: **43 ms is an AVERAGE over acts naming one to four rows, not a bound on
-#: one.**  :data:`_MAX_MATCH_MEMBERS` lets a crafted item name 100 lines and
-#: 100 rows, each running its own settle door, so a hostile pass is bounded by
-#: ``MAX_CONTENT_LENGTH`` (512 KB, ``app/config.py``) rather than by this --
-#: measured, a body that size carries about 44,600 ticks and is refused, in
-#: 0.36 s, before any of them runs.  This ceiling is what keeps an ORDINARY
-#: pass inside the budget; that one is what keeps a crafted one out.
+#: one.**  An item may name any number of lines and rows, so a hostile pass is
+#: bounded by ``MAX_CONTENT_LENGTH`` (512 KB, ``app/config.py``) rather than by
+#: this.  This ceiling is what keeps an ORDINARY pass inside the budget; that
+#: one is what keeps a crafted one out, and
+#: :func:`~app.services.statement_match._resolve.resolve_rows` is what keeps
+#: either from naming a row the pass never offered.  *It said
+#: ``_MAX_MATCH_MEMBERS`` bounded a member at 100 until plan step
+#: ``bank_import:X-go`` deleted that cap; see
+#: :class:`StatementMatchSchema`'s own note for the measurement that
+#: replaces the one this paragraph used to quote.*
 #:
 #: **A bound that fires is REFUSED and said, never silently truncated.**  An
 #: import may carry ``_secu_csv.MAX_LINES`` = 20,000 lines, so an account can
@@ -309,14 +304,68 @@ class StatementMatchSchema(BaseSchema):
     act and reach the same door.
     """
 
-    line_ids = fields.List(
-        RowId(), required=False, load_default=list,
-        validate=validate.Length(max=_MAX_MATCH_MEMBERS),
-    )
-    rows = fields.List(
-        ReviewedRowField(), required=False, load_default=list,
-        validate=validate.Length(max=_MAX_MATCH_MEMBERS),
-    )
+    #: **NEITHER LIST CARRIES A LENGTH CEILING**, and its absence is plan step
+    #: ``bank_import:X-go`` (developer, 2026-09-06).  ``_MAX_MATCH_MEMBERS =
+    #: 100`` stood on both until then, justified as stopping a crafted
+    #: submission asking "the accept door to re-derive and settle an account's
+    #: whole history in one request".  Both halves of that were already false:
+    #:
+    #: * the DOMAIN bound exists where the offer set does.
+    #:   :func:`~app.services.statement_match._resolve.resolve_rows` looks
+    #:   every submitted row up in the pass's own ``unmatched_rows`` and
+    #:   refuses anything else BY NAME, and
+    #:   :func:`~app.services.statement_match._resolve.load_lines` does the
+    #:   same for lines.  A body cannot reach an account's history at all; it
+    #:   reaches at most what this pass offered, which the server derived;
+    #: * the RESOURCE bound exists where the body does, and it is
+    #:   ``MAX_FORM_MEMORY_SIZE`` -- **500,000 bytes, Flask's own default,
+    #:   which this app never sets**.  Werkzeug's ``_parse_urlencoded`` weighs
+    #:   the body against it before this schema sees anything, and it is the
+    #:   BINDING one: ``MAX_CONTENT_LENGTH`` (524,288, ``app/config.py``) is
+    #:   larger, so for a urlencoded body it never fires.
+    #:   :data:`MAX_BATCH_ITEMS` beside them bounds the ACTS.
+    #:
+    #: **And it had started to contradict the screen.**  Since plan step
+    #: ``bank_import:X-gi-1`` the scriptless MATCH pane offers EVERY unexplained
+    #: row on the account as a tickbox
+    #: (:class:`~app.services.statement_match.MatchReach`), bounded only by the
+    #: span the recorded lines cover -- so an account holding more than 100 of
+    #: them rendered more controls than this would accept, which is ruling
+    #: **R-HW**'s *a control that cannot succeed*.  67 on the developer's own
+    #: account when the pane was measured (2026-08-30), so it had not yet
+    #: bitten; the list grows with the statement span.
+    #:
+    #: **THE WORST CASE IS NOT MULTIPLICATIVE, and that is what makes the
+    #: deletion safe.**  ``MAX_FORM_MEMORY_SIZE`` weighs the WHOLE BODY -- one
+    #: ``content_length`` against one number, with no per-field accounting for
+    #: a urlencoded body -- so :data:`MAX_BATCH_ITEMS` items each naming
+    #: unbounded members is UNCONSTRUCTIBLE: every item's ticks come out of one
+    #: 500,000-byte budget.  **The body was always the tighter bound**: 500
+    #: items x 100 members is 50,000 ticks, against a body that can carry
+    #: 22,727, so the deleted cap could never bind in aggregate and the door's
+    #: worst case is IDENTICAL before and after this step.
+    #:
+    #: Measured 2026-09-06, three runs per shape, at the CRAFTED tick --
+    #: ``rows-1=purchase:1:1:1&`` is **22 bytes**, where a browser's
+    #: ``rows-1234=transaction%3A4567%3A-178.32%3A1&`` is 43: ONE item carrying
+    #: the whole 22,727-tick budget costs **50-54 ms**, and 500 items sharing
+    #: it cost **57-132 ms**.  Every row in either is then refused by
+    #: ``resolve_rows``, because no pass offers them.
+    #:
+    #: *Three drafts of this note were wrong and the corrections are kept
+    #: because each was a different mistake.  The first quoted 21.8 ms and
+    #: asked only the single-item question -- the wrong question, since whether
+    #: the item ceiling MULTIPLIES is what decides safety.  The second answered
+    #: that but cited ``MAX_CONTENT_LENGTH``, a gate that never fires for these
+    #: bodies, and priced a BROWSER's tick while bounding a CRAFTED one, which
+    #: understated the budget by 1.86x.  Both were found by adversarial review
+    #: before this step was committed.  The figure the deleted block quoted --
+    #: 44,600 ticks in 0.36 s -- was measured against the retired
+    #: ``match-<i>-rows`` wire shape and is not any of these.*
+    #: Both lists, and the note above governs the pair: neither carries a
+    #: ceiling, for one reason, so they are spelled the same way.
+    line_ids = fields.List(RowId(), required=False, load_default=list)
+    rows = fields.List(ReviewedRowField(), required=False, load_default=list)
     #: The DIFFERENCE this match states it was REVIEWED against (plan step
     #: ``bank_import:X-f6d-4``, ruling **R-FN**).
     #:
@@ -347,8 +396,8 @@ class StatementMatchSchema(BaseSchema):
     #: **No ``Range`` bound, and the reason is NOT the one a first version
     #: gave.**  That version said a bound was unnecessary because the
     #: difference is "bounded by the ``Numeric(12, 2)`` columns it is summed
-    #: from", which is arithmetically false -- a match may name up to
-    #: :data:`_MAX_MATCH_MEMBERS` of them per side.  The bound lives at the
+    #: from", which is arithmetically false -- a match may name any number of
+    #: them per side.  The bound lives at the
     #: DOOR instead
     #: (``app.services.statement_match._variance._reject_unstorable``), where
     #: the sum it must bound actually exists; a bound here could only refuse a
