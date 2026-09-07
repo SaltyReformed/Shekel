@@ -743,12 +743,14 @@ class Transaction(
     # rather than a gap -- so this is nullable where plan step R5's
     # specification said ``NOT NULL``.  Two live writers create a
     # template-linked row that no cadence named: ``carry_forward_service``
-    # rolls an unspent envelope forward as an ``is_override`` row (and writes
-    # ``due_date = None`` for the same reason), and the one-time branch of
-    # ``routes/transfers/_instances.py`` materialises a transfer whose template
-    # has no rule at all.  On a production clone the backfill considered 736 of
-    # 788 template-linked rows -- the rest sit on archived templates it does not
-    # walk -- stamped 726 and left 10 NULL.
+    # rolls an unspent envelope forward as an ``is_override`` row, and the
+    # one-time branch of ``routes/transfers/_instances.py`` materialises a
+    # transfer whose template has no rule at all.  **The envelope row is DATED
+    # since 2026-09-06** (``_execute._leftover_due_date``) and this column is
+    # still NULL: a row priced by its definition resolves on its own due date,
+    # but no occurrence names it.  On a production clone the backfill
+    # considered 736 of 788 template-linked rows -- the rest sit on archived
+    # templates it does not walk -- stamped 726 and left 10 NULL.
     #
     # **A NULL row answers no occurrence, so it claims its whole PAY
     # PERIOD instead** -- the pre-R17 rule, which is the only claim that
