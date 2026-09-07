@@ -51,11 +51,11 @@ from app.models.transaction import Transaction
 from app.services import statement_match
 from app.services.statement_match import RowKind
 from app.services.statement_match._candidates import purchase_candidate
-from app.services.statement_match._variance import (
+from app.services.statement_match._landing import (
     DifferenceLanding,
-    MatchSides,
     corrected_figure,
 )
+from app.services.statement_match._sides import MatchSides
 
 from ._builders import (
     accepted_acts,
