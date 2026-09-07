@@ -2540,7 +2540,9 @@ class TestTemplateHardDelete:
         settled row is still present after the route returns.
 
         ``Transaction.template_id`` is a FK with ``ON DELETE SET NULL``
-        (``app/models/transaction.py:132-134``), so the surviving
+        (cited by NAME rather than by line: the line number this carried was
+        already stale, and the 2026-09-06 ``__table_args__`` split moved the
+        surrounding file again), so the surviving
         RECEIVED row has its ``template_id`` cleared but its financial
         data -- amount, status, period -- is intact.  The financial
         history that CRIT-05 was destroying is preserved.
