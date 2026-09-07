@@ -100,13 +100,49 @@ Which settles three things:
 3. **`X-gi-2a` is blocked on both** and ranks after them. Building it first ships a screen that
    contradicts itself, and every interim wording considered was rejected as hiding the problem.
 
-## What is still open on `X-go`
+## The question `X-go` had to answer first, and its answer
 
-The single-item worst case is measured: a tick is 43 bytes on the wire, so a 512 KB body carries
-**12,192** of them, and reading plus grading that many costs **21.8 ms**, linear.
-**What was not asked before that figure was written into a docstring** is whether
-`MAX_CONTENT_LENGTH` is a whole-body cap or a per-item one, and therefore whether
-`MAX_BATCH_ITEMS = 500` items each carrying unbounded members makes the worst TOTAL multiplicative.
-If it is per-item and multiplicative, a straight delete of the member cap is the wrong shape and
-`X-go` needs re-planning rather than a PR. Raised by the coordinator session 2026-09-06; it must be
-answered before `X-go` is committed.
+A first measurement took the single-item worst case -- a tick is 43 bytes on the wire, so a 512 KB
+body carries **12,192** of them -- and wrote it into a docstring as the REASON the cap could go.
+**The question it did not ask** is whether `MAX_CONTENT_LENGTH` bounds the whole body or each item,
+and therefore whether `MAX_BATCH_ITEMS = 500` items each carrying unbounded members makes the worst
+TOTAL multiplicative. Only the per-item reading is multiplicative, and under it a straight delete
+would have been the wrong shape. Raised by the coordinator session 2026-09-06.
+
+**ANSWERED: the cap is on the WHOLE BODY, so the worst case is NOT multiplicative and `X-go`'s
+straight delete is the right shape.** Every item's ticks come out of one body budget, so 500 items
+each naming unbounded members is unconstructible. **The body was always the tighter bound**: 500
+items x 100 members is 50,000 ticks against a body carrying at most 22,727, so the deleted cap could
+never bind in aggregate and the door's worst case is IDENTICAL before and after this step.
+
+**Two intermediate answers were wrong, and the corrections matter more than the conclusion.** An
+adversarial review of the built step found both, before it was committed:
+
+- **The gate named was the one that never fires.** `MAX_CONTENT_LENGTH` (524,288, `app/config.py`)
+  is not binding for a urlencoded body. Flask's `MAX_FORM_MEMORY_SIZE` defaults to **500,000**, this
+  app never sets it, and Werkzeug's `_parse_urlencoded` weighs the body against that first. The
+  codebase already knew: `tests/test_routes/test_auth_validation.py:285` calls it "the WSGI 500KB
+  form-size limit".
+- **The tick priced was a browser's, while the sentence bounded a CRAFTED body.** A browser emits
+  `rows-1234=transaction%3A4567%3A-178.32%3A1&` at 43 bytes; a crafted body pays none of that, and
+  `rows-1=purchase:1:1:1&` is **22 bytes** and loads through the live reader and schema. That is
+  1.86x more ticks than the first answer allowed for.
+
+Re-measured at the true bound, three runs each:
+
+| shape | ticks | read + grade |
+|---|---|---|
+| ONE item carrying the whole budget | 22,727 | 50-54 ms |
+| 500 items (the ceiling) sharing it | 21,500 | 57-132 ms |
+
+Every row in either is then refused by `resolve_rows`, because no pass offers them. The item ceiling
+adds per-item overhead and multiplies nothing.
+
+**A related correction to the domain-bound claim above.** `resolve_rows` is total for what a body
+may NAME, but it is not FIRST on the write path: in `_accept.py` the `MatchContent(...)` arguments
+evaluate left to right, so `load_lines(..., for_write=True)` takes its row locks BEFORE
+`resolve_rows` narrows. Harmless today, because `reconcile_match_payload` emits exactly one
+`line_ids` member on every reachable path -- but deleting the cap raises the row-side work done
+while holding that lock from at most 100 `repriced` calls to at most the whole offer set (~827 on
+the developer's data), which lengthens the window on the already-filed cross-item deadlock finding
+**N-471**. Bounded, not a blocker, and stated rather than implied.
