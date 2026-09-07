@@ -144,10 +144,6 @@ def _contribution_inputs_for_accounts(
     if not accounts:
         return {}
 
-    # Every account in the set is owned by one user (the caller's), so the
-    # user id the payroll-feed loader scopes by comes off any of them.
-    user_id = accounts[0].user_id
-
     # The shared loader owns the canonical-classifier filter, so a
     # parameterised physical asset (Property -> APPRECIATING) is correctly
     # excluded here rather than re-derived by elimination.
@@ -183,14 +179,14 @@ def _contribution_inputs_for_accounts(
     # which OTHER accounts shared its read -- the caller-dependent input this
     # loader exists to rule out.  A feed is per ACCOUNT by construction, so
     # there is no set-wide figure left to leak across one.
-    # The PASS's projection memo.  This entry is called once per ACCOUNT by
-    # four seam readers, and running the engine is the expensive half of the
-    # loader, so without it the engine re-ran the owner's whole saved window
+    # The PASS's paycheck PRICER.  This entry is called once per ACCOUNT by
+    # four seam readers, and pricing is the expensive half of the loader, so
+    # without a shared one the engine re-ran the owner's whole saved window
     # per account -- measured at 61 ``calculate_paycheck`` calls against ~7
-    # before this step, on a 3-account 10-period fixture.
+    # before ``salary:R14-b``, on a 3-account 10-period fixture.
     feeds = load_payroll_feeds(
-        user_id, ctx.calendar(), list(investment_params_map.keys()),
-        investment_params_map, ctx.payroll_breakdowns,
+        ctx.paychecks(), list(investment_params_map.keys()),
+        investment_params_map,
     )
     return {
         account.id: ContributionInputs(

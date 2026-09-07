@@ -155,13 +155,14 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       2026-09-05 once **R-SAL11** ruled the raise model) (**R-SAL10**; closes **N-541**, carries
       **N-540**). `AccountPayrollFeed` holds a figure past the saved calendar because nothing prices
       a payday past it, and six rules over that fold were each measured wrong, so the remedy is to
-      DELETE the extrapolation rather than to find a seventh (**R-SAL10**).
-      `income_service.project_profile` takes a HORIZON and prices to it; `employee_at` becomes a
-      LOOKUP that RAISES past the horizon, deleting `_year_averages`, `_complete_years`,
-      `_held_employee`, `_held_gross` and `salary_basis(beyond=)`. Measured cost of pricing the
-      horizon: `project_profile` runs at 88 microseconds a payday, so 92 ms per profile per render
-      for a 40-year chart, ONCE behind the projection memo
-      `tests/test_arch/test_one_read_pass_per_render.py` already pins.
+      DELETE the extrapolation rather than to find a seventh (**R-SAL10**). `income_service` prices
+      a paycheck PER PAYDAY on demand (**R-SAL14**, shipped at `S3-d`) rather than returning a list
+      somebody has to size; `employee_at` becomes a LOOKUP that RAISES past the horizon, deleting
+      `_year_averages`, `_complete_years`, `_held_employee`, `_held_gross` and
+      `salary_basis(beyond=)`. *A cost of `88` microseconds a payday and `92` ms per profile per
+      render stood here for `project_profile`, the producer `S3-d` DELETED; it is struck rather than
+      restated, because pricing on demand costs what the caller reads and there is no longer one
+      figure to quote. `S3-e` measures the ask it introduces.*
       **AN OPEN DEVELOPER FORK BOUNDS THIS STEP'S CENSUS**: which RAISE MODEL the engine applies
       past the saved calendar is unruled -- the paycheck engine compounds a recurring merit raise
       forever and `/retirement` applies a merit horizon, and over 41 years the two shipped functions
@@ -179,14 +180,26 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       default (**R-SAL13**). **A LATER STEP MUST OBEY**: the downgrade is state-lossy, so a lossless
       rollback needs `UPDATE salary.salary_raises SET terminal_year = NULL` beside it; the deploy
       script's own rollback is dump-and-restore.
-- [ ] **S3-d** -- `income_service.project_profile` takes a HORIZON and prices to it. Carries
-      **N-540**.
+- [x] **S3-d** `62612c9a` -- the producer became a FUNCTION of the payday, with no horizon parameter
+      (**R-SAL14**); `PeriodInfo` gained the PAYDAY, `project_profile` is deleted, and NO FIGURE
+      MOVED. **A LATER LEAF MUST OBEY**: the capability is BUILT and not yet ASKED FOR -- every
+      caller still passes `calendar.saved()`, so the hold is still reached and
+      `TestThePricerAnswersPastTheSavedHORIZON` grades what `S3-e` needs. It did NOT close **P63**,
+      did not carry **N-540**, and opened **N-547**.
 - [ ] **S3-f** -- the PER-RAISE probe and its Save on the `/retirement` rail. **OPENS ON A STOP**:
       the developer asked *"how would you design this from scratch"* and has not answered the lane's
       reply, so the design is undecided. Its id was cited in four files `S3-c` shipped before this
       row existed.
-- [ ] **S3-e** -- delete `AccountPayrollFeed`'s hold and `salary_basis(beyond=)`; `employee_at`
-      becomes a lookup that RAISES past the horizon. Closes **N-541**.
+- [ ] **S3-e** -- WIDEN THE ASK, then delete what it orphans. Every caller still passes
+      `calendar.saved()`, so the hold is still reached: ask the pricer for the paydays each surface
+      actually projects over, then delete `_year_averages`, `_complete_years`, `_held_employee`,
+      `_held_gross`, `salary_basis(beyond=)` and
+      `retirement_projection.build_employer_salary_basis`, making `employee_at` a lookup that RAISES
+      past the horizon. The producer shipped at `S3-d`; what is left is the ASK and the deletion.
+      `models_employee` is re-ruled here or deleted for `is_payroll_linked`: with no hold there is
+      no window to ask *did payroll pay this account on any priced payday* of. **MOVES MONEY** -- it
+      replaces every held figure with a priced one. Closes **N-541**, **N-544**, **N-545**,
+      **N-546**.
 - [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (**R-SAL3**; findings **F-21**,
       **N-395**). `salary.paycheck_deductions.deductions_per_year` server-defaults to 26 and the
       form offers 26 / 24 / 12; it is never multiplied or divided, only compared, so it is a

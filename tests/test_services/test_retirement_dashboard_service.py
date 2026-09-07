@@ -261,7 +261,7 @@ class TestComputeGapNetBiweekly:
         pay = retirement_dashboard_service._CurrentPay(
             net_biweekly=Decimal("2000.00"),
             current_breakdown=paycheck_calculator.PaycheckBreakdown(
-                period=paycheck_calculator.PeriodInfo(period_id=1),
+                period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
                 earnings=paycheck_calculator.Earnings(
                     annual_salary=Decimal("65000.00"),
                     gross_biweekly=Decimal("2500.00"),
@@ -396,7 +396,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         pay = retirement_dashboard_service._CurrentPay(
             net_biweekly=Decimal("2000.00"),
             current_breakdown=paycheck_calculator.PaycheckBreakdown(
-                period=paycheck_calculator.PeriodInfo(period_id=1),
+                period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
                 earnings=paycheck_calculator.Earnings(
                     annual_salary=Decimal("100000.00"),
                     gross_biweekly=Decimal("2500.00"),
@@ -436,7 +436,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         pay = retirement_dashboard_service._CurrentPay(
             net_biweekly=Decimal("2000.00"),
             current_breakdown=paycheck_calculator.PaycheckBreakdown(
-                period=paycheck_calculator.PeriodInfo(period_id=1),
+                period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
                 earnings=paycheck_calculator.Earnings(
                     annual_salary=Decimal("100000.00"),
                     gross_biweekly=Decimal("2500.00"),

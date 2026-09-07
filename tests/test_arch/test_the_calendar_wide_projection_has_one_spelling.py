@@ -3,14 +3,16 @@
 Plan step **salary:R14-a**, closing ledger row **N-443**.  Running the paycheck
 engine over an owner's WHOLE saved calendar, with tax configs resolved per
 period year, was written out longhand in three places --
-``income_service.SalaryPricing._breakdown_by_period``,
-``routes/salary/views.py`` and ``routes/salary/cockpit.py`` -- each pairing
-:func:`~app.services.tax_config_service.load_tax_configs_for_periods` with
+``income_service.SalaryPricing``, ``routes/salary/views.py`` and
+``routes/salary/cockpit.py`` -- each pairing
+``tax_config_service.load_tax_configs_for_periods`` (the door plan step
+salary:S3-d replaced with :func:`~app.services.tax_config_service
+.configs_by_year`) with
 :func:`~app.services.paycheck_calculator.project_salary` over the same
 ``calendar.saved()``.  Ruling **R-IZ**: a second walk is a cache with no
 column, agreement is not the test, and where a layer puts the shared leaf out
 of reach the remedy is to MOVE THE LEAF.  The leaf is
-:func:`app.services.income_service.project_profile`.
+:class:`app.services.income_service.ProfilePaychecks`.
 
 What this test enforces
 -----------------------
@@ -64,15 +66,22 @@ the four was measured against this scanner:
 * ``f = paycheck_calculator.project_salary`` then ``f(...)`` -- an assignment
   alias, where :func:`_local_names` reads only ``ImportFrom``.
 * ``getattr(pc, "project_salary")(...)``.
-* NOT PINNED, and unpinnable here: a hand-rolled
-  ``load_tax_configs_for_periods`` plus a per-period
-  :func:`~app.services.paycheck_calculator.calculate_paycheck` loop.  It
-  calls ``project_salary`` nowhere, so this census cannot see it by
-  construction -- and it is the shape a future author is MOST likely to
-  write, which is why it is named here rather than left implicit.
+* A hand-rolled tax-config resolution plus a per-period
+  :func:`~app.services.paycheck_calculator.calculate_paycheck` loop calls
+  ``project_salary`` nowhere, so THIS census cannot see it by construction.
+  It was named here as unpinnable until plan step **salary:S3-d**;
+  :func:`test_the_direct_engine_callers_are_the_six_C12_owns` is the second
+  census that pins it, over ``calculate_paycheck`` itself.
 
-None of these appears in ``app/`` today.  They are the shapes a reviewer must
-still catch by eye; this test is a floor, not a ceiling.  The census also
+**The second census has the SAME first four blind spots**, because it uses the
+same matcher: a ``**`` unpacking is irrelevant to it (it reads no keyword), but
+an assignment alias, a ``getattr`` form and a name bound by anything other than
+``ImportFrom`` are all invisible to it exactly as they are here.
+:func:`test_the_per_period_blind_spots_are_the_ones_named` pins them, so the
+statement above is executable for both censuses rather than for one.
+
+The first four appear nowhere in ``app/`` today.  They are the shapes a
+reviewer must still catch by eye; this test is a floor, not a ceiling.  The census also
 reads only ``app/`` -- ``scripts/`` and ``tools/`` are clean, and
 ``tests/test_services/test_paycheck_calculator.py`` holds two legitimate
 calls that are deliberately out of scope.
@@ -194,10 +203,10 @@ def test_the_calendar_wide_projection_is_spelled_once():
     census = _census(_repo_root())
     assert census == {_THE_LEAF: 1}, (
         "The calendar-wide paycheck projection must be spelled exactly once, "
-        f"in {_THE_LEAF} (income_service.project_profile). Census: {census}. "
+        f"in {_THE_LEAF} (ProfilePaychecks.over). Census: {census}. "
         "A new entry here is ledger row N-443 recurring: route it through "
-        "income_service.project_profile instead of pairing "
-        "load_tax_configs_for_periods with project_salary again."
+        "income_service.ProfilePaychecks instead of pairing "
+        "a tax-config resolution with project_salary again."
     )
 
 
@@ -303,4 +312,174 @@ def test_the_blind_spots_are_the_ones_named():
             f"{label} is no longer a blind spot -- the scanner now sees it. "
             "That is an improvement, but the module docstring still lists it "
             "as unseen: delete that entry."
+        )
+
+
+#: The engine's PER-PERIOD entry.  The second census below is over this name,
+#: where the first is over ``project_salary``: a hand-rolled
+#: tax-config resolution plus a loop of these calls the first
+#: census's subject nowhere, which is the blind spot the module docstring
+#: named as unpinnable until plan step **salary:S3-d**.
+_PER_PERIOD = "calculate_paycheck"
+
+#: Every ``app/`` site that prices a paycheck by calling the engine's
+#: per-period entry directly, as ``{relative path: call count}``.
+#:
+#: **These are ledger rows P62 / P63 / P64 and plan step C12, enumerated
+#: rather than described.**  Each prices ONE period, resolving its tax configs
+#: through a different door from :class:`~app.services.income_service
+#: .ProfilePaychecks`, so routing them through the pass's pricer could move a
+#: figure ``/savings`` and ``/retirement`` publish -- which is why plan step
+#: salary:S3-d left them alone and why C12 is ruled to need its own decision
+#: first.  On ``/retirement`` the current period is priced at
+#: ``retirement_dashboard_service`` AND again inside the projection axis, so
+#: that one payday is priced twice today.
+#:
+#: The census is by ENUMERATION and not by subtraction: every entry here was
+#: read and counted, so a SEVENTH site fails this test and C12 deleting one
+#: fails it too.  Both directions are the point.
+_DIRECT_ENGINE_CALLERS = {
+    "app/routes/salary/_helpers.py": 2,
+    "app/routes/salary/cockpit.py": 1,
+    "app/routes/salary/profiles.py": 1,
+    "app/services/retirement_dashboard_service.py": 1,
+    "app/services/savings_dashboard_service/_metrics.py": 1,
+}
+
+
+def _per_period_calls(tree: ast.AST) -> int:
+    """Return how many direct ``calculate_paycheck`` calls *tree* holds.
+
+    The same matcher :func:`_calendar_wide_calls` uses, over the per-period
+    name and with no keyword test: there is only one mode of this call, so
+    every one of them counts.
+
+    Args:
+        tree: The parsed module.
+
+    Returns:
+        The number of matching calls.
+    """
+    names = {_PER_PERIOD}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == _PER_PERIOD and alias.asname:
+                    names.add(alias.asname)
+    found = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            found += func.attr == _PER_PERIOD
+        elif isinstance(func, ast.Name):
+            found += func.id in names
+    return found
+
+
+def _per_period_census(root: Path) -> dict[str, int]:
+    """Return ``{relative path: count}`` for direct engine callers under app/.
+
+    The ENGINE's own module is excluded: ``project_salary`` calls
+    ``calculate_paycheck`` once, in the loop that IS the batch entry, and
+    counting the definition's own use would put the producer in a census of
+    its bypassers.
+    """
+    counts: dict[str, int] = {}
+    for path in sorted((root / "app").rglob("*.py")):
+        relative = str(path.relative_to(root))
+        if relative == _THE_ENGINE:
+            continue
+        hits = _per_period_calls(
+            ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
+        )
+        if hits:
+            counts[relative] = hits
+    return counts
+
+
+def test_the_direct_engine_callers_are_the_six_C12_owns():
+    """Only the six enumerated sites price a paycheck outside the pricer.
+
+    The second census, added at plan step **salary:S3-d**, over the blind spot
+    the first one names: a per-period ``calculate_paycheck`` loop is invisible
+    to a ``project_salary`` scanner by construction, and it is the shape a
+    future author is most likely to write.
+
+    It asserts the WHOLE map rather than "no new file has one", so both
+    directions fail: a seventh caller appearing anywhere, and one of these six
+    being deleted or moved without :data:`_DIRECT_ENGINE_CALLERS` being told.
+    The second is what makes this test C12's checklist rather than a fence C12
+    would have to remember to take down.
+    """
+    census = _per_period_census(_repo_root())
+    assert census == _DIRECT_ENGINE_CALLERS, (
+        "The set of app/ sites calling paycheck_calculator.calculate_paycheck "
+        f"directly has changed. Census: {census}; expected "
+        f"{_DIRECT_ENGINE_CALLERS}. A NEW entry is a seventh place that "
+        "prices a paycheck outside the read pass's "
+        "income_service.PaycheckPricing -- route it through "
+        "ctx.paychecks().for_profile(profile).at(period) instead, unless it "
+        "genuinely needs a tax-config door of its own, in which case say so "
+        "here. A MISSING entry means plan step C12 has folded one in: delete "
+        "it from _DIRECT_ENGINE_CALLERS, and when the map empties delete this "
+        "test with the finding it tracks (ledger rows P62 / P63 / P64)."
+    )
+
+
+def test_the_per_period_scanner_fires_on_a_planted_call():
+    """The second census's scanner really sees the shape it claims to.
+
+    The same firing proof :func:`test_the_scanner_fires_on_a_planted_second_spelling`
+    gives the first census, and for the reason stated in the module docstring:
+    a census that returns "nothing new" is indistinguishable from a census
+    that looked in the wrong place until you make it fire.
+    """
+    attribute_form = ast.parse(
+        "paycheck_calculator.calculate_paycheck(basis, period, configs)\n"
+    )
+    assert _per_period_calls(attribute_form) == 1
+
+    imported_form = ast.parse(
+        "from app.services.paycheck_calculator import calculate_paycheck\n"
+        "calculate_paycheck(basis, period, configs)\n"
+    )
+    assert _per_period_calls(imported_form) == 1
+
+    aliased_form = ast.parse(
+        "from app.services.paycheck_calculator import "
+        "calculate_paycheck as cp\n"
+        "cp(basis, period, configs)\n"
+    )
+    assert _per_period_calls(aliased_form) == 1
+
+    # The batch entry is a DIFFERENT question and must not be counted here;
+    # the first census owns it.
+    assert _per_period_calls(
+        ast.parse("project_salary(basis, periods, configs_by_year=c)\n"),
+    ) == 0
+
+
+def test_the_per_period_blind_spots_are_the_ones_named():
+    """The second census's documented blind spots really are blind.
+
+    :func:`test_the_blind_spots_are_the_ones_named`'s twin, over
+    ``calculate_paycheck``.  The module docstring says the two censuses share
+    their limits; a shared limit stated once and executed once is a claim about
+    one of them, which is how the pair would come apart.  Both directions fail
+    here, as they do for the first census.
+    """
+    blind = {
+        "assignment_alias":
+            "f = paycheck_calculator.calculate_paycheck\n"
+            "f(basis, period, configs)\n",
+        "getattr_form":
+            "getattr(pc, 'calculate_paycheck')(basis, period, configs)\n",
+    }
+    for label, source in blind.items():
+        assert _per_period_calls(ast.parse(source)) == 0, (
+            f"{label} is no longer a blind spot of the per-period census -- "
+            "the scanner now sees it. That is an improvement, but the module "
+            "docstring still lists it as unseen: delete that entry."
         )

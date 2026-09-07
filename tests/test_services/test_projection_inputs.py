@@ -36,7 +36,7 @@ from app.services.investment_projection import (
     build_contribution_timeline,
     calculate_investment_inputs,
 )
-from app.services.income_service import project_profile
+from app.services.income_service import paycheck_pricing
 from app.services.pay_calendar import calendar_for
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
@@ -431,7 +431,7 @@ class TestLoadPayrollFeeds:
     Two questions, and the point of the step is that neither is answered here:
     what a deduction takes from a paycheck, and what gross funds an employer
     contribution, are both established by
-    :func:`~app.services.income_service.project_profile` when it prices the
+    :class:`~app.services.income_service.ProfilePaychecks` when it prices the
     paycheck.  What this loader owns is the FOLD -- which lines belong to which
     account, and which profile may answer at all -- so that is what these cases
     grade.
@@ -477,8 +477,9 @@ class TestLoadPayrollFeeds:
             ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
+            pricing = paycheck_pricing(calendar)
             feeds = load_payroll_feeds(
-                ids["user_id"], calendar,
+                pricing,
                 [ids["acct_a_id"], ids["acct_b_id"]], {},
             )
             paydays = [period.start_date for period in calendar.saved()]
@@ -523,8 +524,9 @@ class TestLoadPayrollFeeds:
             db.session.commit()
 
             calendar = calendar_for(ids["user_id"])
+            pricing = paycheck_pricing(calendar)
             feed = load_payroll_feeds(
-                ids["user_id"], calendar, [ids["acct_a_id"]], {},
+                pricing, [ids["acct_a_id"]], {},
             )[ids["acct_a_id"]]
             payday = calendar.saved()[0].start_date
             assert feed.employee_at(payday) == Decimal("750")
@@ -546,8 +548,9 @@ class TestLoadPayrollFeeds:
             ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
+            pricing = paycheck_pricing(calendar)
             feed = load_payroll_feeds(
-                ids["user_id"], calendar, [ids["acct_a_id"]], {},
+                pricing, [ids["acct_a_id"]], {},
             )[ids["acct_a_id"]]
             assert set(feed.employee_by_payday) == {
                 period.start_date for period in calendar.saved()
@@ -572,8 +575,9 @@ class TestLoadPayrollFeeds:
             ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
+            pricing = paycheck_pricing(calendar)
             feed = load_payroll_feeds(
-                ids["user_id"], calendar, [ids["acct_a_id"]], {},
+                pricing, [ids["acct_a_id"]], {},
             )[ids["acct_a_id"]]
             payday = calendar.saved()[0].start_date
             assert feed.employee_at(payday) == Decimal("500")
@@ -588,8 +592,9 @@ class TestLoadPayrollFeeds:
         an account that names none models no employer money rather than
         borrowing whichever profile a reader resolved.  The gross asserted is
         the engine's own for that payday, read back through
-        :func:`~app.services.income_service.project_profile` -- so this grades
-        the FOLD and cannot pass by re-deriving the arithmetic it is checking.
+        :class:`~app.services.income_service.ProfilePaychecks` -- so this
+        grades the FOLD and cannot pass by re-deriving the arithmetic it is
+        checking.
         """
         with app.app_context():
             ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
@@ -603,24 +608,24 @@ class TestLoadPayrollFeeds:
             db.session.commit()
 
             calendar = calendar_for(ids["user_id"])
+            pricing = paycheck_pricing(calendar)
             feeds = load_payroll_feeds(
-                ids["user_id"], calendar,
+                pricing,
                 [ids["acct_a_id"], ids["acct_b_id"]],
                 {ids["acct_a_id"]: named, ids["acct_b_id"]: unnamed},
             )
             payday = calendar.saved()[0].start_date
-            # Keyed on the BREAKDOWN's own period ID and looked up through
-            # the calendar, never paired by position: an equality whose two
-            # sides share one producer measures nothing, and a ``zip`` here
-            # would have shared the exact expression the loader used.
-            payday_by_id = {
-                period.period_id: period.start_date
-                for period in calendar.saved()
-            }
+            # Keyed on the BREAKDOWN's OWN payday, never paired by
+            # position: an equality whose two sides share one producer
+            # measures nothing, and a ``zip`` here would have shared the exact
+            # expression the loader used.  This read the payday out of a
+            # ``{period_id: start_date}`` table until plan step salary:S3-d
+            # put the payday on the paycheck.
             expected = {
-                payday_by_id[breakdown.period.period_id]:
-                    breakdown.earnings.gross_biweekly
-                for breakdown in project_profile(profile, calendar)
+                breakdown.period.payday: breakdown.earnings.gross_biweekly
+                for breakdown in paycheck_pricing(calendar).for_profile(
+                    profile,
+                ).over(calendar.saved())
             }[payday]
             # And the figure itself, hand-computed, so the case still grades
             # something if BOTH sides were to move together: $100,000 over 26
@@ -653,8 +658,9 @@ class TestLoadPayrollFeeds:
             db.session.commit()
 
             calendar = calendar_for(ids["user_id"])
+            pricing = paycheck_pricing(calendar)
             feed = load_payroll_feeds(
-                ids["user_id"], calendar, [ids["acct_a_id"]],
+                pricing, [ids["acct_a_id"]],
                 {ids["acct_a_id"]: params},
             )[ids["acct_a_id"]]
             assert feed.funds_employer is False
@@ -684,8 +690,9 @@ class TestLoadPayrollFeeds:
             db.session.commit()
 
             calendar = calendar_for(ids["user_id"])
+            pricing = paycheck_pricing(calendar)
             feed = load_payroll_feeds(
-                ids["user_id"], calendar, [ids["acct_a_id"]],
+                pricing, [ids["acct_a_id"]],
                 {ids["acct_a_id"]: params},
             )[ids["acct_a_id"]]
             assert feed.funds_employer is False
@@ -703,8 +710,9 @@ class TestLoadPayrollFeeds:
             ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
+            pricing = paycheck_pricing(calendar)
             feeds = load_payroll_feeds(
-                ids["user_id"], calendar,
+                pricing,
                 [ids["acct_a_id"], ids["other_acct_id"]], {},
             )
             assert set(feeds) == {ids["acct_a_id"], ids["other_acct_id"]}
@@ -716,7 +724,7 @@ class TestLoadPayrollFeeds:
         """An empty account list answers the empty map without a query."""
         with app.app_context():
             assert load_payroll_feeds(
-                seed_user["user"].id, calendar_for(seed_user["user"].id),
+                paycheck_pricing(calendar_for(seed_user["user"].id)),
                 [], {},
             ) == {}
 

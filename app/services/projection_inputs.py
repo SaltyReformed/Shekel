@@ -48,7 +48,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services import income_service
+from app.services.income_service import PaycheckPricing
 from app.services.cash_ledger import AmountBasis, contributions_by_id
 from app.services.investment_projection import (
     AccountPayrollFeed,
@@ -57,7 +57,6 @@ from app.services.investment_projection import (
     ShadowContributions,
     calculate_investment_inputs,
 )
-from app.services.pay_calendar import PayCalendar
 from app.utils.money import ZERO
 from app.utils.balance_predicates import status_contributes_to_balance
 
@@ -428,11 +427,9 @@ def load_shadow_income_contributions_for_account(
 
 
 def load_payroll_feeds(
-    user_id: int,
-    calendar: "PayCalendar",
+    paychecks: "PaycheckPricing",
     account_ids: "list[int]",
     params_by_account: "dict[int, InvestmentParams]",
-    breakdowns: "dict[int, dict] | None" = None,
 ) -> "dict[int, AccountPayrollFeed]":
     """Price each account's payroll feed through the PAYCHECK ENGINE.
 
@@ -440,8 +437,8 @@ def load_payroll_feeds(
     arithmetic** (ruling **R-SAL2**).  What a payroll deduction takes from a
     paycheck, and what gross an employer contribution is a percentage of, are
     both facts the paycheck engine establishes when it prices the paycheck.
-    This runs :func:`~app.services.income_service.project_profile` -- the ONE
-    spelling of a profile's projection since ``salary:R14-a`` -- once per
+    This asks :class:`~app.services.income_service.PaycheckPricing` -- the
+    ONE spelling of a profile's projection since ``salary:R14-a`` -- for each
     profile that funds any of these accounts, and folds the resulting
     :class:`~app.services.paycheck_calculator.DeductionLine`\\ s by the
     ``target_account_id`` they already carry.
@@ -482,26 +479,35 @@ def load_payroll_feeds(
     a stranger's salary.
 
     Args:
-        user_id: The owner these accounts and profiles belong to.  Every
-            profile query here is scoped by it.
-        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
-            Its saved window is the domain every priced payday comes from; a
-            projection past it is the feed's hold rule, not this loader's.
+        paychecks: The read pass's
+            :class:`~app.services.income_service.PaycheckPricing`, which
+            carries the owner's calendar as well as their prices.
+
+            **It replaced a calendar beside an OPTIONAL memo at plan step
+            salary:S3-d**, and both halves of that pair were holes.  Running
+            the engine is the expensive half of this function -- each paycheck
+            replays the year's prior paydays for its FICA and annual-cap
+            cumulatives -- and the balance seam asks for a feed once per
+            ACCOUNT, so without a memo the engine re-ran the same profile once
+            per account per entry.  ``breakdowns=None`` meant "no memo", and
+            two of that argument's four callers passed it inside the step that
+            added it; there is nothing to omit now.  Taking the calendar off
+            the same value is the other half: a calendar handed separately is
+            one owner's paydays pairable with another owner's prices.
+
+            **The OWNER comes off it too**, for the same reason and by the
+            same argument one input further: this took a ``user_id`` beside
+            the calendar, and every caller filled it with the owner that
+            calendar already names.  Two homes for one fact on the very
+            function whose case against a separate calendar is that pairing
+            them is a hazard -- so the ``user_id`` every query below is
+            scoped by is read off ``paychecks.calendar``, which cannot
+            disagree with the paydays.
         account_ids: The accounts to price a feed for.  An empty list returns
             an empty map without issuing a query.
         params_by_account: ``{account_id: InvestmentParams}`` from
             :func:`load_investment_params_for_accounts`, read for the
             ``salary_profile_id`` that funds each employer contribution.
-        breakdowns: An optional ``{profile_id: {payday: PaycheckBreakdown}}``
-            memo the caller owns, filled here for a profile it does not yet
-            hold.  **Running the engine is the expensive half of this
-            function** -- a projection walks the owner's whole saved window
-            and each paycheck replays the year's prior paydays for its FICA
-            and annual-cap cumulatives -- and the balance seam asks for a feed
-            once per ACCOUNT, so without a memo the engine re-ran the same
-            profile once per account per entry.  ``None`` means "no memo",
-            which is right for the two route callers: each asks once per
-            render.
 
     Returns:
         ``{account_id: AccountPayrollFeed}``, TOTAL over *account_ids* -- an
@@ -514,6 +520,9 @@ def load_payroll_feeds(
     if not account_ids:
         return {}
 
+    # The owner off the CALENDAR the prices were derived against, so the rows
+    # this scopes and the paychecks that price them cannot name two owners.
+    user_id = paychecks.calendar.user_id
     deductions_by_account = load_active_deductions_for_accounts(
         user_id, account_ids,
     )
@@ -532,29 +541,23 @@ def load_payroll_feeds(
     )
     profiles = _load_funding_profiles(user_id, wanted)
 
-    paydays = [period.start_date for period in calendar.saved()]
-    # KEYED ON THE BREAKDOWN'S OWN PERIOD ID, not paired with ``paydays`` by
-    # position.  ``PaycheckBreakdown.period`` is a
-    # :class:`~app.services.paycheck_calculator.PeriodInfo` carrying the
-    # ``budget.pay_periods.id`` the paycheck was priced for -- structurally
-    # never ``None`` for a projection over the SAVED window -- so the payday
-    # is looked up rather than inferred from ordering.  A ``zip`` against
-    # ``calendar.saved()`` gives the same answer today and is a maintenance
-    # contract between two producers rather than a key, which is the shape
-    # ``CLAUDE.md`` rule 14 names; it would also truncate silently if the two
-    # ever differed in length.
-    payday_by_period_id = {
-        period.period_id: period.start_date for period in calendar.saved()
+    periods = paychecks.calendar.saved()
+    paydays = [period.start_date for period in periods]
+    # KEYED ON THE BREAKDOWN'S OWN PAYDAY, which it carries since plan step
+    # salary:S3-d.  This was a ``{period_id: start_date}`` lookup table built
+    # from ``calendar.saved()`` -- a second producer of a fact the paycheck
+    # already knows -- because ``PeriodInfo`` held only the id.  Zipping the
+    # two sequences by position would have been the maintenance contract
+    # ``CLAUDE.md`` rule 14 names, and would truncate silently if they ever
+    # differed in length; the table avoided that and cost a table.  The
+    # paycheck states its own payday now, so there is neither.
+    breakdowns_by_profile = {
+        profile_id: {
+            breakdown.period.payday: breakdown
+            for breakdown in paychecks.for_profile(profile).over(periods)
+        }
+        for profile_id, profile in profiles.items()
     }
-    breakdowns_by_profile = {} if breakdowns is None else breakdowns
-    for profile_id, profile in profiles.items():
-        if profile_id not in breakdowns_by_profile:
-            breakdowns_by_profile[profile_id] = {
-                payday_by_period_id[breakdown.period.period_id]: breakdown
-                for breakdown in income_service.project_profile(
-                    profile, calendar,
-                )
-            }
     return {
         account_id: AccountPayrollFeed(
             employee_by_payday=_employee_by_payday(
