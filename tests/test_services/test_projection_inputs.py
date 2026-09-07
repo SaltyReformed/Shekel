@@ -717,7 +717,8 @@ class TestLoadPayrollFeeds:
             )
             assert set(feeds) == {ids["acct_a_id"], ids["other_acct_id"]}
             unfunded = feeds[ids["other_acct_id"]]
-            assert unfunded.models_employee is False
+            assert unfunded == AccountPayrollFeed.absent()
+            assert unfunded.is_payroll_linked is False
             assert unfunded.funds_employer is False
 
     def test_no_accounts_issues_no_query(self, app, db, seed_user):
@@ -1105,6 +1106,12 @@ class TestShadowContributionBoundary:
             timeline = build_contribution_timeline(
                 feed=AccountPayrollFeed.absent(), contribution_transactions=records,
                 periods=[period], as_of=period.start_date,
+                # UNREAD here -- the feed is absent, so ``is_payroll_linked``
+                # is False and path 1 never runs.  Any day would serve; the
+                # payday is passed because ``budget.pay_periods`` stores only
+                # that, where production reads the boundary off
+                # :meth:`~app.services.pay_calendar.PayCalendar.horizon`.
+                saved_through=period.start_date,
             )
 
             assert inputs.periodic_contribution == Decimal("400")

@@ -190,16 +190,27 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       the developer asked *"how would you design this from scratch"* and has not answered the lane's
       reply, so the design is undecided. Its id was cited in four files `S3-c` shipped before this
       row existed.
-- [ ] **S3-e** -- WIDEN THE ASK, then delete what it orphans. Every caller still passes
-      `calendar.saved()`, so the hold is still reached: ask the pricer for the paydays each surface
-      actually projects over, then delete `_year_averages`, `_complete_years`, `_held_employee`,
-      `_held_gross`, `salary_basis(beyond=)` and
-      `retirement_projection.build_employer_salary_basis`, making `employee_at` a lookup that RAISES
-      past the horizon. The producer shipped at `S3-d`; what is left is the ASK and the deletion.
-      `models_employee` is re-ruled here or deleted for `is_payroll_linked`: with no hold there is
-      no window to ask *did payroll pay this account on any priced payday* of. **MOVES MONEY** -- it
-      replaces every held figure with a priced one. Closes **N-541**, **N-544**, **N-545**,
-      **N-546**.
+- [ ] **S3-e -- the hold is DELETED** (the DECOMPOSED parent, split 2026-09-06 into the NO-MONEY
+      re-homing and the MONEY; **R-SAL16** carries the argument and **R-SAL15** the design).
+- [ ] **S3-e-1** -- re-home both questions that only mean something while the feed has a WINDOW,
+      then delete both members: the transfer-average boundary in `build_contribution_timeline`
+      becomes the caller's `saved_through` off `PayCalendar.horizon()`, and `_plan_for`'s gate
+      becomes `is_payroll_linked` (**R-SAL17**). **`prices()` was in NO census** and is why this
+      leaf exists. **NO FIGURE MOVES**: byte-identical on a production clone over 8 accounts x 63
+      periods of `balance_map` and `/retirement` at the base, `+60` and `+180`-month points -- with
+      a `$250` deduction and three `$400` transfers ARMED onto an investment account first, so the
+      re-homed term carried `$2.37M` of projected balance rather than `$0.00`.
+- [ ] **S3-e-2** -- WIDEN THE ASK and delete what it orphans. The feed prices a payday ON DEMAND
+      through the pass's pricer (**R-SAL15**, which also refuses the window-and-RAISE design this
+      step was first specified with), so `_year_averages`, `_complete_years`, `_held_employee`,
+      `_held_gross`, `salary_basis(beyond=)` and `build_employer_salary_basis` all go and no caller
+      states a horizon. **MOVES MONEY, OWN PR, own harness.** Measured on a production clone (user
+      1, account 6, 5% employer flat, employer dollars past the `2028-08-23` horizon):
+      `/investment`'s 40-year chart `$200,779.31` -> `$394,634.68` (**+$193,855.37**), `/savings`'s
+      Horizon band `$44,122.87` -> `$52,750.94`, `/retirement` `$132,984.43` -> `$131,030.46` --
+      least on the surface that ALREADY projects a salary path past the horizon, which moves only by
+      the AS-OF difference this arc set out to close. The EMPLOYEE half is `$0.00`: no deduction of
+      his carries a `target_account_id`. Closes **N-541**, **N-544**-**N-546**.
 - [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (**R-SAL3**; findings **F-21**,
       **N-395**). `salary.paycheck_deductions.deductions_per_year` server-defaults to 26 and the
       form offers 26 / 24 / 12; it is never multiplied or divided, only compared, so it is a

@@ -462,10 +462,13 @@ class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
             # infer it, and ``employee_by_payday == {}`` is the ``!= []``
             # class an adversarial review already rejected on this exact case.
             # What grades the refusal is the SIBLING case below, over an owner
-            # with no schedule row at all.
+            # with no schedule row at all.  A ``models_employee is False``
+            # line stood beside the map assertion until plan step
+            # salary:S3-e-1 deleted that property; it asserted nothing the
+            # empty map does not already imply, the property having been
+            # ``any(amount > 0)`` over it.
             assert inputs.investment_params is not None
             assert inputs.feed.employee_by_payday == {}
-            assert inputs.feed.models_employee is False
 
     def test_the_balance_seam_REFUSES_an_owner_with_no_schedule_row(
         self, app, db, seed_user, seed_periods,

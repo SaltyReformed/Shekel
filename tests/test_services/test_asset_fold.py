@@ -1064,6 +1064,79 @@ class TestTheContributionTier:
         )
         assert columns[seed_periods[1].id].contribution == Decimal("308.95")
 
+    # pylint: disable-next=protected-access
+    def test_a_LINKED_feed_pricing_zero_folds_exactly_as_NO_feed_does(
+        self, db, seed_user, seed_periods,
+    ):
+        """The state plan step salary:S3-e-1's gate change moved, measured.
+
+        ``_plan_for`` asked a PRICE question -- *did any priced payday pay
+        this account* -- and now asks the PRESENCE one ``is_payroll_linked``,
+        because *priced* stops naming a fixed window at plan step
+        **salary:S3-e-2** (the field's own docstring carries the argument).
+        The two disagree on exactly one state: a deduction WIRED to this
+        account that prices ``$0.00`` on every payday, with no employer
+        contribution to size.  That state built no plan before and builds an
+        empty one now, so this case is the claim that the fold does not move.
+
+        It is not an argument that nothing changed -- something did, a
+        recorded-contribution query now runs for such an account.  It is the
+        claim that no FIGURE changed, and the reason is that
+        :func:`~app.services.balance_at._asset_contributions
+        .contribution_events` emits an event only for a non-zero amount.
+
+        **It PASSES on both sides of that gate, by design, and saying so is
+        the point** (measured 2026-09-06 against the reverted predicate).  It
+        is a regression guard on the equality, not a control that tells the
+        two gates apart -- their only other difference is one query, which is
+        not worth a brittle count.  What makes the equality a MEASUREMENT
+        rather than the shape of the helper is the non-vacuity arm below: a
+        paying feed moves the same columns.
+        """
+        account = _401k(
+            seed_user, seed_periods[0], Decimal("20000.00"),
+            opened_on=date(2026, 1, 2),
+        )
+        ctx = _ctx(seed_user)
+        params = _params_for(account)
+        periods = seed_periods[:3]
+
+        linked_but_zero = _view(
+            account, ctx, periods, params=params,
+            feed=_flat_feed(periods, "0"),
+        )
+        no_feed_at_all = _view(account, ctx, periods, params=params)
+        assert linked_but_zero == no_feed_at_all
+
+        # Non-vacuity: the harness CAN tell two feeds apart, so the equality
+        # above is a measurement rather than the shape of the helper.  Note
+        # ``_view`` DISCARDS its ``periods`` argument -- the seam walks
+        # ``cash.calendar.saved()``, the whole schedule -- so the three-period
+        # feeds above cover a prefix of it and the rest reads the hold.  That
+        # is harmless in both directions here (an all-zero map holds
+        # ``$0.00``, an all-$500 map holds ``$500``) and is stated because a
+        # reader would otherwise assume the fold is scoped to those three.
+        paying = _view(
+            account, ctx, periods, params=params,
+            feed=_flat_feed(periods, "500.00"),
+        )
+        assert paying != no_feed_at_all
+
+        # **And the PREDICATE itself, which the equality above cannot grade.**
+        # An adversarial review of this step measured that the equality passes
+        # on BOTH sides of the gate change -- it is a regression guard, so
+        # reverting `_plan_for` to the PRICE question leaves it green. These
+        # two lines are what fails on that revert: a linked all-zero feed now
+        # builds a plan where it used to build none, and an unlinked one still
+        # builds none.
+        assert _asset_contributions._plan_for(
+            account, ctx.amounts(),
+            _inputs(params, _flat_feed(periods, "0")),
+        ) is not None
+        assert _asset_contributions._plan_for(
+            account, ctx.amounts(), _inputs(params),
+        ) is None
+
 
 class TestTheContributionWalksLimit:  # pylint: disable=protected-access
     """The annual limit is a calendar-year recurrence over BOTH feeds.

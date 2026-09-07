@@ -106,11 +106,43 @@ class AccountPayrollFeed:
             that :class:`ShadowContributions` keeps for the recorded feed --
             and that pairing exists because an adversarial review caught
             exactly this question being answered by a screened list.
+
+            **It is the only EMPLOYEE-side gate now, and plan step
+            salary:S3-e-1 made it so** (the employer half still asks
+            :attr:`funds_employer`, and `_plan_for` still ORs the two).  A
+            second one stood beside it -- ``models_employee``, *did any
+            priced payday pay this account* -- which the balance seam's
+            plan asked where :func:`build_contribution_timeline` asked this
+            one, and the two were kept apart deliberately: a PRICE question
+            and a PRESENCE question over the saved window.  What the price
+            question cannot survive is the window going away.  Once a feed
+            answers whatever payday it is asked (plan step **salary:S3-e-2**),
+            *priced* means *whatever this caller asked for*, so the same
+            account models money for one consumer and not for another -- an
+            answer that depends on the reader, which is what this arc removes.
+            The presence fact does not move, so it is what both ask.  Deleting
+            the price gate moves no figure:
+            :func:`~app.services.balance_at._asset_contributions
+            .contribution_events` emits an event only for a NON-ZERO amount,
+            and an account whose every deduction prices ``$0.00`` contributes
+            zero on every payday of the walk.  It does cost one
+            recorded-contribution query for such an account, which is the
+            whole of what changed.
     """
 
     employee_by_payday: "Mapping[date, Decimal]"
     gross_by_payday: "Mapping[date, Decimal]"
-    is_payroll_linked: bool = False
+    #: NO DEFAULT, and plan step **salary:S3-e-1** removed the ``= False``
+    #: it had.  While ``models_employee`` was the balance seam's gate, that
+    #: gate was DERIVED from the map and no constructor could hand it a wrong
+    #: answer.  This field is CARRIED, so a defaulted one lets
+    #: ``AccountPayrollFeed({payday: Decimal("500")}, {})`` mean *pays $500 a
+    #: payday and models nothing* -- and :func:`~app.services.balance_at
+    #: ._asset_contributions._plan_for` would drop that account's whole
+    #: modelled contribution out of every balance the seam produces.  Every
+    #: construction already named it; requiring it is what keeps the state
+    #: unrepresentable rather than merely unbuilt.
+    is_payroll_linked: bool
     #: The two HELD figures, derived at construction so the hold rule has one
     #: producer and no caller can supply a figure inconsistent with the maps
     #: (the shape ``PayCalendar.periods`` uses for the same reason).  Excluded
@@ -202,9 +234,9 @@ class AccountPayrollFeed:
         line skips one payday a month, and a window ending on a skip holds
         ``$0.00`` for the whole tail.  Measured at cadence 14, ``$211.56`` a
         payday, window ``2027-01-19..2028-02-29``: ``$5,712.12`` of real
-        in-window deductions, :attr:`models_employee` ``True``, and
-        ``$0.00`` held against a true ``$195.29``.  13 of 365 anchors do this
-        at 40 paydays, 2 of 365 at 49, none at 51 or above.
+        in-window deductions and ``$0.00`` held against a true ``$195.29``.
+        13 of 365 anchors do this at 40 paydays, 2 of 365 at 49, none at 51
+        or above.
 
         It can OVERSTATE on a CAPPED one: measured at cadence 14, ``$600`` a
         payday against a ``$1,000`` cap over ``2027-01-15..2028-01-14``, it
@@ -334,38 +366,7 @@ class AccountPayrollFeed:
         Returns:
             The empty :class:`AccountPayrollFeed`.
         """
-        return cls({}, {})
-
-    @property
-    def models_employee(self) -> bool:
-        """Whether payroll pays this account anything on any priced payday.
-
-        The gate the balance seam's plan asks before modelling an employee
-        feed at all (:func:`~app.services.balance_at._asset_contributions
-        ._plan_for`), so an account whose deductions all price at ``$0.00``
-        models nothing rather than a series of zeros.  The contribution
-        TIMELINE asks a different question and gates on
-        :attr:`is_payroll_linked`; see that field.
-
-        **It reads the priced MAP, not the held figures, and an adversarial
-        review measured why.**  It was ``self._held_employee != (ZERO, ZERO)``
-        back when the hold was "the last payday that paid something", for
-        which the two agreed closely enough to look equivalent.  The hold is a
-        COMPLETE-calendar-year average now, and that is a different predicate:
-        a window with no complete year at all, or one whose complete year
-        happens to be all zeros, holds ``$0.00`` in both directions while an
-        adjacent partial year paid.  Measured on a 26-payday
-        window split 14 / 12 across a year boundary with a ``$1,000``-capped
-        deduction paying entirely in the SHORTER year -- ``$1,000.00`` of real
-        in-window deductions, and this gate said the account modelled nothing,
-        which drops the whole figure out of every balance the seam produces.
-
-        Returns:
-            ``True`` when at least one priced payday paid this account.
-        """
-        return any(
-            amount > ZERO for amount in self.employee_by_payday.values()
-        )
+        return cls({}, {}, is_payroll_linked=False)
 
     @property
     def funds_employer(self) -> bool:
@@ -381,27 +382,6 @@ class AccountPayrollFeed:
             ``True`` when a funding profile's paychecks were priced.
         """
         return bool(self.gross_by_payday)
-
-    def prices(self, payday: date) -> bool:
-        """Whether *payday* is one the owner's calendar actually reached.
-
-        The boundary between an answer and an extrapolation, asked rather
-        than inferred: :meth:`employee_at` and :meth:`gross_at` are TOTAL, so
-        a caller cannot tell a priced payday from a held one by their return
-        values, and one caller must (see
-        :func:`build_contribution_timeline`'s path 1).
-
-        Args:
-            payday: The pay period's ``start_date``.
-
-        Returns:
-            ``True`` when the engine priced this payday, ``False`` when the
-            answer for it is held.
-        """
-        return (
-            payday in self.employee_by_payday
-            or payday in self.gross_by_payday
-        )
 
     def employee_at(self, payday: date) -> Decimal:
         """Return what this account received from payroll on *payday*.
