@@ -21,8 +21,9 @@ none.  What it costs is one refusal the lone-row shape never needed
 claim -- that a group's gap is *five cents the bank moved that the app has no
 row for at all*.  It says that where the owner says nothing; it does not say
 it as a fact about the world.  An earlier version of this paragraph did, and
-:class:`DifferenceLanding`'s own measured population then asserted the
-negation eight hundred lines below it.
+:class:`~._landing.DifferenceLanding`'s own measured population then
+asserted the negation.  *That read "eight hundred lines below it" while the two
+shared a file; plan step ``bank_import:X-gq`` moved the class out.*
 
 **Ruling R-FN is what the row is**, and its mechanism already exists: an
 ordinary transaction with ``category_id`` NULL books to the per-owner
@@ -202,7 +203,7 @@ def _reject_unstorable(sides: MatchSides) -> None:
     NUMBER per side since ``bank_import:X-go`` deleted the schema's member cap,
     so the total can leave the domain any one of them lives in and this is its
     ONLY bound.  Both remedies this module offers then write an unstorable
-    figure: :func:`corrected_figure` onto the row a match names, and
+    figure: :func:`~._landing.corrected_figure` onto the row a match names, and
     :func:`mint` into a new one.
 
     **What that costs without this refusal is the whole PASS, not the item.**
@@ -373,9 +374,11 @@ def _reject_unaccepted_difference(
     *what the screen had disclosed*, which this door cannot know and so had to
     proxy.  This one predicts *what this door is about to write*, which it can
     check.  At a zero difference the bank leaves the attributed member exactly
-    what it already holds -- :class:`DifferenceLanding` subtracts the OTHER
+    what it already holds -- :class:`~._landing.DifferenceLanding` subtracts
+    the OTHER
     members from a bank total the two sides agree on -- so
-    :func:`corrected_figure` answers ``None`` whether a member is named or
+    :func:`~._landing.corrected_figure` answers ``None`` whether a member is
+    named or
     not, and :func:`~._accept.record_match` resolves no residual period
     because the difference is zero.  The two writers a difference has are both
     provably idle and there is no act to consent to.
@@ -486,7 +489,8 @@ def _reject_unrepresentable_landing(
     shape never needed, which is why the widening had to bring one.**  A
     transaction stores a non-negative GROSS whose direction comes from its
     ``transaction_type_id`` and never from the figure
-    (:func:`corrected_figure`'s own note), so the only cash it can be moved to
+    (:func:`~._landing.corrected_figure`'s own note), so the only cash it can
+    be moved to
     is cash of the direction it already has.  For a match naming ONE row that
     was guaranteed: :func:`_reject_opposed_movements` compares the two sums,
     and with one row ``sides.app`` IS that row's cash, so the bank's figure
@@ -587,7 +591,8 @@ def reject_unrecordable(
         sides: What the two halves come to, derived once for the whole act.
         accepted: The difference the owner agreed to, or ``None``.
         landing: Where the difference would go
-            (:class:`DifferenceLanding`), or ``None`` where the caller has not
+            (:class:`~._landing.DifferenceLanding`), or ``None`` where the
+            caller has not
             derived one.  **Defaulted, and it is the one argument here that
             is**: the doors that take a SUBMISSION derive the landing before
             they refuse, and the two that BUILD their own match name a single

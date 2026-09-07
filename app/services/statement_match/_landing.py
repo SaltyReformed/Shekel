@@ -55,7 +55,7 @@ class DifferenceLanding:
     **ONE rule, and it is the whole of ruling R-GD(a)'s determinacy:** the
     difference this door would write goes to the member the match ATTRIBUTES it
     to, and where it attributes it to none it becomes **R-FN**'s ordinary
-    accepted row (:func:`mint`).  A match attributes it
+    accepted row (:func:`~._variance.mint`).  A match attributes it
 
     * to its SOLE row where it names one -- nothing has to be apportioned, so
       the bank's figure is simply an assertion about that row;
@@ -65,7 +65,7 @@ class DifferenceLanding:
       every match this screen submitted before that step.
 
     **The middle arm is the step's whole change, and it does not weaken the
-    argument above it.**  This module's opening paragraph -- *three rows
+    argument above it.**  :mod:`._variance`'s opening paragraph -- *three rows
     summing to one deposit, five cents short, is not five cents of error in one
     of them* -- is about what the DOOR can DERIVE, and it stands unamended:
     nothing here apportions and nothing here guesses.  What is new is that the
@@ -142,7 +142,7 @@ class DifferenceLanding:
 
     Attributes:
         on_row: The member the difference is written to, or ``None`` where it
-            has none and :func:`mint` is what closes the gap.  It is one of
+            has none and :func:`~._variance.mint` is what closes the gap.  It is one of
             the very rows handed to :meth:`of`, so the caller cannot be given
             a row the act does not name.
         bank_cash: What the bank states :attr:`on_row` is worth, signed on
@@ -352,7 +352,8 @@ def corrected_figure(
     Returns:
         The figure to submit, or ``None`` when nothing should be submitted --
         a group, an unchanged figure, or a row whose amount is DERIVED from its
-        own purchases and which :func:`_reject_uncorrectable_row` has already
+        own purchases and which :func:`~._variance._reject_uncorrectable_row`
+        has already
         refused.
     """
     if bank_cash is None or bank_cash == row.cash_amount:
