@@ -51,6 +51,12 @@ than a second copy here (rule 16): **N-239** and **N-323**.
 
 ## The steps
 
+*The Reconcile rebuild -- one page on four verbs (rulings R-HP through R-HX), nineteen shipped steps
+from the page itself to the Skipped tab's Undo -- was ARCHIVED at `bank_import:X-gq`'s registry pass
+under conventions rule 5, this document's cap being binding and rule 5's escape being the sanctioned
+one. Its as-built record is `historical/bank_import_x_gj_as_built_2026-09-04.md`, which governs
+nothing and says so on its own first line. The code as committed is what those steps did.*
+
 - [ ] **X-f6** `feat(import): the bank says when money moved` -- the DECOMPOSED parent of the
       statement importer (**R-FP**), carrying **N-173**.
       **It is no longer the sequenced follow-on ruling R-EB made it** (developer, 2026-08-13): what
@@ -113,26 +119,6 @@ what it leaves a LATER step is on that step's own entry.
 - [x] **X-gf-3b-1** `d2248fe6` -- the workbench is not the queue (**R-HC**). Closed **N-374**.
 - [x] **X-gf-3b-2** `ff744d79` -- one list by the decision (**R-HB**, **R-HD**). **N-380** shut,
       **N-381** open.
-- [x] **X-gj** `f119ec0a` -- the Reconcile rebuild, one page on four verbs (**R-HP**..**R-HX**);
-      ticked with `X-gj-4b`. Detail: `historical/bank_import_x_gj_as_built_2026-09-04.md`.
-- [x] **X-gj-1** `a43e8e2f` -- the page, split three ways on the services boundary.
-- [x] **X-gj-1a** `bc851df9` -- the pass becomes CARDS (**R-HP**, **R-HQ**, **R-HW**).
-- [x] **X-gj-1b** `cfcfcac9` -- the page and the three bank-line tabs; minted `X-gk`.
-- [x] **X-gj-1c** `a43e8e2f` -- the two settled tabs; the register RETIRED (**R-HU**).
-- [x] **X-gj-2** `a23315dc` -- **R-HT(a)**'s inflow answer, deposit half and refund half.
-- [x] **X-gj-2a** `751eba5d` -- a standing rule answers a DEPOSIT: the fifth `RuleAnswer`.
-- [x] **X-gj-2b** `a23315dc` -- the refund filing. Ruled **R-IK**, **R-IL**, **R-IM**.
-- [x] **X-gj-2b-1** `9920bed7` -- the entry positivity check becomes `amount <> 0` (**R-II**).
-- [x] **X-gj-2b-2** `1bfeff07` -- a rule FILES a refund; a PARTITION correction, not a new arm.
-- [x] **X-gj-2b-3** `a23315dc` -- the reader census; a purchase's sign is PICKED, not derived.
-- [x] **X-gj-3** `e42dcd6b` -- **R-HT(b)**'s group answer; its second leaf WITHDRAWN (**R-JJ**).
-- [x] **X-gj-3a** `e42dcd6b` -- a group's difference lands on a member the OWNER names (**R-IU**).
-- [x] **X-gj-4** `f119ec0a` -- the SKIP verb, split at its gate; **R-JG** took the act ROW.
-- [x] **X-gj-4a** `758bbe55` -- the STORE and its two doors: `budget.statement_line_skips`.
-- [x] **X-gj-4b** `f119ec0a` -- the SKIP verb LIT, shut on an account payment (**R-HW**, **R-JI**).
-- [x] **X-gj-4c** `56f97b98` -- the SKIPPED TAB (**R-JH**); its ORDER argument is spent.
-- [x] **X-gj-4c-1** `456d6bd2` -- a *never a purchase* answer is not a disposition (**R-JH**).
-- [x] **X-gj-4c-2** `56f97b98` -- the TAB, its Undo, and a `CardKind` the building arm states.
 - [x] **X-gk** `8569e5ec` -- the MERCHANTS surface (**R-IC**); opened **N-402** and **N-403**.
 - [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the DECOMPOSED
       parent of the exception queue's retirement, split 2026-09-05 at its own census into five
@@ -147,6 +133,26 @@ what it leaves a LATER step is on that step's own entry.
   - [x] **X-gi-2** `b462af07` -- **R-HU**'s deletion. Closed **N-404**; PRUNED `match_by_hand` per
         `X-gi-1`'s obligation; moved the `not_shown_alone` render coverage onto the Reconcile pane;
         filed **BI-479** and **BI-480**, both owned by `X-gi-3`.
+  - [x] **X-go** `20f96d90` -- `_MAX_MATCH_MEMBERS` deleted (**R-BI2**). Two bounds already held its
+        stated reason: `resolve_rows` and `load_lines` refuse anything the pass did not offer, and
+        `MAX_FORM_MEMORY_SIZE` (500,000, Flask's default, unset here) refuses the body first.
+        **It could never bind in aggregate** -- 500 items x 100 members is 50,000 ticks against a
+        body carrying 22,727 -- so the door's worst case is IDENTICAL before and after, and the cap
+        had begun to contradict a pane offering every unexplained row as a tickbox (**R-HW**).
+  - [x] **X-gq** `86f8620d` + `be59238e` -- the LANDING out of `_variance.py` (999 -> 685 lines)
+        into `_landing.py`, on the seam that module's own first line names, for the headroom the
+        consent gate's rewrite needs. **A LATER SPLIT MUST OBEY**: a byte-pure move cannot keep a
+        REFERENCE true across a module boundary -- nine broke here, seven unqualified Sphinx roles
+        and two direction words -- and pylint, the suite and byte-identity are all blind to it. The
+        docstring was NOT divided; six of eleven paragraphs span both halves (**BI-484**).
+  - [ ] **X-gp** `feat(import): one control, whose options are the acts` -- **R-BI2**, superseding
+        **R-IV**. The MATCH pane draws TWO controls for ONE decision -- `difference_on-<line>` and a
+        consent box whose label is composed from the select's server-side value -- and the door
+        compares only the FIGURE, so two different acts submit the same consent. R-IV accepted that
+        bound because the htmx swap re-renders the box unticked, which is a DOM event holding a
+        money consent together; `X-gi-2a` is what makes the select reachable on the scriptless pane,
+        where nothing swaps. ONE control, options labelled with the figures they write, value
+        carrying landing AND figure, door comparing it whole. **MOVES MONEY, own PR, own review.**
   - [ ] **X-gi-2a** `fix(import): a refused Apply keeps the owner's ticks` -- **BI-478**, which that
         row measures; given its own leaf by the developer 2026-09-06 so `X-gi-2` stayed a pure
         deletion. `reconcile_page`'s fifth parameter becomes the ASK rather than the line id, and
@@ -155,20 +161,12 @@ what it leaves a LATER step is on that step's own entry.
         than a second spelling. **It moves no money**: the cost is RE-TICKING.
         **X-gi-2 armed nothing here** -- the pane behaved this way before it -- but the workbench
         whose identical defect made rule 6 defer this is gone, so the parity argument is spent.
-  - [ ] **X-gi-3** `refactor(import): the queue's model has no reader` -- `_queue.py` whole
-        (`_SAID`, `_notes_for`, the evidence grouping), `_register.py`, four `ReviewSet` members,
-        their re-exports, `test_queue.py`, and `test_rules.py`'s queue half.
-        **A LATER READER must obey**: `TestNoSweptRowCarriesASentence` goes WITH the queue, never
-        before it. **Plus a TEMPLATE orphan** (X-gi-1's census, 2026-09-05):
-        `_statement_queue_macros.html` SURVIVES -- `_statement_reconcile_macros.html:3` imports
-        `books_already_hold` -- but its `match_by_hand` does not, its sole importer being the review
-        body `X-gi-2` deletes. A LIVE file holding a DEAD macro whose `url_for` names a deleted
-        endpoint; Jinja never evaluates an uncalled macro, so nothing raises until someone calls it
-        and gets a `BuildError`. **DISCHARGED**: `X-gi-2` pruned that macro in the commit that
-        deleted its importer, and left this step **BI-479** and **BI-480** instead -- the two dead
-        form readers with their helpers and the half of `test_statement_batch.py` that reaches the
-        LIVE schemas only through them, and two `ReviewBounds` properties. Those rows carry the
-        census; the classes grading the schemas DIRECTLY stay.
+  - [x] **X-gi-3** `43ce313b` -- `_queue.py`, `_register.py`, THREE `ReviewSet` members (the census
+        said four; `unmatched` is LIVE via `card_subject`), plus `answered_merchants` and
+        `MerchantRegister`, which the enumeration missed and whose reach survives in
+        `merchant_directory`. **A LATER STEP MUST OBEY**: BI-479's remedy text was wrong --
+        re-pointing the two schema classes beat deleting them, or live coverage went with the dead
+        readers. Closes **BI-479**, **BI-480**; filed **BI-482**..**BI-485**.
   - [ ] **X-gi-4** `fix(import): three findings the deletion does not close` -- **N-470**'s two
         unrendered receipt figures, **N-405**'s CSP-dead inline style, **N-402**'s 12 uncovered
         route decorators. **N-405's ledger diagnosis was WRONG**: djlint H021 runs in pre-commit and
