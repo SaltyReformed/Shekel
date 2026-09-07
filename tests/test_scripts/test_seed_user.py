@@ -42,8 +42,8 @@ from app.models.tax_config import (
     TaxBracketSet,
 )
 from app.models.user import User, UserSettings
-from app.services.auth_service import (
-    DEFAULT_CATEGORIES,
+from app.services.registration_service import DEFAULT_CATEGORIES
+from app.services.tax_seed_data import (
     DEFAULT_FEDERAL_BRACKETS,
     DEFAULT_FICA,
     DEFAULT_STATE_CHILD_DEDUCTIONS,

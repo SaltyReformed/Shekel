@@ -17,6 +17,7 @@ import pytest
 import requests
 
 from app.extensions import db
+from app.enums import BusinessDayShiftEnum
 from app.models.account import Account, AccountAnchorHistory
 from app.models.user import User, UserSettings
 from app.models.category import Category
@@ -32,11 +33,14 @@ from app.services import (
     auth_service,
     pay_calendar,
     pay_schedule_service,
+    registration_service,
+    tax_seed_data,
 )
 from app.exceptions import AuthError, ConflictError, ValidationError
 from app.utils.dates import display_today
 from tests._test_helpers import (
     all_periods,
+    freeze_today,
     last_covered_day,
     registration_spec,
 )
@@ -194,7 +198,7 @@ class TestChangePassword:
 
 
 class TestRegisterUser:
-    """Tests for auth_service.register_user()."""
+    """Tests for registration_service.register_user()."""
 
     def test_register_user_creates_user(self, app, db):
         """register_user() creates a User, UserSettings, and baseline Scenario.
@@ -203,7 +207,7 @@ class TestRegisterUser:
         field values after a successful registration.
         """
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="newuser@example.com", password="securepass123",
                 display_name="New User",
             ))
@@ -235,7 +239,7 @@ class TestRegisterUser:
         """
         with app.app_context():
             plaintext = "securepass123"
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="hash@example.com", password=plaintext,
                 display_name="Hash Test",
             ))
@@ -252,7 +256,7 @@ class TestRegisterUser:
         UserSettings model.
         """
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="defaults@example.com", password="securepass123",
                 display_name="Defaults Test",
             ))
@@ -274,7 +278,7 @@ class TestRegisterUser:
         must be normalized to prevent login mismatches.
         """
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="UPPER@EXAMPLE.COM", password="securepass123",
                 display_name="Upper Test",
             ))
@@ -285,7 +289,7 @@ class TestRegisterUser:
     def test_register_user_email_is_stripped(self, app, db):
         """register_user() strips whitespace from email before storage."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="  spaced@example.com  ", password="securepass123",
                 display_name="Spaced Test",
             ))
@@ -296,7 +300,7 @@ class TestRegisterUser:
     def test_register_user_display_name_is_stripped(self, app, db):
         """register_user() strips whitespace from display_name before storage."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="strip@example.com", password="securepass123",
                 display_name="  Padded Name  ",
             ))
@@ -313,7 +317,7 @@ class TestRegisterUser:
         """
         with app.app_context():
             with pytest.raises(ConflictError, match="already exists"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="test@shekel.local", password="securepass123",
                     display_name="Dup Test",
                 ))
@@ -328,7 +332,7 @@ class TestRegisterUser:
         """
         with app.app_context():
             with pytest.raises(ConflictError):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="TEST@SHEKEL.LOCAL", password="securepass123",
                     display_name="Case Test",
                 ))
@@ -337,7 +341,7 @@ class TestRegisterUser:
         """register_user() raises ValidationError for passwords under 12 chars."""
         with app.app_context():
             with pytest.raises(ValidationError, match="at least 12 characters"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="short@example.com", password="12345678901",
                     display_name="Short Test",
                 ))
@@ -345,7 +349,7 @@ class TestRegisterUser:
     def test_register_user_exactly_12_chars_succeeds(self, app, db):
         """register_user() accepts a password that is exactly 12 characters."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="exact@example.com", password="123456789012",
                 display_name="Exact Test",
             ))
@@ -357,7 +361,7 @@ class TestRegisterUser:
         """register_user() rejects an email with no @ sign."""
         with app.app_context():
             with pytest.raises(ValidationError, match="Invalid email format"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="notanemail", password="securepass123",
                     display_name="No At Test",
                 ))
@@ -366,7 +370,7 @@ class TestRegisterUser:
         """register_user() rejects an email with no domain after @."""
         with app.app_context():
             with pytest.raises(ValidationError, match="Invalid email format"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="user@", password="securepass123",
                     display_name="No Domain Test",
                 ))
@@ -375,7 +379,7 @@ class TestRegisterUser:
         """register_user() rejects an email with no TLD (no dot in domain)."""
         with app.app_context():
             with pytest.raises(ValidationError, match="Invalid email format"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="user@domain", password="securepass123",
                     display_name="No TLD Test",
                 ))
@@ -388,7 +392,7 @@ class TestRegisterUser:
         """
         with app.app_context():
             with pytest.raises(ValidationError, match="Invalid email format"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="user @example.com", password="securepass123",
                     display_name="Space Test",
                 ))
@@ -397,7 +401,7 @@ class TestRegisterUser:
         """register_user() raises ValidationError for an empty email."""
         with app.app_context():
             with pytest.raises(ValidationError, match="Invalid email format"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="", password="securepass123",
                     display_name="Empty Email Test",
                 ))
@@ -406,7 +410,7 @@ class TestRegisterUser:
         """register_user() raises ValidationError for an empty display name."""
         with app.app_context():
             with pytest.raises(ValidationError, match="Display name is required"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="empty@example.com", password="securepass123",
                     display_name="",
                 ))
@@ -420,7 +424,7 @@ class TestRegisterUser:
         """
         with app.app_context():
             with pytest.raises(ValidationError, match="Display name is required"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="ws@example.com", password="securepass123",
                     display_name="   ",
                 ))
@@ -432,7 +436,7 @@ class TestRegisterUser:
         after register_user() returns should discard the new user.
         """
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="nocommit@example.com", password="securepass123",
                 display_name="No Commit",
             ))
@@ -454,7 +458,7 @@ class TestRegisterUser:
         """
         with app.app_context():
             with pytest.raises(ValidationError, match="email") as exc_info:
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="notvalid", password="short",
                     display_name="Order Test",
                 ))
@@ -464,7 +468,7 @@ class TestRegisterUser:
     def test_register_user_creates_default_categories(self, app, db):
         """register_user() creates 24 default categories for the new user."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="cats@example.com", password="securepass123",
                 display_name="Category Test",
             ))
@@ -478,7 +482,7 @@ class TestRegisterUser:
     def test_register_user_categories_have_correct_groups(self, app, db):
         """register_user() creates categories spanning all expected groups."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="groups@example.com", password="securepass123",
                 display_name="Group Test",
             ))
@@ -496,7 +500,7 @@ class TestRegisterUser:
     def test_register_user_categories_include_income_salary(self, app, db):
         """register_user() creates the Income: Salary category needed for salary profiles."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="salary@example.com", password="securepass123",
                 display_name="Salary Cat Test",
             ))
@@ -509,14 +513,14 @@ class TestRegisterUser:
 
     def test_default_categories_include_transfers(self, app, db):
         """DEFAULT_CATEGORIES list contains the two transfer categories."""
-        from app.services.auth_service import DEFAULT_CATEGORIES
+        from app.services.registration_service import DEFAULT_CATEGORIES
         assert ("Transfers", "Incoming") in DEFAULT_CATEGORIES
         assert ("Transfers", "Outgoing") in DEFAULT_CATEGORIES
 
     def test_seed_user_creates_transfer_categories(self, app, db):
         """register_user() creates both Transfers: Incoming and Transfers: Outgoing."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="xfer_cats@example.com", password="securepass123",
                 display_name="Transfer Cat Test",
             ))
@@ -532,7 +536,7 @@ class TestRegisterUser:
     def test_transfer_categories_have_valid_sort_order(self, app, db):
         """Transfer categories have unique, non-null sort_order values."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="xfer_sort@example.com", password="securepass123",
                 display_name="Transfer Sort Test",
             ))
@@ -556,7 +560,7 @@ class TestRegisterUser:
     def test_register_user_categories_have_sort_order(self, app, db):
         """register_user() assigns sequential sort_order to categories."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="sort@example.com", password="securepass123",
                 display_name="Sort Test",
             ))
@@ -571,7 +575,7 @@ class TestRegisterUser:
     def test_register_user_categories_rollback_on_failure(self, app, db):
         """register_user() categories are discarded on transaction rollback."""
         with app.app_context():
-            auth_service.register_user(registration_spec(
+            registration_service.register_user(registration_spec(
                 email="rollback@example.com", password="securepass123",
                 display_name="Rollback Test",
             ))
@@ -585,7 +589,7 @@ class TestRegisterUser:
     def test_register_user_creates_federal_tax_brackets(self, app, db):
         """register_user() creates federal tax bracket sets for 2025 and 2026."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="tax@example.com", password="securepass123",
                 display_name="Tax Test",
             ))
@@ -602,7 +606,7 @@ class TestRegisterUser:
     def test_register_user_creates_fica_config(self, app, db):
         """register_user() creates FICA configs for 2025 and 2026."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="fica@example.com", password="securepass123",
                 display_name="FICA Test",
             ))
@@ -622,7 +626,7 @@ class TestRegisterUser:
         the MFJ standard deduction is $25,500 (not the single $12,750).
         """
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="state@example.com", password="securepass123",
                 display_name="State Test",
             ))
@@ -633,7 +637,7 @@ class TestRegisterUser:
             ).all()
             expected = sum(
                 len(data["standard_deduction_by_status"])
-                for data in auth_service.DEFAULT_STATE_TAX.values()
+                for data in tax_seed_data.DEFAULT_STATE_TAX.values()
             )
             assert len(state_configs) == expected
             assert all(sc.state_code == "NC" for sc in state_configs)
@@ -655,7 +659,7 @@ class TestRegisterUser:
     def test_register_user_creates_state_child_deductions(self, app, db):
         """register_user() seeds the NC AGI-tiered per-child deduction (T-P5)."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="childded@example.com", password="securepass123",
                 display_name="Child Ded Test",
             ))
@@ -663,7 +667,7 @@ class TestRegisterUser:
 
             expected = sum(
                 len(tiers)
-                for data in auth_service.DEFAULT_STATE_CHILD_DEDUCTIONS.values()
+                for data in tax_seed_data.DEFAULT_STATE_CHILD_DEDUCTIONS.values()
                 for tiers in data["tiers_by_status"].values()
             )
             assert (
@@ -674,7 +678,7 @@ class TestRegisterUser:
     def test_register_user_corrects_ctc_to_2200(self, app, db):
         """register_user() seeds the OBBBA-corrected $2,200 CTC + $1,700 ACTC cap."""
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="ctc@example.com", password="securepass123",
                 display_name="CTC Test",
             ))
@@ -727,7 +731,7 @@ class TestRegistrationBuildsARealPayCalendar:
         signup_day = display_today()
         payday = signup_day - timedelta(days=days_back)
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email=f"window-{days_back}@example.com",
                 display_name=f"Window {days_back}",
                 first_payday=payday,
@@ -761,7 +765,7 @@ class TestRegistrationBuildsARealPayCalendar:
         defaulted one.
         """
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="weekly@example.com", display_name="Weekly",
                 first_payday=display_today() - timedelta(days=3),
                 cadence_days=7, num_periods=4,
@@ -800,7 +804,7 @@ class TestRegistrationBuildsARealPayCalendar:
         """
         signup_day = display_today()
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="opening@example.com", display_name="Opening",
                 first_payday=signup_day - timedelta(days=10),
                 cadence_days=14, num_periods=3,
@@ -839,7 +843,7 @@ class TestRegistrationBuildsARealPayCalendar:
         with app.app_context():
             before = db.session.query(User).count()
             with pytest.raises(ValidationError, match="has not happened yet"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="future@example.com", display_name="Future",
                     first_payday=display_today() + timedelta(days=1),
                 ))
@@ -856,7 +860,7 @@ class TestRegistrationBuildsARealPayCalendar:
         with app.app_context():
             before = db.session.query(User).count()
             with pytest.raises(ValidationError, match="has already ended"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="stale@example.com", display_name="Stale",
                     first_payday=display_today() - timedelta(days=14),
                     cadence_days=14,
@@ -874,12 +878,12 @@ class TestRegistrationBuildsARealPayCalendar:
         eight_days_back = display_today() - timedelta(days=8)
         with app.app_context():
             with pytest.raises(ValidationError, match="has already ended"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="weekly-stale@example.com",
                     display_name="Weekly Stale",
                     first_payday=eight_days_back, cadence_days=7,
                 ))
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="biweekly-ok@example.com",
                 display_name="Biweekly OK",
                 first_payday=eight_days_back, cadence_days=14,
@@ -905,7 +909,7 @@ class TestRegistrationBuildsARealPayCalendar:
         with app.app_context():
             before = db.session.query(User).count()
             with pytest.raises(ValidationError, match="between 1 and 365"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email=f"cadence-{cadence}@example.com",
                     display_name="Bad Cadence", cadence_days=cadence,
                 ))
@@ -934,7 +938,7 @@ class TestRegistrationBuildsARealPayCalendar:
         with app.app_context():
             before = db.session.query(User).count()
             with pytest.raises(ValidationError, match="between 1 and 260"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email=f"batch-{num_periods}@example.com",
                     display_name="Bad Batch", num_periods=num_periods,
                 ))
@@ -965,7 +969,7 @@ class TestRegistrationBuildsARealPayCalendar:
         """
         with app.app_context():
             today = display_today()
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="one-day-cadence@example.com",
                 display_name="Daily Pay",
                 first_payday=today,
@@ -977,6 +981,59 @@ class TestRegistrationBuildsARealPayCalendar:
             assert [
                 period.start_date for period in all_periods(user.id)
             ] == [today, today + timedelta(days=1), today + timedelta(days=2)]
+
+    def test_the_window_follows_the_DERIVATION_under_a_displacing_convention(
+        self, app, db, monkeypatch,
+    ):
+        """Plan step **pay_calendar:C14-e-3**: the bound is the real paycheck's end.
+
+        **The case this repair exists for, hand-computed.**  An owner paid
+        every 14 days under ``prior`` signs up on Friday 2026-01-16 and
+        truthfully states Monday 2026-01-05 -- an ordinary business day, so
+        their answer is exactly what the form asks for.  Their next grid day is
+        2026-01-19, Martin Luther King, Jr. Day, so payroll really pays Friday
+        2026-01-16 and the paycheck opened on 01-05 runs only through
+        **2026-01-15**.  Sign-up day is not in it.
+
+        The deleted arithmetic accepted that answer: it read the paycheck as
+        ``[01-05, 01-05 + 13]`` = through 01-18, so 2026-01-05 sat inside the
+        window ``[today - 13, today]``.  Measured over every sign-up day of
+        2026-2030, **112 of 1,826** admit such an answer at this cadence under
+        ``prior`` (110 at 7, 105 at 28, and 0 under ``next``), and at
+        ``num_periods`` = ``PERIOD_BATCH_MIN`` the owner then holds no paycheck
+        covering their own sign-up day at all --
+        :meth:`~app.services.pay_calendar.PayCalendar.filing_period` clamps the
+        opening assertion into one that does not contain it.
+
+        The ``next`` arm is the CONTROL: the same day and the same cadence are
+        accepted there, because that convention moves the boundary the other
+        way (2026-01-19 is paid 2026-01-20, so the paycheck runs to 01-19 and
+        covers sign-up day).  Without it this case would pass for a rule that
+        refused everything near a holiday.
+        """
+        freeze_today(monkeypatch, date(2026, 1, 16))
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc:
+                registration_service.register_user(registration_spec(
+                    email="mlk-prior@example.com", display_name="MLK Prior",
+                    first_payday=date(2026, 1, 5), cadence_days=14,
+                    shift=BusinessDayShiftEnum.PRIOR,
+                ))
+            message = str(exc.value)
+            assert "has already ended" in message
+            # The paycheck's REAL end, which the deleted rule read as 01-18.
+            assert "2026-01-15" in message
+            assert "2026-01-18" not in message
+
+            user = registration_service.register_user(registration_spec(
+                email="mlk-next@example.com", display_name="MLK Next",
+                first_payday=date(2026, 1, 5), cadence_days=14,
+                num_periods=1, shift=BusinessDayShiftEnum.NEXT,
+            ))
+            db.session.flush()
+            periods = all_periods(user.id)
+            assert periods[0].start_date == date(2026, 1, 5)
+            assert last_covered_day(periods[0]) == date(2026, 1, 19)
 
     def test_the_refusal_message_names_the_paycheck_not_the_owners_arithmetic(
         self, app, db,
@@ -995,7 +1052,7 @@ class TestRegistrationBuildsARealPayCalendar:
         stale = today - timedelta(days=20)
         with app.app_context():
             with pytest.raises(ValidationError) as exc:
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="worded@example.com", display_name="Worded",
                     first_payday=stale, cadence_days=14,
                 ))
@@ -1026,7 +1083,7 @@ class TestRegistrationAsksHowFarBackThePaychecksGo:
         """
         signup_day = display_today()
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="history-stated@example.com",
                 display_name="History Stated",
                 first_payday=signup_day,
@@ -1048,7 +1105,7 @@ class TestRegistrationAsksHowFarBackThePaychecksGo:
         """
         signup_day = display_today()
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="history-blank@example.com",
                 display_name="History Blank",
                 first_payday=signup_day,
@@ -1069,7 +1126,7 @@ class TestRegistrationAsksHowFarBackThePaychecksGo:
         """
         signup_day = display_today()
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="history-equal@example.com",
                 display_name="History Equal",
                 first_payday=signup_day,
@@ -1094,7 +1151,7 @@ class TestRegistrationAsksHowFarBackThePaychecksGo:
         signup_day = display_today()
         with app.app_context():
             with pytest.raises(ValidationError, match="cannot have started"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="history-late@example.com",
                     display_name="History Late",
                     first_payday=signup_day - timedelta(days=3),
@@ -1116,7 +1173,7 @@ class TestRegistrationAsksHowFarBackThePaychecksGo:
         """
         with app.app_context():
             with pytest.raises(ValidationError, match="2100-12-31"):
-                auth_service.register_user(registration_spec(
+                registration_service.register_user(registration_spec(
                     email="history-absurd@example.com",
                     display_name="History Absurd",
                     history_opens_on=date(9999, 1, 1),
@@ -1137,7 +1194,7 @@ class TestRegistrationAsksHowFarBackThePaychecksGo:
         """
         signup_day = display_today()
         with app.app_context():
-            user = auth_service.register_user(registration_spec(
+            user = registration_service.register_user(registration_spec(
                 email="history-loaded@example.com",
                 display_name="History Loaded",
                 first_payday=signup_day,

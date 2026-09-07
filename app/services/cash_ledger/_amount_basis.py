@@ -197,7 +197,7 @@ def baseline_amount_basis(user_id: int) -> AmountBasis:
     :func:`resolve_transaction_amount` refuses a row for.
 
     Phase 1 is baseline-only: the only two scenario writers
-    (``auth_service.register_user``, ``baseline_service``) both write a
+    (``registration_service.register_user``, ``baseline_service``) both write a
     baseline under ``uq_scenarios_one_baseline``, so an account fully isolates
     a row set today.  When that changes, every caller of this and every scope
     it prices take the same operating scenario in ONE edit.

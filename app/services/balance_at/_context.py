@@ -895,7 +895,7 @@ def require_scenario(ctx: BalanceContext) -> None:
         raise BaselineMissingError(
             "the balance_at seam requires a baseline scenario; this user has "
             "none, so no balance can be answered for them. Every owner gets one "
-            "at registration (auth_service.register_user) and nothing deletes "
+            "at registration (registration_service.register_user) and nothing deletes "
             "one, so reaching this means the data was changed outside the app: "
             "POST /grid/create-baseline repairs it, together with both posting "
             "ledgers",

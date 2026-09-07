@@ -2,7 +2,7 @@
 Shekel Budget App -- Seed User & Default Data
 
 Creates the single Phase 1 user by delegating to
-``auth_service.register_user`` -- the same provisioning path the
+``registration_service.register_user`` -- the same provisioning path the
 /register route uses -- so the seeded user is identical in shape to a
 self-registered one: user, settings, the pay-period schedule, checking
 account (with origination anchor history), baseline scenario, default
@@ -84,7 +84,7 @@ from app.enums import BusinessDayShiftEnum
 from app.exceptions import ConflictError, ValidationError
 from app.extensions import db
 from app.models.user import User
-from app.services import auth_service, pay_rhythm
+from app.services import pay_rhythm, registration_service
 # pylint: enable=wrong-import-position
 
 
@@ -151,7 +151,7 @@ def _read_last_payday() -> date:
 
 
 def seed_user():
-    """Create the seeded user via ``auth_service.register_user``.
+    """Create the seeded user via ``registration_service.register_user``.
 
     Applies the script-side guards (production password policy, the
     12-character minimum with operator guidance, and the required
@@ -245,40 +245,42 @@ def seed_user():
     # both problems is told about the credential one before being sent to look
     # up a payday.
     try:
-        user = auth_service.register_user(auth_service.RegistrationSpec(
-            email=email,
-            password=password,
-            display_name=display_name,
-            first_payday=_read_last_payday(),
-            # ``none`` with no env var, and that is the answer rather than an
-            # omission (plan step pay_calendar:C14-b, ruling R-PC56): every
-            # schedule starts with the payday convention OFF, and a seeded
-            # owner is one nobody has asked, so stating anything else would be
-            # a claim made on their behalf.  The owner answers on the
-            # pay-periods settings card.
-            rhythm=pay_rhythm.Rhythm(
-                cadence_days=_read_int_env(
-                    "SEED_USER_CADENCE_DAYS",
-                    BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
-                    unit="days",
+        user = registration_service.register_user(
+            registration_service.RegistrationSpec(
+                email=email,
+                password=password,
+                display_name=display_name,
+                first_payday=_read_last_payday(),
+                # ``none`` with no env var, and that is the answer rather than an
+                # omission (plan step pay_calendar:C14-b, ruling R-PC56): every
+                # schedule starts with the payday convention OFF, and a seeded
+                # owner is one nobody has asked, so stating anything else would be
+                # a claim made on their behalf.  The owner answers on the
+                # pay-periods settings card.
+                rhythm=pay_rhythm.Rhythm(
+                    cadence_days=_read_int_env(
+                        "SEED_USER_CADENCE_DAYS",
+                        BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
+                        unit="days",
+                    ),
+                    shift=BusinessDayShiftEnum.NONE,
                 ),
-                shift=BusinessDayShiftEnum.NONE,
+                num_periods=_read_int_env(
+                    "SEED_USER_NUM_PERIODS",
+                    BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
+                    unit="pay periods",
+                ),
+                # No env var, and that is the answer rather than an omission (plan
+                # step balance:X-bh-2).  ``None`` means NOT STATED: the engine
+                # counts only the paydays this seed records, which is exactly what
+                # it did before that step and is the reading a script may honestly
+                # supply.  Unlike the payday above there is nothing to fabricate --
+                # a seed script cannot know when the owner's job began, and saying
+                # so is what ``None`` now means.  The owner states it themselves on
+                # the pay-periods settings section, which is the door for it.
+                history_opens_on=None,
             ),
-            num_periods=_read_int_env(
-                "SEED_USER_NUM_PERIODS",
-                BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
-                unit="pay periods",
-            ),
-            # No env var, and that is the answer rather than an omission (plan
-            # step balance:X-bh-2).  ``None`` means NOT STATED: the engine
-            # counts only the paydays this seed records, which is exactly what
-            # it did before that step and is the reading a script may honestly
-            # supply.  Unlike the payday above there is nothing to fabricate --
-            # a seed script cannot know when the owner's job began, and saying
-            # so is what ``None`` now means.  The owner states it themselves on
-            # the pay-periods settings section, which is the door for it.
-            history_opens_on=None,
-        ))
+        )
     except ConflictError:
         # The race: another process created this owner between the check
         # above and this call.  Same outcome, re-read rather than assumed.

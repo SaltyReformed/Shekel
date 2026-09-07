@@ -4,7 +4,7 @@ Shekel Budget App -- Annual Tax Liability Service Tests
 Hand-confirmed assertions for ``tax_liability_service.compute_annual_liability``:
 the filing-time FEDERAL + NC-STATE annual liability the analytics Taxes tab
 builds its refund estimate on (T-P1).  Configs are seeded through the
-canonical ``auth_service._seed_tax_data_for_user`` path so the numbers anchor
+canonical ``registration_service._seed_tax_data_for_user`` path so the numbers anchor
 on the same 2025/2026 DEFAULT_* seeds a registered user receives; the profile
 is built inline (the established test_tax_config_service pattern).
 
@@ -20,7 +20,7 @@ import pytest
 from app.extensions import db as _db
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
-from app.services.auth_service import _seed_tax_data_for_user
+from app.services.registration_service import _seed_tax_data_for_user
 from app.services.exceptions import InvalidFilingStatusError
 from app.services.tax_liability_service import AnnualLiability, compute_annual_liability
 

@@ -232,6 +232,43 @@ def num_periods_field(**kwargs) -> fields.Integer:
     return fields.Integer(validate=_PERIOD_BATCH_RANGE, **kwargs)
 
 
+def payday_field(**kwargs) -> fields.Date:
+    """Return a which-day-were-you-paid field bounded by the app's calendar.
+
+    **Plan step ``pay_calendar:C14-e-3``, and the bound is not cosmetic.**
+    The four doors that state a payday -- registration's *last payday*,
+    ``/pay-periods/generate``'s *start date*, and regenerate's and reset's
+    *corrected first payday* -- each declared a bare
+    :class:`marshmallow.fields.Date` while every other persisted date in this
+    application is held to
+    :data:`~app.utils.dates.CALENDAR_DATE_MIN` ..
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX`, ``history_opens_on`` included
+    (:func:`history_opens_on_field`, one function below).
+
+    That was survivable while a payday was only compared and stored.  It stops
+    being survivable when a payday is DISPLACED: the shift reads
+    :func:`~app.utils.business_days.federal_holidays`, which computes the
+    FOLLOWING year's New Year spillover, so a stated payday in year 9999 leaves
+    ``datetime``'s own domain and raises ``ValueError`` -- not
+    ``ValidationError`` -- out of the service tier and into a 500 on a public
+    form.  ``is_business_day``'s docstring says the bound is stated rather than
+    guarded because "no in-app caller can reach that"; ``C14-e-3`` made a
+    caller that can, and an adversarial review of that step found it.  The
+    remedy is the DOOR, not a guard in the calendar: bounding the input is what
+    makes that sentence true again rather than fencing a state the door should
+    never have admitted.
+
+    Args:
+        **kwargs: Forwarded to :class:`marshmallow.fields.Date` -- the
+            per-schema half of the declaration (``required``, and
+            registration's own ``error_messages``).
+
+    Returns:
+        The field, carrying the shared calendar-range validator.
+    """
+    return fields.Date(validate=_HISTORY_OPENS_RANGE, **kwargs)
+
+
 def history_opens_on_field(**kwargs) -> fields.Date:
     """Return a when-did-these-paychecks-start field bounded by the column's CHECK.
 
@@ -264,7 +301,7 @@ def history_opens_on_field(**kwargs) -> fields.Date:
 class PayPeriodGenerateSchema(BaseSchema):
     """Validates POST data for generating pay periods."""
 
-    start_date = fields.Date(required=True)
+    start_date = payday_field(required=True)
     num_periods = num_periods_field(
         load_default=BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
     )
@@ -334,7 +371,7 @@ class PayPeriodRegenerateSchema(BaseSchema):
     missing input must not.
     """
 
-    new_start_date = fields.Date(required=True)
+    new_start_date = payday_field(required=True)
     num_periods = num_periods_field(required=True)
     cadence_days = cadence_days_field(required=True)
     shift = shift_field(required=True)
@@ -357,7 +394,7 @@ class PayPeriodResetSchema(BaseSchema):
     ``load_default=False``; the route refuses an unconfirmed reset).
     """
 
-    new_start_date = fields.Date(required=True)
+    new_start_date = payday_field(required=True)
     num_periods = num_periods_field(required=True)
     cadence_days = cadence_days_field(required=True)
     shift = shift_field(required=True)

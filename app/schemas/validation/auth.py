@@ -21,6 +21,7 @@ from app.schemas.validation.pay_periods import (
     cadence_days_field,
     history_opens_on_field,
     num_periods_field,
+    payday_field,
     shift_field,
     validate_derivable_rhythm,
 )
@@ -36,7 +37,7 @@ from app.schemas.validation.pay_periods import (
 # ``auth_service.hash_password``); inputs longer than that would be
 # silently truncated and could not be reproduced at verify time
 # without the same truncation.  The 12-character minimum matches
-# ``auth_service.register_user`` and ``auth_service.change_password``.
+# ``registration_service.register_user`` and ``auth_service.change_password``.
 #
 # Commit C-26 of the 2026-04-15 security remediation plan promotes
 # these constants out of the companion-only namespace so every auth
@@ -216,7 +217,7 @@ class RegisterSchema(_AuthFormSchema):
 
     Required fields: email, display_name, password, confirm_password,
     last_payday.  Enforces the same 12-character minimum / 72-byte UTF-8
-    maximum as ``auth_service.register_user`` so the schema layer rejects bad
+    maximum as ``registration_service.register_user`` so the schema layer rejects bad
     input before the service is called.  Email uniqueness is enforced
     by the service (it needs a live DB session), so the schema only
     validates shape.
@@ -271,7 +272,7 @@ class RegisterSchema(_AuthFormSchema):
         ],
     )
     confirm_password = fields.String(required=True)
-    last_payday = fields.Date(
+    last_payday = payday_field(
         required=True,
         error_messages={"required": "Enter the day you were last paid."},
     )
@@ -333,7 +334,7 @@ class RegisterSchema(_AuthFormSchema):
         renders no field errors at all: ``routes/auth/credentials.register``
         catches the marshmallow error and flashes
         ``_first_validation_message``, so this refusal reads identically to
-        the one ``auth_service.register_user``'s up-front block would have
+        the one ``registration_service.register_user``'s up-front block would have
         raised.  What it buys HERE is that all four doors refuse the same
         pairs through one predicate rather than three of them through the
         schema and the fourth through a service the schema does not reach.

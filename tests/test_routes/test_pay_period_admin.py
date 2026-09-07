@@ -1066,7 +1066,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
     periods and skipped every template, measured through this same HTTP door
     at 3 appended periods holding 0 template rows.
 
-    The seventh writer, ``auth_service.register_user``, has no HTTP door of
+    The seventh writer, ``registration_service.register_user``, has no HTTP door of
     its own here and is correct as it stands: no template can exist at
     registration, and the baseline scenario is created after that call, so a
     repopulation would return 0 on ``ctx.scenario is None``.

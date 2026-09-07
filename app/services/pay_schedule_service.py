@@ -288,7 +288,7 @@ def reject_out_of_range_cadence(cadence_days: int) -> None:
     **One implementation of the bound, two callers, and the second is why it
     is a function** (plan step X-ad-a).  :func:`upsert_schedule` is the one
     writer of the column and asks this immediately before writing, so no door
-    can persist a value the CHECK refuses.  ``auth_service.register_user`` asks
+    can persist a value the CHECK refuses.  ``registration_service.register_user`` asks
     it EARLIER -- in its up-front validation block, before the ``User`` row is
     added to the session -- because a registration that refuses halfway leaves
     a partly-built owner in a session whose only protection is that nobody
@@ -405,7 +405,7 @@ def reject_out_of_range_history_opening(history_opens_on: date | None) -> None:
     :func:`reject_out_of_range_cadence`'s sibling, written for the same reason
     and asked by the same two kinds of caller: :func:`set_history_opening`, the
     column's one writer, asks it immediately before writing, and
-    ``auth_service.register_user`` asks it in its up-front validation block,
+    ``registration_service.register_user`` asks it in its up-front validation block,
     before the ``User`` row exists.  A value outside the CHECK reaches the
     database as an ``IntegrityError`` 500 rather than as something a form can
     render, and an HTML date input accepts a five-digit-year typo, so this is
@@ -442,7 +442,7 @@ def reject_history_opening_after_payday(
     """Refuse an opening later than the first payday it is a floor below.
 
     **One rule, asked of two different sources**, which is why it is a function
-    rather than an inline test at either.  ``auth_service.register_user`` asks
+    rather than an inline test at either.  ``registration_service.register_user`` asks
     it of the payday the sign-up form STATES, up front, before the ``User`` row
     is added -- that module's standing property, and the reason its
     pay-calendar checks all sit in one block.  :func:`set_history_opening` asks

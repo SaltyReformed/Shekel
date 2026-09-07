@@ -13,10 +13,10 @@ longest run of consecutive closed days
 structural decision.**  The pair was declared in
 :mod:`app.services.pay_schedule_service`, and until ``C14-e`` that was the
 right place: the pay calendar read only ``cadence_days``, so the one consumer
-of the pair was the write door beside it.  ``C14-e-3`` will make
+of the pair was the write door beside it.  ``C14-e-3`` made
 :func:`~app.services.pay_calendar.projected_payday` the nominal grid day
 DISPLACED under the convention, and ``C14-e-1`` threaded the pair to every
-producer ahead of it so the money-moving diff is one expression -- which gives
+producer ahead of it so that money-moving diff was one expression -- which gives
 the PURE half of :mod:`app.services.pay_calendar` the convention to carry.
 That half may not import a module holding a database session, nor could it,
 because ``pay_calendar._loader`` imports ``pay_schedule_service`` and the edge

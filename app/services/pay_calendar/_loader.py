@@ -95,7 +95,7 @@ def schedule_for(user_id: int) -> pay_schedule_service.ScheduleFacts:
 
     **Not reachable by any live page, and that is measured rather than
     assumed** (2026-09-02).  Two places in ``app/`` construct a ``User``:
-    ``auth_service.register_user``, which writes the schedule row AND real
+    ``registration_service.register_user``, which writes the schedule row AND real
     paydays since plan step balance:X-ad-a, and
     ``routes/settings.companion_create``, which writes neither.  Nothing in
     ``app/`` deletes a schedule row -- not truncate, not regenerate, not

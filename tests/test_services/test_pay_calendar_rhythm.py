@@ -15,10 +15,21 @@ No database: a :class:`~app.services.pay_calendar.PayCalendar` is a pure value
 over a payday set, which is what lets these cases state a schedule in one line.
 """
 
+import random
 from datetime import date, timedelta
 
 import pytest
 
+from app.enums import BusinessDayShiftEnum
+from app.utils.business_days import (
+    is_business_day,
+    shift_to_business_day,
+    shortest_collision_free_cadence,
+)
+from app.services.pay_calendar._rhythm import (
+    _backdated_paydays,
+    _paydays_between,
+)
 from app.services.pay_calendar import (
     PayCalendar,
     PayCalendarError,
@@ -37,7 +48,7 @@ _CADENCE = 14
 
 def _calendar(
     count, opening=_JANUARY_OPENING, cadence=_CADENCE, user_id=1,
-    history_opens_on=None,
+    history_opens_on=None, shift=BusinessDayShiftEnum.NONE,
 ):
     """A calendar of *count* paydays every *cadence* days from *opening*.
 
@@ -52,7 +63,7 @@ def _calendar(
     return PayCalendar.from_paydays(
         [(index + 1, opening + timedelta(days=cadence * index))
          for index in range(count)],
-        rhythm_of(cadence),
+        rhythm_of(cadence, shift),
         user_id=user_id,
         history_opens_on=history_opens_on,
     )
@@ -678,3 +689,231 @@ class TestTheEngineRefusesAPaydayItsCalendarCannotPlace:
         )
 
         assert _month_ordinal(_calendar(26), date(2026, 1, 30)) == 3
+
+
+class TestTheBackwardRhythmDISPLACES:
+    """Plan step **pay_calendar:C14-e-3**: the rhythm below the record is PAID days.
+
+    ``_backdated_paydays`` open-coded the progression twice and returned grid
+    days; it asks
+    :func:`~app.services.pay_calendar.projected_payday` now, so a rhythm day
+    landing on a closed one is counted on the day payroll really paid it.
+
+    **This is the half that closes ledger row N-398**, and the forward half
+    does not touch it.  That row's subject is the 2026-01-01 payroll paid
+    2025-12-31: the two days sit in different TAX YEARS, so the FICA wage base
+    and every ``annual_cap`` turn over between them, and a year-to-date that
+    counts the nominal day charges a paycheck to the wrong year.  Both readers
+    of this rhythm ask over a calendar month or a calendar year, which is
+    exactly where a displacement across a boundary shows up.
+
+    The schedule is the developer's own: first RECORDED payday 2026-03-26 at a
+    fourteen-day cadence, whose backward rhythm passes through 2026-01-01 six
+    cadences down (84 days).
+    """
+
+    _OPENING = date(2026, 3, 26)
+    _NOMINAL_NEW_YEAR = date(2026, 1, 1)
+
+    def _developer(self, shift, history_opens_on=date(2025, 1, 1)):
+        """The production owner's schedule under *shift*, with a stated history."""
+        return _calendar(
+            26, opening=self._OPENING, history_opens_on=history_opens_on,
+            shift=shift,
+        )
+
+    def test_the_grid_really_passes_through_new_years_day(self):
+        """The premise every case below rests on, asserted rather than assumed."""
+        assert (self._OPENING - self._NOMINAL_NEW_YEAR).days == 6 * _CADENCE
+        assert self._NOMINAL_NEW_YEAR.strftime("%A") == "Thursday"
+        assert shift_to_business_day(
+            self._NOMINAL_NEW_YEAR, BusinessDayShiftEnum.PRIOR,
+        ) == date(2025, 12, 31)
+
+    def test_a_holiday_payday_is_counted_in_the_YEAR_IT_WAS_PAID(self):
+        """N-398, worked: nine 2026 paychecks under ``prior``, ten under ``none``.
+
+        The year-to-date at 2026-05-21 spans ``[2026-01-01, 2026-05-20]``.
+        Under ``none`` the rhythm's 2026-01-01 sits on the span's opening day
+        and is counted, giving ten.  Under ``prior`` payroll paid it
+        2025-12-31, which is in the 2025 tax year and outside the span, giving
+        nine -- **the true count, and the figure ledger row N-398 states**.
+
+        ``next`` gives ten as well, and that is not the same ten: the payday is
+        2026-01-02, still inside 2026, so the count is right for a different
+        reason than ``none``'s is.  Asserted as a DAY and not only a count,
+        because two answers of ten made of different days is precisely what a
+        bare length would hide.
+        """
+        spans = {
+            shift: paydays_in_year_before(
+                self._developer(shift), date(2026, 5, 21),
+            )
+            for shift in BusinessDayShiftEnum
+        }
+
+        assert len(spans[BusinessDayShiftEnum.PRIOR]) == 9
+        assert date(2025, 12, 31) not in spans[BusinessDayShiftEnum.PRIOR]
+        assert self._NOMINAL_NEW_YEAR not in spans[BusinessDayShiftEnum.PRIOR]
+
+        assert len(spans[BusinessDayShiftEnum.NONE]) == 10
+        assert spans[BusinessDayShiftEnum.NONE][0] == self._NOMINAL_NEW_YEAR
+
+        assert len(spans[BusinessDayShiftEnum.NEXT]) == 10
+        assert spans[BusinessDayShiftEnum.NEXT][0] == date(2026, 1, 2)
+
+    def test_a_grid_day_ABOVE_the_span_is_counted_when_it_is_PAID_inside(self):
+        """December 2025 holds THREE paydays under ``prior``, and one is January's.
+
+        The walk's upper widening, which is the half that is necessary: the
+        2026-01-01 grid day is outside the December span, and payroll pays it
+        2025-12-31, which is inside.  A walk that stopped at the last grid day
+        within the span would answer two and drop a whole paycheck from that
+        month's ordinal -- the number a 24-per-year deduction reads.
+        """
+        month = paydays_in_month_through(
+            self._developer(BusinessDayShiftEnum.PRIOR), date(2025, 12, 31),
+        )
+
+        assert month == (
+            date(2025, 12, 4), date(2025, 12, 18), date(2025, 12, 31),
+        )
+        assert paydays_in_month_through(
+            self._developer(BusinessDayShiftEnum.NONE), date(2025, 12, 31),
+        ) == (date(2025, 12, 4), date(2025, 12, 18))
+
+    def test_a_grid_day_BELOW_the_span_is_counted_when_it_is_PAID_inside(self):
+        """``next`` pushes the 2026-01-01 grid day onto a floor of 2026-01-02.
+
+        The other direction, reached through the stated history floor rather
+        than the month bound: with ``history_opens_on`` at 2026-01-02 the grid
+        day 2026-01-01 falls below the floor, and its payday does not.  It is
+        counted, because the floor is a statement about days money moved.
+        """
+        counted = paydays_in_month_through(
+            self._developer(
+                BusinessDayShiftEnum.NEXT, history_opens_on=date(2026, 1, 2),
+            ),
+            date(2026, 1, 31),
+        )
+
+        assert counted == (date(2026, 1, 2), date(2026, 1, 15), date(2026, 1, 29))
+
+    def test_the_backward_half_still_MEETS_the_record_exactly(self):
+        """No day is counted twice and none is skipped at the seam.
+
+        The saved half is authoritative from ``periods[0].start_date`` up, and
+        the backward half stops strictly below it.  Displacement cannot break
+        that -- a recorded payday is a day money moved and so is its own
+        displacement, and the grid day one cadence below it cannot be pushed up
+        a whole cadence -- but the property is asserted rather than argued,
+        over a span straddling the seam under every convention.
+        """
+        for shift in BusinessDayShiftEnum:
+            calendar = self._developer(shift)
+            # March 2026 straddles the seam: 2026-03-12 comes from the
+            # backward walk and 2026-03-26 is the first RECORDED payday.
+            span = paydays_in_month_through(calendar, date(2026, 3, 31))
+            recorded = {period.start_date for period in calendar.periods}
+
+            assert span == (date(2026, 3, 12), self._OPENING), shift
+            assert len(span) == len(set(span)), shift
+            assert list(span) == sorted(span), shift
+            assert (span[1] - span[0]).days == _CADENCE, shift
+            assert span[0] not in recorded and span[1] in recorded, shift
+
+    def test_the_walk_matches_a_BRUTE_FORCE_reference_over_randomised_spans(
+        self,
+    ):
+        """The bound is exhaustive AND minimal, swept rather than argued.
+
+        The reference walks every grid day from far below the span to far above
+        it and filters on the PAYDAY, with no cleverness about where to start
+        or stop; the producer jumps to two divisions and takes one extra step
+        above the span and none below.  Both displacing conventions, cadences
+        from the collision floor to 40, spans up to 800 days below the record.
+
+        Seeded, so a failure names the same case twice.  Randomised rather than
+        catalogued because what is graded is a BOUND, and a catalogue tests the
+        shapes whoever wrote it thought of -- which is the one thing an
+        off-by-one in a walk bound survives.
+
+        **Two counters make it non-vacuous.**  One case must need the step
+        ABOVE the span (a grid day outside it, paid inside) or the widening is
+        ungraded; and one payday must differ from its own grid day, or the
+        whole sweep ran on the nominal path.
+        """
+        rng = random.Random(1439)
+        floor = shortest_collision_free_cadence()
+        # **The OPENING is randomised, and an adversarial review of
+        # ``C14-e-3`` is why.**  A first form of this sweep fixed it at a
+        # Thursday -- a business day, hence its own displacement -- which is
+        # the ONE axis the partition between the two halves rests on.  With it
+        # held constant the sweep could not see the phantom paycheck a CLOSED
+        # opening produced under ``prior``, and the seam case beside it opened
+        # on a business day too, so neither could.  ``_OPENINGS`` carries both
+        # kinds and the counters below assert both were drawn.
+        openings = (date(2029, 6, 21), date(2026, 11, 26), date(2026, 7, 3))
+        mismatches, needed_the_step_above, displaced_any = [], 0, 0
+        closed_openings = 0
+
+        for _ in range(4000):
+            cadence = rng.randint(floor, 40)
+            shift = rng.choice(
+                [BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT],
+            )
+            opening = rng.choice(openings)
+            closed_openings += not is_business_day(opening)
+            first_day = opening - timedelta(days=rng.randint(1, 800))
+            last_day = min(
+                first_day + timedelta(days=rng.randint(0, 400)),
+                opening - timedelta(days=1),
+            )
+            calendar = _calendar(
+                4, opening=opening, cadence=cadence,
+                history_opens_on=first_day, shift=shift,
+            )
+
+            grid = [
+                opening + timedelta(days=step * cadence)
+                for step in range(-(900 // cadence) - 2, 3)
+            ]
+            reference = tuple(
+                day for day in (
+                    shift_to_business_day(g, shift)
+                    for g in grid if g < opening
+                )
+                if first_day <= day <= last_day
+            )
+            produced = _backdated_paydays(calendar, first_day, last_day)
+            # The two halves may never both claim a day.  The reference above
+            # excludes grid INDEX 0 -- the recorded opening, which the saved
+            # half owns -- so a producer that emitted its displacement would
+            # mismatch; this asserts the same thing of the composed answer,
+            # which is what a consumer actually reads.
+            whole = _paydays_between(calendar, first_day, last_day)
+            assert len(whole) == len(set(whole)), (cadence, shift.name, opening)
+
+            where = (cadence, shift.name, first_day, last_day)
+            if produced != reference:
+                mismatches.append(where)
+            needed_the_step_above += any(
+                g > last_day and shift_to_business_day(g, shift) in reference
+                for g in grid
+            )
+            displaced_any += any(
+                shift_to_business_day(g, shift) != g and
+                shift_to_business_day(g, shift) in reference
+                for g in grid
+            )
+
+        assert not mismatches, mismatches[:5]
+        assert needed_the_step_above > 0, (
+            "no case needed the grid step ABOVE the span, so the sweep never "
+            "graded the widening it exists to check"
+        )
+        assert displaced_any > 0, "the sweep never displaced a payday"
+        assert closed_openings > 0, (
+            "every case opened on a business day, so the sweep held constant "
+            "the one axis the two halves' partition rests on"
+        )

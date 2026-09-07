@@ -37,7 +37,7 @@ class FakeFicaConfig:
     Carries the statutory SS rate and wage-base cap used by
     capped_social_security (the helper apply_calibration delegates to for
     the SS line, CRIT-03 / F-037).  Defaults match the 2026 seed values
-    (auth_service.DEFAULT_FICA[2026]).
+    (tax_seed_data.DEFAULT_FICA[2026]).
     """
 
     def __init__(self, ss_rate="0.062", ss_wage_base="184500"):

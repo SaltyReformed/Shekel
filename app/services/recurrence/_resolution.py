@@ -755,7 +755,7 @@ def _first_occurrence(spec: RecurrenceSpec, calendar: PayCalendar) -> date:
     Raises:
         RecurrenceResolutionError: When the owner's schedule is empty, so a
             pay-period cadence has no paycheck to name.  Registration
-            bootstraps a schedule (``auth_service.register_user``), so an empty
+            bootstraps a schedule (``registration_service.register_user``), so an empty
             one is a broken invariant rather than a state to paper over.
     """
     if spec.unit is not RecurrenceUnitEnum.PERIOD:
@@ -765,7 +765,7 @@ def _first_occurrence(spec: RecurrenceSpec, calendar: PayCalendar) -> date:
         raise RecurrenceResolutionError(
             f"user {spec.user_id} has no pay periods, so a pay-period "
             f"recurrence has no first paycheck to name.  Registration "
-            f"bootstraps a schedule (auth_service.register_user), so an empty "
+            f"bootstraps a schedule (registration_service.register_user), so an empty "
             f"schedule here is a broken invariant rather than a state to "
             f"paper over."
         )

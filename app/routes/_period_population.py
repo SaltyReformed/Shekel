@@ -42,7 +42,7 @@ so on an owner who already had a schedule it appended periods and skipped every
 template (ledger row **D58**, pre-existing, closed here).
 
 **ONE write path in ``app/`` creates pay periods and does not come here**, and
-it is correct twice over: ``auth_service.register_user`` records the new
+it is correct twice over: ``registration_service.register_user`` records the new
 owner's first schedule, where no template can exist yet AND the baseline
 scenario is created after that call, so a repopulation would return 0 on
 ``ctx.scenario is None``.

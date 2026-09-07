@@ -33,7 +33,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
-from app.services.auth_service import _seed_tax_data_for_user
+from app.services.registration_service import _seed_tax_data_for_user
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._inputs import _contribution_inputs_for_accounts
 from app.services.pay_calendar import PayCadence, PayCalendar, PayCalendarError
