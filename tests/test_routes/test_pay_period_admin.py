@@ -335,10 +335,23 @@ class TestRegenerateRoute:
 class TestGenerateRoute:
     """POST /pay-periods/generate persists the cadence."""
 
-    def test_generate_persists_cadence(self, app, auth_client, seed_user):
-        """Generating captures the cadence in a pay_schedule row."""
+    def test_generate_persists_cadence(self, app, bare_auth_client, bare_user):
+        """Generating captures the cadence in a pay_schedule row.
+
+        **Re-pointed from ``seed_user`` to ``bare_user`` at plan step
+        ``pay_calendar:C14-f``** (ruling **R-PC63**).  The SUBJECT is
+        unchanged -- establishing a rhythm still captures its cadence -- and
+        what moved is which owner reaches that branch.  ``seed_user`` already
+        holds paydays, so this door now CONTINUES their rhythm and never
+        touches ``cadence_days``; asserting otherwise would be asserting that
+        an owner may restate a phase they already have, which is what ledger
+        row **P80** was.  ``bare_user`` holds none, so this is the ESTABLISH
+        path the case always meant to cover.  That an owner WITH a rhythm no
+        longer moves the cadence here is pinned in
+        ``test_pay_periods.py::test_generate_can_only_WIDEN_the_covered_interval``.
+        """
         with app.app_context():
-            resp = auth_client.post(
+            resp = bare_auth_client.post(
                 "/pay-periods/generate",
                 data={
                     "start_date": "2027-01-01",
@@ -348,7 +361,7 @@ class TestGenerateRoute:
                 },
             )
             assert resp.status_code == 302
-            schedule = pay_schedule_service.get_schedule(seed_user["user"].id)
+            schedule = pay_schedule_service.get_schedule(bare_user["user"].id)
             assert schedule is not None
             assert schedule.cadence_days == 10
 

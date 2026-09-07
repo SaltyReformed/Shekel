@@ -6,13 +6,20 @@
    neither renders its own h4/h5; blurb, error block, and the
    three-field form live here so the validation hints and field
    defaults cannot drift between the two surfaces.  ``errors`` is read
-   from the including context. #}
+   from the including context.
+
+   **This card ESTABLISHES a rhythm and never continues one** (plan step
+   pay_calendar:C14-f, ruling R-PC63).  Its parent renders it only for an owner
+   holding no paydays; an owner who has some gets the Extend form, which asks
+   how many more and nothing else.  The blurb said "your next (or first)
+   payday", which was the weld written down: "next" is the continue job this
+   card no longer does. #}
 {{ render_errors(errors) }}
 
 {% call form_card("Generate Pay Periods", "bi-calendar-range") %}
 <p class="text-muted">
-  Enter your next (or first) payday and the app will generate biweekly
-  pay periods forward.
+  Enter your first payday and the app will generate pay periods forward
+  from it.
 </p>
 
 <form method="POST" action="{{ url_for('pay_periods.generate') }}">
