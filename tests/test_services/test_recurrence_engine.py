@@ -5153,11 +5153,11 @@ class TestARowRecordsItsOccurrence:
         carries the owner's own records (the neighbouring retain cases).
 
         Re-pointing was the alternative, and it is the same invalid inference
-        an adversarial review cut from ``scripts/stamp_occurrences.py``: it is
-        a deduction only if every row answers some occurrence, which a NULL
-        ``occurs_on`` denies.  A wrongly adopted row then SUPPRESSES generation
-        of the real bill, which is a payment vanishing with nothing on screen
-        to show it.
+        an adversarial review cut from the one-time ``occurs_on`` backfill
+        (ruling **recurrence:R-R49**, which is that lesson's home now that the
+        backfill script is retired, 2026-09-06): it is a deduction only if
+        every row answers some occurrence, which a NULL ``occurs_on`` denies.  A wrongly adopted row then SUPPRESSES generation of the real
+        bill, which is a payment vanishing with nothing on screen to show it.
         """
         with app.app_context():
             template = self._make_template_with_rule(

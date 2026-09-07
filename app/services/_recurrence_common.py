@@ -553,16 +553,28 @@ def classify_maintain_work(
     it retires when it carries nothing and is held back as a conflict when it
     carries the owner's records.  It is never silently re-pointed at whatever
     occurrence is left over in its paycheck: that is a deduction only if every
-    row answers some occurrence, and a NULL ``occurs_on`` denies it -- the same
-    invalid inference an adversarial review cut from ``stamp_occurrences.py``,
-    where it paired a ``$12.34`` envelope roll-forward with a car payment nine
-    paychecks away.
+    row answers some occurrence, and a NULL ``occurs_on`` denies it.  Ruling
+    **recurrence:R-R49** is that lesson's home and carries what it cost, an
+    adversarial review having cut the same inference from the one-time
+    ``occurs_on`` backfill -- where it paired a ``$12.34`` envelope
+    roll-forward with a car payment nine paychecks away.  That backfill script
+    was RETIRED 2026-09-06, so the ruling is the citation that still resolves.
 
-    **A NULL ``occurs_on`` row answers no occurrence, so it is never named.**
-    Every such row on the developer's data is immutable (four ``Paid``, one
-    ``Credit``; ``Projected`` is the only mutable status in ``ref.statuses``),
-    so none reaches this branch today -- but a mutable one would retire, and
-    that is the correct answer for a row no rule claims.
+    **A NULL ``occurs_on`` row answers no occurrence, so it is never named**,
+    and a mutable one therefore RETIRES here -- which is the correct answer for
+    a row no rule claims, and a HARD DELETE at ``_maintain``.
+
+    *How many such rows exist is a property of the DATABASE, not of this code,
+    and the two the developer runs disagree.*  Re-measured 2026-09-06, where an
+    earlier undated version of this paragraph said "every such row is immutable
+    (four ``Paid``, one ``Credit``)" and was quoted as the reason none reaches
+    this branch: PRODUCTION holds six, all immutable (four ``Paid``, one
+    ``Credit``, one ``Cancelled`` that is also ``is_override``), so the
+    conclusion holds there but the count was one short.  The DEV database is a
+    pre-backfill restore and holds 622 of 624, **503 of them mutable and
+    reachable by this branch**.  A count measured on one database is not a
+    property of the predicate; what is safe to rely on is the branch's own
+    rule, not the population it happens to find.
 
     **The claims that decide CREATE come from *claimants*, NOT from *existing*,
     and that distinction is ledger row D57 on this path.**  *existing* is a
