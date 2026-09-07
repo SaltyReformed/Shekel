@@ -109,3 +109,82 @@ migration rates 0.00/10 and all 181 would hard-fail the `E` gate, each needing d
 the finding unbuilt.
 
 **NO OWNER AND NO STEP ID YET.** All four lanes are on other work. Needs both.
+
+## Corrections OWED to `docs/plans/`, which still carries the wrong text today
+
+These are not new findings. They are places where the plan of record, as committed, says something
+the code refutes -- so a session that opens `ledger.md` or `steps.md` and works from it is
+misdirected. Each was verified against dev at the line cited.
+
+### `BAL-463`'s REMEDY IS AIMED AT THE WRONG TIER (`ledger.md:34`)
+
+The row's status column says *"the remedy makes the guard STRUCTURAL rather than conventional, so a
+migration cannot ship a bare declare"*.
+**The strand producer is APPLICATION code, not a migration.**
+
+`carry_forward_service._execute._create_target_override_row` creates a leftover row copying
+`template_id` with `due_date=None`; `recurrence_engine._conflicts.resolve_conflicts:200` ("use the
+template's amount") then calls `declare_derived` on it, emptying its figure. The row is then priced
+by amount rule 3, which resolves on the row's OWN due date -- and it has none, so `_stated_amount`
+raises `AmountUnresolvable`, which has five handlers in `app/` and none on the grid, dashboard or
+companion path.
+
+**A step built to the row AS WRITTEN would have hardened migrations and left that live.** The
+predicate stands and the row stays OPEN; only the remedy sentence is wrong. Fixed in code by `X-bv`
+(PR #290, commit `66ff070b`), and `ledger.md:34` still carries the wrong sentence.
+
+This is the one correction in this file that is a TRAP rather than a fact a reader can re-derive: it
+cost the balance lane its first hour, and the document that would have corrected it was untracked.
+
+Also refuted, so it is not re-proposed: the claimed live path at
+`app/schemas/validation/transactions.py:105/:154` is NOT it.
+`_gates._reject_generated_due_date_edit` already refuses `due_date` on any template-linked row keyed
+on presence, wired at `mutations.py:338`; the `:154` schema is the ad-hoc create, which cannot set
+`template_id`.
+
+### `N-365` calls a fork open that `R-IR` answered (`ledger.md:49`)
+
+The row still says whether the remedy is a SPLIT per module or a different ceiling is a fork `X-be`
+owes. Ruling `R-IR` answered it on 2026-09-01. Pre-existing; caused by none of today's steps.
+
+### `steps.md:70`'s `X-bv` row is the REFUTED specification
+
+It still specifies the migration-guard remedy above. It needs re-writing to the producer fix, not
+merely re-ranking.
+
+### `steps.md` owes rows for `X-bz` and `X-ca`
+
+Both are issued, both have merged or open PRs, and neither appears in any planning document.
+
+## pay_calendar, 2026-09-07 -- FIVE rulings, none yet in `rulings.md`
+
+Recorded verbatim from the lane as it closed. `grep -rl "R-PC63" docs/` returned nothing before this
+file; these existed only in code comments and session transcripts.
+
+1. **`R-PC63` -- `C14-f` is the DOOR FIX, not the check.** An owner who already holds a rhythm is
+   asked only how many more paychecks; the days come from the producer Extend already uses.
+   **It SUPERSEDES `R-PC55`, and that supersession rides WITH the ruling** rather than being a
+   separate question to re-ask. Two costs accepted: the `C8` overlap, and that the residue is
+   `regenerate`.
+2. **The sub-fork is CONTINUE, not refuse.** A submitted `start_date` / `cadence_days` / `shift` is
+   IGNORED, not refused, on `PayPeriodExtendSchema`'s own **P29** precedent -- *"an old client that
+   still posts one is not refused; the value is simply ignored, which is now what it means."*
+3. **Fork 4: pull `C8`'s door half into `C14-f`.**
+4. **`regenerate` is `C17`'s era-mint in disguise; guard it meanwhile** with a confirmation when a
+   rebuild skips a whole paycheck. **`P80` is RE-POINTED at `C17` and explicitly NOT CLOSED** -- a
+   confirmed gap is still a gap. **DO NOT TICK P80.**
+5. **Split the GATES out of `pay_period_admin`** -- `PC-498`'s stated remedy, the developer's
+   placement, mirroring `C3-a`. Shipped as `app/services/pay_period_gates.py`.
+
+### `steps.md:82` is the REFUTED specification and misdirects a fresh session
+
+It still reads *"Add the two-clause integrity check the convention makes statable (**R-PC55**)"* --
+the design ruling 1 SUPERSEDED. A session doing what `CLAUDE.md` says (start at `steps.md`, take the
+first row) would rebuild the check the developer ruled away, against a door that no longer needs it.
+
+### Still owed ids and rows for pay_calendar
+
+`C14-f`'s row rewrite, `P80`'s re-point, and four reported-not-fixed findings.
+**The one that must not be softened:** the step NARROWS `N-493` / `N-494`, which are `C14-f`'s own
+rows -- `generate` was the repair door for an owner whose stored `(cadence, shift)` pair became
+illegal, and they now dispatch into `extend`, which hands the pair straight back.
