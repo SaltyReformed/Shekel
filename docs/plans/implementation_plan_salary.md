@@ -192,14 +192,11 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       row existed.
 - [ ] **S3-e -- the hold is DELETED** (the DECOMPOSED parent, split 2026-09-06 into the NO-MONEY
       re-homing and the MONEY; **R-SAL16** carries the argument and **R-SAL15** the design).
-- [ ] **S3-e-1** -- re-home both questions that only mean something while the feed has a WINDOW,
-      then delete both members: the transfer-average boundary in `build_contribution_timeline`
-      becomes the caller's `saved_through` off `PayCalendar.horizon()`, and `_plan_for`'s gate
-      becomes `is_payroll_linked` (**R-SAL17**). **`prices()` was in NO census** and is why this
-      leaf exists. **NO FIGURE MOVES**: byte-identical on a production clone over 8 accounts x 63
-      periods of `balance_map` and `/retirement` at the base, `+60` and `+180`-month points -- with
-      a `$250` deduction and three `$400` transfers ARMED onto an investment account first, so the
-      re-homed term carried `$2.37M` of projected balance rather than `$0.00`.
+- [x] **S3-e-1** `b8ee429a` -- the two window-only questions re-homed and both members deleted: the
+      transfer-average boundary in `build_contribution_timeline` became the caller's `saved_through`
+      off `PayCalendar.horizon()`, and `_plan_for`'s gate became `is_payroll_linked` (**R-SAL17**).
+      **`prices()` was in NO census** and is why this leaf existed. NO FIGURE MOVED. **R-SAL18**
+      binds `S3-e-2` to `DerivedPeriod.is_projected`.
 - [ ] **S3-e-2** -- WIDEN THE ASK and delete what it orphans. The feed prices a payday ON DEMAND
       through the pass's pricer (**R-SAL15**, which also refuses the window-and-RAISE design this
       step was first specified with), so `_year_averages`, `_complete_years`, `_held_employee`,
