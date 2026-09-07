@@ -11,7 +11,9 @@ one.**  Measured 2026-08-31 on a migrated clone of the developer's own
 database, account 1: **62 merchants, 30 answered and 32 not**.
 :class:`~._section.MerchantSection` asks about a merchant only while this
 pass has an unexplained outflow for it AND nobody has answered -- **0 rows**
-that day.  :class:`~._section.MerchantRegister` shows the 30 answered.
+that day.  The register showed the 30 answered, and went at plan step
+``bank_import:X-gi-3`` with the screen that rendered it -- which is what
+leaves THIS surface the only one that shows an answer.
 :func:`~._offered_rules.rules_worth_offering` offers a rule only for a merchant
 the pass just filed spending for.  So **32 of 62 -- every unanswered one -- were
 on no surface at all**, and there was no way to say where ``Duke Energy`` (8
@@ -19,9 +21,9 @@ lines, `$2,232.34`), ``T-Mobile`` (8 lines, `$540.00`) or ``Audible`` (7 lines,
 `$111.72`) goes without first finding an unexplained line from it.
 
 **One merchant is edited at a time, and that is structural rather than
-cosmetic** (developer, 2026-08-31).  The register submits every merchant it
-renders in one form, and this arc has paid three times for the blast radius
-that gives one press: a deactivated template made a select fall onto *I have
+cosmetic** (developer, 2026-08-31).  The retired register submitted every
+merchant it rendered in ONE form, and this arc has paid three times for the
+blast radius that gives one press: a deactivated template made a select fall onto *I have
 not said* and the next Save silently WITHDREW a rule; an archived category made
 another fall onto the empty option, so a Save aimed at one merchant printed a
 refusal for a second the owner never touched; and the incomplete-new-envelope
@@ -29,17 +31,23 @@ short-circuit read "nothing changed" for a third.  A form carrying ONE merchant
 puts that whole class OUT OF REACH of the rendered page -- which is the honest
 claim, and not the "unconstructible" this said until an adversarial review
 built a two-merchant body and watched one land while the other was refused.
-The DOOR is shared with three surfaces that legitimately submit many merchants
-at once, so it reads every merchant a body names; what this page changes is
-what a browser can send from it.
+The DOOR is shared with the surfaces that legitimately submit many merchants
+at once -- the Reconcile receipt's per-merchant offer, and the merchants list
+itself -- so it reads every merchant a body names; what this page changes is
+what a browser can send from it.  *It said THREE surfaces until plan step
+``bank_import:X-gi-3`` deleted the register's.*
 
-**It is also what keeps the render bounded.**  Measured the same day: the
-register's control renders **30 rows in 129,413 bytes**, a mean of **4,313
-bytes a row**, because every row carries a ``<select>`` over all 17 offerable
-templates and another over all 31 active categories.  At 62 merchants that
-shape is ~267 KB.  A row that STATES its answer and opens the control only when
-asked renders the two big selects once, for the row being edited -- which is
-what finding **N-326** asks for, and this page does not rebuild it wider.
+**It is also what keeps the render bounded.**  Measured the same day, on the
+register's control while it still existed: **30 rows in 129,413 bytes**, a mean
+of **4,313 bytes a row**, because every row carried a ``<select>`` over all 17
+offerable templates and another over all 31 active categories.  At 62 merchants
+that shape is ~267 KB.  A row that STATES its answer and opens the control only
+when asked renders the two big selects once, for the row being edited -- which
+is what finding **N-326** asks for, and this page does not rebuild it wider.
+*The subject of that measurement went at plan step ``bank_import:X-gi-3``, so
+it can no longer be re-derived; it is kept, dated and marked spent, because it
+is the REASON this page's shape was chosen rather than a claim about anything
+live.*
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
 frozen dataclasses out, no Flask import, no clock read.  It READS and never
@@ -161,10 +169,10 @@ class MerchantActivity:
     rows are worth answering for.
 
     **It counts every line this account holds from the merchant, explained or
-    not, and it is not a pass.**  The register carries no count deliberately --
-    counting WAITING lines is the review pass's work and a surface with no pass
-    would be stating a figure it cannot know
-    (:class:`~._section.MerchantRegister`).  This is the other question: how
+    not, and it is not a pass.**  The retired register carried no count
+    deliberately -- counting WAITING lines is the review pass's work and a
+    surface with no pass would be stating a figure it cannot know.  This is
+    the other question: how
     much of the bank's record names this merchant at all, which is one grouped
     read over ``budget.bank_statement_lines`` with no calendar, no matcher and
     no candidate derivation behind it.
@@ -189,12 +197,15 @@ class MerchantEntry:
     **It COMPOSES a** :class:`~._section.MerchantSummary` **rather than adding
     fields to it**, which is the shape :class:`~._section.WaitingMerchant`
     already takes and for the same reason: the summary is *which merchant, and
-    what did they say*, and it is shared by three surfaces that do not share
-    what surrounds it.
+    what did they say*, and it is shared by surfaces that do not share what
+    surrounds it.
 
     Attributes:
         summary: The merchant and its stored answer, built by the one producer
-            all four surfaces share (:func:`~._section.merchant_summary`).
+            BOTH surviving surfaces share
+            (:func:`~._section.merchant_summary`).  *That read "all four" while
+            the review queue and the register had controls of their own; plan
+            step ``bank_import:X-gi-3`` deleted the last of them.*
         says: What the stored answer says, in words -- or :data:`NOT_SAID`.
             **Derived here and never in Jinja**: the four answers are told
             apart by :class:`~._rules.RuleAnswer` identity, and a template

@@ -357,7 +357,9 @@ def rule_payload(form) -> dict:
     """Return one pass over the rule section as :class:`MerchantRuleBatchSchema` loads it.
 
     **The form shape lives HERE, beside the schema that grades it**, for the
-    reason :func:`batch_payload` gives.
+    reason
+    :func:`~app.schemas.validation.statement_reconcile.reconcile_payload`
+    gives.
 
     **Every merchant the section rendered submits an item, including the ones
     the owner did not touch.**  There is no way to tell an untouched control

@@ -1237,8 +1237,10 @@ class TestAFigureThisAppCannotStoreIsRefused:
     """A door that SUMS is not bounded by the columns it sums.
 
     Every figure descends from a ``Numeric(12, 2)`` column, but a match may
-    name up to 100 of them per side -- so the total, and the difference derived
-    from it, can leave the domain any one of them lives in.  Reaching the
+    name ANY NUMBER of them per side -- plan step ``bank_import:X-go`` deleted
+    the schema's member cap, so this refusal is the only bound on that SUM --
+    and the total, and the difference derived from it, can leave the domain any
+    one of them lives in.  Reaching the
     database with one is ``NumericValueOutOfRange``, which is not a
     ``ValidationError`` and therefore escapes the per-item SAVEPOINT: it kills
     the WHOLE pass and every item that had landed beside it.  Reproduced by

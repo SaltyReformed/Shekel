@@ -36,7 +36,7 @@ here is its target.
 :class:`_RateCard` built in memory from figures passed on the command line or
 read out of the audit log; nothing is assigned to an ORM attribute and nothing
 is committed.  The stored state is priced through
-:func:`app.services.income_service.project_profile` -- the ONE producer of a
+:class:`app.services.income_service.ProfilePaychecks` -- the ONE producer of a
 profile's projection (ledger row **N-443**) -- and every state through
 :func:`app.services.paycheck_calculator.project_salary` beneath it, which is
 what the first CALLS.  **That is one producer invoked twice, not two doors**,
@@ -72,7 +72,10 @@ from app.models.transaction import Transaction
 from app.services import income_service, paycheck_calculator
 from app.services.pay_calendar import calendar_for
 from app.services.payroll_basis import PayrollBasis
-from app.services.tax_config_service import load_tax_configs_for_periods
+from app.services.tax_config_service import (
+    configs_by_year as _configs_by_year,
+    profile_tax_series,
+)
 from app import ref_cache
 
 # The statuses that make a row's amount a RECORD rather than a plan.  A
@@ -191,7 +194,7 @@ def _grade_profile(profile, cards):
 
     Raises:
         AssertionError: The direct ``project_salary`` call disagrees with
-            :func:`income_service.project_profile` on the stored calibration,
+            :class:`income_service.ProfilePaychecks` on the stored calibration,
             which would mean this harness is not measuring the app's own
             producer.
     """
@@ -202,12 +205,13 @@ def _grade_profile(profile, cards):
     calendar = calendar_for(profile.user_id)
     basis = PayrollBasis(profile, calendar)
     periods = calendar.saved()
-    configs_by_year = load_tax_configs_for_periods(
-        profile.user_id, profile, periods,
+    configs_by_year = _configs_by_year(
+        profile_tax_series(profile.user_id, profile),
+        {period.start_date.year for period in periods},
     )
 
     # What this harness assembles, checked against what the app assembles.
-    # `project_profile` CALLS `project_salary`, so this is one producer
+    # `ProfilePaychecks.over` CALLS `project_salary`, so this is one producer
     # invoked twice, NOT two independent producers -- it cannot grade the
     # engine, and an adversarial review of this step corrected a docstring
     # that claimed it did.  What it does grade is the four arguments, which
@@ -218,13 +222,15 @@ def _grade_profile(profile, cards):
     # single-year collapse, which is a no-op for these rows.
     door = {
         b.period.period_id: b.earnings.net_pay
-        for b in income_service.project_profile(profile, calendar)
+        for b in income_service.paycheck_pricing(calendar).for_profile(
+            profile,
+        ).over(periods)
     }
     states = {"stored": _price(basis, periods, configs_by_year,
                               profile.calibration)}
     assert states["stored"] == door, (
         "this harness builds project_salary's arguments differently from "
-        "income_service.project_profile, so every state it reports is priced "
+        "income_service.ProfilePaychecks, so every state it reports is priced "
         "off inputs the app does not use"
     )
 

@@ -39,7 +39,7 @@ class AccountPayrollFeed:
     and the ``AdaptedDeduction`` adapter that flattened them (plan step
     **salary:R14-b**, ruling **R-SAL2**).  Both series are folds of the
     :class:`~app.services.paycheck_calculator.PaycheckBreakdown`\\ s
-    :func:`~app.services.income_service.project_profile` already produces, so
+    :class:`~app.services.income_service.ProfilePaychecks` already produces, so
     what a deduction takes from a paycheck is answered ONCE, by the engine
     that computes the paycheck.
 

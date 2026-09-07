@@ -21,9 +21,10 @@ graded by the SAME set of rules the review queue and the hand-build workbench
 were, and reaches the same applier.  A second schema would be free to grade
 ``residual`` less strictly than the one beside it, which is what that field's
 own docstring records having cost once.  *Those two pages went at plan step
-``bank_import:X-gi-2``, and their FORM READERS -- ``batch_payload`` and
-``hand_match_payload`` -- were left with no caller in ``app/``; the row filing
-that is ``bank_import:BI-479``, owned by ``bank_import:X-gi-3``.*
+``bank_import:X-gi-2``, which left their FORM READERS -- ``batch_payload`` and
+``hand_match_payload`` -- with no caller in ``app/`` (finding
+``bank_import:BI-479``); plan step ``bank_import:X-gi-3`` deleted both, so the
+readers below are the only ones a request reaches.*
 
 **Nothing here validates.**  Every value moved is a raw submitted string, so a
 forged id, an unparseable figure and a destination naming no row are all the
@@ -49,8 +50,8 @@ from app.services.statement_match import RECORD_AS_INCOME, Verb
 #: R-HS pre-fills a justified suggestion -- the destination a standing rule
 #: names arrives selected -- and then says *an untouched card is not
 #: submitted: OK per card and Apply are the consent*.  Those two cannot both
-#: be true of :func:`batch_payload`'s form, where the destination select IS
-#: the tick, so a pre-filled select on an untouched card would write a
+#: be true of the retired review queue's form, where the destination select
+#: IS the tick, so a pre-filled select on an untouched card would write a
 #: purchase.  Here the select is only ever READ for a line whose OK checkbox
 #: is in the body, and a browser submits a checkbox only when it is ticked.
 _OK_FIELD = "ok"
@@ -67,10 +68,9 @@ _VERB_PREFIX = "verb-"
 
 #: What a card's MATCH tab ticks a candidate row with, keyed by its BANK LINE.
 #: One token per row carrying its kind, id, reviewed figure and reviewed
-#: revision (:class:`ReviewedRowField`), for the reason
-#: :func:`_match_items` gives: two parallel lists are desynchronised by a body
-#: submitting different lengths, and one token cannot be desynchronised from
-#: itself.
+#: revision (:class:`ReviewedRowField`).  **One token and never two parallel
+#: lists**: those are desynchronised by a body submitting different lengths,
+#: and one token cannot be desynchronised from itself.
 _ROWS_PREFIX = "rows-"
 
 #: What a card's MATCH tab carries the accepted difference in, keyed by its
@@ -132,7 +132,8 @@ def reconcile_match_payload(form, key: str) -> dict:
         **Omitted rather than sent as ``None``**, so the schema's own
         ``load_default`` is the one statement of what absence means -- and an
         EMPTY consent, or an unchosen member, is untouched rather than
-        malformed, which is :func:`_match_items`' founding principle.
+        malformed: a body carrying an empty control must not 400 the act over
+        a field nobody filled in.
 
     """
     item = {"line_ids": [key], "rows": form.getlist(f"{_ROWS_PREFIX}{key}")}
@@ -149,18 +150,19 @@ def reconcile_payload(form) -> "tuple[dict, tuple[str, ...]]":
     """Return one Reconcile pass as :class:`StatementBatchSchema` loads it.
 
     Plan step ``bank_import:X-gj-1b``.  **A second reader for one schema and
-    one door**, which is what :func:`hand_match_payload` was for the workbench:
-    the Reconcile page and the review queue applied the same acts through
-    :func:`~app.services.statement_match.apply_reviewed`, and a second SCHEMA
-    would be free to grade ``residual`` less strictly than the one beside it.
-    Since plan step ``bank_import:X-gi-2`` this is the only reader of the three
-    that a request reaches.
+    one door**, which is what the retired ``hand_match_payload`` was for the
+    workbench: the Reconcile page and the review queue applied the same acts
+    through :func:`~app.services.statement_match.apply_reviewed`, and a second
+    SCHEMA would be free to grade ``residual`` less strictly than the one
+    beside it.  Since plan step ``bank_import:X-gi-2`` this is the only reader
+    of the three a request reaches, and since ``X-gi-3`` the only one there
+    is.
     What differs is the FORM, and the form shape lives here beside the schema
     that grades it.
 
     **It is keyed by BANK LINE and carries no rendered position at all**,
-    where :func:`batch_payload` keys its ticks by the proposal's position on
-    the page.  That is ruling **R-HC**'s own lesson taken one surface further:
+    where the retired ``batch_payload`` keyed its ticks by the proposal's
+    position on the page.  That is ruling **R-HC**'s own lesson taken one surface further:
     a position is a property of the DOCUMENT, and two acts that share a
     namespace are one ``hx-include`` away from being unioned into an act
     nobody assembled.  One card, one line id, everywhere.

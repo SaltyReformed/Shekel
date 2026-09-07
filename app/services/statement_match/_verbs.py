@@ -280,7 +280,7 @@ def offers_for(
     waits for.
 
     **The ADD refusal is STATED by the caller and never inferred here**, which
-    is :class:`~._queue.QueueRow`'s own idiom and for its reason: the builder
+    was the retired queue's ``QueueRow`` idiom and for its reason: the builder
     knows which of the pass's lists it drew this line from, so it reads the
     refusal that mechanism's value already carries -- a parked line's
     :attr:`~._bars.BarredLine.reason`, an inflow's or a creatable line's
