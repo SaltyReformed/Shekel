@@ -593,8 +593,8 @@ in SILENCE where a refused DELETE is loud.
   today its own. Closes **N-440**.
 * [ ] **X-au-f** `refactor(transfers): a generated transfer's amount is its definition's` -- the
   PARENT half of the transfer cutover. `transfers.amount` resolves from the template series for a
-  generated transfer. **Blocked by `X-bl`** (**R-JF**): the cutover's control must be able to fail
-  before the cutover starts. It also closes **N-450**, the two `transfer_templates.default_amount`
+  generated transfer. **UNBLOCKED at `X-bl-1`** (`e0e257a7`, **R-JF**): the control can now fail,
+  and the one arm it cannot yet exercise is precisely the one THIS step gives a population to. It also closes **N-450**, the two `transfer_templates.default_amount`
   kinds of `N-243`'s dissolved census -- a derive-mode loan payment's, repaired only by a manual
   click, and an investment contribution's, repaired by nothing -- both the parent's stored figure.
   **ITS SHADOW HALF SHIPPED AT `X-au-g-2c-2` (`1f2b98a4`, ruling R-IN)** -- a shadow resolves from
@@ -616,16 +616,16 @@ in SILENCE where a refused DELETE is loud.
   `loan_payment_service._manual_shadow_amount:660` until X-au-g-2a moved it; the line number was
   already stale before the move, so the module path is cited without one.*
 
-* [ ] **X-bl** `test(harness): a cutover's control can fail` -- ruling **R-JF**; closes **N-445**,
-  **N-432**. `verify_amount_resolver.py`'s invariance control skips every DERIVED row by construction
-  (its loop continues on a `NULL` `estimated_amount`, which the ownership check makes NULL on every
-  derived row), so two shipped as-built records quote *409* and *934 derived rows invariant* as
-  evidence of nothing. The rebuilt control perturbs the SOURCE -- a version's amount, a parent
-  transfer's figure, a salary profile -- and asserts derived rows move by exactly that while OWN rows
-  do not. **N-432 is the same class one harness over**: the loan oracle's reference is built through
-  91 production modules, 52 of them for a value it DISCARDS; it takes its inputs directly instead (a
-  literal `LoanInputs` was refuted as a hand-rolled replay). **Blocks `X-au-f`**: a control that
-  cannot fail grades nothing, and `X-au-d`'s as-built takes the correction `X-au-e`'s carries.
+* [x] **X-bl-1** `e0e257a7` -- a cutover's control can fail. SEVEN INSTANCE-DISTINCT perturbations
+  of the SOURCES a row's rule names; EIGHT mutations fire it, three of them the wrong-INSTANCE class
+  that passed its own earlier drafts, and pass 1's two comparison arms are DELETED, unrepresentable
+  since the ownership CHECK. Closed **N-445**. Record: `archive/x_bl_1_as_built_2026-09-09.md`.
+* [ ] **X-bl-2** `refactor(loans): the oracle's reference takes its own inputs` -- **N-432**,
+  **R-JF**'s second half, `X-bl` having been SPLIT 2026-09-09. The replay reads three DATES per
+  payment and no amount while the feed is assembled through the amount model: **98 modules where
+  the arithmetic needs 42**. **ROOT CAUSE one table down**: a loan's settled history has TWO
+  producers, because `PaymentRecord` holds a PLAN and a RECORD in one type. **UNRULED** -- the cut
+  is NOT settled-ness. The ledger row carries the argument.
 * [ ] **X-bm** `perf(loaders): every batch caller applies the pricing load` -- closes **N-296**.
   `pricing_load_options` publishes the EIGHT chains a batch pricing needs; THREE loaders apply it
   and SEVEN batch callers do not (companion, pulse, calendar, asset contributions, projection inputs,
