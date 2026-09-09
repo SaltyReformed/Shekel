@@ -73,6 +73,13 @@ walk needs no fence (plan step D-fold).
   the owner's CALENDAR and the date-to-period locator until plan step **C2-d**,
   which moved that question to :mod:`app.services.pay_calendar` -- see that
   module's own header for why all three names went at once.
+* :mod:`._installments` -- WHICH contractual payment each of a loan's rows
+  satisfies (plan step **balance:X-bl-2a**), and which monthly schedule slot it
+  consumes when two collide.  The payment feed's DATE half: the amount-free
+  producer :func:`app.services.loan_payment_service.get_payment_history` is
+  built on, so a consumer that needs only the chronology -- the schedule
+  replay's confirmed feed is the whole of it -- stops loading the amount model
+  to get it (finding **N-432**).
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes, no commits, and
 -- since plan step **C2-d** -- **no database session of its own**.
@@ -99,6 +106,10 @@ Plan of record: ``docs/audits/balance_architecture/README.md`` (step B1).
 from ._events import (
     confirmed_shadows_through,
     loan_event_stream,
+)
+from ._installments import (
+    PaymentInstallment,
+    payment_installments,
 )
 from ._walk import (
     LoanAnchorCorrection,
@@ -139,6 +150,7 @@ __all__ = [
     "LoanPaymentSplit",
     "LoanReplay",
     "LoanResetEvent",
+    "PaymentInstallment",
     "PaymentOutcome",
     "ResetOutcome",
     "anchor_visible_on",
@@ -148,6 +160,7 @@ __all__ = [
     "dated_deltas",
     "installment_slot",
     "loan_event_stream",
+    "payment_installments",
     "payment_visible_on",
     "replay_loan_events",
     "split_one_payment",

@@ -101,6 +101,7 @@ from app.services.recurring_transfer_query import (
     StandingPayment,
     standing_installment_cash,
 )
+from app.utils.amount_relationships import pricing_load_options
 from app.utils.dates import add_months
 
 from ._context import BalanceContext, _memoize_once, require_scenario
@@ -601,7 +602,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
     )
 
     projected_shadows = loan_loaders.projected_income_shadows(
-        account.id, ctx.scenario_id,
+        account.id, ctx.scenario_id, options=pricing_load_options(),
     )
     # The pass's OWN loan derivation, not a second one built here: this line
     # called ``live_loan_transfer_amounts`` directly while the cash fold built a

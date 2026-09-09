@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- WHICH RELATIONSHIPS pricing a row walks.
 
-One function, and it exists so that the eager load the amount model needs is
+Two functions, and they exist so that the eager load the amount model needs is
 stated ONCE rather than copied into every loader that feeds it.
 :mod:`app.services.cash_ledger._amount_source` owns the five rules; this owns
 the relationship graph those rules traverse, so a rule that starts reading a new
@@ -34,6 +34,28 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 
 
+def period_load_option():
+    """Return the loader option for a row's PAY PERIOD -- one spelling, two askers.
+
+    :func:`pricing_load_options` needs it because amount rule 4's DERIVE arm
+    dates the installment it prices, and
+    :func:`app.services.loan_loaders.income_shadows` needs it because the period
+    start is its sort key.  Both ask HERE rather than each writing
+    ``selectinload(Transaction.pay_period)``, and the reason is a failure mode
+    rather than tidiness: a caller that states the pricing options ALSO goes
+    through that partition, so the same relationship path is named twice in one
+    query.  Two identical options merge; two options naming one path with
+    DIFFERENT strategies is a hard SQLAlchemy error, and
+    :func:`app.services.loan_loaders.query_shadow_income`'s own history records
+    that exact failure being how a duplicate load was found.  One producer makes
+    the strategies unable to differ.
+
+    Returns:
+        The ``selectinload`` option for :attr:`Transaction.pay_period`.
+    """
+    return selectinload(Transaction.pay_period)
+
+
 def pricing_load_options() -> tuple:
     """Return the loader options a caller resolving MANY rows should apply.
 
@@ -63,10 +85,13 @@ def pricing_load_options() -> tuple:
       of this set**, and the control in
       ``test_a_transfer_shadow_is_derived.TestTheAmountModelsOwnEagerLoad`` is
       what found it: three ``budget.pay_periods`` reads against an assertion of
-      zero.  Before this step the obligation was one loader's --
-      ``loan_loaders.query_shadow_income`` eager-loads it, and every caller of
+      zero.  Before that step the obligation was one loader's --
+      ``loan_loaders.query_shadow_income`` eager-loaded it, and every caller of
       that derivation came through there -- and declaring every shadow derived
-      is what spread it to the grid and the cash fold.
+      is what spread it to the grid and the cash fold.  *That loader carries no
+      such obligation now (plan step balance:X-bl-2a made the load its caller's
+      statement); the path is shared through :func:`period_load_option` instead,
+      which is what stops the two spellings differing.*
 
     **The per-ROW chains are a true N+1 and the per-DEFINITION ones are not**: a
     template's collections are identity-mapped, so 44 templates served 452 rows
@@ -104,7 +129,7 @@ def pricing_load_options() -> tuple:
         selectinload(Transaction.transfer).selectinload(
             Transfer.template,
         ).selectinload(TransferTemplate.amount_versions),
-        selectinload(Transaction.pay_period),
+        period_load_option(),
     )
 
 

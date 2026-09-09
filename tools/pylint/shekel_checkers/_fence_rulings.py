@@ -754,6 +754,17 @@ _FENCED_MODULE_RULINGS = {
             # A date-bounded loader of settled payment ROWS.  It selects records,
             # and carries no balance of any kind.
             "confirmed_shadows_through",
+            # The payment feed's DATE half (plan step balance:X-bl-2a).  It
+            # returns dates and nothing else, and that is structural rather than
+            # incidental: ``PaymentInstallment`` has no money field to fill.  It
+            # selects the loan's shadow rows and states each one's three dates --
+            # the same ruling ``confirmed_shadows_through`` carries, over the
+            # same rows.  It hands back the ORM row, so a figure is reachable by
+            # relationship exactly as it is from that loader; what it cannot do
+            # is sum one, which is the fence's subject.  (``schedule_dates``, the
+            # slot assignment, is NOT here: it lives in the unfenced pure engine
+            # ``amortization_engine``, which no scoped package covers.)
+            "payment_installments",
         }),
     ),
     # The genesis loan-ledger package.  Scoped WHOLE, not just ``_reader``: a new

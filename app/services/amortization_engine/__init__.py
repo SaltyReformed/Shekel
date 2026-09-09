@@ -45,6 +45,7 @@ from ._projection import (
     calculate_monthly_payment,
     calculate_remaining_months,
     project_forward,
+    schedule_dates,
 )
 
 __all__ = [
@@ -61,4 +62,5 @@ __all__ = [
     "calculate_remaining_months",
     "project_forward",
     "required_extra_for_projection",
+    "schedule_dates",
 ]

@@ -946,9 +946,11 @@ def replay_schedule(
         # (finding N-36).  The walk keys the rate on the installment's DUE date
         # -- contract time, ruling D5 -- but it reads RAW payments, while this
         # replay consumes records that have been through
-        # ``loan_payment_service._redistribute_to_distinct_months``, which
-        # INVENTS a due date for a payment colliding on an already-allocated
-        # month.  Keying the rate on an invented date would let a schedule-
+        # ``amortization_engine.schedule_dates``
+        # (``loan_payment_service._redistribute_to_distinct_months`` until plan
+        # step balance:X-bl-2a),
+        # which INVENTS a due date for a payment colliding on an
+        # already-allocated month.  Keying the rate on an invented date would let a schedule-
         # alignment artifact move a replayed balance, so this stays on the
         # pay-period start, which is always a fact.  Containment: this replay's
         # rows and balance are DISCARDED whenever a ``confirmed_view`` is

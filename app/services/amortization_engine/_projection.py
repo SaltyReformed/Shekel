@@ -115,12 +115,16 @@ class PaymentRecord:
         lives in ``ref.statuses`` and a constraint cannot join), so a bulk
         ``query.update`` bypassing the seam can still leave a settled day on a
         Projected row.  What it removes is the disagreement in the RECORD, by
-        moving the arbitration to one boundary --
-        :func:`app.services.loan_payment_service.get_payment_history`, which
-        reads the STATUS and then requires the day, the same order the fold's
-        loader uses (``loan_loaders.settled_income_shadows``).  So the resolver
-        and the ledger cannot classify a payment differently even on a row a
-        bypass has broken.
+        arbitrating at ONE producer --
+        :func:`app.services.loan_ledger.payment_installments`, which reads a
+        row's cash day only when
+        :func:`app.services.loan_loaders.income_shadows` placed it in the SETTLED
+        half.  So the resolver and the ledger cannot classify a payment
+        differently even on a row a bypass has broken.  *This named
+        ``get_payment_history``, "which reads the STATUS and then requires the
+        day, the same order the fold's loader uses", until plan step
+        **balance:X-bl-2a**: that was two producers kept in step by an ORDERING,
+        and the step deleted the second rather than restating the contract.*
 
         Returns:
             ``True`` for a settled payment (Paid or Received), ``False``
@@ -310,6 +314,84 @@ def _advance_month(year: int, month: int, day: int) -> date:
         year += 1
     max_day = calendar.monthrange(year, month)[1]
     return date(year, month, min(day, max_day))
+
+
+def schedule_dates(due_dates: list[date], payment_day: int) -> list[date]:
+    """Return one DISTINCT monthly schedule slot per payment, in the order given.
+
+    Biweekly pay periods sometimes place two loan payments in the same calendar
+    month; a monthly amortization engine sums same-month payments, double-counting
+    that month and leaving the next empty.  This walks the payments in the order
+    given and hands each the first free month at or after its own due month, so
+    the engine sees one payment per month.  At most one extra payment per month
+    (~2x/year) is expected, so cascading collisions are not, but the inner loop
+    handles them.
+
+    **It returns SLOTS, not records, and the caller decides what to do with
+    them.**  It was ``loan_payment_service._engine_prep
+    ._redistribute_to_distinct_months`` until plan step **balance:X-bl-2a** -- a
+    rewrite of :class:`PaymentRecord` instances, which meant only a caller
+    holding PRICED records could ask the question.  The question is about dates
+    alone, so it is asked over dates alone, and the amount-free feed
+    (:func:`app.services.loan_ledger.payment_installments`) reaches the same
+    producer the priced path does.
+
+    **It lives HERE, in the pure primitives, and that is the second draft.**  It
+    first landed in ``loan_ledger._installments``, whose loaders put
+    ``loan_payment_service._engine_prep`` -- pure arithmetic, closure 14 -- on a
+    **42-module** closure to reach it (measured 2026-09-09).  That is the defect
+    this step exists to remove, so the rule sits beside
+    :func:`advance_to_next_payment_date`, the only thing it calls, where both
+    tiers already import it and neither loads a row to get it.
+
+    **Only the slot is invented; nothing here touches a fact.**  The funding
+    period and the cash day never enter, so a caller cannot accidentally
+    overwrite one with a slot -- the shape the previous version had to warn
+    against in prose.  Overwriting the funding period with the slot (the pre-fix
+    behaviour) costs a WRONG RATE PERIOD for that payment, which finding
+    **N-36** records as the reason the replay keeps its rate on the period start.
+
+    The collision key is the DUE MONTH, not the pay-period-start month: two pay
+    periods that both fall before the same ``payment_day`` (e.g. Apr 10 and
+    Apr 24, both due May 1) collide on the May schedule row, and the schedule and
+    the override map key everything by due month -- a pay-period-start key would
+    leave that collision unresolved and sum both into a single double payment.
+    *That key is written inline here rather than through
+    ``loan_ledger.installment_slot``, which spells the same ``(year, month)``:
+    routing the two together changes the installment identity across the whole
+    loan architecture, which is ``recurrence:R16-c``'s job and is deferred in
+    that function's own docstring.*
+
+    Args:
+        due_dates: Each payment's own installment date, in the order the caller
+            wants collisions resolved (the caller's order decides which payment
+            keeps a contested month, so it must be the chronology both the
+            replay and the priced feed use).
+        payment_day: The loan's contractual day-of-month due day, 1-31.  Only an
+            INVENTED slot uses it; a payment that keeps its own month keeps its
+            own date, day included.
+
+    Returns:
+        One slot date per element of ``due_dates``, positionally, all in
+        distinct calendar months.  A payment whose due month is uncontested gets
+        its own ``due_date`` back unchanged.
+    """
+    slots: list[date] = []
+    allocated_months: set[tuple[int, int]] = set()
+    for due in due_dates:
+        # A payment whose own month is free keeps its own DATE, day included --
+        # the uncontested case, which is every payment on both live loans.  A
+        # contested one walks forward a month at a time through
+        # ``advance_to_next_payment_date``, the project's one "next month, day
+        # clamped to this month's last" primitive, so a ``payment_day`` of 31
+        # lands on the 28th in February here exactly as it does in a forward
+        # projection.
+        slot = due
+        while (slot.year, slot.month) in allocated_months:
+            slot = advance_to_next_payment_date(slot, payment_day)
+        slots.append(slot)
+        allocated_months.add((slot.year, slot.month))
+    return slots
 
 
 def advance_to_next_payment_date(

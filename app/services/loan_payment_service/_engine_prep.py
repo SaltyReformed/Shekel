@@ -8,15 +8,28 @@ calendar month redistributed onto distinct months.
 
 Lowest leaf of the package: it imports no sibling, so the two corrections can
 be read without the loading or pricing tiers in scope.
+
+**The second correction's RULE lives one tier down since plan step
+balance:X-bl-2a** (:func:`app.services.amortization_engine.schedule_dates`, finding
+**N-432**).  It rewrote :class:`PaymentRecord` instances here, which meant only
+a caller holding PRICED records could ask which monthly slot a payment consumes
+-- a question about dates alone.  What stays here is the APPLICATION of the
+answer to a priced feed; what left is the answer, so the amount-free feed
+(``loan_ledger.payment_installments``' callers) reaches the same producer
+instead of restating it.
 """
 
-import calendar
+import dataclasses
 from datetime import date
 from decimal import Decimal
 
 from app.models.loan_params import LoanParams
 from app.services import escrow_calculator, loan_resolver
-from app.services.amortization_engine import PaymentRecord, RateChangeRecord
+from app.services.amortization_engine import (
+    PaymentRecord,
+    RateChangeRecord,
+    schedule_dates,
+)
 
 def compute_contractual_pi(
     params: LoanParams,
@@ -70,65 +83,6 @@ def compute_contractual_pi(
     )
 
 
-def _redistribute_to_distinct_months(
-    payments: list[PaymentRecord], payment_day: int
-) -> list[PaymentRecord]:
-    """Shift payments sharing a monthly DUE month to consecutive months.
-
-    Biweekly pay periods sometimes place two mortgage payments in the same
-    calendar month; the monthly engine would sum them, double-counting one
-    month and leaving the next empty.  At most one extra payment per month
-    (~2x/year) is expected, so cascading collisions are not, but the
-    while-loop handles them defensively.  The collision key is each payment's
-    DUE month (:attr:`PaymentRecord.due_date`, the installment it satisfies),
-    NOT its pay-period-start month: two pay periods that both fall before the
-    same ``payment_day`` (e.g. Apr 10 and Apr 24, both due May 1) collide on
-    the May schedule row, and the schedule/override key everything by due
-    month -- a pay-period-start-month key would leave that collision
-    unresolved and sum both into a single double payment.
-
-    Only the DUE date shifts.  ``payment_date`` (the pay period funding the
-    payment) and ``settled_on`` (the day its cash moved) are FACTS and are
-    carried through untouched: the first is the replay's rate lookup, the second
-    is its "has this happened?" cap, and an invented date must reach neither.
-    Overwriting ``payment_date`` with the shifted due date (the pre-fix
-    behaviour) costs a WRONG RATE PERIOD for that payment today -- the reason
-    finding **N-36** keeps the rate on a fact rather than on a redistribution's
-    output.  It used to cost more: until plan step **X-an** ``payment_date`` was
-    also the replay's as-of cap, so a shifted payment whose invented due date
-    sorted after ``as_of`` fell out of the replay entirely.  That half is gone
-    with the cap; the rate half is not.
-    """
-    result: list[PaymentRecord] = []
-    allocated_months: set[tuple[int, int]] = set()
-    for p in payments:
-        ym = (p.due_date.year, p.due_date.month)
-        if ym not in allocated_months:
-            result.append(p)
-            allocated_months.add(ym)
-        else:
-            y, m = ym
-            m += 1
-            if m > 12:
-                m = 1
-                y += 1
-            while (y, m) in allocated_months:
-                m += 1
-                if m > 12:
-                    m = 1
-                    y += 1
-            max_day = calendar.monthrange(y, m)[1]
-            new_due = date(y, m, min(payment_day, max_day))
-            result.append(PaymentRecord(
-                payment_date=p.payment_date,
-                due_date=new_due,
-                settled_on=p.settled_on,
-                amount=p.amount,
-            ))
-            allocated_months.add((y, m))
-    return result
-
-
 def prepare_payments_for_engine(
     payments: list[PaymentRecord],
     payment_day: int,
@@ -161,10 +115,29 @@ def prepare_payments_for_engine(
        engine sums same-month payments, double-counting one month and
        leaving the next empty.  This shifts extra same-month payments
        to subsequent months to restore one-payment-per-month alignment.
+       The assignment itself is :func:`app.services.amortization_engine.schedule_dates`
+       (plan step **balance:X-bl-2a**), so this feed and the amount-free one
+       cannot resolve a collision differently -- and they must not: a slot both
+       sides do not agree on is a month the replay consumes and the forward
+       override plans separately.
+
+    The order matters, and only through step 2.  Step 1 keys each payment's
+    escrow on its OWN due date, which is why it runs first: after step 2 the
+    loser of a collision carries an invented date, and resolving escrow on that
+    would back out the wrong version.  Step 2 then resolves collisions in
+    ``payment_date`` order.  **That sort is STABLE, so it does not make this
+    function order-independent** -- two payments sharing a ``payment_date`` keep
+    the order the caller handed them in, and which of them keeps a contested due
+    month follows.  The determinism lives in the FEED
+    (:func:`app.services.loan_ledger.payment_installments` keys
+    ``(pay_period.start_date, id)``), which is the precondition rather than a
+    property of this call.
 
     Args:
         payments: List of PaymentRecord from get_payment_history().
-        payment_day: Mortgage payment day of month (from LoanParams).
+        payment_day: Mortgage payment day of month (from LoanParams).  Dates the
+            slot an invented one lands on; a payment keeping its own due month
+            keeps its own date.
         escrow_lines: The loan's escrow lines with their full version history
             (:func:`~app.services.loan_loaders.load_escrow_lines`); each
             payment resolves its own as-of escrow from them.  Empty for a loan
@@ -208,5 +181,20 @@ def prepare_payments_for_engine(
         sorted_payments = adjusted
 
     # Step 2: Redistribute payments that share a monthly DUE month to
-    # consecutive months so the monthly engine sees one per due month.
-    return _redistribute_to_distinct_months(sorted_payments, payment_day)
+    # consecutive months so the monthly engine sees one per due month.  The
+    # slots come from ``amortization_engine.schedule_dates`` -- the ONE producer of
+    # that assignment since plan step balance:X-bl-2a, shared with the
+    # amount-free feed (``loan_ledger.payment_installments``' callers), which
+    # is what lets a consumer of the DATES reach the same answer without
+    # loading the tier that prices a row.  Only the due date moves;
+    # ``payment_date`` and ``settled_on`` are facts and are carried through.
+    return [
+        dataclasses.replace(payment, due_date=slot)
+        for payment, slot in zip(
+            sorted_payments,
+            schedule_dates(
+                [payment.due_date for payment in sorted_payments], payment_day,
+            ),
+            strict=True,
+        )
+    ]

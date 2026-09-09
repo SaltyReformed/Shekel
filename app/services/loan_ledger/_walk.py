@@ -232,7 +232,13 @@ def walk_loan_ledger(
     # since-removed version still applies to a historical period and a later
     # escrow change never re-splits a past payment (plan Section 2 / D3).
     escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
-    shadows = loan_loaders.settled_income_shadows(loan_account_id, scenario_id)
+    # ``options=()``: the stream reads each shadow's due date, its pay period
+    # (loaded by the producer) and its SETTLEMENT RECORD -- all columns of the
+    # row plus the joined status.  It traverses no pricing relationship, so it
+    # states no pricing load (plan step balance:X-bl-2a).
+    shadows = loan_loaders.settled_income_shadows(
+        loan_account_id, scenario_id, options=(),
+    )
     payment_splits, anchor_corrections = _replay_events(loan_event_stream(
         anchor_facts, shadows, params.payment_day, periods, escrow_lines,
     ))

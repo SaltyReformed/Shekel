@@ -166,7 +166,12 @@ def _principal_net_by_shadow(
         ``{shadow transaction id: net principal Decimal}`` (unrounded running
         sums; the caller rounds); empty when the loan has no settled payment.
     """
-    shadows = loan_loaders.settled_income_shadows(loan_account_id, scenario_id)
+    # ``options=()``: only ``id`` and ``transfer_id`` are read below, both
+    # columns of the row itself, so no relationship is traversed and none is
+    # loaded (plan step balance:X-bl-2a made that the caller's call).
+    shadows = loan_loaders.settled_income_shadows(
+        loan_account_id, scenario_id, options=(),
+    )
     shadow_ids = {shadow.id for shadow in shadows}
     shadow_id_by_transfer = {
         shadow.transfer_id: shadow.id for shadow in shadows
