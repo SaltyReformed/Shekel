@@ -620,12 +620,21 @@ in SILENCE where a refused DELETE is loud.
   of the SOURCES a row's rule names; EIGHT mutations fire it, three of them the wrong-INSTANCE class
   that passed its own earlier drafts, and pass 1's two comparison arms are DELETED, unrepresentable
   since the ownership CHECK. Closed **N-445**. Record: `archive/x_bl_1_as_built_2026-09-09.md`.
-* [ ] **X-bl-2** `refactor(loans): the oracle's reference takes its own inputs` -- **N-432**,
-  **R-JF**'s second half, `X-bl` having been SPLIT 2026-09-09. The replay reads three DATES per
-  payment and no amount while the feed is assembled through the amount model: **98 modules where
-  the arithmetic needs 42**. **ROOT CAUSE one table down**: a loan's settled history has TWO
-  producers, because `PaymentRecord` holds a PLAN and a RECORD in one type. **UNRULED** -- the cut
-  is NOT settled-ness. The ledger row carries the argument.
+* [x] **X-bl-2a** `ee4fc2d7` -- the payment feed has ONE date producer and ONE
+  settled-history derivation (**R-BAL7**), and the amount model's eager load is the CALLER's
+  statement (**R-BAL8**); `loan_loaders` became a package at 1,054 lines. Byte-identical on both
+  live loans and 4,000 collision trials; the DISPLAYED loan balance **25 statements -> 21**.
+  **A LATER step must obey:** the load is stated by whoever traverses it, graded by a
+  statement-COUNTING pair -- a presence check passed a mutant that deleted the options. Carries **N-432**.
+* [ ] **X-bl-2b** `refactor(loans): the oracle's reference takes its own inputs` -- closes
+  **N-432**. `_resolver_balance` and FIVE other suite copies of the un-seeded replay (`conftest`,
+  `test_loan_principal_settles`, `test_loan_resolver_single_source`, `test_balance_at`,
+  `test_savings_dashboard_service`) still build their input through `load_loan_context`, each
+  reaching into the private `loan_resolver._periods`, so the reference's closure is **101 modules
+  against the 45 its own tier needs** (`X-bl-2a`'s package split raised both, from 98 and 42) and a
+  pricing refusal still breaks a control that reads no figure. Making `PaymentRecord` COMPOSE a
+  `PaymentInstallment` -- one projection to `ConfirmedPayment` rather than two -- touches ~50
+  construction sites, which is why **R-BAL7** split the work.
 * [ ] **X-bm** `perf(loaders): every batch caller applies the pricing load` -- closes **N-296**.
   `pricing_load_options` publishes the EIGHT chains a batch pricing needs; THREE loaders apply it
   and SEVEN batch callers do not (companion, pulse, calendar, asset contributions, projection inputs,
@@ -1006,25 +1015,7 @@ section 4, under their unchanged ids.*
   collapsed twelve sites in `routes/transactions/forms.py` into four; `url_converters.py`,
   `routes/transfers/_helpers.py` (which counts its own `request.form` site, so it says 35) and
   `steps.md` state the same number and were moved with it.
-* [x] **X-br** `6a3eb135` -- THE FRESH CONTAINER PER RUN (ruled 2026-09-04): all four leaves shipped.
-  Every fence the suite carries -- the slot, `RESTART_TEST_DB`, the
-  live-backend probe, `TEST_DB_PREFIX`, `TEST_TEMPLATE_DATABASE` -- exists
-  because ONE postmaster serves every worktree. A cluster per run makes each
-  guard nothing rather than guard less, and fixes what none of them did: two
-  runs in ONE worktree. Ticks with **X-br-4**.
-* [x] **X-br-1** `b1ffc9b6` -- the test template baked into a tagged,
-  self-verifying image (PR #247, merge `418695b2`).
-  `scripts/build_test_db_image.py` IS the specification; three measured facts
-  in its module docstring must not be re-derived. **A later step must obey:**
-  the cache key is an OPTIMISATION and verification runs on EVERY invocation,
-  so a stale image is refused rather than trusted.
-* [x] **X-br-2** `7c739495` -- a run gets its own cluster, pytest as a CHILD so there is an after in which to remove it, INT and TERM trapped with EXIT. Opt-in behind `TEST_DB_PER_RUN` until **X-br-3**; measured FASTER than the shared cluster.
-* [x] **X-br-3** `8ee74b95` -- the harness got a daemon of its own; `DOCKER_HOST` selects a rootless
-  one, so per-run containers stop landing on the daemon running production. **25 passed, 3 skipped**,
-  not the 28 predicted, and those 3 are **N-459**/**N-460**, which **X-bs** owns. FOUR of this
-  entry's pre-ship clauses were refuted by the ship -- the install is an AUR `yay -S`, it shipped as
-  `feat(test):`, and `slirp4netns` is absent AND unnecessary under `--network=none`; the corrections
-  are in `docs/test-harness-isolation.md`, which says "Do not restore them here."
+*The `X-br` family -- the fresh container per run, its container and four leaves -- is ARCHIVED to `archive/x_br_family_2026-09-09.md` (2026-09-09, developer's call under rule 4). Every id still resolves in `steps.md`.*
 * [x] **X-bu** `142f64cb` -- closed **BAL-462**: deleted `row_valuation.owned_amount` and folded
   its body into `_amount_source._own_answer`, the spelling the transfer arm has always used. **It
   grew by one reader under R-BAL4**: the ACTUAL half's fall-through refused an unsettled DERIVED
@@ -1071,12 +1062,6 @@ section 4, under their unchanged ids.*
   **THE ORDER IS LOAD-BEARING -- unmask FIRST, then the ports**: the three tests now skipping ARE
   the collision and the only witnesses that the laundering arms are wrong, so fixing the ports first
   leaves the laundering untested with its witnesses gone, which is strictly worse than today.
-* [x] **X-br-4** `6a3eb135` -- the slot, the probe, `RESTART_TEST_DB`, `TEST_DB_PREFIX` and the
-  `test-db` service are gone; the private cluster is the only path. Closed **N-457**, whose failure
-  mode is now unrepresentable. **Its own sentence was WRONG about one of the five fences**: the
-  slot's CONTENTION hazard survives a per-run cluster, so the LOCK went and a NOTE replaced it
-  (**R-BAL1**); the bake port became caller-chosen (**R-BAL2**). **A LATER STEP MUST OBEY**: N-459's
-  remaining site, the deploy fixtures' `-p 0:443`, stays with **X-bs**.
 * [ ] **X-bt** `refactor(test): one producer answers whether a daemon is safe to spawn on` --
   `scripts/test.sh` ASKS the daemon (`docker info`) while `tests/test_deploy/conftest.py` matches a
   PATH ALLOWLIST, and the conftest cannot read the wrapper's answer because in every case it exists
