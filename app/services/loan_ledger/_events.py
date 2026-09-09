@@ -122,7 +122,8 @@ def loan_event_stream(
     the event rather than recomputed downstream (plan step E1c), and it is the
     SAME strict ``anchor_date < due_date`` post-anchor boundary the resolver's
     replay uses (:func:`is_confirmed_payment_eligible`, fed the same derivation
-    via :attr:`PaymentRecord.due_date`) -- the two MUST stay on one derivation,
+    via :attr:`~app.services.amortization_engine.PaymentDates.due_date`) -- the
+    two MUST stay on one derivation,
     or the posted ledger and the replayed balance drift on which payments a given
     anchor subsumes.
 

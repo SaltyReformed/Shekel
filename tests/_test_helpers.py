@@ -7883,3 +7883,74 @@ def _figure_column_of(row) -> str:
         if column in type(row).__table__.c:
             return column
     raise AttributeError(f"{type(row).__name__} carries no figure column")
+
+
+def unseeded_replay_balance(loan_id, scenario_id, as_of):
+    """Return a loan's UN-SEEDED schedule-replay balance -- the pre-switch value.
+
+    **The suite's ONE assembly of the anchor replay** (plan step
+    **balance:X-bl-2b**).  The balance the resolver derives from its anchor
+    replay ALONE -- no genesis seed, no ledger -- which is what a loan's scalar
+    surfaces showed BEFORE the read switch, and what five controls across four
+    files pin so they can assert the ledger DIVERGES from it off-schedule.
+
+    Each of those five spelled the four-step assembly itself, and this step made
+    the block longer rather than shorter, so they are one call now.  What that
+    removes is not lines but a CONTRACT stated five times: the replay's feed must
+    carry its schedule SLOT
+    (:func:`~app.services.amortization_engine.slotted_dates`), because the
+    forward override plans by that same slot and a feed the two disagree on
+    drops a planned payment.  Stated once, a caller cannot forget it.
+
+    **The reconciliation oracle deliberately does NOT call this**, and that is
+    the one duplication left standing.  ``test_posting_ledger_loan_reconciliation
+    ._resolver_balance`` keeps its own body because
+    ``test_the_roots_cover_what_the_reference_calls`` reads the modules the
+    reference depends on off THAT FUNCTION'S OWN AST -- a delegation to a helper
+    in this file would make the closure check grade an empty root set, which is
+    the vacuity that control exists to prevent.  The reason is written at that
+    function too.
+
+    **It is AMOUNT-FREE.**  The replay reads three dates per payment and no
+    figure, so the feed is ``loan_ledger.payment_installments`` and not the
+    priced ``load_loan_context``: a pricing refusal cannot break a control that
+    reads no amount, and the import closure is 46 modules rather than 102
+    (measured 2026-09-09; the metric is stated in
+    ``app.services.loan_ledger._installments``).
+
+    Args:
+        loan_id: The loan account to replay.
+        scenario_id: The budget scenario scoping its payment feed.
+        as_of: The evaluation date; the replay stops at the latest payment whose
+            CASH had moved by it.
+
+    Returns:
+        The replayed balance owed, rounded to the cent exactly as the deleted
+        ``LoanState.current_balance`` was.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services import loan_ledger, loan_loaders, loan_resolver
+    from app.services.amortization_engine import slotted_dates
+    from app.services.loan_resolver._periods import _replay_from_anchor
+    from app.utils.money import round_money
+
+    params = loan_loaders.load_loan_params(loan_id)
+    installments = loan_ledger.payment_installments(
+        loan_id, scenario_id, params.payment_day, options=(),
+    )
+    return round_money(
+        _replay_from_anchor(
+            anchor_events=loan_loaders.load_loan_anchor_facts(params),
+            periods=loan_resolver.resolve_periods(
+                params, loan_loaders.load_rate_changes(loan_id),
+            ),
+            payments=slotted_dates(
+                [installment.dates for installment in installments],
+                params.payment_day,
+            ),
+            payment_day=params.payment_day,
+            as_of=as_of,
+        ).balance_as_of
+    )

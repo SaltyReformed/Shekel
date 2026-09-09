@@ -104,7 +104,7 @@ def main():
                 account_id, ctx.amounts(), params,
             )
             full = list(context.payments)
-            confirmed = [p for p in full if p.is_confirmed]
+            confirmed = [p for p in full if p.dates.is_confirmed]
             feeds = {
                 "FULL": full,
                 "EMPTY": [],

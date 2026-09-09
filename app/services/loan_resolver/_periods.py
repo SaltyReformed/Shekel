@@ -18,13 +18,13 @@ from typing import TYPE_CHECKING
 
 from app.services.amortization_engine import (
     AmortizationRow,
+    PaymentDates,
     PaymentRecord,
     PeriodTerms,
     RateChangeRecord,
 )
 from app.services.rate_period_engine import (
     BalanceAnchor,
-    ConfirmedPayment,
     LoanTerms,
     RatePeriod,
     ScheduleReplay,
@@ -275,10 +275,16 @@ class LoanInputs:
     deliberately NOT bundled here -- they are the per-call question asked of
     a given loan, not part of the loan's data.
 
-    Frozen so a caller can derive a variant with
-    :func:`dataclasses.replace` (the resolver passes a confirmed-only
-    ``payments`` view to the composer this way) without mutating the
-    shared instance.
+    Frozen so a caller cannot mutate a bundle another consumer is holding.
+
+    *The parenthetical here read "the resolver passes a confirmed-only*
+    ``payments`` *view to the composer this way", and no caller has done that
+    for some time: the composer takes the WHOLE feed and separates it itself
+    (:func:`._payoff._build_forward_inputs` hands the replay the dates and
+    :func:`._payoff._build_monthly_override` takes the complement).  A grep for
+    a* ``dataclasses.replace`` *over this class finds none in* ``app/`` *or*
+    ``tests/`` *(2026-09-09).  Corrected rather than left, because a stale
+    example is read as a live contract.*
 
     Attributes:
         loan_params: A :class:`LoanParams`-shaped object exposing the
@@ -386,72 +392,100 @@ def select_latest_anchor(anchor_events: list) -> object:
 
 
 def _replay_from_anchor(
-    loan_inputs: LoanInputs,
+    *,
+    anchor_events: list,
     periods: list[RatePeriod],
+    payments: list[PaymentDates],
+    payment_day: int,
     as_of: date,
 ) -> ScheduleReplay:
-    """Replay confirmed payments forward from the loan's latest anchor.
+    """Replay a loan's settled payments forward from its latest anchor.
 
-    Shared by :func:`._state.resolve_loan` (which reads ``balance_as_of``
-    for the current balance) and :func:`._payoff.compute_payoff_scenarios`
-    (which reads the full replay -- rows, balance, next pay date, remaining
-    months -- as the deterministic-past slice).  Selecting the latest
-    anchor and starting replay from its verified balance is identical
-    work for both, so it lives here once: the resolver's
-    independently-derived balance and the composer's history rows walk
-    the same replay and cannot diverge.  Under the read switch this
-    replay is the None-view FALLBACK for balances and rows, and still
-    supplies the forward projection's starting date / remaining months.
+    ONE production caller: :func:`._payoff.compute_payoff_scenarios`, which
+    reads the full replay -- rows, balance, next pay date, remaining months --
+    as the deterministic-past slice.  Under the read switch the rows and the
+    balance are the None-view FALLBACK; the starting date and remaining months
+    are taken from it always.
+    :func:`._state.resolve_loan` reaches this only THROUGH that composer.
 
-    Only confirmed payments reduce the balance.  An unconfirmed payment
+    *This paragraph opened "Shared by* ``._state.resolve_loan`` *(which reads*
+    ``balance_as_of`` *for the current balance)" until plan step
+    **balance:X-bl-2b**.  That module neither imports this function nor names
+    ``balance_as_of``, and the "current balance" it described is the*
+    ``LoanState`` *field plan step D2a DELETED.  Corrected rather than carried,
+    on the same ground as the two other stale claims this step fixed: a stale
+    example is read as a live contract.*
+
+    **Keyword-only, because three of its five arguments are LISTS.**
+    ``anchor_events``, ``periods`` and ``payments`` are adjacent and
+    type-indistinguishable at a call site, so a positional signature would let
+    two of them swap silently and answer a wrong balance rather than raise.  Its
+    own callee (:func:`~app.services.rate_period_engine.replay_schedule`) is
+    keyword-only for the same reason.
+
+    **It takes the five values it READS, not the :class:`LoanInputs` bundle**
+    (plan step **balance:X-bl-2b**, finding **N-432**).  The bundle carries the
+    loan's PRICED payment feed because the forward override needs the figures;
+    this replay reads three dates per payment and no amount, so taking the
+    bundle made a caller that has only the dates unable to reach it -- which is
+    what put the reconciliation oracle's amount-free reference on a 101-module
+    import closure against the 45 its own arithmetic needs.  Its production
+    caller passes ``[payment.dates for payment in loan_inputs.payments or []]``;
+    the suite's un-seeded replays pass the loader's installment dates directly.
+
+    Only settled payments reduce the balance.  An unconfirmed payment
     is a Projected transfer the user has not yet marked received; it is
-    a future commitment, not historical fact, so it is filtered out here
-    (the forward projection picks it up via the override map).
-    ``replay_schedule`` owns the anchor-boundary and as-of cap, keying
-    each payment by its true monthly due date so a pay period that
-    straddles a mid-period balance true-up is classified correctly.
-
-    The comprehension below filters on the SETTLE DAY rather than on
-    :attr:`~app.services.amortization_engine.PaymentRecord.is_confirmed`, and
-    they are the same predicate: ``is_confirmed`` IS ``settled_on is not None``
-    since plan step **X-an**, when it stopped being stored.  Binding the day in
-    the filter is what makes
-    :attr:`~app.services.rate_period_engine.ConfirmedPayment.settled_on`'s
-    non-``None`` type a property of the code rather than of a comment.
+    a future commitment, not historical fact (the forward projection picks it
+    up via the override map).  **Nothing is filtered here to achieve that**:
+    ``replay_schedule`` owns the anchor boundary AND the as-of cap, and that cap
+    (:func:`~app.services.rate_period_engine.is_confirmed_payment_eligible` ->
+    :func:`app.utils.dates.has_settled_by`) answers ``False`` for a payment
+    carrying no settle day, so an unsettled payment is excluded by the same
+    rule that excludes one settled after ``as_of``.  This function pre-filtered
+    on ``settled_on is not None`` and projected onto a ``ConfirmedPayment``
+    type until plan step **balance:X-bl-2b** measured the two to be one
+    predicate; both were deleted rather than kept as a second statement of it
+    (``CLAUDE.md`` rule 14).
 
     Args:
-        loan_inputs: The loan's loaded input bundle.  ``anchor_events``
-            must be non-empty (the Commit-12 invariant).
+        anchor_events: The loan's anchor facts; must be non-empty (the
+            Commit-12 invariant).
         periods: The loan's ordered rate periods, built once by the
             caller via :func:`resolve_periods`.
+        payments: The loan's payment feed as
+            :class:`~app.services.amortization_engine.PaymentDates`, settled and
+            projected alike -- the caller filters nothing.
+            **Every caller reading a loan's real feed must apply
+            :func:`~app.services.amortization_engine.slotted_dates` first**, so
+            the due dates carry the schedule SLOT the forward override also
+            plans by; the priced path applies it inside
+            :func:`~app.services.loan_payment_service.prepare_payments_for_engine`
+            and the amount-free path at the call.  *A feed of HAND-BUILT dates
+            whose due months are already distinct needs no slotting, which is
+            why the pure resolver unit tests pass one unslotted:*
+            ``slotted_dates`` *returns such a feed unchanged.*
+        payment_day: The loan's contractual day-of-month due day, which drives
+            the forward projection's first date.
         as_of: Evaluation date; replay stops at the latest payment whose CASH
             had moved by it (plan step **X-an**; it was the pay period until
             then, which is the funding basis, not the day the money left).
 
     Returns:
         The :class:`~app.services.rate_period_engine.ScheduleReplay` for
-        the confirmed-payment history through ``as_of``.
+        the settled-payment history through ``as_of``.
 
     Raises:
-        ValueError: When ``loan_inputs.anchor_events`` is empty (via
+        ValueError: When ``anchor_events`` is empty (via
             :func:`select_latest_anchor`).
     """
-    anchor = select_latest_anchor(loan_inputs.anchor_events)
+    anchor = select_latest_anchor(anchor_events)
     return replay_schedule(
         periods=periods,
         anchor=BalanceAnchor(
             balance=Decimal(str(anchor.anchor_balance)),
             as_of_date=anchor.anchor_date,
         ),
-        confirmed_payments=[
-            ConfirmedPayment(
-                period_start=payment.payment_date,
-                due_date=payment.due_date,
-                settled_on=settled_on,
-            )
-            for payment in (loan_inputs.payments or [])
-            if (settled_on := payment.settled_on) is not None
-        ],
-        payment_day=loan_inputs.loan_params.payment_day,
+        payments=payments,
+        payment_day=payment_day,
         as_of=as_of,
     )

@@ -11,17 +11,18 @@ loaded the whole pricing tier and inherited its refusals, so an
 answers the date question alone.
 
 **The closure figures, dated because a measurement quoted as a REASON decays
-invisibly -- and both of these decayed inside this very step.**  Assembling the
-feed through ``get_payment_history`` reaches **98** modules at ``e74f7d6d`` and
-**101** here; the replay's own tier
-(``loan_loaders`` + ``loan_ledger`` + ``loan_resolver``) is **42** there and
-**45** here; ``rate_period_engine`` alone is **6**, with zero models and zero
-``db``.  Splitting ``loan_loaders`` into a package adds three modules to any
-closure containing it, which is what moved BOTH numbers -- so the gap this step
-is filed over is 101 against 45, not the 98 against 42 the ledger row was
-opened with.  **This step does not close that gap**: its consumer, the
-reconciliation oracle's reference, still builds through ``load_loan_context``,
-and moving it is ``X-bl-2b``.
+invisibly -- and every one of these has decayed at least once.**  Assembling the
+feed through ``get_payment_history`` reaches **98** modules at ``e74f7d6d``,
+**101** at ``2625963a`` (X-bl-2a) and **102** here; the replay's own tier is
+**42**, **45** and **46** across those same three trees; ``rate_period_engine``
+alone is **6** and **7**, with zero models and zero ``db``.  Two package edits
+moved every one of them: splitting ``loan_loaders`` into a package added three
+modules to any closure containing it (X-bl-2a), and ``amortization_engine
+._dates`` added one (X-bl-2b).  **The gap is CLOSED at X-bl-2b**, which moved
+the consumer -- the reconciliation oracle's reference and five other suite
+copies of the un-seeded replay -- onto :func:`payment_installments`: **101 at
+``2625963a``, 46 here**, and the pricing route on this tree is 102, so the
+amount-free feed removes **56** modules like-for-like.
 
 **It is also where a loan's settled history stops having TWO producers.**
 :func:`app.services.loan_loaders.settled_income_shadows` calls itself the
@@ -44,17 +45,20 @@ pay-period start instead
 (:func:`app.services.rate_period_engine.replay_schedule`, finding **N-36**).  It
 lives in the pure engine and not here so BOTH feeds reach it without a loader in
 scope: hosting it HERE put ``loan_payment_service._engine_prep`` -- pure
-arithmetic -- on a **46-module** import closure against the **15** it has at
-``e74f7d6d`` and still has, which is the very defect this step exists to remove,
+arithmetic -- on a **46-module** import closure against the **15** it had at
+``e74f7d6d`` (**16** here, ``_dates`` included), which is the very defect these
+steps exist to remove,
 rebuilt one module over.  An installment carries facts; the slot is a derivation
 over the whole feed.
 
-*Every closure figure in this step is the same metric, stated because two of
-them had already decayed once: modules under ``app/`` reachable by import from
-the named roots, counting the roots and excluding the ``app`` package itself
-(its ``__init__`` is the application factory and reaches everything).  A package
-root seeds every module inside it.  Measured 2026-09-09 on ``e74f7d6d`` and on
-this tree.*
+*Every closure figure in this step is the same metric, stated because they keep
+decaying: modules under ``app/`` reachable by import from the named roots,
+counting the roots and excluding the ``app`` package itself (its ``__init__`` is
+the application factory and reaches everything).  A package root seeds every
+module inside it.  Measured 2026-09-09 on ``e74f7d6d``, on ``2625963a`` and on
+this tree, by the reconciliation oracle's own closure walker
+(``tests/test_integration/test_posting_ledger_loan_reconciliation.py``), which
+is the code the check reads -- not a second implementation of the metric.*
 
 Pure except for :func:`payment_installments`, which reaches the loan loaders for
 its rows exactly as :func:`~app.services.loan_ledger.walk_loan_ledger` does.
@@ -64,6 +68,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from app.models.transaction import Transaction
+from app.services.amortization_engine import PaymentDates
 from app.services.loan_loaders import income_shadows, loan_payment_due_date
 
 from ._visible import payment_visible_on
@@ -73,17 +78,29 @@ from ._visible import payment_visible_on
 class PaymentInstallment:
     """One loan payment's THREE dates and the row they were read off.
 
-    The RECORD half of
-    :class:`~app.services.amortization_engine.PaymentRecord` -- that type's four
-    fields less the amount -- carried as a value so a consumer that needs the
-    chronology does not load the tier that prices it.  See the module docstring
-    for what that tier costs.
+    The RECORD half of a loan payment paired with its source row, so a consumer
+    that needs the chronology does not load the tier that prices it.  See the
+    module docstring for what that tier costs.
+
+    **It COMPOSES the dates rather than restating them** (plan step
+    **balance:X-bl-2b**).  :class:`~app.services.amortization_engine.PaymentDates`
+    is the one home for a payment's three dates, and
+    :class:`~app.services.amortization_engine.PaymentRecord` -- this value's
+    priced sibling -- composes the same type, so handing the replay an
+    amount-free feed is an attribute read rather than a projection that could
+    drift from the priced one.  The three fields lived here directly until that
+    step, which is how the FUNDING basis came to carry two names (``period_start``
+    here, ``payment_date`` there) for one fact.
 
     All three dates are read through the derivation that already owns each, so
     this value introduces none of its own: the funding period off the shadow's
     own :class:`~app.models.pay_period.PayPeriod`, the installment through
     :func:`app.services.loan_loaders.loan_payment_due_date`, the cash day through
-    :func:`._visible.payment_visible_on`.
+    :func:`._visible.payment_visible_on`.  The ``due_date`` here is always the
+    payment's OWN installment, never the slot
+    :func:`~app.services.amortization_engine.schedule_dates` may invent for it;
+    a consumer that needs slots applies
+    :func:`~app.services.amortization_engine.slotted_dates` to the feed.
 
     Attributes:
         income_shadow: The loan-side income shadow this installment was read
@@ -91,21 +108,16 @@ class PaymentInstallment:
             keying a map by its id -- takes it from here rather than issuing a
             second query, the same reason
             :class:`~app.services.loan_ledger.LoanPaymentSplit` carries one.
-        period_start: The start of the pay period funding the payment (the
-            FUNDING basis).  Governs the replay's rate lookup and nothing else.
-        due_date: The monthly installment this payment satisfies (the
-            INSTALLMENT basis) -- a fact, never the slot
-            :func:`schedule_dates` may have invented for it.
-        settled_on: The civil day the payment's cash moved (the CASH basis), or
-            ``None`` when it has not moved.  Non-``None`` exactly for a row from
-            the settled set, which is what makes "has this happened?" a property
-            of the query rather than of a second reading of the status column.
+        dates: The payment's
+            :class:`~app.services.amortization_engine.PaymentDates` -- its
+            funding period, the installment it satisfies, and the day its cash
+            moved.  ``settled_on`` is non-``None`` exactly for a row from the
+            settled set, which is what makes "has this happened?" a property of
+            the query rather than of a second reading of the status column.
     """
 
     income_shadow: Transaction
-    period_start: date
-    due_date: date
-    settled_on: date | None
+    dates: PaymentDates
 
 
 def payment_installments(
@@ -117,8 +129,13 @@ def payment_installments(
     satisfy, and has its cash moved?" derivation, and the amount-free half of
     :func:`app.services.loan_payment_service.get_payment_history`, which is built
     on it.  A consumer that needs only the chronology -- the schedule replay's
-    confirmed feed is the whole of it -- takes this and never loads the amount
-    model.
+    feed is the whole of it -- takes this and never loads the amount model.
+    A caller feeding the replay applies
+    :func:`app.services.amortization_engine.slotted_dates` to
+    ``[installment.dates for installment in ...]`` first, which is the same
+    collision assignment the priced feed's
+    :func:`~app.services.loan_payment_service.prepare_payments_for_engine`
+    applies.
 
     **Settled-ness is read off the PARTITION, not derived here.**
     :func:`app.services.loan_loaders.income_shadows` is the app's one answer to
@@ -184,9 +201,11 @@ def payment_installments(
     return [
         PaymentInstallment(
             income_shadow=shadow,
-            period_start=shadow.pay_period.start_date,
-            due_date=loan_payment_due_date(shadow, payment_day),
-            settled_on=settled_on,
+            dates=PaymentDates(
+                period_start=shadow.pay_period.start_date,
+                due_date=loan_payment_due_date(shadow, payment_day),
+                settled_on=settled_on,
+            ),
         )
         for shadow, settled_on in dated
     ]

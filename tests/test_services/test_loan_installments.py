@@ -34,15 +34,16 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services.amortization_engine import schedule_dates
+from app.services.amortization_engine import schedule_dates, slotted_dates
 from app.services.loan_ledger import payment_installments
 from app.services.loan_loaders import _shadows, query_shadow_income
-from app.services.loan_payment_service import get_payment_history
+from app.services.loan_payment_service import get_payment_history, load_loan_context
 from app.services.cash_ledger import amount_basis
 from app.services.transfer_service import TransferSpec, create_transfer
 from tests._test_helpers import (
     an_entered_day,
     create_loan_account,
+    loan_params_for,
     settle_day_columns,
     settlement_columns,
 )
@@ -302,8 +303,10 @@ class TestPaymentInstallments:
                 loan.id, seed_user["scenario"].id, _PAYMENT_DAY, options=(),
             )
 
-            assert [i.settled_on for i in installments] == [settled_day, None]
-            assert [i.period_start for i in installments] == [
+            assert [i.dates.settled_on for i in installments] == [
+                settled_day, None,
+            ]
+            assert [i.dates.period_start for i in installments] == [
                 seed_periods[1].start_date, seed_periods[2].start_date,
             ]
 
@@ -356,7 +359,7 @@ class TestPaymentInstallments:
                 "the bypass did not land -- this case would pass over a "
                 "producer that reads the day and reports it"
             )
-            assert installments[0].settled_on is None
+            assert installments[0].dates.settled_on is None
 
     def test_two_payments_in_one_period_order_by_id(
         self, app, db, seed_user, seed_periods,
@@ -433,10 +436,12 @@ class TestPaymentInstallments:
                 loan.id, seed_user["scenario"].id, _PAYMENT_DAY, options=(),
             )
 
-            assert [i.period_start for i in installments] == [
+            assert [i.dates.period_start for i in installments] == [
                 seed_periods[1].start_date, seed_periods[3].start_date,
             ]
-            assert [i.settled_on is None for i in installments] == [True, False]
+            assert [
+                i.dates.settled_on is None for i in installments
+            ] == [True, False]
 
     def test_a_loan_with_no_payments_produces_nothing(
         self, app, db, seed_user,
@@ -449,6 +454,82 @@ class TestPaymentInstallments:
             assert payment_installments(
                 loan.id, seed_user["scenario"].id, _PAYMENT_DAY, options=(),
             ) == []
+
+
+class TestBothFeedsReachOneSlotAssignment:
+    """The PRICED feed and the AMOUNT-FREE feed resolve a collision IDENTICALLY.
+
+    **The claim ``slotted_dates`` exists for, and until plan step
+    balance:X-bl-2b nothing graded it.**  Ruling **R-BAL7** put the
+    biweekly-collision assignment in the pure engine so BOTH of a loan's feeds
+    reach one producer -- and the reason is not tidiness: a slot the two do not
+    agree on is a month the replay CONSUMES and the forward override PLANS
+    separately, which silently drops a planned payment.  The two producers were
+    pinned only through their own halves (``TestPreparePaymentsForEngine`` on the
+    priced one, :class:`TestScheduleDates` on the arithmetic); nothing ran a
+    collision through both and compared, so an edit that slotted one feed and not
+    the other would have gone green.
+
+    The case is the smallest collision there is: two payments in ONE pay period,
+    so both satisfy the same monthly installment and the second must be pushed
+    to the next free month.  **The non-vacuity arms are asserted first** -- that
+    the two payments really do share a due month, and that the assignment really
+    does move one of them -- because an equality between two feeds that both
+    happened to leave the dates alone would pass over the defect this exists to
+    catch.
+    """
+
+    def test_a_collision_gets_the_same_slots_from_both_feeds(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Both feeds report the same due dates, and the facts are untouched."""
+        with app.app_context():
+            loan = _make_loan(seed_user)
+            db.session.commit()
+            for amount in (Decimal("1500.00"), Decimal("1600.00")):
+                _transfer_to_loan(
+                    seed_user, loan, seed_periods[1], amount,
+                    status_enum=StatusEnum.DONE,
+                    settled_on=seed_periods[1].start_date,
+                )
+            db.session.commit()
+
+            scenario_id = seed_user["scenario"].id
+            installments = payment_installments(
+                loan.id, scenario_id, _PAYMENT_DAY, options=(),
+            )
+            amount_free = slotted_dates(
+                [installment.dates for installment in installments],
+                _PAYMENT_DAY,
+            )
+            priced = load_loan_context(
+                loan.id,
+                amount_basis(seed_user["user"].id, scenario_id),
+                loan_params_for(db.session, loan.id),
+            ).payments
+
+            # Non-vacuity 1: the two payments really do collide.
+            assert len(installments) == 2
+            assert (
+                installments[0].dates.due_date == installments[1].dates.due_date
+            ), "the fixture built no collision -- this case grades nothing"
+            # Non-vacuity 2: the assignment really does move the loser.
+            assert amount_free[1].due_date != installments[1].dates.due_date, (
+                "no slot was invented -- an assignment that did nothing would "
+                "make the equality below hold trivially"
+            )
+
+            # The claim: ONE assignment, reached by both feeds.
+            assert [dates.due_date for dates in amount_free] == [
+                payment.dates.due_date for payment in priced
+            ]
+            # ...and only the installment moved on either side.
+            assert [dates.period_start for dates in amount_free] == [
+                payment.dates.period_start for payment in priced
+            ]
+            assert [dates.settled_on for dates in amount_free] == [
+                payment.dates.settled_on for payment in priced
+            ]
 
 
 def _settled_ids():

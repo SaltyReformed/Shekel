@@ -251,12 +251,12 @@ def get_payment_history(
     the pairing.  Splitting it that way is what lets a consumer that needs only
     the chronology -- the schedule replay, which reads three dates and no amount
     -- take the installments alone: this function's import closure is the amount
-    model's -- **98 modules at ``e74f7d6d`` and 101 here, against the 42 / 45 the
-    replay's own tier needs** (2026-09-09; the package split moved both numbers,
-    and the metric is stated in
-    :mod:`app.services.loan_ledger._installments`) -- and every one of those
-    modules is a module the reconciliation oracle's independent reference still
-    has to be right about, until ``X-bl-2b`` moves it off this door.
+    model's -- **102 modules here, against the 46 the replay's own tier needs**
+    (2026-09-09; the metric and its history are stated in
+    :mod:`app.services.loan_ledger._installments`).  Plan step **X-bl-2b** moved
+    the reconciliation oracle's independent reference, and five other suite
+    copies of the un-seeded replay, off this door, so none of those 56 extra
+    modules is one they have to be right about any more.
 
     **That split also deletes the SECOND producer of a loan's settled history.**
     This function read the status column itself (``txn.status.is_settled``) while
@@ -339,16 +339,20 @@ def get_payment_history(
     no longer reproducible.  It is named only because conflating the two is what
     kept N-266(a)'s bound alive as a "cycle" long after the path was deleted.
 
-    Each record carries all three of a loan payment's dates (see
-    :class:`~app.services.amortization_engine.PaymentRecord`), copied verbatim
-    off its :class:`~app.services.loan_ledger.PaymentInstallment` and derived
-    nowhere near here: ``payment_date`` is the pay-period start (the funding
-    basis), ``due_date`` is the installment it satisfies, from the ONE
-    derivation the genesis write walk also uses
+    Each record carries all three of a loan payment's dates as the ONE value
+    that holds them (:class:`~app.services.amortization_engine.PaymentDates`),
+    taken WHOLE off its
+    :class:`~app.services.loan_ledger.PaymentInstallment` and derived nowhere
+    near here: ``period_start`` is the pay-period start (the funding basis),
+    ``due_date`` is the installment it satisfies, from the ONE derivation the
+    genesis write walk also uses
     (:func:`app.services.loan_loaders.loan_payment_due_date`), and
     ``settled_on`` is the day the cash moved, from the ONE derivation the
     genesis fold dates that payment's principal by
-    (:func:`app.services.loan_ledger.payment_visible_on`).
+    (:func:`app.services.loan_ledger.payment_visible_on`).  *This copied the
+    three fields ACROSS -- from a* ``period_start`` *to a* ``payment_date``,
+    *two names for one fact -- until plan step* **balance:X-bl-2b** *made both
+    types compose the dates.*
 
     The ``due_date`` here is the payment's OWN installment, never the schedule
     slot :func:`app.services.amortization_engine.schedule_dates` may invent for it: the
@@ -444,9 +448,7 @@ def get_payment_history(
 
     return [
         PaymentRecord(
-            payment_date=installment.period_start,
-            due_date=installment.due_date,
-            settled_on=installment.settled_on,
+            dates=installment.dates,
             amount=priced[installment.income_shadow.id],
         )
         for installment in installments

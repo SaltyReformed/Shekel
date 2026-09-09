@@ -737,7 +737,6 @@ from app.services.auth_service import hash_password
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     rhythm_of,
-    amount_basis_for_scenario,
     bind_db_clock_rewriter,
     create_loan_account,
     insert_trueup_event,
@@ -2615,31 +2614,16 @@ def cross_page_loan_unpaid_ctx(db, seed_user):
 def _unseeded_replay_balance(loan_id, scenario_id, as_of):
     """Return a loan's un-seeded schedule-replay balance (the pre-switch value).
 
-    The balance the resolver derives from its anchor replay ALONE -- no genesis
-    seed -- so a cross-page fixture can pin what a loan's scalar surfaces showed
-    BEFORE the read switch and assert the ledger diverges from it off-schedule.
+    :func:`tests._test_helpers.unseeded_replay_balance`, the suite's ONE
+    assembly of that replay (plan step **balance:X-bl-2b**).  Kept as a name
+    here because the cross-page fixtures below read like prose with it.
     """
     # Pylint: ``import-outside-toplevel`` -- the app services are loaded lazily,
     # the convention every helper in this conftest follows.
     # pylint: disable=import-outside-toplevel
-    from app.services import loan_loaders, loan_payment_service, loan_resolver
-    from app.services.loan_resolver._periods import _replay_from_anchor
-    from app.utils.money import round_money
+    from tests._test_helpers import unseeded_replay_balance
 
-    params = loan_loaders.load_loan_params(loan_id)
-    ctx = loan_payment_service.load_loan_context(
-        loan_id, amount_basis_for_scenario(scenario_id), params,
-    )
-    inputs = loan_resolver.LoanInputs(
-        params, loan_loaders.load_loan_anchor_facts(params),
-        ctx.payments, ctx.rate_changes,
-    )
-    # The replay derivation directly: ``LoanState.current_balance`` carried it
-    # until plan step D2a deleted the field (the seam folds displayed balances).
-    periods = loan_resolver.resolve_periods(params, inputs.rate_changes)
-    return round_money(
-        _replay_from_anchor(inputs, periods, as_of).balance_as_of
-    )
+    return unseeded_replay_balance(loan_id, scenario_id, as_of)
 
 
 @pytest.fixture()

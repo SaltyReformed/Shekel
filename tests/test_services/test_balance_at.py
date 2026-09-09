@@ -96,7 +96,6 @@ from tests._test_helpers import (
     account_never_asserted,
     add_txn,
     all_periods,
-    amount_basis_for_scenario,
     append_balance_assertion,
     create_account_of_type,
     create_account_via_service,
@@ -4511,7 +4510,7 @@ class TestLoanNotYetOriginated:
             bctx = BalanceContext.build(seed_user["user"].id)
             resolved = resolved_loan(acct, bctx)
             # The two clauses that would otherwise conspire.
-            assert any(p.is_confirmed for p in resolved.context.payments)
+            assert any(p.dates.is_confirmed for p in resolved.context.payments)
             assert balance_at.balance_at(acct, bctx, bctx.as_of) == self.ZERO
 
             figures = balance_at.loan_figures(acct, bctx)
@@ -4861,13 +4860,9 @@ class TestBrokenLoanFailsLoud:
         (the control's teeth) is proven, not assumed.
         """
         # pylint: disable=import-outside-toplevel
-        from app.services import (
-            loan_loaders, loan_payment_service, loan_resolver,
-        )
-        from app.services.loan_resolver._periods import _replay_from_anchor
-        from app.utils.money import round_money
         from tests._test_helpers import (
             clear_loan_ledger, create_settled_transfer, settle_instant_on,
+            unseeded_replay_balance,
         )
 
         with app.app_context():
@@ -4884,20 +4879,12 @@ class TestBrokenLoanFailsLoud:
             db.session.commit()
 
             # The control's teeth: the money-blind replay genuinely diverges.
-            params = loan_loaders.load_loan_params(acct.id)
-            ctx = loan_payment_service.load_loan_context(
-                acct.id, amount_basis_for_scenario(seed_user["scenario"].id),
-                params,
+            # The suite's ONE assembly of it, on the AMOUNT-FREE feed since plan
+            # step balance:X-bl-2b -- the replay reads three dates per payment
+            # and no figure.
+            replayed = unseeded_replay_balance(
+                acct.id, seed_user["scenario"].id, date.today(),
             )
-            inputs = loan_resolver.LoanInputs(
-                params, loan_loaders.load_loan_anchor_facts(params),
-                ctx.payments, ctx.rate_changes,
-            )
-            replayed = round_money(_replay_from_anchor(
-                inputs,
-                loan_resolver.resolve_periods(params, inputs.rate_changes),
-                date.today(),
-            ).balance_as_of)
             assert replayed == Decimal("239761.08")
 
             bctx = BalanceContext.build(seed_user["user"].id)
