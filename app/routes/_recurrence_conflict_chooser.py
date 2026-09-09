@@ -521,8 +521,11 @@ def regenerate_or_conflict_chooser(
     "Does not repeat" therefore left every future instance the deleted rule
     had already generated sitting on the grid.  The gate is now "the template
     IS or WAS recurring", and on a cleared recurrence the regeneration deletes
-    the untouched projected rows from ``effective_from`` forward and generates
-    nothing, because there is no rule left to generate from.  Settled rows are
+    the untouched projected DATED rows from ``effective_from`` forward and
+    generates nothing, because there is no rule left to generate from.  **An
+    untouched projected UNDATED row survives that sweep** since finding
+    **REC-516**: it answers no occurrence, so no rule ever named it and none
+    dropped it, and it is retained as a conflict rather than deleted.  Settled rows are
     immutable and overridden ones raise as conflicts exactly as they do for
     any other edit (``_recurrence_common.classify_maintain_work``), and since
     plan steps R10-a and R10-b a row carrying the owner's own records is
