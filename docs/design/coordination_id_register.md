@@ -24,7 +24,7 @@ free id. A worktree created after you look is invisible.
 
 | arc | ruling | ledger | step |
 |---|---|---|---|
-| balance | R-BAL7 | BAL-472 | `X-cb` (the X-b run is EXHAUSTED at X-bz; the whole X-c run was free) |
+| balance | R-BAL10 | BAL-475 | `X-cc` (the X-b run is EXHAUSTED at X-bz; `X-ca` and `X-cb` are now taken) -- **this row was stale and is corrected, not merely advanced**: it still offered `R-BAL7` and `BAL-472` on 2026-09-09, after `X-bl-2a` had minted `R-BAL7`/`R-BAL8`. `balance:X-bl-2b` took `R-BAL9`, `BAL-472`-`BAL-474` and `X-cb` on 2026-09-09 with **no coordinator session active** (developer ruling that day: the lane chooses its own ids then). `BAL-470` and `BAL-471` remain RESERVED-unminted below and were skipped, not consumed |
 | bank_import | R-BI3 | BI-485 | X-gr |
 | recurrence | R-R63 | REC-517 | -- |
 | pay_calendar | R-PC63 | PC-507 | -- |

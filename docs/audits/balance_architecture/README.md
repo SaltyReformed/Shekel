@@ -626,15 +626,21 @@ in SILENCE where a refused DELETE is loud.
   live loans and 4,000 collision trials; the DISPLAYED loan balance **25 statements -> 21**.
   **A LATER step must obey:** the load is stated by whoever traverses it, graded by a
   statement-COUNTING pair -- a presence check passed a mutant that deleted the options. Carries **N-432**.
-* [ ] **X-bl-2b** `refactor(loans): the oracle's reference takes its own inputs` -- closes
-  **N-432**. `_resolver_balance` and FIVE other suite copies of the un-seeded replay (`conftest`,
-  `test_loan_principal_settles`, `test_loan_resolver_single_source`, `test_balance_at`,
-  `test_savings_dashboard_service`) still build their input through `load_loan_context`, each
-  reaching into the private `loan_resolver._periods`, so the reference's closure is **101 modules
-  against the 45 its own tier needs** (`X-bl-2a`'s package split raised both, from 98 and 42) and a
-  pricing refusal still breaks a control that reads no figure. Making `PaymentRecord` COMPOSE a
-  `PaymentInstallment` -- one projection to `ConfirmedPayment` rather than two -- touches ~50
-  construction sites, which is why **R-BAL7** split the work.
+* [x] **X-bl-2b** `0e93ec9f` -- a loan payment's three dates are ONE value both records COMPOSE,
+  and the replay takes it (**R-BAL9**, superseding R-BAL7's deferral). `ConfirmedPayment` deleted;
+  the oracle's reference and five other suite copies went **101 modules -> 46**; byte-identical,
+  13,217 passed. **A LATER step must obey:** a feed reaching the replay carries its schedule SLOT,
+  and `slotted_dates` is the one application. Closed **N-432**; opened **BAL-472**, **BAL-473**,
+  **BAL-474**. Record: `archive/x_bl_2b_as_built_2026-09-09.md`.
+* [ ] **X-cb** `refactor(loans): the slot has one door and the predicate takes the value` -- closes
+  **BAL-472**, **BAL-473**, **BAL-474**, all three found by `X-bl-2b`'s two neutral reviews and
+  reported rather than taken there (rule 6). `schedule_dates` stays exported with **zero production
+  callers outside `slotted_dates`**, so the collision assignment has a second public door and
+  R-BAL7's invariant is held by convention where the import graph could hold it -- and dropping it
+  reverses a decision `X-bl-2a` took one step earlier, which is why it is a step and not a footnote.
+  `is_confirmed_payment_eligible` still takes `settled_on` and `due_date` apart, the one place a
+  caller could still pair two different payments' dates. Seven dead imports across three loan test
+  files go in the same sweep; all pre-date `X-bl-2b`, measured byte-identical at `2625963a`.
 * [ ] **X-bm** `perf(loaders): every batch caller applies the pricing load` -- closes **N-296**.
   `pricing_load_options` publishes the EIGHT chains a batch pricing needs; THREE loaders apply it
   and SEVEN batch callers do not (companion, pulse, calendar, asset contributions, projection inputs,
