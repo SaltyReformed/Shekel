@@ -618,14 +618,14 @@ in SILENCE where a refused DELETE is loud.
 
 * [x] **X-bl-1** `e0e257a7` -- a cutover's control can fail. SEVEN INSTANCE-DISTINCT perturbations
   of the SOURCES a row's rule names; EIGHT mutations fire it, three of them the wrong-INSTANCE class
-  that passed its own earlier drafts. Closed **N-445**; opened **N-549**. `X-bl` SPLIT here
-  (developer, 2026-09-09). Record: `archive/x_bl_1_as_built_2026-09-09.md`.
+  that passed its own earlier drafts, and pass 1's two comparison arms are DELETED, unrepresentable
+  since the ownership CHECK. Closed **N-445**. Record: `archive/x_bl_1_as_built_2026-09-09.md`.
 * [ ] **X-bl-2** `refactor(loans): the oracle's reference takes its own inputs` -- **N-432**,
-  **N-549**; **R-JF**'s second half. The replay reads three DATES per payment and no amount while
-  the feed is assembled through the amount model: **98 modules where the arithmetic needs 42**.
-  **ROOT CAUSE one table down**: a loan's settled history has TWO producers, because `PaymentRecord`
-  holds a PLAN and a RECORD in one type. **UNRULED**, and the cut is NOT settled-ness. Both findings
-  carry the full argument.
+  **R-JF**'s second half, `X-bl` having been SPLIT 2026-09-09. The replay reads three DATES per
+  payment and no amount while the feed is assembled through the amount model: **98 modules where
+  the arithmetic needs 42**. **ROOT CAUSE one table down**: a loan's settled history has TWO
+  producers, because `PaymentRecord` holds a PLAN and a RECORD in one type. **UNRULED** -- the cut
+  is NOT settled-ness. The ledger row carries the argument.
 * [ ] **X-bm** `perf(loaders): every batch caller applies the pricing load` -- closes **N-296**.
   `pricing_load_options` publishes the EIGHT chains a batch pricing needs; THREE loaders apply it
   and SEVEN batch callers do not (companion, pulse, calendar, asset contributions, projection inputs,

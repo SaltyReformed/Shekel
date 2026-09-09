@@ -88,11 +88,39 @@ one claim that the expectation shares no producer with the resolver -- it shares
 `amount_rule`, and a MANUAL loan payment misread as a plain shadow is silent to
 both sides. That is dormant only because `budget.loan_payment_settings` is empty.
 
-## What it opened
+## What it DELETED, and why that is not a filing
 
-**`N-549`**: pass 1's agreement arm compares a value with itself in both
-directions. `resolved` and `today` are the same expression one line apart, and
-`stored` is non-NULL only on an OWN row whose rule answers by returning that
-column. Both arms were removed from the exit gate here and labelled structural;
-whether an agreement pass should exist at all once `X-au-d` deleted its second
-producer is a design question this step did not answer.
+Pass 1's agreement comparison is gone, and it was nearly filed as a ledger row
+instead. The developer refused that: a finding should not be filed against a
+step whose subject it is not, and the question to answer first is whether
+deleting it addresses the ROOT CAUSE.
+
+It does, and the argument is a proof rather than an observation.
+`ck_transactions_amount_ownership` is
+`(amount_source_id IS NULL) = (estimated_amount IS NOT NULL)`, so a row carrying
+a figure IS an OWN row, and rule 1 answers by RETURNING that figure. **The only
+state the drift comparison could measure -- a row storing a figure while
+something else prices it -- is the state the CHECK forbids.** It was
+representable before `X-au-c1` added the pair and has not been since. The
+mismatch arm beside it compared `resolved` against `today`, two keys assigned
+the same expression one line apart.
+
+**A replacement was built and its own negative control refuted it.** Asserting
+the CHECK's claim over the data looks like the right answer -- a predicate that
+can fail where a comparison cannot. Fired at, with the constraint DROPPED on a
+throwaway clone and one derived row given a figure, the run does not report a
+violation. It DIES, in `AmountOwnership.from_columns`, before a record is built:
+
+```text
+ValueError: a row states its OWN figure or the relation that prices it,
+never both and never neither: got figure Decimal('42.00') beside source 1
+```
+
+The pair is guarded at THREE tiers -- the schema CHECK, the write seam, and the
+composite type's HYDRATION -- and the third means a reader cannot observe the
+violation to report it. So the replacement was deleted with the comparison it
+was meant to replace. A broken database gets that ValueError, naming the row and
+both halves, which is louder than any count this file could print.
+
+**Nothing was filed.** Pass 1 now grades refusals; the cut-over count beside it
+is a census and compares nothing.

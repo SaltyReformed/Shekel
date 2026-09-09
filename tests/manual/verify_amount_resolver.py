@@ -9,7 +9,7 @@ naming the rows where it does not.
 **AN AGREEMENT ORACLE CANNOT SEE THIS RESOLVER, and an adversarial review proved
 it by deleting the resolver.**  With the whole body replaced by
 ``return txn.estimated_amount`` the agreement pass reported *997 rows, 0
-mismatches, OK* (2026-08-12, pre-cutover).  It has to: the app's own published
+mismatches, OK* (2026-08-12, pre-cutover).  It has to: the app's published
 answer IS this resolver (``cash_ledger.amounts_by_id`` is
 ``{row.id: resolve_transaction_amount(row, basis)}``), so comparing the two
 compares a value with itself.  That is the harness question
@@ -17,29 +17,37 @@ compares a value with itself.  That is the harness question
 test?* -- answered no, and a free pass that reads as proof is what standard 4's
 firing control exists to stop.
 
-So the weight is entirely on the second pass, and this file states plainly what
-the first one can and cannot say:
+**SO THE AGREEMENT PASS IS DELETED RATHER THAN LABELLED** (plan step X-bl-1).
+It had two arms and both were identities.  The mismatch arm compared
+``resolved`` against ``today``, two keys assigned the SAME expression one line
+apart.  The drift arm compared ``resolved`` against the row's STORED column --
+and that one is not a slip and not a consequence of the cutovers:
+``ck_transactions_amount_ownership`` is the biconditional
+``(amount_source_id IS NULL) = (estimated_amount IS NOT NULL)``, so a row
+carrying a figure IS an OWN row, and rule 1 answers by RETURNING that figure.
+**The only state that comparison could measure -- a row storing a figure while
+something else prices it -- is exactly the state the CHECK forbids.**  It was
+representable before plan step X-au-c1 added the pair; it has not been since.
 
-1. **REFUSALS** -- every row resolves, or the run names the rows that refuse.
-   This is the only arm of pass 1 that can be non-zero.
-2. **INVARIANCE** -- seven PERTURBATIONS of the SOURCES a row's rule names, each
-   applied in the session, never flushed and rolled back, after which every row
-   in the database is re-resolved.  Each one names the rows it must move and BY
-   HOW MUCH, and every other row must not move by a cent.
+**A REPLACEMENT WAS BUILT, AND ITS OWN NEGATIVE CONTROL REFUTED IT.**  The
+obvious fix is to assert the CHECK's claim over the data instead of comparing
+two producers -- a predicate that can fail where the comparison cannot.  It was
+written, and then fired at it: with the constraint DROPPED on a throwaway clone
+and one derived row given a figure, the run does not report a violation.  It
+DIES, in :func:`~app.models.amount_ownership.AmountOwnership.from_columns`,
+before a single record is built::
 
-**PASS 1'S AGREEMENT ARM IS STRUCTURALLY EMPTY, AND SAYING SO IS PART OF THIS
-STEP.**  Its mismatch check compared ``resolved`` against ``today`` -- two keys
-assigned the SAME expression one line apart -- so it was ``x != x`` and could
-never report a row.  Its drift check compared ``resolved`` against ``stored``,
-and since the cutover a row storing a figure is an OWN row by
-``ck_transactions_amount_ownership``, whose rule ANSWERS by returning that
-column: also an identity.  Both were true before this step and the docstring it
-replaced said so in one clause; a first draft of THIS docstring dropped that
-clause and re-quoted *"1,028 rows, 1,028 agreeing, 0 drift"* as fresh 2026-09-09
-evidence, which two adversarial reviews caught.  The numbers are struck rather
-than tensed: this file grades REFUSALS and the seven perturbations, and nothing
-else.  *Whether an agreement pass should exist at all now that plan step X-au-d
-deleted its second producer is a design question this step does not answer.*
+    ValueError: a row states its OWN figure or the relation that prices it,
+    never both and never neither: got figure Decimal('42.00') beside source 1
+
+The pair is guarded at THREE tiers -- the schema CHECK, the write seam, and the
+composite type's HYDRATION -- and the third means a reader cannot observe the
+violation to report it.  So the replacement predicate is unreachable and was
+deleted with the comparison it was meant to replace.  What a broken database
+gets is that ValueError, naming the row and both halves: louder than a count,
+and one this file cannot improve on.  *Two shipped as-built records and an
+earlier draft of this docstring quoted "1,028 rows, 1,028 agreeing, 0 drift" as
+a measurement.  The numbers are struck, not tensed.*
 
 **PASS 2 WAS REBUILT BECAUSE IT COULD NOT FAIL FOR THE ROWS IT EXISTED FOR**
 (finding **N-445**).  It perturbed each row's OWN stored column and asserted a
@@ -182,9 +190,10 @@ together.  Traced, the four misclassifications split three to one:
   Invariant 2 broken) is never priced or graded here at all.
 
 **Measured 2026-09-09** on a clone of production at ``a1c7e5d20f43``: 1,028
-rows, 0 refusals.  The rule census was 525 TEMPLATE, 350 TRANSFER, 94 OWN, 59
-SALARY, 0 LOAN_PAYMENT, and 934 of those 1,028 store no figure at all; 7 of the
-525 TEMPLATE rows price from a version a later one supersedes.  Pass 2:
+rows and 0 refusals.  The rule census was 525
+TEMPLATE, 350 TRANSFER, 94 OWN, 59 SALARY, 0 LOAN_PAYMENT, and 934 of those
+1,028 store no figure at all; 7 of the 525 TEMPLATE rows price from a version a
+later one supersedes.  Pass 2:
 ``own_column`` moved 94 and held 934 against a rival VERIFIED to have landed;
 ``transaction_series`` moved 525 and held 503; ``newest_transaction_version``
 moved 518 and held 510, the 7 superseded rows among them; ``transfer_series``
@@ -1116,7 +1125,6 @@ def _baseline_records():
                 "prices_from_a_superseded_version": _superseded(txn),
                 "resolves_to_newest_version": _resolves_to_newest_version(txn),
                 "resolved": _money(resolved),
-                "today": _money(resolved),
                 "stored": _money(txn.estimated_amount),
                 "refusal": refusal,
                 "takes_the_control_raise": False,
@@ -1193,12 +1201,14 @@ def _verdict(key, before, expected, amount, refusal):
 
 
 def _report_pass_one(records):
-    """Print the census and what pass 1 can and cannot measure.
+    """Print the census and the refusals, which is all pass 1 can measure.
 
-    **Only the REFUSAL count gates.**  The agreement comparison this pass is
-    named for lost its second producer at plan step X-au-d and is now
-    structurally empty; the module docstring carries the argument, and the two
-    numbers it can never move are printed as such rather than as evidence.
+    **This pass no longer compares the resolver against anything, and plan step
+    X-bl-1 is where that stopped being pretended.**  It had two comparison arms
+    and both were identities; the module docstring carries the argument and the
+    measurement that settled it.  What is left is the one arm that can be
+    non-zero: a REFUSAL.  ``rows CUT OVER`` beside it is a CENSUS, not a
+    control -- it counts empty columns and compares nothing.
 
     Args:
         records: Every per-row record from :func:`_baseline_records`.
@@ -1207,17 +1217,9 @@ def _report_pass_one(records):
         ``True`` when no row refused.
     """
     refused = [rec for rec in records if rec["refusal"] is not None]
-    # A row that STORES nothing has no stored-vs-derived drift to measure --
-    # the whole point of a cutover is that the column it would be compared
-    # against is empty.
     emptied = [
         rec for rec in records
         if rec["refusal"] is None and rec["stored"] is None
-    ]
-    drifted = [
-        rec for rec in records
-        if rec["refusal"] is None and rec["stored"] is not None
-        and rec["resolved"] != rec["stored"]
     ]
 
     print(f"rows graded: {len(records)}")
@@ -1230,11 +1232,9 @@ def _report_pass_one(records):
             if rec["rule"] == rule and rec["stored"] is None
         )
         print(f"  {rule:<13} {count:>5}   (storing no figure: {derived})")
-    # RULE-GUARDED, and an adversarial review is why: the bare
-    # ``prices_from_a_superseded_version`` count is 32 on this clone and 25 of
+    # RULE-GUARDED: the bare superseded count is 32 on this clone and 25 of
     # those are OWN rows, which rule 1 prices from their own column and which
-    # touch no version at all.  Printing 32 under this label overstated the
-    # graded population by 4.5x and disagreed with the module docstring.
+    # touch no version at all.
     observable = sum(
         1 for rec in records
         if rec["rule"] == AmountRule.TEMPLATE.value
@@ -1246,15 +1246,10 @@ def _report_pass_one(records):
     )
 
     print("\npass 1 -- what the resolver REFUSES")
-    print(f"  refusals (the only arm here that can be non-zero): {len(refused)}")
+    print(f"  refusals: {len(refused)}")
     for rec in refused[:20]:
         print(f"    REFUSED id={rec['id']} rule={rec['rule']}: {rec['refusal']}")
-    print(f"  rows CUT OVER (storing no figure at all): {len(emptied)}")
-    print(
-        f"  stored-vs-derived drift: {len(drifted)} rows -- STRUCTURALLY ZERO, "
-        "not measured: a row storing a figure is an OWN row by the ownership "
-        "CHECK, and rule 1 answers by returning that column"
-    )
+    print(f"  rows CUT OVER (storing no figure at all): {len(emptied)} (a census)")
     return not refused
 
 
