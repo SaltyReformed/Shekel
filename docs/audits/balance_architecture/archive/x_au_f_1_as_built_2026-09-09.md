@@ -157,6 +157,24 @@ rather than taken here.
   `UndefinedError` on a live screen, not a blank. The grid is not among them --
   it renders a transfer's two SHADOWS as ordinary rows off its own map (Transfer
   Invariant 5).
+* **`X-au-f-2`'s two producers are typed on the WRONG ROW, and nothing else says
+  so.** **R-BAL10** puts the answer on the PARENT, but both producers it must
+  reach take a shadow: `loan_loaders.loan_payment_due_date(shadow: Transaction,
+  payment_day)` and `_loan_pricing.LoanPricing.derive_cash(shadow: Transaction,
+  ...)`, which passes it on to `_loan_installment._shadow_live_amount`. A
+  `Transfer` carries both facts either one reads -- its own `due_date`, and the
+  `pay_period` the fallback reconstructs from -- so it can answer the identical
+  question and neither signature will accept it. **The in-repo precedent for the
+  fix is exact**: `settle_day.settle_day_from_columns` takes the two VALUES
+  rather than a row *precisely so a transfer can answer it* (`Transfer.
+  settle_day_columns` states the argument). Traced at this leaf and written down
+  here because it is the first thing `X-au-f-2` hits and no plan document names
+  it.
+* **The `round_money` boundary is ONE call and must not become two.** Today's
+  derive arm is `round_money(monthly_pi + escrow + extra)` -- three terms, summed
+  then rounded once, the E-26 boundary. Composing it as
+  `round_money(round_money(pi + escrow) + extra)` double-rounds, which is how a
+  cutover advertised as byte-identical parts from its predecessor by a cent.
 * **The box and its `amount_as_rendered` companion must read the SAME
   expression.** Ruling **R-JR**'s authorship comparison asks whether what came
   back differs from what was shown; two expressions that could resolve
