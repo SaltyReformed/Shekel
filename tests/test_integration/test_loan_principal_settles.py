@@ -74,6 +74,7 @@ from tests._test_helpers import (
     unseeded_replay_balance,
 )
 from app.services.row_valuation import settled_contribution
+from app.models.amount_ownership import AmountOwnership
 
 
 # -- Hand-computed reference values -----------------------------------------
@@ -222,7 +223,7 @@ def _create_piti_transfer(  # pylint: disable=too-many-arguments,too-many-positi
             to_account_id=to_account_id,
             pay_period_id=pay_period_id,
             scenario_id=scenario_id,
-            amount=amount,
+            amount_ownership=AmountOwnership.own(amount),
             status_id=projected_id,
             category_id=category_id,
             notes="C14 PITI transfer",

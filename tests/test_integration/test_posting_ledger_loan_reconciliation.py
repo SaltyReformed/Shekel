@@ -2132,7 +2132,16 @@ class TestResolverIsLedgerFree:
         """
         sources = _module_sources()
         edges = _import_edges(sources)
-        assert "app.ref_cache" in edges["app.services.cash_ledger._amount_source"]
+        # **``_amount_rule`` since plan step X-au-f**, not ``_amount_source``:
+        # the CLASSIFICATION tier split into its own module when the resolver
+        # passed ``max-module-lines``, and ``_declared_relation`` -- the one
+        # reader of ``ref_cache`` on this path, which turns a stored
+        # ``amount_source_id`` back into the member the rules are written
+        # against -- went with it.  Re-pointed rather than deleted: the claim is
+        # that the resolver reads reference data BY ID, and that claim is now
+        # about the leaf that does it.
+        assert "app.ref_cache" in edges["app.services.cash_ledger._amount_rule"]
+        assert "app" not in edges["app.services.cash_ledger._amount_rule"]
         assert "app" not in edges["app.services.cash_ledger._amount_source"]
         closure = _import_closure(_RESOLVER_REFERENCE_ROOTS, sources)
         assert "app" not in closure

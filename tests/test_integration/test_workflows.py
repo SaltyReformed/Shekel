@@ -173,7 +173,7 @@ class TestTransferToBalance:
                     to_account_id=savings.id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("200.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("200.00")),
                     status_id=projected.id,
                     category_id=seed_user["categories"]["Rent"].id,
                     name="Save $200",

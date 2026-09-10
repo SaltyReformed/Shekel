@@ -58,6 +58,7 @@ from tests._test_helpers import (
     select_option_values,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
+from app.models.amount_ownership import AmountOwnership
 
 
 @pytest.fixture(autouse=True)
@@ -3223,7 +3224,7 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             to_account_id=loan_account.id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
-            amount=amount,
+            amount_ownership=AmountOwnership.own(amount),
             status_id=status_id,
             category_id=seed_user["categories"]["Rent"].id,
             settle_day=an_entered_day(period.start_date) if settled else None,

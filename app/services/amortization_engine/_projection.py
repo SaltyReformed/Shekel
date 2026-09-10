@@ -576,7 +576,7 @@ def _apply_override_payment(
     plan makes every near month an override month, so an override month can no
     longer swallow the extra.  There is no double-count: the standing extra is
     NOT baked into the override amount (it is a live parameter,
-    ``cash_ledger._loan_installment._shadow_live_amount`` /
+    ``cash_ledger._loan_installment._installment_cash`` /
     amount rule 4's MANUAL arm), so adding it here is its single application.
 
     Negative amortization (override below the period interest) is preserved as a

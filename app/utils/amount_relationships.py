@@ -37,10 +37,11 @@ from app.models.transfer_template import TransferTemplate
 def period_load_option():
     """Return the loader option for a row's PAY PERIOD -- one spelling, two askers.
 
-    :func:`pricing_load_options` needs it because amount rule 4's DERIVE arm
-    dates the installment it prices, and
     :func:`app.services.loan_loaders.income_shadows` needs it because the period
-    start is its sort key.  Both ask HERE rather than each writing
+    start is its sort key, and :func:`pricing_load_options` still applies it --
+    for amount rule 4's DERIVE arm until plan step X-au-f-2 moved that read onto
+    the PARENT transfer's period, and since then for the reason that set's own
+    entry states (finding **BAL-477**).  Both ask HERE rather than each writing
     ``selectinload(Transaction.pay_period)``, and the reason is a failure mode
     rather than tidiness: a caller that states the pricing options ALSO goes
     through that partition, so the same relationship path is named twice in one
@@ -62,10 +63,19 @@ def pricing_load_options() -> tuple:
     Every relationship below is ``lazy="select"``, so a loader that omits them
     makes the resolver issue queries per row.
 
-    Five chains, covering EIGHT relationships.  An adversarial review counted
+    Six chains, covering NINE relationships.  An adversarial review counted
     seven at plan step X-au-b after a first draft named two; the eighth was
-    found by this step's own query-count control, which is worth stating
-    because a census is exactly the kind of claim that reads as complete:
+    found by that step's own query-count control, which is worth stating
+    because a census is exactly the kind of claim that reads as complete --
+    **and a first draft of THIS sentence said TEN**, having added one chain and
+    counted two relationships for it.  A census miscounted inside a paragraph
+    about censuses reading as complete; caught by an adversarial review of
+    plan step X-au-f, which listed the nine.
+    **The tenth arrived at plan step X-au-f-2**, when ruling **R-BAL10** moved
+    a loan payment's answer onto the PARENT: the derive arm dates its
+    installment from the TRANSFER's two columns now, so the chain it walks is
+    ``Transaction.transfer -> pay_period`` where it was the shadow's own
+    period.  The list:
 
     * ``Transaction.template`` -> ``salary_profiles`` -- amount rule 2's
       refinement (``_amount_source._rule_within_definition``) asks whether an
@@ -78,10 +88,21 @@ def pricing_load_options() -> tuple:
     * ``Transaction.transfer`` -> ``template`` -> ``amount_versions`` -- rule 5
       and rule 4's MANUAL arm both price through
       ``_amount_source.resolve_transfer_amount``;
-    * ``Transaction.pay_period`` -- rule 4's DERIVE arm dates the installment it
-      prices, and ``loan_loaders.loan_payment_due_date`` reads the period on
-      EVERY call rather than only on its no-``due_date`` fallback, which that
-      function's own docstring records.  **It was missing from the first draft
+    * ``Transaction.transfer`` -> ``pay_period`` -- rule 4's DERIVE arm dates
+      the installment it prices, and
+      ``loan_loaders.installment_for`` takes the period start EAGERLY rather
+      than only on its no-``due_date`` fallback, so the relationship is read on
+      every call.  **It was the SHADOW's own period until plan step X-au-f-2**,
+      where ruling R-BAL10 moved the answer to the parent; the parent's period
+      is the same value (Transfer Invariant 3) read from the row that now
+      carries the rule.
+    * ``Transaction.pay_period`` -- **no amount RULE reads this since plan step
+      X-au-f-2**, and it is kept rather than dropped because the drop is a
+      different question with a different blast radius: five batch loaders
+      apply this set and their OTHER reads of the relationship have not been
+      censused, so deleting it here could turn one of them into an N+1 in
+      silence.  Filed as **BAL-477** against plan step X-bm, which owns this
+      set's batch callers.  **It was missing from the first draft
       of this set**, and the control in
       ``test_a_transfer_shadow_is_derived.TestTheAmountModelsOwnEagerLoad`` is
       what found it: three ``budget.pay_periods`` reads against an assertion of
@@ -103,9 +124,9 @@ def pricing_load_options() -> tuple:
     measured 2026-09-01 at stamp ``a4c6f1d92b73``** -- so every surface that
     loads one walks to its parent, and a loader that forgets pays per row.
 
-    ``selectinload`` throughout rather than ``joinedload``: three of the four
-    chains end in a COLLECTION, and a joined load over two collections
-    multiplies the row count.
+    ``selectinload`` throughout rather than ``joinedload``: three of the chains
+    end in a COLLECTION, and a joined load over two collections multiplies the
+    row count.
 
     **It is deliberately NOT conditional on which rows a caller holds.**  A
     loader does not know which rule will price each row -- that is the amount
@@ -129,6 +150,7 @@ def pricing_load_options() -> tuple:
         selectinload(Transaction.transfer).selectinload(
             Transfer.template,
         ).selectinload(TransferTemplate.amount_versions),
+        selectinload(Transaction.transfer).selectinload(Transfer.pay_period),
         period_load_option(),
     )
 

@@ -44,6 +44,7 @@ from tests._test_helpers import (
 from app.services.settle_day import record_settle_day
 from app.services.state_machine import allowed_transitions
 from app.services.amount_ownership import state_own_amount
+from app.models.amount_ownership import AmountOwnership
 
 
 @pytest.fixture()
@@ -122,7 +123,7 @@ def _create_basic_transfer(td):
             to_account_id=td["savings_account"].id,
             pay_period_id=td["periods"][0].id,
             scenario_id=td["scenario"].id,
-            amount=Decimal("250.00"),
+            amount_ownership=AmountOwnership.own(Decimal("250.00")),
             status_id=td["projected_status"].id,
             category_id=td["categories"]["Rent"].id,
         ),
@@ -199,7 +200,7 @@ class TestCreateTransfer:
                     to_account_id=td["savings_account"].id,
                     pay_period_id=td["periods"][0].id,
                     scenario_id=td["scenario"].id,
-                    amount=Decimal("500.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("500.00")),
                     status_id=td["projected_status"].id,
                     category_id=rent_cat.id,
                 ),
@@ -225,7 +226,7 @@ class TestCreateTransfer:
                     to_account_id=td["savings_account"].id,
                     pay_period_id=td["periods"][0].id,
                     scenario_id=td["scenario"].id,
-                    amount=Decimal("200.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("200.00")),
                     status_id=td["projected_status"].id,
                     category_id=td["categories"]["Rent"].id,
                     transfer_template_id=td["transfer_template"].id,
@@ -248,7 +249,7 @@ class TestCreateTransfer:
                     to_account_id=td["savings_account"].id,
                     pay_period_id=td["periods"][0].id,
                     scenario_id=td["scenario"].id,
-                    amount=Decimal("300.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("300.00")),
                     status_id=td["projected_status"].id,
                     category_id=td["categories"]["Rent"].id,
                     name="Mortgage Payment",
@@ -293,7 +294,7 @@ class TestCreateTransferValidation:
                         to_account_id=td["savings_account"].id,
                         pay_period_id=td["periods"][0].id,
                         scenario_id=td["scenario"].id,
-                        amount=Decimal("0"),
+                        amount_ownership=AmountOwnership.own(Decimal("0")),
                         status_id=td["projected_status"].id,
                         category_id=td["categories"]["Rent"].id,
                     ),
@@ -311,7 +312,7 @@ class TestCreateTransferValidation:
                         to_account_id=td["savings_account"].id,
                         pay_period_id=td["periods"][0].id,
                         scenario_id=td["scenario"].id,
-                        amount=Decimal("-100"),
+                        amount_ownership=AmountOwnership.own(Decimal("-100")),
                         status_id=td["projected_status"].id,
                         category_id=td["categories"]["Rent"].id,
                     ),
@@ -329,7 +330,7 @@ class TestCreateTransferValidation:
                         to_account_id=td["account"].id,
                         pay_period_id=td["periods"][0].id,
                         scenario_id=td["scenario"].id,
-                        amount=Decimal("100"),
+                        amount_ownership=AmountOwnership.own(Decimal("100")),
                         status_id=td["projected_status"].id,
                         category_id=td["categories"]["Rent"].id,
                     ),
@@ -364,7 +365,7 @@ class TestCreateTransferValidation:
                         to_account_id=td["account"].id,
                         pay_period_id=td["periods"][0].id,
                         scenario_id=td["scenario"].id,
-                        amount=Decimal("100"),
+                        amount_ownership=AmountOwnership.own(Decimal("100")),
                         status_id=td["projected_status"].id,
                         category_id=td["categories"]["Rent"].id,
                     ),
@@ -384,7 +385,7 @@ class TestCreateTransferValidation:
                         to_account_id=td["savings_account"].id,
                         pay_period_id=td["periods"][0].id,
                         scenario_id=td["scenario"].id,
-                        amount=Decimal("100"),
+                        amount_ownership=AmountOwnership.own(Decimal("100")),
                         status_id=td["projected_status"].id,
                         category_id=td["categories"]["Rent"].id,
                     ),
@@ -402,7 +403,7 @@ class TestCreateTransferValidation:
                         to_account_id=td["savings_account"].id,
                         pay_period_id=td["periods"][0].id,
                         scenario_id=td["scenario"].id,
-                        amount=Decimal("100"),
+                        amount_ownership=AmountOwnership.own(Decimal("100")),
                         status_id=td["projected_status"].id,
                         category_id=td["categories"]["Rent"].id,
                     ),
@@ -431,7 +432,7 @@ class TestCreateTransferValidation:
                         to_account_id=td["savings_account"].id,
                         pay_period_id=other_periods[0].id,
                         scenario_id=td["scenario"].id,
-                        amount=Decimal("100"),
+                        amount_ownership=AmountOwnership.own(Decimal("100")),
                         status_id=td["projected_status"].id,
                         category_id=td["categories"]["Rent"].id,
                     ),
@@ -451,7 +452,7 @@ class TestCreateTransferValidation:
                         to_account_id=td["savings_account"].id,
                         pay_period_id=td["periods"][0].id,
                         scenario_id=td["scenario"].id,
-                        amount=Decimal("100"),
+                        amount_ownership=AmountOwnership.own(Decimal("100")),
                         status_id=td["projected_status"].id,
                         category_id=other_cat.id,
                     ),
@@ -469,7 +470,7 @@ class TestCreateTransferValidation:
                         to_account_id=td["savings_account"].id,
                         pay_period_id=td["periods"][0].id,
                         scenario_id=td["scenario"].id,
-                        amount="not-a-number",
+                        amount_ownership=AmountOwnership.own("not-a-number"),
                         status_id=td["projected_status"].id,
                         category_id=td["categories"]["Rent"].id,
                     ),
@@ -489,8 +490,7 @@ class TestUpdateTransfer:
             xfer = _create_basic_transfer(td)
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, amount=Decimal("400.00"), amount_authored=True
-            )
+                xfer.id, td["user"].id, amount_ownership=AmountOwnership.own(Decimal("400.00")), )
 
             assert xfer.amount == Decimal("400.00")
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
@@ -621,16 +621,14 @@ class TestUpdateTransfer:
 
             with pytest.raises(NotFoundError):
                 transfer_service.update_transfer(
-                    xfer.id, second_user["user"].id, amount=Decimal("100"), amount_authored=True
-                )
+                    xfer.id, second_user["user"].id, amount_ownership=AmountOwnership.own(Decimal("100")), )
 
     def test_nonexistent_rejected(self, app, db, transfer_data):
         """Update of non-existent transfer raises NotFoundError."""
         with app.app_context():
             with pytest.raises(NotFoundError):
                 transfer_service.update_transfer(
-                    99999, transfer_data["user"].id, amount=Decimal("100"), amount_authored=True
-                )
+                    99999, transfer_data["user"].id, amount_ownership=AmountOwnership.own(Decimal("100")), )
 
     def test_validates_positive_amount(self, app, db, transfer_data):
         """Update with zero amount raises ValidationError."""
@@ -640,8 +638,7 @@ class TestUpdateTransfer:
 
             with pytest.raises(ValidationError, match="positive"):
                 transfer_service.update_transfer(
-                    xfer.id, td["user"].id, amount=Decimal("0"), amount_authored=True
-                )
+                    xfer.id, td["user"].id, amount_ownership=AmountOwnership.own(Decimal("0")), )
 
     def test_validates_period_ownership(self, app, db, transfer_data, second_user):
         """Update with period belonging to another user raises NotFoundError."""
@@ -677,7 +674,7 @@ class TestUpdateTransfer:
                     to_account_id=td["savings_account"].id,
                     pay_period_id=td["periods"][0].id,
                     scenario_id=td["scenario"].id,
-                    amount=Decimal("100"),
+                    amount_ownership=AmountOwnership.own(Decimal("100")),
                     status_id=td["projected_status"].id,
                     category_id=rent_cat.id,
                 ),
@@ -1017,8 +1014,7 @@ class TestInvariants:
             xfer = _create_basic_transfer(td)
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, amount=Decimal("777.77"), amount_authored=True
-            )
+                xfer.id, td["user"].id, amount_ownership=AmountOwnership.own(Decimal("777.77")), )
 
             assert xfer.amount == Decimal("777.77")
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
@@ -1066,7 +1062,7 @@ class TestInvariants:
             done = db.session.query(Status).filter_by(name="Paid").one()
             transfer_service.update_transfer(
                 xfer.id, td["user"].id,
-                amount=Decimal("999.99"), amount_authored=True,
+                amount_ownership=AmountOwnership.own(Decimal("999.99")),
                 status_id=done.id,
                 pay_period_id=td["periods"][4].id,
             )
@@ -1104,8 +1100,7 @@ class TestSoftDeleteHandling:
 
             with pytest.raises(NotFoundError, match="not found"):
                 transfer_service.update_transfer(
-                    xfer_id, td["user"].id, amount=Decimal("500.00"), amount_authored=True
-                )
+                    xfer_id, td["user"].id, amount_ownership=AmountOwnership.own(Decimal("500.00")), )
 
     def test_delete_soft_deleted_transfer_is_idempotent(self, app, db, transfer_data):
         """Verify that calling delete_transfer(soft=True) on an already
@@ -1961,7 +1956,7 @@ class TestDueDateAndSettleDayShadows:
                     to_account_id=td["savings_account"].id,
                     pay_period_id=td["periods"][0].id,
                     scenario_id=td["scenario"].id,
-                    amount=Decimal("250.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
                     status_id=td["projected_status"].id,
                     category_id=td["categories"]["Rent"].id,
                     due_date=date(2026, 1, 15),
@@ -1992,7 +1987,7 @@ class TestDueDateAndSettleDayShadows:
                     to_account_id=td["savings_account"].id,
                     pay_period_id=td["periods"][0].id,
                     scenario_id=td["scenario"].id,
-                    amount=Decimal("250.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
                     status_id=td["projected_status"].id,
                     category_id=td["categories"]["Rent"].id,
                     due_date=None,
@@ -2275,7 +2270,7 @@ class TestTheFigureCorrectionDoorOnAPair:
                 to_account_id=td["savings_account"].id,
                 pay_period_id=td["periods"][0].id,
                 scenario_id=td["scenario"].id,
-                amount=Decimal(amount),
+                amount_ownership=AmountOwnership.own(Decimal(amount)),
                 status_id=td["projected_status"].id,
                 category_id=td["categories"]["Rent"].id,
             ),
@@ -2360,7 +2355,7 @@ class TestTheFigureCorrectionDoorOnAPair:
                     to_account_id=td["savings_account"].id,
                     pay_period_id=td["periods"][0].id,
                     scenario_id=td["scenario"].id,
-                    amount=Decimal("250.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
                     status_id=td["projected_status"].id,
                     category_id=td["categories"]["Rent"].id,
                 ),
@@ -2373,7 +2368,7 @@ class TestTheFigureCorrectionDoorOnAPair:
                 transfer_service.update_transfer(
                     xfer.id, td["user"].id,
                     is_override=True,
-                    amount=Decimal("999.00"), amount_authored=True,
+                    amount_ownership=AmountOwnership.own(Decimal("999.00")),
                     settled_amount=Decimal("50.00"),
                 )
 
@@ -2437,7 +2432,7 @@ class TestTheFigureCorrectionDoorOnAPair:
                     to_account_id=td["savings_account"].id,
                     pay_period_id=td["periods"][0].id,
                     scenario_id=td["scenario"].id,
-                    amount=Decimal("250.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
                     status_id=td["projected_status"].id,
                     category_id=td["categories"]["Rent"].id,
                 ),
@@ -2589,7 +2584,7 @@ class TestMovingATransferBetweenAccounts:
             db.session.flush()
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, amount=Decimal("300.00"), amount_authored=True,
+                xfer.id, td["user"].id, amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
             db.session.flush()
 
@@ -2795,7 +2790,7 @@ class TestMovingATransferBetweenAccounts:
                 transfer_service.update_transfer(
                     xfer.id, td["user"].id,
                     to_account_id=elsewhere.id,
-                    amount=Decimal("-5.00"), amount_authored=True,
+                    amount_ownership=AmountOwnership.own(Decimal("-5.00")),
                 )
 
             expense, income = self._legs(xfer)
@@ -2827,7 +2822,7 @@ class TestMovingATransferBetweenAccounts:
             with pytest.raises(ValidationError, match="must be different"):
                 transfer_service.update_transfer(
                     xfer.id, td["user"].id,
-                    amount=Decimal("999.00"), amount_authored=True,
+                    amount_ownership=AmountOwnership.own(Decimal("999.00")),
                     to_account_id=td["account"].id,
                 )
 
@@ -2880,7 +2875,7 @@ class TestMovingATransferBetweenAccounts:
                     to_account_id=loan.id,
                     pay_period_id=td["periods"][0].id,
                     scenario_id=td["scenario"].id,
-                    amount=Decimal("250.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
                     status_id=td["projected_status"].id,
                     category_id=td["categories"]["Rent"].id,
                 ),
@@ -3014,7 +3009,7 @@ class TestMovingATransferBetweenAccounts:
                         to_account_id=loan.id,
                         pay_period_id=td["periods"][index].id,
                         scenario_id=td["scenario"].id,
-                        amount=Decimal("400.00"),
+                        amount_ownership=AmountOwnership.own(Decimal("400.00")),
                         status_id=td["projected_status"].id,
                         category_id=td["categories"]["Rent"].id,
                         due_date=td["periods"][index].start_date,

@@ -131,9 +131,13 @@ def query_settled_expenses(
     surprises list prices a row through
     ``cash_ledger.resolve_transaction_amount`` as of 2026-09-05 (the
     ``/analytics/spending`` fix), and rule 4's arm --
-    ``LoanPricing.derive_cash`` -> ``loan_loaders.loan_payment_due_date`` --
-    reads ``pay_period`` on every call, by that function's own stated
-    precondition.  It is unreachable on production today, where
+    ``LoanPricing.derive_cash`` -> ``loan_loaders.installment_for`` -- reads a
+    ``pay_period`` on every call, because that producer takes the period start
+    eagerly.  **Since plan step balance:X-au-f-2 it is the PARENT TRANSFER's
+    period rather than the shadow's** (ruling R-BAL10 moved the answer to the
+    parent), so the chain this query would have to load is
+    ``Transaction.transfer -> pay_period``; the count is unchanged and the
+    relationship is not.  It is unreachable on production today, where
     ``budget.loan_payment_settings`` is empty, and reachable in seeded data the
     moment a payment is tracked in derive mode.  So the sentence above is true
     of every arm but that one; the removal is not re-litigated here, and

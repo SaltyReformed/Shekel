@@ -97,6 +97,7 @@ from tests._test_helpers import (
     linked_ledger_account,
 )
 from app.services import cash_ledger
+from app.models.amount_ownership import AmountOwnership
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +362,7 @@ def _build_asset_and_liability_books(seed_user) -> tuple:
             to_account_id=savings.id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
-            amount=Decimal("40.00"),
+            amount_ownership=AmountOwnership.own(Decimal("40.00")),
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             category_id=None,
         ),

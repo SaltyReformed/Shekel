@@ -67,6 +67,7 @@ from tests._test_helpers import (
     create_savings_account,
     freeze_today,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 #: Pinned "today", before every date this module writes.  The lock classifier
@@ -1197,7 +1198,7 @@ class TestACoverageWithdrawalIsAccepted:
                 to_account_id=savings.id,
                 pay_period_id=seed_periods[-1].id,
                 scenario_id=seed_user["scenario"].id,
-                amount=Decimal("150.00"),
+                amount_ownership=AmountOwnership.own(Decimal("150.00")),
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 category_id=None,
             ))

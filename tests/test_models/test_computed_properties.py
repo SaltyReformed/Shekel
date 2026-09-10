@@ -32,7 +32,11 @@ from app.services.paycheck_calculator import (
 from app.services import account_service
 from app.utils.dates import display_today
 from app.utils.dates import add_months
-from app.services.cash_ledger import contribution_of, resolve_transfer_amount
+from app.services.cash_ledger import (
+    amount_basis,
+    contribution_of,
+    resolve_transfer_amount,
+)
 from app.services.row_valuation import settled_contribution
 from tests._test_helpers import (
     amount_basis_for,
@@ -360,7 +364,12 @@ class TestTransferAmountResolves:
             xfer = self._make_transfer(
                 seed_user, seed_periods, "Projected", Decimal("500.00"),
             )
-            assert resolve_transfer_amount(xfer) == Decimal("500.00")
+            assert resolve_transfer_amount(
+                xfer,
+                amount_basis(
+                    seed_user["user"].id, seed_user["scenario"].id,
+                ),
+            ) == Decimal("500.00")
 
     def test_settled_resolves_to_its_own_amount(
         self, app, db, seed_user, seed_periods,
@@ -370,7 +379,12 @@ class TestTransferAmountResolves:
             xfer = self._make_transfer(
                 seed_user, seed_periods, "Paid", Decimal("500.00"),
             )
-            assert resolve_transfer_amount(xfer) == Decimal("500.00")
+            assert resolve_transfer_amount(
+                xfer,
+                amount_basis(
+                    seed_user["user"].id, seed_user["scenario"].id,
+                ),
+            ) == Decimal("500.00")
 
     def test_cancelled_still_resolves_to_its_amount(
         self, app, db, seed_user, seed_periods,
@@ -389,7 +403,12 @@ class TestTransferAmountResolves:
             xfer = self._make_transfer(
                 seed_user, seed_periods, "Cancelled", Decimal("500.00"),
             )
-            assert resolve_transfer_amount(xfer) == Decimal("500.00")
+            assert resolve_transfer_amount(
+                xfer,
+                amount_basis(
+                    seed_user["user"].id, seed_user["scenario"].id,
+                ),
+            ) == Decimal("500.00")
 
 
 class TestTransferSettleDay:
@@ -434,7 +453,7 @@ class TestTransferSettleDay:
                 to_account_id=savings.id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
-                amount=Decimal("250.00"),
+                amount_ownership=AmountOwnership.own(Decimal("250.00")),
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 category_id=seed_user["categories"]["Rent"].id,
                 name="Settle day probe",
@@ -486,7 +505,7 @@ class TestTransferSettleDay:
                     to_account_id=savings.id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("250.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
                     status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                     category_id=seed_user["categories"]["Rent"].id,
                     name="Undated probe",

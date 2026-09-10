@@ -371,11 +371,13 @@ _FENCED_MODULE_RULINGS = {
         "contributed_amount",
         "contribution_of",
         "contributions_by_id",
-        # ``_amount_source`` -- WHERE one row's amount comes from (plan step
-        # X-au-b, ruling R-FI).  Four names, one ruling, because they are one
-        # question at two tiers: ``amount_basis`` resolves the live producers
-        # ONCE for a row set, ``amount_rule`` says which of the five sources
-        # prices a row, and the two ``resolve_*_amount`` entries answer what one
+        # ``_amount_source`` / ``_amount_rule`` -- WHERE one row's amount comes
+        # from (plan step X-au-b, ruling R-FI).  FIVE names, one ruling, because
+        # they are one question at two tiers: ``amount_basis`` resolves the live
+        # producers ONCE for a row set, the two ``*amount_rule`` entries say
+        # which of the five sources prices a row of each TABLE (the transfer
+        # classifier arrived with rule 4 at plan step X-au-f-2, ruling R-BAL10),
+        # and the two ``resolve_*_amount`` entries answer what one
         # row's AMOUNT COLUMN holds or would hold.  Non-producers on exactly the
         # ground their ``_amounts`` siblings above stand on, and one tier
         # further from a balance than those: an amount per ROW is not a balance
@@ -390,6 +392,7 @@ _FENCED_MODULE_RULINGS = {
         # it resolves nothing, folds nothing, and reads no anchor.
         "baseline_amount_basis",
         "amount_rule",
+        "transfer_amount_rule",
         "resolve_transaction_amount",
         "resolve_transfer_amount",
         # The BATCH form of the same answer (plan step X-au-c2b), on the same

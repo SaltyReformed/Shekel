@@ -66,7 +66,6 @@ Architecture (``CLAUDE.md``):
   - All monetary arithmetic uses :class:`~decimal.Decimal`.
 """
 
-import logging
 from decimal import Decimal
 
 from app.exceptions import ValidationError
@@ -85,13 +84,6 @@ from app.services.status_seam import (
 )
 from app.services.transfer_service._status import apply_status_to_all_three
 from app.services.transfer_service._validation import TransferRows
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_TRANSFER_AMOUNT_FROZEN,
-    log_event,
-)
-
-logger = logging.getLogger(__name__)
 
 
 def _reject_unsettleable(shadow: Transaction) -> None:
@@ -411,48 +403,26 @@ def settle(
         ),
     )
 
-    # The one money write no operator asked for, on the record.  It fires when
-    # the app's own derivation decided the booked figure AND that figure is not
-    # the one the transfer states -- which is the event's whole purpose, since
-    # what makes a settle worth recording is that it books something other than
-    # what the operator could see.  Not when a human's figure won, whether they
-    # typed it at this tick (*correction*) or at an earlier one the revert
-    # retained (*held*).
+    # **``EVT_TRANSFER_AMOUNT_FROZEN`` WAS EMITTED HERE, AND IT IS DELETED
+    # RATHER THAN RE-POINTED** (ruling **R-BAL12**, plan step X-au-f).  Its
+    # predicate was ``booked != rows.transfer.amount`` -- the one money write no
+    # operator asked for, fired when the app's own derivation decided the booked
+    # figure and that figure was not the one the transfer stated.
     #
-    # **Three things changed at plan step X-au-g-2c-2, and all three are
-    # corrections rather than consequences.**
+    # That column is EMPTY for a generated transfer now, so the comparison was
+    # finding **N-451**: true on EVERY settle, including a plain
+    # checking-to-savings transfer where no derivation decided anything.
+    # Re-pointing it at the RESOLVED figure makes it fire on NONE -- under
+    # ruling **R-BAL10** the booked figure IS what the transfer states, so the
+    # two sides share one producer and the comparison is an identity.  An event
+    # that cannot fire is a fence the design made unnecessary, so it went with
+    # its predicate, its ``log_events`` registration and its integration test
+    # rather than being kept as a green check that measures nothing.
     #
-    # The predicate was ``frozen is not None`` -- it asked the deleted
-    # read-time repair whether it had fired.  A first replacement asked the
-    # amount model for the RULE (``AmountRule.LOAN_PAYMENT``), and an
-    # adversarial review measured that WIDER than what it replaced: the old
-    # producer's candidate map admitted only derive-mode payments and manual
-    # ones carrying a standing extra, so a manual / no-extra settle logged
-    # nothing, while every loan payment matches the rule.  The event would have
-    # started firing on settles where no derivation decided anything, directly
-    # contradicting the sentence above it.  Comparing against the transfer's
-    # own figure reproduces the old extension exactly -- a derive-mode payment
-    # books its installment, a manual one with an extra books base + extra, and
-    # both differ from ``transfers.amount``, while a manual payment with no
-    # extra and a plain transfer book precisely that figure -- without naming a
-    # producer that no longer exists.
-    #
-    # And the guard did not test *held*, so a re-settle that HONOURED a retained
-    # correction logged a freeze that had not happened and reported the
-    # derivation's figure as though it were the booked one -- two numbers apart,
-    # in a record whose whole purpose is to say which was booked.
-    if (
-        correction is None
-        and held is None
-        and booked != rows.transfer.amount
-    ):
-        log_event(
-            logger, logging.INFO, EVT_TRANSFER_AMOUNT_FROZEN, BUSINESS,
-            "A derived loan payment recorded its live payment-date figure",
-            user_id=rows.transfer.user_id,
-            transfer_id=rows.transfer.id,
-            frozen_amount=str(booked),
-        )
+    # What it recorded is not lost: ``settled_basis_id`` says whether a booked
+    # figure was the app's own resolution or a human's correction, on the row,
+    # for every settle rather than for the subset a predicate happened to
+    # select (plan step X-au-c3).
     return correction is not None
 
 

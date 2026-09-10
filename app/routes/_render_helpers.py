@@ -182,14 +182,24 @@ def transfer_budgets(xfer: Transfer) -> "dict[int, Decimal]":
     about this.  The argument above needs no citation.*
 
     **SINGLE-ROW reads only**, the boundary :attr:`Transfer.settled_on`
-    documents.  It costs no query at all today -- ``resolve_transfer_amount``
-    takes no read pass, so a transfer that owns its figure is answered from the
-    row already loaded -- and the boundary is stated now because the leaf that
-    gives a loan payment's parent its producer hands this function a basis, at
-    which point one call per row is what an N+1 looks like.  No batch surface
-    exists to be wrong about: the grid renders a transfer's two SHADOWS as
-    ordinary rows off its own ``budgets`` map (Transfer Invariant 5), and all
-    nine parent-transfer render sites are one-row HTMX swaps.
+    documents, and the leaf that stated that boundary in advance has arrived.
+    Plan step X-au-f-2 gave a loan payment's PARENT its producer (ruling
+    **R-BAL10**), so this now builds a read pass and one call per row is what
+    an N+1 would look like.  A transfer that owns its figure or reads its
+    definition's series still costs no query -- the basis resolves nothing
+    until a rule asks it -- and only a DERIVE-mode loan payment reaches the
+    loan.  No batch surface exists to be wrong about: the grid renders a
+    transfer's two SHADOWS as ordinary rows off its own ``budgets`` map
+    (Transfer Invariant 5), and all nine parent-transfer render sites are
+    one-row HTMX swaps.
+
+    **The basis is BUILT here rather than threaded, exactly as the transaction
+    twin builds one** (:func:`fragment_amounts`, whose comment carries the
+    argument): a FRAGMENT has no read pass to take one from -- it is reached by
+    an HTMX swap that loaded nothing else -- and a pass-shaped caller builds
+    one basis for everything it loaded instead.  It is pinned off the
+    transfer's OWN columns, which is what makes it right for the row being
+    priced whichever of the nine sites called.
 
     Args:
         xfer: The transfer the fragment renders.  It states no ownership rule of
@@ -211,7 +221,11 @@ def transfer_budgets(xfer: Transfer) -> "dict[int, Decimal]":
             answer.  A refusal is never a fallback (see
             :mod:`app.services.cash_ledger._amount_source`).
     """
-    return {xfer.id: resolve_transfer_amount(xfer)}
+    return {
+        xfer.id: resolve_transfer_amount(
+            xfer, amount_basis(xfer.user_id, xfer.scenario_id),
+        ),
+    }
 
 
 @dataclass(frozen=True)

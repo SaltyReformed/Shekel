@@ -748,6 +748,7 @@ from tests._test_helpers import (
     posted_loan_balance_at,
     rebuild_calendar,
     settle_day_columns,
+    state_template_price,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -3241,6 +3242,12 @@ def _build_full_user_data(db, seed_user, periods):
         default_amount=Decimal("200.00"),
     )
     db.session.add(transfer_tpl)
+    db.session.flush()
+    # A definition STATES its price, as every app-side create door does.  Since
+    # plan step balance:X-au-f a generated TRANSFER stores no figure and is
+    # priced by this series on its own due date, so a template without one
+    # generates rows ``_stated_amount`` REFUSES.
+    state_template_price(transfer_tpl)
 
     # d) Salary profile.
     salary_profile = SalaryProfile(
@@ -3400,6 +3407,10 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
         default_amount=Decimal("150.00"),
     )
     db.session.add(transfer_tpl)
+    db.session.flush()
+    # Its price, stated as every app-side create door states it (see the
+    # calendar-anchored twin above).
+    state_template_price(transfer_tpl)
 
     # d) Salary profile.
     salary_profile = SalaryProfile(

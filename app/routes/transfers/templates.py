@@ -53,7 +53,7 @@ from app.routes._amount_version_actions import (
     withdraw_amount_version,
 )
 from app.services.balance_at import BalanceContext
-from app.services.cash_ledger import resolve_transfer_amount
+from app.services.cash_ledger import amount_basis, resolve_transfer_amount
 from app.routes._recurrence_conflict_chooser import (
     PreEditTemplateState,
     RecurrenceConflictKind,
@@ -426,18 +426,18 @@ def edit_transfer_template(template_id):
 # Mutations route through transfer_recurrence (shadow-safe resolve).
 _TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
     model=Transfer,
-    # A transfer's amount rule (plan step X-au-c2b): rule 5's own entry, which
-    # needs no basis -- a parent transfer is priced by its own figure or by its
-    # definition's series, never by a live producer.
-    resolve_amount=resolve_transfer_amount,
+    # A transfer's amount rule, as a one-argument callable and the exact twin of
+    # the transaction kind's.  It passed the resolver BARE until plan step
+    # X-au-f-2, under a comment claiming a parent transfer needs no basis --
+    # made false by R-BAL10; pinned off the row, one row at a time -- so N
+    # conflicted loan payments resolve their loan N times, bounded by the
+    # conflicted set and free for every other kind (the basis is lazy).
+    resolve_amount=lambda row: resolve_transfer_amount(
+        row, amount_basis(row.user_id, row.scenario_id),
+    ),
     regenerate_fn=transfer_recurrence.regenerate_for_template,
     resolve_fn=transfer_recurrence.resolve_conflicts,
     update_endpoint="transfers.update_transfer_template",
-    # A generated TRANSFER still stores its amount (``transfers.amount``), so
-    # "use" hands this kind's row a figure -- unchanged behaviour.  Plan step
-    # balance:X-au-f is what empties that column and makes this False, at
-    # which point the field and its branch go (ruling **R-JD**).
-    use_states_a_figure=True,
 )
 
 

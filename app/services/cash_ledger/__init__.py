@@ -162,9 +162,12 @@ from ._amount_basis import (
     amount_basis,
     baseline_amount_basis,
 )
-from ._amount_source import (
+from ._amount_rule import (
     AmountRule,
     amount_rule,
+    transfer_amount_rule,
+)
+from ._amount_source import (
     amounts_by_id,
     resolve_transaction_amount,
     resolve_transfer_amount,
@@ -243,6 +246,7 @@ __all__ = [
     "baseline_amount_basis",
     "books_hold",
     "amount_rule",
+    "transfer_amount_rule",
     "amounts_by_id",
     "account_opening_fact",
     "cash_anchor_facts",

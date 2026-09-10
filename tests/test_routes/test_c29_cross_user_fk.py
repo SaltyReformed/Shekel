@@ -107,7 +107,7 @@ def _create_transfer_with_shadows(seed_user, period, savings):
             to_account_id=savings.id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
-            amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             status_id=projected_id,
             category_id=seed_user["categories"]["Rent"].id,
             name="C-29 Transfer",
