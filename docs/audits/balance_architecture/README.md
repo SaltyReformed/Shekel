@@ -635,11 +635,7 @@ in SILENCE where a refused DELETE is loud.
   transfers cut over, every one template-generated, **0 differing from what the
   series answers on their own due date**, and `budget.loan_payment_settings`
   holds 0 rows, so every loan arm here grades on a seeded loan.
-  * [x] **X-au-f-1** `ce8bf485` -- every parent-transfer render site takes the
-    amount model's answer, not the column; `render_transfer_cell` makes the
-    context ONE definition rather than six. Byte-identical BY CONSTRUCTION: no
-    writer in `app/` declares a transfer derived. Closed **N-452**; opened
-    **BAL-476**. Record: `archive/x_au_f_1_as_built_2026-09-09.md`.
+  * [x] **X-au-f-1** `ce8bf485` -- every parent-transfer render site takes the amount model's answer rather than the column; byte-identical BY CONSTRUCTION. Closed **N-452**; opened **BAL-476**. Record: `archive/x_au_f_1_as_built_2026-09-09.md`.
   * [ ] **X-au-f-2** `refactor(transfers): a generated transfer's amount is its
     definition's` -- THE CUTOVER, in one act. **R-BAL10**'s build: the parent's
     producer answers the whole cash on the installment's own due date, amount
@@ -662,10 +658,7 @@ in SILENCE where a refused DELETE is loud.
     **N-263**, **N-450**, **N-451**, **BAL-476**. Record:
     `archive/x_au_f_2_as_built_2026-09-10.md`.
 
-* [x] **X-bl-1** `e0e257a7` -- a cutover's control can fail. SEVEN INSTANCE-DISTINCT perturbations
-  of the SOURCES a row's rule names; EIGHT mutations fire it, three of them the wrong-INSTANCE class
-  that passed its own earlier drafts, and pass 1's two comparison arms are DELETED, unrepresentable
-  since the ownership CHECK. Closed **N-445**. Record: `archive/x_bl_1_as_built_2026-09-09.md`.
+* [x] **X-bl-1** `e0e257a7` -- a cutover's control can FAIL: seven instance-distinct perturbations of the sources a row's rule names, eight mutations firing it. Closed **N-445**. Record: `archive/x_bl_1_as_built_2026-09-09.md`.
 * [x] **X-bl-2a** `ee4fc2d7` -- the payment feed has ONE date producer and ONE
   settled-history derivation (**R-BAL7**), and the amount model's eager load is the CALLER's
   statement (**R-BAL8**); `loan_loaders` became a package at 1,054 lines. Byte-identical on both
@@ -1068,25 +1061,15 @@ section 4, under their unchanged ids.*
   `routes/transfers/_helpers.py` (which counts its own `request.form` site, so it says 35) and
   `steps.md` state the same number and were moved with it.
 *The `X-br` family -- the fresh container per run, its container and four leaves -- is ARCHIVED to `archive/x_br_family_2026-09-09.md` (2026-09-09, developer's call under rule 4). Every id still resolves in `steps.md`.*
-* [x] **X-bu** `142f64cb` -- closed **BAL-462**: deleted `row_valuation.owned_amount` and folded
-  its body into `_amount_source._own_answer`, the spelling the transfer arm has always used. **It
-  grew by one reader under R-BAL4**: the ACTUAL half's fall-through refused an unsettled DERIVED
-  row while the estimate half resolved, so it asks the resolver now. Its obligation on `X-bx` --
-  inherit the last copy of `own_figure(txn.estimated_amount, ...)` -- was DISCHARGED there
-  (`f7b9e094`) by deleting that copy rather than routing it.
-* [x] **X-bv** `66ff070b` -- closed the STRAND at its producer: a leftover now carries
-  `compute_due_date`'s answer, so `declare_derived` cannot leave a template-linked row amount rule 3
-  must price on a due date it has not got. **Its written remedy aimed at the wrong tier.**
+* [x] **X-bu** `142f64cb` -- closed **BAL-462**: `row_valuation.owned_amount` deleted and folded into `_amount_source._own_answer`, growing one reader under **R-BAL4**. Its obligation on `X-bx` was DISCHARGED there (`f7b9e094`) by deleting the copy rather than routing it.
+* [x] **X-bv** `66ff070b` -- closed the STRAND at its producer: a leftover carries `compute_due_date`'s answer, so `declare_derived` cannot leave a row amount rule 3 must price on a due date it has not got. **Its written remedy aimed at the wrong tier**; the CHECK is `X-bv-2`'s.
 * [ ] **X-bv-2** `fix(models): the CHECK the producer fix makes unreachable` -- owns **BAL-463**.
   `template_id IS NULL OR due_date IS NOT NULL`, replacing `b4d9e1c7a052`'s three-term predicate,
   which admitted the undated leftover and refused only the TRANSITION, turning the declare into a
   500. The two-term form needs NO guard: nothing can reach the state.
-* [x] **X-bz** `8e5c3ea5` -- retired the one-time `occurs_on` backfill, its `entrypoint.sh` block,
-  sentinel and tests; `occurs_on IS NULL` meant two things and the filter fenced that conflation.
-  **The sentinel is LEFT**: a rollback restores the old image and it alone then stops the script.
-* [x] **X-ca** `e1cc26b6` -- moved `__table_args__` out to `_transaction_table_args.py`, 997 lines
-  to 667, off the 1000 ceiling so `X-bv-2` can add its constraint. **A COUNTING ORACLE IS NOT AN
-  EQUIVALENCE ORACLE**: purity rests on an AST comparison run out of git, not on a census.
+* [x] **X-bz** `8e5c3ea5` -- retired the one-time `occurs_on` backfill, its `entrypoint.sh` block and tests; `occurs_on IS NULL` meant two things and the filter fenced that conflation.
+  **The sentinel is LEFT, and that is OPERATIONAL rather than historical**: a rollback restores the old image and the sentinel alone then stops the script.
+* [x] **X-ca** `e1cc26b6` -- moved `__table_args__` out to `_transaction_table_args.py`, 997 lines to 667, off the 1000 ceiling for `X-bv-2`'s constraint. **A COUNTING ORACLE IS NOT AN EQUIVALENCE ORACLE**: purity rests on an AST comparison run out of git, not on a census.
 * [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
   `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
   so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43
