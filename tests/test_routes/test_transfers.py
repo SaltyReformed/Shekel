@@ -946,6 +946,96 @@ class TestGridCells:
             assert b'name="amount"' in response.data
             assert b"200" in response.data
 
+    @pytest.mark.parametrize(
+        ("url_template", "expects_a_money_box"),
+        [
+            ("/transfers/cell/{}", False),
+            ("/transfers/quick-edit/{}", True),
+            ("/transfers/{}/full-edit", True),
+        ],
+        ids=["cell", "quick-edit", "full-edit"],
+    )
+    def test_a_DERIVED_transfer_renders_its_definitions_price_not_its_column(
+        self, app, auth_client, seed_user, seed_periods_today,
+        url_template, expects_a_money_box,
+    ):
+        """A transfer that stores NO figure still shows one, and it is the series'.
+
+        **The control plan step balance:X-au-f-1 exists to make possible**, and
+        the one that discriminates: it FAILS on the code this leaf replaces.
+        Every transfer in production today owns its figure, so a test built on
+        one grades nothing -- the column and the amount model return the same
+        `Decimal`, and reverting the leaf leaves it green. This one declares the
+        transfer DERIVED, which is the state plan step `X-au-f-3`'s migration
+        creates for 169 production rows: `budget.transfers.amount` is NULL, and a
+        template reading that column renders Jinja's `None` (finding **N-452**).
+
+        **The series states TWO prices and the assertion picks the one governing
+        the transfer's OWN due date**, so a fragment that resolved on the wrong
+        date -- today, the pay period's start, the newest version -- fails here
+        rather than agreeing by accident. `$450.00` is stated after the
+        transfer's due date and `$400.00` before it, so the answer is `$400.00`.
+
+        The money boxes are SCRAPED out of the response rather than compared
+        against a hand-built payload: the box and its `amount_as_rendered`
+        companion must read ONE expression, which is what ruling **R-JR**'s
+        authorship comparison rests on -- a box and a companion that could
+        resolve differently would report a re-price nobody made.
+        """
+        # Pylint: ``import-outside-toplevel`` (1/1) -- the module's import block
+        # is models and services; the amount model's write door and its enum are
+        # named only by this case.
+        # pylint: disable-next=import-outside-toplevel
+        from app.enums import AmountSourceEnum
+        # pylint: disable-next=import-outside-toplevel
+        from app.services import template_amount_service
+        # pylint: disable-next=import-outside-toplevel
+        from app.services.amount_ownership import declare_derived
+
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings)
+            xfer = _create_transfer(
+                seed_user, seed_periods_today, savings, template=template,
+            )
+            due = seed_periods_today[0].start_date
+            template_amount_service.set_amount(
+                template, Decimal("400.00"),
+                effective_on=due - timedelta(days=30),
+            )
+            template_amount_service.set_amount(
+                template, Decimal("450.00"),
+                effective_on=due + timedelta(days=30),
+            )
+            xfer.due_date = due
+            # The state X-au-f-3's migration writes: the definition prices this
+            # row, so the row stores no figure at all.
+            declare_derived(xfer, AmountSourceEnum.TEMPLATE)
+            db.session.commit()
+            assert xfer.amount is None
+
+            response = auth_client.get(url_template.format(xfer.id))
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            # The failure this guards is Jinja rendering the empty column into
+            # an attribute.  Scoped to `value="None"` rather than the bare word:
+            # the popover's category select legitimately offers `-- None --`,
+            # and a test that fails on THAT is failing for the wrong reason.
+            assert 'value="None"' not in html
+            if not expects_a_money_box:
+                # The display cell prints the figure without cents.
+                assert "400" in html
+                return
+            box = re.search(r'name="amount"[^>]*\bvalue="([^"]*)"', html)
+            companion = re.search(
+                r'name="amount_as_rendered"[^>]*\bvalue="([^"]*)"', html,
+            )
+            assert box is not None, "the amount box rendered no value at all"
+            assert companion is not None, "no amount_as_rendered companion"
+            assert Decimal(box.group(1)) == Decimal("400.00")
+            assert box.group(1) == companion.group(1)
+
     def test_get_full_edit(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transfers/<id>/full-edit returns the full-edit form."""
         with app.app_context():

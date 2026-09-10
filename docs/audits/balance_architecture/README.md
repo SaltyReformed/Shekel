@@ -591,30 +591,39 @@ in SILENCE where a refused DELETE is loud.
   which makes **N-440**'s disagreement state unrepresentable rather than guarded. A migration; moves
   no money. **Gated on `credit_card:CC4d`**, which gives the one derived row that carries no link
   today its own. Closes **N-440**.
-* [ ] **X-au-f** `refactor(transfers): a generated transfer's amount is its definition's` -- the
-  PARENT half of the transfer cutover. `transfers.amount` resolves from the template series for a
-  generated transfer. **UNBLOCKED at `X-bl-1`** (`e0e257a7`, **R-JF**): the control can now fail,
-  and the one arm it cannot yet exercise is precisely the one THIS step gives a population to. It also closes **N-450**, the two `transfer_templates.default_amount`
-  kinds of `N-243`'s dissolved census -- a derive-mode loan payment's, repaired only by a manual
-  click, and an investment contribution's, repaired by nothing -- both the parent's stored figure.
-  **ITS SHADOW HALF SHIPPED AT `X-au-g-2c-2` (`1f2b98a4`, ruling R-IN)** -- a shadow resolves from
-  its parent, the copy in `update_transfer` and the drift corrector in `restore_transfer` are both
-  deleted, and **Transfer Invariant 3's AMOUNT clause is STRUCTURAL for a DERIVED shadow -- not for
-  an owner-priced pair, whose TAKE arm still states one figure on the parent AND each leg
-  (`X-au-m`'s subject), and not for the status and period clauses (`X-bi-6`'s)**. This bullet
-  claimed all three until that step; they are struck rather than left, because a step description
-  that claims work which shipped elsewhere is how the next reader rebuilds it. What this step still owes is the parent,
-  and one consequence worth naming: once `transfers.amount` is empty for a generated transfer,
-  "the owner authored this figure" IS "the parent owns its amount", so
-  `transfer_service._amount.apply_amount_ownership`'s `stated_override` parameter dissolves. `uq_transfers_adhoc_dedupe`
-  is unaffected: its predicate is `transfer_template_id IS NULL`, and an ad-hoc transfer owns its
-  amount. **It runs AFTER the loan leaf and the first draft had them the other way round**, which an
-  adversarial review reproduced: a loan-payment shadow IS a transfer shadow, so this step NULLs it,
-  while `cash_ledger._loan_installment._manual_shadow_amount` reads `shadow.estimated_amount` under
-  a docstring asserting that column is "NOT NULL, always the generated base" -- manual-mode loan
-  payments would be broken for the whole interval between the two leaves. *That producer was
-  `loan_payment_service._manual_shadow_amount:660` until X-au-g-2a moved it; the line number was
-  already stale before the move, so the module path is cited without one.*
+* [ ] **X-au-f** the DECOMPOSED parent of the PARENT-transfer cutover, split
+  2026-09-09 into three leaves once the developer ruled its loan question FROM
+  SCRATCH (**R-BAL10**). It ticks with the last of them, and carries **N-450**.
+  **Its SHADOW half shipped at `X-au-g-2c-2`** (`1f2b98a4`, **R-IN**): a shadow
+  resolves from its parent and Transfer Invariant 3's AMOUNT clause is structural
+  for a DERIVED shadow -- not for an owner-priced pair (`X-au-m`'s) and not for
+  the status and period clauses (`X-bi-6`'s).
+  **`uq_transfers_adhoc_dedupe` is unaffected**: its predicate is
+  `transfer_template_id IS NULL`, and an ad-hoc transfer owns its amount.
+  **TWO of this step's own claims were REFUTED by tracing it.** `stated_override`
+  does NOT dissolve when the column empties -- alone it becomes the only spelling
+  of the conflict resolver's hand-back, and what dissolves it is
+  `update_transfer` stating an `AmountOwnership` (**R-BAL11**). And the ordering
+  hazard this bullet recorded against the loan leaf is DISCHARGED:
+  `_manual_shadow_amount` was deleted at `X-au-g-2c-2`.
+  **The population is measured** and the record below carries it: 169 of 175
+  transfers cut over, every one template-generated, **0 differing from what the
+  series answers on their own due date**, and `budget.loan_payment_settings`
+  holds 0 rows, so every loan arm here grades on a seeded loan.
+  * [x] **X-au-f-1** `ce8bf485` -- every parent-transfer render site takes the
+    amount model's answer, not the column; `render_transfer_cell` makes the
+    context ONE definition rather than six. Byte-identical BY CONSTRUCTION: no
+    writer in `app/` declares a transfer derived. Closed **N-452**; opened
+    **BAL-476**. Record: `archive/x_au_f_1_as_built_2026-09-09.md`.
+  * [ ] **X-au-f-2** `refactor(transfers): a loan payment's parent states its own
+    cash` -- **R-BAL10**'s build: the parent's producer answers the whole cash on
+    the installment's own due date, amount rule 4 moves onto the TRANSFER
+    dispatch, and `_rule_within_parent_transfer` is deleted. Closes **N-263**.
+  * [ ] **X-au-f-3** `refactor(transfers): a generated transfer's amount is its
+    definition's` -- the migration and the writers, plus `X-au-e`'s three owed
+    chooser deletions (**R-JD**), the freeze event's (**R-BAL12**), the due-date
+    gate **BAL-476** names, and `transfer_template_has_paid_history`'s edit.
+    Closes **N-450**, **N-451**, **BAL-476**.
 
 * [x] **X-bl-1** `e0e257a7` -- a cutover's control can fail. SEVEN INSTANCE-DISTINCT perturbations
   of the SOURCES a row's rule names; EIGHT mutations fire it, three of them the wrong-INSTANCE class
