@@ -89,7 +89,21 @@ CAPS = {
     # 1350; 1280 is well under it.  It is the FIRST raise above the 1,200 this
     # document carried before the registries left, and it is taken together
     # with the archive rather than as a substitute for it.
-    "balance": 1280,
+    # **RAISED 1280 -> 1300 by the developer, 2026-09-09**, on rule 4's terms:
+    # a binding cap is his question, and this one bound TWO sessions in one
+    # evening.  `balance:X-bi-6a` + the `X-bi-6` rewrite put the README at
+    # 1272 against the 1260 floor, and the `X-au-f` lane independently
+    # abandoned filing a finding because rule 12 wants a README specification
+    # it could not fit.  **Rule 5's escape was spent first and is now empty**:
+    # the ten archivable entries the 2026-09-05 raise censused were taken with
+    # that raise, and no completed span remains.  The 3.4-lines-per-open-step
+    # calibration still allows ~1350, so this stays well under it.
+    # **It does NOT clear the whole queue, and that is stated rather than
+    # discovered**: the `X-au-f` lane owes a further 8-12 lines for the leaf-2
+    # re-split, which would land at 1280-1284 against this cap's own 1280
+    # floor.  The next raise is therefore already foreseeable and is the
+    # developer's again.
+    "balance": 1300,
     # **RAISED 850 -> 900 by the developer, 2026-09-03**, on rule 4's terms and
     # by the same calibration that raised the balance README.  The cap BOUND
     # while minting `recurrence:R7d-h`: the document sat at 843 with 23 open
