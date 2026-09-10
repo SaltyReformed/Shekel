@@ -112,7 +112,18 @@ CAPS = {
     # the 1300 raise, was stale: 12 multi-line shipped entries hold 37 lines,
     # of which 19 are PROTECTED by "a later step must obey" clauses
     # (`X-au-g-2a`, `X-bl-2a`, `X-bl-2b`, `X-bx`) that a line census cannot
-    # see, leaving **22 genuinely recoverable**.  The developer ruled ARCHIVE
+    # see.  **That census said 22 recoverable and it was WRONG: the true
+    # figure is 18, and 17 were taken.**  It counted a trailing BLANK line and
+    # a following HEADING as entry content, so `X-f1` and `X-bh-2` -- already
+    # one-line pointers -- were scored as condensable.  Re-measured by counting
+    # only INDENTED non-blank continuation lines.  The ruling is unaffected (an
+    # 18-line escape is still non-empty and still short of the 24-line delta),
+    # but the number is corrected here rather than left standing, because a
+    # false figure in a rationale is the defect this project treats as equal to
+    # a code bug.  The archive pass took 17 rather than 18 deliberately: `X-bz`
+    # keeps a second line because its sentinel is a LIVE operational fact about
+    # what a rollback does, and a pointer would bury it.  The developer ruled
+    # ARCHIVE
     # AND RAISE (2026-09-10), the same pairing as 2026-09-05: this raise
     # unblocks the lane at 1296 against a 1310 floor, and the archive pass
     # follows it rather than substituting for it, landing the README near
