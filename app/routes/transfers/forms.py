@@ -12,13 +12,16 @@ from flask_login import current_user, login_required
 from app.extensions import db
 from app.models.ref import Status
 from app.services import category_service, pay_period_service
-from app.services.account_resolver import resolve_grid_account
 from app.services.pay_calendar import calendar_for
 from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
 from app.routes._period_options import period_move_options
-from app.routes._render_helpers import transfer_settlement_amounts
+from app.routes._render_helpers import (
+    render_transfer_cell,
+    transfer_budgets,
+    transfer_settlement_amounts,
+)
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import _get_owned_transfer
 
@@ -31,10 +34,7 @@ def get_cell(xfer_id):
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
-    account = resolve_grid_account(current_user.id, current_user.settings)
-    return render_template(
-        "transfers/_transfer_cell.html", xfer=xfer, account=account,
-    )
+    return render_transfer_cell(xfer)
 
 
 @transfers_bp.route("/transfers/quick-edit/<int:xfer_id>", methods=["GET"])
@@ -45,7 +45,10 @@ def get_quick_edit(xfer_id):
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
-    return render_template("transfers/_transfer_quick_edit.html", xfer=xfer)
+    return render_template(
+        "transfers/_transfer_quick_edit.html",
+        xfer=xfer, budgets=transfer_budgets(xfer),
+    )
 
 
 @transfers_bp.route("/transfers/<int:xfer_id>/full-edit", methods=["GET"])
@@ -86,6 +89,7 @@ def get_full_edit(xfer_id):
     return render_template(
         "transfers/_transfer_full_edit.html",
         xfer=xfer, statuses=statuses, categories=categories, periods=periods,
+        budgets=transfer_budgets(xfer),
         settled=amounts.settled, retained=amounts.retained,
         # The settle-day correction's bounds -- ``max`` from ruling R-EJ,
         # ``min`` from ruling R-EL.  The USER's today via ``display_today()``,

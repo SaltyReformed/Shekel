@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from flask import render_template
+from flask_login import current_user
 
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -23,7 +24,9 @@ from app.services.cash_ledger import (
     amount_basis,
     amounts_by_id,
     recorded_amounts_by_id,
+    resolve_transfer_amount,
 )
+from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
 from app.services.grid_view_service import due_captions_by_id
 from app.services.transaction_service import retained_settle_amounts_by_id
@@ -140,13 +143,85 @@ def fragment_amounts(txn: Transaction) -> RenderAmounts:
     )
 
 
+def transfer_budgets(xfer: Transfer) -> "dict[int, Decimal]":
+    """Return ``{transfer_id: what this transfer's amount IS}``, one entry.
+
+    The transfer twin of :attr:`RenderAmounts.budgets`, and the ONE producer
+    every surface showing a transfer's figure reads (plan step **X-au-f**).
+    The three transfer fragments -- the cell, the quick edit and the full-edit
+    popover -- took ``xfer.amount`` straight off the parent until this step,
+    which was correct exactly while a generated transfer STORED its figure.
+    That column empties for a generated transfer at this step's cutover leaf,
+    at which point a template reading it renders Jinja's ``None`` into a money
+    box and posts the literal string ``"None"`` back through
+    ``TransferUpdateSchema`` (which refuses it).  Asking the amount model
+    instead is the same move ``routes/transactions/forms`` already made for the
+    transaction popover.
+
+    **It is a MAP rather than a scalar for the reason
+    :func:`fragment_amounts` states**: two of the three fragments POST this
+    figure back into a money box, and a missing scalar renders ``value=""`` in
+    silence where an absent map raises.  **What it does NOT buy is protection
+    from the WRONG map**, and an adversarial review is why that is written
+    down: ``budgets`` is one context key over two id spaces that are not
+    disjoint, so a transaction-keyed map handed to a transfer fragment answers
+    a HIT rather than a ``KeyError``.  No path does that today -- the one route
+    that could, ``transactions/forms.get_full_edit``, returns from inside its
+    shadow branch before any transaction map is built -- and the guarantee is
+    that a MISSING map is loud, not that a mismatched one is.
+
+    **It is SEPARATE from :func:`transfer_settlement_amounts` rather than a
+    third field on it, and the split is by what each surface renders.**  The
+    cell and the quick edit show a PLAN and nothing else, while that producer
+    loads the shadow pair and reads two settlement records to answer -- so
+    bundling them would make every cell swap pay for two figures it does not
+    display.  The popover, which shows all three, calls both.  *A first draft of
+    this paragraph cited finding N-296 for that cost and an adversarial review
+    opened the row: N-296 is a per-DEFINITION eager load in BATCH callers, whose
+    remedy is `pricing_load_options` and whose step is `X-bm`.  It says nothing
+    about this.  The argument above needs no citation.*
+
+    **SINGLE-ROW reads only**, the boundary :attr:`Transfer.settled_on`
+    documents.  It costs no query at all today -- ``resolve_transfer_amount``
+    takes no read pass, so a transfer that owns its figure is answered from the
+    row already loaded -- and the boundary is stated now because the leaf that
+    gives a loan payment's parent its producer hands this function a basis, at
+    which point one call per row is what an N+1 looks like.  No batch surface
+    exists to be wrong about: the grid renders a transfer's two SHADOWS as
+    ordinary rows off its own ``budgets`` map (Transfer Invariant 5), and all
+    nine parent-transfer render sites are one-row HTMX swaps.
+
+    Args:
+        xfer: The transfer the fragment renders.  It states no ownership rule of
+            its own and needs none: it reads neither ``user_id`` nor
+            ``scenario_id`` and, on the OWN arm, issues no query at all, so
+            there is nothing here to scope.  Eight of the nine callers reach it
+            through an owner-scoped load; the ninth
+            (``routes/transactions/forms.get_full_edit``) establishes ownership
+            TRANSITIVELY, its shadow having passed ``_get_owned_transaction``
+            and :func:`transfer_settlement_amounts` refusing a foreign or
+            soft-deleted parent one line earlier.  Stated rather than claimed
+            uniform, because an adversarial review measured the difference.
+
+    Returns:
+        ``{xfer.id: Decimal}``, holding exactly one entry.
+
+    Raises:
+        AmountUnresolvable: From the resolver, for a transfer whose rule cannot
+            answer.  A refusal is never a fallback (see
+            :mod:`app.services.cash_ledger._amount_source`).
+    """
+    return {xfer.id: resolve_transfer_amount(xfer)}
+
+
 @dataclass(frozen=True)
 class TransferSettlementAmounts:
     """The TWO settlement maps the transfer full-edit popover must publish.
 
     The transfer half of :class:`RenderAmounts`, and deliberately only two of
-    its three: a transfer's PLAN is ``xfer.amount``, a column the parent carries
-    itself, so there is no budget map to resolve.  What the parent does NOT
+    its three: the PLAN is :func:`transfer_budgets`, a producer of its own
+    because the two fragments that show a plan and no record must not pay for
+    a record they do not render.  What the parent does NOT
     carry is a settlement record -- a transfer's money moves on its two shadow
     legs and each records its own -- so both maps below are read off a leg.
 
@@ -226,6 +301,55 @@ def transfer_settlement_amounts(
     return TransferSettlementAmounts(
         settled={xfer.id: settled[rows.expense.id]},
         retained={xfer.id: retained[rows.expense.id]},
+    )
+
+
+def render_transfer_cell(xfer: Transfer, **extra: Any) -> str:
+    """Render a parent transfer's grid cell with the context it must carry.
+
+    **The transfer twin of :func:`render_transaction_cell`, and this module's
+    own opening paragraph is what it satisfies**: every HTMX response that
+    re-renders a cell must ship the same context, *so the render has exactly one
+    definition with a public name*.  The transaction cell had that; the transfer
+    cell had SIX hand-assembled ``render_template`` calls across three modules
+    and two blueprints, each repeating ``xfer``, a ``resolve_grid_account``
+    lookup, and -- once plan step **X-au-f-1** made the figure a resolved one --
+    a ``budgets`` map.
+
+    **It was extracted at the moment the required context GREW, which is the
+    only moment the omission is cheap.**  A seventh site added later without
+    ``budgets`` is not a blank cell: Jinja raises on the subscript, so it is a
+    500 on a live money surface, and on five of the six sites that surface is
+    already an ERROR path -- a 409 conflict fragment or a designed 4xx -- where a
+    500 replaces the message the user needed.  Naming the render once removes
+    the way to forget.
+
+    The ACCOUNT is resolved here rather than passed, because all six callers
+    resolved the same thing from the same two arguments; it decides which
+    direction arrow the cell draws.
+
+    Args:
+        xfer: The transfer to render.  Owner-established by the caller -- see
+            :func:`transfer_budgets`, which states what that does and does not
+            guarantee.
+        **extra: Forwarded to ``render_template`` -- ``wrap_div=True``,
+            ``conflict=True``, ``error=<message>``, the flags each caller adds
+            on top of the shared context.
+
+    Returns:
+        Rendered HTML string.
+
+    Raises:
+        AmountUnresolvable: From :func:`transfer_budgets`, for a transfer whose
+            rule cannot answer.  Unreachable while every transfer owns its
+            figure; the leaves after this one are what give it a population.
+    """
+    return render_template(
+        "transfers/_transfer_cell.html",
+        xfer=xfer,
+        account=resolve_grid_account(current_user.id, current_user.settings),
+        budgets=transfer_budgets(xfer),
+        **extra,
     )
 
 

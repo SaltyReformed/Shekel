@@ -29,6 +29,7 @@ from app.routes._period_options import period_move_options
 from app.routes._render_helpers import (
     fragment_amounts,
     render_transaction_cell,
+    transfer_budgets,
     transfer_settlement_amounts,
 )
 from app.routes.transactions._bp import transactions_bp
@@ -137,6 +138,7 @@ def get_full_edit(txn_id):
             categories=categories,
             source_txn_id=txn.id,
             periods=periods,
+            budgets=transfer_budgets(xfer),
             settled=xfer_amounts.settled,
             retained=xfer_amounts.retained,
             # The settle-day correction's bounds -- ``max`` from ruling R-EJ,

@@ -2,7 +2,9 @@
    Replaces cell content on click for fast amount edits.
    Expand button (⋯) or F2 opens the full edit popover.
 
-   Expected context: xfer -- a Transfer object.
+   Expected context: xfer -- a Transfer object, budgets --
+   ``{transfer_id: what this transfer's amount IS}``, from
+   ``routes._render_helpers.transfer_budgets``.
 
    Finalised transfers (is_immutable: Paid / Received /
    Cancelled) lock the amount: the input is disabled (so it neither
@@ -22,16 +24,22 @@
          step="0.01"
          min="0.01"
          name="amount"
-         value="{{ xfer.amount }}"
+         value="{{ budgets[xfer.id] }}"
          class="form-control form-control-sm txn-quick-input flex-1-min-0"
          aria-label="Edit amount for {{ xfer.name or 'Transfer' }}"
          {% if locked %}disabled{% else %}autofocus{% endif %}>
   {# WHAT WE SHOWED (ruling R-JR, plan step X-au-h) -- the transfer popover's
      twin of this carries the same companion and states the argument in full.
      This door offers ONLY an amount, so submitting it unchanged is the
-     ordinary way to dismiss it. #}
+     ordinary way to dismiss it.
+
+     It reads the SAME expression as the box above, which is the property the
+     companion rule depends on rather than a tidiness: the door decides
+     authorship by asking whether what came back differs from what was
+     rendered, so a box and a companion resolved differently would report a
+     re-price nobody made. #}
   <input type="hidden" name="amount_as_rendered"
-         value="{{ xfer.amount }}">
+         value="{{ budgets[xfer.id] }}">
   <button type="button"
           class="btn btn-sm btn-link p-0 xfer-expand-btn"
           title="More options (F2)"

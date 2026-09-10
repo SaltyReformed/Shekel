@@ -3,7 +3,11 @@
    Contains amount, status, category, notes, and quick status action buttons.
    Form submits via HTMX PATCH targeting the original cell by ID.
 
-   Expected context: xfer, statuses, categories, settled, retained.
+   Expected context: xfer, statuses, categories, budgets, settled, retained.
+   ``budgets`` is ``{transfer_id: what this transfer's amount IS}`` from
+   ``routes._render_helpers.transfer_budgets``; ``settled`` and ``retained``
+   come from ``transfer_settlement_amounts``.  Two producers rather than one
+   because the cell and the quick edit render a plan and no record.
    Optional: source_txn_id -- when opened from a shadow transaction cell,
    the form targets #txn-cell-<source_txn_id> instead of #xfer-cell-<xfer.id>.
 
@@ -75,7 +79,7 @@
       <div class="col">
         <label class="form-label mb-0 small">Amount</label>
         <input type="number" step="0.01" min="0.01" name="amount"
-               value="{{ xfer.amount }}"
+               value="{{ budgets[xfer.id] }}"
                class="form-control form-control-sm"
                placeholder="Amount"
                {{ 'disabled' if locked else '' }}>
@@ -91,9 +95,11 @@
            Rendering the companion from the SAME expression as the input means
            it keeps agreeing with the box when that expression becomes the
            resolved figure rather than the stored one -- the cutover moves both
-           or neither. #}
+           or neither.  **That expression is now the amount model's answer**
+           (X-au-f's reader leaf): both this and the box read ``budgets``, so
+           the two move together by construction rather than by review. #}
         <input type="hidden" name="amount_as_rendered"
-               value="{{ xfer.amount }}">
+               value="{{ budgets[xfer.id] }}">
       </div>
       {# **The ACTUAL: what the bank really moved.**
 

@@ -13,7 +13,7 @@ verbatim from the pre-split ``app/routes/transfers.py``.
 
 import logging
 
-from flask import jsonify, render_template, request
+from flask import jsonify, request
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
@@ -27,7 +27,6 @@ from app.models.ref import Status
 from app import ref_cache
 from app.enums import StatusEnum
 from app.services import status_seam, transfer_service
-from app.services.account_resolver import resolve_grid_account
 from app.services.settle_day import settle_day_from_columns
 from app.services.state_machine import finalised_edit_rejection
 from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
@@ -38,6 +37,7 @@ from app.utils.error_fragments import (
     flatten_schema_errors,
 )
 from app.routes._authored_figure import figure_was_authored
+from app.routes._render_helpers import render_transfer_cell
 from app.utils.rendered_figure import as_rendered_field
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import (
@@ -391,10 +391,7 @@ def create_ad_hoc():
         return _handle_adhoc_integrity(exc, data)
     logger.info("user_id=%d created ad-hoc transfer (id=%d)", current_user.id, xfer.id)
 
-    account = resolve_grid_account(current_user.id, current_user.settings)
-    response = render_template(
-        "transfers/_transfer_cell.html", xfer=xfer, account=account, wrap_div=True,
-    )
+    response = render_transfer_cell(xfer, wrap_div=True)
     return response, 201, {"HX-Trigger": "balanceChanged"}
 
 
@@ -714,11 +711,7 @@ def _adhoc_dedupe_idempotent_response(data):
         "Duplicate ad-hoc transfer prevented; returning existing id=%d "
         "(idempotent success)", existing.id,
     )
-    account = resolve_grid_account(current_user.id, current_user.settings)
-    response = render_template(
-        "transfers/_transfer_cell.html",
-        xfer=existing, account=account, wrap_div=True,
-    )
+    response = render_transfer_cell(existing, wrap_div=True)
     return response, 201, {"HX-Trigger": "balanceChanged"}
 
 
