@@ -1,17 +1,27 @@
 """
 Shekel Budget App -- Cash ledger: what one loan INSTALLMENT costs.
 
-Amount rule 4's per-shadow tier: a loan's rate periods and payment day
-(:class:`_LoanCashBasis`), and the rule that prices one shadow against them --
-the DERIVE arm's installment P&I plus that installment's own escrow plus any
-standing extra.  The MANUAL arm lived here too until plan step X-au-g-2c-2;
-see the note at the foot of this file for where it went and why.
+Amount rule 4's per-INSTALLMENT tier: a loan's rate periods and payment day
+(:class:`_LoanCashBasis`), and the rule that prices one installment against
+them -- the DERIVE arm's installment P&I plus that installment's own escrow
+plus any standing extra.  The MANUAL arm lived here too until plan step
+X-au-g-2c-2; see the note at the foot of this file for where it went and why.
+
+**Nothing here takes a ROW, and plan step X-au-f-2 is what re-typed it**
+(ruling **R-BAL10**).  :func:`_installment_cash` took the payment SHADOW and
+read two columns off it; the answer's home is the PARENT transfer now, which
+carries the identical two facts under the identical names and is not a
+:class:`~app.models.transaction.Transaction`.  So it takes the two VALUES --
+the same shape :func:`app.services.loan_loaders.installment_for` beneath it
+already had, and the same shape
+:func:`app.services.settle_day.settle_day_from_columns` takes precisely so a
+transfer can answer it.  The module names no model at all as a result.
 
 **Every contractual term here resolves on the INSTALLMENT it governs, never on
 a read date** (ruling **R-IJ**, plan step X-au-g-2b).  The basis holds the
 loan's term SET -- a pure function of its params and its rate feed, dated by
-nothing -- and :func:`_shadow_live_amount` derives the shadow's due date once
-and reads both the P&I and the escrow on it.  Nothing in this module, or in
+nothing -- and :func:`_installment_cash` derives the installment date once and
+reads both the P&I and the escrow on it.  Nothing in this module, or in
 the package above it, reads a wall clock.
 
 **It lives in THIS package rather than in ``loan_payment_service``, and plan
@@ -77,26 +87,27 @@ Imports no sibling, so it is the bottom of this package's pricing line:
 """
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
-from app.models.transaction import Transaction
 from app.services import escrow_calculator, loan_resolver
 from app.services.loan_loaders import (
+    installment_for,
     load_loan_params,
     load_rate_changes,
-    loan_payment_due_date,
 )
 from app.services.rate_period_engine import RatePeriod, period_for_date
 from app.utils.money import round_money
 
 @dataclass(frozen=True)
 class _LoanCashBasis:
-    """The two loan-level facts a shadow's live cash is built from.
+    """The two loan-level facts one installment's live cash is built from.
 
     Both fall out of ONE ``LoanParams`` load (:func:`_resolve_loan_basis`), so
-    they are returned together rather than re-queried per shadow: the rate
+    they are returned together rather than re-queried per row: the rate
     periods are the loan's TERMS over its whole life, the payment day the
-    contractual constant that turns a shadow into the installment it satisfies.
+    contractual constant that turns a payment into the installment it
+    satisfies.
 
     **It holds the loan's term SET rather than one resolved P&I, and ruling
     R-IJ is why** (plan step X-au-g-2b).  A loan's contractual terms resolve on
@@ -106,8 +117,8 @@ class _LoanCashBasis:
     recast falls between them.  What a pass CAN share is the period set, which
     is a pure function of the loan's params and its rate feed and depends on no
     date at all -- so it is resolved once per loan per pass here and each
-    shadow reads the period governing its own due date
-    (:func:`_shadow_live_amount`), exactly as its escrow already resolves on
+    payment reads the period governing its own due date
+    (:func:`_installment_cash`), exactly as its escrow already resolves on
     that date.
 
     Attributes:
@@ -117,8 +128,8 @@ class _LoanCashBasis:
             a configured loan: period 0 always starts at origination.
         payment_day: The loan's contractual day-of-month due day, 1-31, from
             :attr:`app.models.loan_params.LoanParams.payment_day` -- the
-            fallback basis :func:`app.services.loan_loaders.loan_payment_due_date`
-            needs for a shadow carrying no stored ``due_date``.
+            fallback basis :func:`app.services.loan_loaders.installment_for`
+            needs for a payment carrying no stored ``due_date``.
     """
 
     periods: list[RatePeriod]
@@ -141,17 +152,17 @@ def _resolve_loan_basis(loan_account_id: int) -> _LoanCashBasis | None:
     the same producer this now calls, DECOMPOSED rather than replaced:
     ``compute_monthly_payment_baseline`` is by its own definition
     ``period_for_date(resolve_periods(params, rate_changes), as_of).period_pi``,
-    so resolving the periods here and letting each shadow pick its own period
-    (:func:`_shadow_live_amount`) reads the same figure from the same
+    so resolving the periods here and letting each payment pick its own period
+    (:func:`_installment_cash`) reads the same figure from the same
     derivation on a date the pass no longer chooses.  The periods are a pure
     function of the params and the rate feed, so there is no date left to pin:
     a resolver reads no wall clock.
 
     The escrow term is deliberately NOT added here for the reason the P&I is
     no longer resolved here -- it is per-INSTALLMENT
-    (:func:`_shadow_live_amount`), not one figure per loan.  A future-dated
+    (:func:`_installment_cash`), not one figure per loan.  A future-dated
     escrow version means a December and a January payment carry different
-    escrow, so the escrow must be resolved against each shadow's own due date
+    escrow, so the escrow must be resolved against each payment's own due date
     rather than folded into a single loan-level PITI; ruling R-IJ is that same
     rule, stated for the P&I term beside it.
 
@@ -221,26 +232,41 @@ def _resolve_loan_basis(loan_account_id: int) -> _LoanCashBasis | None:
     )
 
 
-def _shadow_live_amount(
+def _installment_cash(
     basis: _LoanCashBasis,
     escrow_lines: list,
-    shadow: Transaction,
+    due_date: "date | None",
+    period_start: date,
     extra_principal: Decimal,
 ) -> Decimal:
-    """Derive-mode live cash for a loan-payment shadow: its INSTALLMENT's P&I + escrow + extra.
+    """Derive-mode live cash for one loan payment: its INSTALLMENT's P&I + escrow + extra.
 
     The single expression every reader of an AUTO-DERIVED loan payment's cash
     builds it from, so no two can disagree.  It backed a read-time override and
     a settle-time capture as one method until plan step X-au-g-2c-2 deleted
-    both: a derive-mode shadow stores no figure for an override to supersede,
+    both: a derive-mode payment stores no figure for an override to supersede,
     and a settle books what the amount model resolves
-    (:func:`._amount_source._loan_payment_answer` -> :meth:`derive_cash`), so
-    the display figure and the booked one are one expression rather than two
-    kept in step.
+    (:func:`._amount_source.resolve_transfer_amount`), so the display figure and
+    the booked one are one expression rather than two kept in step.
 
-    **BOTH contractual terms resolve on the shadow's own DUE date, and that is
-    ruling R-IJ** (plan step X-au-g-2b): the due date
-    (:func:`app.services.loan_loaders.loan_payment_due_date`) is derived ONCE
+    **It takes the two DATING COLUMNS rather than the row that carries them,
+    and plan step X-au-f-2 is what re-typed it** (ruling **R-BAL10**).  It was
+    ``_shadow_live_amount(basis, escrow_lines, shadow, extra_principal)`` and
+    read ``shadow.due_date`` and ``shadow.pay_period.start_date`` through
+    :func:`app.services.loan_loaders.loan_payment_due_date`.  R-BAL10 puts a
+    loan payment's amount on the PARENT transfer, which carries both of those
+    facts under the same names and is not a
+    :class:`~app.models.transaction.Transaction`, so a row-shaped reader could
+    not be handed one.  Taking the values is the shape
+    :func:`app.services.loan_loaders.installment_for` beneath it already had
+    for exactly this reason -- the transfer WRITE boundary must date an
+    installment before any row exists -- and the shape
+    :func:`app.services.settle_day.settle_day_from_columns` takes *precisely so
+    a transfer can answer it*.
+
+    **BOTH contractual terms resolve on the payment's own DUE date, and that is
+    ruling R-IJ** (plan step X-au-g-2b): the installment date
+    (:func:`app.services.loan_loaders.installment_for`) is derived ONCE
     here and drives the P&I -- the level payment of the rate period containing
     it (:func:`~app.services.rate_period_engine.period_for_date`) -- and the
     escrow -- :func:`~app.services.escrow_calculator.escrow_monthly_as_of` on
@@ -253,11 +279,21 @@ def _shadow_live_amount(
     ``period_for_date(periods, on_date)``), so the cash built into a payment and
     the interest and escrow its split backs out of principal read one period and
     one escrow version, by construction (the cash==split invariant) rather than
-    by coincidence.  **A charge is dated at the EARLIEST installment due in its
-    accrual period, which for the one-payment-a-month shape IS this due date**;
-    a SECOND payment in one period deliberately clears no fresh charge, so there
-    the cash carries an escrow the split does not back out and the whole payment
-    is principal (plan step X-au-g-2c-3b-2).
+    by coincidence.  **That still holds now the cash is dated from the PARENT
+    and the split from the SHADOW**: ``due_date`` is a mirrored field with the
+    parent canonical (``models/transfer.py``), written to all three rows in one
+    statement by ``transfer_service._update`` and corrected on restore.  A
+    census of every writer of a shadow's ``due_date`` or ``pay_period_id``
+    across ``app/`` returns those three sites and no other -- no bulk update, no
+    ``setattr`` splat reaches a leg -- so the two reads are one value.
+    **It is one value with TWO HOMES kept equal by a maintenance contract,
+    which is rule 14's own shape**: this step created the second read rather
+    than inheriting it, and what deletes it is ``X-bi-6`` removing the shadow
+    rows -- one row is left to date anything from.  **A charge is dated at the EARLIEST installment
+    due in its accrual period, which for the one-payment-a-month shape IS this
+    due date**; a SECOND payment in one period deliberately clears no fresh
+    charge, so there the cash carries an escrow the split does not back out and
+    the whole payment is principal (plan step X-au-g-2c-3b-2).
     Until R-IJ that held for the escrow alone: the P&I came from whatever
     period contained the READ date, so on an ARM whose rate had adjusted
     between the two the residual ``cash - interest - escrow`` absorbed the
@@ -275,8 +311,10 @@ def _shadow_live_amount(
     ``extra_principal`` (the standing overpayment, spec Sec. 6) is added on top
     in BOTH the display and the settle freeze, and the split's residual
     ``cash - interest - escrow`` lands it in principal automatically.
-    ``round_money`` holds the E-26 sum-then-round boundary even though the terms
-    are already 2dp.
+    **``round_money`` is ONE call over THREE terms and must not become two**
+    (ruling E-26): summing then rounding once is the boundary, where
+    ``round_money(round_money(pi + escrow) + extra)`` would double-round and
+    part a cutover advertised as byte-identical from its predecessor by a cent.
 
     Args:
         basis: The loan's :class:`_LoanCashBasis` (:func:`_resolve_loan_basis`),
@@ -286,16 +324,21 @@ def _shadow_live_amount(
             read -- so passing them separately would let a call site pair one
             loan's terms with another's due day.
         escrow_lines: The loan's escrow lines with their full version history.
-        shadow: The payment shadow whose installment dates BOTH resolutions.
+        due_date: The payment's own stored due date, or ``None``.  Both dating
+            values come off ONE row at every call site, for the reason *basis*
+            is taken whole.
+        period_start: The start date of the payment's pay period -- the
+            fallback basis, read on every call because
+            :func:`~app.services.loan_loaders.installment_for` takes it eagerly.
         extra_principal: The recurring payment's standing extra principal
             (``0.00`` when none), from :func:`loan_payment_config`.
 
     Returns:
         ``round_money(period_for_date(basis.periods, due).period_pi
         + escrow_monthly_as_of(lines, due) + extra_principal)``, where ``due``
-        is the shadow's installment date.
+        is the installment this payment satisfies.
     """
-    due = loan_payment_due_date(shadow, basis.payment_day)
+    due = installment_for(due_date, period_start, basis.payment_day)
     monthly_pi = period_for_date(basis.periods, due).period_pi
     escrow = escrow_calculator.escrow_monthly_as_of(escrow_lines, due)
     return round_money(monthly_pi + escrow + extra_principal)
@@ -308,10 +351,12 @@ def _shadow_live_amount(
 # stored base plus the standing extra -- under a docstring asserting that
 # column was "the recurring base".  A transfer shadow stores no figure at all
 # now: it declares ``PARENT_TRANSFER`` and reads its parent through the amount
-# model, so the manual arm is ``resolve_transfer_amount(txn.transfer) + extra``
-# (:func:`._amount_source._loan_payment_answer`) -- the DEFINITION's price
+# model, so the manual arm is the parent's own series price plus the extra
+# (:func:`._amount_source._loan_payment_cash`) -- the DEFINITION's price
 # rather than a copy of it, which is the same arm ruling **R-FI** gives every
-# other manually-priced row.
+# other manually-priced row.  Plan step X-au-f-2 moved that arm off the SHADOW
+# dispatch onto the TRANSFER's (**R-BAL10**), which is where both arms of rule
+# 4 now live.
 #
 # **The two answered the same number for every row that existed**: Transfer
 # Invariant 3 held on the column, so a shadow's ``estimated_amount`` WAS its

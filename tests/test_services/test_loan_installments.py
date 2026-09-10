@@ -47,6 +47,7 @@ from tests._test_helpers import (
     settle_day_columns,
     settlement_columns,
 )
+from app.models.amount_ownership import AmountOwnership
 
 #: The ``payment_day`` of the loans this file builds.
 _PAYMENT_DAY = 1
@@ -77,7 +78,7 @@ def _transfer_to_loan(
             to_account_id=loan.id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
-            amount=amount,
+            amount_ownership=AmountOwnership.own(amount),
             status_id=ref_cache.status_id(status_enum),
             category_id=seed_user["categories"]["Rent"].id,
             settle_day=None if settled_on is None else an_entered_day(settled_on),

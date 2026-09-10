@@ -3470,7 +3470,7 @@ class TestResolveConflictsShadowGuard:
                 to_account_id=savings.id,
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,
-                amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 status_id=projected.id,
                 category_id=outgoing.id,
             ),

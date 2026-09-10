@@ -75,7 +75,7 @@ def _create_basic_transfer(td):
             to_account_id=td["savings_account"].id,
             pay_period_id=td["periods"][0].id,
             scenario_id=td["scenario"].id,
-            amount=Decimal("250.00"),
+            amount_ownership=AmountOwnership.own(Decimal("250.00")),
             status_id=td["projected_status"].id,
             category_id=td["categories"]["Rent"].id,
         ),

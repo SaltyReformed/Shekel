@@ -703,7 +703,7 @@ def latest_settled_payment_due_date(
     Keys on the payment's DUE date -- contract time, the EXACT date the fold's
     walk (:func:`app.services.loan_ledger.walk_loan_ledger`) and the settle-time
     cash freeze
-    (:func:`app.services.cash_ledger._loan_installment._shadow_live_amount`) resolve each
+    (:func:`app.services.cash_ledger._loan_installment._installment_cash`) resolve each
     payment's escrow at (ruling D5, finding N-34).  It is the SAME
     :func:`_settled_payment_due_dates` derivation the anchor-ordering guards
     read, so the escrow guard, the walk, and the tax figure provably agree on

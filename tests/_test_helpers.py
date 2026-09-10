@@ -2966,7 +2966,7 @@ def create_transfer(
             to_account_id=to_account.id,
             pay_period_id=period.id,
             scenario_id=scenario_id,
-            amount=amount,
+            amount_ownership=AmountOwnership.own(amount),
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             category_id=None,
             name=name,
@@ -4881,7 +4881,9 @@ def state_template_price(template, amount=None, *, effective_on=None):
 
     **A fixture that constructs a template and stops has built a definition the
     application cannot build**, and since plan step balance:X-au-e that
-    difference is fatal rather than cosmetic.  Both doors that create a
+    difference is fatal rather than cosmetic -- for a TRANSFER template since
+    balance:X-au-f, which is the twin obligation this helper was written
+    anticipating.  Both doors that create a
     transaction template -- ``routes/templates/crud.create_template`` and
     ``routes/salary/profiles._salary_template`` -- call
     ``template_amount_service.set_amount`` immediately after the flush, so every
@@ -5480,6 +5482,11 @@ def make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
     )
     db_session.add(template)
     db_session.flush()
+    # A definition STATES its price, exactly as ``routes/transfers/templates``
+    # does on every create.  Since plan step X-au-f a generated TRANSFER stores
+    # no figure either, so a bare-constructed transfer template generates rows
+    # nothing can price -- the transaction twin's obligation, one table over.
+    state_template_price(template)
     # The definition first, then the cadence onto it (plan step R-F6).
     make_every_period_rule(db_session, template)
     return template
@@ -5558,13 +5565,21 @@ def make_loan_payment_template(
         name=f"Loan Payment {loan_account.id}",
         default_amount=Decimal(amount),
     )
+    db_session.add(template)
+    db_session.flush()
+    # **Priced BEFORE the settings row is attached, and the order is the same
+    # one ``track_payment`` takes.**  ``template_amount_service.owns_its_amount``
+    # is False for a DERIVE-mode loan payment, so the write door would refuse a
+    # version stated after the flip -- and the versions a template already holds
+    # stay as the record of what was stated while it was manual, which is what
+    # a MANUAL payment's base is read from since plan step X-au-f.
+    state_template_price(template)
     # Attached through the relationship so it flushes with the template, the
     # way the route attaches it.
     template.settings = LoanPaymentSettings(
         derive_from_loan=derive_from_loan,
         extra_principal=Decimal(extra_principal),
     )
-    db_session.add(template)
     db_session.flush()
     # The definition first, then the cadence onto it (plan step R-F6).
     if cadence is None:
@@ -7108,7 +7123,7 @@ class PlantedPricing:
         """
         return self._overrides.get((template_id, pay_period_id))
 
-    def derive_cash(self, shadow, loan_account_id, extra_principal):
+    def derive_cash(self, due_date, period_start, loan_account_id, extra):
         """REFUSE: a planted basis cannot price a loan.
 
         :func:`planted_basis` puts this same object in ``AmountBasis.loans``,
@@ -7121,17 +7136,24 @@ class PlantedPricing:
         the rule under test" was the whole of the guarantee before this; a
         promise a test can break silently is not one.
 
+        **The signature took a payment SHADOW until plan step X-au-f-2**, where
+        ruling **R-BAL10** re-typed the real producer onto the two dating VALUES
+        so a parent TRANSFER could answer it.  A double whose signature has
+        drifted from its subject stops standing in for it, so this mirrors the
+        real one exactly.
+
         Args:
-            shadow: Ignored.
+            due_date: Ignored.
+            period_start: Ignored.
             loan_account_id: Ignored.
-            extra_principal: Ignored.
+            extra: Ignored.
 
         Raises:
             AssertionError: Always.
         """
         raise AssertionError(
             "A planted basis cannot price a loan payment: PlantedPricing "
-            "stands in for the SALARY derivation only. This row reached "
+            "stands in for the SALARY derivation only. This transfer reached "
             "AmountRule.LOAN_PAYMENT, so the case needs a real basis "
             "(amount_basis) over a seeded loan -- a planted map cannot grade "
             "a derivation."
@@ -7171,6 +7193,45 @@ def planted_basis(*rows, overrides=None):
         scenario_id=getattr(rows[0], "scenario_id", 0) if rows else 0,
         salary=planted,
         loans=planted,
+    )
+
+
+def transfer_amount(xfer):
+    """What one parent TRANSFER is worth -- its amount, resolved.
+
+    **The parent twin of :func:`shadow_amount`, and it exists for the same
+    reason one step later.**  That helper was written when plan step
+    X-au-g-2c-2 moved a SHADOW's figure from a column to a value; plan step
+    X-au-f does the same for the PARENT, so a case asserting
+    ``xfer.amount == Decimal(...)`` on a generated transfer is now comparing a
+    figure against ``None``.  What those cases were ABOUT -- what the transfer
+    is worth -- is asked of the amount model here.
+
+    An AD-HOC transfer still owns its figure, so this answers the same column it
+    always did for one; the helper is right for both kinds, which is what stops
+    a case having to know which it holds.
+
+    A FRESH basis per call, for the reason :func:`shadow_amount` states: a case
+    that edits a transfer and re-reads must see the new figure, and a basis
+    memoizes for the length of a read pass.
+
+    Args:
+        xfer: The transfer to price.
+
+    Returns:
+        The ``Decimal`` the transfer resolves to.
+
+    Raises:
+        AmountUnresolvable: From the amount model, for a transfer whose rule
+            cannot price it -- a refusal is never a fallback.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.cash_ledger import amount_basis, resolve_transfer_amount
+
+    return resolve_transfer_amount(
+        xfer, amount_basis(xfer.user_id, xfer.scenario_id),
     )
 
 
@@ -7620,6 +7681,41 @@ def pay_periods_hydrated():
         yield loaded
     finally:
         event.remove(Session, "loaded_as_persistent", _record)
+
+
+def rendered_transfer_amount(xfer) -> str:
+    """Return what the transfer FORM would have rendered in its amount box.
+
+    **What a route test must post as ``amount_as_rendered``**, and the ONE
+    spelling of it, because getting this wrong is how a route test stops
+    exercising the door it names.  The three transfer fragments read
+    ``budgets[xfer.id]`` off ``routes._render_helpers.transfer_budgets`` since
+    plan step balance:X-au-f-1 -- the amount model's answer, not the
+    ``budget.transfers.amount`` COLUMN -- so a payload built from that column
+    stopped being what a browser sends the moment X-au-f emptied it for a
+    generated transfer.
+
+    Sixteen call sites posted ``str(xfer.amount)`` until X-au-f, which was the
+    same string while every transfer owned its figure and became the literal
+    ``"None"`` the day the cutover landed.  ``TransferUpdateSchema`` then
+    refuses the field and the PATCH returns 422, so every one of those cases
+    would have been asserting against a rejected request rather than against
+    the authorship rule it was written for -- the shape
+    ``feedback_a_route_test_must_post_what_the_template_emits`` names.
+
+    Args:
+        xfer: The transfer whose form is being simulated.
+
+    Returns:
+        The rendered figure as the form's string, ready to post.
+    """
+    from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
+        amount_basis, resolve_transfer_amount,
+    )
+
+    return str(resolve_transfer_amount(
+        xfer, amount_basis(xfer.user_id, xfer.scenario_id),
+    ))
 
 
 def amount_basis_for(row):

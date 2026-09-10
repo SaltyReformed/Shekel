@@ -605,7 +605,20 @@ in SILENCE where a refused DELETE is loud.
   today its own. Closes **N-440**.
 * [ ] **X-au-f** the DECOMPOSED parent of the PARENT-transfer cutover, split
   2026-09-09 into three leaves once the developer ruled its loan question FROM
-  SCRATCH (**R-BAL10**). It ticks with the last of them, and carries **N-450**.
+  SCRATCH (**R-BAL10**) and RE-CUT into two on 2026-09-10 (**R-BAL14**). It ticks with the
+  last of them, and carries **N-450**.
+  **X-au-f-3 is ABSORBED into `X-au-f-2` rather than withdrawn, and the reason
+  is a MEASUREMENT rather than a preference.** The split put the parent's
+  PRODUCER in one leaf and the migration that empties its column in the next,
+  which are two halves of ONE act: between them every reader asks the parent
+  while the parent still stores its stale snapshot, so a derive-mode payment
+  freezes at its creation-time P&I + escrow (`$1,499.10` against a re-escrowed
+  `$1,599.10`) and a manual one silently drops its standing extra (`$1,300.00`
+  against `$1,450.00`). 27 suite cases across three integration files reproduce
+  it. `$0.00` on production, where `budget.loan_payment_settings` is empty, and
+  ONE *auto-track* click from live -- `track_payment` flips the settings row and
+  never touches `amount_source_id`. The DESIGN is unchanged; the boundary was
+  wrong.
   **Its SHADOW half shipped at `X-au-g-2c-2`** (`1f2b98a4`, **R-IN**): a shadow
   resolves from its parent and Transfer Invariant 3's AMOUNT clause is structural
   for a DERIVED shadow -- not for an owner-priced pair (`X-au-m`'s) and not for
@@ -627,15 +640,27 @@ in SILENCE where a refused DELETE is loud.
     context ONE definition rather than six. Byte-identical BY CONSTRUCTION: no
     writer in `app/` declares a transfer derived. Closed **N-452**; opened
     **BAL-476**. Record: `archive/x_au_f_1_as_built_2026-09-09.md`.
-  * [ ] **X-au-f-2** `refactor(transfers): a loan payment's parent states its own
-    cash` -- **R-BAL10**'s build: the parent's producer answers the whole cash on
-    the installment's own due date, amount rule 4 moves onto the TRANSFER
-    dispatch, and `_rule_within_parent_transfer` is deleted. Closes **N-263**.
-  * [ ] **X-au-f-3** `refactor(transfers): a generated transfer's amount is its
-    definition's` -- the migration and the writers, plus `X-au-e`'s three owed
-    chooser deletions (**R-JD**), the freeze event's (**R-BAL12**), the due-date
-    gate **BAL-476** names, and `transfer_template_has_paid_history`'s edit.
-    Closes **N-450**, **N-451**, **BAL-476**.
+  * [ ] **X-au-f-2** `refactor(transfers): a generated transfer's amount is its
+    definition's` -- THE CUTOVER, in one act. **R-BAL10**'s build: the parent's
+    producer answers the whole cash on the installment's own due date, amount
+    rule 4 moves onto the TRANSFER dispatch, and `_rule_within_parent_transfer`
+    is deleted. The migration (`b7e4c1f38a20`) then empties `transfers.amount`
+    for the 169 non-override generated rows, behind a per-CLASS precondition:
+    an ordinary row and a MANUAL payment must agree with what their definition
+    answers (the manual one against series + the standing extra, not the series
+    alone), while a DERIVE-mode payment is asked only for a resolvable loan --
+    its stored figure is the snapshot whose drift this deletes. Every WRITER
+    states an `AmountOwnership` rather than a figure (**R-BAL11**): the create
+    door, `update_transfer`, `DerivedTransferFields` -- whose diff would
+    otherwise re-send `default_amount` and silently UN-DERIVE each row on the
+    next regeneration, the hazard that class's own docstring predicted -- and
+    the conflict resolver, whose "use" states no figure for either kind now
+    (**R-JD**). The settle freeze event goes with its predicate and its case
+    (**R-BAL12**), the popover renders a generated transfer's due date as TEXT
+    behind a route gate (**BAL-476**), and `transfer_template_has_paid_history`
+    drops the `is_deleted` filter its twin dropped at `X-au-e`. Closes
+    **N-263**, **N-450**, **N-451**, **BAL-476**. Record:
+    `archive/x_au_f_2_as_built_2026-09-10.md`.
 
 * [x] **X-bl-1** `e0e257a7` -- a cutover's control can fail. SEVEN INSTANCE-DISTINCT perturbations
   of the SOURCES a row's rule names; EIGHT mutations fire it, three of them the wrong-INSTANCE class

@@ -71,6 +71,8 @@ from tests._test_helpers import (
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
 from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import state_own_amount
+from tests._test_helpers import state_template_price
+from tests._test_helpers import transfer_amount
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -153,6 +155,10 @@ def _recurring_transfer_template(seed_user, savings, recurs=True):
     )
     db.session.add(template)
     db.session.flush()
+    # Its definition STATES a price, as every app-side create door
+    # does: since plan step X-au-f a generated transfer stores no
+    # figure and reads this series on its own due date.
+    state_template_price(template)
     rule = _every_period_rule(template) if recurs else None
     if rule is not None:
         transfer_recurrence.generate_for_template(
@@ -500,7 +506,7 @@ class TestClearingATransferTemplatesRecurrence:
             ).all()
             assert len(pair) == 2
             assert {t.transaction_type_id for t in pair} == {income_id, expense_id}
-            assert all(shadow_amount(t) == xfer.amount for t in pair)
+            assert all(shadow_amount(t) == transfer_amount(xfer) for t in pair)
             assert all(t.pay_period_id == xfer.pay_period_id for t in pair)
         # 4 survivors x 2 legs; the 6 swept transfers took 12 shadows with them.
         assert db.session.query(Transaction).filter(
@@ -534,6 +540,10 @@ class TestClearingATransferTemplatesRecurrence:
         )
         db.session.add(template)
         db.session.flush()
+        # Its definition STATES a price, as every app-side create door
+        # does: since plan step X-au-f a generated transfer stores no
+        # figure and reads this series on its own due date.
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule_id = _every_period_rule(template).id
         db.session.commit()
@@ -579,7 +589,7 @@ class TestClearingATransferTemplatesRecurrence:
                 to_account_id=template.to_account_id,
                 pay_period_id=seed_periods[6].id,
                 scenario_id=seed_user["scenario"].id,
-                amount=template.default_amount,
+                amount_ownership=AmountOwnership.own(template.default_amount),
                 status_id=_projected_id(),
                 category_id=template.category_id,
                 name=template.name,

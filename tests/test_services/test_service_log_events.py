@@ -228,7 +228,7 @@ def _make_transfer(td, **overrides):
         to_account_id=td["savings"].id,
         pay_period_id=td["periods"][0].id,
         scenario_id=td["scenario"].id,
-        amount=Decimal("100.00"),
+        amount_ownership=AmountOwnership.own(Decimal("100.00")),
         status_id=td["projected"].id,
         category_id=td["category"].id,
     )
@@ -269,7 +269,7 @@ class TestTransferServiceLogging:
             with _LogCapture("app.services.transfer_service") as cap:
                 transfer_service.update_transfer(
                     xfer.id, td["user"].id,
-                    amount=Decimal("123.45"), amount_authored=True,
+                    amount_ownership=AmountOwnership.own(Decimal("123.45")),
                     notes="updated notes",
                 )
 
@@ -277,8 +277,11 @@ class TestTransferServiceLogging:
         assert record is not None
         assert record.user_id == td["user"].id
         assert record.transfer_id == xfer.id
-        # Sorted alphabetically -- amount, notes.
-        assert record.fields_changed == ["amount", "notes"]
+        # Sorted alphabetically -- amount_ownership, notes.  The field the
+        # caller states is the OWNERSHIP since ruling **R-BAL11** (plan step
+        # X-au-f), where it was a figure plus two flags; the audit names what
+        # was actually stated.
+        assert record.fields_changed == ["amount_ownership", "notes"]
 
     def test_soft_delete_transfer_emits_event(self, app, db, _transfer_setup):
         """delete_transfer(soft=True) emits ``transfer_soft_deleted``."""

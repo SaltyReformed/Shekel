@@ -81,6 +81,7 @@ from tests._test_helpers import (
     posted_loan_balance_at,
     posted_loan_balance_map,
 )
+from app.models.amount_ownership import AmountOwnership
 
 # The shared synthetic split-loan fixture ($250,000 @ 6%, trued up to $100,000 --
 # distinct so a correct interest figure proves the walk's anchor reset); see
@@ -1406,7 +1407,7 @@ class TestReverseLoanPaymentPostings:
                     to_account_id=loan.id,
                     pay_period_id=seed_periods[_P1].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("1000.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1000.00")),
                     status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                     category_id=None,
                 ),

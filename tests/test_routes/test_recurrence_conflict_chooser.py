@@ -57,14 +57,20 @@ class TestApplyConflictDecisions:
     """The chooser's resolution dispatch (Loop B, P3)."""
 
     @staticmethod
-    def _spy_kind(calls, *, use_states_a_figure):
+    def _spy_kind(calls):
         """A :class:`RecurrenceConflictKind` whose resolver only records.
 
-        ``**kwargs`` rather than a ``new_amount=None`` default, because what is
-        under test in the parametrised case below is whether the argument was
-        PASSED at all -- a default would make "omitted" and "passed as None"
-        the same observation, which is the shape that lets a dispatch drift
-        without any test noticing.
+        ``**kwargs`` rather than named parameters, because what the case below
+        asserts is that NOTHING beyond the three positional arguments is passed
+        -- a named default would make "omitted" and "passed as None" the same
+        observation, which is the shape that lets a dispatch drift without any
+        test noticing.
+
+        **It took a ``use_states_a_figure`` until plan step X-au-f** (ruling
+        **R-JD**).  Both kinds' generated rows store no figure now, so "use"
+        means the same thing on both tables -- hand this row back to its
+        definition -- and the field, its branch and the resolver's
+        ``new_amount`` went together.
         """
         def fake_resolve(ids, action, user_id, **kwargs):
             calls.append({
@@ -79,30 +85,26 @@ class TestApplyConflictDecisions:
             # dispatch under test, so it is the identity here.
             model=None, resolve_amount=lambda row: row, regenerate_fn=None,
             resolve_fn=fake_resolve, update_endpoint="x",
-            use_states_a_figure=use_states_a_figure,
         )
 
-    @pytest.mark.parametrize("use_states_a_figure", [True, False])
-    def test_ignores_ids_outside_conflict_set(self, use_states_a_figure):
+    def test_ignores_ids_outside_conflict_set(self):
         """An id absent from the raised conflict set never reaches
         ``resolve_fn``, so the chooser cannot be used to mutate an arbitrary
         owned row.  ``resolve_fn`` is a spy here; the partition into use/keep
         must exclude the out-of-set id (999).
 
-        **Both kinds are driven** (plan step balance:X-au-e, ruling **R-JD**):
-        the allow-list is what this case is about and it is the same for both,
-        but running only the transfer shape would leave the transaction
-        shape's dispatch -- which calls ``resolve_fn`` with a DIFFERENT
-        signature -- graded by nothing here.
+        **It was parametrised over both kinds until plan step X-au-f**, because
+        the two dispatched to resolvers with DIFFERENT signatures and running
+        one shape left the other's arm ungraded.  There is one arm now
+        (ruling **R-JD**), so the parametrisation had nothing left to vary.
         """
         calls = []
-        kind = self._spy_kind(calls, use_states_a_figure=use_states_a_figure)
+        kind = self._spy_kind(calls)
         conflict = RecurrenceConflict(overridden=[10], deleted=[20])
         decisions = {10: "keep", 20: "use", 999: "use"}  # 999 not in the set
 
         apply_conflict_decisions(
-            kind=kind, conflict=conflict, decisions=decisions,
-            new_amount=Decimal("5.00"), user_id=1,
+            kind=kind, conflict=conflict, decisions=decisions, user_id=1,
         )
 
         update = next(c for c in calls if c["action"] == "update")
@@ -112,37 +114,33 @@ class TestApplyConflictDecisions:
         assert 999 not in update["ids"]
         assert 999 not in keep["ids"]
 
-    @pytest.mark.parametrize(
-        "use_states_a_figure, expected",
-        [(True, {"new_amount": Decimal("5.00")}), (False, {})],
-    )
-    def test_the_kind_decides_whether_use_carries_a_figure(
-        self, use_states_a_figure, expected,
-    ):
-        """"Use" hands a TRANSFER a figure and a TRANSACTION nothing.
+    def test_USE_carries_no_figure_for_either_kind(self):
+        """"Use" hands a row BACK to its definition and states no figure.
 
-        Plan step balance:X-au-e, ruling **R-JD**.  A generated transaction
-        stores no amount, so ``recurrence_engine.resolve_conflicts`` has no
-        ``new_amount`` parameter at all and passing one would be a
-        ``TypeError``; a generated transfer still stores one until plan step
-        X-au-f, so its resolver still takes it.  This asserts the KWARGS, not
-        just the value: the transaction arm's claim is that the argument is
-        ABSENT, which an assertion on a value could not tell from ``None``.
+        **This replaces ``test_the_kind_decides_whether_use_carries_a_figure``,
+        whose subject plan step X-au-f deleted** (ruling **R-JD**).  That case
+        asserted a transfer's resolver took ``new_amount=`` and a transaction's
+        did not; neither does now, because neither generated row stores a
+        figure and the definition's own effective-dated series prices both on
+        the row's due date.
 
-        Both rows go through "use" here so the assertion is about the arm the
-        branch selects rather than about which ids reach it.
+        It asserts the KWARGS rather than a value, exactly as its predecessor
+        did and for the same reason: the claim is that the argument is ABSENT,
+        which an assertion on a value could not tell from ``None``.  A resolver
+        that grew the parameter back would fail here rather than silently
+        re-storing a figure on every "use".
         """
         calls = []
-        kind = self._spy_kind(calls, use_states_a_figure=use_states_a_figure)
+        kind = self._spy_kind(calls)
         conflict = RecurrenceConflict(overridden=[10], deleted=[20])
 
         apply_conflict_decisions(
             kind=kind, conflict=conflict, decisions={10: "use", 20: "use"},
-            new_amount=Decimal("5.00"), user_id=1,
+            user_id=1,
         )
 
         update = next(c for c in calls if c["action"] == "update")
         assert update["ids"] == [10, 20]
-        assert update["kwargs"] == expected
+        assert update["kwargs"] == {}
         # "Keep" never carries a figure for either kind.
         assert next(c for c in calls if c["action"] == "keep")["kwargs"] == {}

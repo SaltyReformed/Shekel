@@ -374,11 +374,51 @@ class TestTransferTemplateHasPaidHistorySemanticIsSettled:
             )
             assert transfer_template_has_paid_history(xfer_template.id) is False
 
-    def test_soft_deleted_settled_ignored(self, app, db, seed_user, seed_periods_today):
-        """Soft-deleted settled transfers do not block deletion."""
+    def test_soft_deleted_settled_BLOCKS_deletion(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A soft-deleted settled transfer is payment history (**R-JE**).
+
+        **This assertion was ``is False`` until plan step balance:X-au-f**, and
+        the transaction twin's took the identical turn one step earlier -- see
+        :meth:`TestTemplateHasPaidHistory.test_soft_deleted_settled_BLOCKS_deletion`
+        for the developer's 2026-09-03 ruling and the argument, which applies
+        here unchanged now that the second half of it is true one table over.
+
+        What made this side wait: the predicate kept its ``is_deleted`` filter
+        while a generated TRANSFER still stored its own amount, so a survivor
+        left behind by a hard delete -- ``fk_transfers_transfer_template_id`` is
+        ON DELETE SET NULL -- was priced by rule 1 off the column it held and
+        harmed nothing.  X-au-f empties that column, so the same survivor now
+        declares TEMPLATE and names no template: ``_stated_amount`` REFUSES it,
+        and the cutover migration's own downgrade cannot restore it either,
+        because its placeholder arm joins on the ``transfer_template_id`` that
+        is now NULL.
+
+        The cost is stated rather than hidden: such a template is archived
+        instead of permanently deleted.
+        """
         with app.app_context():
             xfer_template, xfer = _make_transfer_template_with_status(
                 app, db, seed_user, seed_periods_today[0], "Paid",
+            )
+            xfer.is_deleted = True
+            db.session.commit()
+            assert transfer_template_has_paid_history(xfer_template.id) is True
+
+    def test_soft_deleted_PROJECTED_still_does_not_block(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The negative control for the case above: it is SETTLED that counts.
+
+        Without this, a predicate that had dropped the STATUS test rather than
+        the ``is_deleted`` one would pass the case above and block the permanent
+        deletion of any template holding a discarded projected transfer.  The
+        transaction twin carries the same pair, for the same reason.
+        """
+        with app.app_context():
+            xfer_template, xfer = _make_transfer_template_with_status(
+                app, db, seed_user, seed_periods_today[0], "Projected",
             )
             xfer.is_deleted = True
             db.session.commit()

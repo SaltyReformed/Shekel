@@ -347,7 +347,7 @@ class TestTransferShadowMarkDoneStateMachine:
                 to_account_id=savings.id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
-                amount=Decimal("100.00"),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 status_id=projected_id,
                 category_id=seed_user["categories"]["Rent"].id,
             ),

@@ -199,7 +199,7 @@ def _make_transfer(seed_user, period):
             to_account_id=savings.id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
-            amount=Decimal("75.00"),
+            amount_ownership=AmountOwnership.own(Decimal("75.00")),
             status_id=projected.id,
             category_id=seed_user["categories"]["Rent"].id,
             name="CFP Transfer",
