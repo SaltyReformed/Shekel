@@ -103,7 +103,24 @@ CAPS = {
     # re-split, which would land at 1280-1284 against this cap's own 1280
     # floor.  The next raise is therefore already foreseeable and is the
     # developer's again.
-    "balance": 1300,
+    # **RAISED 1300 -> 1330 by the developer, 2026-09-10**, and the foreseen
+    # raise one comment up arrived within the hour: he merged `X-au-f-2` and
+    # `X-au-f-3` into ONE cutover leaf, so two specifications collapsed into
+    # one and the lane's delta measured 24 lines, putting the README at 1296
+    # against the 1300 cap's 1280 floor.  **Rule 5's escape was spent FIRST
+    # and this time it was NOT empty** -- the claim that it was, written at
+    # the 1300 raise, was stale: 12 multi-line shipped entries hold 37 lines,
+    # of which 19 are PROTECTED by "a later step must obey" clauses
+    # (`X-au-g-2a`, `X-bl-2a`, `X-bl-2b`, `X-bx`) that a line census cannot
+    # see, leaving **22 genuinely recoverable**.  The developer ruled ARCHIVE
+    # AND RAISE (2026-09-10), the same pairing as 2026-09-05: this raise
+    # unblocks the lane at 1296 against a 1310 floor, and the archive pass
+    # follows it rather than substituting for it, landing the README near
+    # 1274 with ~36 lines of slack.  The archive is SEQUENCED AFTER the
+    # lane's merge deliberately -- both edit the same README region, and
+    # doing them at once manufactures the conflict two sessions have twice
+    # avoided.  The 3.4-lines-per-open-step calibration still allows ~1350.
+    "balance": 1330,
     # **RAISED 850 -> 900 by the developer, 2026-09-03**, on rule 4's terms and
     # by the same calibration that raised the balance README.  The cap BOUND
     # while minting `recurrence:R7d-h`: the document sat at 843 with 23 open
