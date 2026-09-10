@@ -433,19 +433,20 @@ have to do the same, explicitly, rather than silently lose money records.
 
 ### 4.4 Honest risks
 
-1. **Transfer shadows are 248 of 926 rows** and carry four CRITICAL invariants (`CLAUDE.md`). A
-   shadow's movement is the parent transfer's, and getting that wrong breaks invariants 3 and 4.
-   `transaction_service/_settle.py` already records that an adversarial review settled one leg of a
-   pair through exactly this seam.
-2. **The envelope's own leg.** Three facts in the measured span are an envelope's own delta rather
+1. **Transfer shadows are 248 of 926 rows** and carry FIVE critical invariants (`CLAUDE.md`; this
+   line said four until 2026-09-09, and a correctness pass on this document's account of them owed
+   its own paragraph the same count). A shadow's movement is the parent transfer's, and getting that
+   wrong breaks invariants 3 and 4. `transaction_service/_settle.py` already records that an
+   adversarial review settled one leg of a pair through exactly this seam. 2.
+   **The envelope's own leg.** Three facts in the measured span are an envelope's own delta rather
    than a purchase's (`-$208.15`), and `balance_at._cash_periods._budget_legs` reads a partially
    spent envelope at its whole cost -- the spent part as movements, the rest as a reservation. The
-   refactor must preserve that reading exactly or the grid's subtotals move.
-3. **`credit_payback_id` / `is_credit`** on entries, and the `Credit` status, are a second axis the
-   unification has to carry rather than flatten.
-4. **`pay_period_id`.** A purchase takes its parent's, deliberately. A movement with no plan item (a
-   bank line nothing was planned for) has no parent to take it from, and
-   `ReviewScope.period_holding` is the resolver that must answer instead.
+   refactor must preserve that reading exactly or the grid's subtotals move. 3.
+   **`credit_payback_id` / `is_credit`** on entries, and the `Credit` status, are a second axis the
+   unification has to carry rather than flatten. 4. **`pay_period_id`.** A purchase takes its
+   parent's, deliberately. A movement with no plan item (a bank line nothing was planned for) has no
+   parent to take it from, and `ReviewScope.period_holding` is the resolver that must answer
+   instead.
 
 ### 4.5 Decomposition -- RE-CUT, by provenance rather than by row kind
 
@@ -641,9 +642,25 @@ structural code. What this design removes, as opposed to guards:
   becomes the flip's own per-account readiness measure, which is what `SpanAgreement.reconciles` is
   actually good at.
 
-What it does NOT delete, and should not: the books-boundary triggers (`X-f3c-2b-1`, `2b-2b`, `2d`),
-the append-only refusals, and the transfer invariants. Those make states unstorable, which is
-structure, not a fence.
+What it does NOT delete, and should not: the books-boundary triggers (`X-f3c-2b-1`, `2b-2b`, `2d`)
+and the append-only refusals. Those make states unstorable, which is structure, not a fence.
+
+**The transfer invariants stood in that list until 2026-09-09 and the claim was measured FALSE**
+(ruling **R-BAL13**). *Those make states unstorable* is true of invariant 1's UPPER bound
+(`uq_transactions_transfer_type_active`), invariant 2's hard-delete arm (the `transfer_id` FK's
+CASCADE) and invariant 3's derived-amount half (`X-au-g-2c-2`). It is false of the rest: invariant
+1's LOWER bound is a Python validator that runs only when a mutation door loads the pair, its
+ENDPOINT clause -- the expense leg sits on the parent's `from_account_id` -- is held by nothing at
+all while `account_posting_service/_walk.py` raises on the state the schema admits (**BAL-475**),
+invariant 2's creation arm is convention, and invariant 4 is TWENTY `transfer_id IS NOT NULL` branch
+sites across twelve files in `app/`. `posting_service.py` ships a repairer for pairs that break,
+which is the tell: a rule with a documented repair procedure is a rule that gets violated.
+
+So this design DOES delete them, and the deletion is `X-bi-6a` + `X-bi-6`. It also corrects this
+document's own scope: section 4.4 names transfer shadows as the largest risk and this section
+treated their invariants as settled, but the movement unification replaces the RECORD half only --
+`balance_at/_plan.py`'s PLANNED tier reads projected shadows, so the PLAN half needs a producer of
+its own before the shadow rows can go.
 
 ---
 

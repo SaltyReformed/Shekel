@@ -400,13 +400,25 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     it, and run two balance semantics live on one account meanwhile.
   * [ ] **X-bi-5** delete `is_envelope`, `tracks_purchases`'s branch sites and the template sites,
     which is the fence this family makes structurally unnecessary rather than merely unused.
-  * [ ] **X-bi-6** delete the shadow's stored `status_id` and `pay_period_id` -- Transfer Invariant
-    3's other two clauses (**R-JA**, `CLAUDE.md` rule 14). `transfer_service` keeps them equal to
-    the parent's BY HAND, which is one value with two homes and a maintenance contract. **It runs
-    after X-bi-4 and the ordering is the substance: INVARIANT 5 IS WHY THE MIRROR EXISTS** -- the
-    shadow duplicates its parent so the fold can read `budget.transactions` alone, so the mirror is
-    droppable only once the fold reads movements. Rewrites Transfer Invariant 3 in `CLAUDE.md` from
-    a rule someone maintains into a fact the schema makes unrepresentable.
+  * [ ] **X-bi-6a** re-point every PROJECTED-shadow READER (**R-BAL13**). **The PRODUCER is
+    `X-au-f-2`'s, not this step's** -- `16f83aa0` already states that leaf's two producers take a
+    shadow
+  while **R-BAL10** puts the answer on the PARENT, so a second one here was `R-IZ`'s own failure
+    mode. What remains is the READ side, and it is FOUR sites rather than the one the first draft
+  named: `cash_ledger._facts.planned_cash_rows` is KIND-BLIND on `transfer_id` and carries the
+    general case for every account (via `_cash_fold._cash_plan`, reduced at
+  `_cash_periods.sum_projected`); `_plan.py`'s PLANNED tier is only the LOAN forward plan;
+    `_asset_contributions.py:198` and `projection_inputs.shadow_contributions` are the rest. Built
+    to the
+  one-reader scope, the next step drops projected transfers out of every account's cash fold.
+  * [ ] **X-bi-6** delete the transfer shadow `Transaction` ROWS (**R-BAL13**, superseding this
+    step's stored-column scope under **R-JA**). Its two columns are two of the **FIVE** clauses
+  `restore_transfer` keeps by hand -- `pay_period_id`, `category_id`, `due_date`, `is_override`,
+    `status_id` (`_restore.py:144-221`) -- and the fence is **38 sites, not 20**: 20 Python branches
+  in 12 modules, 7 Jinja in 3 templates, 4 inverted guards, 7 query exclusions. **The pair-drift
+    repairer is `transfer_service._restore`, NOT `posting_service`**, which only skips and warns --
+  deleting the latter removes a skip arm and leaves the repairer standing. **Still after X-bi-4:
+    INVARIANT 5 IS WHY THE MIRROR EXISTS.** Closes **BAL-475**.
 * [ ] **X-bk** the ONE-TIME manual reconcile of the imported bank history against the app's own
   rows, through the app's doors and into the post-restructure shape, so the whole history keeps its
   plan-versus-actual comparison. **MOVES MONEY**, and it is an OPERATOR act -- a rehearsed runbook
