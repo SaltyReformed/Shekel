@@ -22,6 +22,7 @@ from app.models.user import User, UserSettings
 from app.services import cash_ledger
 from tests._test_helpers import (
     bare_expense_template,
+    definition_firing_twice_in_a_paycheck,
     generate_row_of,
     make_cadence_rule,
     make_expense_template,
@@ -497,23 +498,23 @@ class TestGenerateRowOf:
             ).count() == 0
 
     def test_a_cadence_firing_twice_in_one_paycheck_is_refused(
-        self, app, db, seed_user, seed_schedule_at_cadence,
+        self, app, db, seed_user,
     ):
         """A monthly rule inside a 60-day paycheck names two occurrences.
 
         The engine writes both -- a paycheck CAN hold two rows of one
         definition (plan step R17) -- and the builder refuses to pick, because
         which of the two a test means is a generation test's subject.  The two
-        rows stay flushed, as the docstring says they do.
+        rows stay flushed, as the docstring says they do.  The paycheck is
+        :func:`definition_firing_twice_in_a_paycheck`'s, pinned to a date: on
+        a today-relative calendar this case read THREE rows every summer.
         """
         with app.app_context():
-            periods = seed_schedule_at_cadence(60)
-            template = bare_expense_template(db.session, seed_user)
-            make_cadence_rule(
-                template, MONTHLY, starts_on=periods[1].start_date,
+            template, period = definition_firing_twice_in_a_paycheck(
+                db.session, seed_user, name="Cadence Under Test",
             )
             with pytest.raises(ValueError, match="wrote 2 rows"):
-                generate_row_of(template, periods[1])
+                generate_row_of(template, period)
             assert db.session.query(Transaction).filter_by(
                 template_id=template.id,
             ).count() == 2
