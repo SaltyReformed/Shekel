@@ -389,6 +389,16 @@ class Transaction(
         ),
     )
     notes = db.Column(db.Text)
+    # NULLABLE ONLY ON A ROW THAT NAMES NO DEFINITION.  A row that names a
+    # recurring definition always carries this date --
+    # ``ck_transactions_template_row_needs_due_date`` in
+    # :mod:`app.models._transaction_table_args` says so (plan step
+    # **X-bv-2**), because amount rule 3 prices such a row from its
+    # definition's series as of THIS day and an undated one cannot be priced
+    # at all.  No other rule reads a transaction's own date: a transfer shadow
+    # and a credit payback are priced through their parent, and an ad-hoc row
+    # owns its figure, so on those the field is the owner's optional note of
+    # when the bill falls and NULL means they gave none.
     due_date = db.Column(db.Date, nullable=True)
     # WHICH OCCURRENCE this row is -- the date the template's cadence named
     # when the recurrence engine wrote it (plan step **R17**, the first leaf of

@@ -1,15 +1,18 @@
 """
 Shekel Budget App -- ``budget.transactions``' table arguments, as one value.
 
-**A PURE MOVE, and that is the whole of it** (developer 2026-09-06, under
-ruling **balance:R-IR**: *pylint's 1,000-line module ceiling stays, and the
-session that breaks a module is the one that splits it*).
+**Born as a PURE MOVE** (plan step X-ca, developer 2026-09-06, under ruling
+**balance:R-IR**: *pylint's 1,000-line module ceiling stays, and the session
+that breaks a module is the one that splits it*).
 :class:`~app.models.transaction.Transaction` stood at 997 of that ceiling, so
 the next constraint the balance arc adds could not be written at all -- and
 R-IR's answer is to SPLIT, never to shave a comment or raise the limit, the
 module-level ``too-many-lines`` escape hatch having been withdrawn with it.  The
 340 lines of ``__table_args__`` came here verbatim: nothing reworded, reordered
-or dropped.
+or dropped.  **The constraint that split was made for is the first member
+added since**: ``ck_transactions_template_row_needs_due_date`` (plan step
+X-bv-2, 2026-09-11), so the purity claim below is dated to the move and
+describes the 25 members that came across, not the tuple as it stands.
 
 **Why THIS seam.**  ``__table_args__`` is the one part of the model that is a
 VALUE rather than a declaration.  It names no attribute the class exposes, no
@@ -309,6 +312,37 @@ transaction_table_args = (
         "+ (transfer_id IS NOT NULL)::int "
         "+ (credit_payback_for_id IS NOT NULL)::int <= 1",
         name="ck_transactions_one_pricing_link",
+    ),
+    # A ROW OF A DEFINITION IS DATED (plan step **X-bv-2**, ruling
+    # **R-BAL6**, finding **BAL-463**).  Amount rule 3 prices a derived row
+    # from its definition's series *as of the row's own due date*, and ruling
+    # **D5** forbids substituting the pay period's bounds -- so a
+    # template-linked row with no date is unpriceable the moment its figure
+    # is handed back to the definition, which ``resolve_conflicts``' "use the
+    # template's amount" does with one press.  ``AmountUnresolvable`` has no
+    # handler on the grid, and one such row was the whole screen.
+    #
+    # **Two terms, not three, and the difference is what makes it need no
+    # guard.**  A staged three-term form (``... OR amount_source_id IS NULL
+    # ...``) admitted the undated row and refused only the DECLARE, turning
+    # the chooser's button into an ``IntegrityError`` that a guard in
+    # ``resolve_conflicts`` would then have had to fence.  This form is
+    # invariant under the declare, which touches neither column here.  Every
+    # constructor that sets ``template_id`` is dated -- the two engine paths
+    # splat ``DerivedRowFields`` (``compute_due_date``'s answer) and the
+    # carry-forward leftover is X-bv's -- and no writer in ``app/`` sets
+    # ``template_id`` on an existing row, so nothing can reach the state.
+    # The transaction PATCH is refused a step earlier by
+    # ``routes/transactions/_gates._reject_generated_due_date_edit``, which
+    # also refuses MOVING the date -- something no CHECK can say -- and
+    # renders a designed 400; this is that door's backstop for a writer that
+    # is not the application, and the storage-tier statement of the
+    # ``due_date IS NULL`` arm ``c8f3a5d2e714``'s strand guard had to ask.
+    # An AD-HOC row is untouched: nothing prices it by its date, and the
+    # form still offers the field.  Migration ``4d7123cd9803``.
+    db.CheckConstraint(
+        "template_id IS NULL OR due_date IS NOT NULL",
+        name="ck_transactions_template_row_needs_due_date",
     ),
     db.CheckConstraint(
         "version_id > 0",
