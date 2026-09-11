@@ -139,7 +139,7 @@ what it leaves a LATER step is on that step's own entry.
         **It could never bind in aggregate** -- 500 items x 100 members is 50,000 ticks against a
         body carrying 22,727 -- so the door's worst case is IDENTICAL before and after, and the cap
         had begun to contradict a pane offering every unexplained row as a tickbox (**R-HW**).
-  - [x] **X-gq** `86f8620d` + `be59238e` -- the LANDING out of `_variance.py` (999 -> 685 lines)
+  - [x] **X-gq** `86f8620d` + `be59238e` -- the LANDING out of `_variance.py` (999 -> 690 lines)
         into `_landing.py`, on the seam that module's own first line names, for the headroom the
         consent gate's rewrite needs. **A LATER SPLIT MUST OBEY**: a byte-pure move cannot keep a
         REFERENCE true across a module boundary -- nine broke here, seven unqualified Sphinx roles

@@ -155,8 +155,12 @@ root; never silence it with a bare disable.
   both ways, and the dependency graph is referential and acyclic. It also grades the ORDER: ranks
   are dense, a rank never precedes an unshipped blocker's, the derived `starts` column is
   recomputed, every step's description is one complete sentence, and every archived document
-  declares itself one on its first line. **Editing a planning document is what runs it**
-  (pre-commit, scoped to those files; CI runs `pytest tools/plan_gate`).
+  declares itself one on its first line. **Since 2026-09-11 it reads GIT and the CODE too**: a
+  SHIPPED row's commit must resolve and be an ancestor of HEAD, no commit may claim an open leaf,
+  and every `(census N ...)` marker is RE-RUN against the tree (`_shipped.py`, `_census.py`; CI
+  checks out at `fetch-depth: 0` so neither arm is silently blind).
+  **Editing a planning document is what runs it** (pre-commit, scoped to those files; CI runs
+  `pytest tools/plan_gate`).
 - **Judgment the linters cannot mechanize** (float-on-money boundaries, IDOR, transfer invariants,
   DRY/SOLID, test quality) is the `code-reviewer` subagent and the `/standards` command.
 

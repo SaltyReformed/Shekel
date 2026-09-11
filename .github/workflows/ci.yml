@@ -117,9 +117,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          # No git operations run after checkout (only pylint + pytest),
-          # so the GITHUB_TOKEN need not persist in .git/config.  Avoids
-          # the credential-persistence vector (zizmor artipacked).
+          # The plan gate's git arms (tools/plan_gate/_shipped.py) READ this
+          # history: they resolve every SHIPPED step's commit and refuse an
+          # open leaf that a commit on this tree says it shipped.  The default
+          # depth-1 checkout makes both arms blind, and rule 7's hash arm used
+          # to grade a hash's FORM only for exactly that reason -- "a gate that
+          # passes on nothing".  ``test_shipped_against_git`` asserts the
+          # history IS gradeable, so removing this line fails the suite loudly
+          # instead of silently switching two arms off.
+          fetch-depth: 0
+          # The arms only READ local history, so the GITHUB_TOKEN still need
+          # not persist in .git/config.  Avoids the credential-persistence
+          # vector (zizmor artipacked).
           persist-credentials: false
 
       # ── 2. Set up Python ─────────────────────────────────────────
