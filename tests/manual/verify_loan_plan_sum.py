@@ -3,9 +3,11 @@
 The regression harness for recurrence plan step **R16-b-2**, which makes the
 balance seam's ESTIMATED tier sum EVERY definition paying into a loan on its
 own cadence, price every occurrence no row answers (ruling **R-R64**), and
-charge the CONTRACT's calendar (ruling **R-R68**).  Run it on a worktree at
-the base commit and on the branch, against the same clone, and diff the two
-outputs from line 2.
+charge the CONTRACT's calendar (ruling **R-R68**) -- every installment after
+the loan's LATEST balance assertion, whether or not a payment lands in it
+(ruling **R-R71**; both live loans carry an assertion in 2026, so no month
+before it is charged).  Run it on a worktree at the base commit and on the
+branch, against the same clone, and diff the two outputs from line 2.
 
 **The BASELINE is expected byte-identical, and five doors are PLANTED so the
 diff MUST move where the rulings say it moves.**  Both of the developer's live
@@ -42,8 +44,8 @@ runs.  Each door constructs a state in which the two tiers differ:
   REMOVED**: the Van's next projected installment is soft-deleted through the
   transfer door.  The old tier could not see a tombstone and re-synthesized
   the installment; the sum reads the tombstone as the owner's answer -- the
-  installment is not paid -- and the contract charges the period anyway, so
-  the payoff moves OUT by one installment.
+  installment is not paid -- and the contract charges the period anyway
+  (ruling **R-R71**), so the payoff moves OUT by one installment.
 * **DOOR 5 -- D54, a projected extra in a SEEDED month**: a ``$300.00``
   projected transfer into the Van due five days after its most recently
   settled installment, inside that installment's month.  The old calendar charged that month a second time at

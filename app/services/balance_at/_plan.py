@@ -140,11 +140,20 @@ servicer advanced -- whichever side of today it is on, and a catch-up payment
 at the definition's level cash clears those arrears before it reaches
 principal, which is what the servicer's books say too; the assertion is the
 boundary because the owner's own statement of the balance supersedes every
-month before it.  What this leaves for ``R16-c`` is the
-balance SERIES: the settled walk still charges only the months it saw paid, so
-a read AT ``as_of`` holds the seed flat where the read after it carries the
-skipped months' interest, until that step applies this same predicate in the
-walk (D53's past half).
+month before it.  **That boundary is the design of record** (ruling
+**R-R72**): a loan's balance is the replay from its LATEST assertion over the
+CONTRACT's calendar.  Two halves of it are later steps'.  ``R16-c`` applies
+this same predicate in the settled walk (D53's past half): until then the
+walk charges only the months it saw paid, so a read AT ``as_of`` holds the
+seed flat where the read after it carries the skipped months' interest.  And
+``R20`` records the balance the owner states at SETUP as the assertion it is
+(a ``tracking_start``), where today the setup door stores it in the params
+row's demoted current-principal column and nothing reads it (finding
+**REC-519**):
+a loan configured mid-life without a separate tracking-start therefore has
+only its origination assertion, and this calendar reads it as unpaid since
+origination -- which is what its records say, and not a bound this module
+guesses around.
 
 **Why in the seam, not the ``loan_ledger`` leaf.**  The plan composes the loan's
 projected records, its live D3 cash, and the resolver's contractual schedule --
