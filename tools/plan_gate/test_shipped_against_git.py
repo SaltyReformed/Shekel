@@ -193,13 +193,23 @@ class TestEveryShippedRowNamesACommitThisTreeCarries:
         This is the arm-level half of the merge-in-progress fix; the half that
         proves ``graded_heads`` itself reads ``MERGE_HEAD`` is
         :class:`TestAMergeBeingCommittedIsGradedAgainstBothParents`.
+
+        **The dangling head is ADDED to the live heads, not substituted for
+        them, and the answer is read by the staged ROW.**  The pre-commit hook
+        runs this control while a merge is being committed, and its first
+        version replaced ``("HEAD", "MERGE_HEAD")`` with ``("HEAD", dangling)``
+        -- which refused every tick dev had made -- then filtered the messages
+        by the dangling sha, which every message carried in its "ancestor of
+        HEAD or <sha>" text.  It failed on the first conflicted resync after
+        the fix merged (2026-09-11), the exact state the fix exists for.
         """
         dangling = _dangling_commit("reachable through the second head only")
-        monkeypatch.setattr(_shipped, "graded_heads", lambda: ("HEAD", dangling))
+        heads = (*_shipped.graded_heads(), dangling)
+        monkeypatch.setattr(_shipped, "graded_heads", lambda: heads)
         row = next(r for r in registry.step_rows() if r.shipped)
         stage("steps", f"| {row.commit.strip()} |", f"| `{dangling[:8]}` |")
         problems = _shipped.shipped_commit_violations()
-        assert not [p for p in problems if dangling[:8] in p], problems
+        assert not [p for p in problems if p.startswith(f"{row.key} is SHIPPED")], problems
 
 
 class TestNoOpenLeafHasAlreadyShipped:
