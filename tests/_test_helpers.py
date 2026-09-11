@@ -23,7 +23,7 @@ from datetime import (
 from decimal import Decimal
 from app.enums import BusinessDayShiftEnum
 from app.models.amount_ownership import AmountOwnership
-from app.services import pay_calendar, pay_rhythm, pay_schedule_service
+from app.services import pay_calendar, pay_era_write, pay_rhythm, pay_schedule_service
 
 
 # The synthetic split-loan fixture shared verbatim by the three parallel
@@ -2277,6 +2277,103 @@ def loan_income_shadow(db_session, transfer_id, loan_account_id):
 #: statement in this repository that re-creates ``budget.pay_periods.end_date``
 #: and ``budget.pay_periods.period_index``.
 _C4C_REVISION_FILE = "b7a41e2c9d63_a_pay_period_is_one_fact.py"
+_C17A_REVISION_FILE = "6fc77e86d76f_a_pay_schedule_is_a_sequence_of_eras.py"
+
+
+def restore_pay_schedule_rhythm_columns(db_session):
+    """Put the rhythm columns back on ``budget.pay_schedule``, for one older statement.
+
+    :func:`restore_pay_period_derived_columns`' sibling, for the same reason.
+    Plan step ``pay_calendar:C17-a`` moved ``cadence_days``, ``shift_id`` and
+    ``nominal_anchor`` off the schedule row and onto ``budget.pay_eras``; four
+    older migrations read or write the first of those on the row --
+    ``af8254074bef``'s backfill, ``f1c8b3d5e920``'s, ``b7a41e2c9d63``'s
+    downgrade and ``f2b7c40d918e``'s -- and a test that drives one of their
+    callables against the test database meets ``UndefinedColumn`` where it
+    used to find the schema it expected.
+
+    **It adds the columns and fills them from each owner's LATEST era, and it
+    does NOT run C17-a's ``downgrade()``, which is the difference
+    :func:`relax_pay_schedule_shift_not_null` already argued for one column
+    over.**  That downgrade also DROPS ``budget.pay_eras``, and every reader
+    the head mapper has -- ``get_schedule``, ``calendar_for``, every fixture
+    that derives a span -- selects that table; a test whose subject is an old
+    statement reading the row's cadence would then break on every read it
+    makes afterwards.  What the old statement needs is the COLUMN, so that is
+    what comes back: three nullable columns, filled by the migration's own
+    ``_RESTORE_RHYTHM_SQL`` (the shipped statement, not a copy), with the era
+    table left standing and no key, CHECK or NOT NULL re-added.  A test that
+    then deletes a schedule row must retire the owner's eras first, exactly
+    as it must delete their paydays first.
+
+    Idempotent (``ADD COLUMN IF NOT EXISTS``), because a round-trip case
+    replays an older revision's ``downgrade`` twice.  Everything the sibling
+    helper says about scope, locks and the absence of a restore applies
+    unchanged, including ledger row ``balance:P79``.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that currently holds
+            the schedule table's locks.
+    """
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import text
+
+    db_session.commit()
+    if _pay_schedule_carries_a_cadence(db_session):
+        # Already restored -- by an earlier call, or by
+        # :func:`rewind_pay_schedule_rhythm`, after which the era table this
+        # would fill from is gone.
+        return
+    # Pylint: ``protected-access`` -- the migration's own restore statement,
+    # so this helper cannot drift from what the shipped downgrade writes.
+    restore_sql = load_migration_module(
+        _C17A_REVISION_FILE,
+    )._RESTORE_RHYTHM_SQL  # pylint: disable=protected-access
+    db_session.execute(text(
+        "ALTER TABLE budget.pay_schedule "
+        "ADD COLUMN cadence_days INTEGER, "
+        "ADD COLUMN shift_id INTEGER, "
+        "ADD COLUMN nominal_anchor DATE"
+    ))
+    db_session.execute(text(restore_sql))
+    db_session.commit()
+
+
+def rewind_pay_schedule_rhythm(db_session):
+    """Run plan step ``pay_calendar:C17-a``'s own ``downgrade()``.
+
+    The WHOLE rewind, for the few cases whose subject is an older revision's
+    statement against the schema exactly as that revision's chain leaves it:
+    the rhythm columns back on ``budget.pay_schedule`` with their ``NOT
+    NULL``, ``ck_pay_schedule_cadence_range`` and ``fk_pay_schedule_shift_id``
+    re-added, and ``budget.pay_eras`` DROPPED with ``ref.pay_cadence_kinds``.
+    A case that needs the CHECK to fire, or that drops ``budget.pay_schedule``
+    itself, needs this; a case that only reads the cadence off the row wants
+    :func:`restore_pay_schedule_rhythm_columns`, which leaves every head
+    reader working.  Call it FIRST: that helper skips once the columns exist,
+    and the restore statement it would run reads the table this drops.
+
+    It refuses a schedule row holding no era, as the shipped downgrade does.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that currently holds
+            the schedule table's locks.
+    """
+    run_migration_callable(
+        load_migration_module(_C17A_REVISION_FILE).downgrade, db_session,
+    )
+
+
+def _pay_schedule_carries_a_cadence(db_session):
+    """Return whether ``budget.pay_schedule.cadence_days`` exists right now."""
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import text
+
+    return bool(db_session.execute(text(
+        "SELECT 1 FROM information_schema.columns "
+        " WHERE table_schema = 'budget' AND table_name = 'pay_schedule' "
+        "   AND column_name = 'cadence_days'"
+    )).scalar())
 
 
 def restore_pay_period_derived_columns(db_session):
@@ -2328,6 +2425,11 @@ def restore_pay_period_derived_columns(db_session):
         db_session: The test ``db.session``, in the scope that currently holds
             this table's locks.
     """
+    # C4-c's downgrade rebuilds the stored end from
+    # ``budget.pay_schedule.cadence_days``, which plan step
+    # ``pay_calendar:C17-a`` moved onto the era relation -- so the schedule's
+    # rhythm columns come back FIRST, or the statement this replays cannot.
+    restore_pay_schedule_rhythm_columns(db_session)
     run_migration_callable(
         load_migration_module(_C4C_REVISION_FILE).downgrade, db_session,
     )
@@ -2698,12 +2800,13 @@ def shift_id_of(shift=BusinessDayShiftEnum.NONE):
     """Return the ``ref.business_day_shifts.id`` a member is stored as.
 
     For the handful of tests that build a
-    :class:`~app.models.pay_schedule.PaySchedule` row DIRECTLY rather than
-    through ``pay_schedule_service.upsert_schedule`` -- constraint cases, which
-    need a row the database will accept in every respect except the one under
-    test.  ``shift_id`` is ``NOT NULL`` with no server default (plan step
-    ``pay_calendar:C14-b``), so a row built without it fails on the wrong
-    constraint and the case passes for the wrong reason.
+    :class:`~app.models.pay_era.PayEra` row DIRECTLY rather than through
+    ``pay_era_write.mint_era`` -- constraint cases, which need a row
+    the database will accept in every respect except the one under test.
+    ``shift_id`` is ``NOT NULL`` with no server default (plan step
+    ``pay_calendar:C14-b``; the column moved from the schedule row to the era
+    at ``C17-a``), so a row built without it fails on the wrong constraint
+    and the case passes for the wrong reason.
 
     Args:
         shift: The convention, defaulting to
@@ -2748,6 +2851,126 @@ def rhythm_of(cadence_days, shift=BusinessDayShiftEnum.NONE):
     return pay_rhythm.Rhythm(
         cadence_days=cadence_days, shift=shift,
     )
+
+
+def era_of(effective_from, cadence_days, shift=BusinessDayShiftEnum.NONE):
+    """Return a fixed-days :class:`~app.services.pay_rhythm.Era`.
+
+    :func:`rhythm_of`'s sibling for the era relation (plan step
+    ``pay_calendar:C17-a``): the rhythm plus the day it took effect, which is
+    also the grid's phase.  The kind is the one member that exists,
+    ``FIXED_DAYS``, stated here once rather than at every call site.
+
+    Args:
+        effective_from: The era's first nominal payday.
+        cadence_days: Days between the paydays.
+        shift: The convention, defaulting to
+            :attr:`~app.enums.BusinessDayShiftEnum.NONE` for
+            :func:`rhythm_of`'s reason.
+
+    Returns:
+        The era.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.enums import PayCadenceKindEnum
+
+    return pay_rhythm.Era(
+        effective_from=effective_from,
+        kind=PayCadenceKindEnum.FIXED_DAYS,
+        rhythm=rhythm_of(cadence_days, shift),
+    )
+
+
+def mint_fixture_era(user_id, effective_from, cadence_days,
+                     shift=BusinessDayShiftEnum.NONE):
+    """Give *user_id* a schedule row and ONE era, without recording a payday.
+
+    The state every payday-holding owner has, for a fixture that then writes
+    its ``budget.pay_periods`` rows BY HAND -- a corrupt shape a checker must
+    catch, or a calendar-monthly schedule no door can yet write (ledger row
+    **P78**).  ``fk_pay_periods_schedule`` needs the row and a calendar needs
+    the era; the ordinary fixtures go through ``record_paydays``, which does
+    both, and this is the one line for the fixtures that cannot.
+
+    Plan step ``pay_calendar:C17-a``: it replaces the
+    ``upsert_schedule(user_id, rhythm, None)`` line those fixtures carried,
+    and it takes the era's day because an era has one.  The extend door steps
+    from that day and the era rule tests a batch's first payday against its
+    grid, so a fixture that later EXTENDS or RECORDS through the writer must
+    state a day on the grid it means; the derivation itself still anchors on
+    the recorded paydays at this leaf, so a hand-built schedule that is only
+    read never notices the day.
+
+    Args:
+        user_id: The owner.
+        effective_from: The era's first nominal payday.
+        cadence_days: Days between the paydays.
+        shift: The convention, defaulting to ``none``.
+
+    Returns:
+        The minted :class:`~app.models.pay_era.PayEra` row, flushed.
+    """
+    pay_schedule_service.ensure_schedule_row(user_id)
+    return pay_era_write.mint_era(
+        user_id, era_of(effective_from, cadence_days, shift),
+    )
+
+
+def restate_fixture_era(user_id, effective_from, cadence_days,
+                        shift=BusinessDayShiftEnum.NONE):
+    """Replace every era *user_id* holds with ONE, without touching a payday.
+
+    The fixture form of "force the owner's stored cadence" for a case that
+    proves a reader takes the RHYTHM from storage rather than inferring it
+    from the rows: the paydays stay exactly where they are and only the era
+    moves.  Before plan step ``pay_calendar:C17-a`` that was one
+    ``upsert_schedule`` line; an era is a row per rhythm, so the honest
+    equivalent retires the owner's eras and mints the one the case states.
+
+    Args:
+        user_id: The owner.
+        effective_from: The era's first nominal payday.
+        cadence_days: Days between the paydays.
+        shift: The convention, defaulting to ``none``.
+
+    Returns:
+        The minted :class:`~app.models.pay_era.PayEra` row, flushed.
+    """
+    pay_schedule_service.ensure_schedule_row(user_id)
+    pay_era_write.retire_eras(user_id, None)
+    return pay_era_write.mint_era(
+        user_id, era_of(effective_from, cadence_days, shift),
+    )
+
+
+def strip_owner_schedule(db_session, user_id):
+    """Leave *user_id* as an owner who has never generated a schedule.
+
+    Every payday, every era and the ``budget.pay_schedule`` row go, in the
+    only order the keys admit: ``fk_pay_periods_schedule`` and, since plan
+    step ``pay_calendar:C17-a``, ``fk_pay_eras_schedule`` are both
+    ``ON DELETE RESTRICT``, so the children go before the parent.  Six cases
+    each spelled the first two deletes by hand before the era relation added a
+    third child; this is the one statement of the order so the seventh
+    cannot copy it wrongly.
+
+    Bulk deletes with ``synchronize_session=False``, so an instance the case
+    already loaded is not touched; the case commits or reads back as it
+    needs to.
+
+    Args:
+        db_session: The test ``db.session``.
+        user_id: The owner to strip.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.models.pay_era import PayEra
+    from app.models.pay_period import PayPeriod
+    from app.models.pay_schedule import PaySchedule
+
+    for model in (PayPeriod, PayEra, PaySchedule):
+        db_session.query(model).filter_by(user_id=user_id).delete(
+            synchronize_session=False,
+        )
 
 
 def registration_spec(**overrides):

@@ -410,10 +410,18 @@ def check_balance_anomalies(session):
         # the interior hole this sub-select was also catching -- is deleted.
         #
         # The horizon is ``MAX(start_date) + (cadence_days - 1)``, which is the
-        # derivation's own projected end for the last period; joining
-        # ``budget.pay_schedule`` for it is legal for every owner who holds a
-        # payday, because ``fk_pay_periods_schedule`` makes the cadence row
-        # exist (plan step C4-b-2).
+        # derivation's own projected end for the last period.  The cadence is
+        # the LATEST ERA's since plan step ``pay_calendar:C17-a``: the
+        # schedule row no longer carries one, and the last period's end reads
+        # the latest era exactly as ``pay_schedule_service.ScheduleFacts.rhythm``
+        # does.  An owner who holds a payday holds an era -- every batch that
+        # records one mints an era when none covers it, and the C17-a
+        # migration backfills one per owner -- so the join drops nobody.
+        # *This SQL restates the derivation's end rule a second time, and the
+        # arithmetic form here ignores the payday convention; that it should
+        # be DELETED rather than made exact is the fork ledger row PC-501
+        # carries for the developer, and re-pointing the join is not a ruling
+        # on it.*
         #
         # Soft-deleted rows are excluded: they contribute to no figure on any
         # surface.  An owner with NO periods is excluded by the join rather
@@ -428,10 +436,14 @@ def check_balance_anomalies(session):
             JOIN (
                 SELECT pp.user_id,
                        MIN(pp.start_date) AS first_day,
-                       MAX(pp.start_date) + (sch.cadence_days - 1) AS last_day
+                       MAX(pp.start_date) + (era.cadence_days - 1) AS last_day
                 FROM budget.pay_periods pp
-                JOIN budget.pay_schedule sch ON sch.user_id = pp.user_id
-                GROUP BY pp.user_id, sch.cadence_days
+                JOIN (
+                    SELECT DISTINCT ON (user_id) user_id, cadence_days
+                    FROM budget.pay_eras
+                    ORDER BY user_id, effective_from DESC
+                ) era ON era.user_id = pp.user_id
+                GROUP BY pp.user_id, era.cadence_days
             ) sched ON sched.user_id = p.user_id
             WHERE t.is_deleted = FALSE
               AND s.is_settled = TRUE

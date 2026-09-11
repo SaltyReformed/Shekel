@@ -699,9 +699,10 @@ def nominal_payday_after(anchor: date, rhythm: Rhythm, day: date) -> date:
     :func:`~._derive.project_period_after` probes on.
 
     Args:
-        anchor: A day the owner's NOMINAL grid passes through --
-            ``budget.pay_schedule.nominal_anchor``.  It need NOT place *day*
-            on its own grid; see above.
+        anchor: A day the owner's NOMINAL grid passes through -- the
+            latest era's ``effective_from`` since plan step ``C17-a``
+            (``budget.pay_schedule.nominal_anchor`` before it).  It need NOT
+            place *day* on its own grid; see above.
         rhythm: The owner's cadence and payday convention.
         day: The day the answer's PAYDAY must fall after.  Callers pass the
             last paycheck's end.

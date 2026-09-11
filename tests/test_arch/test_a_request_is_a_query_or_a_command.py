@@ -383,10 +383,7 @@ class TestWriteTransaction:
             user_id=seed_user["user"].id,
         ).one_or_none()
         if schedule is None:
-            schedule = PaySchedule(
-                user_id=seed_user["user"].id, cadence_days=14,
-                shift_id=shift_id_of(),
-            )
+            schedule = PaySchedule(user_id=seed_user["user"].id)
             db.session.add(schedule)
         schedule.rolling_enabled = True
         schedule.rolling_target_periods = target
@@ -437,10 +434,7 @@ class TestWriteTransaction:
             user_id=seed_user["user"].id,
         ).one_or_none()
         if schedule is None:
-            schedule = PaySchedule(
-                user_id=seed_user["user"].id, cadence_days=14,
-                shift_id=shift_id_of(),
-            )
+            schedule = PaySchedule(user_id=seed_user["user"].id)
             db.session.add(schedule)
         schedule.rolling_enabled = True
         schedule.rolling_target_periods = len(seed_periods) + 4
@@ -492,10 +486,7 @@ class TestWriteTransaction:
             user_id=seed_user["user"].id,
         ).one_or_none()
         if schedule is None:
-            schedule = PaySchedule(
-                user_id=seed_user["user"].id, cadence_days=14,
-                shift_id=shift_id_of(),
-            )
+            schedule = PaySchedule(user_id=seed_user["user"].id)
             db.session.add(schedule)
         schedule.rolling_enabled = True
         schedule.rolling_target_periods = target

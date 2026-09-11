@@ -41,7 +41,7 @@ from app.services.payroll_basis import PayrollBasis
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_report_service import compute_tax_report
 
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import rhythm_of, strip_owner_schedule
 
 
 def _strip_every_payday(db, user_id):
@@ -61,10 +61,7 @@ def _strip_every_payday(db, user_id):
     is the order this helper always meant.
     """
     db.session.commit()
-    db.session.execute(text(
-        "DELETE FROM budget.pay_periods WHERE user_id = :u"), {"u": user_id})
-    db.session.execute(text(
-        "DELETE FROM budget.pay_schedule WHERE user_id = :u"), {"u": user_id})
+    strip_owner_schedule(db.session, user_id)
     db.session.commit()
 
 

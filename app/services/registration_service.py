@@ -193,8 +193,8 @@ def _reject_impossible_first_payday(
         first_payday: The stated most recent payday, read as a day on the
             owner's NOMINAL grid -- the same reading
             ``pay_period_write._requested_paydays`` gives it, since this value
-            becomes both the batch's phase and
-            ``budget.pay_schedule.nominal_anchor``.
+            becomes both the batch's phase and the first era's
+            ``effective_from`` (plan step ``pay_calendar:C17-a``).
         rhythm: The stated cadence and payday convention
             (:class:`~app.services.pay_rhythm.Rhythm`).  ``register_user`` asks
             ``reject_out_of_range_cadence`` and ``reject_shift_on_short_cadence``

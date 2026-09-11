@@ -774,7 +774,7 @@ class TestRegistrationBuildsARealPayCalendar:
 
             schedule = pay_schedule_service.get_schedule(user.id)
             assert schedule is not None
-            assert schedule.cadence_days == 7
+            assert pay_schedule_service.resolve_cadence(user.id) == 7
             periods = all_periods(user.id)
             assert all(
                 last_covered_day(p) == p.start_date + timedelta(days=6) for p in periods
