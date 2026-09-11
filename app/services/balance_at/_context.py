@@ -91,21 +91,23 @@ _Derived = TypeVar("_Derived")
 class BalanceContext:  # pylint: disable=too-many-instance-attributes
     """One read pass's pinned as-of, scenario, and memoized derivations.
 
-    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed because the
-    ten ARE one read pass's state and there is no smaller cohesive object
-    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and seven
+    Pylint: ``too-many-instance-attributes`` (12/7) -- suppressed because the
+    twelve ARE one read pass's state and there is no smaller cohesive object
+    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and nine
     MEMOS, each keyed by the thing it is a derivation of.  Bundling the memos
     behind a nested record would put an access level in front of state the
     seam fills from five different modules while creating a second object with
     no behaviour of its own.  It reached 8 at plan step C2-c, when the pay
     calendar became a pass-level derivation instead of an argument every caller
-    passed by hand, 9 at X-au-c2b (the amount basis) and 10 at **X-i4** (the
-    cash fold); plan step **X-i1** raises it further, because that step's
-    remaining inputs (the contribution feed, the standing extra, the
-    contractual schedule) are memos of exactly this kind.  The count is a
-    property of what a read pass IS rather than a threshold this class is
-    drifting past.  *The figure read ``(8/7)`` and "five MEMOS" until X-i4:
-    ``_amount_bases`` had joined without it being updated, which is the class
+    passed by hand, 9 at X-au-c2b (the amount basis), 10 at **X-i4** (the
+    cash fold), 11 at balance:X-au-d (the paycheck pricing) and 12 at
+    recurrence:**R16-b-2** (a rule's resolution); plan step **X-i1** raises it
+    further, because that step's remaining inputs (the contribution feed, the
+    standing extra, the contractual schedule) are memos of exactly this kind.
+    The count is a property of what a read pass IS rather than a threshold
+    this class is drifting past.  *The figure read ``(8/7)`` and "five MEMOS"
+    until X-i4, and ``(10/7)`` and "seven" until R16-b-2's adversarial review:
+    each time a memo had joined without it being updated, which is the class
     of claim this file's own ``scenario_id`` docstring already warns about.*
 
     Frozen: the pinned inputs (``user_id`` / ``scenario`` / ``as_of``) cannot be
@@ -116,14 +118,16 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     contexts with the same pins are equal whether or not either has resolved a
     loan yet.
 
-    **THREE derivations this module owns, three it stores in PUBLIC caches, and
+    **FIVE derivations this module owns, three it stores in PUBLIC caches, and
     ONE in a PRIVATE one.**  The WALK (:meth:`loan_walk`), the CALENDAR
-    (:meth:`calendar`) and the AMOUNT BASIS (:meth:`amounts`) derive from leaves
-    BELOW this module, which it imports outright, so all three stay private,
-    filled by this module's own methods.  *The count read "two" and named only
-    the first two until plan step X-i4, having missed ``amounts`` when X-au-c2b
-    added it -- the same omission the attribute-count note above records, one
-    sentence over.*  The RESOLUTION, PLAN and
+    (:meth:`calendar`), the AMOUNT BASIS (:meth:`amounts`), the PAYCHECK
+    PRICING (:meth:`paychecks`) and a rule's RESOLUTION
+    (:meth:`resolved_recurrence_of`) derive from leaves BELOW this module,
+    which it imports outright, so all five stay private, filled by this
+    module's own methods.  *The count read "two" and named only the first two
+    until plan step X-i4, having missed ``amounts`` when X-au-c2b added it, and
+    "three" until R16-b-2's review, having missed ``paychecks`` -- the same
+    omission the attribute-count note above records, one sentence over.*  The RESOLUTION, PLAN and
     PAYOFF caches (:attr:`loans` /
     :attr:`plans` / :attr:`payoffs`) are derived in the
     ``balance_at`` seam modules ABOVE it (``_resolution`` / ``_plan`` /
@@ -603,15 +607,18 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         is resolved fresh and never stored -- it exists for one render and
         names no row.
 
-        **A foreign rule never enters the memo, and no check here is what
-        makes that so.**  The pure resolver refuses a rule paired with another
-        owner's calendar -- ``RecurrenceResolutionError``, naming the rule --
-        and it runs BEFORE the store on every miss, so a hit is always the
-        owner's own rule.  The composed door relies on that refusal being the
-        rule's own and reaching a caller first (before any account is loaded),
-        so a second, earlier refusal here would change which error names the
-        pairing; :func:`_memoize_once` carries its own check because the
-        derivations it stores do not refuse for themselves.
+        **A foreign rule never enters the memo with a VALUE, and no check here
+        is what makes that so.**  The pure resolver refuses a rule paired with
+        another owner's calendar -- ``RecurrenceResolutionError``, naming the
+        rule -- and it runs BEFORE the store on every miss, so a hit holding a
+        value is always the owner's own rule.  The one thing a foreign rule
+        can leave here is the ``None`` an EMPTY calendar answers, which
+        ``resolved_recurrence`` returns before the resolver's ownership check
+        runs; it carries nothing.  The composed door relies on that refusal
+        being the rule's own and reaching a caller first (before any account
+        is loaded), so a second, earlier refusal here would change which error
+        names the pairing; :func:`_memoize_once` carries its own check because
+        the derivations it stores do not refuse for themselves.
 
         Args:
             rule: The :class:`~app.models.recurrence_rule.RecurrenceRule` to

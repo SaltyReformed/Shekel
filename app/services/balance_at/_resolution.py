@@ -62,10 +62,12 @@ from app.services.loan_loaders import (
 )
 from app.services.loan_payment_service import LoanContext, load_loan_context
 from app.services.recurrence import NEVER_ENDS, EndBound, RecurrenceOwner
+from app.models.transfer_template import TransferTemplate
+from app.services import recurring_transfer_query
 from app.services.recurring_transfer_query import (
     StandingPayment,
     destination_account,
-    standing_payment,
+    loan_payment_config,
 )
 
 from ._confirmed_view import confirmed_view
@@ -128,7 +130,17 @@ class ResolvedLoan:
             slice of this row read through its own narrow accessor.  The plan
             needed the other two the moment it had to price an installment no
             row covers, and taking them from a second read would have let one
-            pass hold two answers about one definition.
+            pass hold two answers about one definition.  **It prices nothing
+            since plan step R16-b-2**: the plan sums :attr:`definitions`, and
+            this is the oldest of them, kept for the resolver's extra and the
+            identity the recurrence form locks on.
+        definitions: EVERY active recurring transfer paying into the loan
+            (:func:`~app.services.recurring_transfer_query.active_recurring_transfer_templates`),
+            oldest first, loaded ONCE here (plan step R16-b-2).  The forward
+            plan walks each on its own cadence; :attr:`standing` is the first
+            of them, so "which definitions pay in" and "which one is the
+            standing payment" are one query and cannot disagree.  ``[]`` for a
+            loan with no definition, whose plan is then the contract's.
     """
 
     params: LoanParams
@@ -136,6 +148,7 @@ class ResolvedLoan:
     context: LoanContext
     state: loan_resolver.LoanState
     standing: StandingPayment | None
+    definitions: list[TransferTemplate]
 
 
 def resolved_loan(
@@ -268,16 +281,15 @@ def resolve_loan_bundle(
       composer falls back to that replay, the pre-switch behaviour.  The loan's
       displayed BALANCE is not derived here at all (plan step D2a): the seam folds
       it from the same recorded events.
-    * **The loan's STANDING PAYMENT**, loaded ONCE here and threaded BOTH into
-      the resolve -- its ``extra_principal``, so ``state``'s schedule, payoff,
-      and interest are the COMMITTED plan-aware trajectory every summary surface
-      shows, matching the loan detail page (step 8,
-      ``docs/design/escrow_line_identity_refactor.md`` Sec. 16) -- and WHOLE
-      onto :attr:`ResolvedLoan.standing`, so the seam's forward plan prices
-      every installment past the materialized-shadow horizon from the same
-      definition without a second read (finding N-15, and plan step **R7d-a**
-      for the base and the mode).  ``None`` for a loan with no recurring
-      payment, and the injected extra is then ``0.00`` -- a safe no-op.
+    * **The loan's DEFINITIONS**, loaded ONCE here: every active recurring
+      transfer into it (:attr:`ResolvedLoan.definitions`, plan step R16-b-2),
+      which the seam's forward plan sums, and the oldest of them as the
+      STANDING PAYMENT, threaded into the resolve -- its ``extra_principal``,
+      so ``state``'s schedule, payoff, and interest are the COMMITTED
+      plan-aware trajectory every summary surface shows, matching the loan
+      detail page (step 8, ``docs/design/escrow_line_identity_refactor.md``
+      Sec. 16).  ``None`` for a loan with no recurring payment, and the
+      injected extra is then ``0.00`` -- a safe no-op.
 
     Returning the loaded ``context`` alongside the ``state`` is what removes the
     last reason for a consumer to re-load: the loan tile previously called
@@ -326,7 +338,21 @@ def resolve_loan_bundle(
     context = load_loan_context(
         account.id, ctx.amounts_or_none(), params,
     )
-    standing = standing_payment(account.id, account.user_id)
+    # ONE query for every definition into the loan (plan step R16-b-2); the
+    # standing payment is its oldest member, read off the same list rather
+    # than fetched again by ``standing_payment`` (finding N-511's shape).
+    # Reached through the module rather than an imported name, so the query
+    # is resolved at CALL time where it is defined -- which is where the
+    # "one lookup per pass" control counts it.
+    definitions = recurring_transfer_query.active_recurring_transfer_templates(
+        account.id, account.user_id,
+    )
+    standing = None
+    if definitions:
+        _derive, extra = loan_payment_config(definitions[0])
+        standing = StandingPayment(
+            template=definitions[0], extra_principal=extra,
+        )
     # The resolver takes the EXTRA alone -- it prices the contractual schedule
     # and an overpayment is the only part of the definition that moves it.  The
     # base and the mode go on the bundle for the forward plan, which prices
@@ -348,6 +374,7 @@ def resolve_loan_bundle(
         context=context,
         state=state,
         standing=standing,
+        definitions=definitions,
     )
 
 

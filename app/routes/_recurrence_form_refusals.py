@@ -49,6 +49,7 @@ from app.schemas.validation import (
     RECURRENCE_STARTS_ON_KEY,
     end_bound_before_start_message,
 )
+from app.services.cash_ledger import is_loan_payment_definition
 from app.services.balance_at import (
     BalanceContext,
     authored_closing,
@@ -325,9 +326,13 @@ def is_loan_payment(template: Any) -> bool:
     ``recurring_transfer_query.loan_standing_extra`` threads into the balance
     seam's :class:`~app.services.balance_at._resolution.ResolvedLoan`.
 
-    ``getattr`` because only ``TransferTemplate`` declares the relationship;
-    these helpers are deliberately kind-agnostic, and a transaction template is
-    never a loan payment.
+    **ONE reading of the settings-row test**: the amount model's
+    :func:`~app.services.cash_ledger.is_loan_payment_definition`, which is
+    how a written row is classified as a loan payment and how the balance
+    seam's estimate classifies a definition whose row does not exist yet.  A
+    third spelling here was what R16-b-2's adversarial review found; the
+    kind-agnostic ``getattr`` lives there now, so a transaction template still
+    answers ``False`` without a query.
 
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate``.
@@ -335,7 +340,7 @@ def is_loan_payment(template: Any) -> bool:
     Returns:
         ``True`` when the template carries loan-payment settings.
     """
-    return getattr(template, "settings", None) is not None
+    return is_loan_payment_definition(template)
 
 
 def refuse_recurrence_update(

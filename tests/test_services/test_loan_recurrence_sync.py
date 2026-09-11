@@ -227,11 +227,17 @@ class TestSyncRecurringPaymentBounds:
         installments plus the post-contractual extension (plan C8c) at the same
         level payment.  Hand-checked: the level P&I on $12,000.00 / 24 months /
         5% is $526.46, and $12,000.00 at 5%/12 amortizes in exactly 24 payments
-        at that figure -- so a borrower who has paid NOTHING is still a full
-        24 installments from zero.  Counting from the first one the plan
-        pays (2026-07-01) that lands on 2028-06-01: seven contractual
-        installments and seventeen from the extension, 18 months past the
-        contractual 2027-01-01.
+        at that figure -- so a borrower who has paid NOTHING is a full 24
+        installments from zero PLUS the arrears.  Since plan step R16-b-2 the
+        sixteen skipped months from 2025-02-01 to 2026-06-01 each accrue their
+        $50.00 of interest (ruling R-R71: a skipped month owes its interest
+        whichever side of today it is on), $800.00 standing when the first
+        payment lands on 2026-07-01, which that payment and the next clear
+        before any principal moves; counting from there the balance reaches
+        zero on 2028-08-01 -- seven contractual installments and nineteen from
+        the extension, 20 months past the contractual 2027-01-01.  It read
+        2028-06-01 while the skipped months charged nothing (B-9's holds-flat,
+        repealed by the ruling).
 
         **"Never paid" is a fact the OWNER states since plan step R16-b-2, and
         this fixture states it.**  Ruling **R-R64**: an occurrence the
@@ -301,7 +307,7 @@ class TestSyncRecurringPaymentBounds:
                 "payoff 2027-01-01, so the bound is still coming off the "
                 "schedule walk that pays down installments nobody paid (B-9)."
             )
-            assert rule.end_date == date(2028, 6, 1)
+            assert rule.end_date == date(2028, 8, 1)
 
     def test_a_STATED_price_at_the_contractual_figure_bounds_identically(
         self, app, db, seed_user, seed_periods,

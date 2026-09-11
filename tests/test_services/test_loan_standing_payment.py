@@ -590,7 +590,7 @@ class TestTheEscrowPairingFoldsToTheSameBalance:
     def test_an_escrowing_loan_folds_like_its_escrow_free_twin(
         self, seed_user, db,  # pylint: disable=unused-argument
     ):
-        """Adding escrow to a contract-priced loan moves NO projected figure.
+        """Adding escrow to a contract-priced, CURRENT loan moves NO projected figure.
 
         Two identical loans, one escrowing `$7,403.88` a year (`$616.99` a
         month) and one escrowing nothing, both with no recurring payment so the
@@ -598,17 +598,37 @@ class TestTheEscrowPairingFoldsToTheSameBalance:
         servicer; it pays no principal, so the payoff and every projected
         balance must be identical.  Under the mutation this class exists for,
         the escrowing loan pays down `$616.99` a month faster.
+
+        **Both loans originate on the read day**, so no installment is
+        missed.  On the module's 2026-01-01 loan read at 2026-04-15 three
+        months are unpaid, and since plan step R16-b-2 a skipped month accrues
+        its charge -- interest AND escrow -- until a payment clears it (ruling
+        R-R71); a catch-up payment at the level cash then clears the escrow
+        arrears before principal, so a DELINQUENT escrowing loan genuinely
+        pays down slower than its twin, which is the servicer's arithmetic and
+        not the mutation.  The invariant this test states holds for a loan
+        that is current, which is the loan it now builds.
         """
-        escrowing, ctx = _loan(seed_user, escrow_annual=Decimal("7403.88"))
+        escrowing = create_loan_account(
+            seed_user, db.session, name="Escrowing",
+            principal=_PRINCIPAL, rate=_RATE, term=_TERM,
+            origination_date=_AS_OF, payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE,
+        )
+        add_escrow_line(
+            db.session, escrowing.id, "Property Tax", Decimal("7403.88"),
+            effective_date=_AS_OF,
+        )
         bare = create_loan_account(
             seed_user, db.session, name="No Escrow",
             principal=_PRINCIPAL, rate=_RATE, term=_TERM,
-            origination_date=_ORIGINATION, payment_day=1,
+            origination_date=_AS_OF, payment_day=1,
             account_type=AcctTypeEnum.MORTGAGE,
         )
+        db.session.flush()
         ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
 
-        dates = [date(2026, 5, 1), date(2026, 6, 1), date(2026, 7, 1)]
+        dates = [date(2026, 6, 1), date(2026, 7, 1), date(2026, 8, 1)]
         assert balance_at.positions(escrowing, ctx, dates) == \
             balance_at.positions(bare, ctx, dates)
         assert balance_at.loan_payoff_date(escrowing, ctx) == \

@@ -31,6 +31,8 @@ from decimal import Decimal
 
 import pytest
 
+from app import ref_cache
+from app.enums import SettledDayBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transfer import Transfer
@@ -45,12 +47,17 @@ from app.services import (
     transfer_service,
 )
 from app.services.balance_at import BalanceContext
-from app.services.balance_at._plan import loan_plan
+from app.services.balance_at._plan import (
+    _PAYOFF_EXTENSION_MONTHS,
+    _charge_dates,
+    loan_plan,
+)
 from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
 from app.services.generation_schedule import GenerationSchedule
 from app.services.recurrence import compute_due_date
+from app.services.settle_day import SettleDay
 from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
@@ -282,12 +289,63 @@ class TestAnOccurrenceNoRowAnswers:
         assert not any(
             p.is_estimated for p in plan.payments if p.due_date < _AS_OF
         )
-        # ...and March is still CHARGED (R-R37 / D53): the contract charges
-        # every forward period, and the slot a plan payment occupies; the
-        # 03-01 slot is a past slot no payment occupies, so it is not.  What
-        # IS pinned is that the deletion moved the payoff OUT by exactly the
-        # installment it removed.
-        assert balance_at.loan_payoff_date(account, ctx) == date(2026, 8, 1)
+        # ...and March is still CHARGED (rulings R-R37 and R-R71, finding
+        # D53): the contract charges every month after the loan's last
+        # balance assertion whether or not a payment lands in it, so the
+        # skipped month's $60.00 stands until April's payment clears it.
+        # Hand-checked from the $12,000 seed: Feb pays 1,975.15 principal
+        # (10,024.85), March charges 50.12 and nothing pays, April's payment
+        # clears 50.12 + 50.12 and pays 1,934.91 (8,089.94), then 40.45 /
+        # 1,994.70 (6,095.24), 30.48 / 2,004.67 (4,090.57), 20.45 / 2,014.70
+        # (2,075.87), 10.38 / 2,024.77 (51.10), and the 09-01 installment
+        # clears the rest: the deletion moved the payoff OUT by one
+        # installment AND the skipped month's interest, 2026-09-01.  Read on
+        # any other day the answer is the same, which is what R-R71 bought:
+        # bounded at the read day instead, this loan answered 2026-08-01
+        # once as_of had passed the skipped month.
+        assert [c.on_date for c in plan.charges][:3] == [
+            date(2026, 2, 1), date(2026, 3, 1), date(2026, 4, 1),
+        ]
+        assert balance_at.loan_payoff_date(account, ctx) == date(2026, 9, 1)
+
+    def test_an_occurrence_at_or_before_origination_is_not_estimated(
+        self, seed_user,
+    ):
+        """Ruling R-C's boundary, asked of the estimate as the write door asks it of a row.
+
+        A SECOND definition into the loan keeps the start its owner authored
+        (its control is unlocked, plan ledger row D50); authored before the
+        loan, it names occurrences the write door would REFUSE
+        (``_reject_payment_before_origination``), so a generate pass would
+        not write them and the fold, which would erase such a payment against
+        a zero balance, must not price them.  An adversarial review of this
+        step found exactly this fixture paying for months the loan did not
+        exist; the shared predicate
+        (:func:`~app.services.loan_loaders.precedes_origination`) is what
+        stops it.  The occurrence ON the origination date is refused too.
+        """
+        account, ctx = _loan(seed_user)
+        _definition(seed_user, account, _LEVEL, name="Payment")
+        early = _definition(
+            seed_user, account, Decimal("100.00"), name="Early sweep",
+            bind=False,
+        )
+        early.recurrence_rule.starts_on = date(2025, 11, 1)
+        db.session.flush()
+        template_amount_service.set_amount(
+            early, Decimal("100.00"), effective_on=date(2025, 11, 1),
+        )
+        db.session.commit()
+        ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
+
+        plan = loan_plan(account, ctx)
+
+        sweep = sorted(
+            p.due_date for p in _estimated(plan) if p.cash == Decimal("100.00")
+        )
+        assert sweep, "precondition: the sweep's later occurrences are estimated"
+        assert sweep[0] == date(2026, 2, 1), sweep[:3]
+        assert all(due > _ORIGINATION for due in sweep)
 
     def test_an_occurrence_before_the_schedule_opens_is_not_estimated(
         self, seed_user,
@@ -400,7 +458,62 @@ class TestTheEstimateIsWhatGenerationWouldWrite:
 
 @pytest.mark.usefixtures("db", "seed_periods")
 class TestTheChargeCalendarIsTheContracts:
-    """R-R68: charges follow the contract's installments, seed-aware."""
+    """R-R68 / R-R71: charges follow the contract's installments, seed-aware."""
+
+    def test_a_skipped_month_is_charged_whichever_side_of_today_it_is_on(
+        self, seed_user, monkeypatch,
+    ):
+        """R-R71: the payoff is a function of the records, not of the read day.
+
+        The adversarial review's case: Feb-Apr settled, May's row soft-deleted.
+        Charging every month at or after ``as_of`` -- the calendar as first
+        built -- charged May while it lay ahead of an April read and nowhere
+        once a May read had passed it, so the same records answered
+        2026-09-01 in April and 2026-08-01 in May.  Bounded at the loan's
+        last balance assertion instead, both reads answer 2026-09-01, and the
+        skipped month's $30.22 stands in both.
+        """
+        # The settle door refuses a settle day that has not happened, so the
+        # clock is pinned past the last settlement.
+        freeze_today(monkeypatch, date(2026, 4, 15))
+        account, _ctx = _loan(seed_user)
+        _schedule_through(seed_user, 14)
+        template = _definition(seed_user, account, _LEVEL, name="Payment")
+        _generate(seed_user, template)
+        for occurrence in (date(2026, 2, 1), date(2026, 3, 1), date(2026, 4, 1)):
+            row = (
+                db.session.query(Transfer)
+                .filter(
+                    Transfer.transfer_template_id == template.id,
+                    Transfer.occurs_on == occurrence,
+                )
+                .one()
+            )
+            transfer_service.update_transfer(
+                row.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                settle_day=SettleDay(
+                    day=occurrence, basis=SettledDayBasisEnum.ENTERED,
+                ),
+            )
+        may = (
+            db.session.query(Transfer)
+            .filter(
+                Transfer.transfer_template_id == template.id,
+                Transfer.occurs_on == date(2026, 5, 1),
+            )
+            .one()
+        )
+        transfer_service.delete_transfer(may.id, seed_user["user"].id, soft=True)
+        db.session.commit()
+
+        payoffs = {}
+        for read_day in (date(2026, 4, 15), date(2026, 5, 15), date(2026, 6, 15)):
+            ctx = BalanceContext.build(seed_user["user"].id, read_day)
+            plan = loan_plan(account, ctx)
+            assert date(2026, 5, 1) in {c.on_date for c in plan.charges}, read_day
+            payoffs[read_day] = balance_at.loan_payoff_date(account, ctx)
+        assert set(payoffs.values()) == {date(2026, 9, 1)}, payoffs
 
     def test_an_ad_hoc_extra_does_not_displace_the_installment_of_its_month(
         self, seed_user,
@@ -442,6 +555,42 @@ class TestTheChargeCalendarIsTheContracts:
             c.on_date for c in plan.charges
             if (c.on_date.year, c.on_date.month) == (2026, 5)
         ] == [date(2026, 5, 1)]
+
+    def test_the_charge_sequence_reaches_every_payment_past_the_extension(
+        self, seed_user,
+    ):
+        """A plan payment sixty-plus months past the contract still faces its month's charge.
+
+        The adversarial review's M1: the calendar's dates were the contract's
+        rows plus the sixty-month extension, so a loan that had matured more
+        than five years ago while still owing (``_secured_debt`` names the
+        shape) folded a live projected row against NO charge, where the old
+        payments-derived calendar followed it.  The sequence now runs to the
+        later of the extension's end and the last plan payment, one month at a
+        time, and stops at the extension when nothing lies beyond it.
+        """
+        account, _ctx = _loan(seed_user)
+        contractual = contractual_schedule_from_origination(
+            account.loan_params, loan_loaders.load_rate_changes(account.id),
+        )
+        last = contractual[-1].payment_date
+
+        bounded = _charge_dates(contractual, last)
+        assert len(bounded) == len(contractual) + _PAYOFF_EXTENSION_MONTHS
+        assert bounded[len(contractual)] == date(2026, 8, 1)
+
+        # A payment on the 10th faces its MONTH's charge, dated on the
+        # contract's day (the 1st): the sequence ends in the payment's month,
+        # whether the payment falls before or after the contract's day.
+        for far in (date(2035, 3, 10), date(2035, 3, 1)):
+            extended = _charge_dates(contractual, far)
+            assert extended[:len(bounded)] == bounded
+            assert extended[-1] == date(2035, 3, 1), far
+        assert all(
+            (later.year - earlier.year) * 12 + later.month - earlier.month == 1
+            for earlier, later in zip(extended, extended[1:])
+        )
+        assert _charge_dates([], far) == []
 
     def test_a_slot_the_seed_charged_is_not_charged_again(
         self, seed_user, monkeypatch,

@@ -590,10 +590,18 @@ def _require_generable(resolved: ResolvedRecurrence) -> None:
         )
 
 
-def _placement_search(
+def _searches(
     calendar: PayCalendar, placement: PeriodPlacementEnum,
-) -> "Callable[[date], DerivedPeriod | None]":
-    """Return the schedule search *placement* names, refusing an unknown one.
+) -> "tuple[Callable[[date], DerivedPeriod | None], Callable[[date], DerivedPeriod | None]]":
+    """Return the ``(saved, projecting)`` searches *placement* names, refusing an unknown one.
+
+    ONE table from placement to search, since plan step R16-b-2's adversarial
+    review found two -- a saved one and a projecting one -- that a placement
+    added to one and not the other would have split.  Each rule names its
+    saved search (the schedule's own, answering ``None`` past the horizon,
+    which is what generation writes against) beside its TOTAL twin (the
+    calendar's span search, projecting at the owner's cadence, which the
+    balance seam's estimate places on).
 
     Resolved ONCE per composition rather than per occurrence, which is also
     what makes an unrecognised placement an eager refusal instead of one that
@@ -604,22 +612,39 @@ def _placement_search(
         placement: Which placement rule the recurrence uses.
 
     Returns:
-        The bound search method.
+        The bound saved search and the bound projecting search.
 
     Raises:
         RecurrenceGenerationError: When *placement* is not a member this
             engine has a rule for.
     """
     if placement is PeriodPlacementEnum.CONTAINING_DATE:
-        return calendar.period_containing
+        return calendar.period_containing, calendar.span_containing
     if placement is PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER:
-        return calendar.period_starting_on_or_after
+        return (
+            calendar.period_starting_on_or_after,
+            lambda day: span_starting_on_or_after(calendar, day),
+        )
     raise RecurrenceGenerationError(
         f"period placement {placement!r} has no rule.  Every member of "
         f"PeriodPlacementEnum must map an occurrence onto a period; "
         f"answering None instead would read as a schedule that cannot host "
         f"the row."
     )
+
+
+def _placement_search(
+    calendar: PayCalendar, placement: PeriodPlacementEnum,
+) -> "Callable[[date], DerivedPeriod | None]":
+    """Return the SAVED search *placement* names (:func:`_searches`' first half)."""
+    return _searches(calendar, placement)[0]
+
+
+def _span_search(
+    calendar: PayCalendar, placement: PeriodPlacementEnum,
+) -> "Callable[[date], DerivedPeriod | None]":
+    """Return the PROJECTING search *placement* names (:func:`_searches`' second half)."""
+    return _searches(calendar, placement)[1]
 
 
 def occurrences(
@@ -776,43 +801,6 @@ def occurrence_placements(
     return _placements(
         resolved, calendar, _placement_search(calendar, resolved.placement),
         through=through,
-    )
-
-
-def _span_search(
-    calendar: PayCalendar, placement: PeriodPlacementEnum,
-) -> "Callable[[date], DerivedPeriod | None]":
-    """Return the PROJECTING twin of :func:`_placement_search`'s search.
-
-    The same two placement rules over the calendar's TOTAL searches -- the
-    ones that keep answering past the saved horizon at the owner's cadence --
-    so a placement past the horizon is the projected paycheck the row would
-    live in rather than ``None``.  Total over the enum in the same shape as
-    the saved search, with the same eager refusal, and
-    ``test_recurrence_occurrence`` grades BOTH tables against every member: a
-    placement given a saved rule and not a projecting one fails there rather
-    than defaulting into whichever arm is last.
-
-    Args:
-        calendar: The owner's pay-period schedule.
-        placement: Which placement rule the recurrence uses.
-
-    Returns:
-        The bound projecting search.
-
-    Raises:
-        RecurrenceGenerationError: When *placement* is not a member this
-            engine has a rule for.
-    """
-    if placement is PeriodPlacementEnum.CONTAINING_DATE:
-        return calendar.span_containing
-    if placement is PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER:
-        return lambda day: span_starting_on_or_after(calendar, day)
-    raise RecurrenceGenerationError(
-        f"period placement {placement!r} has no projecting rule.  Every "
-        f"member of PeriodPlacementEnum must map an occurrence onto a saved "
-        f"or projected period; answering None instead would read as an "
-        f"occurrence the owner's schedule can never host."
     )
 
 

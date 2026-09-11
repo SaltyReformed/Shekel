@@ -551,9 +551,13 @@ def test_arm_payoff_date_consistent_across_surfaces(
         # The chip's producer since C8d: the fold to zero.  Hand-checked -- the
         # loan has paid nothing, so its balance is still $400,000.00 and the
         # contractual payment amortizes exactly that over exactly 360
-        # installments; the first one the plan synthesizes is the first one NOT
-        # already past (a strictly-past installment with no record pays nothing,
-        # D1), so the loan clears 360 months after it.
+        # installments from the first one the plan pays.  Since plan step
+        # R16-b-2 the installments nobody paid ACCRUE (ruling R-R71: a skipped
+        # month owes its interest whichever side of today it is on), so the
+        # arrears stand when the first payment lands and the loan clears LATER
+        # than 360 months after it -- how much later depends on how many
+        # months today is past origination, which is why the bound is stated
+        # as an inequality rather than a date the wall clock would move.
         #
         # "Not already past" is ON OR AFTER today, not "next month".  The fixture
         # pays on the 1st, so on the 1st of a month today's own installment is
@@ -571,10 +575,11 @@ def test_arm_payoff_date_consistent_across_surfaces(
             if this_months_installment >= date.today()
             else add_months(this_months_installment, 1)
         )
-        assert seam_payoff == add_months(first_forward, 359), (
-            f"Derived payoff {seam_payoff} is not 360 installments from the "
-            f"next one ({first_forward}); the fold is not starting from the "
-            "unpaid full principal."
+        assert seam_payoff > add_months(first_forward, 359), (
+            f"Derived payoff {seam_payoff} is not past 360 installments from "
+            f"the next one ({first_forward}); the fold is not starting from "
+            "the unpaid full principal plus the arrears of the months nobody "
+            "paid (ruling R-R71)."
         )
         # Control: the two answers genuinely differ here, so the chip assertion
         # below cannot pass by both producers happening to agree.  Without it a

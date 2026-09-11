@@ -174,13 +174,19 @@ _inputs}``, ``_loan_figures -> _positions -> {_plan, _plan_fold}`` (the figures'
 payoff is the fold to zero, plan step C8d), and ``{_positions, _loan_interest} ->
 _plan_fold -> {_plan, _fold}`` -- the forward model's BUILD and its FOLD, split
 at plan step R16-a when ``_plan`` passed the line ceiling, with the arrow one-way
-because ``_plan`` imports neither -- a DAG with ``_fold`` at the producer floor,
-so no module imports a sibling that imports it back.  Every loan producer also
+because ``_plan`` imports neither -- and ``_plan -> {_plan_definitions,
+_plan_records}``, ``_plan_definitions -> {_plan_records, _resolution}``, the
+second split of ``_plan`` at plan step R16-b-2 (the definition WALK that sums
+every recurring transfer into a loan, and the two RECORD types both halves
+share) -- a DAG with ``_fold`` at the producer floor, so no module imports a
+sibling that imports it back.  Every loan producer also
 imports ``_resolution`` for the read
 pass's ONE whole-loan read; ``_resolution`` imports only ``_context`` among its
 siblings, plus ``_confirmed_view`` for the confirmed seed it threads into every
 resolution (plan step E1d-b); ``_confirmed_view`` imports ``_context`` and
-``_fold``, so that sub-chain is a DAG too.  ``_context`` sits at the
+``_fold``, so that sub-chain is a DAG too.  ``_resolution`` also holds the
+loan-payment IDENTITY and ruling R-R56's arm since R16-b-2 (``_plan`` reads
+them and ``_loan_figures`` sits above ``_plan``).  ``_context`` sits at the
 floor, with ``_fold`` and ``_asset_contributions`` -- the three modules that
 import no sibling at runtime.  ``_plan``'s ``LoanForwardPlan``, ``_resolution``'s
 ``ResolvedLoan`` and ``_cash_fold``'s ``AssembledCashFold`` are all type-only

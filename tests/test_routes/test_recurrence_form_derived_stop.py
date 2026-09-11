@@ -447,15 +447,18 @@ class TestTheIdentityIsReadOffThePass:
         loan-destination render, which this counter could not have taken (the
         old predicate reached the query through an import alias this patch
         does not see).  What it grades is the NEW path: counted at the query's
-        own definition, which ``standing_payment`` reaches by name at call
-        time; the control is a SECOND pass, on which the count must move, so
-        a counter that never fires cannot pass this.
+        own definition -- ``active_recurring_transfer_templates``, the ONE
+        query for every definition into the loan since plan step R16-b-2,
+        which the pass's resolution reaches by name at call time and from
+        whose first row the standing payment is read; the control is a SECOND
+        pass, on which the count must move, so a counter that never fires
+        cannot pass this.
         """
         with app.app_context():
             loan = _loan(seed_user)
             tpl = _payment_into(seed_user, loan)
             calls = []
-            real = recurring_transfer_query.active_recurring_transfer_template
+            real = recurring_transfer_query.active_recurring_transfer_templates
 
             def counting(account_id, user_id):
                 calls.append(account_id)
@@ -463,7 +466,7 @@ class TestTheIdentityIsReadOffThePass:
 
             monkeypatch.setattr(
                 recurring_transfer_query,
-                "active_recurring_transfer_template",
+                "active_recurring_transfer_templates",
                 counting,
             )
             ctx = _ctx(seed_user)
