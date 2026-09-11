@@ -260,8 +260,8 @@ present only when it differs. **`compute_due_date` is DELETED** -- it is the las
 endpoint-month scan R4a deleted from period selection (row D18) and the last place the disproved
 `due_dom < dom` next-month inference lives (R-R2). Two things follow that the old specification did
 not have: the write loop stops discarding `PlannedOccurrence.occurrence`
-(the two producers of one fact: `recurrence_engine` is a PACKAGE now, so find them with
-`grep -rn 'placement\.occurrence' app/` rather than at a line number), and
+(the two producers of one fact, one per ENGINE: `grep -rn 'due_date=compute_due_date' app/`,
+which is where the line numbers pointed before `recurrence_engine` became a PACKAGE), and
 **the index re-key this step used to carry SHIPPED at `R17`**, with the
 `RecurrenceCadenceUnsupported` retirement that rode on it. What remains here is the DATE split:
 `compute_due_date` reads a row's PERIOD, so two occurrences inside one paycheck -- storable since
@@ -290,9 +290,10 @@ deletes that function.
 
 `loan_installment_date(...)` becomes the single derivation over the rule plus `due_on`.
 **There is no `recurrence_due_dates` table and there will not be**: R-R12 puts the installment on
-the ROW, where the ledger already reads it, rather than on the rule. The files carrying `payment_day` (census 20 code files `payment_day` in `app/**/*.py`) (3
-doc-only, 2 the definition surface), and **19 of 22 already read it as the installment** -- exactly
-two make it a CASH day, `routes/loan/payment_transfer.py:175` and `loan_recurrence_sync.py:172`, and
+the ROW, where the ledger already reads it, rather than on the rule. The files carrying `payment_day` in code
+(census 20 code files `payment_day` in `app/**/*.py`) -- EIGHT more name it only in prose,
+which a code census excludes by construction -- **already read it as the installment, bar two** -- exactly
+two make it a CASH day, in `routes/loan/payment_transfer.py` and `loan_recurrence_sync.py`, and
 those two ARE D4's mechanism. Eight distinct producers of "when is this installment due" collapse
 into one; the plan previously counted them as one accessor plus a rule read. Kills D4.
 **This step needs its own review pass** -- it is the deepest cut into the ledger.

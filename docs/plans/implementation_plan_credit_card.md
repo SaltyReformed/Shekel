@@ -268,7 +268,7 @@ historical-only note), `models/transaction.py` (index + FK renamed), `models/tra
 `grid/_transaction_entries.html`, `_keyboard_help.html`, `analytics/_balance_sheet.html`,
 `accounts/cash_detail.html`, `savings/_cockpit.html`. JS: `app.js` (markTxnCredit + `c` key);
 `command_palette.js` (Credit command, badge glyph). Tests: `tests/test_services/test_credit_workflow.py`,
-`test_entry_credit_workflow.py` (~1,338), `test_c19_credit_payback_unique.py` (~1,141) -- reworked
+`test_entry_credit_workflow.py` (1,789), `test_c19_credit_payback_unique.py` (1,144) -- reworked
 per CC3a-c; plus grid-template, state-machine, carry-forward, posting-lifecycle suites asserting
 Credit shapes.
 

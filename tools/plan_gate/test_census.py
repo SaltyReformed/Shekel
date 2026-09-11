@@ -134,6 +134,43 @@ class TestACensusIsReRunRatherThanRemembered:
         assert any("says 99999 code lines" in p for p in problems), problems
 
 
+class TestAMarkerTheParserCannotReadIsRefused:
+    """A `(census ...)` the regex misses reads as NO census and its number is ungraded.
+
+    Three existed the day this arm was written and the arm found SIX: trailing
+    prose inside the parenthesis (twice, both added by the commit that fixed
+    other findings), and a marker line-WRAPPED between `in` and its glob
+    (three times, one predating all of it). That is a CLASS, and rule 3's own
+    recorded failure mode one register down: a pattern matching nothing reads
+    as silence and passes.
+    """
+
+    def test_the_live_corpus_has_no_near_miss(self):
+        """Every `(census N ...)` in the live documents parses."""
+        assert not _census.near_miss_violations()
+
+    @pytest.mark.parametrize("broken", [
+        "(census 3 lines `x` in `app/**/*.py`, and some trailing prose)",
+        "(census 3 lines `x` in\n`app/**/*.py`)",
+        "(census 3 `x` in `app/**/*.py`)",
+        "(census 3 lines x in `app/**/*.py`)",
+    ])
+    def test_the_control_fires_on_each_way_a_marker_can_break(self, stage_census, broken):
+        """Trailing prose, a line break, a missing unit and a bare pattern all fail."""
+        stage_census(broken)
+        assert _census.near_miss_violations(), broken
+
+    def test_the_rule_s_own_grammar_example_is_not_a_near_miss(self):
+        """`(census <N> ...)` in conventions.md is a PLACEHOLDER, exempt by SHAPE.
+
+        The arm requires a DIGIT, so the rule that states the grammar is not
+        graded as a broken instance of it -- and no allowlist is needed, which
+        is the kind of fence this project deletes rather than maintains.
+        """
+        assert "(census <N>" in (registry.PLANS / "conventions.md").read_text(encoding="utf-8")
+        assert not _census.near_miss_violations()
+
+
 class TestACensusMayNotReachOutsideTheCode:
     """A marker names a path in the code trees, and anything else is refused."""
 

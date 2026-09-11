@@ -231,8 +231,9 @@ their only live specimen from them, which both `_staging` docstrings predict and
       parent, ticked at `C2-f3e`; that tick is also `balance:X-l` and `recurrence:R-F12`.
 - [x] **C2-f1 -- the three the calendar already answered.** `792e3b21`.
 - [ ] **C10 -- the salary package reads the OWNER's day.** Five sites answer "which paycheck am I
-      in" as `period_containing(date.today())` (census 5 code lines `period_containing` in
-      `app/routes/salary/**/*.py`), FOUR of whose line numbers this row carried had drifted by
+      in" as `period_containing(date.today())`
+      (census 5 code lines `period_containing` in `app/routes/salary/**/*.py`),
+      FOUR of whose line numbers this row carried had drifted by
       2026-09-11 -- having taken the derivation at
       `C2-f2d-3` and kept the process clock. **`C2-f3a` CLOSED P49 and was wrong to**; its
       adversarial design review caught that before the commit. Five one-line reads, in a step of

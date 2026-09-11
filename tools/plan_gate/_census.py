@@ -146,14 +146,34 @@ def _python_text(source: str, mode: str) -> str:
 
 
 @functools.lru_cache(maxsize=None)
-def _read(path: Path) -> str:
-    """Read one file, memoized.
+def _read_at(path: Path, _mtime_ns: int, _size: int) -> str:
+    """Read one file, memoized on its IDENTITY rather than its name.
 
-    The arm walks the same trees once per MARKER -- 28 of them over 533 files
-    in ``app/`` -- and tokenizing each file per marker took the gate from 90
-    seconds to 250.  A gate slow enough to skip is a gate that gets skipped.
+    The arm walks the same trees once per MARKER -- thirty of them over 533
+    files in ``app/`` -- and tokenizing each file per marker took the gate from
+    90 seconds to 250.  A gate slow enough to skip is a gate that gets skipped.
+
+    **The mtime and size are in the key deliberately.**  :func:`census_paths`
+    and :func:`census_count` are PUBLIC so a control can measure, and the first
+    control that plants a tree, measures, edits a planted file and measures
+    again would otherwise read the old bytes and confirm a wrong number -- which
+    is ``lessons.md``'s own recorded shape: *a census and a gate can be blind
+    the same way, and then they confirm each other*.  A cache keyed on the path
+    alone is safe only for as long as nobody writes such a control, which is not
+    a property worth resting on.
+
+    Retention is bounded by the corpus rather than by ``maxsize``: today's
+    markers hold ``app/`` and ``tests/`` raw plus their filtered renderings,
+    about 69 MB of strings, which is fine for a process that exits after one
+    commit and is stated here so the next reader need not measure it again.
     """
     return path.read_text(encoding="utf-8")
+
+
+def _read(path: Path) -> str:
+    """Read one file through the identity-keyed cache."""
+    stat = path.stat()
+    return _read_at(path, stat.st_mtime_ns, stat.st_size)
 
 
 def census_unreadable(paths: list[Path]) -> list[Path]:
@@ -218,6 +238,42 @@ def _documents() -> list[Path]:
         registry.PLANS / "lessons.md",
         *registry.ARC_DOCS.values(),
     ]
+
+
+#: A marker-shaped opening.  Anything starting ``(census `` that :data:`MARKER`
+#: does NOT consume is a number wearing the gate's uniform: it reads as "no
+#: census is claimed" and passes, which is rule 3's own recorded failure mode
+#: (a pattern matching nothing reads as silence).  Three instances existed the
+#: day this arm was written -- trailing prose inside the parenthesis, and a
+#: marker line-WRAPPED between ``in`` and its glob, twice.
+#: A DIGIT is required so rule 6's own grammar example, ``(census <N> ...)``,
+#: is exempt by SHAPE rather than by an allowlist: a placeholder cannot be
+#: mistaken for a count.
+NEAR_MISS = re.compile(r"\(census \d")
+
+
+def near_miss_violations() -> list[str]:
+    """Refuse a marker-shaped string the parser cannot read.
+
+    Returns:
+        One message per ``(census `` opening :data:`MARKER` did not consume.
+    """
+    problems = []
+    for document in _documents():
+        text = document.read_text(encoding="utf-8")
+        consumed = {m.start() for m in MARKER.finditer(text)}
+        for near in NEAR_MISS.finditer(text):
+            if near.start() in consumed:
+                continue
+            line = text.count("\n", 0, near.start()) + 1
+            problems.append(
+                f"{document.name}:{line} opens a census the parser cannot read. "
+                f"It must be one line, `(census <N> [code|comments] lines|files "
+                f"`<regex>` in `<glob>`)`, with NOTHING between the glob and the "
+                f"closing paren -- a marker the regex misses reads as no census "
+                f"at all and its number is graded by nothing ({_RULE})",
+            )
+    return problems
 
 
 def census_violations() -> list[str]:

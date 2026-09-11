@@ -671,6 +671,10 @@ in SILENCE where a refused DELETE is loud.
 2026-09-03 (**R-SAL1**); their specifications are `../../plans/implementation_plan_salary.md`,
 section 4, under their unchanged ids.*
 
+  **The census counts every code line NAMING the column, not attribute access alone**: an
+  `\.default_amount` pattern reads 13 and misses the two column declarations, the four
+  Marshmallow fields and the five kwarg writes -- including `routes/salary/profiles.py`,
+  which is one of the two salary routes this step's own headline is about.
 * [ ] **X-bq** `refactor(transactions): the flag's write set matches its meaning` -- the follow-up
   `X-au-h` created by shipping. That step made `is_override` MEAN one thing (*this row is the
   owner's, not the rule's*, **R-JR**) without making its WRITE SET match: `due_date`, `name` and
@@ -817,7 +821,7 @@ section 4, under their unchanged ids.*
   * [ ] **X-x2 THE FABRICATIONS** (R-CY) -- the branches that publish a figure the app did not
     compute take the raising accessor. **Its first arm is DONE and must not be rebuilt**: the
     anchor-cache substitutions died with the column at X-f1c3c (ruling R-EH), and an AST pass over
-    `main` finds no live read left -- only prose (census 10 files `current_anchor_period_id` in `app/**/*.py`). What REMAINS, re-measured against
+    `main` finds no live read left -- only prose (census 0 code lines `current_anchor_period_id` in `app/**/*.py`), which is the arm that matters: a file-count of the prose asserts nothing about a live read. What REMAINS, re-measured against
     `8d812662`: the fabricated `$0.00` in four producers, and `build_trend_periods`'
     `current_index = 0` into an empty list, still live at `routes/accounts/detail.py:228` and
     `analytics_view.py:485`.
@@ -1005,7 +1009,7 @@ section 4, under their unchanged ids.*
   that is precisely the form the first ruling specified and measurement rejected. The instrument is
   an open question the step's trace decides, and it must be shown FIRING on a planted defect.
 * [ ] **X-ah** `fix(routes): a query-string id is parsed like every other id` -- closes **N-142**.
-  The one submitted-id surface X-ae did not convert: the `request.args.get(..., type=int)` calls (census 29 code lines `request\.args\.get\([^)]*type=int` in `app/**/*.py`; `X-ah`'s own marker counts every `type=int` coercion, which is 34)
+  The one submitted-id surface X-ae did not convert: the `request.args.get(..., type=int)` calls (census 29 code lines `request\.args\.get\([^)]*type=int` in `app/**/*.py`); `X-ah`'s own marker counts every `type=int` coercion, which is 34
   where Werkzeug catches the `ValueError` (so no crash) but the coercion is `int()` (so `'١٠٦'` is
   106, `' 2026 '` is 2026, `'1_0'` is 10). **It needs a per-site ruling, which is why it is a step**:
   the path parameters were all row ids and the schema fields all row ids, so each took one blanket
@@ -1095,16 +1099,33 @@ section 4, under their unchanged ids.*
   `_test_helpers._restamp_assertion` across 54 call sites, where neither 418 green tests nor pylint
   could see it. `$0.00` and 0 of 82 dev rows violating; what it buys is a fence that cannot be
   held by habit.
-* [ ] **X-cd** `fix(transfers): one bound for every transfer money field` -- owns **N-301**, and it
-  OPENS WITH A QUESTION THAT IS THE DEVELOPER'S: is *the bank moved `$0.00`* a legal observation,
-  or is Projected the only way the app says that? The settle-day box's own title says reverting is
-  how you assert the money did not move, which argues the second; the transaction side is at least
-  internally consistent, since `estimated_amount` is `min=0` too. What is NOT in question is the
-  contradiction: `settled_amount` takes `_NON_NEGATIVE_MONETARY` with an INCLUSIVE minimum while
-  `TransferCreateSchema.amount`, `TransferUpdateSchema.amount` and both template schemas use
-  `min_inclusive=False` behind `_validate_positive_amount`, so one door refuses what the next
-  accepts on the same row. **The ruling decides the direction, not whether to act.** Latent:
-  `$0.00` today, and a settled transfer that records nothing moved is a figure no screen explains.
+* [ ] **X-ce** `refactor(app): a census in the code is dated or it is a command` -- owns
+  **BAL-479**, and it is `conventions.md` rule 6 turned on the CODE. That rule makes a planning row
+  RE-RUN its census; `app/` states hundreds in docstrings and comments and nothing re-runs any.
+  **Not all of them are defects, and the classification IS the step.** A DATED record of a past act
+  stands as written -- `loan_payment_service/_context.py`'s *102 modules against the 46 the replay
+  needs (2026-09-09)* is a measurement with a date and a pointer, which is what a record should
+  look like. A PRESENT-TENSE claim with no date and no command is a stored derivation beside no
+  reconciler, in the code rather than beside it.
+  **The specimen is three spellings of one measurement**: `url_converters.py` says *34 `type=int`
+  sites*, `utils/digit_strings.py` says *42*, and `balance:X-ah`'s re-run says 34. Two of the three
+  are docstrings nothing grades, and they are what made the FIRST TWO markers written under rule 6
+  both wrong -- the census counted the sentences about the census as uses of the thing.
+  `$0.00`, and what it costs is the next session's SCOPE.
+* [ ] **X-cd** `fix(transfers): a money bound states which question it answers` -- owns **N-301**.
+  **RULED 2026-09-11 (R-BAL15): *the bank moved `$0.00`* IS a legal observation**, so
+  `settled_amount` keeps its INCLUSIVE minimum and Projected is not the only way to say the money
+  did not move.
+  **That ruling DISSOLVES this row's contradiction rather than resolving it.** `settled_amount`
+  takes `_NON_NEGATIVE_MONETARY` while `TransferCreateSchema.amount`, `TransferUpdateSchema.amount`
+  and both template schemas use `min_inclusive=False` behind `_validate_positive_amount` -- and
+  those are not the same question asked twice. An `amount` is a PLAN, and a `$0.00` plan is not a
+  thing anyone means; a `settled_amount` is an OBSERVATION, and `$0.00` is a thing a bank does.
+  **So the step is the SEAM, not a bound change**: `_NON_NEGATIVE_MONETARY` and
+  `_validate_positive_amount` each say in their own docstring which of the two they answer, and the
+  four fields are audited against that rather than against each other. Nothing moves on today's
+  data; what it buys is that the next reader cannot mistake the pair for a defect, as this row did
+  from 2026-08-18 until the ruling.
 * [ ] **X-bg** `feat(transfers): an occurrence that did not happen is not an archive` --
   closes **N-386**, whose row carries the measurement. **The door derives its own
   destructiveness from a link rather than from what the owner said**:
@@ -1164,8 +1185,9 @@ section 4, under their unchanged ids.*
   graph, so suppression accounting has no line to credit). The likely shape is a pre-commit arm that
   strips each disable in turn and fails if the tree stays clean without it; the instrument is not
   ruled here and must be shown FIRING on a planted stale disable. **SIXTEEN live `duplicate-code`
-  disables remain in `app/` and not one has been re-measured** (4 in `models/`, 5 in `routes/`, 6 in
-  `services/`). The step's first deliverable is the census.
+  disables remain in `app/` and not one has been re-measured** -- 5 in `models/`, 4 in
+  `routes/`, 7 in `services/`, a breakdown that summed to FIFTEEN beside this sixteen until
+  2026-09-11. The step's first deliverable is the census.
 * [x] **X-am** `7b0ddae8` -- the `Settled` ARCHIVE is DELETED (**R-HA**, which carries what `CC3b` owes). Closed **N-177**; as-built in `archive/x_am_as_built_2026-08-27.md`, entry in `archive/four_shipped_steps_2026-08-30.md`.
 * [ ] **E2-0** `the membership trace` -- NO code. Answer from the code: which modules are members,
   what the public re-export surface is, whether `account_projection` is in or out, and whether
@@ -1196,7 +1218,7 @@ section 4, under their unchanged ids.*
   **The money half:** `Money`, a value type over `Decimal` that cannot be constructed from a `float`
   and whose rounding is a method carrying the app's rule, retiring W9901 and W9904 together.
   **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 45 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
-  17 bare.** Its trace must decide whether it lands at the ORM boundary (a `TypeDecorator`, so the
+  (census 17 code lines `\.quantize\((?![^)]*rounding=)` in `app/**/*.py`) bare.** Its trace must decide whether it lands at the ORM boundary (a `TypeDecorator`, so the
   blast radius is the type rather than the call sites) or as a hand conversion -- the
   `TypeDecorator` route is the one that makes the checkers redundant BY CONSTRUCTION.
   **The SCHEMA layer is the third surface and the only live money today** -- the corrected census
@@ -1223,8 +1245,9 @@ section 4, under their unchanged ids.*
   public name, which is a floor rather than the fix.
   **The census is RE-RUN, not remembered** -- it read "26 canonical accessors plus five, measured
   2026-08-23 and not to be re-taken" until 2026-09-11, by which point it was 27 plus seven and one
-  of its claims was false. Canonical: (census 27 lines `^def [a-z_]*_id\(` in
-  `app/ref_cache/_accessors.py`). **`acct_type_icon` and `acct_type_max_term` have no PRODUCTION
+  of its claims was false. Canonical:
+  (census 27 lines `^def [a-z_]*_id\(` in `app/ref_cache/_accessors.py`).
+  **`acct_type_icon` and `acct_type_max_term` have no PRODUCTION
   caller** (census 0 code lines `acct_type_(icon\|max_term)` in `app/routes/**/*.py`) and are
   candidates for DELETION rather than folding -- with them the `_cache.acct_type_meta` map `init()`
   populates to feed them. They are NOT unreferenced, which this paragraph used to say: two tests
