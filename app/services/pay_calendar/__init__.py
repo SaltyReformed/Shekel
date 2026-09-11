@@ -124,7 +124,7 @@ from ._searches import (
     opening_payday,
     period_by_id,
 )
-from ._walks import paychecks_from
+from ._walks import paychecks_from, span_starting_on_or_after
 from ._window import PeriodWindow
 
 __all__ = [
@@ -150,6 +150,7 @@ __all__ = [
     "nominal_payday_after",
     "opening_payday",
     "paychecks_from",
+    "span_starting_on_or_after",
     "paydays_in_month_through",
     "paydays_in_year_before",
     "period_by_id",

@@ -37,10 +37,10 @@ Pure: no session, no clock, no Flask.  Every answer is a function of the
 paydays and the cadence the calendar carries.
 """
 from collections.abc import Iterator
-from datetime import date
+from datetime import date, timedelta
 
 from ._calendar import PayCalendar
-from ._derive import DerivedPeriod
+from ._derive import DerivedPeriod, project_period_after
 from ._views import current_and_future_window, projected_paychecks
 
 
@@ -122,4 +122,63 @@ def paychecks_from(
     )
 
 
-__all__ = ["paychecks_from"]
+def span_starting_on_or_after(
+    calendar: PayCalendar, day: date,
+) -> "DerivedPeriod | None":
+    """Return the first span opening on or after *day*, projecting past the horizon.
+
+    :meth:`~._calendar.PayCalendar.period_starting_on_or_after`'s TOTAL
+    companion, the pairing :meth:`~._calendar.PayCalendar.span_containing`
+    already makes against :meth:`~._calendar.PayCalendar.period_containing`:
+    the saved search answers where the schedule reaches, and this one keeps
+    answering past it at the owner's own cadence.  Plan step **R16-b-2** added
+    it because the balance seam's ESTIMATED loan tier places every occurrence
+    a definition names on the paycheck its row WOULD live in, saved or not
+    (ruling **R-R69**), and a ``Monthly First`` definition places on "the NEXT
+    paycheck" -- which past the horizon is a projection, exactly as a span is.
+
+    A function here rather than a 21st method on the door, for the reason the
+    module docstring gives: the door's two ceilings fire on the NUMBER of
+    questions, and this is a walk's question (keep answering past the saved
+    schedule) rather than a search's.
+
+    A projected period carries ``period_id = None`` and continues the saved
+    ``period_index``, so a caller needing a foreign-key target cannot mistake
+    one for a saved row.  Before the opening bound the SAVED search already
+    answers -- the owner's first paycheck opens on or after any earlier day --
+    so nothing is projected backwards here, and the ruling of 2026-08-10 holds
+    by construction rather than by a guard.
+
+    Args:
+        calendar: The owner's schedule.
+        day: The calendar day to search forward from, inclusive.
+
+    Returns:
+        The first :class:`~._derive.DerivedPeriod` whose ``start_date`` is on
+        or after *day* -- MATERIALISED when the schedule reaches one, projected
+        when it does not -- or ``None`` for an empty calendar.
+    """
+    saved = calendar.period_starting_on_or_after(day)
+    if saved is not None:
+        return saved
+    horizon = calendar.horizon()
+    if horizon is None:
+        return None
+    # No saved period opens on or after *day*, so the answer is projected.
+    # ``project_period_after`` answers the projection COVERING a day past the
+    # horizon; probe from the later of *day* and the first uncovered day, and
+    # step one period forward when the covering span opened before *day* (a
+    # *day* inside a projected span, or inside the last saved one).
+    covering = project_period_after(
+        calendar.periods, calendar.rhythm,
+        max(day, horizon + timedelta(days=1)),
+    )
+    if covering.start_date >= day:
+        return covering
+    return project_period_after(
+        calendar.periods, calendar.rhythm,
+        covering.end_date + timedelta(days=1),
+    )
+
+
+__all__ = ["paychecks_from", "span_starting_on_or_after"]

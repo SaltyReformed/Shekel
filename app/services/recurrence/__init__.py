@@ -212,6 +212,7 @@ from app.services.recurrence._occurrence import (
     occurrence_placements,
     occurrences,
     place,
+    projected_occurrence_placements,
 )
 from app.services.recurrence._reading import (
     RuleReading,
@@ -314,6 +315,7 @@ __all__ = [
     "picker_model",
     "place",
     "placed_periods",
+    "projected_occurrence_placements",
     "read_rule",
     "reauthor_rule",
     "recurrence_spec",
