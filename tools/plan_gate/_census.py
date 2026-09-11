@@ -45,6 +45,7 @@ from __future__ import annotations
 import functools
 import io
 import re
+import sys
 import tokenize
 from pathlib import Path
 
@@ -104,6 +105,92 @@ def census_paths(glob: str) -> list[Path] | None:
     )
 
 
+#: The interpreter a FILTERED census can be run on.  **PEP 701 (Python 3.12)
+#: stopped emitting an f-string as one ``STRING`` token** and split it into
+#: ``FSTRING_START`` / ``FSTRING_MIDDLE`` / the interpolated expression's own
+#: tokens / ``FSTRING_END``.  That split is what the filters below need, and
+#: wanting it is not a preference: ``f"<TransferTemplate ... ${self.default_amount}>"``
+#: is a REAL read of the column, so a step deleting the column must see it,
+#: while ``f"... carries no due_date, so there is no date to "`` is prose that
+#: must not be counted.  A pre-3.12 tokenizer can tell neither apart -- it hides
+#: both inside one ``STRING`` -- so it is reported as blindness rather than
+#: guessed around.  ``CLAUDE.md`` states the project's floor as 3.12+ and the
+#: Dockerfile and ``ci.yml`` both run 3.14, so this states an existing
+#: requirement rather than adding one.
+#:
+#: **Written after the divergence shipped**, so it is not a guess: the first
+#: draft of this module was measured on 3.11 and its numbers were committed;
+#: CI re-ran them on 3.14 and three markers disagreed, because on 3.14 the
+#: interpolations counted (right, and 3.11 missed them) and the literal text
+#: counted too (wrong, and 3.11 got it right).  One arm, two answers, and the
+#: gate would have graded whichever interpreter reached it first.
+_TOKENIZER_FLOOR = (3, 12)
+
+#: Every token class that is literal string TEXT rather than code, read out of
+#: this interpreter's own token table BY SHAPE rather than listed.  Before PEP
+#: 701 that was ``STRING`` alone; since 3.12 an f-string arrives as its own
+#: START / MIDDLE / END wrapped around the tokens of each interpolation, and
+#: 3.14 adds the same three for a t-string.
+#:
+#: **A written-out list would have a floor and no CEILING.**
+#: :data:`_TOKENIZER_FLOOR` closes the divergence downward; a later Python that
+#: adds another string-literal family would reopen it upward, silently, and one
+#: arm with two answers is this module's whole subject.  Deriving the set
+#: deletes the allowlist the design doctrine calls scaffolding.  Measured
+#: identical to the seven-name list on 3.11, 3.12, 3.13 and 3.14.
+#:
+#: **START and END are blanked alongside MIDDLE rather than left standing.**
+#: The rule is *the whole literal is string text except the expressions inside
+#: it*, so a census of ``f"`` finds a prefix on no interpreter; leaving the
+#: delimiters would let one pattern answer differently per version.
+#:
+#: **One limit, measured rather than assumed.**  CPython emits ``{{`` and
+#: ``}}`` as a token whose TEXT is the single unescaped brace while its span
+#: starts at the source offset, so the blank falls one column short and a bare
+#: brace survives: ``f"{{X}} and {X}"`` renders as ``   {   }        {X} ``.
+#: Identical on 3.12, 3.13 and 3.14, and it can only ever OVER-count.  No live
+#: marker contains a brace; one that did would need checking here first.
+_STRING_TEXT = tuple(
+    number for number, name in tokenize.tok_name.items()
+    if name == "STRING" or name.endswith(("STRING_START", "STRING_MIDDLE", "STRING_END"))
+)
+
+
+def _blindness(subject: str) -> str:
+    """Return the one sentence every path says when this tokenizer is too old.
+
+    ONE spelling, because a message duplicated across two call paths is the
+    same defect this package grades the planning documents for.
+
+    Args:
+        subject: what cannot be answered, as the sentence's subject.
+
+    Returns:
+        The sentence, naming the floor, this interpreter, and why it matters.
+    """
+    floor = ".".join(str(part) for part in _TOKENIZER_FLOOR)
+    return (
+        f"{subject} needs Python {floor}+ to tell an f-string's interpolated "
+        f"CODE from its literal PROSE (PEP 701); this is "
+        f"{sys.version_info.major}.{sys.version_info.minor}.  Answering anyway "
+        f"would give a different number than the 3.14 the Dockerfile and "
+        f"`ci.yml` both run, which is exactly the drift this arm exists to "
+        f"catch ({_RULE})"
+    )
+
+
+def interpreter_is_gradeable() -> bool:
+    """Return whether this tokenizer can tell an interpolation from the prose round it.
+
+    **A gate that silently passes when it cannot run is worse than no gate**, and
+    ``_shipped.history_is_gradeable`` is the same predicate one register over:
+    the arms report their own blindness and a control asserts the predicate is
+    TRUE on the live tree, so an interpreter below :data:`_TOKENIZER_FLOOR`
+    fails loudly instead of quietly grading a different corpus.
+    """
+    return sys.version_info >= _TOKENIZER_FLOOR
+
+
 @functools.lru_cache(maxsize=None)
 def _python_text(source: str, mode: str) -> str:
     """Return the source with everything but one token class blanked out.
@@ -115,9 +202,10 @@ def _python_text(source: str, mode: str) -> str:
     counted a docstring narrating a disable that had been REMOVED.  Both read as
     precise and both were wrong, in the direction that invents work.
 
-    ``code`` blanks COMMENT and STRING spans, so a docstring mentioning a symbol
-    is not a use of it and a trailing comment cannot satisfy a census of the
-    statement beside it.  ``comments`` blanks everything else, which is what a
+    ``code`` blanks COMMENT spans and every string-literal span
+    (:data:`_STRING_TEXT`), so a docstring mentioning a symbol is not a use of
+    it and a trailing comment cannot satisfy a census of the statement beside
+    it.  ``comments`` blanks everything else, which is what a
     census of ``# pylint: disable=...`` directives actually means -- the
     directive IS a comment, and prose about one is a string.
 
@@ -125,13 +213,38 @@ def _python_text(source: str, mode: str) -> str:
     preserved: the count stays "matching lines", the same unit ``lines`` uses,
     and two identical statements in one file still count twice.
 
+    **An f-string is split, not swallowed.**  Its literal text is string text
+    and its interpolations are code, which is what :data:`_STRING_TEXT` and
+    :data:`_TOKENIZER_FLOOR` between them say: ``f"{self.default_amount}"``
+    counts under ``code`` and ``f"...no due_date, so there is no date to "``
+    does not.
+
+    **The rule is LEXICAL and the difference matters.**  ``code`` asks whether
+    the name stands outside every string literal and comment.  It does NOT ask
+    *would deleting this break the line*, and the two part company on a name
+    used as a STRING: ``db.CheckConstraint("default_amount >= 0")`` and
+    ``data["default_amount"]`` break exactly as hard and this filter sees
+    neither.  A step censusing such a name owes a second, UNFILTERED marker or
+    a sentence saying so -- `conventions.md` rule 6.  `X-bp`'s carries one, in
+    its SPECIFICATION rather than its index row: the row sat at 384 of a
+    400-character cap, which is rule 4 putting a specification where rule 4
+    says specifications go.
+
+    **The interpreter guard is at :func:`census_count`, not here**, first
+    because that is the PUBLIC boundary and this is private, so a caller is
+    refused at the door.  Memoization is the second reason and the narrower
+    one: ``lru_cache`` does not cache exceptions, so a guard here would still
+    raise on every cache MISS, but it is skipped entirely for a
+    ``(source, mode)`` this process has already read -- which no control could
+    then grade.  The floor it enforces is :data:`_TOKENIZER_FLOOR`.
+
     Returns:
         The source with the unwanted token spans replaced by spaces; the source
         unchanged when it will not tokenize, so a syntax error degrades to the
         ``lines`` behaviour rather than silently reporting zero.
     """
     lines = source.splitlines()
-    wanted = (tokenize.COMMENT,) if mode == "comments" else (tokenize.STRING, tokenize.COMMENT)
+    wanted = (tokenize.COMMENT,) if mode == "comments" else (*_STRING_TEXT, tokenize.COMMENT)
     spans = []
     try:
         for token in tokenize.generate_tokens(io.StringIO(source).readline):
@@ -211,7 +324,15 @@ def census_count(pattern: re.Pattern[str], paths: list[Path], unit: str,
     what the token stands for.
 
     Public for the reason :func:`census_paths` is.
+
+    Raises:
+        RuntimeError: when *token_filter* is set and this interpreter is below
+            :data:`_TOKENIZER_FLOOR`.  Refusing is the point: answering is how
+            three markers were measured on 3.11, committed green, and failed in
+            CI on 3.14 against the same code.
     """
+    if token_filter and not interpreter_is_gradeable():
+        raise RuntimeError(_blindness(f"a `{token_filter}` census"))
     total = 0
     for path in paths:
         try:
@@ -286,10 +407,28 @@ def near_miss_violations() -> list[str]:
 def census_violations() -> list[str]:
     """Re-run every census marker in the live documents and grade its number.
 
+    **On an interpreter below the floor this REPORTS rather than returns
+    silence**, which is where it parts from ``_shipped.history_is_gradeable``.
+    That arm can return nothing because a shallow checkout is a property of the
+    RUN and one control names it.  Measured here on 3.11, both ways: under
+    silence THREE controls that assert cleanliness PASS -- both
+    ``test_the_live_corpus_is_clean`` and
+    ``test_a_marker_a_formatter_wrapped_is_still_read`` -- so the gate reports
+    clean while grading nothing, which is the exact defect
+    :func:`interpreter_is_gradeable` exists to prevent.  Silence also fails
+    EIGHT controls that ask this function for its glob, no-file and
+    will-not-compile messages with a bare ``assert []``, sending their reader
+    to the glob arm when the cause is their Python.  The finding is that the
+    gate cannot be run, so the finding is what it says.
+
     Returns:
         One message per marker whose stated count is wrong, whose glob is
-        illegal or matches nothing, or whose pattern will not compile.
+        illegal or matches nothing, or whose pattern will not compile -- or the
+        single blindness message when this interpreter cannot be trusted to
+        answer any of them.
     """
+    if not interpreter_is_gradeable():
+        return [_blindness("re-running the live censuses")]
     problems: list[str] = []
     for document in _documents():
         for match in MARKER.finditer(document.read_text(encoding="utf-8")):

@@ -71,9 +71,20 @@ class TestEveryShippedRowNamesACommitThisTreeCarries:
         ancestor of HEAD, so the arm's two clauses are told apart: a control
         using a fabricated hash would fire the first clause and leave the
         second ungraded.
+
+        **The identity is supplied rather than inherited.**  ``commit-tree``
+        writes an author and a committer, and a CI runner has neither
+        ``user.name`` nor ``user.email`` configured -- this control passed on a
+        workstation and died on GitHub with ``fatal: empty ident name``, an
+        exit 128 that reads as the arm being broken rather than the control
+        needing a name. ``-c`` scopes it to this one command, so nothing about
+        the developer's git configuration is read or written.
         """
         dangling = subprocess.run(
-            ("git", "commit-tree", "HEAD^{tree}", "-m", "not on any branch"),
+            ("git",
+             "-c", "user.name=plan gate control",
+             "-c", "user.email=plan-gate@localhost",
+             "commit-tree", "HEAD^{tree}", "-m", "not on any branch"),
             cwd=registry.REPO, capture_output=True, text=True, check=True,
         ).stdout.strip()
         row = next(r for r in registry.step_rows() if r.shipped)
