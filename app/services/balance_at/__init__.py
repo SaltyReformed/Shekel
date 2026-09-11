@@ -245,9 +245,8 @@ from ._kind_correct import (
     investment_growth_since_anchor,
 )
 from ._liability import liability_owed_at_dates
+from ._resolution import authored_closing, is_standing_loan_payment
 from ._loan_figures import (
-    authored_closing,
-    is_standing_loan_payment,
     LoanFigures,
     LoanTerms,
     loan_closing_date,

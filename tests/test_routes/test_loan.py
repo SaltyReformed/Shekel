@@ -56,6 +56,7 @@ from tests._test_helpers import (
     make_loan_payment_template,
     posted_loan_balance_at,
     select_option_values,
+    state_template_price,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.models.amount_ownership import AmountOwnership
@@ -3420,6 +3421,11 @@ class TestTransferPrompt:
         )
         db.session.add(tpl)
         db.session.commit()
+        # Priced, as every real definition is (the loan page's plan sums this
+        # definition's occurrences since plan step R16-b-2 and refuses a
+        # series nobody stated).
+        state_template_price(tpl)
+        db.session.commit()
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             tpl, MONTHLY,
@@ -3862,6 +3868,10 @@ class TestPaymentDrift:
         loan_payment_settings feature): an active monthly TransferTemplate with a
         recurrence rule and a stored ``default_amount``, and no 1:1 settings row --
         which every reader treats as manual mode (derive_from_loan False, no extra).
+        Its price is STATED, as both production definitions' are (the
+        template-amount backfill gave every existing template a version):
+        the loan page's plan sums this definition's occurrences since plan
+        step R16-b-2 and refuses a series nobody stated.
         """
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
@@ -3875,6 +3885,8 @@ class TestPaymentDrift:
             is_active=True,
         )
         db_session.add(tpl)
+        db_session.commit()
+        state_template_price(tpl)
         db_session.commit()
         # The definition first, then the cadence onto it (plan step R-F6),
         # then COMMITTED (plan step X-i3) -- every caller of this helper goes

@@ -857,6 +857,14 @@ _FENCED_MODULE_RULINGS = {
         # render.
         "calendar",
         "reported_periods",
+        # The read pass's RECURRENCE memo (plan step R16-b-2, ruling R-R67's
+        # one-walk consequence): what one rule MEANS against the owner's
+        # calendar, resolved once per pass.  A NON-producer on the ground
+        # ``calendar`` stands on -- a cadence, a first occurrence and an
+        # authored bound, DATES with no money anywhere in the value -- and
+        # ``recurrence.resolved_recurrence`` is a public leaf below this seam
+        # that answers the identical value.
+        "resolved_recurrence_of",
         # The read pass's AMOUNT-MODEL memo (plan step X-au-c2b).  A
         # NON-producer on the ground ``calendar`` stands on: it hands back an
         # ``AmountBasis``, which carries the two live DERIVATIONS a row's
@@ -946,14 +954,13 @@ _FENCED_MODULE_RULINGS = {
         # which is a different thing from this answering one.
         "loan_standing_extra",
         "loan_standing_extra_for_account",
-        # What the definition says one installment costs -- the whole value and
-        # the rule that reads it.  A PAYMENT amount, ruled on exactly the ground
+        # What the definition says one installment costs -- the whole value.
+        # A PAYMENT amount, ruled on exactly the ground
         # ``compute_contractual_pi`` is above: what one payment moves, never
-        # what an account owes.  The rule is PURE and takes the loan's own
-        # contribution (the contractual P&I, the installment's escrow) as
-        # arguments precisely so it needs no producer to answer.
+        # what an account owes.  The RULE that read it,
+        # ``standing_installment_cash``, was deleted at plan step R16-b-2
+        # (ruling R-R67): the amount model's own arm prices an estimate now.
         "standing_payment",
-        "standing_installment_cash",
     })),
     # The PURE loan-resolver tier (:data:`_LOAN_RESOLVER_ENGINE_MODULES`,
     # closing finding B-12).  Package-scoped, so a new submodule is covered the

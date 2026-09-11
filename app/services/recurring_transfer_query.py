@@ -27,13 +27,15 @@ periods and its escrow history, which is the AMOUNT MODEL's work -- rule 4 --
 and not a read of a definition.  *That rule's producer lived in
 ``loan_payment_service`` until plan step X-au-g-2a moved it into
 ``cash_ledger``; this sentence said "the loan seam's work" and now names the
-tier that actually owns it.*  :func:`standing_installment_cash` is the definition's half of that
-one rule and takes the loan's contribution -- the contractual P&I and the
-installment's escrow -- as arguments.
+tier that actually owns it.*  **The definition's half of that rule lived here
+too, as ``standing_installment_cash``, until plan step R16-b-2 deleted it**
+(ruling **R-R67**): it was a copy of the amount model's own arms, measured a
+cent apart from them on a loan's last installment (finding **REC-517**), and
+an estimate is priced through those arms now
+(:func:`app.services.cash_ledger.definition_cash`).
 """
 
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.orm import joinedload
@@ -42,8 +44,6 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.services.template_amount_service import amount_as_of, owns_its_amount
-from app.utils.money import round_money
 
 
 def destination_account(
@@ -129,10 +129,11 @@ def active_recurring_transfer_templates(
         .options(
             joinedload(TransferTemplate.settings),
             # The price SERIES, because a caller that resolves it per
-            # installment (:func:`standing_installment_cash`, ~300 times for a
-            # 30-year loan) would otherwise take a lazy load mid-fold.  One
-            # collection per template, and the settings row beside it is loaded
-            # the same way for the same reason.
+            # occurrence (the balance seam's ESTIMATED tier through
+            # ``cash_ledger.definition_cash``, ~300 times for a 30-year loan)
+            # would otherwise take a lazy load mid-fold.  One collection per
+            # template, and the settings row beside it is loaded the same way
+            # for the same reason.
             joinedload(TransferTemplate.amount_versions),
         )
         .filter(
@@ -304,8 +305,11 @@ class StandingPayment:
     which is a loop: the payoff bounds the recurrence, the recurrence writes the
     rows, and the rows move the payoff.
 
-    The three shapes a loan can be in are the three arms of
-    :func:`standing_installment_cash`, and this value is what tells them apart.
+    **It PRICES nothing since plan step R16-b-2** (ruling **R-R67**): the
+    forward plan sums every definition into the loan and prices each
+    occurrence through the amount model's own arm.  What it still carries is
+    the extra the resolver's committed schedule threads and the identity the
+    recurrence form locks on (:func:`app.services.balance_at.is_standing_loan_payment`).
 
     **It carries the TEMPLATE and not a price, and that is the correction an
     adversarial review of this step forced.**  The first cut carried
@@ -370,99 +374,3 @@ def standing_payment(
         return None
     _derive, extra = loan_payment_config(template)
     return StandingPayment(template=template, extra_principal=extra)
-
-
-def standing_installment_cash(
-    standing: "StandingPayment | None",
-    contractual_pi: Decimal,
-    monthly_escrow: Decimal,
-    due: date,
-) -> Decimal:
-    """Return what one installment costs, from the loan's own definition.
-
-    **The ONE rule for "what will this loan be paid on this date", asked about
-    an installment no row covers** (plan step **R7d-a**).  A materialised row is
-    priced by
-    amount rule 4 (:func:`app.services.cash_ledger.resolve_transaction_amount`);
-    this is
-    the same question for a month whose row has not been written, and the arms
-    are deliberately the same cases so the two cannot come to disagree:
-
-    * **No standing payment** -- the CONTRACT's P&I plus that installment's
-      escrow.  Nothing else is known about how the loan will be paid.
-    * **A definition that does not STATE its price**
-      (:func:`~app.services.template_amount_service.owns_its_amount` is False --
-      a DERIVE-mode loan payment, whose stored figure is a snapshot of the
-      contract rather than a statement) -- the contract's P&I, that
-      installment's escrow, and the standing extra.  That is what the mode
-      MEANS, so reading the contract is the row's own rule and not a guess
-      about it.
-    * **A STATED price** -- what the definition's series says on the
-      installment's OWN due date
-      (:func:`~app.services.template_amount_service.amount_as_of`), plus the
-      standing extra.  The owner has said what leaves checking that month, and
-      a projection substituting the servicer's figure would model a loan the
-      owner is not paying.
-
-    **The DERIVE arm's residue is now ONE difference from what
-    amount rule 4 prices the
-    same installment at, and it is named rather than absorbed.**  It was TWO
-    until plan step ``balance:X-au-g-2b``: that producer pinned its P&I at the
-    READ PASS's ``as_of`` while this read the contract's P&I for the
-    installment's OWN date, which differ for an ARM (finding **N-40**).  This
-    tier's per-installment figure was the correct one, which is why it kept it
-    rather than adopting the pin; ruling **R-IJ** made that the rule for every
-    tier, so the two producers now key on the same date and the difference is
-    gone.  What remains: the LAST contractual installment is a residual
-    rather than the level payment
-    (``amortization_engine`` forces the final month to absorb the remainder), so
-    the two differ there for a reason that is not a rate effect at all; the fold
-    caps that installment against the balance either way.
-
-    **Resolved AS OF the installment, never off ``default_amount``, and an
-    adversarial review of this step is why.**  That scalar is the NEWEST price
-    the series states rather than the price on a date, so reading it here made
-    an amount stated as effective in 2028 reach every installment from 2026
-    forward: measured, a `$700.00` Van payment effective 2028-01-01 moved the
-    derived payoff six installments EARLY once the future rows were absent --
-    the under-generating direction R7d exists to close.  Ruling **R-FI**'s rule,
-    applied to the tier that had been exempt from it.
-
-    **An EMPTY series answers like a loan with no definition at all**, which is
-    the one place this is softer than
-    :func:`~app.services.cash_ledger._amount_source._stated_amount`'s refusal.
-    A template owning its amount whose creator never went through
-    ``set_amount`` states no price, and the honest estimate for a month nobody
-    priced is the same one a loan with no recurring payment gets.  Refusing here
-    would take a balance page down for a state the contract can answer.
-
-    Args:
-        standing: The loan's :func:`standing_payment`, or ``None`` when it has
-            no recurring payment.
-        contractual_pi: The contractual P&I governing this installment, from
-            the loan's own amortization schedule.  Escrow-free by construction.
-        monthly_escrow: The escrow in force for this installment
-            (:func:`~app.services.escrow_calculator.escrow_monthly_as_of` on its
-            due date), ``0.00`` when the loan escrows nothing.
-        due: The installment's own due date -- what the stated price resolves
-            AS OF.  Contract time, the same date the escrow above is resolved
-            on (ruling D5).
-
-    Returns:
-        The installment's cash, escrow-INCLUSIVE where the definition states
-        one -- the pairing the loan replay takes, where the escrow stands as its
-        accrual period's CHARGE (``loan_ledger.AccrualCharge``) and is backed out
-        of principal by the ONE allocation.
-    """
-    if standing is None:
-        return round_money(contractual_pi + monthly_escrow)
-    stated = (
-        amount_as_of(standing.template, due)
-        if owns_its_amount(standing.template)
-        else None
-    )
-    if stated is None:
-        return round_money(
-            contractual_pi + monthly_escrow + standing.extra_principal,
-        )
-    return round_money(stated + standing.extra_principal)

@@ -27,7 +27,10 @@ import pytest
 
 from app.exceptions import BaselineMissingError
 from app.services import balance_at, loan_recurrence_sync, template_amount_service
+from app.models.transfer import Transfer
+from app.services import pay_period_write, transfer_recurrence, transfer_service
 from app.services.balance_at import BalanceContext
+from app.services.generation_schedule import GenerationSchedule
 from app.services.recurrence import (
     EMPTY,
     INDEFINITE,
@@ -54,8 +57,10 @@ from tests._test_helpers import (
     make_expense_template,
     make_loan_payment_template,
     make_transfer_template,
+    rhythm_of,
+    state_template_price,
 )
-from tests.oracles.recurrence_baseline import MONTHLY
+from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY
 
 
 def _window(template, ctx):
@@ -224,16 +229,67 @@ class TestSyncRecurringPaymentBounds:
         5% is $526.46, and $12,000.00 at 5%/12 amortizes in exactly 24 payments
         at that figure -- so a borrower who has paid NOTHING is still a full
         24 installments from zero.  Counting from the first one the plan
-        synthesizes (2026-07-01, since a strictly-past installment with no record
-        pays nothing) that lands on 2026-06-01: seven contractual installments
-        and seventeen from the extension, 18 months past the contractual
-        2027-01-01.
+        pays (2026-07-01) that lands on 2028-06-01: seven contractual
+        installments and seventeen from the extension, 18 months past the
+        contractual 2027-01-01.
+
+        **"Never paid" is a fact the OWNER states since plan step R16-b-2, and
+        this fixture states it.**  Ruling **R-R64**: an occurrence the
+        schedule places that no row in any state answers is "not generated
+        yet" and the plan prices it as generation would -- so a loan whose
+        rows were merely never generated is NOT delinquent, it is unplanned,
+        and the plan would pay its 2026 installments the day after ``as_of``.
+        What makes an installment unpaid is a row the owner un-planned: a
+        cancelled or deleted row still answers its occurrence and pays
+        nothing.  So the schedule is extended to cover ``as_of`` (a live
+        schedule always does; ``seed_periods`` stops in May), the rows are
+        GENERATED, and every overdue one is soft-deleted, which is the state a
+        delinquent owner's books are in; the 2025 installments fall before the
+        schedule opens (2026-01-02), where nothing is generated or estimated
+        either way.
         """
         with app.app_context():
             loan = self._loan(seed_user, db.session)
             tpl = make_loan_payment_template(db.session, seed_user, loan)
             db.session.commit()
             rule = tpl.recurrence_rule
+            pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=seed_periods[0].start_date,
+                num_periods=16,
+                rhythm=rhythm_of(14),
+            )
+            db.session.flush()
+            # Every SAVED period is open for writing -- the whole schedule,
+            # not only the six paydays just recorded -- so every in-schedule
+            # occurrence gets its row.
+            generation_ctx = BalanceContext.build(tpl.user_id)
+            transfer_recurrence.generate_for_template(
+                tpl,
+                GenerationSchedule.for_period_ids(
+                    generation_ctx,
+                    {
+                        period.period_id
+                        for period in generation_ctx.calendar().periods
+                    },
+                ),
+                seed_user["scenario"].id,
+            )
+            db.session.flush()
+            overdue = (
+                db.session.query(Transfer)
+                .filter(
+                    Transfer.transfer_template_id == tpl.id,
+                    Transfer.due_date < date(2026, 7, 1),
+                )
+                .all()
+            )
+            assert overdue, "precondition: the schedule reaches overdue installments"
+            for row in overdue:
+                transfer_service.delete_transfer(
+                    row.id, seed_user["user"].id, soft=True,
+                )
+            db.session.commit()
 
             loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
             db.session.commit()
@@ -456,6 +512,7 @@ class TestIsStandingLoanPayment:
             )
             db.session.add(second)
             db.session.flush()
+            state_template_price(second)
             # The definition first, then the cadence onto it (plan step R-F6).
             make_every_period_rule(db.session, second)
             db.session.flush()
@@ -837,6 +894,10 @@ class TestLoanPaymentWindowResolver:
             )
             db.session.add(sweep)
             db.session.flush()
+            # Priced, as ``POST /transfers`` prices every definition it
+            # creates: the forward plan sums this sweep's occurrences too
+            # (plan step R16-b-2) and refuses a series nobody stated.
+            state_template_price(sweep)
             # The definition first, then the cadence onto it (plan step R-F6).
             make_every_period_rule(db.session, sweep)
             payment = make_loan_payment_template(db.session, seed_user, loan)
@@ -1114,7 +1175,14 @@ class TestLoanPaymentWindowResolver:
             insert_trueup_event(
                 loan_params_for(db.session, loan.id), Decimal("0.00"),
             )
-            tpl = make_loan_payment_template(db.session, seed_user, loan)
+            # The PERIOD unit is this test's subject: only a paycheck-space
+            # cadence normalises its first occurrence onto a payday, which is
+            # the drift the column can then leave behind.  Stated, since the
+            # fixture's default became the loan door's monthly rule at plan
+            # step R16-b-2.
+            tpl = make_loan_payment_template(
+                db.session, seed_user, loan, cadence=EVERY_PERIOD,
+            )
             rule = tpl.recurrence_rule
             db.session.flush()
 
@@ -1254,6 +1322,7 @@ class TestLoanPaymentWindowResolver:
                 )
                 db.session.add(extra)
                 db.session.flush()
+                state_template_price(extra)
                 make_every_period_rule(db.session, extra)
             db.session.commit()
 

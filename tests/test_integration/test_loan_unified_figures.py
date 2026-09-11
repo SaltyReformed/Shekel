@@ -32,7 +32,14 @@ from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transfer_template import TransferTemplate
-from app.services import balance_at, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver
+from app.services import (
+    balance_at,
+    loan_loaders,
+    loan_payment_service,
+    loan_posting_service,
+    loan_recurrence_sync,
+    loan_resolver,
+)
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.utils.dates import add_months
 from app.utils.money import round_money
@@ -635,10 +642,18 @@ def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
     )
     db.session.add(template)
     db.session.commit()
-    # The definition first, then the cadence onto it (plan step R-F6).
+    # The definition first, then the cadence onto it (plan step R-F6), then
+    # the loan's own start onto the cadence (``bind_rule_to_loan``, plan step
+    # C9a), as the loan door does.  ``fires_on_day=1`` alone started the
+    # rule on the first 1st the schedule reaches -- before this loan exists,
+    # and on a day that is never its ``payment_day`` -- which the forward
+    # plan hid while it synthesized contractual slots and now prices as the
+    # occurrences they are (plan step R16-b-2, ruling **R-R64**).
     rule = make_cadence_rule(
         template, MONTHLY, fires_on_day=1,
     )
+    loan_recurrence_sync.bind_rule_to_loan(rule, loan_account.id)
+    db.session.commit()
 
 
 def test_standing_extra_payoff_consistent_across_surfaces(

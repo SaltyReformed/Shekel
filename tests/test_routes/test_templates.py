@@ -3513,8 +3513,14 @@ def _loan_payment_template(seed_user):
         default_amount=Decimal("500.00"),
         is_active=True,
     )
-    template.settings = LoanPaymentSettings(derive_from_loan=False)
     db.session.add(template)
+    db.session.flush()
+    # Priced BEFORE the settings row is attached, the order ``track_payment``
+    # takes, as every real manual payment is: the loan page's plan sums this
+    # definition's occurrences since plan step R16-b-2 and refuses a series
+    # nobody stated.
+    state_template_price(template)
+    template.settings = LoanPaymentSettings(derive_from_loan=False)
     db.session.commit()
     # The definition first, then the cadence onto it (plan step R-F6).
     rule = make_cadence_rule(

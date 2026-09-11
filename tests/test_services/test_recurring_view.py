@@ -995,9 +995,15 @@ class TestTheDestinationsStopReachesTheRow:
         ``200 * 12 / (1 * 12)``.
         """
         loan = _loan(seed_user)
-        tpl = make_loan_payment_template(
-            db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
-        )
+        # The loan door's own shape -- monthly on the payment day, its start
+        # bound to the first contractual installment -- which the fixture
+        # authors by default since plan step R16-b-2.  Stating ``fires_on_day``
+        # instead started the rule on the first 1st the 52-period schedule
+        # reaches, months before this loan exists, and the plan now prices
+        # every occurrence the schedule places that no row answers (ruling
+        # **R-R64**) -- so the loan's own stop moved six installments early
+        # on payments for months it did not owe.
+        tpl = make_loan_payment_template(db.session, seed_user, loan)
         db.session.commit()
         stale = date(2026, 7, 15)
         reauthor_rule(
@@ -1114,9 +1120,11 @@ class TestTheDestinationsStopReachesTheRow:
             [], [], [tpl], _ctx(seed_user, _LOAN_TODAY),
         )
 
-        assert view.transfers.rows[0].equivalent.monthly == Decimal("433.33"), (
-            "precondition: the synced payment is still a live commitment "
-            "($200 every paycheck is 200 * 26 / 12)"
+        # ``$200.00`` monthly is ``200 * 12 / 12``: the fixture authors the
+        # loan door's monthly rule since plan step R16-b-2 (it read
+        # ``433.33`` for the every-paycheck rule it authored before).
+        assert view.transfers.rows[0].equivalent.monthly == Decimal("200.00"), (
+            "precondition: the synced payment is still a live commitment"
         )
         assert len(calls) == 1, (
             f"a loan payment with a synced column resolved its rule "

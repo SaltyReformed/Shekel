@@ -125,7 +125,6 @@ from app.services.recurrence import (
     ResolvedRecurrence,
     RuleReading,
     occurrence_placements,
-    resolved_recurrence,
 )
 
 
@@ -207,7 +206,10 @@ def resolved_definition(
     rule = getattr(template, "recurrence_rule", None)
     if rule is None:
         return None
-    resolved = resolved_recurrence(rule, ctx.calendar())
+    # The pass's memo, not a fresh resolution: the forward plan behind the
+    # derived stop below walks this same rule to sum the definition's
+    # occurrences (plan step R16-b-2), and one pass resolves one rule once.
+    resolved = ctx.resolved_recurrence_of(rule)
     if resolved is None:
         return None
     # The occurrence walk is deliberately NOT run first.  ``resolved_recurrence``

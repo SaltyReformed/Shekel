@@ -66,6 +66,7 @@ from app.services.cash_ledger import AmountBasis, amount_basis
 from app.services.income_service import PaycheckPricing, paycheck_pricing
 from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
 from app.services.pay_calendar import PayCalendar, PeriodWindow, calendar_for
+from app.services.recurrence import ResolvedRecurrence, resolved_recurrence
 from app.services.scenario_resolver import get_baseline_scenario
 
 if TYPE_CHECKING:
@@ -260,6 +261,11 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             nothing is handed a dict now -- :meth:`paychecks` is the accessor,
             exactly as :meth:`calendar` and :meth:`amounts` are for the two
             memos above.
+        _recurrences: The pass's per-rule resolution memo, keyed by
+            ``rule.id`` and filled by :meth:`resolved_recurrence_of`.  Private
+            because this module owns the derivation (it imports the pure
+            resolver, a leaf below the seam), and a ``None`` value is a
+            MEMOIZED "the owner has no pay periods", not an empty slot.
     """
 
     user_id: int
@@ -284,6 +290,9 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         default_factory=dict, repr=False, compare=False,
     )
     _amount_bases: "dict[int, AmountBasis]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    _recurrences: "dict[int, ResolvedRecurrence | None]" = field(
         default_factory=dict, repr=False, compare=False,
     )
     _paycheck_pricing: "dict[int, PaycheckPricing]" = field(
@@ -572,6 +581,65 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         if self.user_id not in self._calendars:
             self._calendars[self.user_id] = calendar_for(self.user_id)
         return self._calendars[self.user_id]
+
+    def resolved_recurrence_of(self, rule) -> "ResolvedRecurrence | None":
+        """Return what *rule* MEANS against this owner's calendar, resolving it once.
+
+        The memo that collapses a read pass's N resolutions of one rule to
+        one.  Plan step **R16-b-2** put it here: the composed door
+        (``recurring_definition.resolved_definition``) resolves a definition's
+        rule to narrow it by the loan's derived stop, and that stop is the
+        forward plan's zero crossing, which since R16-b-2 walks the SAME rule
+        under its authored closing to sum the definition's occurrences -- so
+        one page reading one loan payment resolved its rule twice on one pass,
+        the shape plan ledger row **N-511** counts and rule 14's ONE WALK
+        forbids.  Both readers take the pure resolution from here and each
+        applies its own closing to the value.
+
+        **A memo on the PASS, not a cache**, for the reason :meth:`calendar`
+        gives; and, like it, filled here rather than passed through, because
+        ``app.services.recurrence`` is a leaf below the seam.  Keyed by the
+        rule's id, so a TRANSIENT rule (the form preview's, ``id`` ``None``)
+        is resolved fresh and never stored -- it exists for one render and
+        names no row.
+
+        **A foreign rule never enters the memo, and no check here is what
+        makes that so.**  The pure resolver refuses a rule paired with another
+        owner's calendar -- ``RecurrenceResolutionError``, naming the rule --
+        and it runs BEFORE the store on every miss, so a hit is always the
+        owner's own rule.  The composed door relies on that refusal being the
+        rule's own and reaching a caller first (before any account is loaded),
+        so a second, earlier refusal here would change which error names the
+        pairing; :func:`_memoize_once` carries its own check because the
+        derivations it stores do not refuse for themselves.
+
+        Args:
+            rule: The :class:`~app.models.recurrence_rule.RecurrenceRule` to
+                resolve, stored or transient.
+
+        Returns:
+            The :class:`~app.services.recurrence.ResolvedRecurrence` with the
+            AUTHORED closing alone, or ``None`` when the owner has no pay
+            periods -- the two answers
+            :func:`~app.services.recurrence.resolved_recurrence` gives.
+
+        Raises:
+            RecurrenceResolutionError: See
+                :func:`~app.services.recurrence.resolved_recurrence`; a rule
+                paired with another owner's pass is refused there.
+        """
+        # ``getattr``: the composed door's contract admits any object exposing
+        # ``recurrence_rule`` (its own fixtures build ``SimpleNamespace``
+        # stand-ins), and a rule with no id is resolved fresh like a
+        # transient one.
+        rule_id = getattr(rule, "id", None)
+        if rule_id is None:
+            return resolved_recurrence(rule, self.calendar())
+        if rule_id not in self._recurrences:
+            self._recurrences[rule_id] = resolved_recurrence(
+                rule, self.calendar(),
+            )
+        return self._recurrences[rule_id]
 
     def amounts(self) -> AmountBasis:
         """Return the pass's amount-model basis, building it once.
