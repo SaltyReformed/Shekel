@@ -285,6 +285,34 @@ class TestTheThreeQuestionsAnswerDifferently:
         assert filed is cal.periods[-1]
         assert filed.period_id == 13
 
+    def test_a_period_says_itself_whether_it_is_projected(self):
+        """``is_projected`` is the named form of *this period has no row*.
+
+        Ruling **R-SAL18** (plan step salary:S3-e-2): a consumer that must
+        know whether the schedule has reached a period asks the period, by
+        name, rather than being handed a boundary date -- and never reads
+        ``period_id`` raw, because pay-calendar plan step C2-f2c stopped that
+        consumer knowing how a period spells its key.  Every saved period of
+        a calendar answers ``False``; every period a projection axis adds
+        past the horizon answers ``True``; and the boundary between the two
+        is the horizon exactly, on both the saved-only value and the axis
+        that projects beyond it.
+        """
+        cal = calendar()
+        assert all(period.is_projected is False for period in cal.periods)
+        assert cal.saved()[-1].is_projected is False
+
+        axis = cal.projection_axis(
+            cal.opening_bound(), cal.horizon() + timedelta(days=100),
+        )
+        flags = [period.is_projected for period in axis]
+        assert flags[:len(cal.periods)] == [False] * len(cal.periods)
+        assert flags[len(cal.periods):] == [True] * (len(axis) - len(cal.periods))
+        assert len(axis) > len(cal.periods)
+        first_projected = axis[len(cal.periods)]
+        assert first_projected.start_date == cal.horizon() + timedelta(days=1)
+        assert first_projected is not cal.span_containing(cal.horizon())
+
     def test_before_the_first_payday_the_span_refuses_and_filing_clamps(self):
         """Nothing is projected backwards; a record still needs a paycheck.
 

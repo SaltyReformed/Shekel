@@ -5,8 +5,8 @@ step **X-ad-a** is why: registration became a fifth door onto the same two
 rules, so a literal copied once more would have been five statements of one
 bound.  Each pair is imported from whoever OWNS the rule rather than restated
 here -- the cadence pair from the model carrying the matching CHECK constraint
-(:data:`~app.models.pay_schedule.CADENCE_DAYS_MIN` /
-:data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`), the batch pair from the
+(:data:`~app.models.pay_era.CADENCE_DAYS_MIN` /
+:data:`~app.models.pay_era.CADENCE_DAYS_MAX`), the batch pair from the
 writer whose transaction does the work
 (:data:`~app.services.pay_period_write.PERIOD_BATCH_MIN` /
 :data:`~app.services.pay_period_write.PERIOD_BATCH_MAX`), and, since plan step
@@ -34,7 +34,7 @@ from app import ref_cache
 from app.config import BaseConfig
 from app.enums import BusinessDayShiftEnum
 from app.exceptions import ValidationError as AppValidationError
-from app.models.pay_schedule import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
+from app.models.pay_era import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
 from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
@@ -112,8 +112,8 @@ class BusinessDayShiftField(_RefEnumField):
     id travelling under the name ``shift`` is the natural mistake, and it is
     one that would move a money date.  The conversion happens once here and
     once in
-    :func:`~app.services.pay_schedule_service.upsert_schedule`, at the two
-    edges of the wire.
+    :func:`~app.services.pay_schedule_service.mint_era`, at the two edges of
+    the wire.
 
     Whether the cadence beside it can CARRY the chosen convention is a
     property of the pair rather than of this field, so it is refused by

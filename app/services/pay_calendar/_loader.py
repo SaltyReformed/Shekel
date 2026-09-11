@@ -144,18 +144,20 @@ def schedule_for(user_id: int) -> pay_schedule_service.ScheduleFacts:
     Raises:
         PayCalendarError: The owner holds no ``budget.pay_schedule`` row, which
             since plan step C4-b-2 IMPLIES no pay periods either
-            (``fk_pay_periods_schedule``).
+            (``fk_pay_periods_schedule``) -- or, since plan step ``C17-a``, a
+            row with no era, which states no rhythm to derive from.
     """
     facts = pay_schedule_service.resolve_schedule(user_id)
     if facts is None:
         raise PayCalendarError(
             f"user {user_id} has no pay calendar: they hold no "
-            f"budget.pay_schedule row, and since fk_pay_periods_schedule that "
-            f"means no pay periods either, so neither which paycheck covers a "
-            f"day nor how many paychecks they receive in a year is "
-            f"answerable.  Since plan step X-ad-a registration writes the row "
-            f"and the paydays together, so this is companion data or an owner "
-            f"before their first batch rather than a state to default.  "
+            f"budget.pay_schedule row -- and since fk_pay_periods_schedule "
+            f"that means no pay periods either -- or a row with no era, so "
+            f"neither which paycheck covers a day nor how many paychecks they "
+            f"receive in a year is answerable.  Since plan step X-ad-a "
+            f"registration writes the row, the era and the paydays together, "
+            f"so this is companion data or an owner before their first batch "
+            f"rather than a state to default.  "
             f"Assuming biweekly would report a weekly-paid owner's "
             f"commitments at half their true monthly value."
         )

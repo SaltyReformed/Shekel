@@ -643,14 +643,14 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         prices no paycheck pays nothing for holding this.
 
         *Its per-payday memo means a caller CAN ask for a subset and pay for
-        only that; no consumer of this accessor does.*  All three -- the
-        payroll feeds and the two salary routes -- ask for
-        ``calendar.saved()``, the owner's whole saved schedule, because that
-        is the domain each of them reports over.  The place a subset is
-        actually asked for is
-        :meth:`~app.services.income_service.SalaryPricing.net_for`, which
-        prices the ONE period a row names; it reads its own pricer rather than
-        this one (ledger row **P63**).
+        only that.*  The two salary routes ask for ``calendar.saved()``, the
+        owner's whole saved schedule, because that is the domain each of them
+        reports over; the payroll feeds ask for whichever period a consumer
+        reads -- the balance seam's saved window, or a 40-year chart's axis
+        -- one at a time, since plan step salary:S3-e-2 (ruling
+        **R-SAL15**).  :meth:`~app.services.income_service.SalaryPricing
+        .net_for` prices the ONE period a row names, and reads its own pricer
+        rather than this one (ledger row **P63**).
 
         It is keyed by ``user_id`` for the reason :meth:`calendar` is, and it
         is built over that same memoized calendar so a pass cannot hold

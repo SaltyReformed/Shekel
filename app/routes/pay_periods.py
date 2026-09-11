@@ -83,8 +83,10 @@ def _holds_paydays(user_id: int) -> bool:
     question its name asks** -- not because the difference is reachable today.
     ``get_schedule`` returning ``None`` implies no paydays
     (``fk_pay_periods_schedule``, plan step C4-b-2); the converse does not
-    hold in the SCHEMA, since ``upsert_schedule`` writes ``nominal_anchor``
-    through a ``COALESCE`` that never clears it.
+    hold in the SCHEMA.  An owner holding the row and no ERA (plan step
+    ``pay_calendar:C17-a``) holds no paydays either -- every batch that
+    records one mints an era when none covers it -- and answers ``False``
+    here without a calendar being built.
 
     *A first draft justified this by naming ``truncate_pay_periods`` and
     ``reset_pay_periods`` as producers of "a row with no paydays", and this
@@ -97,16 +99,14 @@ def _holds_paydays(user_id: int) -> bool:
     be the substitution rule 14 exists to refuse -- not because a caller was
     censused and found.
 
-    **A DIVERGENCE worth naming rather than leaving implicit**:
-    ``extend_pay_periods`` refuses on ``not saved or nominal_anchor is None``
-    and this asks only the first half, so the same question now has three
-    homes -- the template's ``pp_periods``, this, and that service test.  They
-    agree while the anchor is backfilled for every owner holding a payday
-    (migration ``a1c7e5d20f43``); if the anchor half ever armed, such an owner
-    would be shown only the manage card and handed a refusal by both doors.
-    The rule-14 remedy is for the service to expose its own predicate so there
-    is ONE producer, which is a change to that module's surface and not this
-    step's.
+    **A DIVERGENCE worth naming rather than leaving implicit**: the same
+    question has three homes -- the template's ``pp_periods``, this, and
+    ``extend_pay_periods``' own ``not saved`` refusal.  *Until plan step
+    ``C17-a`` the extend door asked a second half too, ``nominal_anchor is
+    None``, which this did not; that column is gone and the two doors ask one
+    question again.*  The rule-14 remedy is still for the service to expose
+    its own predicate so there is ONE producer, which is a change to that
+    module's surface and not this step's.
 
     Args:
         user_id: The owning user.
@@ -122,6 +122,8 @@ def _holds_paydays(user_id: int) -> bool:
     if schedule_row is None:
         return False
     facts = pay_schedule_service.ScheduleFacts.of(schedule_row)
+    if facts is None:
+        return False
     return bool(calendar_at_schedule(user_id, facts).saved())
 
 
@@ -396,9 +398,9 @@ def truncate():
         # ``end_date`` could not express a one-day period -- so a legacy owner
         # met an unhandled 500 here.  C4-c dropped that column: a delete now
         # removes rows and computes nothing, ``retire_paydays`` reaches
-        # ``_apply`` with ``recording=[]`` so ``upsert_schedule`` is never
-        # called, and the whole path below this line raises no
-        # ``ValidationError`` at all.
+        # ``_apply`` with ``recording=[]`` so no era is minted or judged
+        # (``mint_era`` since plan step C17-a), and the whole path below this
+        # line raises no ``ValidationError`` at all.
         #
         # Leaving it would be the exact defect the paragraph above rejects for
         # ``PayPeriodUnresolved``: a business-rule refusal added anywhere under

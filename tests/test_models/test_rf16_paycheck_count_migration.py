@@ -51,7 +51,8 @@ from sqlalchemy import text
 
 from app.extensions import db as _db
 from app.models.pay_schedule import PaySchedule
-from tests._test_helpers import restore_pay_period_derived_columns, shift_id_of
+from app.services import pay_era_write, pay_schedule_service
+from tests._test_helpers import restore_pay_period_derived_columns
 from app.models.salary_profile import SalaryProfile
 
 _MIGRATIONS_DIR = (
@@ -192,18 +193,23 @@ def _profile(db, seed_user, name="R-F16"):
 
 
 def _set_cadence(db, user_id, cadence_days):
-    """Force the owner's persisted cadence, creating the row if absent."""
-    schedule = (
-        db.session.query(PaySchedule).filter_by(user_id=user_id).first()
+    """Force the owner's persisted cadence on the REWOUND schedule row.
+
+    Every case that calls this runs under
+    :func:`with_the_pay_period_derived_columns`, whose rewind also runs plan
+    step ``pay_calendar:C17-a``'s downgrade -- putting ``cadence_days`` back
+    on ``budget.pay_schedule`` (from the owner's latest era) and dropping
+    ``budget.pay_eras``.  R-F16's downgrade reads the ROW's column, so that is
+    what this writes, by SQL: the head mapper no longer declares it.  The
+    seeded owner always holds the row (``record_paydays`` created it), so
+    there is no create arm left; a case for an owner with no row deletes it
+    explicitly.
+    """
+    db.session.execute(
+        text("UPDATE budget.pay_schedule SET cadence_days = :cadence "
+             "WHERE user_id = :uid"),
+        {"cadence": cadence_days, "uid": user_id},
     )
-    if schedule is None:
-        schedule = PaySchedule(
-            user_id=user_id, cadence_days=cadence_days,
-            shift_id=shift_id_of(),
-        )
-        db.session.add(schedule)
-    else:
-        schedule.cadence_days = cadence_days
     db.session.flush()
 
 
@@ -278,6 +284,9 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
         with app.app_context():
             user_id = seed_user["user"].id
             profile = _profile(db, seed_user, name="Legacy weekly")
+            # The era is a second child of the row since plan step C17-a
+            # (``fk_pay_eras_schedule``); it goes before the parent too.
+            pay_era_write.retire_eras(user_id, None)
             db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
             # A 7-day period: its stored end is start + (cadence - 1).
             db.session.execute(
@@ -323,6 +332,9 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
                 text("DELETE FROM budget.pay_periods WHERE user_id = :uid"),
                 {"uid": user_id},
             )
+            # The era is a second child of the row since plan step C17-a
+            # (``fk_pay_eras_schedule``); it goes before the parent too.
+            pay_era_write.retire_eras(user_id, None)
             db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
             profile = _profile(db, seed_user, name="No schedule")
             db.session.commit()

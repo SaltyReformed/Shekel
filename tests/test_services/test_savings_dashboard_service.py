@@ -4526,7 +4526,7 @@ class TestNetWorthHorizon:
             # the second key that restated it).  The periods come off the pass
             # (pay-calendar plan step C2-f2d-3) rather than being threaded in.
             ctx = retirement_projection.build_projection_context(
-                BalanceContext.build(uid), horizon["dates"][-1], None, None,
+                BalanceContext.build(uid), horizon["dates"][-1], None,
             )
             projections = retirement_projection.project_accounts_with_batch(
                 ctx,
@@ -6557,7 +6557,6 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
         from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
-        from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
         from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
             PayCalendarError,
             calendar_for,
@@ -6609,17 +6608,15 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
-        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
-        from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
         from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
             PayCalendarError,
             calendar_for,
         )
+        from tests._test_helpers import strip_owner_schedule  # pylint: disable=import-outside-toplevel
         with app.app_context():
             user_id = seed_user["user"].id
-            # Periods FIRST: ``fk_pay_periods_schedule`` is ON DELETE RESTRICT.
-            db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
-            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
+            # Children FIRST: both schedule keys are ON DELETE RESTRICT.
+            strip_owner_schedule(db.session, user_id)
             db.session.commit()
 
             with pytest.raises(PayCalendarError, match="no pay calendar"):

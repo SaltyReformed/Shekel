@@ -67,7 +67,6 @@ from app.services.retirement_gap_calculator import (
 from app.services.retirement_projection import (
     ProjectionBatch,
     RetirementProjectionContext,
-    build_employer_salary_basis,
     build_projection_context,
     load_projection_batch,
     project_accounts_with_batch,
@@ -358,12 +357,10 @@ def load_retirement_inputs(balance_ctx: BalanceContext) -> RetirementInputs:
     base_date = resolve_planned_retirement_date(gap.pensions, gap.settings)
     base_ctx = build_projection_context(
         balance_ctx,
-        # The three point-dependent fields are placeholders: every picture
-        # replaces the horizon, the return override AND the employer salary
-        # basis, so building a basis here would run the whole salary projection
-        # once per render and discard it.
+        # The two point-dependent fields are placeholders: every picture
+        # replaces the horizon and the return override.  (A third, the
+        # employer salary basis, left at plan step salary:S3-e-2.)
         base_date,
-        None,
         None,
     )
     return RetirementInputs(
@@ -601,11 +598,14 @@ def _derive_picture(
     """Compute the picture at *point* from the render's loaded inputs.
 
     BOTH sides of the gap move with the plan: a later date extends the
-    salary path, the pension's years of service and its high-salary window, the
-    employer salary basis and the growth horizon, and it re-derives the income
-    target from that longer path -- so the required target moves as well as the
-    projected balance.  Every one of those is recomputed
-    here; nothing that was LOADED is.
+    salary path, the pension's years of service and its high-salary window
+    and the growth horizon, and it re-derives the income target from that
+    longer path -- so the required target moves as well as the projected
+    balance.  Every one of those is recomputed here; nothing that was LOADED
+    is.  *The employer salary basis left this list at plan step
+    salary:S3-e-2*: the payroll feed prices every period's gross through the
+    engine, so a later date extends the axis and nothing else has to be
+    rebuilt for it.
 
     Args:
         inputs: The render's loaded inputs.
@@ -619,12 +619,13 @@ def _derive_picture(
         None if inputs.base_date is None
         else add_months(inputs.base_date, point.month_offset)
     )
-    # The render's ONE day, threaded into all three producers that open a
-    # salary path (pay-calendar plan step C2-f2e, ledger row **P55**).  Each
-    # read ``date.today().year`` for itself, and this function runs once per
-    # PLAN POINT -- the retire-later lever probes about ten -- so a render
-    # crossing a New Year could project the verdict card's path from year N and
-    # the lever card's from N+1.
+    # The render's ONE day, threaded into both producers that open a salary
+    # path (pay-calendar plan step C2-f2e, ledger row **P55**; there were
+    # three until salary:S3-e-2 deleted ``build_employer_salary_basis``).
+    # Each read ``date.today().year`` for itself, and this function runs once
+    # per PLAN POINT -- the retire-later lever probes about ten -- so a render
+    # crossing a New Year could project the verdict card's path from year N
+    # and the lever card's from N+1.
     as_of = inputs.balance_ctx.as_of
     pension = compute_pension_summary(
         gap.pensions, as_of, point.month_offset,
@@ -636,9 +637,6 @@ def _derive_picture(
         inputs.base_ctx,
         planned_retirement_date=retirement_date,
         return_rate_override=point.return_rate_override,
-        employer_salary_basis=build_employer_salary_basis(
-            gap.salary_profiles, retirement_date, as_of, gap.pay_cadence,
-        ),
     )
     axis = resolve_projection_axis(ctx)
     projections = project_accounts_with_batch(ctx, inputs.batch, axis)

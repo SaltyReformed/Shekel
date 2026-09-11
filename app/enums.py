@@ -262,6 +262,27 @@ class BusinessDayShiftEnum(enum.Enum):
     NEXT = "next"
 
 
+class PayCadenceKindEnum(enum.Enum):
+    """What KIND of rhythm a pay era runs on (plan step ``pay_calendar:C17``).
+
+    An era of ``budget.pay_eras`` states how an owner has been paid SINCE its
+    ``effective_from``, and the kind says how its paydays are placed.  Ruling
+    **R-PC58** puts the kind on the era because an era carries a kind as easily
+    as a length: the day-of-month schedules ``recurrence:R13`` needs land here
+    as further members, not as a migration over a cadence column.
+
+        fixed_days -- every ``cadence_days`` days from the era's first payday,
+                      the only member until the day-of-month kinds land
+                      (``C17-d``).
+
+    Values match ``ref.pay_cadence_kinds.name``; application code resolves
+    them via ``ref_cache.pay_cadence_kind_id`` and compares the integer ID,
+    never the string ``name`` -- the project-wide IDs-for-logic invariant.
+    """
+
+    FIXED_DAYS = "fixed_days"
+
+
 class GoalModeEnum(enum.Enum):
     """Savings goal amount mode values.
 

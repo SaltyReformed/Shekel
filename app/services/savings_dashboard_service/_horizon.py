@@ -18,12 +18,12 @@ the P-AC1 ruling fixed on worked real-data examples:
   (:func:`app.services.retirement_projection.build_projection_context` plus
   the ``project_accounts_with_batch`` probe seam over the OWNER'S OWN pay
   periods to the horizon end), sampled annually -- so the band is the
-  engine's own projection, never a parallel model.  It supplies no
-  LONG-HORIZON salary path, which since plan step **salary:R14-b** means the
-  employer base is the paycheck engine's own per payday inside the saved
-  calendar and a held paycheck past it -- not the constant this said until
-  then.  See :func:`_retirement_investment_bands` for what that changed and
-  for the P-AC1 oracle figure it retired.
+  engine's own projection, never a parallel model.  The employer base is the
+  paycheck engine's own gross for every period of the axis since plan step
+  **salary:S3-e-2** -- the engine's inside the saved calendar and a HELD
+  paycheck past it from **salary:R14-b** until then, and a constant before
+  that.  See :func:`_retirement_investment_bands` for what each change
+  moved and for the P-AC1 oracle figure the first retired.
 * **Asset band** = per-account param growth: a Property compounds at its
   ``annual_appreciation_rate``, an interest account at its ``apy``, and plain
   cash holds flat -- every figure traceable to a parameter the account
@@ -347,13 +347,12 @@ def _retirement_investment_bands(
     **The employer-contribution base stopped being CONSTANT at plan step
     salary:R14-b, and this paragraph asserted the opposite until then.**  It
     read "held CONSTANT (``employer_salary_basis`` is ``None``), which is what
-    the ruled oracle used and what every net-worth consumer does".  The
-    ``None`` argument is unchanged and still means "no LONG-HORIZON salary
-    path", but ``retirement_projection._run_account_projection`` now composes
-    the paycheck engine's own per-payday gross underneath it, so inside the
-    owner's saved calendar this band is priced per period like every other
-    surface, and only PAST that calendar does the ``None`` mean a held
-    paycheck.  The P-AC1 oracle figure this paragraph quoted
+    the ruled oracle used and what every net-worth consumer does".  From
+    R14-b to salary:S3-e-1 the engine's own per-payday gross priced the
+    saved calendar and a HELD paycheck priced the tail past it; since plan
+    step **salary:S3-e-2** the engine prices every period of this axis and
+    the ``employer_salary_basis`` argument no longer exists (ruling
+    **R-SAL15**).  The P-AC1 oracle figure this paragraph quoted
     ($1,187,745.83 at 2049-12-31) was measured against the constant base and
     is not reproducible through this path any more.  It is stated as HISTORY
     where it appears above rather than restated at a number nobody has
@@ -370,15 +369,15 @@ def _retirement_investment_bands(
     salary:R14-b, the ENGINE-PRICED employer base rather than a constant one
     -- so the two ranges of one chart still meet where they touch, and they
     now meet by pricing the same paycheck rather than by both being flat.
-    The /retirement READINESS page still supplies a projected salary path
-    (its own fork F3 refinement) for paydays past the saved calendar, where
-    this band holds the last real paycheck -- the one place the two still
-    differ.  **They no longer differ about when a raise STOPS**: plan step
-    salary:S3-c gave both engines the same termination rule (ruling
-    **R-SAL11**, each raise's own stored ``terminal_year``).  What is left is
-    a difference in REACH, plus an AS-OF rule the two still spell
-    differently (payday-priced against December-of-year), and plan step
-    salary:S3 is the step that closes both.
+    **And this band and /retirement's readiness page price the same employer
+    base on every payday since plan step salary:S3-e-2.**  Between R14-b
+    and then the two differed past the saved calendar -- /retirement
+    supplied its own December-of-year salary path (fork F3) where this band
+    held the last real paycheck -- after salary:S3-c (ruling **R-SAL11**)
+    had already given both the same raise-termination rule.  The payroll
+    feed prices any period through the paycheck engine now, so the
+    difference in REACH and the AS-OF difference both went with that page's
+    own path.
 
     The engine is skipped entirely (returning zero bands) when the user has
     no retirement or investment account, so a loan- or cash-only user pays
@@ -429,14 +428,12 @@ def _retirement_investment_bands(
     if not engine_band_by_account_id:
         return bands
 
-    # The last two args are return_rate_override and employer_salary_basis,
-    # both None: no slider override, and no LONG-HORIZON salary path.  Since
-    # plan step salary:R14-b that second None no longer means a constant
-    # employer base -- the paycheck engine's own per-payday gross is composed
-    # underneath it inside the owner's saved calendar, and only past that
-    # calendar does the None mean a held paycheck (see the docstring).
+    # The last arg is return_rate_override, None: no slider override.  The
+    # employer base is the paycheck engine's own gross for every period of
+    # this axis, past the owner's saved calendar included (plan step
+    # salary:S3-e-2; see the docstring for what stood here before).
     ctx = retirement_projection.build_projection_context(
-        core.balance_ctx, frame.horizon_end, None, None,
+        core.balance_ctx, frame.horizon_end, None,
     )
     batch = retirement_projection.load_projection_batch(ctx)
     projections = retirement_projection.project_accounts_with_batch(

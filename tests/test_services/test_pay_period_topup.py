@@ -36,6 +36,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.routes._period_population import populate_new_periods
 from app.services import (
+    pay_era_write,
     pay_period_rolling,
     pay_period_write,
     pay_schedule_service,
@@ -47,6 +48,7 @@ from scripts.integrity_check import (
 )
 from tests.conftest import SEED_USER_CADENCE_DAYS
 from tests._test_helpers import (
+    era_of,
     rhythm_of,
     all_periods,
     assert_pay_period_invariants,
@@ -104,21 +106,13 @@ def _future_periods(db_session, seed_user, count, start=_FUTURE_START):
 
 
 def _enable_rolling(db_session, user_id, target):
-    """Give the user a schedule row with rolling on at ``target``.
+    """Turn rolling on at ``target`` for an owner who already holds an era.
 
-    **It hands the STORED phase back rather than ``None``**, which the writer
-    would otherwise clear: ``upsert_schedule`` is an upsert of the whole
-    rhythm, deliberately with no "leave this half alone" argument, so a caller
-    changing one column states them all.  Clearing it here would leave the
-    owner unable to extend -- which is what the door refuses for a schedule
-    that states no phase -- and the top-up under test IS an extend.
+    The rhythm is not restated here: every caller recorded its paydays
+    through ``record_paydays`` first, which minted the era the top-up under
+    test continues (plan step ``pay_calendar:C17-a``), and rolling is the
+    schedule row's own fact with its own door.
     """
-    pay_schedule_service.upsert_schedule(
-        user_id, rhythm=rhythm_of(14),
-        nominal_anchor=pay_schedule_service.resolve_schedule(
-            user_id,
-        ).nominal_anchor,
-    )
     pay_schedule_service.set_rolling(user_id, enabled=True, target_periods=target)
     db_session.commit()
 
@@ -182,8 +176,8 @@ class TestTopUpFastPaths:
         user_id = seed_user["user"].id
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)
-            # Row exists but rolling is off (the column default).
-            pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
+            # Row exists (the batch above created it) and rolling is off,
+            # the column default.
             db.session.commit()
             before = _count_periods(db.session, user_id)
             result, statements = capture_sql_statements(
@@ -445,7 +439,9 @@ class TestTheTopUpCountsOnTheOwnersDay:
             db.session.commit()
 
             # pylint: disable=protected-access
-            facts = pay_schedule_service.ScheduleFacts(rhythm_of(cadence_days), None, None)
+            facts = pay_schedule_service.ScheduleFacts(
+                (era_of(date(2026, 7, 3), cadence_days),), None,
+            )
             on_process = pay_period_rolling._future_period_count(
                 user_id, facts, date(2026, 7, 31),
             )
@@ -505,21 +501,18 @@ class TestTheCadenceThreadedIsTheOWNERSStoredOne:
         """
         user_id = seed_user["user"].id
         pay_period_write.record_paydays(user_id, _FUTURE_START, 3, rhythm_of(14))
-        pay_schedule_service.upsert_schedule(
-            user_id, rhythm=rhythm_of(self._STORED_CADENCE),
-            # **A cadence change RE-ESTABLISHES the phase**, and handing back
-            # the anchor the 14-day batch wrote would state a grid that no
-            # longer describes this owner: the 3-day grid through 2026-07-03
-            # runs 07-30, 08-02, and 08-02 falls INSIDE the paycheck opened by
-            # the recorded 07-31, which ``_reject_backward_payday`` refuses.
-            # In ``app/`` the pair cannot come apart -- ``record_paydays`` is
-            # the only writer and co-writes the cadence with the batch's own
-            # first payday -- so this states what that writer would have
-            # stated for a batch recorded at the new cadence.  The stored
-            # cadence and the phase it belongs to are ONE fact that
-            # ``budget.pay_schedule`` holds as two columns, which is ledger
-            # row **N-492** and what **R-PC58** puts in ``C17``'s era row.
-            nominal_anchor=_FUTURE_START + timedelta(days=28),
+        # **A cadence change is a NEW ERA**, and its day is its phase (plan
+        # step ``pay_calendar:C17-a``, ruling **R-PC58**): a 3-day grid
+        # phased on the 14-day batch's opening would run 07-30, 08-02, and
+        # 08-02 falls INSIDE the paycheck opened by the recorded 07-31, which
+        # ``_reject_backward_payday`` refuses.  So the era takes effect on the
+        # last recorded payday -- what ``record_paydays`` would have minted
+        # for a batch stated at the new cadence from there -- which is the
+        # phase the extend continues.  The old row held the cadence and the
+        # phase as two columns, which was ledger row **N-492**.
+        pay_era_write.mint_era(
+            user_id,
+            era_of(_FUTURE_START + timedelta(days=28), self._STORED_CADENCE),
         )
         db_session.commit()
         return user_id
@@ -539,11 +532,16 @@ class TestTheCadenceThreadedIsTheOWNERSStoredOne:
             # pylint: disable=protected-access
             assert pay_period_rolling._future_period_count(
                 user_id,
-                pay_schedule_service.ScheduleFacts(rhythm_of(self._STORED_CADENCE), None, None),
+                pay_schedule_service.ScheduleFacts(
+                    (era_of(_FUTURE_START, self._STORED_CADENCE),), None,
+                ),
                 self._PROBE_DAY,
             ) == 0
             assert pay_period_rolling._future_period_count(
-                user_id, pay_schedule_service.ScheduleFacts(rhythm_of(14), None, None),
+                user_id,
+                pay_schedule_service.ScheduleFacts(
+                    (era_of(_FUTURE_START, 14),), None,
+                ),
                 self._PROBE_DAY,
             ) == 1
 

@@ -87,6 +87,7 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     ("budget", "loan_payment_settings"),
     ("budget", "merchant_rules"),
     ("budget", "merchants"),
+    ("budget", "pay_eras"),
     ("budget", "pay_periods"),
     ("budget", "pay_schedule"),
     ("budget", "rate_history"),

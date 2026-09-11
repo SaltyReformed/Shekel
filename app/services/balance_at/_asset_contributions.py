@@ -82,15 +82,17 @@ class ContributionInputs:
             takes this bundle rather than the deduction feed alone.
         feed: The account's
             :class:`~app.services.investment_projection.AccountPayrollFeed` --
-            what its payroll puts in on each payday, and what gross funds its
-            employer contribution, both priced by the PAYCHECK ENGINE at the
-            loader (plan step **salary:R14-b**, ruling **R-SAL2**).  It
-            replaced two fields: the adapted deduction rows, which this tier
-            re-priced off the profile's stored annual salary and so read
-            RAISE-BLIND (finding **D45**), and one ``salary_gross_biweekly``
-            scalar that sized every period's employer contribution at today's
-            gross.  Both were one figure standing in for a series; a payday is
-            what makes either fact true, so both are keyed by one now.
+            what its payroll puts in on each period's paycheck, and what
+            gross funds its employer contribution, both priced by the
+            PAYCHECK ENGINE (plan step **salary:R14-b**, ruling **R-SAL2**)
+            for whichever period is asked (plan step **salary:S3-e-2**,
+            ruling **R-SAL15**).  It replaced two fields: the adapted
+            deduction rows, which this tier re-priced off the profile's
+            stored annual salary and so read RAISE-BLIND (finding **D45**),
+            and one ``salary_gross_biweekly`` scalar that sized every
+            period's employer contribution at today's gross.  Both were one
+            figure standing in for a series; a paycheck is what makes either
+            fact true, so both are answered per period now.
     """
 
     investment_params: InvestmentParams | None = None
@@ -130,7 +132,7 @@ class _ContributionPlan:
     Attributes:
         feed: The account's
             :class:`~app.services.investment_projection.AccountPayrollFeed`,
-            asked per payday for the employee amount and for the gross the
+            asked per period for the employee amount and for the gross the
             employer contribution is a percentage of.  **It was one
             ``per_period`` scalar until plan step salary:R14-b**, which is
             finding **D45**: a deduction's amount and its paycheck's gross
@@ -254,11 +256,11 @@ def _plan_for(
     # and plan step **salary:S3-e-1** made the two one.  This asked a PRICE
     # question -- *did any priced payday pay this account* -- on the argument
     # that a linked deduction pricing $0.00 on every payday of the window
-    # models nothing.  It survives only while there IS a window: once a feed
-    # answers whatever payday it is asked (plan step **salary:S3-e-2**),
-    # "priced" means "whatever this caller asked for" and the gate answers
-    # differently for two readers of one account.  Deleting it moves no
-    # figure -- :func:`contribution_events` emits an event only for a
+    # models nothing.  It survived only while there WAS a window: since plan
+    # step **salary:S3-e-2** a feed answers whatever period it is asked, so
+    # "priced" would mean "whatever this caller asked for" and the gate would
+    # answer differently for two readers of one account.  Deleting it moved
+    # no figure -- :func:`contribution_events` emits an event only for a
     # NON-ZERO amount, and every payday of such an account contributes
     # ``employee = 0`` (:func:`~app.services.growth_engine
     # .cap_contribution_at_limit` of zero is zero) plus ``employer = 0``
@@ -419,8 +421,10 @@ def _dated_events(
     R14-b models LESS than the old feed did (`$176.30` against `$181.59`), so
     counting them netted a real understatement against periods the app never
     reaches.  The window this walk covers is the owner's SAVED schedule minus
-    what the assertion already contains, and it is exactly the domain the feed
-    prices, so the feed's hold rule never engages here.
+    what the assertion already contains.  *Until plan step salary:S3-e-2 that
+    was also exactly the domain the feed had priced up front, so its hold
+    rule never engaged here; the feed prices any period on demand now and
+    there is no hold rule to engage.*
 
     Args:
         plan: The account's :class:`_ContributionPlan`.
@@ -462,11 +466,11 @@ def _dated_events(
             continue
 
         employee = growth_engine.cap_contribution_at_limit(
-            plan.feed.employee_at(period.start_date), plan.annual_limit, ytd,
+            plan.feed.employee_at(period), plan.annual_limit, ytd,
         )
         employer = growth_engine.calculate_employer_contribution(
             plan.employer_params, recorded + employee,
-            plan.feed.gross_at(period.start_date),
+            plan.feed.gross_at(period),
         )
         ytd += employee
         amount = employee + employer

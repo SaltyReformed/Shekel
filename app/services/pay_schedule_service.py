@@ -1,35 +1,45 @@
 """
 Shekel Budget App -- Pay Schedule Service
 
-Reads and writes the per-user ``budget.pay_schedule`` row: the
-persisted pay-period cadence that the extend / regenerate paths
-continue an existing schedule from, the day the owner's paychecks
-began, and the rolling-window configuration the continuous top-up
-consumes.
+Reads and writes the per-user ``budget.pay_schedule`` row -- the owner-level
+configuration a schedule cannot derive from its own rows -- and the
+``budget.pay_eras`` rows that hang off it: one era per *how I have been paid
+since*, carrying the cadence, its kind, the phase and the payday convention
+(plan step ``pay_calendar:C17-a``, ruling **R-PC58**).
 
-**The row holds three facts about the RHYTHM and two about a WRITE**, and
-the doors here are split on that line.  ``cadence_days``, ``shift_id`` and
-``history_opens_on`` are what a pay CALENDAR is derived from, and since plan
-step ``C14-e`` :func:`resolve_schedule` answers all three in ONE read as
-:class:`ScheduleFacts` -- the cadence and the convention as the
-:class:`~app.services.pay_rhythm.Rhythm` the derivation now displaces
-under, the opening bound beside it.  *``shift_id`` had a scalar reader of
-its own,* ``resolve_shift``, *for the single caller that continues a stored
-rhythm without asking what it is; that was a knowingly accepted second query
-of a row the same request had already resolved, and ``C14-e`` deleted the
-function rather than keeping it, which is the disposition its own docstring
-scheduled.*  ``rolling_enabled`` and ``rolling_target_periods``
-configure the on-request top-up and are read off the row itself by the
-caller that is about to write.
+**The RHYTHM is an ERA's fact and the ROW holds what is the owner's**, and the
+doors here are split on that line.  An era's ``cadence_days``, ``shift_id``
+and ``effective_from`` are what a pay CALENDAR is derived from, and
+:func:`resolve_schedule` answers every era in ONE read as
+:class:`ScheduleFacts`, the cadence and the convention of each travelling as
+the :class:`~app.services.pay_rhythm.Rhythm` the derivation displaces under
+and the opening bound beside them.  ``rolling_enabled`` and
+``rolling_target_periods`` configure the on-request top-up and are read off
+the row itself by the caller that is about to write; ``history_opens_on``
+bounds the earliest era's backward rhythm and is the owner's because only that
+era has one.
 
-**:class:`~app.services.pay_rhythm.Rhythm` is DECLARED in the pay-calendar
-package and imported back here** (plan step ``C14-e``).  It is a pure value --
-a frozen ``int`` beside an ``Enum`` member -- and this module holds a session,
-so declaring it here put it out of reach of the derivation that must now read
-it.  Rule 14's remedy for a leaf a layer has misplaced is to move the leaf,
-not to mint a second one; see that class for the whole argument.  Every door
-that spells ``pay_rhythm.Rhythm`` reaches one definition, and
-the one definition.
+*Until ``C17-a`` the row held one ``cadence_days``, one ``shift_id`` and one
+``nominal_anchor``, and* ``upsert_schedule`` *rewrote all three on every batch
+that recorded a payday -- so "correct my cadence going forward" silently
+re-described every PAST payday too (ledger row **N-492**), and the extend path
+re-judged the stored pair on every ``/grid`` render by handing it back through
+that door (**N-494**).  That door is gone.*  **This module READS the eras and
+writes the schedule row; :mod:`app.services.pay_era_write` writes the eras**
+-- the reader / writer split ``pay_period_service`` / ``pay_period_write``
+already draws for the paydays (plan step C3-b), made for the same reason: an
+era is minted by ``mint_era`` when a batch states a rhythm the era covering
+its first payday does not hold, retired by ``retire_eras`` when a later batch
+supersedes it, and the two refusals both writers ask live HERE, beside the
+column bounds they state.
+
+**:class:`~app.services.pay_rhythm.Rhythm` and :class:`~app.services.pay_rhythm.Era`
+are DECLARED in a pure leaf and imported here** (plan step ``C14-e``,
+extended at ``C17-a``).  Each is a frozen value with no session behind it,
+and this module holds a session, so declaring them here would put them out
+of reach of the derivation that must read them.  Rule 14's remedy for a leaf
+a layer has misplaced is to move the leaf, not to mint a second one; see that
+module for the whole argument.
 
 **It no longer owns the advisory lock that serializes the structural
 pay-period mutations** (plan step X-f1c3c).  That lock moved, unchanged
@@ -52,18 +62,16 @@ from datetime import date
 
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import joinedload
 
 from app import ref_cache
 from app.enums import BusinessDayShiftEnum
 from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.pay_era import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN, PayEra
 from app.models.pay_period import PayPeriod
-from app.models.pay_schedule import (
-    CADENCE_DAYS_MAX,
-    CADENCE_DAYS_MIN,
-    PaySchedule,
-)
-from app.services.pay_rhythm import Rhythm
+from app.models.pay_schedule import PaySchedule
+from app.services.pay_rhythm import Era, Rhythm
 from app.utils.business_days import shortest_collision_free_cadence
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
@@ -72,127 +80,175 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ScheduleFacts:
-    """The ``budget.pay_schedule`` facts a pay CALENDAR is built from.
+    """The facts a pay CALENDAR is built from: the owner's eras, and the bound.
 
-    Plan step **balance:X-bh-2**.  One value rather than several return types
-    because they arrive from one row and are read by one consumer -- a
+    Plan step **balance:X-bh-2**, reshaped at **pay_calendar:C17-a**.  One
+    value rather than several return types because they arrive from one load
+    and are read by one consumer -- a
     :class:`~app.services.pay_calendar.PayCalendar` needs them all, and
-    resolving them separately would be several queries of the same row per
+    resolving them separately would be several queries of the same rows per
     calendar load, which is exactly the redundant-schedule-read defect ledger
     rows **P68** and **P69** record.
 
-    **It carries THREE columns since plan step ``C14-e-1``, in two fields**:
-    the cadence and the payday convention travel as one
-    :class:`~app.services.pay_rhythm.Rhythm`, because from ``C14-e-3`` a
-    projected payday is the nominal grid day displaced under that convention
-    and the two are a single owner's single rhythm.  That is the shape this
-    value was already built for -- ``ScheduleFacts.of`` is "the one place that
-    says which columns are the calendar facts", so a third fact reaches every
-    consumer without a signature moving, and none did.
+    **It carries the ERAS, not a rhythm** (ruling **R-PC58**).  Until
+    ``C17-a`` it carried the schedule row's one cadence and one convention as
+    a :class:`~app.services.pay_rhythm.Rhythm` beside a ``nominal_anchor``;
+    a pay schedule is a SEQUENCE OF ERAS now, and this value is that sequence
+    with the owner's history bound beside it.  :attr:`rhythm` still answers --
+    the LATEST era's -- because at this leaf every reader of the calendar
+    takes one rhythm exactly where it took the row's, and that is what makes
+    the leaf move ``$0.00`` by construction; ``C17-b`` is where readers ask
+    the era covering their own day.
 
-    **It is the facts OF A ROW, and since plan step C4-d it cannot say
-    otherwise** (ruling **R-PC45**).  ``cadence_days`` was typed ``int | None``
-    beside a nullable ``history_opens_on``, which made four pairs constructible
-    where a row can produce two: absence of a cadence beside a STATED opening
-    said "I do not know how often this owner is paid, and I do know their
-    paychecks reach back to June 2020", and ``ck_pay_schedule_cadence_range``
-    sits on a ``NOT NULL`` column, so no row can say it.  That is the defect
-    plan step C4-b-2 removed from the SCHEMA surviving one tier up in the TYPE.
-    "This owner has no schedule at all" is now :func:`resolve_schedule`
-    answering ``None``, which is one optional rather than two independent ones,
-    and the ``int | None`` that used to travel from here into
-    :class:`~app.services.pay_calendar.PayCalendar`,
-    :func:`~app.services.pay_calendar.derive_periods` and three projection
-    producers -- policed at each by prose and by two runtime raises -- has no
-    subject at any of them.
+    **It is the facts OF AN OWNER WHO HOLDS AN ERA, and cannot say
+    otherwise** (ruling **R-PC45**'s principle, one relation over).  The
+    tuple is NON-EMPTY: an owner with a schedule row and no era has stated no
+    rhythm, and :meth:`of` answers ``None`` for them rather than a value whose
+    :attr:`rhythm` would raise.  "This owner has no calendar at all" is
+    therefore one optional -- :func:`resolve_schedule` answering ``None`` --
+    rather than a value carrying an absence a reader must remember to test.
 
     **It carries the calendar facts and NOT the rolling ones.**
     ``rolling_enabled`` and ``rolling_target_periods`` configure a WRITE
-    (the on-request top-up); these two describe the owner's rhythm, which is
+    (the on-request top-up); these describe the owner's rhythm, which is
     what a calendar derives from.  A caller that needs the rolling half wants
     the row itself (:func:`get_schedule`), because it is about to write.
 
     Attributes:
-        rhythm: How often the owner is paid and what payroll does when a payday
-            lands on a closed day
-            (:class:`~app.services.pay_rhythm.Rhythm`).  Both halves are
-            STORED values and never inferred ones; the arm that inferred the
-            cadence closed findings **P8** and **P35** on its way out (see
-            :func:`resolve_schedule`).  Neither is optional, because both
-            columns are ``NOT NULL``: a row states its rhythm or it is not a
-            row.
+        eras: The owner's :class:`~app.services.pay_rhythm.Era` values,
+            ``effective_from`` ascending and never empty.  Every half of
+            every era is a STORED value and never an inferred one; the arm
+            that inferred a cadence closed findings **P8** and **P35** on its
+            way out (see :func:`resolve_schedule`).
         history_opens_on: How far back this owner's paychecks reach, or
             ``None`` for NOT STATED (ruling **balance:R-IA**, amended
             2026-08-31) -- an absence rather than a claim, and one the
-            backward rhythm answers by counting only the record.  It stays
-            optional where the cadence above did not, and the asymmetry is the
-            COLUMN's: this one is nullable and that one is not.  There is NO
-            fallback for it: an owner with no schedule row has stated nothing,
-            and the first recorded payday is a record boundary rather than an
-            answer.
-        nominal_anchor: A day the owner's NOMINAL pay grid passes through, or
-            ``None`` for a schedule row holding no paydays (plan step
-            ``pay_calendar:C14-e-2``).  **The GRID's phase, which is not the
-            record's**: from ``C14-e-3`` a recorded payday is a CASH day, so
-            the two part company on every displaced payday and neither can be
-            read off the other.  ``pay_period_admin.extend_pay_periods`` is
-            its one reader -- it continues the rhythm from HERE rather than
-            from its own last output, which is what stops each batch
-            re-phasing the grid by the previous batch's displacement.
-            Optional for the same reason ``history_opens_on`` is: the column
-            is, and the state it stands for is an owner holding a schedule row
-            and zero paydays.
+            backward rhythm answers by counting only the record.  It is the
+            one optional here because the COLUMN is nullable; there is NO
+            fallback for it, since the first recorded payday is a record
+            boundary rather than an answer.
     """
 
-    rhythm: Rhythm
+    eras: "tuple[Era, ...]"
     history_opens_on: date | None
-    nominal_anchor: date | None
+
+    @property
+    def latest_era(self) -> Era:
+        """Return the era with the greatest ``effective_from``.
+
+        The era the schedule's forward continuation runs on: every extend and
+        rolling top-up records ITS grid, so after any batch the materialised
+        horizon sits inside it.
+
+        Returns:
+            The last of :attr:`eras`.
+        """
+        return self.eras[-1]
+
+    @property
+    def rhythm(self) -> Rhythm:
+        """Return the LATEST era's cadence and convention.
+
+        **The one rhythm every calendar reader takes at plan step ``C17-a``**,
+        where the schedule row's own pair used to be -- which is what holds
+        this leaf at ``$0.00``: a single-era owner (every owner the migration
+        backfills) reads back exactly the values the row held.  For a
+        PIECEWISE owner it is the rhythm their most recent RECORDING batch
+        stated -- the writer retires every era past the last surviving payday
+        and mints from the batch's day, so the latest era is either that
+        batch's mint or the era it continued at the same rhythm -- which is
+        also what the overwritten row held.  Readers that ask a PAST day's
+        rhythm are ``C17-b``'s.
+
+        Returns:
+            :attr:`latest_era`'s :class:`~app.services.pay_rhythm.Rhythm`.
+        """
+        return self.latest_era.rhythm
 
     @classmethod
-    def of(cls, schedule: PaySchedule) -> "ScheduleFacts":
+    def of(cls, schedule: PaySchedule) -> "ScheduleFacts | None":
         """Return the calendar facts carried by an existing schedule *row*.
 
         For a caller that already holds the row -- the rolling top-up, which
         reads it to decide whether to write at all and must not pay for a
-        second read (finding **P70**).  A classmethod rather than two attribute
+        second read (finding **P70**).  A classmethod rather than attribute
         reads at that caller so WHICH columns are the calendar facts is stated
-        once: a third fact added to the table joins the value here, and the
-        top-up inherits it without its author remembering.
+        once: a fact added to the era joins the value here, and the top-up
+        inherits it without its author remembering.
 
         Args:
-            schedule: The owner's ``budget.pay_schedule`` row.
+            schedule: The owner's ``budget.pay_schedule`` row, with its
+                ``eras`` collection loaded or loadable.
 
         Returns:
-            Its :class:`ScheduleFacts`.
+            Its :class:`ScheduleFacts`, or ``None`` when the row holds no era
+            -- an owner who has stated no rhythm, for whom there is no
+            calendar to derive.
 
         Raises:
-            ValidationError: The row names a ``shift_id``
-                ``ref.business_day_shifts`` does not hold.  **This refusal
-                moved here from ``resolve_shift`` at plan step ``C14-e-1``**,
-                which deleted that function; it is stated once, at the one
-                place a stored id becomes a member.
+            ValidationError: An era names a ``shift_id``
+                ``ref.business_day_shifts`` does not hold, or a ``kind_id``
+                ``ref.pay_cadence_kinds`` does not hold.  Stated once, at the
+                one place a stored id becomes a member.
         """
-        shift = ref_cache.business_day_shift_member(schedule.shift_id)
-        if shift is None:
-            raise ValidationError(
-                f"user {schedule.user_id}'s pay schedule names business-day "
-                f"shift {schedule.shift_id}, which this application does not "
-                f"model.  Refused rather than read as 'none': a missing "
-                f"convention would silently un-displace every projected "
-                f"payday, which is a wrong date rather than an error.  "
-                f"fk_pay_schedule_shift_id admits only seeded ids, so "
-                f"reaching this means ref.business_day_shifts was changed "
-                f"under the application."
-            )
-        return cls(
-            rhythm=Rhythm(cadence_days=schedule.cadence_days, shift=shift),
-            history_opens_on=schedule.history_opens_on,
-            nominal_anchor=schedule.nominal_anchor,
+        eras = tuple(_era_of(row) for row in schedule.eras)
+        if not eras:
+            return None
+        return cls(eras=eras, history_opens_on=schedule.history_opens_on)
+
+
+def _era_of(row: PayEra) -> Era:
+    """Return the :class:`~app.services.pay_rhythm.Era` a stored *row* states.
+
+    The storage boundary in the READ direction: two ``ref`` ids become their
+    members here and nowhere else, which is IDs-for-logic as the project means
+    it -- no ``name`` string is ever compared.
+
+    Args:
+        row: A ``budget.pay_eras`` row.
+
+    Returns:
+        The era as a value.
+
+    Raises:
+        ValidationError: The row names a shift or a kind this application does
+            not model.  Refused rather than read as ``none`` / ``fixed_days``:
+            a missing convention would silently un-displace every projected
+            payday, which is a wrong date rather than an error.  The foreign
+            keys admit only seeded ids, so reaching this means a ``ref`` table
+            was changed under the application.
+    """
+    shift = ref_cache.business_day_shift_member(row.shift_id)
+    if shift is None:
+        raise ValidationError(
+            f"user {row.user_id}'s pay era from "
+            f"{row.effective_from.isoformat()} names business-day shift "
+            f"{row.shift_id}, which this application does not model.  "
+            f"Refused rather than read as 'none': a missing "
+            f"convention would silently un-displace every projected payday, "
+            f"which is a wrong date rather than an error.  "
+            f"fk_pay_eras_shift_id admits only seeded ids, so reaching this "
+            f"means ref.business_day_shifts was changed under the application."
         )
+    kind = ref_cache.pay_cadence_kind_member(row.kind_id)
+    if kind is None:
+        raise ValidationError(
+            f"user {row.user_id}'s pay era from "
+            f"{row.effective_from.isoformat()} names cadence kind "
+            f"{row.kind_id}, which this application does not model.  "
+            f"fk_pay_eras_kind_id admits only seeded ids, so "
+            f"reaching this means ref.pay_cadence_kinds was changed under the "
+            f"application."
+        )
+    return Era(
+        effective_from=row.effective_from,
+        kind=kind,
+        rhythm=Rhythm(cadence_days=row.cadence_days, shift=shift),
+    )
 
 
 def get_schedule(user_id: int) -> PaySchedule | None:
-    """Return the user's pay-schedule row, or ``None`` when absent.
+    """Return the user's pay-schedule row with its eras, or ``None`` when absent.
 
     **Absent means one thing, since plan step C4-b-2**: this user has never
     recorded a payday.  ``fk_pay_periods_schedule`` holds a pay period's owner
@@ -203,6 +259,12 @@ def get_schedule(user_id: int) -> PaySchedule | None:
     Absence used to mean a second thing as well -- a legacy user with periods
     that predated this table -- and carrying an answer for that state is what
     findings **P8** and **P35** cost.
+
+    **The eras ride in the same statement** (plan step ``C17-a``).  The row's
+    rhythm moved to ``budget.pay_eras``, and a caller holding this row wants
+    the rhythm too -- the rolling top-up reads it on every ``/grid`` render --
+    so the collection is joined rather than lazily fetched, keeping the
+    schedule read at the one query it was (ledger rows **P68**, **P69**).
 
     Callers that want the CALENDAR facts rather than the row (because they are
     about to derive, not to write) use :func:`resolve_schedule`.
@@ -215,6 +277,7 @@ def get_schedule(user_id: int) -> PaySchedule | None:
     """
     return (
         db.session.query(PaySchedule)
+        .options(joinedload(PaySchedule.eras))
         .filter_by(user_id=user_id)
         .first()
     )
@@ -225,18 +288,18 @@ def reread_schedule(user_id: int) -> PaySchedule:
 
     **For a caller that has taken the per-user advisory lock after loading the
     row and must not trust what it loaded** (plan step **C4**).  Every writer
-    of ``cadence_days`` takes that lock, so a batch committing between a
-    caller's first read and its lock acquisition leaves the caller's instance
-    stale by exactly one write -- which matters wherever the cadence decides a
-    figure, because it dictates the LAST pay period's derived end.
+    of an era takes that lock, so a batch committing between a caller's first
+    read and its lock acquisition leaves the caller's instance stale by
+    exactly one write -- which matters wherever the rhythm decides a figure,
+    because it dictates the LAST pay period's derived end.
 
     **A second :func:`get_schedule` would NOT fix that, and would read as
     though it had.**  The query runs, but SQLAlchemy returns the
-    identity-mapped instance with its ORIGINAL attribute values; that is the
-    same trap :func:`upsert_schedule` spells ``populate_existing`` for after
-    its Core upsert, and taking an advisory lock through the session expires
-    nothing either.  Naming the re-read is what keeps the next caller from
-    writing the version that silently does nothing.
+    identity-mapped instance with its ORIGINAL attribute values; taking an
+    advisory lock through the session expires nothing either.  Naming the
+    re-read is what keeps the next caller from writing the version that
+    silently does nothing.  ``populate_existing`` reaches the joined eras
+    too, so the collection is re-read with the row.
 
     Args:
         user_id: The owning user's id.
@@ -267,6 +330,7 @@ def reread_schedule(user_id: int) -> PaySchedule:
     """
     schedule = (
         db.session.query(PaySchedule)
+        .options(joinedload(PaySchedule.eras))
         .filter_by(user_id=user_id)
         .populate_existing()
         .one_or_none()
@@ -286,9 +350,12 @@ def reject_out_of_range_cadence(cadence_days: int) -> None:
     """Refuse a cadence ``ck_pay_schedule_cadence_range`` would refuse.
 
     **One implementation of the bound, two callers, and the second is why it
-    is a function** (plan step X-ad-a).  :func:`upsert_schedule` is the one
-    writer of the column and asks this immediately before writing, so no door
-    can persist a value the CHECK refuses.  ``registration_service.register_user`` asks
+    is a function** (plan step X-ad-a).
+    :func:`~app.services.pay_era_write.mint_era` is the one writer
+    of the column (``budget.pay_eras.cadence_days`` since plan step
+    ``C17-a``; the schedule row's until then) and asks this immediately before
+    writing, so no door can persist a value the CHECK refuses.
+    ``registration_service.register_user`` asks
     it EARLIER -- in its up-front validation block, before the ``User`` row is
     added to the session -- because a registration that refuses halfway leaves
     a partly-built owner in a session whose only protection is that nobody
@@ -301,8 +368,8 @@ def reject_out_of_range_cadence(cadence_days: int) -> None:
 
     Raises:
         ValidationError: *cadence_days* falls outside
-            :data:`~app.models.pay_schedule.CADENCE_DAYS_MIN` ..
-            :data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`.  The message
+            :data:`~app.models.pay_era.CADENCE_DAYS_MIN` ..
+            :data:`~app.models.pay_era.CADENCE_DAYS_MAX`.  The message
             names the offending value and both bounds, so a surface can render
             it verbatim.
     """
@@ -358,18 +425,19 @@ def reject_shift_on_short_cadence(rhythm: Rhythm) -> None:
     ``ADD CONSTRAINT`` does scan existing rows, but only when some migration
     re-adds it.  Nothing reconciles ``budget.pay_schedule`` today.
 
-    **And a floor RISE would surface badly, which is worth knowing before
-    anyone raises one.**  The continue path re-judges the STORED pair --
-    ``pay_period_admin.extend_pay_periods`` hands it back through
-    :func:`upsert_schedule` -- and the rolling top-up reaches that path from
-    ``routes/grid`` and ``routes/dashboard`` with no ``except
-    ValidationError`` and no error handler registered for this exception.  So
-    an owner whose stored pair became illegal would meet a 500 on the two
-    screens they use most, with no door offering the repair.  Unreachable
-    today: every stored pair was written through this refusal and the
-    backfill seeds ``none``, which is legal at every cadence.  Both gaps are
-    findings the 2026-09-05 review raised and this step REPORTS rather than
-    claims away; neither is C14-b's to fix.
+    **A floor RISE no longer surfaces on a read path** (plan step
+    ``C17-a``, closing ledger row **N-494**).  The continue path used to
+    re-judge the STORED pair -- ``pay_period_admin.extend_pay_periods`` handed
+    it back through the schedule row's upsert -- and the rolling top-up
+    reaches that path from ``routes/grid`` and ``routes/dashboard`` with no
+    ``except ValidationError``, so an owner whose stored pair a later holiday
+    change made illegal would have met a 500 on the two screens they use
+    most.  A batch that CONTINUES an era writes no rhythm now, so this is
+    asked only where a rhythm is STATED.  What a stored pair made illegal
+    still meets is ``pay_calendar.covering_projection``'s refusal, which
+    reaches the "Pay Calendar Unavailable" page rather than a bare 500; that
+    nothing reconciles ``budget.pay_eras`` against a moved holiday set is
+    ledger row **N-493**, still open.
 
     ``none`` displaces nothing, so it is legal at every cadence and returns
     before the floor is computed -- which is also why the walk behind that
@@ -490,15 +558,17 @@ def set_history_opening(
     this column existed holds ``NULL``, and ``NULL`` is not a state a sign-up
     form can revisit.
 
-    **It is a door of its own rather than an argument to**
-    :func:`upsert_schedule`, and the lifecycles are why.  That function is
-    called by ``pay_period_write.record_paydays`` on EVERY batch -- generate,
-    extend, regenerate, reset -- because a batch that records a payday
-    establishes the cadence it was spaced by (the cadence rule, plan step
-    C3-b).  When a job began is not a fact a batch of paydays states, so
-    threading it through that door would either overwrite the owner's answer
-    on every extend or add a "leave this one alone" argument, which is the
-    conditional-write shape ``set_rolling`` already avoids by being separate.
+    **It is a door of its own rather than a field of the era**
+    (:func:`~app.services.pay_era_write.mint_era`), and the lifecycles are
+    why.  An era is minted by
+    ``pay_period_write.record_paydays`` whenever a batch states a rhythm --
+    a first schedule, a cadence corrected going forward -- and when a job
+    began is not a fact a batch of paydays states: only the EARLIEST era runs
+    backward below the record, so a floor per era would be a column with one
+    meaningful row, and threading it through the mint would either restate
+    the owner's answer on every new era or add a "leave this one alone"
+    argument, which is the conditional-write shape ``set_rolling`` already
+    avoids by being separate.
 
     **``None`` is a real value to write, not a skip.**  Clearing the field is
     how an owner WITHDRAWS a statement -- after which the engine counts only
@@ -545,141 +615,26 @@ def set_history_opening(
     return schedule
 
 
-def upsert_schedule(
-    user_id: int, rhythm: Rhythm, nominal_anchor: "date | None" = None,
-) -> PaySchedule:
-    """Create or update the user's persisted RHYTHM, race-safe.
+def ensure_schedule_row(user_id: int) -> None:
+    """Create the user's ``budget.pay_schedule`` row if none exists.
 
-    Called when a schedule's rhythm is established (first generation)
-    or changed (regenerate).  Uses a single PostgreSQL
-    ``INSERT ... ON CONFLICT (uq_pay_schedule_user) DO UPDATE`` so a
-    concurrent first-generation double-submit can never raise an
-    ``IntegrityError`` 500: whichever request inserts second cleanly
-    updates the existing row instead of colliding on the unique
-    constraint.  The conflict-update set is the RHYTHM alone --
-    ``cadence_days`` and ``shift_id`` -- so capturing a new one never
-    disturbs an existing row's rolling-window configuration, its stated pay
-    history, or its ``created_at``.
-
-    **The cadence bound is checked HERE, and that placement is plan step
-    X-ad-a's** (finding **N-123**'s neighbourhood, not the finding itself).
-    This docstring used to say the bound was
-    ``ck_pay_schedule_cadence_range``'s and that "the caller's Marshmallow
-    schema validates the same range before this runs" -- true of the four
-    callers that existed, and a rule held by remembering rather than by
-    structure.  Four doors write a cadence (generate, regenerate, reset, and
-    now registration), the CHECK turns an out-of-range value into an
-    ``IntegrityError`` 500 rather than something a form can render, and this
-    function is the ONE writer of the column.  So the refusal lives at the
-    write door, where a fifth caller inherits it without its author
-    remembering.
-
-    **It writes the RHYTHM as a PAIR, since plan step C14-b**, and the pairing
-    is why rather than tidiness.  ``shift_id`` -- what payroll does when a
-    payday lands on a closed day -- is legal only on a cadence longer than the
-    longest run of closed days (:func:`reject_shift_on_short_cadence`), so the
-    two columns carry a joint rule.  Written by two doors in sequence, the row
-    passes through an intermediate state that is not the one the request
-    means, and EITHER order refuses a legal request: writing the cadence first
-    judges a shortened cadence against a convention the same request is
-    turning OFF, and writing the convention first judges it against a cadence
-    the same request is lengthening.  One statement judged against the state
-    the operation LEAVES BEHIND has neither hole -- the same principle
-    ``pay_period_write._PaydayChange`` exists for one module over.
+    **The row's one creator since plan step ``C17-a``.**  The row used to be
+    created by the rhythm upsert the first time a batch recorded a payday;
+    the rhythm is an era's now, and what a first batch still needs is the
+    owner-level row for ``fk_pay_periods_schedule`` and
+    ``fk_pay_eras_schedule`` to target.  ``INSERT ... ON CONFLICT DO
+    NOTHING`` on ``uq_pay_schedule_user``, so a concurrent first-generation
+    double-submit can never raise an ``IntegrityError`` 500 and an existing
+    row's rolling configuration, stated history and ``created_at`` are never
+    disturbed.
 
     Args:
         user_id: The owning user's id.
-        rhythm: The :class:`~app.services.pay_rhythm.Rhythm` to persist.  A
-            caller CONTINUING a schedule rather than stating one reads the
-            stored pair off the calendar it already built
-            (:attr:`~app.services.pay_calendar.PayCalendar.rhythm`) and passes
-            it back; there is deliberately no "leave this half alone"
-            argument, because a batch that cannot say what the rhythm is
-            cannot be judged against it.  *It read the convention through a
-            scalar query of its own,* ``resolve_shift``, *until plan step
-            ``C14-e-1`` put the convention on the calendar and deleted the
-            function -- the disposition that function's own docstring
-            scheduled.*
-        nominal_anchor: A day the owner's NOMINAL grid passes through, or
-            ``None`` for a write that states no phase (plan step
-            ``C14-e-2``).  Written in the SAME statement as the pair above,
-            for the pair's own reason: the three describe one rhythm, and a
-            row written through two statements passes through a state neither
-            means.  **Its one producer is**
-            ``pay_period_write.record_paydays``, which derives it from the
-            batch's own first payday rather than accepting it from a door --
-            so a phase that is not on the batch's grid is UNREPRESENTABLE
-            rather than refused, which is what doctrine asks of a fence.
-            **``None`` LEAVES THE STORED PHASE STANDING** rather than clearing
-            it, which is the one place this door admits "leave that alone";
-            the statement below carries why the RHYTHM gets no such arm and
-            this does.
-
-    Returns:
-        The created or updated :class:`PaySchedule` row.
-
-    Raises:
-        ValidationError: *cadence_days* falls outside
-            :data:`~app.models.pay_schedule.CADENCE_DAYS_MIN` ..
-            :data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`, the bound
-            ``ck_pay_schedule_cadence_range`` enforces in the database, or the
-            pair is one no calendar can derive
-            (:func:`reject_shift_on_short_cadence`).  A 400 rather than a 500:
-            every door in front of this one takes the values from a form.
     """
-    reject_out_of_range_cadence(rhythm.cadence_days)
-    reject_shift_on_short_cadence(rhythm)
-    # The one place a rhythm's convention becomes an id, which is the storage
-    # boundary and nowhere else -- ``recurrence._authoring`` resolves the same
-    # vocabulary at the same moment for the same reason.
-    shift_id = ref_cache.business_day_shift_id(rhythm.shift)
-    insert_stmt = pg_insert(PaySchedule.__table__).values(
-        user_id=user_id,
-        cadence_days=rhythm.cadence_days,
-        shift_id=shift_id,
-        nominal_anchor=nominal_anchor,
-    )
-    upsert_stmt = insert_stmt.on_conflict_do_update(
-        constraint="uq_pay_schedule_user",
-        set_={
-            "cadence_days": rhythm.cadence_days,
-            "shift_id": shift_id,
-            # COALESCE, so a write that states NO phase leaves the stored one
-            # standing rather than clearing it.  Written the other way it is a
-            # FOOTGUN: this is an UPSERT, so a caller changing the cadence
-            # alone would silently un-phase the owner and their next extend
-            # would be refused.  SIX cases proved that before this arm existed;
-            # ``app/`` has ONE caller and it always states a phase, so the
-            # defect was one door away rather than live -- which is the
-            # distance at which the right move is to make it unrepresentable.
-            #
-            # **The pair still carries a joint rule and this arm does not deny
-            # it**, which a second adversarial review corrected: a cadence and
-            # the phase it is measured from must come from ONE era, or the
-            # grid is one nobody chose.  That is ledger row **N-492** and it is
-            # why the migration backfills MAX rather than MIN.  What holds the
-            # rule here is that ``pay_period_write.record_paydays`` is the only
-            # caller and states BOTH from the batch it is recording -- a
-            # discipline kept by there being one writer, not by this argument
-            # being independent.  A caller that changes the cadence and means a
-            # new grid must say so; ``C17``'s era row is where that stops being
-            # a discipline and becomes a shape.
-            "nominal_anchor": func.coalesce(
-                insert_stmt.excluded.nominal_anchor,
-                PaySchedule.__table__.c.nominal_anchor,
-            ),
-        },
-    )
-    db.session.execute(upsert_stmt)
-    # Reload through the ORM with populate_existing so any instance the
-    # session already holds for this user is refreshed to the values the
-    # core upsert just wrote -- the identity map would otherwise keep a
-    # stale copy.
-    return (
-        db.session.query(PaySchedule)
-        .filter_by(user_id=user_id)
-        .populate_existing()
-        .one()
+    db.session.execute(
+        pg_insert(PaySchedule.__table__)
+        .values(user_id=user_id)
+        .on_conflict_do_nothing(constraint="uq_pay_schedule_user"),
     )
 
 
@@ -785,20 +740,26 @@ def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
     carrying no cadence -- and that split is why some screens showed a repair
     page for them and others showed a blank one.
 
-    **Since plan step ``C14-e-2`` it answers FOUR columns rather than two** --
-    the cadence and the convention as a :class:`~app.services.pay_rhythm.Rhythm`,
-    plus ``history_opens_on`` and ``nominal_anchor`` -- and still in the one
-    read, which is the property :class:`ScheduleFacts` was shaped to have.
+    **Since plan step ``C17-a`` it answers the owner's ERAS rather than one
+    rhythm** -- every ``budget.pay_eras`` row as an
+    :class:`~app.services.pay_rhythm.Era`, plus ``history_opens_on`` -- and
+    still in one statement, since :func:`get_schedule` joins the eras onto the
+    row, which is the property :class:`ScheduleFacts` was shaped to have.
+
+    **``None`` widened by one state at that step**: an owner holding a
+    schedule row and NO era has stated no rhythm and gets no facts, exactly as
+    an owner with no row does.  No door in ``app/`` produces that owner --
+    every batch that records a payday mints an era when none covers it -- and
+    the migration backfills one era for every owner holding a payday, so the
+    state is reachable only for a row whose paydays were all removed before
+    the migration ran.
 
     **``history_opens_on`` never had a fallback and that asymmetry was the
     point.**  Nothing in ``budget.pay_periods`` says when a job began -- the
     first recorded payday is a record boundary, not an answer -- so an owner who
     HAS a row and has stated nothing carries ``None`` there, and it reads as
     exactly that (ruling **balance:R-IA**, amended 2026-08-31).  It is the one
-    optional on :class:`ScheduleFacts` for that reason -- ``nominal_anchor``
-    is the other, and it is optional for a different one: the migration cannot
-    answer for a schedule row holding no paydays.  Each is optional because
-    its column is.
+    optional on :class:`ScheduleFacts`, because its column is.
 
     Args:
         user_id: The owning user's id.
@@ -806,11 +767,12 @@ def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
     Returns:
         The :class:`ScheduleFacts`, or ``None`` when the user has no
         ``budget.pay_schedule`` row -- which by ``fk_pay_periods_schedule`` is
-        an owner with no pay periods either.
+        an owner with no pay periods either -- or a row holding no era.
 
     Raises:
-        ValidationError: The row names a ``shift_id``
-            ``ref.business_day_shifts`` does not hold
+        ValidationError: An era names a ``shift_id``
+            ``ref.business_day_shifts`` does not hold, or a ``kind_id``
+            ``ref.pay_cadence_kinds`` does not hold
             (:meth:`ScheduleFacts.of`, since plan step ``C14-e-1``).  **This
             does not make the door hard**, and the distinction is the one the
             paragraph above draws: the SOFT answer is about an owner with no
@@ -846,11 +808,16 @@ def resolve_cadence(user_id: int) -> int | None:
     Args:
         user_id: The owning user's id.
 
+    **It answers the LATEST era's cadence since plan step ``C17-a``**, which
+    for every owner the migration backfills is the value the schedule row
+    held; a reader that wants a PAST day's cadence is ``C17-b``'s.
+
     Returns:
         The STORED cadence in days, or ``None`` when the user has no
         ``budget.pay_schedule`` row -- since plan step C4-b-2 the same
-        statement as "no pay periods" (``fk_pay_periods_schedule``).  The
-        extend path treats ``None`` as "generate your first schedule first".
+        statement as "no pay periods" (``fk_pay_periods_schedule``) -- or no
+        era.  The extend path treats ``None`` as "generate your first schedule
+        first".
     """
     facts = resolve_schedule(user_id)
     return None if facts is None else facts.rhythm.cadence_days

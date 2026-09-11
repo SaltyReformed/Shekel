@@ -180,8 +180,8 @@
           {{ render_select("shift", PAYDAY_SHIFT_LABEL,
                            PAYDAY_SHIFT_OPTIONS,
                            selected_value=(request.form.get('shift')
-                                           or (pp_schedule.shift_id
-                                               if pp_schedule else SHIFT_NONE)),
+                                           or (pp_era.shift_id
+                                               if pp_era else SHIFT_NONE)),
                            help_text=PAYDAY_SHIFT_HELP,
                            required=true) }}
           {# Neutral outline: rebuilding the tail is not an archive /
@@ -341,8 +341,8 @@
         {{ render_select("shift", PAYDAY_SHIFT_LABEL,
                          PAYDAY_SHIFT_OPTIONS,
                          selected_value=(request.form.get('shift')
-                                         or (pp_schedule.shift_id
-                                             if pp_schedule else SHIFT_NONE)),
+                                         or (pp_era.shift_id
+                                             if pp_era else SHIFT_NONE)),
                          help_text=PAYDAY_SHIFT_HELP,
                          required=true, classes="rs") }}
       </div>

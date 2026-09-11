@@ -36,17 +36,19 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.routes._period_population import populate_new_periods
 from app.services import (
+    pay_era_write,
     pay_period_admin,
     pay_period_write,
     pay_schedule_service,
 )
 from app.services import pay_calendar
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import PayCalendarError, calendar_for
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    era_of,
     rhythm_of,
     assert_pay_period_invariants,
     create_savings_account,
@@ -358,14 +360,15 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
     Measured over production's cadence and opening payday at a batch of one,
     the rolling top-up's steady state: **178 of 301** recorded paydays wrong
     under ``prior`` with **8 days** of final drift, against **0 of 301**
-    anchored on ``budget.pay_schedule.nominal_anchor`` (ledger row **PC-497**
-    fault 2, developer direction **R-PC61**).
+    anchored on the stored phase (ledger row **PC-497** fault 2, developer
+    direction **R-PC61**) -- which since plan step ``pay_calendar:C17-a`` is
+    the latest ERA's ``effective_from``.
 
-    These cases state the convention on the schedule row -- ``C14-e-3`` ships
-    the producer that reads it -- and hand the owner a displaced recorded
-    payday BY HAND while leaving the stored phase where it was.  No door
-    produces that pairing: every batch writes its own ``first_payday`` as the
-    phase, so a record that has advanced past the anchor is the PIECEWISE
+    These cases state the convention on the era -- ``C14-e-3`` ships the
+    producer that reads it -- and hand the owner a displaced recorded payday
+    BY HAND while leaving the era's phase where it was.  No door produces
+    that pairing: a batch that mints an era writes its own ``first_payday``
+    as the era's day, so a record that has advanced past it is the PIECEWISE
     owner ledger row **N-492** describes, and building it directly is what
     ``pay_period_write``'s own module docstring reserves the suite the right to
     do.  It is the state the grid-index search must survive, which is why
@@ -384,15 +387,15 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
     def test_the_writer_co_writes_the_phase_with_the_cadence(
         self, app, db, bare_user,
     ):
-        """The batch's own first payday IS the phase, and one statement writes both.
+        """The batch's own first payday IS the era's day, and one row holds both.
 
-        Everything below rests on this: the anchor is DERIVED from the batch
+        Everything below rests on this: the phase is DERIVED from the batch
         rather than accepted from a door, so a phase that is not on the batch's
         grid is unrepresentable rather than refused.  It is also what keeps the
-        anchor meaningful when the CADENCE changes -- the two columns are
-        written together or not at all, which is the property
-        ``budget.pay_schedule`` can state and ledger row **N-492** is that it
-        cannot state per ERA (``R-PC58``, ``C17``).
+        phase meaningful when the CADENCE changes -- an era is one row carrying
+        both, which is what ``budget.pay_schedule``'s two columns could not
+        state per era (ledger row **N-492**, ruling **R-PC58**, plan step
+        ``C17-a``).
         """
         with app.app_context():
             user_id = bare_user["user"].id
@@ -400,7 +403,7 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
 
             facts = pay_schedule_service.resolve_schedule(user_id)
 
-            assert facts.nominal_anchor == _ON_GRID_PAYDAY
+            assert facts.latest_era.effective_from == _ON_GRID_PAYDAY
             assert facts.rhythm.cadence_days == 14
 
     def test_a_DISPLACED_recorded_payday_does_not_move_the_grid(
@@ -469,27 +472,29 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
                 new_periods[0].start_date - _ON_GRID_PAYDAY
             ).days == 28, "the search must advance TWO steps past the estimate"
 
-    def test_a_schedule_that_states_no_phase_is_REFUSED(
+    def test_a_schedule_that_states_no_era_is_REFUSED(
         self, app, db, bare_user,
     ):
-        """A NULL anchor and an empty schedule are one owner and one refusal.
+        """An owner holding paydays and no era is refused, not phased by guess.
 
-        The migration backfilled every owner holding a payday and
-        ``record_paydays`` writes the column on every batch, so the only rows
-        left NULL hold no paydays at all -- and that owner is already refused
-        for having nothing to extend.  Built here by clearing the column
-        underneath a schedule that HAS paydays, which no door can do: the point
-        is that the door refuses rather than inventing a phase, because an
-        invented phase generates wrong paydays silently where a refusal is
-        read.
+        The migration backfills an era for every owner holding a payday and
+        ``record_paydays`` mints one when none covers its batch, so no door
+        produces this owner.  Built here by retiring the era underneath a
+        schedule that HAS paydays: the point is that the door refuses rather
+        than inventing a phase, because an invented phase generates wrong
+        paydays silently where a refusal is read.  Since plan step ``C17-a``
+        the refusal is the CALENDAR's -- an owner with no era has no rhythm
+        to derive a calendar from, exactly as one with no schedule row -- and
+        it reaches the "Pay Calendar Unavailable" page rather than the card's
+        flash.
         """
         with app.app_context():
             user_id = bare_user["user"].id
             self._owner_anchored_at(db.session, user_id, BusinessDayShiftEnum.NONE)
-            pay_schedule_service.get_schedule(user_id).nominal_anchor = None
+            pay_era_write.retire_eras(user_id, None)
             db.session.commit()
 
-            with pytest.raises(ValidationError, match="Generate your first"):
+            with pytest.raises(PayCalendarError, match="has no pay calendar"):
                 pay_period_admin.extend_pay_periods(user_id, 1)
 
     def test_a_PIECEWISE_owner_whose_tail_was_truncated_can_still_extend(
@@ -521,9 +526,12 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
         floor, so the door SKIPS that slot and the owner gets one long
         paycheck.  It is bounded strictly below two cadences, always accepted,
         and :func:`~app.services.pay_calendar.derive_periods` closes it with no
-        gap and no overlap -- which is what "the stored pair is the CURRENT
-        era's rhythm and older rows are history" means for an owner ``C17``'s
-        eras do not describe yet.
+        gap and no overlap -- which is what "the LATEST era's rhythm is the
+        one the extend continues and older rows are history" means.  Since
+        plan step ``C17-a`` the truncate leaves both eras standing and the
+        extend's batch, stated at 7 days on a day the 14-day era covers,
+        mints a third from 2030-01-25 and retires the 02-22 one it
+        supersedes; the day recorded is the same either way.
         """
         with app.app_context():
             user_id = bare_user["user"].id
@@ -727,14 +735,13 @@ class TestExtendPayPeriods:
     ):
         """A persisted schedule cadence wins over the inferred one."""
         with app.app_context():
-            _future_periods(db.session, seed_user, count=2)
-            pay_schedule_service.upsert_schedule(
-                seed_user["user"].id, rhythm=rhythm_of(7),
-                # "Correct my cadence going forward" restates the cadence and
-                # NOT the phase, so the stored anchor is handed back.
-                nominal_anchor=pay_schedule_service.resolve_schedule(
-                    seed_user["user"].id,
-                ).nominal_anchor,
+            periods = _future_periods(db.session, seed_user, count=2)
+            # "Correct my cadence going forward" is a new ERA from the last
+            # recorded payday (plan step C17-a): the day is on the 14-day grid
+            # the record holds, and the 7-day grid from it is what the extend
+            # continues.
+            pay_era_write.mint_era(
+                seed_user["user"].id, era_of(periods[-1].start_date, 7),
             )
             db.session.commit()
             new_periods = pay_period_admin.extend_pay_periods(
