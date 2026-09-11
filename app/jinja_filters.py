@@ -31,8 +31,8 @@ from app.services.salary_cockpit_service import clean_raise_label
 from app.services.statement_match import (
     CandidateRow,
     MatchProposal,
+    ReviewedDifference,
     as_reviewed,
-    spell_figure,
 )
 from app.utils.dates import month_name, to_display_tz
 
@@ -199,10 +199,19 @@ def stated_difference(proposal: MatchProposal) -> str:
     exempts no shape since the developer's ruling of 2026-08-30, so every
     match states the difference it was reviewed against, and this string is
     read back by
-    :class:`~app.schemas.validation.statements.ReviewedFigureField` on the
+    :class:`~app.schemas.validation.statements.ReviewedDifferenceField` on the
     next request.  ``reviewed_token`` carries the state of one ROW; this
     carries the SUM over them, which is the one figure no per-row guard can
     see being wrong (finding **N-336**).
+
+    **It names no member, and that is the figure's meaning rather than an
+    omission** (plan step ``bank_import:X-gp``).  The consent value carries
+    the member a difference lands on beside the figure, and a proposal is
+    exact, or one line against one row: the first has nothing to land, and
+    the second is answered by ruling **R-GD(a)**'s determinacy.  Written
+    through :attr:`~app.services.statement_match.ReviewedDifference.token`
+    rather than spelling the figure here, so every consent value a surface
+    emits has one writer.
 
     **A filter rather than a property on the proposal**, which is where a
     first version put it.  ``MatchProposal`` already publishes
@@ -225,7 +234,7 @@ def stated_difference(proposal: MatchProposal) -> str:
     Returns:
         Its plain decimal spelling, ``"0.00"`` for the exact and group tiers.
     """
-    return spell_figure(proposal.difference)
+    return ReviewedDifference(figure=proposal.difference).token
 
 
 def register_template_filters(app: Flask) -> None:

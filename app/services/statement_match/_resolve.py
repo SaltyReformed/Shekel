@@ -276,24 +276,25 @@ def resolve_rows(
             "This match names the same row more than once.  Reload the page "
             "and try again; nothing was changed."
         )
-    if (
-        submission.attributed_to is not None
-        and submission.attributed_to not in submission.rows
-    ):
-        # **The attribution is a POINTER into the rows and this is what makes
-        # it one** (plan step ``bank_import:X-gj-3a``).  It is refused HERE,
-        # beside the duplicate-subject refusal above, because both are facts
-        # about the SUBMISSION as a set of rows rather than about any row's
-        # state -- and because refusing it before the offer set is read means
-        # a body naming a row it does not carry never reaches the arithmetic
-        # that would decide the remedy.
+    landed_on = (
+        None if submission.consent is None else submission.consent.on_row
+    )
+    if landed_on is not None and landed_on not in submission.rows:
+        # **The consent's row is a POINTER into the rows and this is what
+        # makes it one** (plan step ``bank_import:X-gj-3a``; one value with
+        # the figure since ``X-gp``).  It is refused HERE, beside the
+        # duplicate-subject refusal above, because both are facts about the
+        # SUBMISSION as a set of rows rather than about any row's state -- and
+        # because refusing it before the offer set is read means a body naming
+        # a row it does not carry never reaches the arithmetic that would
+        # decide the remedy.
         #
         # **Compared as a WHOLE reviewed value rather than by subject.**  The
-        # pane renders the option's value as the row's own token, so the two
-        # fields are one string in any browser; a body whose attribution
-        # carries a different figure or revision from the row it points at is
-        # describing two states of one row, which is finding **N-336**'s shape
-        # with the halves inside one submission.
+        # pane writes the option's value with the row's own token inside it,
+        # so the pointer and the row are one string in any browser; a body
+        # whose consent carries a different figure or revision from the row it
+        # points at is describing two states of one row, which is finding
+        # **N-336**'s shape with the halves inside one submission.
         raise ValidationError(
             "This match says its difference belongs to a row it does not "
             "include.  Reload the page and try again; nothing was changed."

@@ -192,56 +192,12 @@
   </p>
   {% endif %}
 
-  {% if opened.totals and opened.totals.choices %}
-  {# WHERE THE DIFFERENCE GOES, when this match names more than one row.
-     Plan step bank_import:X-gj-3a, rulings R-GD(a) and R-FN.
-
-     THE SERVICE DECIDES WHETHER THIS RENDERS, not a Jinja count: `choices` is
-     empty for a match naming ONE row -- where R-GD(a)'s determinacy already
-     answers the question and there is nothing to pick -- and for a match
-     whose two sides agree, where nothing would be written wherever it landed.
-
-     NO MEMBER IS PRE-SELECTED (R-IU, developer 2026-09-01), on R-HX's reading of
-     what JUSTIFIED means rather than on R-FZ(b): R-HS says R-FZ(b) banned the
-     arbitrary default and never meant a suggestion the app can justify, and
-     R-HX is the one that bounds it -- being the only candidate is not being
-     justified. The app does have a candidate (the member whose figure is
-     computed rather than stored) and no justification, and NO LATER STEP
-     supplies one: X-gj-3b was withdrawn 2026-09-02 (R-JJ) and salary:R18
-     dissolves the question by making one payroll deposit name one row. The first option is R-FN's ordinary row, which is what every
-     group did before this step.
-
-     IT IS INSIDE .rec-match-picks, which is what re-prices: changing where
-     the money lands changes the sentence the consent box carries, and the
-     swap that follows RESETS that box -- which is what changing this means.
-     The values are the very `rows-<line>` tokens above, so the pointer and
-     the row it points at are one string and the door compares them whole.
-
-     THE OPTIONS ARE THE TICKED ROWS in the order `resolve_rows` returns them,
-     which is NOT the order the tick list above renders (that list is a
-     proposal's rows, then the period's candidates or the search's). An
-     earlier version of this comment claimed the two read down the panel the
-     same way; they are different producers with different orders and nothing
-     holds them together. #}
-  <div class="rec-lands">
-    <label class="form-label small text-body-secondary mb-1"
-           for="lands-{{ opened.line.line_id }}">
-      Where the difference goes
-    </label>
-    <select class="form-select form-select-sm"
-            id="lands-{{ opened.line.line_id }}"
-            name="difference_on-{{ opened.line.line_id }}">
-      <option value="">A new row with no category, to categorise later</option>
-      {% for row in opened.totals.choices %}
-      <option value="{{ row | reviewed_token }}"
-              {% if opened.totals.corrects and opened.totals.corrects.kind == row.kind
-                    and opened.totals.corrects.row_id == row.row_id %}selected{% endif %}>
-        {{ row.label }}
-      </option>
-      {% endfor %}
-    </select>
-  </div>
-  {% endif %}
+  {# NO SECOND CONTROL LIVES IN HERE.  A select naming WHERE the difference
+     goes sat inside this wrapper from plan step bank_import:X-gj-3a until
+     X-gp, beside a consent box below whose label was composed from it -- and
+     the door compared only the box's figure, so two acts submitted one
+     consent (R-BI2).  The one control below carries both halves in every
+     option's value, so nothing in here has to re-render it. #}
   </div>
 
   {% if refusal %}
@@ -289,34 +245,88 @@
      three arms and the argument for them.
 
      IT IS OUTSIDE .rec-match-picks, which is the whole of the C2 fix at the
-     top of this file: the consent box's own change event must not replace it.
+     top of this file: the consent control's own change event must not
+     replace it.
 
      `totals` IS None on a REFUSED render, where the route builds this pane
      without pricing anything -- so the arms test it rather than assuming the
      value, which is what a route arm passing None makes necessary. #}
   {% if opened.totals and opened.totals.needs_consent %}
-  <div class="form-check mt-2 mb-0">
-    <input class="form-check-input" type="checkbox"
-           id="residual-{{ opened.line.line_id }}" name="residual-{{ opened.line.line_id }}"
-           value="{{ opened.totals.consent }}">
-    <label class="form-check-label small" for="residual-{{ opened.line.line_id }}">
-      {% if opened.totals.remedy == 'records' %}
-      Record the {{ money(opened.totals.difference) }} difference as a row with no
-      category that you can categorise later.
-      {% elif opened.totals.remedy == 'corrects' %}
-      {# THE ROW'S OWN TWO FIGURES, not the match's two sums, since plan step
-         bank_import:X-gj-3a. For a match naming ONE row they are the same
-         two numbers -- the bank total IS that row's new figure and the app
-         total IS its old one -- so this sentence reads exactly as it did
-         before on every match that already worked. For a GROUP they are not,
-         and quoting the sums would have named a $2,573.43 deposit as the
-         figure written to a $2,473.38 salary row. #}
-      Write {{ money(opened.totals.corrects_to) }} to
-      <strong>{{ opened.totals.corrects.label }}</strong>, in place of the
-      {{ money(opened.totals.corrects.cash_amount) }} your records hold.
-      {% endif %}
-    </label>
-  </div>
+  {# ONE CONTROL WHOSE OPTIONS ARE THE ACTS.  Plan step bank_import:X-gp,
+     ruling R-BI2, superseding R-IV.
+
+     There were TWO controls for one decision from plan step X-gj-3a until
+     this one: a select inside .rec-match-picks naming WHERE the difference
+     goes, and this box, whose value was the FIGURE and whose sentence was
+     composed from that select at draw time.  The door compared only the
+     figure, so leaving the select alone (mint a -$50.00 row) and naming the
+     -$650.00 row (re-price it to -$700.00) submitted the SAME consent -- two
+     acts under one agreement, held apart only by the swap re-rendering this
+     box unticked, which nothing does on the ?open= render.
+
+     Now every act is one option, its sentence says exactly what that act
+     writes, and its value carries the figure AND the member together
+     (`ReviewedDifference`), so the sentence the owner read and the value the
+     door reads are one rendering of one thing.  EVERY FIELD IS THE
+     SERVICE'S: which acts exist, what each writes, and whether the door
+     would refuse one are `HandTotals.options`, and the widget follows
+     `offers_a_choice` -- alternatives are radios, one act is a box the owner
+     can untick.
+
+     NO OPTION IS PRE-SELECTED (R-IU, developer 2026-09-01), on R-HX's
+     reading of what JUSTIFIED means: the app has a candidate for a payroll
+     group and no justification, and no later step supplies one (X-gj-3b
+     withdrawn, R-JJ; salary:R18 dissolves the question).  R-FN's ordinary
+     row is the FIRST option, which is what every group did before X-gj-3a.
+
+     AN OPTION THE DOOR WOULD REFUSE IS DISABLED AND SAYS WHY, in the door's
+     own sentence -- R-HW's shape one control down.  It is the service's
+     fact per option (`refusal`), never a Jinja condition, and it renders
+     because an option that vanished would leave the owner unable to see why
+     a member they can plainly tick is not one the gap can land on.
+
+     THE OPTIONS ARE IN THE ORDER `resolve_rows` RETURNS THE ROWS, which is
+     NOT the order the tick list above renders (that list is a proposal's
+     rows, then the period's candidates or the search's).  Different
+     producers, different orders, and nothing holds them together. #}
+  <fieldset class="rec-consent mt-2 mb-0">
+    {% if opened.totals.offers_a_choice %}
+    <legend class="form-label small text-body-secondary mb-1">
+      What to do with the {{ money(opened.totals.difference) }} difference
+    </legend>
+    {% endif %}
+    {% for option in opened.totals.options %}
+    <div class="form-check">
+      <input class="form-check-input"
+             type="{% if opened.totals.offers_a_choice %}radio{% else %}checkbox{% endif %}"
+             id="consent-{{ opened.line.line_id }}-{{ loop.index }}"
+             name="consent-{{ opened.line.line_id }}"
+             value="{{ option.value }}"
+             {% if option.refusal %}disabled{% endif %}>
+      <label class="form-check-label small"
+             for="consent-{{ opened.line.line_id }}-{{ loop.index }}">
+        {% if option.corrects %}
+        {# THE ROW'S OWN TWO FIGURES, not the match's two sums, since plan step
+           bank_import:X-gj-3a. For a match naming ONE row they are the same
+           two numbers -- the bank total IS that row's new figure and the app
+           total IS its old one -- so this sentence reads exactly as it did
+           before on every match that already worked. For a GROUP they are
+           not, and quoting the sums would have named a $2,573.43 deposit as
+           the figure written to a $2,473.38 salary row. #}
+        Write {{ money(option.corrects_to) }} to
+        <strong>{{ option.corrects.label }}</strong>, in place of the
+        {{ money(option.corrects.cash_amount) }} your records hold.
+        {% else %}
+        Record the {{ money(opened.totals.difference) }} difference as a
+        row with no category that you can categorise later.
+        {% endif %}
+        {% if option.refusal %}
+        <span class="d-block text-body-secondary">{{ option.refusal }}</span>
+        {% endif %}
+      </label>
+    </div>
+    {% endfor %}
+  </fieldset>
   {% elif opened.totals and opened.totals.consent is not none %}
   {# NOTHING TO PERMIT, so no box -- but the figure still travels, so that "a
      match states the difference it was reviewed against" holds with no
@@ -326,7 +336,7 @@
      nothing, and a row that moved under this pane is refused earlier and by
      name (`_resolve._reject_moved_since_review`).  What it buys is one rule
      instead of two. #}
-  <input type="hidden" name="residual-{{ opened.line.line_id }}"
+  <input type="hidden" name="consent-{{ opened.line.line_id }}"
          value="{{ opened.totals.consent }}">
   <p class="small text-body-secondary mt-2 mb-0">
     These add up. Nothing is left over.
@@ -334,16 +344,16 @@
   {% else %}
   <div class="form-check mt-2 mb-0">
     <input class="form-check-input" type="checkbox"
-           id="residual-{{ opened.line.line_id }}" name="residual-{{ opened.line.line_id }}"
+           id="consent-{{ opened.line.line_id }}" name="consent-{{ opened.line.line_id }}"
            value="" disabled>
-    <label class="form-check-label small" for="residual-{{ opened.line.line_id }}">
+    <label class="form-check-label small" for="consent-{{ opened.line.line_id }}">
       {% if opened.totals and opened.totals.remedy == 'refused' %}
       There is nothing to accept while the sentence above stands.
       {% elif opened.re_fetches %}
       Tick the rows this line paid for. If they come to the
       <strong>same total</strong> as the bank, OK records the match. If they
-      <strong>disagree</strong>, the difference appears here and you agree to
-      it before anything is written.
+      <strong>disagree</strong>, the difference appears here and you choose
+      what to do with it before anything is written.
       {% else %}
       {# THE JAVASCRIPT-OFF WORDING, which this pane needed once it had a
          second surface -- exactly the wording its twin on the workbench

@@ -115,8 +115,9 @@
        THEY ARE HIDDEN HERE AND VISIBLE IN THE PANE, and that is one rendering
        each rather than two of one thing: the fragment replaces this element
        whole (hx-target="this", outerHTML), so exactly one `rows-<line>` per
-       row and exactly one `residual-<line>` are in the form at every moment
-       -- these until the rows are looked at, the pane's own controls
+       row is in the form at every moment, and the `consent-<line>` in it is
+       EITHER this hidden figure OR the pane's own control (one box, or one
+       radio per act) -- these until the rows are looked at, the pane's
        afterwards.  They cannot coexist.
 
        THE ROWS MOVED IN HERE at that step and the reason is the re-price.
@@ -129,15 +130,16 @@
     <input type="hidden" name="rows-{{ card.line.line_id }}"
            value="{{ row | reviewed_token }}">
     {% endfor %}
-    <input type="hidden" name="residual-{{ card.line.line_id }}"
+    <input type="hidden" name="consent-{{ card.line.line_id }}"
            value="{{ card.panel.proposal | stated_difference }}">
-    {# NO `difference_on-<line>` HERE, and the asymmetry with the residual
-       above is the rule rather than an omission (plan step
-       bank_import:X-gj-3a). The FIGURE always travels, because R-IA requires
-       every match to state the difference it was reviewed against; WHERE that
-       difference lands is a choice, and not making one is a legal answer that
-       means R-FN's ordinary row. So a card OK'd from the summary without the
-       panel ever being opened does exactly what it did before this step. #}
+    {# THE CONSENT NAMES NO MEMBER HERE, and that is the value's meaning
+       rather than an omission (plan steps bank_import:X-gj-3a and X-gp).
+       The FIGURE always travels, because R-IA requires every match to state
+       the difference it was reviewed against; a proposal is exact or one
+       line against one row, so there is nothing to land or R-GD(a)'s
+       determinacy answers it, and `stated_difference` spells the figure
+       alone.  So a card OK'd from the summary without the panel ever being
+       opened does exactly what it did before either step. #}
     {% endif %}
     <p class="small text-body-secondary mb-0">
       <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>

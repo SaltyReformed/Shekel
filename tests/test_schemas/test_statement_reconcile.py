@@ -75,13 +75,13 @@ class TestNothingIsAnActWithoutItsOwnOK:
             ("verb-7", "match"),
             ("rows-7", "transaction:1:100.00:2"),
             ("rows-7", "transaction:2:2473.38:2"),
-            ("residual-7", "0.04"),
+            ("consent-7", "0.04@transaction:2:2473.38:2"),
         ]))
 
         assert payload["matches"] == [{
             "line_ids": ["7"],
             "rows": ["transaction:1:100.00:2", "transaction:2:2473.38:2"],
-            "residual": "0.04",
+            "consent": "0.04@transaction:2:2473.38:2",
         }]
 
     def test_an_OK_D_income_card_becomes_an_income(self):
@@ -237,23 +237,23 @@ class TestTheMatchReaderIsSharedByThePassAndThePanel:
     def test_an_untouched_consent_is_omitted_rather_than_sent_as_empty(self):
         """The schema's own ``load_default`` is the one statement of absence.
 
-        The panel renders the box ``value=""`` and ``disabled`` in lockstep,
-        so a browser cannot send one -- but a body that does must not 400 the
-        whole pass over a field nobody filled in.
+        The panel renders the scriptless box ``value=""`` and ``disabled`` in
+        lockstep, so a browser cannot send one -- but a body that does must
+        not 400 the whole pass over a field nobody filled in.
         """
         item = reconcile_match_payload(
-            _form([("rows-7", "transaction:1:100.00:2"), ("residual-7", "")]),
+            _form([("rows-7", "transaction:1:100.00:2"), ("consent-7", "")]),
             "7",
         )
 
-        assert "residual" not in item
+        assert "consent" not in item
 
     def test_it_reads_the_SAME_fields_the_pass_does(self):
         """One reader, so the two cannot disagree about a card's rows."""
         body = _form([
             ("ok", "7"), ("verb-7", "match"),
             ("rows-7", "transaction:1:100.00:2"),
-            ("residual-7", "0.04"),
+            ("consent-7", "0.04"),
         ])
 
         assert reconcile_payload(body)[0]["matches"] == [

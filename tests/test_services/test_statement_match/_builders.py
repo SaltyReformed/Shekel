@@ -37,6 +37,7 @@ from app.services.statement_match import (
     PurchaseCreation,
     RuleSubmission,
     ReviewScope,
+    ReviewedDifference,
     ReviewedRow,
     RowKind,
     as_reviewed,
@@ -932,12 +933,23 @@ def a_submission(
             the owner named none (plan step ``bank_import:X-gj-3a``).
 
             **Resolved out of the rows this submission already carries**,
-            which is what the pane does: the select's options ARE the ticked
-            rows, so the pointer and the row it points at are one value.  A
-            pair naming a row this submission does not carry takes the same
-            not-offerable fallback the loop above takes -- deliberately, since
-            the cases asserting the door refuses such a pointer are the ones
-            that need to build it.
+            which is what the pane does: each option's value carries one of
+            the ticked rows' own tokens, so the pointer and the row it points
+            at are one value.  A pair naming a row this submission does not
+            carry takes the same not-offerable fallback the loop above takes
+            -- deliberately, since the cases asserting the door refuses such a
+            pointer are the ones that need to build it.
+
+            **Carried INSIDE the consent beside the figure** since plan step
+            ``bank_import:X-gp`` (:class:`~app.services.statement_match
+            .ReviewedDifference`), so a member with no figure is a shape the
+            wire cannot express and this helper REFUSES rather than builds:
+            a builder that quietly dropped the member would let a case claim
+            it graded *named a member, agreed to nothing* while the door saw
+            neither.
+
+    Raises:
+        AssertionError: When *attributed* is given without *residual*.
 
     Returns:
         The :class:`~app.services.statement_match.MatchSubmission`.
@@ -961,13 +973,20 @@ def a_submission(
             cash_amount=Decimal("0.00"),
             version_id=orm_row.version_id,
         ))
+    assert residual is not None or attributed is None, (
+        "a member cannot be named without a figure: the consent is one value "
+        "carrying both since plan step bank_import:X-gp"
+    )
     return MatchSubmission(
         line_ids=frozenset(line.id for line in lines),
         rows=frozenset(rows),
-        accepted_difference=(
-            None if residual is None else Decimal(str(residual))
+        consent=(
+            None if residual is None
+            else ReviewedDifference(
+                figure=Decimal(str(residual)),
+                on_row=_attribution(rows, attributed),
+            )
         ),
-        attributed_to=_attribution(rows, attributed),
     )
 
 

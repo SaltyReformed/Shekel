@@ -31,8 +31,8 @@ from app.schemas.validation._helpers import (
 from app.services.statement_import import supported_sources
 from app.services.statement_match import (
     NEW_ENVELOPE,
+    ReviewedDifference,
     ReviewedRow,
-    parse_figure,
 )
 from app.utils.digit_strings import parse_row_id
 
@@ -223,15 +223,22 @@ class ReviewedRowField(fields.Field):
             raise self.make_error("invalid") from exc
 
 
-class ReviewedFigureField(fields.Field):
-    """One money figure a submission carries, in the format this screen emits.
+class ReviewedDifferenceField(fields.Field):
+    """What a match's consent control submitted: the difference it was
+    reviewed against, and the member it lands on, AS THE SCREEN SHOWED THEM.
 
     :class:`ReviewedRowField`'s sibling and, since plan step
-    ``bank_import:X-f6d-4``, its co-reader: both go through
-    :func:`~app.services.statement_match._submission.parse_figure`, so the two
-    money strings this one form submits are strict in exactly the same way.
-    See :attr:`StatementMatchSchema.residual` for what having two strictnesses
-    measurably cost.
+    ``bank_import:X-gp``, its co-reader for BOTH halves of the value: the
+    figure goes through
+    :func:`~app.services.statement_match._submission.parse_figure` and the
+    row through :meth:`~app.services.statement_match.ReviewedRow.from_token`,
+    inside :meth:`~app.services.statement_match.ReviewedDifference
+    .from_token`, so nothing submitted here is graded more laxly than the same
+    thing submitted in ``rows``.  *It was ``ReviewedFigureField`` and read the
+    figure alone until that step, beside a second field reading the member;
+    see :attr:`StatementMatchSchema.consent` for why one value replaced two.*
+    See :attr:`StatementMatchSchema.consent` too for what having two
+    strictnesses on one form measurably cost.
 
     ``None`` passes through untouched, because absence is a state the schema
     names (``load_default``) rather than a spelling this reads.
@@ -242,7 +249,7 @@ class ReviewedFigureField(fields.Field):
     }
 
     def _deserialize(self, value, attr, data, **kwargs):
-        """Return the figure *value* names.
+        """Return the reviewed difference *value* names.
 
         Args:
             value: The submitted string.
@@ -251,15 +258,13 @@ class ReviewedFigureField(fields.Field):
             **kwargs: Marshmallow's contract, unused.
 
         Returns:
-            Its :class:`~decimal.Decimal`.
+            The :class:`~app.services.statement_match.ReviewedDifference`.
 
         Raises:
-            ValidationError: When *value* is not a figure this app emitted.
+            ValidationError: When *value* is not a token this app emitted.
         """
-        if not isinstance(value, str):
-            raise self.make_error("invalid")
         try:
-            return parse_figure(value)
+            return ReviewedDifference.from_token(value)
         except ValueError as exc:
             raise self.make_error("invalid") from exc
 
@@ -366,8 +371,24 @@ class StatementMatchSchema(BaseSchema):
     #: ceiling, for one reason, so they are spelled the same way.
     line_ids = fields.List(RowId(), required=False, load_default=list)
     rows = fields.List(ReviewedRowField(), required=False, load_default=list)
-    #: The DIFFERENCE this match states it was REVIEWED against (plan step
-    #: ``bank_import:X-f6d-4``, ruling **R-FN**).
+    #: What this match's CONSENT control submitted: the DIFFERENCE it states
+    #: it was REVIEWED against, and the member it lands on, as ONE value
+    #: (plan steps ``bank_import:X-f6d-4`` and ``X-gp``; rulings **R-FN** and
+    #: **R-BI2**).
+    #:
+    #: **ONE field where there were two, and that is the whole of plan step
+    #: X-gp.**  This was ``residual``, the figure, beside ``difference_on``,
+    #: the member, until then -- and the door compared only the figure, so
+    #: the consent rendered under *record it as a row with no category* could
+    #: be submitted beside a member that re-priced a budget row instead: two
+    #: acts under one agreement, which ruling **R-IV** had accepted on the
+    #: strength of a DOM event and ``X-gi-2a`` falsified.  The pane draws one
+    #: control whose options ARE the acts and each option's value is this
+    #: field's whole value, so there is no second field left to pair
+    #: differently.  **The row half is graded by exactly the reader a member
+    #: of ``rows`` is** -- :class:`ReviewedRowField`'s own -- so a body cannot
+    #: land a difference on something the row list could not have contained,
+    #: and ``resolve_rows`` compares the two as whole reviewed values.
     #:
     #: **It used to be absent on every proposal the app itself offers**, and
     #: plan step ``bank_import:X-gj-1b`` inverted that: the accept door
@@ -379,13 +400,17 @@ class StatementMatchSchema(BaseSchema):
     #: would be
     #: (``app.services.statement_match._variance._reject_unaccepted_difference``).
     #: A ``required=True`` here would turn a scriptless owner's balanced
-    #: hand-built group into a 400 over the whole pass.
+    #: hand-built group into a 400 over the whole pass; and a value naming NO
+    #: member is what every surface but the Reconcile card's MATCH pane
+    #: sends, meaning what an absent attribution always meant -- a match
+    #: naming ONE row is answered by ruling **R-GD(a)**'s determinacy, and a
+    #: group naming no member mints **R-FN**'s ordinary row.
     #:
     #: **Read through the service's own strict reader, exactly as
-    #: :class:`ReviewedRowField` beside it is.**  A first version declared it
-    #: ``fields.Decimal(places=2)``, and an adversarial review measured what
-    #: that cost on 2026-08-23: marshmallow quantizes with the default context
-    #: rounding, which is ``ROUND_HALF_EVEN`` -- the mode
+    #: :class:`ReviewedRowField` beside it is.**  A first version declared the
+    #: figure ``fields.Decimal(places=2)``, and an adversarial review measured
+    #: what that cost on 2026-08-23: marshmallow quantizes with the default
+    #: context rounding, which is ``ROUND_HALF_EVEN`` -- the mode
     #: :mod:`app.utils.money` says must never be reached implicitly through a
     #: bare ``.quantize`` -- so ``"0.054"`` was silently REPAIRED into
     #: agreement with a true difference of ``0.05``, on the one field the
@@ -403,24 +428,7 @@ class StatementMatchSchema(BaseSchema):
     #: the sum it must bound actually exists; a bound here could only refuse a
     #: figure the door was going to refuse anyway, since nothing is written
     #: unless this equals the door's own derivation.
-    residual = ReviewedFigureField(required=False, load_default=None)
-    #: WHICH member of this match the difference belongs to (plan step
-    #: ``bank_import:X-gj-3a``), as that row's own reviewed token.
-    #:
-    #: **The same field type as a member of ``rows`` above, deliberately.**
-    #: The control's value IS one of the row tokens the same body carries, so
-    #: reading it through a second, looser field would let a body attribute a
-    #: difference to something the row list could not have contained -- and
-    #: ``resolve_rows`` compares the two as whole values, which only holds if
-    #: both were read by one reader.
-    #:
-    #: ``load_default=None`` is what every surface but the Reconcile card's
-    #: MATCH pane relies on: a match naming ONE row needs no attribution
-    #: (ruling **R-GD(a)**), and a match naming several with none named is the
-    #: shape that mints **R-FN**'s ordinary row, which is what this screen did
-    #: for every group before this step.  A ``required=True`` here would 400
-    #: the whole pass for a hand-built group nobody had to attribute.
-    difference_on = ReviewedRowField(required=False, load_default=None)
+    consent = ReviewedDifferenceField(required=False, load_default=None)
 
 
 class StatementMatchReleaseSchema(BaseSchema):
