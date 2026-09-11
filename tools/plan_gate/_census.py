@@ -10,13 +10,21 @@ lives in every row that carries a number.
 
 **Measured before the rule was written**, so the rule is not a guess: of the
 censuses in live rows on 2026-09-11, ``X-al`` said fifteen ``duplicate-code``
-disables against 17, ``X-ah`` said 34 ``type=int`` sites against 36, ``X-bm``
-said seven callers lacked ``pricing_load_options`` against 5, ``X-be`` named a
-module at the 1000-line ceiling that had dropped to 857 while missing one that
-had joined it, and ``X-i1`` counted FOUR context inputs, one of which
+disables against 16, ``X-ba`` said twenty-six id accessors against 27, ``X-be``
+named a module at the 1000-line ceiling that had dropped to 857 while missing
+one that had joined it, and ``X-i1`` counted FOUR context inputs, one of which
 (``live_amount_overrides``) another step had already deleted -- ``0`` matches in
 ``app/`` and ``tests/``.  Every one of those rows was correctly OPEN; what had
 rotted was what each said about the code.
+
+**THIS DOCSTRING'S FIRST DRAFT CARRIED TWO WRONG NUMBERS ITSELF**, in a module
+whose whole subject is stale counts: it said 17 rather than 16, and reported
+``X-ah``'s 34 as stale against 36.  Both came from grepping a NAME, which counts
+PROSE -- four docstrings that discuss the ``type=int`` census, and one narrating
+a ``duplicate-code`` disable ``X-au-d`` had removed.  ``X-ah``'s row was right
+all along.  Nothing grades a docstring, which is exactly why the ``code`` and
+``comments`` filters below exist and why this paragraph is here rather than a
+silent edit.
 
 **The prior art is the corpus's own**, at
 ``implementation_plan_pay_calendar.md``: *"A list of line numbers in a planning
@@ -34,25 +42,31 @@ document says can run.
 """
 from __future__ import annotations
 
+import io
 import re
+import tokenize
 from pathlib import Path
 
 import _registry as registry
+import _rulings as rulings
 
 #: Cited by every message below, so a failure sends the reader to the rule.
 _RULE = "conventions.md rule 6"
 
 #: The marker, as it reads inline in a row:
 #:
-#:     (census 17 lines `pylint: *disable=[^#]*duplicate-code` in `app/**/*.py`)
+#:     (census 16 comments `pylint: *disable=[^#]*duplicate-code` in `app/**/*.py`)
 #:
-#: ``lines`` counts matching LINES and ``files`` counts matching FILES, because
-#: a census says one or the other and conflating them is how "20 branches in 12
-#: modules" becomes one number.  The count lives INSIDE the marker so that the
-#: number and the thing that checks it cannot drift apart -- a number in the
-#: prose beside a marker would be rule 14's two homes again.
+#: The UNIT is ``lines`` or ``files``, because a census says one or the other
+#: and conflating them is how "20 branches in 12 modules" becomes one number.
+#: An optional FILTER, ``code`` or ``comments``, precedes it and restricts the
+#: walk to that token class -- a name-grep counts PROSE otherwise, which is what
+#: made the first two markers written under this rule both wrong.  The count
+#: lives INSIDE the marker so that the number and the thing that checks it
+#: cannot drift apart -- a number in the prose beside one would be rule 14's
+#: two homes again.
 MARKER = re.compile(
-    r"\(census (?P<count>\d+) (?P<mode>lines|files) "
+    r"\(census (?P<count>\d+) (?:(?P<filter>code|comments) )?(?P<unit>lines|files) "
     r"`(?P<pattern>[^`]+)` in `(?P<glob>[^`]+)`\)",
 )
 
@@ -83,7 +97,71 @@ def census_paths(glob: str) -> list[Path] | None:
     )
 
 
-def census_count(pattern: re.Pattern[str], paths: list[Path], mode: str) -> int:
+def _python_text(source: str, mode: str) -> str:
+    """Return the source with everything but one token class blanked out.
+
+    **A name-grep cannot tell code from prose**, which `lessons.md` records as a
+    paid-for lesson and which the first two markers written under rule 6 both
+    walked into: ``X-ah``'s census of ``type=int`` counted four DOCSTRINGS that
+    discuss the census, and ``X-al``'s census of ``duplicate-code`` disables
+    counted a docstring narrating a disable that had been REMOVED.  Both read as
+    precise and both were wrong, in the direction that invents work.
+
+    ``code`` blanks COMMENT and STRING spans, so a docstring mentioning a symbol
+    is not a use of it and a trailing comment cannot satisfy a census of the
+    statement beside it.  ``comments`` blanks everything else, which is what a
+    census of ``# pylint: disable=...`` directives actually means -- the
+    directive IS a comment, and prose about one is a string.
+
+    **Spans are blanked rather than lines dropped**, so line NUMBERS are
+    preserved: the count stays "matching lines", the same unit ``lines`` uses,
+    and two identical statements in one file still count twice.
+
+    Returns:
+        The source with the unwanted token spans replaced by spaces; the source
+        unchanged when it will not tokenize, so a syntax error degrades to the
+        ``lines`` behaviour rather than silently reporting zero.
+    """
+    lines = source.splitlines()
+    wanted = (tokenize.COMMENT,) if mode == "comments" else (tokenize.STRING, tokenize.COMMENT)
+    spans = []
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            hit = token.type in wanted
+            if hit if mode == "code" else not hit:
+                spans.append(token.start + token.end)
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return source
+    for srow, scol, erow, ecol in spans:
+        for row in range(srow, min(erow, len(lines)) + 1):
+            if row - 1 >= len(lines):
+                continue
+            line = lines[row - 1]
+            lo = scol if row == srow else 0
+            hi = ecol if row == erow else len(line)
+            lines[row - 1] = line[:lo] + " " * max(0, hi - lo) + line[hi:]
+    return "\n".join(lines)
+
+
+def census_unreadable(paths: list[Path]) -> list[Path]:
+    """Return the files the walk cannot decode.
+
+    A skipped file makes the census UNDER-report while still reading as precise,
+    which is the defect this whole module is about wearing different clothes.
+    Nothing under the roots fails to decode today, so this reports rather than
+    guesses.
+    """
+    bad = []
+    for path in paths:
+        try:
+            path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            bad.append(path)
+    return bad
+
+
+def census_count(pattern: re.Pattern[str], paths: list[Path], unit: str,
+                 token_filter: str | None = None) -> int:
     """Return matching lines, or matching files, across *paths*.
 
     **The walk is LINE-based**, so a pattern may not span lines: a census of
@@ -101,9 +179,32 @@ def census_count(pattern: re.Pattern[str], paths: list[Path], mode: str) -> int:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
+        if token_filter:
+            text = _python_text(text, token_filter)
         hits = sum(1 for line in text.splitlines() if pattern.search(line))
-        total += min(hits, 1) if mode == "files" else hits
+        total += min(hits, 1) if unit == "files" else hits
     return total
+
+
+def _documents() -> list[Path]:
+    """Every live document a census marker may appear in.
+
+    **Rule 6 says the sentence binds EVERY ROW, so the arm reads every registry
+    that HOLDS rows** -- not the three it started with.  `rulings.md` carries at
+    least one census of its own (`R-R54`'s locale sites), and an arm scoped to
+    some documents is rule 3's recorded failure verbatim: *"a rule stated for
+    one artifact and graded on one artifact is a rule the second artifact does
+    not have."*
+    """
+    return [
+        registry.STEPS,
+        registry.LEDGER,
+        rulings.RULINGS,
+        registry.PLANS / "conventions.md",
+        registry.PLANS / "verification.md",
+        registry.PLANS / "lessons.md",
+        *registry.ARC_DOCS.values(),
+    ]
 
 
 def census_violations() -> list[str]:
@@ -114,10 +215,10 @@ def census_violations() -> list[str]:
         illegal or matches nothing, or whose pattern will not compile.
     """
     problems: list[str] = []
-    documents = [registry.STEPS, registry.LEDGER, *registry.ARC_DOCS.values()]
-    for document in documents:
+    for document in _documents():
         for match in MARKER.finditer(document.read_text(encoding="utf-8")):
-            stated, mode = int(match["count"]), match["mode"]
+            stated, unit, token_filter = (
+                int(match["count"]), match["unit"], match["filter"])
             where = f"{document.name}: census `{match['pattern']}` in `{match['glob']}`"
             paths = census_paths(match["glob"])
             if paths is None:
@@ -134,14 +235,30 @@ def census_violations() -> list[str]:
                 )
                 continue
             try:
-                pattern = re.compile(match["pattern"])
+                # A marker lives in a markdown TABLE row, where a literal `|`
+                # must be written `\|` or it splits the row -- and `re` reads
+                # `\|` as a LITERAL pipe, so alternation was unusable and a
+                # pattern needing it would have measured nothing and committed
+                # green as `(census 0 ...)`.  This is the one place the two
+                # grammars meet, so this is where the escape is undone.
+                pattern = re.compile(match["pattern"].replace(r"\|", "|"))
             except re.error as exc:
                 problems.append(f"{where} will not compile: {exc} ({_RULE})")
                 continue
-            measured = census_count(pattern, paths, mode)
+            unreadable = census_unreadable(paths)
+            if unreadable:
+                problems.append(
+                    f"{where} cannot read {len(unreadable)} of its files "
+                    f"({unreadable[0].name} first).  A skipped file makes the "
+                    f"count UNDER-report while reading as precise ({_RULE})",
+                )
+                continue
+            measured = census_count(pattern, paths, unit, token_filter)
             if measured != stated:
                 problems.append(
-                    f"{where} says {stated} {mode} and the code holds {measured}.  "
+                    f"{where} says {stated} "
+                    f"{(token_filter + ' ') if token_filter else ''}{unit} and the code "
+                    f"holds {measured}.  "
                     f"A census is RE-RUN, never remembered: this row has been "
                     f"telling a reader something about the code that stopped "
                     f"being true ({_RULE})",
@@ -157,7 +274,6 @@ def documents_carrying_a_census() -> int:
     matches nothing reads as "no census is claimed" and passes, which is rule
     3's own recorded failure mode one register down.
     """
-    documents = [registry.STEPS, registry.LEDGER, *registry.ARC_DOCS.values()]
     return sum(
-        1 for d in documents if MARKER.search(d.read_text(encoding="utf-8"))
+        1 for d in _documents() if MARKER.search(d.read_text(encoding="utf-8"))
     )

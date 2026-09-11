@@ -49,8 +49,77 @@ class TestTheArmIsGradingSomething:
         assert not _census.census_violations()
 
 
+@pytest.fixture(name="fixture_tree")
+def _fixture_tree(tmp_path, monkeypatch):
+    """Plant a HAND-COUNTED Python tree under a fake `app/` and point the arm at it.
+
+    **The counts below are counted by eye, not by `census_count`.**  Every
+    earlier control derived its expectation by calling the very function it was
+    grading, so a miscount moved both sides together and stayed green -- which
+    `lessons.md` records as *"a census and a gate can be blind the same way, and
+    then they confirm each other"*.
+
+    It is also SYNTHETIC on purpose.  The first drafts pinned
+    ``transfer_id is not None`` and ``app/ref_cache/_accessors.py``, which are
+    exactly what plan steps `X-bi-6` and `X-ba` exist to DELETE: both controls
+    would have failed on a correct edit, the pinned-data failure ``_staging``
+    records four times over and which this package keeps re-paying.
+    """
+    app = tmp_path / "app"
+    (app / "pkg").mkdir(parents=True)
+    # 3 CODE lines hold NEEDLE, 2 COMMENT lines do, 2 STRING lines do.
+    (app / "one.py").write_text(
+        '"""A docstring mentioning NEEDLE, which is PROSE and not a use."""\n'
+        "NEEDLE = 1\n"
+        "x = NEEDLE  # NEEDLE in a comment\n"
+        "y = 2  # another NEEDLE comment\n"
+        "z = 'NEEDLE inside a string literal'\n",
+        encoding="utf-8",
+    )
+    # 1 CODE line, 0 comments, 0 strings. A second FILE, so files != lines.
+    (app / "pkg" / "two.py").write_text("NEEDLE = 2\n", encoding="utf-8")
+    # No NEEDLE at all, so it must not count as a file.
+    (app / "pkg" / "three.py").write_text("OTHER = 3\n", encoding="utf-8")
+    monkeypatch.setattr(registry, "REPO", tmp_path)
+    return {"code lines": 3, "code files": 2, "comments lines": 2, "lines": 6, "files": 2}
+
+
+class TestTheWalkCountsWhatItSays:
+    """`census_count` against a tree whose every number was counted by eye."""
+
+    @pytest.mark.parametrize(
+        "spec", ["code lines", "code files", "comments lines", "lines", "files"],
+    )
+    def test_each_unit_and_filter_matches_the_hand_count(self, fixture_tree, spec):
+        """The arm's answer equals the number a human counted for that mode."""
+        token_filter, _, unit = spec.rpartition(" ")
+        paths = _census.census_paths("app/**/*.py")
+        measured = _census.census_count(
+            re.compile("NEEDLE"), paths, unit, token_filter or None,
+        )
+        assert measured == fixture_tree[spec], (spec, measured, fixture_tree[spec])
+
+    def test_code_excludes_prose_and_comments_excludes_code(self, fixture_tree):
+        """The two filters disagree, which is the whole reason they exist.
+
+        `X-ah` counted four docstrings discussing its own census as uses, and
+        `X-al` counted a docstring narrating a disable that had been REMOVED.
+        Both read as precise; both invented work.
+        """
+        paths = _census.census_paths("app/**/*.py")
+        raw = _census.census_count(re.compile("NEEDLE"), paths, "lines")
+        code = _census.census_count(re.compile("NEEDLE"), paths, "lines", "code")
+        comments = _census.census_count(re.compile("NEEDLE"), paths, "lines", "comments")
+        assert raw > code > comments, (raw, code, comments)
+        assert raw == fixture_tree["lines"] and code + comments < raw
+
+
 class TestACensusIsReRunRatherThanRemembered:
     """The arm walks the code, so a marker cannot disagree with it and survive."""
+
+    def test_the_live_corpus_is_clean(self):
+        """Every marker in the live documents re-runs to the number it states."""
+        assert not _census.census_violations()
 
     def test_the_control_fires_on_a_count_the_code_has_moved_past(self, stage_census):
         """A marker whose number is wrong is refused, with both figures named."""
@@ -58,30 +127,11 @@ class TestACensusIsReRunRatherThanRemembered:
         problems = _census.census_violations()
         assert any("says 99999 lines and the code holds" in p for p in problems), problems
 
-    def test_a_correct_count_passes(self, stage_census):
-        """The same marker, measured rather than invented, is accepted.
-
-        The pair is what proves the arm discriminates: one number apart, and it
-        must answer differently.
-        """
-        paths = _census.census_paths("app/ref_cache/_accessors.py")
-        true = _census.census_count(re.compile(r"^def [a-z]"), paths, "lines")
-        stage_census(f"(census {true} lines `^def [a-z]` in `app/ref_cache/_accessors.py`)")
-        assert not _census.census_violations()
-
-    def test_files_and_lines_are_told_apart(self, stage_census):
-        """`files` counts modules and `lines` counts sites, and they differ here.
-
-        ``transfer_id is not None`` is the live specimen behind `X-bi-6`: 20
-        sites across 12 modules, which is the conflation rule 6 names.
-        """
-        glob, pattern = "app/**/*.py", re.compile("transfer_id is not None")
-        paths = _census.census_paths(glob)
-        lines = _census.census_count(pattern, paths, "lines")
-        files = _census.census_count(pattern, paths, "files")
-        assert lines > files, (lines, files)
-        stage_census(f"(census {files} lines `transfer_id is not None` in `{glob}`)")
-        assert _census.census_violations()
+    def test_a_filtered_marker_reports_its_filter(self, stage_census):
+        """A wrong `code`/`comments` marker names the filter in its message."""
+        stage_census("(census 99999 code lines `def ` in `app/**/*.py`)")
+        problems = _census.census_violations()
+        assert any("says 99999 code lines" in p for p in problems), problems
 
 
 class TestACensusMayNotReachOutsideTheCode:
@@ -98,6 +148,25 @@ class TestACensusMayNotReachOutsideTheCode:
         stage_census(f"(census 1 lines `x` in `{glob}`)")
         problems = _census.census_violations()
         assert any("names a path outside" in p for p in problems), (glob, problems)
+
+    def test_a_symlink_out_of_the_tree_is_not_walked(self, tmp_path, monkeypatch):
+        """A FILE symlink under `app/` that points outside is excluded.
+
+        The four globs above are all refused by the leading-slash, `..` or
+        `_ROOTS` arms before containment is consulted, so this is the only
+        control that reaches `p.resolve().is_relative_to(root)`. CPython's `**`
+        does not descend symlinked DIRECTORIES, which leaves a symlinked file as
+        the reachable case.
+        """
+        (tmp_path / "app").mkdir()
+        outside = tmp_path.parent / f"outside_{tmp_path.name}.py"
+        outside.write_text("SECRET = 1\n", encoding="utf-8")
+        (tmp_path / "app" / "linked.py").symlink_to(outside)
+        (tmp_path / "app" / "real.py").write_text("SECRET = 2\n", encoding="utf-8")
+        monkeypatch.setattr(registry, "REPO", tmp_path)
+        paths = _census.census_paths("app/**/*.py")
+        assert [p.name for p in paths] == ["real.py"], paths
+        assert _census.census_count(re.compile("SECRET"), paths, "lines") == 1
 
     def test_a_glob_matching_no_file_is_refused(self, stage_census):
         """A census over nothing reports 0, which reads as a closed finding."""

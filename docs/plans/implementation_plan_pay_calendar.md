@@ -74,15 +74,22 @@ disagreeing with `start_date` order is the balance resolver walking money out of
 Because the schema cannot make them agree, the application grew
 **five separate runtime fences that all police the same functional dependency**:
 
-| fence | cite |
-|---|---|
-| `_reject_overlapping_batch` -- one-directional, which IS row P2 | `pay_period_service.py:87-130` |
-| `PeriodCalendar.__post_init__` -- the same property at the value boundary | `recurrence/_calendar.py:162-182` |
-| `_pp_assert_structure` -- the same property in the test suite | `tests/_test_helpers.py:3367-3395` |
-| `integrity_check` BA-03 / BA-04 -- the same property in weekly SQL | `scripts/integrity_check.py:353-376` |
-| `uq_pay_periods_user_index` + `ck_pay_periods_date_order` | the schema |
+**FOUR OF THE FIVE ARE ALREADY GONE, and `C4-c` (`c703e1c7`) is what took them** -- which is this
+section's own argument arriving, not a correction to it. Re-derive rather than re-read: the table
+below once carried five line-range cites and every one of them had rotted by 2026-09-11.
 
-Not one of them would exist under the normalized model, because none of them would have a subject.
+| fence | where it stood | now |
+|---|---|---|
+| `_reject_overlapping_batch` -- one-directional, which IS row P2 | `pay_period_service.py` | DELETED; the file names it in prose only |
+| `PeriodCalendar.__post_init__` -- the same property at the value boundary | `recurrence/_calendar.py` | the module MOVED to `pay_calendar/_calendar.py`; the guard survives |
+| `_pp_assert_structure` -- the same property in the test suite | `tests/_test_helpers.py` | DELETED |
+| `integrity_check` BA-03 / BA-04 -- the same property in weekly SQL | `scripts/integrity_check.py` | DELETED at `C4-c` and NOT replaced, which that file says at its own `:331` |
+| `uq_pay_periods_user_index` + `ck_pay_periods_date_order` | the schema | both DROPPED; `uq_pay_periods_user_start` is what stands |
+
+Regenerate with `grep -rn '_reject_overlapping_batch\|_pp_assert_structure\|BA-03\|uq_pay_periods_user' app/ tests/ scripts/`.
+Not one of them would exist under the normalized model, because none would have a subject -- and the
+four that have gone went exactly that way, by their subject being removed rather than by being
+argued with.
 
 ## 2. Evidence
 

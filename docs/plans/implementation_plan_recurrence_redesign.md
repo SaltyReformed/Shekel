@@ -592,18 +592,21 @@ guarded on the deferring placement precisely so a LEAD cannot silently inherit i
 `fires_on_day_of_month` stays `False` for it -- so its rows are dated from the funding payday, the
 same deliberate state the deferring placement carries under **D26**. Closes **D40**.
 
-- [ ] **R12 -- the deploy script's refusals get a test, and the image pins its locale.**
+- [ ] **R12 -- the image pins its locale.**
 **It also takes F-15** (**R-R54**, 2026-09-03): month names would follow the process locale if
 anything ever called `setlocale` -- nothing does, `$0.00` -- and ONE line, `LC_ALL` pinned in the
-image with a startup assertion, covers all 109 sites and every future one; it lands with the deploy
-predicates because that is where the image is asserted.
+image with a startup assertion, covers every site and every future one. The site COUNT is
+**R-R54**'s and is stated there, not restated here; it is not reproducible by any pattern this
+row could name, which rule 6 says is a reason to state no total.
 **Opened at plan step R9, by two independent adversarial reviewers of it.** R-F8 built
 `deploy/shekel-deploy.sh`'s two predicates -- `preflight_migrations`, which refuses a TARGET image
 that cannot resolve the database's stamp, and `repin_is_safe`, which after a failure decides whether
 re-pinning the previous image recovers or kills. Ruling **R-R27** rests R9's one-release drop of
 `ref.recurrence_patterns` on the second of those, and R9 deleted `TestDeliberateRefSeedSurplus`,
-which was the last EXECUTABLE statement of the hazard that refusal now covers. An executable guard
-was replaced by an unexercised one.
+which was the last EXECUTABLE statement of the hazard that refusal now covers. **That sentence
+USED to end "an executable guard was replaced by an unexercised one", and it was already false
+when written**: `repin_is_safe` is exercised by `test_it_refuses_and_leaves_the_pin_at_the_new_digest`
+and `test_a_compose_failure_also_refuses`, both of which observe the refusal AND the pin.
 
 **THE SCRIPT IS DRIVEN, and this paragraph said otherwise for 25 days.**
 `tests/test_deploy/test_shekel_deploy_behaviour.py` shells out to the real

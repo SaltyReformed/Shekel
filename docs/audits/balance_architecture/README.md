@@ -1221,13 +1221,15 @@ section 4, under their unchanged ids.*
   lines, and the repetition is what took the module past pylint's 1,000-line ceiling with four
   lines of headroom -- `bank_import:X-f6e-1` SPLIT it into a package to buy room without touching a
   public name, which is a floor rather than the fix.
-  **The census, measured 2026-08-23 and not to be re-taken**: 26 canonical accessors plus five that
-  are not (`transaction_type_is_income`, `acct_category_member`, `acct_type_icon`,
-  `acct_type_max_term`, `ledger_class_is_debit_normal`); **`acct_type_icon` and
-  `acct_type_max_term` have 0 references in `app/`, `tests/`, `scripts/` or `tools/`** and are
-  candidates for DELETION rather than folding -- with them the `_cache.acct_type_meta` map
-  `init()` populates to feed them. 98 modules `from app import ref_cache`; none reaches a private
-  name through it, and none uses the `from app.ref_cache import <name>` form.
+  **The census is RE-RUN, not remembered** -- it read "26 canonical accessors plus five, measured
+  2026-08-23 and not to be re-taken" until 2026-09-11, by which point it was 27 plus seven and one
+  of its claims was false. Canonical: (census 27 lines `^def [a-z_]*_id\(` in
+  `app/ref_cache/_accessors.py`). **`acct_type_icon` and `acct_type_max_term` have no PRODUCTION
+  caller** (census 0 code lines `acct_type_(icon\|max_term)` in `app/routes/**/*.py`) and are
+  candidates for DELETION rather than folding -- with them the `_cache.acct_type_meta` map `init()`
+  populates to feed them. They are NOT unreferenced, which this paragraph used to say: two tests
+  assert each one exists, and those go with the deletion. `from app import ref_cache` reaches no
+  private name and nothing uses the `from app.ref_cache import <name>` form.
   **What the migration owes**: the per-accessor rationale several docstrings carry is not noise --
   `raise_type_id` names the producer it serves and the ruling behind it -- so the census decides
   per function whether its prose moves to the ENUM, where the meaning belongs. It rewrites a
