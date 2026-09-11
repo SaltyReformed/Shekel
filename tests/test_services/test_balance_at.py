@@ -1040,15 +1040,15 @@ class TestAFeedIsTheSameWhoeverItIsLoadedBeside:
             alone = _contribution_inputs_for_account(checking, ctx)
             batched = _contribution_inputs_for_accounts([checking, roth], ctx)
 
-            # Non-vacuity: the batch really did price a feed to hand out.
-            # Stated on the priced MAP since plan step salary:S3-e-1 deleted
-            # ``models_employee``.  It is the SAME claim that property made --
-            # it was ``any(amount > 0)`` over exactly this map -- and a
-            # stronger one than the surviving ``is_payroll_linked`` would
-            # make, which is why the map and not the flag is asserted here.
+            # Non-vacuity: the batch really did hand out a feed that prices.
+            # Asked of the feed over the pass's saved periods since plan step
+            # salary:S3-e-2 (it was ``any(amount > 0)`` over a priced MAP,
+            # which S3-e-1 put here when it deleted ``models_employee``).  A
+            # stronger claim than the surviving ``is_payroll_linked`` would
+            # make, which is why the prices and not the flag are asserted.
             assert any(
-                amount > 0
-                for amount in batched[roth.id].feed.employee_by_payday.values()
+                batched[roth.id].feed.employee_at(period) > 0
+                for period in ctx.reported_periods()
             )
             # The arm: the account that cannot consume one carries none, in
             # BOTH shapes -- so the two reads are the same object's worth of
@@ -1969,12 +1969,13 @@ class TestInvestmentContributions:
                 ),
             )
             assert with_ded == expected
-            # Non-vacuity: the feed really did price the deduction.  On the
-            # priced MAP since plan step salary:S3-e-1 deleted
-            # ``models_employee``; the property was this predicate.
+            # Non-vacuity: the feed really does price the deduction.  Asked
+            # over the pass's saved periods since plan step salary:S3-e-2 (it
+            # was ``any(amount > 0)`` over a priced MAP, put here at S3-e-1
+            # when ``models_employee`` went; the property was this predicate).
             assert any(
-                amount > 0
-                for amount in feeds_for_inv.employee_by_payday.values()
+                feeds_for_inv.employee_at(period) > 0
+                for period in after_ctx.reported_periods()
             )
 
             # Scope: a non-investment account in the same batch is untouched.

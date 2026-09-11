@@ -32,6 +32,8 @@ applied to the third and last input that was still arriving raw.
 """
 
 import logging
+from collections.abc import Callable
+from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, subqueryload
 
@@ -48,7 +50,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.income_service import PaycheckPricing
+from app.services.income_service import PaycheckPricing, ProfilePaychecks
 from app.services.cash_ledger import AmountBasis, contributions_by_id
 from app.services.investment_projection import (
     AccountPayrollFeed,
@@ -57,6 +59,7 @@ from app.services.investment_projection import (
     ShadowContributions,
     calculate_investment_inputs,
 )
+from app.services.pay_calendar import DerivedPeriod
 from app.utils.money import ZERO
 from app.utils.balance_predicates import status_contributes_to_balance
 
@@ -431,17 +434,31 @@ def load_payroll_feeds(
     account_ids: "list[int]",
     params_by_account: "dict[int, InvestmentParams]",
 ) -> "dict[int, AccountPayrollFeed]":
-    """Price each account's payroll feed through the PAYCHECK ENGINE.
+    """Build each account's payroll feed over the PAYCHECK ENGINE's pricer.
 
     **The producer plan step salary:R14-b puts in place of the feed's own
     arithmetic** (ruling **R-SAL2**).  What a payroll deduction takes from a
     paycheck, and what gross an employer contribution is a percentage of, are
     both facts the paycheck engine establishes when it prices the paycheck.
-    This asks :class:`~app.services.income_service.PaycheckPricing` -- the
-    ONE spelling of a profile's projection since ``salary:R14-a`` -- for each
-    profile that funds any of these accounts, and folds the resulting
-    :class:`~app.services.paycheck_calculator.DeductionLine`\\ s by the
+    This takes :class:`~app.services.income_service.PaycheckPricing` -- the
+    ONE spelling of a profile's projection since ``salary:R14-a`` -- and hands
+    each account two RESOLVERS closed over the pricers of the profiles that
+    fund it, each folding the
+    :class:`~app.services.paycheck_calculator.DeductionLine`\\ s of the
+    paycheck priced for the period it is asked about by the
     ``target_account_id`` they already carry.
+
+    **It prices NOTHING here, since plan step salary:S3-e-2** (ruling
+    **R-SAL15**).  It priced the owner's whole saved window up front and
+    handed the feed two dictionaries, which is why the feed had to INVENT a
+    figure past the last saved payday; a resolver asks the pricer for the
+    period it is handed, whichever one that is, and the pricer's memo makes
+    the second ask free.  What this function still does up front is build
+    the per-profile pricers (:meth:`~app.services.income_service
+    .PaycheckPricing.for_profile`), because THAT is where the tax series
+    loads -- so the loader keeps every query, and a resolver fired inside
+    :mod:`app.services.investment_projection`'s *no database access*
+    contract issues none.
 
     It answers R-SAL2's three questions at their source rather than
     re-deriving any of them:
@@ -467,7 +484,7 @@ def load_payroll_feeds(
     zero against.
 
     **An unknown funding profile models NO employer money** (developer,
-    2026-09-04): the account's ``gross_by_payday`` is empty, which is what
+    2026-09-04): the account gets no gross resolver, which is what
     :attr:`~app.services.investment_projection.AccountPayrollFeed.funds_employer`
     reports and what the surfaces render as *the funding job is not set*.
     Unknown covers three states and they are one answer: the column is
@@ -485,7 +502,7 @@ def load_payroll_feeds(
 
             **It replaced a calendar beside an OPTIONAL memo at plan step
             salary:S3-d**, and both halves of that pair were holes.  Running
-            the engine is the expensive half of this function -- each paycheck
+            the engine is the expensive half of a feed -- each paycheck
             replays the year's prior paydays for its FICA and annual-cap
             cumulatives -- and the balance seam asks for a feed once per
             ACCOUNT, so without a memo the engine re-ran the same profile once
@@ -502,7 +519,9 @@ def load_payroll_feeds(
             function whose case against a separate calendar is that pairing
             them is a hazard -- so the ``user_id`` every query below is
             scoped by is read off ``paychecks.calendar``, which cannot
-            disagree with the paydays.
+            disagree with the paydays.  *The calendar's PAYDAYS are not read
+            here any more* (plan step salary:S3-e-2): the owner is the only
+            thing this function takes off it.
         account_ids: The accounts to price a feed for.  An empty list returns
             an empty map without issuing a query.
         params_by_account: ``{account_id: InvestmentParams}`` from
@@ -541,37 +560,22 @@ def load_payroll_feeds(
     )
     profiles = _load_funding_profiles(user_id, wanted)
 
-    periods = paychecks.calendar.saved()
-    paydays = [period.start_date for period in periods]
-    # KEYED ON THE BREAKDOWN'S OWN PAYDAY, which it carries since plan step
-    # salary:S3-d.  This was a ``{period_id: start_date}`` lookup table built
-    # from ``calendar.saved()`` -- a second producer of a fact the paycheck
-    # already knows -- because ``PeriodInfo`` held only the id.  Zipping the
-    # two sequences by position would have been the maintenance contract
-    # ``CLAUDE.md`` rule 14 names, and would truncate silently if they ever
-    # differed in length; the table avoided that and cost a table.  The
-    # paycheck states its own payday now, so there is neither.
-    breakdowns_by_profile = {
-        profile_id: {
-            breakdown.period.payday: breakdown
-            for breakdown in paychecks.for_profile(profile).over(periods)
-        }
+    # The PRICERS, built here rather than inside a resolver: ``for_profile``
+    # loads the profile's tax series on first construction, and that query
+    # belongs to this loader, not to the pure module the resolver will fire
+    # in.  A pricer prices nothing until asked, so an account whose feed no
+    # consumer reads costs the series and no paycheck.
+    pricers = {
+        profile_id: paychecks.for_profile(profile)
         for profile_id, profile in profiles.items()
     }
     return {
         account_id: AccountPayrollFeed(
-            employee_by_payday=_employee_by_payday(
+            employee=_employee_resolver(
                 account_id, deductions_by_account.get(account_id, []),
-                breakdowns_by_profile, paydays,
+                pricers,
             ),
-            gross_by_payday=_gross_by_payday(
-                params_by_account.get(account_id), breakdowns_by_profile,
-            ),
-            # PRESENCE, beside the amounts and never derived from them: an
-            # account funded by a $0.00 deduction is still WIRED UP, and
-            # ``/retirement``'s prompt asks that question rather than a
-            # dollar one.
-            is_payroll_linked=bool(deductions_by_account.get(account_id)),
+            gross=_gross_resolver(params_by_account.get(account_id), pricers),
         )
         for account_id in account_ids
     }
@@ -617,35 +621,36 @@ def _load_funding_profiles(
     return {profile.id: profile for profile in rows}
 
 
-def _employee_by_payday(
+def _employee_resolver(
     account_id: int,
-    deductions: "list[PaycheckDeduction]",
-    breakdowns_by_profile: dict,
-    paydays: "list[date]",
-) -> "dict[date, Decimal]":
-    """Fold the engine's deduction lines for ONE account, per payday.
+    deductions: list[PaycheckDeduction],
+    pricers: dict[int, ProfilePaychecks],
+) -> Callable[[DerivedPeriod], Decimal] | None:
+    """Build ONE account's ``period -> employee amount`` resolver, or ``None``.
 
-    Reads the amount off the
-    :class:`~app.services.paycheck_calculator.DeductionLine` the engine
-    already priced -- raise-aware, inflation-escalated, cadence-placed and
-    clamped to the line's own calendar-year cap -- rather than pricing
-    anything here.  Pre- and post-tax lines both count: what an account
-    RECEIVES does not depend on which side of the tax line the deduction sits.
+    The resolver reads the amount off the
+    :class:`~app.services.paycheck_calculator.DeductionLine`\\ s of the
+    paycheck the engine prices for the period it is asked about -- raise-aware,
+    inflation-escalated, cadence-placed and clamped to the line's own
+    calendar-year cap -- rather than pricing anything itself.  Pre- and
+    post-tax lines both count: what an account RECEIVES does not depend on
+    which side of the tax line the deduction sits.
 
     Args:
         account_id: The account whose lines to keep.
         deductions: The account's active deductions, read only for WHICH
-            profiles fund it; the amounts come off the breakdowns.
-        breakdowns_by_profile: ``{profile_id: {payday: PaycheckBreakdown}}``.
-        paydays: Every payday the calendar reaches, so the map is TOTAL and a
-            cadence skip is an explicit ``$0.00`` rather than a gap.
+            profiles fund it; the amounts come off the paychecks.
+        pricers: ``{profile_id: ProfilePaychecks}`` for every profile that
+            funds any account in the batch.
 
     Returns:
-        ``{payday: Decimal}`` over every payday, or ``{}`` when no active
-        profile of this owner's funds the account.
+        The resolver, or ``None`` when no active profile of this owner's
+        funds the account -- which is what makes
+        :attr:`~app.services.investment_projection.AccountPayrollFeed
+        .is_payroll_linked` ``False`` there.
     """
     # DISTINCT profiles, keyed by id: an account funded by three of one
-    # profile's deductions must read that profile's breakdown ONCE, or every
+    # profile's deductions must read that profile's paycheck ONCE, or every
     # line on it would be counted as many times as the account has
     # deductions.  The lines themselves are then filtered by
     # ``target_account_id`` below, which is what keeps a sibling deduction
@@ -658,52 +663,53 @@ def _employee_by_payday(
     # one that cannot fire, which ``CLAUDE.md`` rule 1 forbids shipping.
     funding_ids = {ded.salary_profile_id for ded in deductions}
     if not funding_ids:
-        return {}
-    funding = [breakdowns_by_profile[pid] for pid in funding_ids]
-    return {
-        payday: sum(
-            (
-                line.amount
-                for by_payday in funding
-                if (breakdown := by_payday.get(payday)) is not None
-                for line in (breakdown.deductions.pre_tax
-                             + breakdown.deductions.post_tax)
-                if line.target_account_id == account_id
-            ),
-            ZERO,
-        )
-        for payday in paydays
-    }
+        return None
+    funding = [pricers[pid] for pid in funding_ids]
+
+    def _employee(period: DerivedPeriod) -> Decimal:
+        total = ZERO
+        for pricer in funding:
+            deductions_priced = pricer.at(period).deductions
+            for line in deductions_priced.pre_tax + deductions_priced.post_tax:
+                if line.target_account_id == account_id:
+                    total += line.amount
+        return total
+
+    return _employee
 
 
-def _gross_by_payday(
-    params: "InvestmentParams | None", breakdowns_by_profile: dict,
-) -> "dict[date, Decimal]":
-    """Return the FUNDING profile's per-payday gross, or an empty map.
+def _gross_resolver(
+    params: InvestmentParams | None,
+    pricers: dict[int, ProfilePaychecks],
+) -> Callable[[DerivedPeriod], Decimal] | None:
+    """Build the FUNDING profile's ``period -> gross`` resolver, or ``None``.
 
     The employer contribution's basis (**R-SAL5**): the gross of the paycheck
-    the profile named by ``budget.investment_params.salary_profile_id`` was
-    paid on each payday.  Empty when that profile is unknown -- absent,
-    archived, or not this owner's, the three states
+    the profile named by ``budget.investment_params.salary_profile_id`` is
+    paid on the period asked about.  ``None`` when that profile is unknown --
+    absent, archived, or not this owner's, the three states
     :func:`_load_funding_profiles` has already collapsed into "not in the
     map" -- which is the developer's 2026-09-04 ruling that such an account
-    models no employer money at all.
+    models no employer money at all, and what makes
+    :attr:`~app.services.investment_projection.AccountPayrollFeed
+    .funds_employer` ``False`` there.
 
     Args:
         params: The account's :class:`InvestmentParams`, or ``None``.
-        breakdowns_by_profile: ``{profile_id: {payday: PaycheckBreakdown}}``.
+        pricers: ``{profile_id: ProfilePaychecks}`` for every profile that
+            funds any account in the batch.
 
     Returns:
-        ``{payday: Decimal}`` gross per payday, or ``{}``.
+        The resolver, or ``None``.
     """
-    profile_id = getattr(params, "salary_profile_id", None)
-    by_payday = breakdowns_by_profile.get(profile_id)
-    if by_payday is None:
-        return {}
-    return {
-        payday: breakdown.earnings.gross_biweekly
-        for payday, breakdown in by_payday.items()
-    }
+    pricer = pricers.get(getattr(params, "salary_profile_id", None))
+    if pricer is None:
+        return None
+
+    def _gross(period: DerivedPeriod) -> Decimal:
+        return pricer.at(period).earnings.gross_biweekly
+
+    return _gross
 
 
 def build_investment_projection_inputs(

@@ -20,7 +20,6 @@ All functions accept plain data / ORM instances and return plain data.
 No Flask imports.
 """
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
@@ -28,27 +27,24 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.salary_profile import SalaryProfile
 from app.services import (
     account_service,
     balance_at,
     cash_ledger,
     growth_engine,
-    pension_calculator,
 )
 from app.services.investment_projection import (
     AccountPayrollFeed,
     ShadowContributions,
     build_contribution_timeline,
 )
-from app.services.payroll_basis import gross_per_paycheck
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_payroll_feeds,
     load_shadow_income_contributions_for_accounts,
 )
 from app.services.balance_at import BalanceContext
-from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
+from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 
 
 @dataclass(frozen=True)
@@ -99,18 +95,17 @@ class RetirementProjectionContext:
             each projection's ``is_traditional`` flag).
         return_rate_override: Optional slider-supplied annual return that
             overrides each account's stored ``assumed_annual_return``.
-        employer_salary_basis: Optional ``period -> Decimal gross_biweekly``
-            resolver (P1b / fork F3) grown with the P1a salary path,
-            forwarded to ``growth_engine.project_balance`` so the
-            employer-contribution base tracks the projected salary rather
-            than freezing at today's gross; ``None`` when there is no
-            salary profile or no horizon.  **Since plan step salary:R14-b it
-            is the LONG-HORIZON arm only**: the paycheck engine's own
-            per-payday gross is composed underneath it
-            (:meth:`~app.services.investment_projection.AccountPayrollFeed.salary_basis`
-            takes it as ``beyond=``), so it answers a payday the owner's
-            calendar does not reach and ``None`` there means a held paycheck
-            rather than a constant base.
+
+    **The ``employer_salary_basis`` field is GONE** (plan step
+    **salary:S3-e-2**, ruling **R-SAL15**).  It carried this page's own
+    salary path -- ``pension_calculator.project_profile_salaries`` divided
+    by the owner's paycheck count, evaluated at December of each year -- as
+    the ``beyond=`` arm the payroll feed fell back to past the owner's saved
+    calendar, so ``/retirement`` had a second producer of a projected
+    paycheck's gross beside the engine's, differing on AS-OF.  The feed
+    prices any period through the engine now, so the arm has nothing to
+    answer and the field, ``build_employer_salary_basis`` and
+    :func:`build_projection_context`'s fourth parameter all went with it.
     """
 
     balance_ctx: BalanceContext
@@ -118,7 +113,6 @@ class RetirementProjectionContext:
     planned_retirement_date: date | None
     traditional_type_ids: frozenset[int]
     return_rate_override: Decimal | None
-    employer_salary_basis: Callable | None
 
 
 @dataclass(frozen=True)
@@ -231,86 +225,10 @@ class _AccountProjectionResult:
     employer_per_period: Decimal
 
 
-def build_employer_salary_basis(
-    salary_profiles: list[SalaryProfile],
-    planned_retirement_date: date | None,
-    as_of: date,
-    cadence: PayCadence,
-) -> Callable | None:
-    """Build the per-period employer-contribution gross basis (P1b / F3).
-
-    Grows the employer-contribution base with the SAME P1a salary path the
-    pension / income-target projection uses: for each projected year the
-    annual salary is divided by the OWNER's paycheck count -- off their pay
-    cadence since plan step **R-F16**, where it was a second stored column on
-    the profile that nothing held to the cadence -- and quantized to cents
-    (house money rules), and the returned resolver
-    maps a projection period to its year's gross biweekly.  Periods whose
-    year falls outside the projected range (defensive only -- the axis runs
-    from the pass's as_of to retirement, exactly the projected span) clamp to
-    the nearest projected year's gross.
-
-    Returns ``None`` when there is no salary profile or no horizon.  **Since
-    plan step salary:R14-b that no longer means a constant base**: this is
-    ``AccountPayrollFeed.salary_basis``'s ``beyond=`` arm, not a callable
-    handed to the engine, so ``None`` means the tail holds the last real
-    paycheck; the ``employer_params["gross_biweekly"]`` it used to name is
-    emitted by no builder now (**N-538**).
-
-    Args:
-        salary_profiles: The user's active salary profiles (the first is
-            the primary profile whose gross drives the employer base).
-        planned_retirement_date: The projection horizon, or ``None``.
-        as_of: The read pass's pinned day, whose YEAR opens the salary path.
-            It was ``date.today()`` here until pay-calendar plan step C2-f2e
-            (ledger row **P55**): one of the last three producers on
-            ``/retirement`` to resolve the clock for itself, on a render that
-            already held a pass with a pinned day.  The three are asked once
-            per plan point and the retire-later lever probes about ten, so one
-            render read the clock about thirteen times -- and the reads are
-            ``.year``, so they diverge across a NEW YEAR: the verdict card
-            projecting its salary path from year N while the lever card beside
-            it projects from N+1, which is the two-cards-two-clocks shape plan
-            step C2-f2d-1 measured at ``$4.18`` for the read pass itself.
-        cadence: How often the owner is paid.  Taken rather than resolved so
-            this shares the ONE cadence the render's ``GapInputs`` already
-            carries, and so a pure producer stays pure.
-
-    Returns:
-        A ``period -> Decimal gross_biweekly`` callable, or ``None``.
-    """
-    if not salary_profiles or planned_retirement_date is None:
-        return None
-
-    profile = salary_profiles[0]
-    salary_by_year = pension_calculator.project_profile_salaries(
-        profile, as_of.year, planned_retirement_date.year,
-    )
-    if not salary_by_year:
-        return None
-
-    # Through the ONE per-paycheck producer (plan step balance:X-aw), not a
-    # second spelling of its arithmetic: this figure is a projected paycheck's
-    # gross, so it must round exactly as the paycheck engine's does.
-    gross_by_year = {
-        year: gross_per_paycheck(salary, cadence.periods_per_year)
-        for year, salary in salary_by_year
-    }
-    min_year = min(gross_by_year)
-    max_year = max(gross_by_year)
-
-    def _resolver(period):
-        clamped_year = min(max(period.start_date.year, min_year), max_year)
-        return gross_by_year[clamped_year]
-
-    return _resolver
-
-
 def build_projection_context(
     balance_ctx: BalanceContext,
     planned_retirement_date: date | None,
     return_rate_override: Decimal | None,
-    employer_salary_basis: Callable | None,
 ) -> RetirementProjectionContext:
     """Load the retirement accounts and assemble the projection context.
 
@@ -340,9 +258,6 @@ def build_projection_context(
             every producer below shares its scenario and its memos.
         planned_retirement_date: The projection horizon, or ``None``.
         return_rate_override: Optional slider-supplied annual return.
-        employer_salary_basis: Optional per-period gross resolver (P1b /
-            fork F3) grown with the P1a salary path; ``None`` keeps the
-            constant employer-contribution base.
 
     Returns:
         A :class:`RetirementProjectionContext` ready for
@@ -370,7 +285,6 @@ def build_projection_context(
         planned_retirement_date=planned_retirement_date,
         traditional_type_ids=traditional_type_ids,
         return_rate_override=return_rate_override,
-        employer_salary_basis=employer_salary_basis,
     )
 
 
@@ -799,8 +713,8 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
 
     Builds the account's investment projection inputs from the batch's
     shared data and runs ``growth_engine.project_balance`` over
-    *projection_periods* from the supplied *seed* (passing the P1b per-period
-    employer salary basis).
+    *projection_periods* from the supplied *seed*, with the feed's own
+    per-period gross as the employer salary basis.
 
     Also computes the per-account contribution facts (capped current-period
     employee amount and its employer match at THAT PERIOD's own gross since
@@ -838,15 +752,16 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
         if ctx.return_rate_override is not None
         else params.assumed_annual_return
     )
-    # **The employer basis is COMPOSED since plan step salary:R14-b**: the
-    # engine's own gross for every payday the calendar reaches, and past it
-    # this page's projected salary path (:func:`build_employer_salary_basis`)
-    # where supplied.  Composing rather than replacing is what keeps this step
-    # from REGRESSING the one surface that already grew its base.  The two
-    # models it bridges share one TERMINATION rule as of plan step salary:S3-c
-    # (**R-SAL11**) -- both read each raise's stored ``terminal_year`` -- but
-    # still differ on AS-OF: the engine prices a payday on its own date, this
-    # path evaluates each year at December 1.  Plan step salary:S3 closes it.
+    # **The employer basis is the ENGINE's gross for every period of the
+    # axis** (plan step salary:S3-e-2, ruling **R-SAL15**).  From
+    # salary:R14-b to S3-e-1 it was COMPOSED: the engine's gross for the
+    # paydays the saved calendar reached, and past them this page's own
+    # salary path (``build_employer_salary_basis``, deleted) -- a second
+    # producer of a projected paycheck's gross that shared the engine's
+    # termination rule since S3-c (**R-SAL11**) and still differed on AS-OF,
+    # pricing each year at December rather than each payday on its own day.
+    # The feed prices any period through the engine now, so there is one
+    # producer and nothing to compose.
     proj = growth_engine.project_balance(
         current_balance=seed,
         assumed_annual_return=annual_return,
@@ -860,10 +775,8 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
             contribution_transactions=acct_contributions,
             periods=projection_periods,
             as_of=ctx.balance_ctx.as_of,
-            # The SAVED end, which no probe moves (salary:S3-e-1).
-            saved_through=ctx.balance_ctx.calendar().horizon(),
         ),
-        salary_basis=feed.salary_basis(beyond=ctx.employer_salary_basis),
+        salary_basis=feed.gross_at,
     )
     # P1c per-account contribution facts: the capped CURRENT-period employee
     # amount and its employer match at that period's own gross (plan step
@@ -884,7 +797,7 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
         Decimal("0") if current_period is None
         else growth_engine.calculate_employer_contribution(
             inputs.employer_params, employee_per_period,
-            feed.gross_at(current_period.start_date),
+            feed.gross_at(current_period),
         )
     )
     return _AccountProjectionResult(

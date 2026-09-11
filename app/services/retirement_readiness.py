@@ -165,10 +165,11 @@ def compute_readiness_whatif(
     A panel rendered across midnight used to report a day's drift as a what-if
     delta, and one rendered across a NEW YEAR reported a year's: it took
     ``compute_pension_summary``, ``compute_gap_net_biweekly`` and
-    ``build_employer_salary_basis`` reading ``date.today().year`` for
-    themselves.  Pay-calendar plan step C2-f2e threaded the pass's day into all
-    three and closed ledger row **P55**, so both computations now open their
-    salary path on the same year by construction.
+    ``build_employer_salary_basis`` (since deleted, at plan step
+    salary:S3-e-2) reading ``date.today().year`` for themselves.
+    Pay-calendar plan step C2-f2e threaded the pass's day into all three and
+    closed ledger row **P55**, so both computations now open their salary
+    path on the same year by construction.
 
     Args:
         inputs: The render's

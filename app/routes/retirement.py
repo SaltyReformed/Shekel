@@ -103,11 +103,12 @@ def dashboard():
     equal ones, so the two cards cannot state different figures for one plan.
     **And this render is single-clock as of pay-calendar plan step C2-f2e**,
     which closed ledger row **P55**: ``compute_pension_summary``,
-    ``compute_gap_net_biweekly`` and ``build_employer_salary_basis`` each took
-    ``date.today().year`` for themselves, once per plan point over about ten
-    probes, so a render crossing a NEW YEAR could project the verdict card's
-    salary path from year N and the lever card's from N+1.  All three take the
-    pass's day now.  The gates are
+    ``compute_gap_net_biweekly`` and ``build_employer_salary_basis`` (deleted
+    at plan step salary:S3-e-2) each took ``date.today().year`` for
+    themselves, once per plan point over about ten probes, so a render
+    crossing a NEW YEAR could project the verdict card's salary path from
+    year N and the lever card's from N+1.  Both survivors take the pass's day
+    now.  The gates are
     ``tests/test_arch/test_one_read_pass_per_render.py`` for the pass and
     ``test_retirement_dashboard_service.TestTheRenderDayOpensTheSalaryPath``
     for the day.

@@ -456,16 +456,73 @@ class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
             # proved "the calendar read really happened"; it does not --
             # ``_inputs`` evaluates ``ctx.calendar()`` unconditionally as an
             # argument since plan step salary:R14-b, so no assertion here can
-            # infer it, and ``employee_by_payday == {}`` is the ``!= []``
-            # class an adversarial review already rejected on this exact case.
-            # What grades the refusal is the SIBLING case below, over an owner
-            # with no schedule row at all.  A ``models_employee is False``
-            # line stood beside the map assertion until plan step
+            # infer it, and ``employee_by_payday == {}`` (the assertion that
+            # stood here until plan step salary:S3-e-2) was the ``!= []``
+            # class an adversarial review already rejected on this exact
+            # case.  What grades the refusal is the SIBLING case below, over
+            # an owner with no schedule row at all.  A ``models_employee is
+            # False`` line stood beside the map assertion until plan step
             # salary:S3-e-1 deleted that property; it asserted nothing the
-            # empty map does not already imply, the property having been
-            # ``any(amount > 0)`` over it.
+            # empty map does not already imply.
+            #
+            # **The feed is LINKED, on both sides of salary:S3-e-2.**  The
+            # fixture's deduction names this account; the flag was CARRIED
+            # off the deduction rows before that step and is the employee
+            # resolver's presence after it, and both read ``True`` here.
+            # What the empty map asserted was that no PAYDAY existed to key
+            # it by, which the resolver has no shape for; the sibling case
+            # below pins the one presence fact an empty calendar DID move.
             assert inputs.investment_params is not None
-            assert inputs.feed.employee_by_payday == {}
+            assert inputs.feed.is_payroll_linked is True
+
+    def test_a_named_funding_profile_funds_the_employer_side_with_no_payday(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """``funds_employer`` is the funding profile's presence, not a payday's.
+
+        **The one presence fact an empty calendar moved at plan step
+        salary:S3-e-2**, found by that step's adversarial review.  The feed
+        answered ``bool(gross_by_payday)`` before it -- ``False`` for an
+        owner who had NAMED an active funding profile but recorded no
+        payday, because the map had no key to hold -- and answers the gross
+        resolver's presence now, which the loader builds from the profile
+        link alone.  Three readers turn on it: ``/investment``'s "funding
+        job is not set" notice (``_cards._compute_employer_funding``) stops
+        being shown to an owner whose job IS set, ``calculate_investment_
+        inputs`` stops withholding ``employer_params``, and the balance seam
+        builds a contribution plan for the account.  No figure moves -- with
+        no payday there is no period for any of them to price -- so this
+        pins the flag itself, on the fixture that can see it.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = _investment_account_with_an_active_deduction(
+                db, seed_user, "401k-employer",
+            )
+            params = (
+                db.session.query(InvestmentParams)
+                .filter_by(account_id=account.id).one()
+            )
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=user_id, name="401k-employer profile")
+                .one()
+            )
+            params.salary_profile_id = profile.id
+            params.employer_contribution_type_id = (
+                ref_cache.employer_contribution_type_id(
+                    EmployerContributionTypeEnum.FLAT_PERCENTAGE,
+                )
+            )
+            params.employer_flat_percentage = Decimal("0.05")
+            _strip_every_payday_keeping_the_schedule(db, user_id)
+
+            ctx = BalanceContext.build(user_id)
+            inputs = _contribution_inputs_for_accounts([account], ctx)[account.id]
+
+            assert not ctx.reported_periods()
+            assert inputs.feed.funds_employer is True
+            assert inputs.feed.is_payroll_linked is True
 
     def test_the_balance_seam_REFUSES_an_owner_with_no_schedule_row(
         self, app, db, seed_user, seed_periods,

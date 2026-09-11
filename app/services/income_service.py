@@ -13,21 +13,21 @@ prices a generated row from it.
 **It became a FUNCTION of the payday rather than a LIST at plan step
 salary:S3-d**, and that is what deletes the horizon question rather than
 answering it.  ``project_profile(profile, calendar)`` returned a list over the
-owner's SAVED window, so past the last saved payday there is no paycheck and
-:class:`~app.services.investment_projection.AccountPayrollFeed` INVENTS one by
-holding a figure -- six rules over that fold, each measured wrong (**N-541**,
-ruling **R-SAL10**).
+owner's SAVED window, so past the last saved payday there was no paycheck and
+:class:`~app.services.investment_projection.AccountPayrollFeed` INVENTED one
+by holding a figure -- six rules over that fold, each measured wrong
+(**N-541**, ruling **R-SAL10**).
 
-**That hold is still LIVE, and the present tense above is deliberate.**  This
-step builds the producer that can price a payday past the horizon and moves
-every consumer onto it; it does NOT yet ask for one.  Every production caller
-of :meth:`ProfilePaychecks.over` still passes ``calendar.saved()``, so
-``_year_averages``, ``_complete_years``, ``_held_employee`` and
-``_held_gross`` are all still reached.  Plan step **salary:S3-e** is what
-widens the ask and deletes them, on the strength of what
-``TestThePricerAnswersPastTheSavedHORIZON`` grades here.
+**The hold is GONE since plan step salary:S3-e-2** (ruling **R-SAL15**).
+S3-d built the producer that can price a payday past the horizon and moved
+every consumer onto it while every one of them still asked for
+``calendar.saved()``; S3-e-2 is where the ask widened.  The feed holds two
+resolvers over :class:`ProfilePaychecks` now and prices whichever period a
+consumer hands it, so nothing states a horizon and nothing holds.
+``TestThePricerAnswersPastTheSavedHORIZON`` is what that deletion rested on,
+and it is kept: it is the one place the capability is graded on its own.
 
-Widening the list needs somebody to decide HOW LONG, and
+Widening the list needed somebody to decide HOW LONG, and
 one render asks two lengths of it: the balance seam wants the saved window, the
 40-year chart wants forty years, and they share one memo.  Nothing decides,
 because a paycheck does not depend on any other paycheck --
@@ -338,9 +338,10 @@ class PaycheckPricing:
         """The pass's pay calendar, so a consumer holding this needs no second.
 
         Published because :func:`~app.services.projection_inputs
-        .load_payroll_feeds` needs the payday set as well as the prices, and
-        taking the two separately is how one owner's calendar comes to be
-        paired with another's paychecks.
+        .load_payroll_feeds` needs the OWNER as well as the prices -- it
+        needed the payday set too until plan step salary:S3-e-2 stopped it
+        pricing anything up front -- and taking the two separately is how
+        one owner's calendar comes to be paired with another's paychecks.
 
         Returns:
             The :class:`~app.services.pay_calendar.PayCalendar` this pricer
