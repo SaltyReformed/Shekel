@@ -22,7 +22,6 @@ DROPS the index to plant an otherwise-unrepresentable row cannot leak.
 """
 
 import importlib.util
-from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -30,11 +29,10 @@ import pytest
 import sqlalchemy.exc
 from sqlalchemy import text
 
-from app.models.amount_ownership import AmountOwnership
 from app.extensions import db as _db
-from app.models.transaction import Transaction
+from app.services.amount_ownership import state_own_amount
 
-from tests._test_helpers import make_expense_template
+from tests._test_helpers import generate_row_of, make_expense_template
 
 
 _MIGRATION = (
@@ -113,40 +111,30 @@ class TestTheGuaranteeItBought:
     ):
         """The behaviour, not the schema text.
 
-        Before the migration this insert SUCCEEDED -- the exemption let an
+        Before the migration this write SUCCEEDED -- the exemption let an
         override row answer an occurrence a live row already answered, and the
         duplicate was then counted twice on every balance surface.  R17
         measured that class at 8 rows / `$1,482.93` on a production clone.
+
+        Both rows are the ENGINE's (plan step balance:X-cf): the rule's own in
+        one paycheck and its row of the next, re-priced by the owner (the
+        re-price door's two acts) and then rewritten to answer the FIRST row's
+        occurrence -- the one axis this constraint is about, and the only
+        column here a hand did not get from the engine.
         """
         with app.app_context():
             template = make_expense_template(db.session, seed_user)
-            db.session.flush()
-            common = {
-                "user_id": seed_user["user"].id,
-                "pay_period_id": seed_periods_today[0].id,
-                "scenario_id": seed_user["scenario"].id,
-                "account_id": seed_user["account"].id,
-                "status_id": _db.session.execute(
-                    text("SELECT id FROM ref.statuses WHERE name='Projected'"),
-                ).scalar(),
-                "category_id": seed_user["categories"]["Groceries"].id,
-                "transaction_type_id": _db.session.execute(
-                    text("SELECT id FROM ref.transaction_types LIMIT 1"),
-                ).scalar(),
-                "template_id": template.id,
-                "occurs_on": date(2026, 10, 15),
-            }
-            db.session.add(Transaction(
-                name="the rule's own", amount_ownership=AmountOwnership.own(Decimal("10.00")),
-                is_override=False, **common,
-            ))
+            own = generate_row_of(template, seed_periods_today[0])
+            sibling = generate_row_of(template, seed_periods_today[1])
+            state_own_amount(sibling, Decimal("12.00"))
+            sibling.is_override = True
             db.session.flush()
 
-            db.session.add(Transaction(
-                name="a re-priced sibling", amount_ownership=AmountOwnership.own(Decimal("12.00")),
-                is_override=True, **common,
-            ))
-            with pytest.raises(sqlalchemy.exc.IntegrityError):
+            sibling.occurs_on = own.occurs_on
+            with pytest.raises(
+                sqlalchemy.exc.IntegrityError,
+                match="idx_transactions_template_scenario_occurrence",
+            ):
                 db.session.flush()
             db.session.rollback()
 
@@ -163,37 +151,19 @@ class TestTheMigrationsPreFlight:
         index is dropped first -- which is safe because every test clones a
         fresh worker database.  Without this the pre-flight would be a control
         that has never once been shown to fire, which is the shape a green
-        deploy cannot distinguish from a correct one.
+        deploy cannot distinguish from a correct one.  The pair is built the
+        way the case above builds it.
         """
         with app.app_context():
             db.session.execute(text(
                 "DROP INDEX budget.idx_transactions_template_scenario_occurrence"
             ))
             template = make_expense_template(db.session, seed_user)
-            db.session.flush()
-            common = {
-                "user_id": seed_user["user"].id,
-                "pay_period_id": seed_periods_today[0].id,
-                "scenario_id": seed_user["scenario"].id,
-                "account_id": seed_user["account"].id,
-                "status_id": _db.session.execute(
-                    text("SELECT id FROM ref.statuses WHERE name='Projected'"),
-                ).scalar(),
-                "category_id": seed_user["categories"]["Groceries"].id,
-                "transaction_type_id": _db.session.execute(
-                    text("SELECT id FROM ref.transaction_types LIMIT 1"),
-                ).scalar(),
-                "template_id": template.id,
-                "occurs_on": date(2026, 10, 15),
-            }
-            db.session.add(Transaction(
-                name="the rule's own", amount_ownership=AmountOwnership.own(Decimal("10.00")),
-                is_override=False, **common,
-            ))
-            db.session.add(Transaction(
-                name="a re-priced sibling", amount_ownership=AmountOwnership.own(Decimal("12.00")),
-                is_override=True, **common,
-            ))
+            own = generate_row_of(template, seed_periods_today[0])
+            sibling = generate_row_of(template, seed_periods_today[1])
+            state_own_amount(sibling, Decimal("12.00"))
+            sibling.is_override = True
+            sibling.occurs_on = own.occurs_on
             db.session.flush()
 
             sql = _migration_module().COLLIDING_OCCURRENCES_SQL.format(
@@ -203,7 +173,7 @@ class TestTheMigrationsPreFlight:
 
             assert len(rows) == 1, rows
             assert rows[0][0] == template.id
-            assert rows[0][2] == date(2026, 10, 15)
+            assert rows[0][2] == own.occurs_on
             assert rows[0][3] == 2, "it counts both live rows"
 
     def test_it_is_silent_on_clean_data(
@@ -212,29 +182,16 @@ class TestTheMigrationsPreFlight:
         """The other direction, so the query is not simply always positive.
 
         A control that fires on everything is as useless as one that fires on
-        nothing, and only running both directions tells them apart.
+        nothing, and only running both directions tells them apart.  The one
+        row here is the engine's, re-priced by the owner: an override row that
+        answers its occurrence ALONE is exactly what the exemption used to
+        exclude, and what the tightened predicate must still not report.
         """
         with app.app_context():
             template = make_expense_template(db.session, seed_user)
-            db.session.flush()
-            db.session.add(Transaction(
-                user_id=seed_user["user"].id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=_db.session.execute(
-                    text("SELECT id FROM ref.statuses WHERE name='Projected'"),
-                ).scalar(),
-                name="the rule's own",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=_db.session.execute(
-                    text("SELECT id FROM ref.transaction_types LIMIT 1"),
-                ).scalar(),
-                amount_ownership=AmountOwnership.own(Decimal("10.00")),
-                template_id=template.id,
-                occurs_on=date(2026, 10, 15),
-                is_override=True,
-            ))
+            own = generate_row_of(template, seed_periods_today[0])
+            state_own_amount(own, Decimal("10.00"))
+            own.is_override = True
             db.session.flush()
 
             sql = _migration_module().COLLIDING_OCCURRENCES_SQL.format(

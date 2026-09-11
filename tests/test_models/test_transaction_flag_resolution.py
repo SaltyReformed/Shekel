@@ -15,8 +15,8 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import generate_row_of, make_expense_template
 
 
 def _adhoc(seed_user, period, *, is_envelope, companion_visible):
@@ -42,39 +42,22 @@ def _adhoc(seed_user, period, *, is_envelope, companion_visible):
 
 def _templated(seed_user, period, *, tpl_envelope, tpl_visible,
                own_envelope, own_visible):
-    """Create a template (with tpl_* flags) plus a row linked to it.
+    """Create a template (with tpl_* flags) plus the engine's row of it.
 
-    The row's OWN flags are set to the opposite of the template's so the
-    test can prove the resolved property reads the template, not the row.
+    The row is the definition's own, generated through the engine
+    (:func:`generate_row_of`, plan step balance:X-cf) rather than restated
+    here.  The engine writes neither flag on a row -- both are the row's own
+    columns, at their defaults -- so the row's OWN flags are then set to the
+    opposite of the template's, which is the state that proves the resolved
+    property reads the template and not the row.
     """
-    category = list(seed_user["categories"].values())[0]
-    tpl = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=category.id,
-        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        name="Templated",
-        default_amount=Decimal("100.00"),
-        is_envelope=tpl_envelope,
-        companion_visible=tpl_visible,
+    tpl = make_expense_template(
+        db.session, seed_user, amount="100.00", name="Templated",
+        is_envelope=tpl_envelope, companion_visible=tpl_visible,
     )
-    db.session.add(tpl)
-    db.session.flush()
-    txn = Transaction(
-        name="Templated",
-        amount_ownership=AmountOwnership.own(Decimal("100.00")),
-        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        account_id=seed_user["account"].id,
-        category_id=category.id,
-        scenario_id=seed_user["scenario"].id,
-        template_id=tpl.id,
-        is_envelope=own_envelope,
-        companion_visible=own_visible,
-    )
-    db.session.add(txn)
+    txn = generate_row_of(tpl, period)
+    txn.is_envelope = own_envelope
+    txn.companion_visible = own_visible
     db.session.commit()
     return txn
 
