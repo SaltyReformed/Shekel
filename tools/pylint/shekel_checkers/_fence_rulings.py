@@ -395,6 +395,14 @@ _FENCED_MODULE_RULINGS = {
         "transfer_amount_rule",
         "resolve_transaction_amount",
         "resolve_transfer_amount",
+        # The estimate's price and the classifier it dispatches on (plan step
+        # R16-b-2, ruling R-R67): what a row a definition has NOT written yet
+        # would resolve to, through the identical arms a written one takes.
+        # A PAYMENT amount, non-producer on the same ground as the two
+        # resolvers above; the template-level settings-row test beside it
+        # reads one relationship and answers a bool.
+        "definition_cash",
+        "is_loan_payment_definition",
         # The BATCH form of the same answer (plan step X-au-c2b), on the same
         # ground as ``contributions_by_id`` above: a dict keyed by ROW ID, one
         # entry per row the caller loaded, and nothing per account.  It differs
@@ -917,8 +925,9 @@ _FENCED_MODULE_RULINGS = {
     # defined in this module can answer what an account is WORTH.  What it
     # answers is what a repeating definition SAYS.
     "app.services.recurring_transfer_query": (frozenset(), frozenset({
-        # The query itself: which template pays into this account.  A row, not
-        # a figure.
+        # The query itself: which templates pay into this account, and the
+        # oldest of them.  Rows, not figures.
+        "active_recurring_transfer_templates",
         "active_recurring_transfer_template",
         # The other direction: which ACCOUNT a definition pays into.  A row off
         # the template's own FK column, moved here from ``loan_recurrence_sync``

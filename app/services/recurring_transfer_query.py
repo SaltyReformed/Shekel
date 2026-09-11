@@ -95,31 +95,34 @@ def destination_account(
     return db.session.get(Account, account_id)
 
 
-def active_recurring_transfer_template(
+def active_recurring_transfer_templates(
     account_id: int, user_id: int,
-) -> TransferTemplate | None:
-    """Return the active recurring transfer template paying INTO *account_id*.
+) -> list[TransferTemplate]:
+    """Return EVERY active recurring transfer template paying INTO *account_id*.
 
-    An active (``is_active``) :class:`TransferTemplate` owned by *user_id* whose
-    destination is *account_id* and which carries a recurrence rule (a
-    ``budget.recurrence_rules`` row names it).  The OLDEST is returned, and the
-    ordering is load-bearing rather than tidy -- see the comment on it.  More
-    than one recurring transfer into a single account is a user
-    misconfiguration this query does not model, and ``routes/loan/
-    payment_transfer.py`` handles the case rather than refusing it, so the set
-    is not guaranteed to hold one row.  ``None`` when the account has no
-    recurring funding transfer.
-    The 1:1 ``settings`` row is eager-loaded, since the loan callers read its
-    ``extra_principal`` right after (the prompt prefill and
-    :func:`loan_standing_extra`).
+    The active (``is_active``) :class:`TransferTemplate` rows owned by
+    *user_id* whose destination is *account_id* and which carry a recurrence
+    rule (a ``budget.recurrence_rules`` row names each), oldest first.  **The
+    set, not one of it** (plan step **R16-b-2**, ruling **R-R35**): every
+    recurring transfer into a loan is a payment against it, and the balance
+    seam's ESTIMATED tier sums each one's occurrences on its own cadence --
+    so the question this answers is "which definitions pay in here", where
+    :func:`active_recurring_transfer_template` below answers the narrower
+    "which ONE is the standing payment" for the three readers that still
+    need a single row.  That function is this one's first element, so the
+    filter is stated once.
+
+    The 1:1 ``settings`` row and the price SERIES are eager-loaded on every
+    row -- see the comments on the options for why.
 
     Args:
         account_id: The destination account (a loan or investment account).
-        user_id: The owning user (scopes the query -- ownership is established by
-            the caller's chokepoint).
+        user_id: The owning user (scopes the query -- ownership is established
+            by the caller's chokepoint).
 
     Returns:
-        The active recurring :class:`TransferTemplate`, or ``None``.
+        The active recurring :class:`TransferTemplate` rows, ascending by id;
+        ``[]`` when the account has no recurring funding transfer.
     """
     return (
         db.session.query(TransferTemplate)
@@ -151,17 +154,51 @@ def active_recurring_transfer_template(
             # review measured otherwise.
             TransferTemplate.recurrence_rule.has(),
         )
-        # **ORDERED, because ``.first()`` over an unordered query is whichever
-        # row the planner hands back** -- and since plan step R7d-a this answer
-        # decides how the loan's whole forward plan is PRICED, not just whether
-        # a dashboard shows a prompt.  Two renders in one session could
-        # otherwise disagree about a loan's payoff.  The oldest definition wins,
-        # which is stable under later edits; WHICH of several recurring
-        # transfers into one loan is its PAYMENT is a rule nothing states, and
-        # that is finding **D47** rather than something this ORDER BY decides.
+        # **ORDERED, because the first row of an unordered query is whichever
+        # row the planner hands back** -- and from plan step R7d-a to R16-b-2
+        # that answer decided how the loan's whole forward plan was PRICED.
+        # It prices nothing now (the tier sums every row here, finding
+        # **D47**), but it still decides the loan-payment identity the form
+        # locks on and the opening-bound sync writes for, and two renders in
+        # one session must not disagree about it.  The oldest definition wins,
+        # which is stable under later edits.
         .order_by(TransferTemplate.id)
-        .first()
+        .all()
     )
+
+
+def active_recurring_transfer_template(
+    account_id: int, user_id: int,
+) -> TransferTemplate | None:
+    """Return the active recurring transfer template paying INTO *account_id*.
+
+    The OLDEST of :func:`active_recurring_transfer_templates`, and the
+    ordering is load-bearing rather than tidy -- see the comment on it there.
+    More than one recurring transfer into a single account is a state
+    ``routes/loan/payment_transfer.py`` handles rather than refusing, so the
+    set is not guaranteed to hold one row.  ``None`` when the account has no
+    recurring funding transfer.
+
+    **Since plan step R16-b-2 this row PRICES nothing** -- the ESTIMATED tier
+    sums every definition (:func:`active_recurring_transfer_templates`) --
+    and what it still decides is the loan-payment IDENTITY the form locks on
+    and the opening-bound sync writes for
+    (:func:`app.services.balance_at.is_standing_loan_payment`, plan ledger
+    row **D50**), plus the three loan-side readers that need ONE row: the
+    dashboard's extra-principal prefill and the two routes that MUTATE a
+    settings row (**D49**).  Ruling **R-R35** wants that search deleted
+    rather than answered; those readers are what keep it.
+
+    Args:
+        account_id: The destination account (a loan or investment account).
+        user_id: The owning user (scopes the query -- ownership is established
+            by the caller's chokepoint).
+
+    Returns:
+        The oldest active recurring :class:`TransferTemplate`, or ``None``.
+    """
+    templates = active_recurring_transfer_templates(account_id, user_id)
+    return templates[0] if templates else None
 
 
 def loan_standing_extra(account_id: int, user_id: int) -> Decimal:

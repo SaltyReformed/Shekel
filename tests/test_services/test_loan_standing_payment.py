@@ -40,6 +40,8 @@ from app.services.balance_at._resolution import (
 )
 from app.services.recurring_transfer_query import (
     StandingPayment,
+    active_recurring_transfer_template,
+    active_recurring_transfer_templates,
     standing_installment_cash,
     standing_payment,
 )
@@ -85,7 +87,7 @@ def _loan(seed_user, escrow_annual=None):
 
 
 def _recurring_payment(seed_user, loan, base, *, derive=None, extra=None,
-                       stated=False, effective_on=None):
+                       stated=False, effective_on=None, name="Loan Payment"):
     """Attach an active recurring payment paying *base* into *loan*.
 
     Mirrors what ``routes/loan/payment_transfer.py`` writes: the definition
@@ -102,7 +104,7 @@ def _recurring_payment(seed_user, loan, base, *, derive=None, extra=None,
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=loan.id,
-        name="Loan Payment",
+        name=name,
         default_amount=base,
     )
     if derive is not None or extra is not None:
@@ -197,6 +199,78 @@ class TestStandingPayment:
         # The MODE is read off the template rather than copied onto the value,
         # so a template switched between modes cannot leave a stale flag behind.
         assert owns_its_amount(standing.template) is False
+
+
+class TestEveryDefinitionIntoAnAccount:
+    """:func:`active_recurring_transfer_templates`, plan step **R16-b-2** (R-R35).
+
+    The SET the ESTIMATED tier sums, where the standing payment is one row
+    of it.  One filter states both: the standing payment is the set's oldest
+    member, so the two cannot disagree about which definitions qualify.
+    """
+
+    def test_it_returns_every_active_ruled_definition_oldest_first(
+        self, seed_user, db,
+    ):
+        """Two definitions into one loan are both returned, ascending by id."""
+        account, _ = _loan(seed_user)
+        first = _recurring_payment(
+            seed_user, account, Decimal("1910.95"), stated=True,
+        )
+        second = _recurring_payment(
+            seed_user, account, Decimal("200.00"), stated=True, name="Extra",
+        )
+        db.session.flush()
+
+        templates = active_recurring_transfer_templates(
+            account.id, seed_user["user"].id,
+        )
+
+        assert [template.id for template in templates] == [first.id, second.id]
+        assert active_recurring_transfer_template(
+            account.id, seed_user["user"].id,
+        ) is templates[0]
+
+    def test_an_archived_or_rule_less_definition_is_not_in_the_set(
+        self, seed_user, db,
+    ):
+        """Inactive, or carrying no rule, is not a definition that pays forward."""
+        account, _ = _loan(seed_user)
+        kept = _recurring_payment(
+            seed_user, account, Decimal("1910.95"), stated=True,
+        )
+        archived = _recurring_payment(
+            seed_user, account, Decimal("300.00"), stated=True, name="Old",
+        )
+        archived.is_active = False
+        unruled = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=account.id,
+            name="One-off",
+            default_amount=Decimal("500.00"),
+        )
+        db.session.add(unruled)
+        db.session.flush()
+
+        templates = active_recurring_transfer_templates(
+            account.id, seed_user["user"].id,
+        )
+
+        assert [template.id for template in templates] == [kept.id]
+
+    def test_an_account_with_no_definition_answers_the_empty_set(
+        self, seed_user, db,  # pylint: disable=unused-argument
+    ):
+        """``[]`` here is ``None`` one function over; both mean the contract is the only estimate."""
+        account, _ = _loan(seed_user)
+
+        assert active_recurring_transfer_templates(
+            account.id, seed_user["user"].id,
+        ) == []
+        assert active_recurring_transfer_template(
+            account.id, seed_user["user"].id,
+        ) is None
 
 
 class TestStandingInstallmentCash:

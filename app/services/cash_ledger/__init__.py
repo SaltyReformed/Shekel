@@ -13,6 +13,7 @@ what is stored?                 :mod:`._facts`            ``loan_loaders``
 what happened, when?            :mod:`._events`           ``loan_ledger._events``
 where do books open?            :mod:`._books`            (no loan analog)
 what IS the amount?             :mod:`._amount_source`    (see below)
+what would a row be worth?      :mod:`._definition_cash`  (see below)
 what does a pass derive live?   :mod:`._amount_basis`     (no loan analog)
 what does a loan resolve to?    :mod:`._loan_pricing`     (no loan analog)
 what does an installment cost?  :mod:`._loan_installment` ``loan_resolver``
@@ -37,6 +38,14 @@ that amount with an entered actual, an excluded status and an envelope's
 purchases.  The arrow runs one way: the second consumes the first.  The loan
 side has no analog for :mod:`._amount_source` because a loan payment's amount
 has exactly one source; a cash row's has five, and four of them are derived.
+
+**The DEFINITION row answers for a row that does not exist yet** (plan step
+R16-b-2, ruling **R-R67**).  Rules 3 and 4 are functions of four columns a
+generated transfer carries -- its definition, its due date, its paycheck's
+payday and its destination -- and :mod:`._definition_cash` states both arms
+over those VALUES; :mod:`._amount_source` delegates a written row to them,
+and the balance seam's ESTIMATED loan tier prices an occurrence no row answers
+yet through the same two, so a row and its estimate cannot part.
 
 **The LOAN PRICING pair is in this package, and plan step X-au-g-2a is what
 put it there.**  Amount rule 4 -- a loan payment's shadow is worth what the
@@ -165,8 +174,10 @@ from ._amount_basis import (
 from ._amount_rule import (
     AmountRule,
     amount_rule,
+    is_loan_payment_definition,
     transfer_amount_rule,
 )
+from ._definition_cash import DefinitionRow, definition_cash
 from ._amount_source import (
     amounts_by_id,
     resolve_transaction_amount,
@@ -230,6 +241,7 @@ from ._walk import (
 __all__ = [
     "AmountBasis",
     "AmountRule",
+    "DefinitionRow",
     "AnchorPoint",
     "LoanPricing",
     "governing_account_opening",
@@ -246,6 +258,8 @@ __all__ = [
     "baseline_amount_basis",
     "books_hold",
     "amount_rule",
+    "definition_cash",
+    "is_loan_payment_definition",
     "transfer_amount_rule",
     "amounts_by_id",
     "account_opening_fact",

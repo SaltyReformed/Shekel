@@ -9,8 +9,9 @@ R16-b-2 moved it here, and the move is ruling **R-R69**'s (developer,
 from its definition, and that estimate has to carry the date the row WOULD
 carry, or the payoff moves the moment the row is written -- the defect class
 the R7d and R16 arcs exist to close.  The balance seam cannot import the
-engine (124 modules, the session and the write state machine) for one pure
-function, and the engine cannot be handed the seam's question; so the leaf
+engine (an import closure of 124 modules at ``e6b0c263``, measured
+2026-09-11 -- the session and the write state machine among them) for one
+pure function, and the engine cannot be handed the seam's question; so the leaf
 moves to the tier both can reach (``CLAUDE.md`` rule 14's placement clause).
 Every caller was re-pointed in the same commit; the engine re-exports
 nothing, so the function has ONE import path.
