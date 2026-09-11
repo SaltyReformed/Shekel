@@ -101,7 +101,9 @@ class TestEverySeededOwnerHasARecordedCadence:
             "which is pay-calendar finding P8 and a state no application door "
             "can produce"
         )
-        assert schedule.cadence_days == SEED_USER_CADENCE_DAYS
+        assert pay_schedule_service.ScheduleFacts.of(
+            schedule,
+        ).rhythm.cadence_days == SEED_USER_CADENCE_DAYS
 
     def test_the_cadence_is_READ_rather_than_inferred(
         self, app, db, seed_user,  # pylint: disable=unused-argument

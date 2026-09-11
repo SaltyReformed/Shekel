@@ -50,10 +50,11 @@
      The option list is ONE list, PAYDAY_SHIFT_OPTIONS, so four forms cannot
      word the same three choices differently.
 
-     ``pp_schedule`` is the settings tab's context and is ABSENT on the
-     standalone /pay-periods/generate page, so the current answer is read
-     where there is one and falls back to "pay on that day anyway" where
-     there is not.  That fallback is the honest one for a first-time owner
+     ``pp_era`` -- the owner's latest era, whose fact the convention is
+     since plan step pay_calendar:C17-a -- is the settings tab's context and
+     is ABSENT on the standalone /pay-periods/generate page, so the current
+     answer is read where there is one and falls back to "pay on that day
+     anyway" where there is not.  That fallback is the honest one for a first-time owner
      and the ``is defined`` guard is cheap insurance rather than the thing
      that prevents a reset: it guards the NAME, and since this app does not
      configure ``StrictUndefined``, a bare truth test would behave
@@ -72,8 +73,8 @@
   {{ render_select("shift", PAYDAY_SHIFT_LABEL,
                    PAYDAY_SHIFT_OPTIONS,
                    selected_value=(request.form.get('shift')
-                                   or (pp_schedule.shift_id
-                                       if pp_schedule is defined and pp_schedule
+                                   or (pp_era.shift_id
+                                       if pp_era is defined and pp_era
                                        else SHIFT_NONE)),
                    help_text=PAYDAY_SHIFT_HELP,
                    errors=errors) }}

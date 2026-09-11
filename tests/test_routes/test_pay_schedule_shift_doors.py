@@ -19,6 +19,7 @@ Nothing here asserts that a payday MOVED, and that is deliberate: C14-b lands
 the column and the doors with behaviour OFF.  ``C14-e`` is the leaf that
 applies the convention at the producer, and it is the one that moves money.
 """
+import re
 from datetime import timedelta
 
 import pytest
@@ -140,6 +141,44 @@ class TestTheControlIsRenderedOnAllFourDoors:
         establishing = bare_auth_client.get("/settings?section=pay-periods").data
         assert establishing.count(b'name="shift"') == 1
         assert b"Generate Pay Periods" in establishing
+
+
+class TestTheManageCardPreselectsTheLatestErasConvention:
+    """The regenerate and reset selects open on the owner's STORED answer.
+
+    Plan step ``pay_calendar:C17-a`` moved the convention from the schedule
+    row to the era, and the three templates read ``pp_era.shift_id`` where
+    they read ``pp_schedule.shift_id``; nothing graded the preselect before
+    (the census above counts ``name="shift"`` only), which is how a re-pointed
+    value could render every select back on ``none`` and pass.  Graded as the
+    rendered ``<option ... selected>`` for the stored id, TWICE on the page
+    (regenerate and reset), after a regenerate that stored ``prior``.
+    """
+
+    def test_a_stored_prior_is_the_selected_option_on_both_forms(
+        self, app, auth_client, seed_user,
+    ):
+        """A regenerate at ``prior`` and the manage card then opens on ``prior``."""
+        with app.app_context():
+            start = display_today() + timedelta(days=14)
+            assert auth_client.post("/pay-periods/regenerate", data={
+                "new_start_date": start.isoformat(),
+                "num_periods": "3",
+                "cadence_days": "14",
+                "shift": shift_form_value(BusinessDayShiftEnum.PRIOR),
+            }).status_code == 302
+            prior_id = ref_cache.business_day_shift_id(BusinessDayShiftEnum.PRIOR)
+            none_id = ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE)
+
+            page = auth_client.get("/settings?section=pay-periods").data
+
+            assert page.count(b'name="shift"') == 2
+            assert len(re.findall(
+                rb'<option value="%d"\s+selected>' % prior_id, page,
+            )) == 2, "both selects must open on the stored convention"
+            assert not re.findall(
+                rb'<option value="%d"\s+selected>' % none_id, page,
+            ), "and neither may snap back to none"
 
 
 class TestEachDoorPersistsTheAnswer:
@@ -302,9 +341,7 @@ class TestADoorRefusesAPairNoCalendarCanDerive:
 
             assert response.status_code == 302
             user_id = bare_user["user"].id
-            assert pay_schedule_service.get_schedule(
-                user_id,
-            ).cadence_days == 2
+            assert pay_schedule_service.resolve_cadence(user_id) == 2
 
 
 class TestAnUnmodelledConventionIsRefusedAtTheSchema:

@@ -45,7 +45,7 @@ from app.exceptions import ValidationError
 from app import ref_cache
 from app.enums import BusinessDayShiftEnum, StatusEnum, TxnTypeEnum
 from app.models.pay_period import PayPeriod
-from app.models.pay_schedule import CADENCE_DAYS_MIN, PaySchedule
+from app.models.pay_era import CADENCE_DAYS_MIN
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
@@ -62,6 +62,7 @@ from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     rhythm_of,
     add_txn,
+    restate_fixture_era,
     all_periods,
     capture_sql_statements,
     create_savings_account,
@@ -1311,7 +1312,7 @@ class TestACoverageWithdrawalIsAccepted:
 
         The state that used to trip it needs a stored cadence SHORTER than the
         schedule it generated -- no door can create that since C3-b's cadence
-        rule, so it is built by editing the schedule row directly, the shape
+        rule, so it is built by restating the era directly, the shape
         pre-C3-b data carries (finding **P28**).  With cadence 3 the append
         lands 2026-05-11 and pulls the last paycheck's end back to 2026-05-10,
         leaving the row that settled 2026-05-18 outside every paycheck.  The
@@ -1326,9 +1327,11 @@ class TestACoverageWithdrawalIsAccepted:
             pay_schedule_service.set_rolling(
                 user_id, enabled=True, target_periods=11,
             )
-            db.session.query(PaySchedule).filter_by(user_id=user_id).update(
-                {"cadence_days": 3}, synchronize_session=False,
-            )
+            # The stored rhythm is an ERA since plan step C17-a, restated here
+            # as one 3-day era phased on the last recorded payday -- a day the
+            # 14-day record already holds, so the grid the top-up continues
+            # runs 05-11, 05-14 from it.
+            restate_fixture_era(user_id, self._LAST_PAYDAY, 3)
             db.session.commit()
 
             created = pay_period_rolling.top_up_rolling_window(
@@ -1376,7 +1379,7 @@ class TestTheCadenceRule:
             )
             db.session.commit()
 
-            assert pay_schedule_service.get_schedule(user_id).cadence_days == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == 7
             assert _paydays(user_id) == [
                 (date(2026, 1, 2), date(2026, 1, 8), 0),
             ]
@@ -1407,7 +1410,7 @@ class TestTheCadenceRule:
             db.session.commit()
 
             assert created == []
-            assert pay_schedule_service.get_schedule(user_id).cadence_days == 14
+            assert pay_schedule_service.resolve_cadence(user_id) == 14
 
     def test_a_REFUSED_batch_leaves_the_cadence_alone(
         self, app, db, bare_user,
@@ -1437,7 +1440,7 @@ class TestTheCadenceRule:
                 )
             db.session.rollback()
 
-            assert pay_schedule_service.get_schedule(user_id).cadence_days == 14
+            assert pay_schedule_service.resolve_cadence(user_id) == 14
 
     def test_extend_takes_no_cadence_at_all(self, app, db, bare_user):
         """Finding **P29**, closed by DELETION rather than by a new write.
@@ -1465,7 +1468,7 @@ class TestTheCadenceRule:
             pay_period_admin.extend_pay_periods(user_id, 1)
             db.session.commit()
 
-            assert pay_schedule_service.get_schedule(user_id).cadence_days == 14
+            assert pay_schedule_service.resolve_cadence(user_id) == 14
             assert _paydays(user_id)[-1] == (
                 date(2026, 1, 30), date(2026, 2, 12), 2,
             )

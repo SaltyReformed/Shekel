@@ -218,6 +218,14 @@ _REF_TABLE_SEEDS = (
     ("RecurrenceUnit", ["period", "week", "month", "year"]),
     ("PeriodPlacement", ["containing_date", "period_starting_on_or_after"]),
     ("BusinessDayShift", ["none", "prior", "next"]),
+    # What KIND of rhythm a pay era runs on (pay-calendar arc, plan step C17;
+    # ruling **R-PC58**).  ``fixed_days`` is the only member until the
+    # day-of-month kinds land at ``C17-d``.  The migration that creates
+    # ``budget.pay_eras`` inline-seeds the identical row so a freshly upgraded
+    # DB resolves the enum before this idempotent reseed runs -- the same
+    # dual-seed pattern the recurrence refs above use.  Names match the enum
+    # ``.value`` strings in ``app/enums.py`` exactly.
+    ("PayCadenceKind", ["fixed_days"]),
     # The amount model's discriminator (balance arc, plan step X-au-c1; ruling
     # **R-FI**).  WHICH RELATION states a row's amount when the row does not
     # state it itself: ``template`` is the recurring definition that generated

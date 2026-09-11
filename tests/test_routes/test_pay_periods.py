@@ -266,12 +266,12 @@ class TestPayPeriodGenerate:
             }, follow_redirects=True)
             assert len(_spans(db.session, user_id)) == 3
 
-            # Empty the calendar, leaving the row and its stored phase behind.
+            # Empty the calendar, leaving the row and its era behind.
             db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
             db.session.commit()
             emptied = pay_schedule_service.get_schedule(user_id)
             assert emptied is not None, "the row must survive for this to bite"
-            assert emptied.nominal_anchor is not None, "so must the phase"
+            assert len(emptied.eras) == 1, "so must the era"
 
             # ESTABLISH again, at a wholly new phase.
             resp = bare_auth_client.post("/pay-periods/generate", data={
@@ -283,7 +283,7 @@ class TestPayPeriodGenerate:
             assert [start for start, _end in _spans(db.session, user_id)] == [
                 date(2027, 3, 4), date(2027, 3, 11),
             ]
-            assert pay_schedule_service.get_schedule(user_id).cadence_days == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == 7
 
 
 # ── Negative Path Tests ─────────────────────────────────────────────
@@ -542,4 +542,4 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
             assert after_horizon == date(2027, 6, 25)
             assert after_horizon > before_horizon
             # The submitted cadence of 1 never reached the schedule.
-            assert pay_schedule_service.get_schedule(user_id).cadence_days == 180
+            assert pay_schedule_service.resolve_cadence(user_id) == 180

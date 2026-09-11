@@ -729,12 +729,12 @@ from app.models.ref import (
 from app.services import (
     account_service,
     pay_period_write,
-    pay_schedule_service,
 )
 from app.services.auth_service import hash_password
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     rhythm_of,
+    mint_fixture_era,
     bind_db_clock_rewriter,
     create_loan_account,
     insert_trueup_event,
@@ -1642,9 +1642,10 @@ def bare_user_with_cadence(db, bare_user):
     since plan step ``pay_calendar:C4-b-2``, ``fk_pay_periods_schedule``
     refuses a pay period whose owner holds no ``budget.pay_schedule`` row, so
     ``bare_user`` alone can no longer carry one.  This fixture is that rule
-    stated ONCE rather than an ``upsert_schedule`` line copied into each case
-    -- four of them today, and the fifth would be the one that copies it
-    wrongly.
+    stated ONCE rather than a schedule-and-era line copied into each case --
+    four of them today, and the fifth would be the one that copies it wrongly.
+    The era's day is inert for hand-built rows at plan step
+    ``pay_calendar:C17-a`` (``mint_fixture_era`` says why).
 
     The cadence is 14 and no case should assert on it: these owners' periods
     are written by hand and are deliberately inconsistent with any cadence.
@@ -1655,10 +1656,7 @@ def bare_user_with_cadence(db, bare_user):
         effect on the database, not a new key, so a case can swap this fixture
         in for ``bare_user`` without touching anything else it reads.
     """
-    pay_schedule_service.upsert_schedule(
-        bare_user["user"].id, rhythm=rhythm_of(14),
-        nominal_anchor=None,
-    )
+    mint_fixture_era(bare_user["user"].id, date(2026, 1, 2), 14)
     db.session.commit()
     return bare_user
 
@@ -2223,7 +2221,7 @@ def _build_cross_page_calendar_periods(db, user):
     # period's projected end.  Every other end is the day before the next
     # payday, which is what makes these rows a real calendar-monthly schedule
     # rather than a stored claim to be one.
-    pay_schedule_service.upsert_schedule(user.id, rhythm_of(31), None)
+    mint_fixture_era(user.id, date(first_year, 1, 1), 31)
 
     all_periods = (
         db.session.query(PayPeriod)
@@ -3477,6 +3475,17 @@ def _refresh_ref_cache_and_jinja_globals(app):
     from app.jinja_globals import register_ref_id_globals
 
     ref_cache.init(_db.session)
+    # ``init`` SELECTs every ``ref`` table and writes nothing, and the session
+    # it ran on is the fixture's OUTER one, which a test body's nested
+    # ``app.app_context()`` cannot reach.  Left as it is, that session sits
+    # idle in a transaction holding a share lock on each ``ref`` table until
+    # the test ends -- and a migration replay that drops a key onto one of
+    # them from the nested context (plan step ``pay_calendar:C17-a``'s
+    # downgrade, run by ``rewind_pay_schedule_rhythm`` and by
+    # ``test_pay_era.py`` directly) then waits on the cluster's
+    # ``lock_timeout`` and fails.  Ending the read-only transaction here
+    # releases the locks and changes nothing else.
+    _db.session.rollback()
     register_ref_id_globals(app)
 
 
