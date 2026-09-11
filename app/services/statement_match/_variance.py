@@ -423,12 +423,15 @@ def _reject_unaccepted_difference(
     **What scripting off can and cannot consent to is unchanged by this
     step.**  A tier's proposal states its figure on the card that offers it
     (``stated_difference``) and the ``?open=`` pane prices the proposal's rows
-    and draws the one act for them, so a near miss is corrected with no
-    script at all.  A set the owner builds BY HAND on that pane is priced
-    only at the press: nothing re-renders to state its difference, so the
-    owner cannot have seen what would be written, and a difference is refused
-    here while an exact set is recorded -- the ruling of 2026-08-30 working,
-    not a casualty of this step.
+    on its first render and draws the one act for them, so a near miss is
+    corrected with no script at all.  A set the owner builds BY HAND on that
+    pane is priced only at the press: nothing re-renders to state its
+    difference, so the owner cannot have seen what would be written, and a
+    difference is refused here while an exact set is recorded -- the ruling
+    of 2026-08-30 working, not a casualty of this step.  **The refusal is
+    what states it** since plan step ``bank_import:X-gi-2a``: the page
+    re-draws the pane from the submitted form, rows ticked and the acts
+    offered, so the next press can carry the consent this gate compares.
 
     Args:
         sides: What the two halves come to.

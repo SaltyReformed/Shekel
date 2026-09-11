@@ -165,7 +165,7 @@ def _choosing(fields, name, value):
     return replaced + [(name, value)]
 
 
-def _post(auth_client, seed_user, fields, page, pane=None):
+def _post(auth_client, seed_user, fields, page, pane=None, opened=None):
     """Post *fields* to Apply, refusing anything the owner could not have sent.
 
     **The refusal is the point, and it is structural rather than a rule to
@@ -208,6 +208,17 @@ def _post(auth_client, seed_user, fields, page, pane=None):
             It is a SECOND document rather than a flag, so the universe stays
             *what was actually rendered* rather than *what a caller says is
             allowed*: a control in neither document is still refused.
+        opened: The bank line the page was opened on with ``?open=``, or
+            ``None``.  **The form's own action carries it** (plan step
+            ``bank_import:X-gi-1``), so a press from an opened page posts to
+            that URL and not to the bare one -- and since plan step
+            ``bank_import:X-gi-2a`` the difference is what the answer prices
+            the pane from.  **The URL is SCRAPED from the page's Apply form
+            and asserted to name that line**, rather than composed here
+            (adversarial review 2026-09-11): a re-drawn page whose action had
+            dropped ``open=`` would otherwise be pressed at a URL it never
+            rendered, and the door reads the rows and consent from the body
+            either way, so nothing else would notice.
 
     Returns:
         The response.
@@ -228,10 +239,39 @@ def _post(auth_client, seed_user, fields, page, pane=None):
             f"browser could never submit it -- post it through auth_client "
             f"directly if the case is about a crafted or stale body"
         )
+    target = _url(seed_user["account"].id)
+    if opened is not None:
+        target = _apply_action(page)
+        assert target.endswith(f"?open={opened}"), (
+            f"the page's Apply form posts to {target!r}, which does not name "
+            f"the card it was opened on"
+        )
     return auth_client.post(
-        _url(seed_user["account"].id),
-        data=MultiDict([("csrf_token", "x")] + list(fields)),
+        target, data=MultiDict([("csrf_token", "x")] + list(fields)),
     )
+
+
+def _apply_action(page):
+    """Return the Apply form's ``action``, exactly as the page emits it.
+
+    Scraped rather than composed, which is :func:`_undo_control`'s rule for
+    the Undo form one door over.
+
+    Args:
+        page: The rendered page or body.
+
+    Returns:
+        The URL.
+
+    Raises:
+        AssertionError: When the page renders no Apply form at all.
+    """
+    found = re.search(
+        r'<form method="post"\s+action="([^"]*/statements/reconcile[^"]*)"',
+        page,
+    )
+    assert found is not None, "the page renders no Apply form"
+    return found.group(1).replace("&amp;", "&")
 
 
 def _undo_control(page):
@@ -3952,6 +3992,351 @@ class TestTheScriptlessPathRECORDSTheMatch:
         )
 
 
+class TestARefusedApplyKeepsTheOwnersTicks:
+    """Plan step ``bank_import:X-gi-2a``, finding **BI-478**, ruling **R-BI3**.
+
+    With scripting off nothing re-prices as the owner ticks, so on a
+    hand-built group with a difference the FIRST press is refused by design
+    (**R-BI1**) -- and the page it answered with priced the pane from the
+    tier's proposal, so every tick was gone and the owner started over.  The
+    answer is priced from the submitted form now, and it echoes every
+    control whose value is still on offer: the rows, and the consent by
+    whole-value equality.
+
+    **Every case reads the PAGE and presses its own bytes**, because what
+    this step changes is what a browser with no JavaScript receives after a
+    press, and the door itself is untouched.
+    """
+
+    @staticmethod
+    def _a_card_payment_and_two_paybacks(seed_user, db):
+        """Stage the class the scriptless pane exists for.
+
+        The parked `-$793.23` card payment and its two paybacks, `-$93.23`
+        and `-$700.00`, from the sibling class's own fixture; the earlier
+        period's second line is what keeps the `-$700.00` row offered at all.
+
+        Returns:
+            The staged bank line.
+        """
+        line, _ = TestTheMatchPaneIsReachableWithNoScript(
+        )._a_card_payment_and_a_payback_another_period_holds(seed_user, db)
+        return line
+
+    def _opened_tokens(self, auth_client, seed_user, line):
+        """Return the opened page and its two row tokens, by figure.
+
+        Returns:
+            ``(page, token_93, token_700)``.
+        """
+        page = _open(auth_client, seed_user, line.id, tab="transfers")
+        tokens = _row_tokens(page, line.id)
+        by_figure = {token.split(":")[2]: token for token in tokens}
+        assert set(by_figure) == {"-93.23", "-700.00"}, (
+            f"the opened card offered {tokens}, not the two paybacks"
+        )
+        return page, by_figure["-93.23"], by_figure["-700.00"]
+
+    @staticmethod
+    def _ticked(body, line_id):
+        """Return the row tokens the re-drawn pane renders TICKED.
+
+        :func:`~tests.test_routes._statement_forms.reconcile_form_fields`
+        keeps what a browser would submit, and an unticked box submits
+        nothing -- so this is exactly the echo under test.
+        """
+        return [
+            value for name, value in reconcile_form_fields(body)
+            if name == f"rows-{line_id}"
+        ]
+
+    def _refused_once(self, auth_client, seed_user, db):
+        """Press Apply on ONE ticked payback and return the refused page.
+
+        `-$93.23` alone against `-$793.23` leaves `-$700.00`, and nothing has
+        consented to it, so the door refuses -- the ordinary first press of
+        the scriptless flow.
+
+        Returns:
+            ``(line, token_93, token_700, body)``.
+        """
+        line = self._a_card_payment_and_two_paybacks(seed_user, db)
+        page, token_93, token_700 = self._opened_tokens(
+            auth_client, seed_user, line,
+        )
+        response = _post(
+            auth_client, seed_user,
+            reconcile_form_fields(page)
+            + [(f"rows-{line.id}", token_93), ("ok", str(line.id))],
+            page, opened=line.id,
+        )
+        assert response.status_code == 200, (
+            "a per-item refusal answers with the screen at 200"
+        )
+        body = response.get_data(as_text=True)
+        assert "These do not add up" in body, (
+            "the press was not refused, so nothing here grades the re-draw"
+        )
+        assert StatementMatch.query.count() == 0
+        return line, token_93, token_700, body
+
+    def test_the_refused_press_comes_back_with_the_rows_ticked_and_priced(
+        self, auth_client, db, seed_user,
+    ):
+        """The whole of BI-478, read off the page the refusal answers with.
+
+        The `-$93.23` row is ticked, the `-$700.00` row is not, the totals
+        are the submitted rows' own, and the one act a lone row can become
+        is offered -- where the shipped tree came back with nothing ticked,
+        nothing priced, and the disabled placeholder.
+        """
+        line, token_93, token_700, body = self._refused_once(
+            auth_client, seed_user, db,
+        )
+
+        assert f'id="rec-match-{line.id}"' in body, "the pane is not open"
+        assert self._ticked(body, line.id) == [token_93], (
+            "the refused press did not come back with the owner's tick"
+        )
+        assert token_700 in _row_tokens(body, line.id), (
+            "the unticked payback is no longer offered"
+        )
+        # **The sums block, and not the figures the row list prints anyway**:
+        # the line's own amount and each row's figure are in the document
+        # whether or not anything was priced (adversarial review 2026-09-11).
+        assert re.search(
+            r'class="rec-sums(?:.|\n)*?your bank shows(?:.|\n)*?-\$793\.23'
+            r'(?:.|\n)*?come to(?:.|\n)*?-\$93\.23'
+            r'(?:.|\n)*?difference(?:.|\n)*?-\$700\.00',
+            body,
+        ), "the re-drawn pane was not priced from the submitted rows"
+        assert _consent_options(body, line.id) == ["-700.00"], (
+            "the difference's one act was not offered on the re-draw"
+        )
+
+    def test_the_second_press_from_the_re_drawn_page_records_the_match(
+        self, auth_client, db, seed_user,
+    ):
+        """The flow, end to end, from the refused page's own bytes.
+
+        Tick the one act it offers and press again: the row echoed by the
+        re-draw and the consent are what the door reads, and it records the
+        bank's figure written to the `-$93.23` row.
+        """
+        line, token_93, _, body = self._refused_once(
+            auth_client, seed_user, db,
+        )
+
+        applied = _post(
+            auth_client, seed_user,
+            reconcile_form_fields(body)
+            + [(f"consent-{line.id}", "-700.00"), ("ok", str(line.id))],
+            body, opened=line.id,
+        )
+
+        assert applied.status_code == 200
+        assert "These do not add up" not in applied.get_data(as_text=True)
+        assert StatementMatch.query.count() == 1, (
+            "the second press did not record the match"
+        )
+        row_id = int(token_93.split(":")[1])
+        db.session.expire_all()
+        assert db.session.get(Transaction, row_id).settled_amount == Decimal(
+            "793.23"
+        ), "the lone-row act did not write the bank's figure to the row"
+
+    def test_a_consent_comes_back_PICKED_when_its_act_is_still_offered(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **R-BI3**: the echo reaches the consent too.
+
+        The owner ticks the one act and presses; the press is refused for a
+        reason that has nothing to do with this card -- a SECOND card's item
+        is malformed, which is a pass-level refusal -- so the same act is
+        still on offer, and the box comes back ticked.
+
+        **Posted directly**, because the second card is not on this tab and
+        its field is one no page renders: a crafted sibling is the only way
+        to refuse a pass whose opened card is in order.
+        """
+        line, token_93, _, body = self._refused_once(
+            auth_client, seed_user, db,
+        )
+        another = an_unexplained_outflow(seed_user, merchant="Kroger")
+        db.session.commit()
+
+        refused = auth_client.post(
+            _url(seed_user["account"].id) + f"?open={line.id}",
+            data=MultiDict(
+                [("csrf_token", "x")]
+                + reconcile_form_fields(body)
+                + [
+                    (f"consent-{line.id}", "-700.00"),
+                    ("ok", str(line.id)),
+                    ("ok", str(another.id)),
+                    (f"verb-{another.id}", "match"),
+                    (f"rows-{another.id}", "not-a-token"),
+                ]
+            ),
+        )
+
+        assert refused.status_code == 400
+        page = refused.get_data(as_text=True)
+        assert "not a row this page could have shown you" in page
+        assert StatementMatch.query.count() == 0
+        assert self._ticked(page, line.id) == [token_93]
+        assert (f"consent-{line.id}", "-700.00") in reconcile_form_fields(
+            page,
+        ), "the consent the owner gave to an unchanged act came back unpicked"
+
+    def test_a_consent_to_an_act_no_longer_offered_is_NOT_picked(
+        self, auth_client, db, seed_user,
+    ):
+        """The control on the case above: equal value, or nothing.
+
+        The owner consents to `-$700.00` written to the `-$93.23` row, then
+        changes the rows so the difference is `-$93.23` instead.  The door
+        refuses the stale figure, the re-draw offers the act for the NEW
+        difference, and it is not picked -- a consent is echoed to the act
+        it was given for and never to whatever stands in its place.
+        """
+        line, _, token_700, body = self._refused_once(
+            auth_client, seed_user, db,
+        )
+
+        refused = _post(
+            auth_client, seed_user,
+            _choosing(
+                reconcile_form_fields(body), f"rows-{line.id}", token_700,
+            ) + [(f"consent-{line.id}", "-700.00"), ("ok", str(line.id))],
+            body, opened=line.id,
+        )
+
+        assert refused.status_code == 200
+        page = refused.get_data(as_text=True)
+        assert "reviewed against a difference of -700.00" in page
+        assert StatementMatch.query.count() == 0
+        assert self._ticked(page, line.id) == [token_700]
+        assert _consent_options(page, line.id) == ["-93.23"]
+        assert not [
+            value for name, value in reconcile_form_fields(page)
+            if name == f"consent-{line.id}"
+        ], "a consent to an act no longer offered was echoed onto another"
+
+    def test_the_scripted_pane_keeps_a_pick_across_a_search_keystroke(
+        self, auth_client, db, seed_user,
+    ):
+        """One template serves both surfaces, so the fragment echoes too.
+
+        Typing in the search box re-fetches the pane with the consent radio
+        in the body; the rows are unchanged, so the same acts are offered and
+        the pick survives -- where the shipped fragment came back with every
+        option blank.  **The body carries the keystroke** (``q-<line>``), so
+        the render graded is the search-narrowed one and not a plain re-price
+        (adversarial review 2026-09-11).
+        """
+        pane_of = TestThePaneOffersWHEREADifferenceGoes()
+        line, _, _ = pane_of._a_payroll_deposit(seed_user, db)
+        tokens = _row_tokens(
+            pane_of._pane(auth_client, seed_user, line), line.id,
+        )
+        chosen = f"0.05@{tokens[0]}"
+        assert chosen in _consent_options(
+            pane_of._pane(auth_client, seed_user, line, rows=tokens), line.id,
+        ), "the act this case picks is not one the pane offers"
+
+        pane = auth_client.post(
+            _match_url(seed_user["account"].id, line.id),
+            data=MultiDict(
+                [("csrf_token", "x"), (f"q-{line.id}", "Data")]
+                + [(f"rows-{line.id}", token) for token in tokens]
+                + [(f"consent-{line.id}", chosen)]
+            ),
+        ).get_data(as_text=True)
+
+        assert f'value="Data"' in pane, "the search was not performed"
+        assert (f"consent-{line.id}", chosen) in reconcile_form_fields(pane), (
+            "the fragment re-drew the picked option blank"
+        )
+        assert [
+            value for name, value in reconcile_form_fields(pane)
+            if name == f"consent-{line.id}"
+        ] == [chosen], "more than one option came back picked"
+
+    def test_ticks_on_the_open_card_survive_an_apply_that_OKd_another_card(
+        self, auth_client, db, seed_user,
+    ):
+        """The card is read from the body whether or not it was OK'd.
+
+        The owner ticks a row on the open card, then OKs a DIFFERENT card on
+        SKIP and presses.  The skip lands, the pass answers from a fresh
+        read, and the open card comes back as they left it.
+        """
+        opened = an_unexplained_outflow(seed_user, merchant="Amazon")
+        a_transaction(seed_user, name="Electricity bill", amount="500.00")
+        other = an_unexplained_outflow(
+            seed_user, merchant="Kroger", amount="-12.34",
+        )
+        db.session.commit()
+        page = _open(auth_client, seed_user, opened.id)
+        (token,) = _row_tokens(page, opened.id)
+
+        applied = _post(
+            auth_client, seed_user,
+            _choosing(
+                reconcile_form_fields(page), f"verb-{other.id}", "skip",
+            ) + [(f"rows-{opened.id}", token), ("ok", str(other.id))],
+            page, opened=opened.id,
+        )
+
+        assert applied.status_code == 200
+        assert StatementLineSkip.query.count() == 1, "the skip did not land"
+        body = applied.get_data(as_text=True)
+        assert self._ticked(body, opened.id) == [token], (
+            "the open card lost its tick to a press that OK'd another card"
+        )
+
+    def test_a_malformed_field_for_the_open_card_refuses_the_pass_first(
+        self, auth_client, db, seed_user,
+    ):
+        """The reader runs BEFORE the door, or it grades a write.
+
+        The open card was not OK'd, so the batch never grades its fields;
+        a crafted row token for it must still be a pass-level refusal, and
+        the skip beside it must NOT land -- the case above is the control
+        that shows the same press landing it when the field is in order.
+        """
+        opened = an_unexplained_outflow(seed_user, merchant="Amazon")
+        a_transaction(seed_user, name="Electricity bill", amount="500.00")
+        other = an_unexplained_outflow(
+            seed_user, merchant="Kroger", amount="-12.34",
+        )
+        db.session.commit()
+        page = _open(auth_client, seed_user, opened.id)
+
+        # POSTED DIRECTLY: the token is one no page renders.
+        refused = auth_client.post(
+            _url(seed_user["account"].id) + f"?open={opened.id}",
+            data=MultiDict(
+                [("csrf_token", "x")]
+                + _choosing(
+                    reconcile_form_fields(page), f"verb-{other.id}", "skip",
+                )
+                + [(f"rows-{opened.id}", "not-a-token"), ("ok", str(other.id))]
+            ),
+        )
+
+        assert refused.status_code == 400
+        body = refused.get_data(as_text=True)
+        assert "not a row this page could have shown you" in body
+        assert StatementLineSkip.query.count() == 0, (
+            "a malformed field for the open card was read after the door"
+        )
+        assert f'id="rec-match-{opened.id}"' in body, (
+            "the refusal did not keep the card open"
+        )
+
+
 class TestAMalformedOpenNeverOutLIVESTheDoor:
     """A reader of the request runs BEFORE the door, or it grades a write.
 
@@ -4000,6 +4385,34 @@ class TestAMalformedOpenNeverOutLIVESTheDoor:
             "a request answered 404 committed a money pass anyway -- the "
             "owner is told nothing and their records moved"
         )
+
+    @pytest.mark.parametrize("spelling", ["0", "-5", "007", "+5"])
+    def test_an_open_that_names_no_row_is_the_same_404_before_the_door(
+        self, auth_client, db, seed_user, spelling,
+    ):
+        """``int()`` reads these as ids; nothing names a row with them.
+
+        Plan step ``bank_import:X-gi-2a`` made the reader load-bearing: the
+        Apply door grades the open card's fields as a match item, whose
+        ``line_ids`` member :class:`~app.schemas.validation._helpers.RowId`
+        refuses at ``0`` and ``-5`` -- so a lax ``asked_to_open`` answered
+        ``?open=0`` with a 400 over the WHOLE PASS naming a field the body
+        never carried, where the query string is this reader's to answer.
+        One spelling per id, read through ``parse_row_id``, and the answer
+        is the 404 the malformed case above already gets.
+        """
+        fields, _line = self._a_pass_that_really_writes(
+            auth_client, seed_user, db,
+        )
+        before = db.session.query(TransactionEntry).count()
+
+        refused = auth_client.post(
+            _url(seed_user["account"].id) + f"?open={spelling}",
+            data=MultiDict(fields),
+        )
+
+        assert refused.status_code == 404
+        assert db.session.query(TransactionEntry).count() == before
 
     def test_the_same_body_WITHOUT_the_bad_open_really_writes(
         self, auth_client, db, seed_user,
