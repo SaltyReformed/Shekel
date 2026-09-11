@@ -86,6 +86,7 @@ from app.utils.balance_predicates import is_balance_contributing
 from app.services.row_valuation import settled_contribution
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.services import template_amount_service
+from app.services.amount_ownership import state_own_amount
 from app.models.transfer_template import TransferTemplate
 
 _MIGRATION = load_migration_module("b3f7c2a9d514_amount_ownership.py")
@@ -533,11 +534,14 @@ class TestOnePricingLink:
             db.session.add(xfer)
             db.session.flush()
 
-            # Period 1, not 0: the fixture already holds a non-override row for
-            # this template in period 0, and
-            # the undated generation index would raise on THAT
-            # instead -- a control that fires for the wrong reason proves
-            # nothing.
+            # Period 1, not 0, is a precaution that has outlived its cause and
+            # is kept because it costs nothing: while the fixture's period-0
+            # row was hand-built and undated, this undated row in the same
+            # paycheck met ``idx_transactions_template_scenario_undated`` first
+            # and the control fired for the wrong reason.  The fixture's row is
+            # the engine's now (plan step balance:X-cf) and answers an
+            # occurrence, so it sits in the other index and the two could not
+            # collide in any period.
             txn = _make_transaction(
                 data, data["periods"],
                 pay_period_id=data["periods"][1].id,
@@ -938,8 +942,24 @@ class TestTheDowngradeRefusesToInventAFigure:
         Both columns are in the guard's loop, and a guard that checked only
         ``transactions`` would let a downgrade fail mid-DDL on the transfers
         ``SET NOT NULL`` -- after it had already dropped the constraints.
+
+        The fixture's own transaction is the ENGINE's row since plan step
+        balance:X-cf and so is derived, which is the state the FIRST arm
+        refuses; the guard raises at the first table it finds a NULL in, so
+        that row would answer for the transfer's arm.  The owner re-prices it
+        first -- the two acts the re-price door performs -- and the world is
+        then the one this case is about: every transaction owns its figure
+        and one transfer does not.
         """
         with app.app_context():
+            # Re-fetched by key: the fixture committed, so its instance is
+            # expired and an attribute set on it may never reach a flush.
+            fixture_row = db.session.get(
+                Transaction, seed_full_user_data["transaction"].id,
+            )
+            state_own_amount(fixture_row, Decimal("1200.00"))
+            fixture_row.is_override = True
+            db.session.flush()
             xfer = _make_transfer(
                 seed_full_user_data,
                 amount_ownership=AmountOwnership.derived(

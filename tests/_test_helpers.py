@@ -3276,11 +3276,13 @@ def make_salary_profile(
 def create_envelope_txn(seed_user, db_session, period, name, estimated):
     """Create an entry-tracked (is_envelope) projected expense (flushed).
 
-    Builds a minimal Every-Period envelope template plus a Projected
-    expense instance in ``period`` on the seed user's account, so the
-    stereotyped template + instance construction is not copied per suite
-    (a duplicate-code finding).  The caller attaches entries via
-    :func:`add_entry` and commits.
+    Builds a minimal Every-Period envelope template and lets the engine
+    generate its Projected row in ``period`` (:func:`generate_row_of`), so the
+    stereotyped template + instance construction is not copied per suite (a
+    duplicate-code finding) and the row is the one the application makes
+    rather than a hand-built copy of it (plan step balance:X-cf).  The
+    envelope's budget is the template's stated price, which the derived row
+    reads; the caller attaches entries via :func:`add_entry` and commits.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -3291,45 +3293,13 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
         estimated: The envelope's estimated (budget) amount (Decimal).
 
     Returns:
-        The created :class:`~app.models.transaction.Transaction` (flushed).
+        The generated :class:`~app.models.transaction.Transaction` (flushed).
     """
-    # pylint: disable=import-outside-toplevel  -- same circular-dep
-    # avoidance as the loan helpers above.
-    from app import ref_cache
-    from app.enums import StatusEnum, TxnTypeEnum
-    from app.models.transaction import Transaction
-    from app.models.transaction_template import TransactionTemplate
-
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type_id,
-        name=name,
-        default_amount=estimated,
-        is_envelope=True,
+    template = make_expense_template(
+        db_session, seed_user, amount=str(estimated),
+        name=name, category_key="Groceries", is_envelope=True,
     )
-    db_session.add(template)
-    db_session.flush()
-    state_template_price(template)
-    # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_every_period_rule(db_session, template)
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type_id,
-        amount_ownership=AmountOwnership.own(estimated),
-        template_id=template.id,
-    )
-    db_session.add(txn)
-    db_session.flush()
-    return txn
+    return generate_row_of(template, period)
 
 
 def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -3964,6 +3934,115 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     db_session.add(txn)
     db_session.flush()
     return txn
+
+
+def generate_row_of(template, period):
+    """Generate the ONE row of *template* in *period* through the engine.
+
+    **The suite's one builder for a row of a definition** (plan step
+    balance:X-cf, developer ruling 2026-09-11, the row-level twin of
+    :func:`state_template_price`'s lesson).  A row that names a recurring
+    definition has exactly one constructor in the application:
+    ``recurrence_engine._generate._new_row``, which splats
+    :class:`~app.services.recurrence_engine.DerivedRowFields` -- the account,
+    name, category, type, amount OWNERSHIP and due date the definition derives
+    -- onto the identity columns, with ``occurs_on`` from the cadence walk.
+    This helper does not restate that line; it CALLS it, through
+    :func:`~app.services.recurrence_engine.generate_for_template` with a
+    window of exactly one paycheck (``GenerationSchedule.for_period_ids``,
+    the shape carry-forward's generate branch uses), and hands back what the
+    engine wrote.  So a fixture built here cannot disagree with the engine
+    about what such a row IS, and a column the engine derives tomorrow lands
+    on every fixture the day it lands on ``DerivedRowFields``.
+
+    **What the hand-built rows were.**  Sixty-eight sites in thirty-nine files
+    constructed ``Transaction(template_id=..., ...)`` by hand: undated (the
+    state the CHECK plan step balance:X-bv-2 binds refuses), and most of
+    them OWNING a figure with ``is_override=False`` -- the pre-X-au-e
+    shape, which no producer has written since a generated row became derived.
+    A control that hand-builds its subject stops grading the producer, and
+    every one of those sites was grading a row the application cannot make.
+
+    Two consequences follow from getting the engine's row, and each is the
+    point rather than a cost:
+
+    * **It is DERIVED.**  It stores no figure; its definition's price series
+      answers for it on its own due date, so a fixture states the figure it
+      expects through :func:`state_template_price` on the template.  A reader
+      that asks the raw ``estimated_amount`` column gets ``None`` here exactly
+      as it does on production, which is what such a reader deserves.
+    * **It answers an OCCURRENCE** (``occurs_on``), so
+      ``idx_transactions_template_scenario_occurrence`` holds over it, and a
+      second ask for the same paycheck writes nothing: the engine's claim
+      predicate (``_recurrence_common.OccurrenceClaims``) sees the first row
+      before the index ever could, which is the 0-rows refusal below.
+
+    A fixture wanting the OWNER's row -- a figure the human authored -- takes
+    ownership of the generated row the way the re-price door does
+    (``routes/transactions/mutations``: :func:`~app.services.amount_ownership.
+    state_own_amount` and ``is_override = True``), rather than building one.
+    A fixture wanting a SETTLED row settles this one, as the app does; the
+    engine only ever writes Projected.
+
+    The row is generated into the owner's BASELINE scenario, which is what
+    every door that generates passes; a fixture for another scenario is a
+    scenario test's subject and authors the pass itself.  Because the
+    baseline is the template owner's by construction, the engine's
+    cross-user scenario gate cannot be reached from here.
+
+    Args:
+        template: The flushed
+            :class:`~app.models.transaction_template.TransactionTemplate`.  It
+            must carry a cadence (``recurrence_rule``): a definition with rows
+            is one that repeats, and :func:`make_every_period_rule` is the
+            ordinary way a fixture gives it one.
+        period: The :class:`~app.models.pay_period.PayPeriod` row the
+            generated row is funded in.  Must be one of the owner's saved
+            periods.
+
+    Returns:
+        The :class:`~app.models.transaction.Transaction` the engine created,
+        flushed.
+
+    Raises:
+        ValueError: *template* has no cadence, or the engine wrote no row in
+            *period* -- its rule names no occurrence in that paycheck, or a
+            row already claims it -- or wrote more than one, which a cadence
+            firing several times inside one paycheck does and which is a
+            generation test's subject rather than a fixture's.  **The 2+
+            refusal leaves the rows it names FLUSHED**: the engine had
+            already written them when the count was taken.
+        RecurrenceWindowError: *period* is not one of the owner's saved
+            periods (``GenerationSchedule.for_period_ids``), which is how
+            another owner's paycheck is refused before any INSERT.
+        BaselineMissingError: The owner has no baseline scenario
+            (``BalanceContext.scenario_id``).
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services import recurrence_engine
+    from app.services.balance_at import BalanceContext
+    from app.services.generation_schedule import GenerationSchedule
+    if template.recurrence_rule is None:
+        raise ValueError(
+            f"template {template.id} ({template.name!r}) has no cadence, so "
+            "the engine generates nothing from it; give it one "
+            "(make_every_period_rule) before asking for its row"
+        )
+    ctx = BalanceContext.build(template.user_id)
+    created = recurrence_engine.generate_for_template(
+        template, GenerationSchedule.for_period_ids(ctx, [period.id]),
+        ctx.scenario_id,
+    )
+    if len(created) != 1:
+        raise ValueError(
+            f"the engine wrote {len(created)} rows of template {template.id} "
+            f"({template.name!r}) in pay period {period.id}, not one: its "
+            "rule names no occurrence in that paycheck or a row already "
+            "claims it (0), or it fires more than once there (2+)"
+        )
+    return created[0]
 
 
 def require_assertion_instant(at):
@@ -5396,12 +5475,34 @@ def make_cadence_rule(owner, cadence, **kwargs):
     )
 
 
-def make_expense_template(db_session, seed_user, amount="1200.00", is_active=True):
+def make_expense_template(
+    db_session, seed_user, amount="1200.00", is_active=True, *,
+    name="Rent", category_key="Rent", is_envelope=False,
+):
     """Create and flush an every-period expense template on the seed account.
 
     Shared by the pay-period CRUD test suites so the
     ``RecurrenceRule`` + ``TransactionTemplate`` construction block is
-    defined once.  The caller commits.
+    defined once.  The caller commits.  **It states the definition's price
+    and its cadence**, so what it returns is a definition the engine can
+    generate from -- the shape every real one has (:func:`state_template_price`
+    says why a bare template is not) -- and :func:`generate_row_of` is the
+    next line for a fixture that wants the definition's row.
+
+    Args:
+        db_session: The test session.
+        seed_user: The seed user fixture dict (or the second user's).
+        amount: The stated price, as a string.
+        is_active: Whether the definition is live.
+        name: The definition's name.  Keyword-only, with the name every
+            existing caller relied on, so widening this helper for the shared
+            fixtures (plan step balance:X-cf) changed no caller.
+        category_key: A key into ``seed_user["categories"]``.
+        is_envelope: Whether the definition's rows track purchases.
+
+    Returns:
+        The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
+        priced and carrying an every-paycheck rule.
     """
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention).
@@ -5415,11 +5516,12 @@ def make_expense_template(db_session, seed_user, amount="1200.00", is_active=Tru
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Rent"].id,
+        category_id=seed_user["categories"][category_key].id,
         transaction_type_id=expense_type.id,
-        name="Rent",
+        name=name,
         default_amount=Decimal(amount),
         is_active=is_active,
+        is_envelope=is_envelope,
     )
     db_session.add(template)
     db_session.flush()
