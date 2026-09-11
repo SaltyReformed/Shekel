@@ -3871,7 +3871,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
     ``LoanPaymentSettings`` -- and on a 2026-08-14 production clone NEITHER of
     the developer's real loan payments carries that row, so both mortgages were
     clearable. The guard now asks the UNION with
-    ``loan_recurrence_sync.is_standing_loan_payment``, and the second case below is
+    ``balance_at.is_standing_loan_payment``, and the second case below is
     the one that was live: it is the production shape, and it FAILS against the
     predicate this step replaced.
     """

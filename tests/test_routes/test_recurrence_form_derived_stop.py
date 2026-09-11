@@ -44,10 +44,9 @@ from app.routes._recurrence_form_render import edit_form_recurrence_state
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import end_bound_before_start_message
 from app.services import balance_at, recurring_transfer_query
-from app.services.balance_at import BalanceContext
+from app.services.balance_at import BalanceContext, is_standing_loan_payment
 from app.services.loan_recurrence_sync import (
     bind_rule_to_loan,
-    is_standing_loan_payment,
     loan_payment_window,
 )
 from app.services.recurrence import (

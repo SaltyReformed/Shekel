@@ -920,6 +920,11 @@ _FENCED_MODULE_RULINGS = {
         # The query itself: which template pays into this account.  A row, not
         # a figure.
         "active_recurring_transfer_template",
+        # The other direction: which ACCOUNT a definition pays into.  A row off
+        # the template's own FK column, moved here from ``loan_recurrence_sync``
+        # at plan step R16-b-2 (ruling R-R70) so the balance seam's identity
+        # reader can reach it; it loads no loan and answers no figure.
+        "destination_account",
         # Two BOOLEAN-and-a-Decimal settings off a transfer template: does this
         # payment's cash derive from the loan, and what standing extra rides on
         # it.  Public since plan step X-au-b, whose amount resolver has to know

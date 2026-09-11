@@ -400,7 +400,7 @@ class TestIsStandingLoanPayment:
             template = make_loan_payment_template(db.session, seed_user, loan)
             db.session.flush()
 
-            assert loan_recurrence_sync.is_standing_loan_payment(template, self._ctx(seed_user)) is True
+            assert balance_at.is_standing_loan_payment(template, self._ctx(seed_user)) is True
 
     def test_a_transfer_into_a_NON_loan_owns_nothing(
         self, app, db, seed_user, seed_periods,
@@ -418,7 +418,7 @@ class TestIsStandingLoanPayment:
             template = make_transfer_template(db.session, seed_user, savings)
             db.session.flush()
 
-            assert loan_recurrence_sync.is_standing_loan_payment(template, self._ctx(seed_user)) is False
+            assert balance_at.is_standing_loan_payment(template, self._ctx(seed_user)) is False
 
     def test_a_SECOND_recurring_payment_into_one_loan_owns_nothing(
         self, app, db, seed_user, seed_periods,
@@ -462,8 +462,8 @@ class TestIsStandingLoanPayment:
 
             ctx = self._ctx(seed_user)
             owned = [
-                loan_recurrence_sync.is_standing_loan_payment(first, ctx),
-                loan_recurrence_sync.is_standing_loan_payment(second, ctx),
+                balance_at.is_standing_loan_payment(first, ctx),
+                balance_at.is_standing_loan_payment(second, ctx),
             ]
             assert owned.count(True) == 1, (
                 f"exactly one of two recurring payments into one loan may own "
@@ -485,7 +485,7 @@ class TestIsStandingLoanPayment:
             template.recurrence_rule = None
             db.session.flush()
 
-            assert loan_recurrence_sync.is_standing_loan_payment(template, self._ctx(seed_user)) is False
+            assert balance_at.is_standing_loan_payment(template, self._ctx(seed_user)) is False
 
     def test_a_transaction_template_owns_nothing(
         self, app, db, seed_user, seed_periods,
@@ -500,7 +500,7 @@ class TestIsStandingLoanPayment:
             template = make_expense_template(db.session, seed_user)
             db.session.flush()
 
-            assert loan_recurrence_sync.is_standing_loan_payment(template, self._ctx(seed_user)) is False
+            assert balance_at.is_standing_loan_payment(template, self._ctx(seed_user)) is False
 
 
 class TestTheDerivedStopShapes:

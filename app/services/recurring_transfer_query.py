@@ -40,9 +40,59 @@ from sqlalchemy.orm import joinedload
 
 from app.extensions import db
 from app.models.account import Account
+from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services.template_amount_service import amount_as_of, owns_its_amount
 from app.utils.money import round_money
+
+
+def destination_account(
+    template: TransferTemplate | TransactionTemplate,
+) -> Account | None:
+    """Return the account *template* pays into, or ``None`` when it pays into none.
+
+    **The COLUMN, then a lookup -- never ``template.to_account``**, and an
+    adversarial review of plan step R7d-b measured why.  That relationship is
+    ``lazy="joined"``, which loads it with the template and then does NOT
+    refresh it when the FK column is written: measured on SQLAlchemy 2.0.49,
+    a ``setattr(template, "to_account_id", other)`` leaves ``to_account``
+    pointing at the OLD account through the following ``flush()`` and only
+    re-loads at ``commit()``.  ``routes/transfers/templates.py`` writes
+    exactly that -- ``to_account_id`` is in ``_TEMPLATE_UPDATE_FIELDS`` and
+    is assigned by ``setattr`` -- and then REGENERATES before committing, so
+    a resolver reading the relationship would bound the new destination's
+    rows by the OLD loan's payoff.  A pending template is the second state:
+    its ``to_account_id`` is set and its ``to_account`` is still ``None``.
+    ``db.session.get`` costs nothing when the row is already in the identity
+    map, which is the case the joined load creates anyway.
+
+    ONE spelling, shared by
+    :func:`app.services.loan_recurrence_sync.loan_payment_window` and
+    :func:`app.services.balance_at.is_standing_loan_payment` (plan step R7d-f;
+    the first cut carried the read twice in one module and an adversarial
+    review named it).  **It lived in ``loan_recurrence_sync`` as a private
+    until plan step R16-b-2** moved the identity it serves into the balance
+    seam (ruling **R-R70**): that module imports the seam, so the seam could
+    not reach the read there, and a definition's destination is a fact about
+    the DEFINITION -- this module's subject -- rather than about a loan's
+    window.
+
+    Args:
+        template: A ``TransferTemplate``, or a ``TransactionTemplate``, which
+            carries no ``to_account_id`` at all -- ``getattr`` on the FK
+            column is what keeps both readers kind-agnostic.
+
+    Returns:
+        The destination :class:`~app.models.account.Account`, or ``None`` when
+        the template pays into no account or names one not yet flushed.  The
+        second is unreachable for a persisted definition -- ``to_account_id``
+        is NOT NULL under an ``ON DELETE RESTRICT`` foreign key -- and a
+        pending one generates nothing either way.
+    """
+    account_id = getattr(template, "to_account_id", None)
+    if account_id is None:
+        return None
+    return db.session.get(Account, account_id)
 
 
 def active_recurring_transfer_template(

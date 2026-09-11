@@ -38,10 +38,8 @@ from app.services.recurrence import (
 # read door resolves at CALL time; patching this file's imported name would
 # leave the composition calling the real one.
 from app.services.recurrence import _reading
-from app.services.loan_recurrence_sync import (
-    bind_rule_to_loan,
-    is_standing_loan_payment,
-)
+from app.services.balance_at import is_standing_loan_payment
+from app.services.loan_recurrence_sync import bind_rule_to_loan
 from app.services.recurring_definition import (
     read_definition,
     resolved_definition,

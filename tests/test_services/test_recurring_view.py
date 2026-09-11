@@ -47,8 +47,7 @@ from app.models.ref import AccountType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service, balance_at, recurring_view
-from app.services.balance_at import BalanceContext
-from app.services.loan_recurrence_sync import is_standing_loan_payment
+from app.services.balance_at import BalanceContext, is_standing_loan_payment
 from app.services.obligations_aggregator import committed_monthly
 from app.services.pay_calendar import (
     PayCadence,
