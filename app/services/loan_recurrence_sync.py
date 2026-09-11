@@ -60,10 +60,11 @@ arrive before the next one runs.
 :func:`loan_payment_window` answers the same question by ASKING the loan, and
 plan step R7d decomposes into one leaf per surface that reads it: R7d-b built
 the resolver, R7d-d moved its ANSWER SHAPES into the recurrence package and put
-the Recurring surface on it, R7d-e moved the monthly totals and R7d-f the
-recurrence form's locked "Ends" control and its inverted-window refusal,
-R7d-c-2 moves generation, and R7d-g stops the write and lands
-``ck_recurrence_rules_valid_window`` true by construction.
+the Recurring surface on it, R7d-e moved the monthly totals, R7d-f the
+recurrence form's locked "Ends" control and its inverted-window refusal, and
+R7d-c-2 moved GENERATION -- the reader whose answer becomes rows, so the stale
+cache D35 measures can no longer drop or add an installment; R7d-g then stops
+the write and lands ``ck_recurrence_rules_valid_window`` true by construction.
 
 **Since R7d-d a reader does not ask this function directly.**  The composed
 door (:func:`app.services.recurring_definition.resolved_definition`) calls it
@@ -262,8 +263,11 @@ def loan_payment_window(
     the first chokepoint makes it one (plan ledger row **N-512**; R7d-f's
     third leaf refuses it at create -- rulings **R-R60** and **R-R61**).
     R7d-f moved the form's locked "Ends"
-    control and its inverted-window refusal onto the same door; R7d-c-2 moves
-    generation, and R7d-g then stops the column being written at all.
+    control and its inverted-window refusal onto the same door; R7d-c-2 moved
+    generation (``recurrence_engine.resolve_generation_plan`` reads the door's
+    placements, so a loan payment is generated only while the loan owes and
+    the maintain pass retires what it no longer justifies); R7d-g then stops
+    the column being written at all.
 
     A pure READ: it opens no transaction, writes nothing and reads no clock of
     its own (*ctx* carries the pass's ``as_of``).
