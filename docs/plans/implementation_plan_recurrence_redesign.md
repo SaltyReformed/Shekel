@@ -605,16 +605,24 @@ re-pinning the previous image recovers or kills. Ruling **R-R27** rests R9's one
 which was the last EXECUTABLE statement of the hazard that refusal now covers. An executable guard
 was replaced by an unexercised one.
 
-**Nothing in the repository drives the script.** `.pre-commit-config.yaml` scopes to `^app/`,
-`^scripts/` and `^tools/`; CI lints `app/` and `scripts/`; `pytest` collects `tests/` and
-`tools/plan_gate`. `shellcheck` reads it but says nothing about behaviour.
+**THE SCRIPT IS DRIVEN, and this paragraph said otherwise for 25 days.**
+`tests/test_deploy/test_shekel_deploy_behaviour.py` shells out to the real
+`deploy/shekel-deploy.sh` with a stubbed `docker` on `PATH` and observes OUTCOMES; it landed
+at `398c332c` on 2026-08-08, nine days BEFORE `D41` was filed against its absence, and it is
+not `@pytest.mark.docker`, so CI runs it. Re-check with
+`grep -rln 'shekel-deploy.sh' tests/` rather than re-reading this sentence.
 
-The step DECIDES first where a shell harness runs -- a `tests/` module shelling out to `bash`, a
-`bats`-style suite with its own runner, or a Python port of the two predicates with the shell
-calling it -- and then covers at minimum: a stamp the target cannot resolve is refused; a stamp the
-OLD image cannot resolve refuses the re-pin; an unchanged stamp after a container that never started
-still re-pins; and an unreadable `alembic_version` is treated as unsafe. Each arm shown FIRING,
-which is the standard the arc's own verification file sets. Closes **D41**.
+**That decision was TAKEN and all four arms EXIST**: a `tests/` module shelling out to `bash` was
+the answer, and it already covers every arm this step listed as its minimum -- a stamp the target
+cannot resolve is refused (`test_a_target_older_than_the_database_is_refused_up_front`); a stamp the
+OLD image cannot resolve refuses the re-pin (`test_it_refuses_and_leaves_the_pin_at_the_new_digest`);
+an unchanged stamp after a container that never started still re-pins
+(`test_a_release_with_no_new_migrations_reverts_the_pin`); and an unreadable `alembic_version` is
+unsafe (`test_an_empty_listing_aborts_rather_than_assuming`), plus `TestThePreflightIsHonest` on
+`preflight_migrations` directly. **So `D41` is DISCHARGED and what remains of this step is `F-15`**:
+`LC_ALL` pinned in the image with a startup assertion, which is one line and no harness at all. The
+step is kept rather than withdrawn because that half is real and unbuilt; its deploy-predicate half
+is not work anybody still owes.
 
 **The semi-monthly case is ruling `R-R28`**, which lives in `rulings.md` like every other and is
 cited by step **R13** below. It was a PARAGRAPH here until `balance:X-ao-2a` -- outside this

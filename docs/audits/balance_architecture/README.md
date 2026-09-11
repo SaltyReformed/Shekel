@@ -867,12 +867,15 @@ section 4, under their unchanged ids.*
   contribution feed at ~9.4 ms per investment account with no cache, the modelled base built 14
   times for 4 accounts on one `/savings` render, `contractual_schedule_from_origination` twice on the
   property page. UNPINNED: the employer-match gross resolving at an implicit `date.today()`,
-  `live_amount_overrides` calling `date.today()` inside the pinned fold, and the standing overpayment
-  read off the CURRENT template row whatever date the pass is pinned at.
+  and the standing overpayment
+  read off the CURRENT template row whatever date the pass is pinned at. (`live_amount_overrides`
+  was the third and `X-au-d` DELETED it, so that clause is discharged rather than owed.)
   * [ ] **X-i1 THE MEMO** -- additive, byte-identical on both databases. The context gains the input
     tier the loan derivations already have, through the SAME `_memoize_once` mechanism rather than a
-    second one: the per-account contribution feed, the override map, the standing extra, the
-    contractual schedule. **The CALENDAR left this list 2026-08-13**, taken early by `C2-c`
+    second one: the per-account contribution feed, the standing extra, the contractual schedule.
+    **The OVERRIDE MAP left this list when `X-au-d` deleted it** -- `live_amount_overrides` has
+    0 matches in the tree -- so this step carries THREE inputs, not the four it counted until
+    2026-09-11. **The CALENDAR left this list 2026-08-13**, taken early by `C2-c`
     (`b8a72f6c`) as a method beside `loan_walk`, which owns its derivation, rather than through
     `_memoize_once`, which stores what the seam fills from above. Every loader keeps its clock, so no
     figure can move and the harness is the proof. **Its tier is WIDENED by N-115** (ruling **R-BU**, which SEQUENCED the residual double load here
