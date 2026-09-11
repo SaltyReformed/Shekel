@@ -170,8 +170,17 @@ tree.
 |---|---|
 | **N-263** | the derive-mode loan payment's PARENT gets a producer, so nulling the column leaves nothing unpriceable (**R-BAL10**) |
 | **N-451** | `EVT_TRANSFER_AMOUNT_FROZEN` is deleted with its predicate, so the vacuity has no site left (**R-BAL12**) |
-| **BAL-476** | the popover renders a generated transfer's due date as TEXT and `_reject_generated_due_date_edit` backstops a crafted request, on BOTH edit doors |
+| **BAL-476** | the popover renders a generated transfer's due date as TEXT and a crafted request is backstopped on BOTH edit doors -- the transfer PATCH through
+`_reject_generated_due_date_edit` and the shadow PATCH through the shared
+`Transfer.due_date_is_its_definitions` predicate applied inline |
 | **N-449** | the same remedy, which is this finding's whole subject: `X-au-e`'s transaction-side fix finally reaching the transfer side. It was NOT named in the commit message and is closed by it -- verified at `templates/transfers/_transfer_full_edit.html:275-289` and `routes/transfers/mutations.py:83,339` rather than taken from that message |
+
+| **N-352** | the two forward tiers stop reading different sources. Its own closing condition -- *a non-override transfer row stops STORING an amount and reads the same series the estimate does* -- is what this leaf did. Both tiers now reach `template_amount_service.amount_as_of`: the PLANNED tier through `amounts_by_id` -> rule 5 -> the parent -> rule 3 (`_amount_source.py:500`), the ESTIMATED tier directly (`recurring_transfer_query.py:335`). Found by the neutral review of the TICK, not of the commit |
+
+**N-448 was retired in the same pass**, closed at `X-au-h` (`825fd791`) since
+2026-09-04 and kept alive only by a clause pointing at **N-451**. Retiring N-451
+here would have left it the one live row citing two ids that exist only in an
+archived record, which is the shape rule 5 forbids.
 
 **N-450 is NOT closed here, against this commit's own message.** Its finding
 text is about `transfer_templates.default_amount`, which still exists

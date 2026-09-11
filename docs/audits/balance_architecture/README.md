@@ -490,7 +490,7 @@ INPUTS; the rule bites on COPIES.
 source of truth -- if it is a derivation then one walk, if it is stored then it is stored in one
 place.* The stored arm is not hypothetical and this phase is already paying it off: Transfer
 Invariant 3 is a maintained DUPLICATE written into `CLAUDE.md` as an invariant, and `X-au-g-2c-2`
-made the shadow half structural while `X-au-f` takes the parent half. **The tell is an invariant** --
+made the shadow half structural and `X-au-f` (`cb4239a2`) took the parent half. **The tell is an invariant** --
 where a rule says two places must always agree, they are one value with two homes, and the remedy is
 to delete a home rather than keep them in step.
 
@@ -611,11 +611,11 @@ in SILENCE where a refused DELETE is loud.
   still stores its stale snapshot. The two records below carry the measurement.
   * [x] **X-au-f-1** `ce8bf485` -- every parent-transfer render site takes the amount model's answer rather than the column; byte-identical BY CONSTRUCTION. Closed **N-452**; opened **BAL-476**. Record: `archive/x_au_f_1_as_built_2026-09-09.md`.
   * [x] **X-au-f-2** `cb4239a2` -- THE CUTOVER, in one act: the parent's producer answers the
-    whole cash on the installment's own due date, amount rule 4 moves onto the TRANSFER dispatch
-    (**R-BAL10**), every writer states an `AmountOwnership` rather than a figure (**R-BAL11**),
-    the settle freeze event is deleted with its predicate (**R-BAL12**), and migration
-    `b7e4c1f38a20` empties `transfers.amount` for the 169 non-override generated rows behind a
-    per-CLASS precondition. Closed **N-263**, **N-450**, **N-451**, **BAL-476**; opened **BAL-477**. Record: `archive/x_au_f_2_as_built_2026-09-10.md`.
+    whole cash on the installment's own due date, amount rule 4 moves onto the TRANSFER
+    dispatch (**R-BAL10**), every writer states an `AmountOwnership` (**R-BAL11**), the settle
+    freeze event is deleted (**R-BAL12**), and `b7e4c1f38a20` empties `transfers.amount` for
+    the 169 non-override generated rows. Closed **N-263**, **N-451**, **BAL-476**, **N-449**
+    and **N-352**; opened **BAL-477**. **NOT N-450**, against this commit's own message: what emptied was the INSTANCE column and that row names the TEMPLATE's, so it goes to `X-bp`. Record: `archive/x_au_f_2_as_built_2026-09-10.md`.
 
 * [x] **X-bl-1** `e0e257a7` -- a cutover's control can FAIL: seven instance-distinct perturbations of the sources a row's rule names, eight mutations firing it. Closed **N-445**. Record: `archive/x_bl_1_as_built_2026-09-09.md`.
 * [x] **X-bl-2a** `ee4fc2d7` -- the payment feed has ONE date producer and ONE
@@ -1079,6 +1079,29 @@ section 4, under their unchanged ids.*
   so the step owes that line a correction as well as a fix. **The fence this deletes** is the
   convention that `requirements.txt` is pinned; peer detection does not depend on the sharing, since
   it reads `/proc/<pid>/cwd` precisely because argv would name the main checkout.
+* [ ] **X-cc** `test(anchor): a fixture assertion is stamped at its own instant` -- owns
+  **N-351**, and the CHECK is the SECOND half. `ck_anchor_history_typed_on_or_after_observed` was
+  written, proven to refuse a planted row, and WITHDRAWN on 2026-08-25 because it collides with a
+  pervasive fixture idiom rather than a stray test: the cash-walk suites freeze today, stamp every
+  assertion at that instant and set `observed_on` across a projection horizon, so 10 row shapes in
+  7 modules assert a balance for a day AFTER the instant they carry. Those fixtures are already
+  unfaithful to production and the CHECK exposes that rather than causing it, which is why the
+  stamping comes first and the constraint second. Production holds the invariant by CONVENTION --
+  `anchor_service.resolve_observation_day` refuses a future `observed_on` and `recorded_on`
+  defaults to the same day -- and the convention failed within a day of the column shipping, in
+  `_test_helpers._restamp_assertion` across 54 call sites, where neither 418 green tests nor pylint
+  could see it. `$0.00` and 0 of 82 dev rows violating; what it buys is a fence that cannot be
+  held by habit.
+* [ ] **X-cd** `fix(transfers): one bound for every transfer money field` -- owns **N-301**, and it
+  OPENS WITH A QUESTION THAT IS THE DEVELOPER'S: is *the bank moved `$0.00`* a legal observation,
+  or is Projected the only way the app says that? The settle-day box's own title says reverting is
+  how you assert the money did not move, which argues the second; the transaction side is at least
+  internally consistent, since `estimated_amount` is `min=0` too. What is NOT in question is the
+  contradiction: `settled_amount` takes `_NON_NEGATIVE_MONETARY` with an INCLUSIVE minimum while
+  `TransferCreateSchema.amount`, `TransferUpdateSchema.amount` and both template schemas use
+  `min_inclusive=False` behind `_validate_positive_amount`, so one door refuses what the next
+  accepts on the same row. **The ruling decides the direction, not whether to act.** Latent:
+  `$0.00` today, and a settled transfer that records nothing moved is a figure no screen explains.
 * [ ] **X-bg** `feat(transfers): an occurrence that did not happen is not an archive` --
   closes **N-386**, whose row carries the measurement. **The door derives its own
   destructiveness from a link rather than from what the owner said**:
