@@ -1119,7 +1119,7 @@ class TestThePeriodUnit:
         """A multi-period cadence does not restart or skip at the boundary.
 
         The projected paychecks continue the saved ``period_index`` sequence
-        (:func:`app.services.pay_calendar._derive.project_period_after`), so
+        (:func:`app.services.pay_calendar._projection.project_period_after`), so
         ``(index - offset) % interval_n`` spans the boundary.  Index 60 is the
         last saved and IS in phase for a 3-period rule anchored at index 0, so
         a walk that restarted its count past the horizon would emit index 61 or

@@ -64,7 +64,8 @@ from datetime import date, timedelta
 from app.services.pay_rhythm import Rhythm
 from app.utils.dates import CALENDAR_DATE_MAX
 
-from ._derive import DerivedPeriod, PayCalendarError, project_period_after
+from ._derive import DerivedPeriod, PayCalendarError
+from ._projection import project_period_after
 from ._searches import final_covered_day, materialised_periods, opening_payday
 from ._window import PeriodWindow
 
@@ -82,7 +83,7 @@ def projected_paychecks(
     application's calendar; the two are the same recurrence with different stop
     conditions, and a second implementation of "where does the next paycheck
     land" is exactly the class ledger row **P6** counted seven of.
-    :func:`~._derive.project_period_after` already holds the ARITHMETIC; what
+    :func:`~._projection.project_period_after` already holds the ARITHMETIC; what
     lives here is the ITERATION, so a caller states only where it stops.
 
     LAZY, and that is a requirement rather than a style: the cadence is
@@ -108,7 +109,7 @@ def projected_paychecks(
     ``/analytics/calendar/2100?view=year`` took **32 ms** of pure stepping at a
     fourteen-day cadence and **442 ms** at the one-day cadence
     ``budget.pay_schedule`` admits, for twelve month cards holding 26 and 365
-    paydays.  :func:`~._derive.project_period_after` already computes any
+    paydays.  :func:`~._projection.project_period_after` already computes any
     period ARITHMETICALLY, so the jump costs one division and the walk that
     follows is as long as the answer: **0.1 ms and 0.6 ms** for the same two
     renders, and 2029 now costs what 2100 costs, where before the two differed
@@ -119,7 +120,7 @@ def projected_paychecks(
             last one is read; an EMPTY tuple yields nothing.
         rhythm: The owner's cadence and payday convention
             (:class:`~app.services.pay_rhythm.Rhythm`), forwarded to
-            :func:`~._derive.project_period_after`.
+            :func:`~._projection.project_period_after`.
         from_day: Skip to the paycheck COVERING this day before yielding, when
             it falls past the schedule's horizon.  ``None`` (the default)
             starts at the first projected paycheck, which is what a caller

@@ -696,7 +696,7 @@ def nominal_payday_after(anchor: date, rhythm: Rhythm, day: date) -> date:
     ``pay_schedule_service.reject_shift_on_short_cadence`` holds a displacing
     convention above it -- so ``nominal(estimate + 2)``'s payday clears *day*
     under either convention.  The same theorem
-    :func:`~._derive.project_period_after` probes on.
+    :func:`~._projection.project_period_after` probes on.
 
     Args:
         anchor: A day the owner's NOMINAL grid passes through --
