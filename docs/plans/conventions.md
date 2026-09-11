@@ -10,9 +10,9 @@ scoped to these documents and the CI step that runs the custom pylint checkers -
 planning document is what runs the gate.
 **Rules 5, 6's "replaced, never appended" half and 8 are DISCIPLINES.** Saying which is which is the
 point: a safety that is not a predicate is not a safety, and labelling a discipline as one is the
-failure being guarded against.
-**Rule 6's CENSUS half became a predicate on 2026-09-11** (`_census.py`), which is why this
-paragraph names HALVES rather than rules: one rule holds both, and the line is what a reader needs.
+failure being guarded against. **Rule 6's CENSUS half became a predicate on 2026-09-11**
+(`_census.py`), which is why this paragraph names HALVES rather than rules: one rule holds both, and
+the line is what a reader needs.
 
 ## The shape
 
@@ -106,27 +106,27 @@ end.
    answer. A stored copy is a derived value beside no reconciler, which is the root cause several
    arcs here exist to remove.
 
-   **THAT SENTENCE NOW BINDS EVERY ROW, NOT ONLY THIS SECTION** (developer, 2026-09-11). A CENSUS
-   -- any count a row asserts about the CODE -- is a marker the gate RE-RUNS:
+   **THAT SENTENCE NOW BINDS EVERY ROW, NOT ONLY THIS SECTION** (developer, 2026-09-11). A CENSUS --
+   any count a row asserts about the CODE -- is a marker the gate RE-RUNS:
    ``(census <N> lines|files `<python regex>` in `<glob>`)``. **The count lives INSIDE the marker**,
    because a number in the prose beside it is rule 14's two homes again; `lines` and `files` are
    separate because conflating them is how *20 branches in 12 modules* becomes one number. The walk
    is LINE-based, so write the pattern against the token that survives a formatter's wrapping
    (`type=int`, not the whole call). A marker names a PATTERN and a PATH and never a COMMAND:
-   executing a shell string out of a markdown file would make every planning document a
+   executing a shell string out of a Markdown file would make every planning document a
    code-execution surface for anyone who can open a pull request, so the document gives the regex
    and `tools/plan_gate/_census.py` does the walk, in-process, over the code trees only.
    **Measured before the rule was written**, on 2026-09-11: `X-al` said fifteen `duplicate-code`
-   disables against 16, `X-ba` said twenty-six id accessors against 27, `X-be` named a module at
-   the 1000-line ceiling that had fallen to 857 while missing one that had joined it, and `X-i1`
-   counted FOUR context inputs of which `X-au-d` had deleted one -- `0` matches. Every row was
-   correctly OPEN; what had rotted was what each said about the CODE, which a reader cannot tell
-   apart without looking. **This paragraph's own FIRST DRAFT had two numbers wrong** -- 17, and
-   `X-ah`'s 34 called stale against 38 -- because a name-grep counts PROSE: four docstrings
-   discussing `type=int`, one narrating a removed disable. `X-ah` was right all along, which is
-   why the modes exist and why this is not a quiet correction. **Where a census is not mechanical**,
-   as *seven batch callers that do not apply `pricing_load_options`* needs a caller set no regex
-   knows, the row keeps the command that regenerates the LIST and states no total.
+   disables against 16, `X-ba` said twenty-six id accessors against 27, `X-be` named a module at the
+   1000-line ceiling that had fallen to 857 while missing one that had joined it, and `X-i1` counted
+   FOUR context inputs of which `X-au-d` had deleted one -- `0` matches. Every row was correctly
+   OPEN; what had rotted was what each said about the CODE, which a reader cannot tell apart without
+   looking. **This paragraph's own FIRST DRAFT had two numbers wrong** -- 17, and `X-ah`'s 34 called
+   stale against 38 -- because a name-grep counts PROSE: four docstrings discussing `type=int`, one
+   narrating a removed disable. `X-ah` was right all along, which is why the modes exist and why
+   this is not a quiet correction. **Where a census is not mechanical**, as
+   *seven batch callers that do not apply `pricing_load_options`* needs a caller set no regex knows,
+   the row keeps the command that regenerates the LIST and states no total.
 
 7. **A SHIPPED step's specification is a POINTER: it OPENS with its commit hash.** The hash's
    POSITION is the predicate, not its presence -- an Alembic revision id is hex too. A LIVE step is

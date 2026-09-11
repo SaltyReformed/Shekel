@@ -69,8 +69,8 @@ substituted tax year is never shown and a new year's brackets have no door (**N-
 of reach (**N-443**, **P62**). A fourth reader, the contribution tier, does not run the engine at
 all and divides the annual figure by the paycheck count (**D45**). The engine derives its own
 calendar where every other read-path consumer takes one (**P63**), and the module sat at pylint's
-ceiling until R-F16 took it to 873; it is back to 994 (**P64**), so the room that argument
-rests on is effectively gone.
+ceiling until R-F16 took it to 873; it is back to 994 (**P64**), so the room that argument rests on
+is effectively gone.
 
 ## 2. Evidence
 

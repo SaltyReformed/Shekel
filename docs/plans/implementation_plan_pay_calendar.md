@@ -86,8 +86,13 @@ below once carried five line-range cites and every one of them had rotted by 202
 | `integrity_check` BA-03 / BA-04 -- the same property in weekly SQL | `scripts/integrity_check.py` | DELETED at `C4-c` and NOT replaced, which that file says at its own `:331` |
 | `uq_pay_periods_user_index` + `ck_pay_periods_date_order` | the schema | both DROPPED; `uq_pay_periods_user_start` is what stands |
 
-Regenerate with `grep -rn
-'_reject_overlapping_batch\|_pp_assert_structure\|BA-03\|uq_pay_periods_user' app/ tests/ scripts/`.
+Regenerate with:
+
+```bash
+grep -rn '_reject_overlapping_batch\|_pp_assert_structure\|BA-03\|uq_pay_periods_user' \
+     app/ tests/ scripts/
+```
+
 Not one of them would exist under the normalized model, because none would have a subject -- and the
 four that have gone went exactly that way, by their subject being removed rather than by being
 argued with.
@@ -232,16 +237,15 @@ their only live specimen from them, which both `_staging` docstrings predict and
       parent, ticked at `C2-f3e`; that tick is also `balance:X-l` and `recurrence:R-F12`.
 - [x] **C2-f1 -- the three the calendar already answered.** `792e3b21`.
 - [ ] **C10 -- the salary package reads the OWNER's day.** Five sites answer "which paycheck am I
-      in" as `period_containing(date.today())`
-      (census 5 code lines `period_containing` in `app/routes/salary/**/*.py`),
-      FOUR of whose line numbers this row carried had drifted by
-      2026-09-11 -- having taken the derivation at
-      `C2-f2d-3` and kept the process clock. **`C2-f3a` CLOSED P49 and was wrong to**; its
-      adversarial design review caught that before the commit. Five one-line reads, in a step of
-      their own because a clock change on money-adjacent screens gets its own review.
-      **It grows the INSTRUMENT** (`balance:N-138`, re-keyed here 2026-09-03): a pylint checker
-      forbidding the process clock -- `date.today()`, `datetime.now()` -- outside one clock module,
-      so the five reads stay moved. Closes **P49**, **N-138**.
+      in" as `period_containing(date.today())` (census 5 code lines `period_containing` in
+      `app/routes/salary/**/*.py`), FOUR of whose line numbers this row carried had drifted by
+      2026-09-11 -- having taken the derivation at `C2-f2d-3` and kept the process clock.
+      **`C2-f3a` CLOSED P49 and was wrong to**; its adversarial design review caught that before the
+      commit. Five one-line reads, in a step of their own because a clock change on money-adjacent
+      screens gets its own review. **It grows the INSTRUMENT** (`balance:N-138`, re-keyed here
+      2026-09-03): a pylint checker forbidding the process clock -- `date.today()`,
+      `datetime.now()` -- outside one clock module, so the five reads stay moved. Closes **P49**,
+      **N-138**.
 - [ ] **C11 -- the LAYER predicate.** The four service modules that still open their own read pass
       take one instead -- `calendar_service`, `investment_dashboard_service/_context` and
       `/_orchestrator`, `tax_report_service` -- and the gate becomes the layer rule rather than a

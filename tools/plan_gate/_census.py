@@ -62,13 +62,19 @@ _RULE = "conventions.md rule 6"
 #: and conflating them is how "20 branches in 12 modules" becomes one number.
 #: An optional FILTER, ``code`` or ``comments``, precedes it and restricts the
 #: walk to that token class -- a name-grep counts PROSE otherwise, which is what
-#: made the first two markers written under this rule both wrong.  The count
+#: made the first two markers written under this rule both wrong.
+#:
+#: **Any WHITESPACE separates the tokens, including a newline**, because these
+#: documents are reflowed by ``rumdl fmt`` to 100 columns and a marker that
+#: demanded single spaces became unreadable the moment a formatter wrapped it.
+#: Two gates were fighting over one line; this is which of them gave way, and it
+#: is the one whose requirement was arbitrary.  The count
 #: lives INSIDE the marker so that the number and the thing that checks it
 #: cannot drift apart -- a number in the prose beside one would be rule 14's
 #: two homes again.
 MARKER = re.compile(
-    r"\(census (?P<count>\d+) (?:(?P<filter>code|comments) )?(?P<unit>lines|files) "
-    r"`(?P<pattern>[^`]+)` in `(?P<glob>[^`]+)`\)",
+    r"\(census\s+(?P<count>\d+)\s+(?:(?P<filter>code|comments)\s+)?(?P<unit>lines|files)\s+"
+    r"`(?P<pattern>[^`]+)`\s+in\s+`(?P<glob>[^`]+)`\)",
 )
 
 #: Where a census may look.  A glob escaping the repository, or reaching into
@@ -268,10 +274,11 @@ def near_miss_violations() -> list[str]:
             line = text.count("\n", 0, near.start()) + 1
             problems.append(
                 f"{document.name}:{line} opens a census the parser cannot read. "
-                f"It must be one line, `(census <N> [code|comments] lines|files "
-                f"`<regex>` in `<glob>`)`, with NOTHING between the glob and the "
-                f"closing paren -- a marker the regex misses reads as no census "
-                f"at all and its number is graded by nothing ({_RULE})",
+                f"It must read `(census <N> [code|comments] lines|files `<regex>` "
+                f"in `<glob>`)` with NOTHING between the glob and the closing "
+                f"paren -- a marker the regex misses reads as no census at all "
+                f"and its number is graded by nothing ({_RULE}). Line breaks "
+                f"BETWEEN its tokens are fine; a formatter puts them there",
             )
     return problems
 

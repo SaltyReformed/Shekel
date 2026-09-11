@@ -810,22 +810,11 @@ def blocked_by_violations() -> list[str]:
 REGISTRY_CAPS = {
     # **RAISED by the developer 2026-09-05 on rule 4's terms**: lessons.md
     # 200 -> 280, conventions.md 280 -> 320.  Each had come to REST on its own
-    # headroom floor -- lessons.md at 179-180 since 2026-08-16 after growing
-    # 143 -> 180 in five days, conventions.md at 256 of a 260 ceiling -- and a
-    # file pinned at its floor reads here exactly like one that has STOPPED
+    # headroom floor -- lessons.md at 179-180 since 2026-08-16, conventions.md at
+    # 256 of a 260 ceiling -- and a file pinned at its floor reads like one STOPPED
     # growing, so an edit there DISPLACES a rule or a lesson rather than adds
     # one.  Rule 5 answers neither: a rule and a lesson have no span to end.
-    # **RAISED 320 -> 350 by the developer, 2026-09-11**, on rule 4's terms, and
-    # every OTHER cap was left where it is on purpose: the developer's words were
-    # to "leave the other documents to force the binding and archiving and
-    # concise entries".  The cap BOUND four times inside one commit -- rule 6's
-    # census half is a new rule with a grammar, a measurement and a
-    # self-correction to carry -- and each time the new text was condensed
-    # rather than the number touched, until the prior-art sentence was cut
-    # outright because `_census.py` already held it.  Rule 5's escape is
-    # genuinely spent here and not merely unspent: every rule in this file is
-    # LIVE, so there is no completed span to archive, which is the condition
-    # rule 4 says makes a binding cap the developer's question.
+    # **320 -> 350, developer 2026-09-11**, every OTHER cap left to bind.
     "conventions.md": 350,
     "verification.md": 120,
     "lessons.md": 280,

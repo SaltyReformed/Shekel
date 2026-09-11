@@ -662,22 +662,28 @@ in SILENCE where a refused DELETE is loud.
   the new purchase plus the parent's leg. Not `X-d`'s, which sits behind the cutover.
 * [ ] **X-bp** `refactor(templates): a template's default amount is its series` -- closes
   **N-446** and **N-450**.
-  **WIDENED 2026-09-11 to BOTH `default_amount` columns** (developer). `transaction_templates` and
-  `transfer_templates` each carry one, each beside an `amount_versions` series that already prices
-  the rows, and each written outside that series -- `routes/salary/profiles.py` on the transaction
-  side, `loan/payment_transfer.py`, `investment.py` and `_transfer_creation_helpers.py` on the
-  transfer side. **It is one design executed twice, so it is one step**: splitting it would mean
-  taking the same decision a second time and leaving one column live in between, with the transfer
-  half (N-450) repaired by a manual click for a derive-mode loan payment and by nothing at all for
-  an investment contribution.
+  **WIDENED 2026-09-11 to BOTH `default_amount` columns** (**R-BAL16**). `transaction_templates`
+  and `transfer_templates` each carry one, and each is written outside the series --
+  `routes/salary/profiles.py` on the transaction side, `loan/payment_transfer.py`, `investment.py`
+  and `_transfer_creation_helpers.py` on the transfer side. **It is one design executed twice, so
+  it is one step**: splitting it would mean taking the same decision a second time with one column
+  live in between.
+  **TWO KINDS HAVE NO SERIES TO READ.** `owns_its_amount` refuses one to a SALARY-LINKED
+  transaction template and a DERIVE-MODE loan payment: their column is a snapshot of a computation,
+  not a copy of a stated price (`transfer_template.py`: "has NONE **and must not**"). For them it
+  dies with NO SUCCESSOR -- the paycheck calculator and amount rule 4 answer live, as `X-au-f-2`'s
+  instance column did. **The derive-mode payment is N-450's own first kind**, so "delete it, read
+  the series" would be wrong for the half that finding is about, and what the DOWNGRADE does for
+  those two is the developer's open question (the ledger row carries it).
   Among the readers, `obligations_aggregator.py` SKIPS a row when the column is `None` or `0`;
-  three live dependencies remain (a downgrade, `archive_profile`, the conflict chooser); and for a
+  the live dependencies are re-measured BY THE STEP, not listed here -- the transaction half's
+  three (a downgrade, `archive_profile`, the conflict chooser) plus at least
+  `routes/loan/dashboard.py`'s `_payment_drift`, which computes a shortfall a SCREEN SHOWS
+  off the stored column; and for a
   SALARY template two routes write it as two quantities, NET and GROSS. No step deleted it and
-  `routes/templates/crud.py` claimed `X-au-e` would until PR #210. The columns go (**R-IY**), every
+  `routes/templates/crud.py` claimed `X-au-e` would until PR #210 -- and its TRANSFER twin at
+  `routes/transfers/templates.py` still says it, which this step now owns. The columns go (**R-IY**), every
   site reads the series, and each downgrade restores its column from that series' opening version.
-  **The census is the row's** -- it counts the bare column name, so it spans both tables; the "17
-  Python and 6 template readers" this entry carried until 2026-09-11 was an attribute-only reading
-  of one of them.
 *`X-av` (the dated per-paycheck gross) and `X-at` (the tax year) moved to the `salary` arc on
 2026-09-03 (**R-SAL1**); their specifications are `../../plans/implementation_plan_salary.md`,
 section 4, under their unchanged ids.*

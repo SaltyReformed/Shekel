@@ -159,8 +159,8 @@ root; never silence it with a bare disable.
   SHIPPED row's commit must resolve and be an ancestor of HEAD, no commit may claim an open leaf,
   and every `(census N ...)` marker is RE-RUN against the tree (`_shipped.py`, `_census.py`; CI
   checks out at `fetch-depth: 0` so neither arm is silently blind).
-  **Editing a planning document is what runs it**
-  (pre-commit, scoped to those files; CI runs `pytest tools/plan_gate`).
+  **Editing a planning document is what runs it** (pre-commit, scoped to those files; CI runs
+  `pytest tools/plan_gate`).
 - **Judgment the linters cannot mechanize** (float-on-money boundaries, IDOR, transfer invariants,
   DRY/SOLID, test quality) is the `code-reviewer` subagent and the `/standards` command.
 

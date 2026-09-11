@@ -151,14 +151,27 @@ class TestAMarkerTheParserCannotReadIsRefused:
 
     @pytest.mark.parametrize("broken", [
         "(census 3 lines `x` in `app/**/*.py`, and some trailing prose)",
-        "(census 3 lines `x` in\n`app/**/*.py`)",
         "(census 3 `x` in `app/**/*.py`)",
         "(census 3 lines x in `app/**/*.py`)",
     ])
     def test_the_control_fires_on_each_way_a_marker_can_break(self, stage_census, broken):
-        """Trailing prose, a line break, a missing unit and a bare pattern all fail."""
+        """Trailing prose, a missing unit and a bare pattern all fail."""
         stage_census(broken)
         assert _census.near_miss_violations(), broken
+
+    def test_a_marker_a_formatter_wrapped_is_still_read(self, stage_census):
+        """A line break BETWEEN a marker's tokens is legal, because `rumdl fmt` makes them.
+
+        These documents are reflowed to 100 columns by the project's own
+        markdown formatter, and the marker used to demand single spaces -- so
+        `rumdl fmt` split one and the near-miss arm caught it, the arm's first
+        catch against a MACHINE rather than an author. Two gates were fighting
+        over one line; the marker gave way, because its requirement was the
+        arbitrary one.
+        """
+        stage_census("(census 0 lines `live_amount_overrides` in\n`app/**/*.py`)")
+        assert not _census.near_miss_violations()
+        assert not _census.census_violations()
 
     def test_the_rule_s_own_grammar_example_is_not_a_near_miss(self):
         """`(census <N> ...)` in conventions.md is a PLACEHOLDER, exempt by SHAPE.

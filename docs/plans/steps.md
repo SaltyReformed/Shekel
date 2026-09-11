@@ -51,17 +51,17 @@ sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The standing priority (developer, 2026-08-19; RE-RULED 2026-09-02).** bank_import reaches
 production first, then the credit_card arc. **Its scope was `X-gj-4b`, `X-gj-4c` and `X-gi`** -- the
 Reconcile screen rebuild finished and the review queue's orphans deleted -- and every bank_import
-step after those three is enhancement carrying no precedence (developer, 2026-09-02). **Two of the
-three have SHIPPED**, so what the priority still names is `X-gi` alone, and its open leaves are the
-rows below: `X-gi-2a`, `X-gi-4` and `X-gi-5`. The other two ticked on 2026-09-04 and their span is
-archived (`historical/bank_import_x_gj_as_built_2026-09-04.md`), which is why no row here carries
-those two ids -- a reader who cannot resolve them from this table is not missing anything. Where two
-arcs' rows are both legal today, this is what "each arc's own stated sequencing" above resolves
-against. **How this document APPLIES it is not part of the ruling**: an unblocked bank_import leaf
-is ranked above an equally unblocked row of another arc. Written here 2026-09-02, on the ruling that
-placed the recurrence earnings-lines chain directly after that scope: until then it lived only in
-session memory, and when a placement finally turned on it neither the session working the step nor
-the coordinator could cite it.
+step after those three is enhancement carrying no precedence (developer, 2026-09-02).
+**Two of the three have SHIPPED**, so what the priority still names is `X-gi` alone, and its open
+leaves are the rows below: `X-gi-2a`, `X-gi-4` and `X-gi-5`. The other two ticked on 2026-09-04 and
+their span is archived (`historical/bank_import_x_gj_as_built_2026-09-04.md`), which is why no row
+here carries those two ids -- a reader who cannot resolve them from this table is not missing
+anything. Where two arcs' rows are both legal today, this is what "each arc's own stated sequencing"
+above resolves against. **How this document APPLIES it is not part of the ruling**: an unblocked
+bank_import leaf is ranked above an equally unblocked row of another arc. Written here 2026-09-02,
+on the ruling that placed the recurrence earnings-lines chain directly after that scope: until then
+it lived only in session memory, and when a placement finally turned on it neither the session
+working the step nor the coordinator could cite it.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
@@ -120,7 +120,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | pay_calendar | C15 | -- | Split the readiness card so the retire-later solve runs only when an assumption it reads has moved and a stepper move costs one probe (**R-PC52**), instead of nine projection walks on every refresh. Closes **P60**. | #47 | -- | NOW |
 | pay_calendar | C16 | -- | Rule and then fix the TWO attribution rules `journal_entries.pay_period_id` carries -- the BUDGET clock for the 332 source-linked entries and the CASH-DATE clock for the 218 anchor corrections -- which `ledger_report_service/_income_statement` sums into one per-period figure with nothing marking the difference. Closes **N-491**. | #48 | -- | NOW / pay_calendar:C7 (shipped) |
 | balance | X-bo | -- | Rule, then apply, whether an entry CREATE may take `sync_purchase_postings` for the new purchase plus the parent's leg instead of re-emitting every sibling's legs, which makes filing N purchases into one budget line quadratic at `$0.00` of drift. Closes **N-406**. | #49 | -- | NOW |
-| balance | X-bp | -- | Delete `default_amount` from BOTH template tables (**R-IY**), each a stored copy of the effective-dated series beside it, and re-point every site onto that series -- Python (census 24 code lines `default_amount` in `app/**/*.py`) and Jinja (census 7 lines `default_amount` in `app/templates/**/*.html`). Closes **N-446**, **N-450**. | #50 | -- | NOW / balance:X-au-e (shipped) |
+| balance | X-bp | -- | Delete `default_amount` from BOTH template tables (**R-IY**, **R-BAL16**) and re-point every site onto the series -- or, for the two kinds `owns_its_amount` refuses one, onto the live producer that already answers -- Python (census 24 code lines `default_amount` in `app/**/*.py`) and Jinja (census 7 lines `default_amount` in `app/templates/**/*.html`). Closes **N-446**, **N-450**. | #50 | -- | NOW / balance:X-au-e (shipped) |
 | balance | X-ad-b | -- | Stop the rolling top-up manufacturing history: an automatic writer creates nothing on a lapsed schedule, and the lapse is surfaced instead. Closes **N-124**. | #51 | -- | NOW |
 | balance | X-x1 | -- | Build the ONE answer to "no pay period covers this date": `PayCalendarGapError`, `require_current_period` / `covers`, one handler and its repair page, taking the grid's two pre-checks as its first callers. Carries **P40**, **P81** (**R-PC51**). | #52 | -- | NOW |
 | balance | X-x2 | -- | Move the branches that publish a figure the app did not compute onto the raising accessor: the fabricated $0.00 in four producers, and `build_trend_periods`' `current_index = 0` into an empty list. | #53 | -- | after #52 / balance:X-x1 |

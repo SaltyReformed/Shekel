@@ -207,18 +207,17 @@ them, and the four `Grid / companion hard requirements` taken the same day are `
   transfer flow: monthly rule `day_of_month = payment_due_day`, one active template per card.
   Straddling close/due periods: due-date-wins placement pinned.
 - [ ] **CC4b** `feat(cards): the payment you owe is the payment the card derives` -- a CARD rule
-      behind the amount resolver (ruling **R-FI**; the balance step that built it is archived,
-      so read `app/services/cash_ledger/_amount_source.py` rather than a plan), NOT another
-      entry in `live_amount_overrides`, which that arc has already DELETED: projected payment amount
-      = statement balance
-      at last close minus `reward_redemption` rows posted since close, floor 0; min mode substitutes
-      CC2a's minimum; fixed mode is a template amount the card owns. The card row stores no amount,
-      so nothing can hold a figure the derivation contradicts. Oracles: derived amount renders
-      identically on grid/card/checking; redemption after close reduces, before close does not (both
-      controls); floor-0. **It owns `N-311`** (re-filed from `balance` 2026-09-03): the CC payback
-      rows do not reconcile to what was actually paid to the card -- one ACH per real payment
-      against one payback per purchase, `$280.21` unexplained -- and the payment as a CARD rule is
-      the remedy.
+      behind the amount resolver (ruling **R-FI**; the balance step that built it is archived, so
+      read `app/services/cash_ledger/_amount_source.py` rather than a plan), NOT another entry in
+      `live_amount_overrides`, which that arc has already DELETED: projected payment amount =
+      statement balance at last close minus `reward_redemption` rows posted since close, floor 0;
+      min mode substitutes CC2a's minimum; fixed mode is a template amount the card owns. The card
+      row stores no amount, so nothing can hold a figure the derivation contradicts. Oracles:
+      derived amount renders identically on grid/card/checking; redemption after close reduces,
+      before close does not (both controls); floor-0. **It owns `N-311`** (re-filed from `balance`
+      2026-09-03): the CC payback rows do not reconcile to what was actually paid to the card -- one
+      ACH per real payment against one payback per purchase, `$280.21` unexplained -- and the
+      payment as a CARD rule is the remedy.
 - [ ] **CC4c** `feat(cards): underpayment warns and projects its finance charge` -- C7-style warning
       (payment < minimum due) + one-click "pay statement balance" (flips mode);
       `card_recurrence_sync` maintains ONE projected finance-charge expense
@@ -275,10 +274,9 @@ historical-only note), `models/transaction.py` (index + FK renamed), `models/tra
 `grid/_transaction_entries.html`, `_keyboard_help.html`, `analytics/_balance_sheet.html`,
 `accounts/cash_detail.html`, `savings/_cockpit.html`. JS: `app.js` (markTxnCredit + `c` key);
 `command_palette.js` (Credit command, badge glyph). Tests:
-`tests/test_services/test_credit_workflow.py`,
-`test_entry_credit_workflow.py` (1,789), `test_c19_credit_payback_unique.py` (1,144) -- reworked
-per CC3a-c; plus grid-template, state-machine, carry-forward, posting-lifecycle suites asserting
-Credit shapes.
+`tests/test_services/test_credit_workflow.py`, `test_entry_credit_workflow.py` (1,789),
+`test_c19_credit_payback_unique.py` (1,144) -- reworked per CC3a-c; plus grid-template,
+state-machine, carry-forward, posting-lifecycle suites asserting Credit shapes.
 
 ## Verification standard
 
