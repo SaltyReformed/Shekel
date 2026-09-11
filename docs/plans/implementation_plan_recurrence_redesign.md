@@ -572,6 +572,38 @@ Found while X-f3b measured the ledger. Its two leaves are below.
 - [x] **R10-b** `ea776528` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
+- [ ] **R19 -- an UNDATED row is retained, never deleted** (finding **REC-516**, ruling **R-R63**).
+      The DECOMPOSED parent, split at the developer's 2026-09-08 ruling into the guard and the root
+      fix. `classify_maintain_work` read *this row answers no occurrence* as
+      *the rule dropped this occurrence* and routed a mutable, record-free undated row to
+      `work.retire` -- a HARD DELETE at `_maintain` and, worse, at `transfer_recurrence`, where
+      `delete_transfer(soft=False)` takes the parent AND BOTH SHADOWS.
+      **The delete was invisible to every count**: the create arm answered the freed occurrence in
+      the same pass, so the table was the same size afterwards
+      (`deleted_count: 1, created_count: 1`, every conflict count zero). Reachable because the only
+      thing that ever filled `occurs_on` on an existing row, `scripts/stamp_occurrences.py`, was
+      retired at `balance:X-bz`. Measured 2026-09-08: production reachable at 0 (its 6 undated
+      transactions are immutable and its 54 undated transfers are 3 immutable and 51 soft-deleted,
+      any restore of which arms one), the dev database at **598**.
+
+- [x] **R19-a** `2f6bab81` -- the guard: an undated row goes to `retained_ids`, so the pass leaves
+      it exactly as found and TELLS the owner. Retained rather than skipped silently because the
+      definition has moved past a row it cannot place: a template repriced `$100.00 -> $250.00`
+      leaves such a row at `$100.00` for good while suppressing the correctly-priced row its
+      paycheck would receive. Both controls were shown to FAIL against the pre-fix branch.
+
+- [ ] **R19-b -- `occurs_on` becomes NOT NULL**, which is what makes `R19-a`'s branch unreachable
+      rather than merely quiet. A template-linked non-override row always records the occurrence it
+      answers; `carry_forward_service` already achieves this by flagging its rows `is_override`, and
+      the one-time transfer branch (`routes/transfers/_instances._materialize_one_time_transfer`)
+      does not -- so it owes a rule for what occurrence a one-time transfer answers, its own date
+      being the obvious candidate. It deletes THREE fences: the NULL arm of `rows_claiming`'s claim
+      query, `R19-a`'s branch with the forward guard beside it, and
+      `idx_transfers_template_scenario_undated`. **Its backfill belongs in the migration** -- a
+      hand-run script is what left this reachable -- and **R-R46** is the obstacle to state and
+      answer: no migration here may import app code, because `build_test_template.py` replays the
+      chain from zero. Expect it to DECOMPOSE.
+
 - [ ] **R11 -- the LEAD placement: fund an occurrence from an EARLIER paycheck.**
 
 **Opened at plan step R8-a, out of what closing ledger row D20 left behind.** D20 said the placement

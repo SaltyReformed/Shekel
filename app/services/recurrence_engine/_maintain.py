@@ -53,7 +53,7 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     the rows the rule still names rather than destroying and rebuilding them**,
     which is plan step R10-a and ruling **R-R19**, closing finding **N-292**.
 
-    Three outcomes, one per period the pass considers:
+    Four outcomes, one per period the pass considers:
 
       1. the rule names the period and an auto-generated row is there -- the
          row is UPDATED in place from :class:`DerivedRowFields` and its
@@ -61,7 +61,11 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
       2. the rule names the period and nothing is there -- a row is created,
          exactly as :func:`generate_for_template` would;
       3. the rule NO LONGER names the period -- the row is removed if it is
-         empty, and RETAINED as a conflict if the owner has records against it.
+         empty, and RETAINED as a conflict if the owner has records against it;
+      4. the row answers NO occurrence at all (``occurs_on`` is NULL) -- it is
+         left exactly as found and RETAINED as a conflict, because the
+         definition has moved past a row it cannot place (finding
+         **REC-516**).
 
     Overridden and soft-deleted rows are conflicts wherever they sit, as
     before; immutable rows are never touched.
