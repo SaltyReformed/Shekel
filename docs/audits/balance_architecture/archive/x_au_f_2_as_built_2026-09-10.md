@@ -157,3 +157,28 @@ Neither is a cycle: both new modules are strictly below the ones that import the
 **R-BAL14** (developer, 2026-09-10), recorded in `../../plans/rulings.md`: the
 cutover is one leaf, `X-au-f-3` is absorbed, and R-BAL10 stands. It supersedes
 nothing.
+
+## The findings this leaf closed
+
+Recorded here 2026-09-11, when the leaf was ticked. `ledger.md`'s own rule is
+that a row leaves when its fix ships and its record moves to the arc's as-built
+document under the same id; the tick that owed this section was a second commit
+that never came, so the rows sat open for a day with their fix already in the
+tree.
+
+| id | what closed it |
+|---|---|
+| **N-263** | the derive-mode loan payment's PARENT gets a producer, so nulling the column leaves nothing unpriceable (**R-BAL10**) |
+| **N-451** | `EVT_TRANSFER_AMOUNT_FROZEN` is deleted with its predicate, so the vacuity has no site left (**R-BAL12**) |
+| **BAL-476** | the popover renders a generated transfer's due date as TEXT and `_reject_generated_due_date_edit` backstops a crafted request, on BOTH edit doors |
+| **N-449** | the same remedy, which is this finding's whole subject: `X-au-e`'s transaction-side fix finally reaching the transfer side. It was NOT named in the commit message and is closed by it -- verified at `templates/transfers/_transfer_full_edit.html:275-289` and `routes/transfers/mutations.py:83,339` rather than taken from that message |
+
+**N-450 is NOT closed here, against this commit's own message.** Its finding
+text is about `transfer_templates.default_amount`, which still exists
+(`models/transfer_template.py:69`, `nullable=False`) and is still written by
+both routes it names (`routes/loan/payment_transfer.py:191`,
+`routes/investment.py:296`). What this leaf emptied is the INSTANCE column,
+`budget.transfers.amount`. The row's own status cell describes the instance and
+its finding cell describes the template, so the row disagrees with itself about
+its subject; that is the developer's to settle, and `X-bp` owns only the
+TRANSACTION template's twin.
