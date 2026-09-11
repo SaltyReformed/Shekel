@@ -69,7 +69,8 @@ substituted tax year is never shown and a new year's brackets have no door (**N-
 of reach (**N-443**, **P62**). A fourth reader, the contribution tier, does not run the engine at
 all and divides the annual figure by the paycheck count (**D45**). The engine derives its own
 calendar where every other read-path consumer takes one (**P63**), and the module sat at pylint's
-ceiling until R-F16 took it to 873 (**P64**).
+ceiling until R-F16 took it to 873; it is back to 994 (**P64**), so the room that argument rests on
+is effectively gone.
 
 ## 2. Evidence
 
@@ -249,8 +250,9 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       it changes what `/savings` and `/retirement` publish, and the merged producer gives
       `income_service`'s basis a threaded calendar, so
       **`balance:X-i1` and this step decide for each other**. It also owes the engine's package
-      split (**P64**): the module was at exactly 1000 lines until `recurrence:R-F16` took it to 873,
-      and this step's own growth is what would spend that room.
+      split (**P64**): `recurrence:R-F16` took it from 1000 to 873 and the growth since has spent
+      almost all of that -- `wc -l app/services/paycheck_calculator.py` reads **994**, SIX lines
+      under the ceiling, so this step splits the module before it adds to it rather than after.
 - [ ] **X-av -- the pay rate is a dated per-paycheck gross** (**balance:R-HW(b)**; findings
       **N-237**, **N-240**, **N-294**, **N-391**). The stored fact becomes what ONE paycheck pays,
       effective-dated, with `annual_salary` derived as `gross x periods_per_year` and shown beside

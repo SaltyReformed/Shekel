@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- Cash ledger: the read pass's LOAN-PAYMENT derivation.
 
-:class:`LoanPricing` is amount rule 4's producer: what one loan-payment shadow's
+:class:`LoanPricing` is amount rule 4's producer: what one loan payment's
 installment costs, with each destination loan resolved at most once per read
 pass.  Lazy, so a pass that prices no loan payment issues no query.
 
@@ -20,7 +20,9 @@ map that decided which shadows it fired for.  Ruling **R-FI** deletes a
 read-time repair by making the state it repairs unrepresentable, and that is
 what a shadow declaring ``PARENT_TRANSFER`` with no stored figure does: there
 is no stale copy left to supersede, so the override has nothing to find and
-:func:`._amount_source._loan_payment_answer` prices the row directly.
+:func:`._amount_source.resolve_transfer_amount` prices the row directly -- at
+the PARENT since plan step X-au-f-2 (ruling **R-BAL10**), which is why nothing
+below this line names a :class:`~app.models.transaction.Transaction` any more.
 
 **Deleting that map took the package's ONLY ``budget.transfers`` query with
 it.**  ``_load_live_payment_configs`` INNER-joined the scenario's transfers
@@ -42,14 +44,14 @@ scenario's basis -- is refused by
 ``scenario_id`` column and is TOTAL where the map's membership never was.
 """
 
+from datetime import date
 from decimal import Decimal
 
-from app.models.transaction import Transaction
 from app.services.loan_loaders import load_escrow_lines
 from ._loan_installment import (
     _LoanCashBasis,
+    _installment_cash,
     _resolve_loan_basis,
-    _shadow_live_amount,
 )
 
 
@@ -75,7 +77,7 @@ class LoanPricing:
     the loan resolve twice.
 
     **The derivation is LAZY**, so a read pass whose rows hold no loan payment
-    pays nothing at all: the per-loan resolve only runs for a loan a shadow
+    pays nothing at all: the per-loan resolve only runs for a loan a payment
     actually names.  That is the "no query when there are no candidates"
     property the row-set producers had, kept rather than traded away.
 
@@ -86,7 +88,7 @@ class LoanPricing:
     contractual terms on the INSTALLMENT they govern, as ruling D5 had already
     put a payment's escrow, so there is no pass-level date left to pin: the
     per-loan resolve (:func:`._loan_installment._resolve_loan_basis`) answers
-    the loan's term SET, which no date parameterises, and each shadow reads the
+    the loan's term SET, which no date parameterises, and each payment reads the
     period governing its own due date.  What a whole pass now shares is the
     derivation rather than an answer.
 
@@ -108,7 +110,7 @@ class LoanPricing:
 
         Membership, never truthiness: the basis is legitimately ``None`` for an
         account carrying no ``LoanParams``, and a truthiness check would
-        re-resolve that on every shadow of every pass.
+        re-resolve that on every payment of every pass.
 
         Args:
             loan_account_id: The destination loan account to resolve.
@@ -125,22 +127,32 @@ class LoanPricing:
 
     def derive_cash(
         self,
-        shadow: Transaction,
+        due_date: "date | None",
+        period_start: date,
         loan_account_id: int,
         extra_principal: Decimal,
     ) -> "Decimal | None":
-        """Return a DERIVE-mode shadow's cash: P&I + its installment's escrow + extra.
+        """Return a DERIVE-mode payment's cash: P&I + its installment's escrow + extra.
 
         **Amount rule 4's derive arm, and it reads no status** -- not
         ``is_projected``, not ``is_override``, not ``is_deleted``.  That is
         finding **N-262**'s rule one tier down: those three say whether a row
         COUNTS and who last touched it, never what prices it.
 
+        **It takes the two DATING COLUMNS rather than the payment SHADOW, and
+        plan step X-au-f-2 is why** (ruling **R-BAL10**).  The answer's home is
+        the PARENT transfer now, which carries the same two facts and is not a
+        :class:`~app.models.transaction.Transaction`; taking the values is what
+        lets one producer answer for either row, and is the shape
+        :func:`app.services.settle_day.settle_day_from_columns` already takes
+        precisely so a transfer can answer it.  The old parameter carried a
+        note that either LEG resolved the same figure; the leg is not asked at
+        all now, so there is no whichever-is-passed question left.
+
         Args:
-            shadow: The payment shadow whose installment dates the escrow.
-                Either leg resolves the same figure -- both share the transfer
-                id, the pay period and the due date -- so Transfer Invariant 3
-                is preserved whichever is passed.
+            due_date: The payment's own stored due date, or ``None``.
+            period_start: The start date of the payment's pay period -- the
+                installment fallback for a payment carrying no due date.
             loan_account_id: The destination loan to resolve.
             extra_principal: The recurring payment's standing extra principal
                 (``0.00`` when none), from
@@ -154,7 +166,9 @@ class LoanPricing:
         basis, escrow_lines = self._loan(loan_account_id)
         if basis is None:
             return None
-        return _shadow_live_amount(basis, escrow_lines, shadow, extra_principal)
+        return _installment_cash(
+            basis, escrow_lines, due_date, period_start, extra_principal,
+        )
 
 
 def loan_pricing() -> LoanPricing:

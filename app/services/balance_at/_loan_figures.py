@@ -548,4 +548,4 @@ def _is_paid_off(
     """
     if not _is_retired(resolved, account, ctx):
         return False
-    return any(p.is_confirmed for p in resolved.context.payments)
+    return any(p.dates.is_confirmed for p in resolved.context.payments)

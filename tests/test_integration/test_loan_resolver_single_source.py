@@ -42,14 +42,13 @@ from app.services import (
     savings_dashboard_service,
     transfer_service,
 )
-from app.services.loan_resolver._periods import _replay_from_anchor
-from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     amount_basis_for_scenario,
     create_loan_account,
     create_settled_transfer,
     loan_params_for,
+    unseeded_replay_balance,
 )
 
 
@@ -169,28 +168,23 @@ def _settle_one_payment(seed_user, loan_account, period, auth_client):
     db.session.expire_all()
 
 
-def _replay_window(account_id, loan_params, ctx):
-    """Return the anchor + confirmed-payment replay balance as of today.
+def _replay_window(account_id, loan_params, scenario_id):
+    """Return the anchor + settled-payment replay balance as of today.
 
     The sanity-floor window the deleted ``LoanState.current_balance`` carried
-    (plan step D2a): the same production derivation one level down
-    (``_replay_from_anchor``, which still seeds the schedule composer's
-    starting state), so the hand-computed pins keep their values while the
-    display surfaces under test read the seam.
+    (plan step D2a): :func:`tests._test_helpers.unseeded_replay_balance`, the
+    suite's ONE assembly of that replay, so the hand-computed pins below keep
+    their values while the display surfaces under test read the seam.
+
+    It took a loaded ``LoanContext`` -- and so the whole pricing tier -- until
+    plan step **balance:X-bl-2b** put the replay on the amount-free feed.  It
+    takes the SCENARIO now, because that is all the feed needs to be scoped.
+
+    ``loan_params`` is taken and unused: the helper re-loads it from the
+    account id.
     """
-    del account_id  # identity carried by loan_params; kept for call clarity
-    inputs = loan_resolver.LoanInputs(
-        loan_params,
-        loan_loaders.load_loan_anchor_facts(loan_params),
-        ctx.payments,
-        ctx.rate_changes,
-    )
-    periods = loan_resolver.resolve_periods(
-        inputs.loan_params, inputs.rate_changes,
-    )
-    return round_money(
-        _replay_from_anchor(inputs, periods, date.today()).balance_as_of
-    )
+    del loan_params  # identity carried by account_id; kept for call clarity
+    return unseeded_replay_balance(account_id, scenario_id, date.today())
 
 
 def _loan_card_principal(auth_client, account_id):
@@ -274,11 +268,9 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
             seed_user, seed_periods[0],
         )
 
-        ctx = loan_payment_service.load_loan_context(
-            account.id, amount_basis_for_scenario(seed_user["scenario"].id),
-            loan_params,
+        replayed = _replay_window(
+            account.id, loan_params, seed_user["scenario"].id,
         )
-        replayed = _replay_window(account.id, loan_params, ctx)
         assert replayed == FIXED_PRINCIPAL, (
             f"Sanity floor: the anchor replay should report {FIXED_PRINCIPAL} "
             f"for a fresh loan, got {replayed}."
@@ -323,11 +315,8 @@ def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
         )
 
         scenario_id = seed_user["scenario"].id
-        ctx = loan_payment_service.load_loan_context(
-            account.id, amount_basis_for_scenario(scenario_id), loan_params,
-        )
         assert _replay_window(
-            account.id, loan_params, ctx,
+            account.id, loan_params, scenario_id,
         ) == BALANCE_AFTER_ONE_SETTLE
 
         # F-008 / F-015 / F-016 / symptom #5 re-pin: loan card display

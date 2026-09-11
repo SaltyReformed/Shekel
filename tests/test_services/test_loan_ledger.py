@@ -485,7 +485,7 @@ class TestFoldCountsAnEventOnTheDayItHappened:
             # The installment this payment satisfies is 2026-02-01 (the split key).
             params = loan_loaders.load_loan_params(loan.id)
             shadows = loan_loaders.settled_income_shadows(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, options=(),
             )
             due = loan_loaders.loan_payment_due_date(
                 shadows[0], params.payment_day,

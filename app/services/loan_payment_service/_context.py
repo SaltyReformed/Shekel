@@ -3,8 +3,15 @@ Shekel Budget App -- A loan's LOADED context and its payment history.
 
 One account's payments, rate changes, escrow and contractual P&I, loaded once
 and shared by every consumer of an amortization schedule
-(:func:`load_loan_context`), plus the query that turns shadow income rows into
-the engine's :class:`PaymentRecord` feed (:func:`get_payment_history`).
+(:func:`load_loan_context`), plus the PRICING of that payment feed
+(:func:`get_payment_history`).
+
+**It stopped owning the payment QUERY at plan step balance:X-bl-2a** (finding
+**N-432**).  The rows, their chronology and their three dates are
+:func:`app.services.loan_ledger.payment_installments` now; what is left here is
+the amount, which is the only part of a payment record this tier is qualified to
+answer.  That is what lets the schedule replay -- three dates, no amount -- reach
+the feed without the amount model behind it.
 
 Sits above :mod:`._engine_prep`, whose two corrections it applies to the feed
 before returning it, and BELOW the amount model: since plan step X-au-g-2c both
@@ -21,19 +28,16 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.loan_params import LoanParams
-from app.models.pay_period import PayPeriod
-from app.models.transaction import Transaction
 from app.services import escrow_calculator
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
 from app.services.cash_ledger import AmountBasis, contributions_by_id
-from app.services.loan_ledger import payment_visible_on
+from app.services.loan_ledger import payment_installments
 from app.services.loan_loaders import (
     _rate_change_records_from,
     load_escrow_lines,
     load_rate_history,
-    loan_payment_due_date,
-    query_shadow_income,
 )
+from app.utils.amount_relationships import pricing_load_options
 from ._engine_prep import compute_contractual_pi, prepare_payments_for_engine
 
 
@@ -233,19 +237,35 @@ def load_loan_context(
 def get_payment_history(
     account_id: int, basis: AmountBasis, payment_day: int,
 ) -> list[PaymentRecord]:
-    """Query shadow income transactions on a debt account.
+    """Price a debt account's payment installments into the engine's feed.
 
     Returns PaymentRecord instances for all non-deleted, non-excluded
     shadow income transactions linked to the given account and the basis's
     scenario.  Shadow income transactions represent payments received by a debt
     account via transfers.
 
-    Filtering logic:
-      - transfer_id IS NOT NULL (shadow transactions only)
-      - transaction_type_id = Income (income side of the transfer)
-      - is_deleted = False (excludes soft-deleted transactions)
-      - status.excludes_from_balance = False (excludes Cancelled and
-        Credit statuses, which do not represent actual payments)
+    **It is the JOIN of two producers since plan step balance:X-bl-2a, and owns
+    neither** (finding **N-432**).  The rows, their order and their three dates
+    are :func:`app.services.loan_ledger.payment_installments`; the figures are
+    :func:`~app.services.cash_ledger.contributions_by_id`.  What is left here is
+    the pairing.  Splitting it that way is what lets a consumer that needs only
+    the chronology -- the schedule replay, which reads three dates and no amount
+    -- take the installments alone: this function's import closure is the amount
+    model's -- **102 modules here, against the 46 the replay's own tier needs**
+    (2026-09-09; the metric and its history are stated in
+    :mod:`app.services.loan_ledger._installments`).  Plan step **X-bl-2b** moved
+    the reconciliation oracle's independent reference, and five other suite
+    copies of the un-seeded replay, off this door, so none of those 56 extra
+    modules is one they have to be right about any more.
+
+    **That split also deletes the SECOND producer of a loan's settled history.**
+    This function read the status column itself (``txn.status.is_settled``) while
+    :func:`app.services.loan_loaders.settled_income_shadows` -- which calls
+    itself the project's single such derivation -- filtered on
+    ``settled_status_ids()``.  The two agreed by a pinned parity, which is rule
+    14's tell rather than its answer; the installment producer reads that loader
+    and the projected one, so settled-ness is decided by which set a row arrived
+    in and this file states no rule about it at all.
 
     **It prices its rows through the AMOUNT MODEL, and routing this ONE reader
     is what finding N-266(a) was** (plan step X-au-g-2c).  Every other reader of
@@ -284,13 +304,15 @@ def get_payment_history(
     NEXT leaf declares derived does here: it resolves, where it used to raise.
 
     **One ORDERING is different and it is stated rather than left to be met.**
-    The old loop priced and dated each row in turn; this prices the whole feed
-    and then dates it.  On a feed carrying BOTH an early row with a broken
-    settle day and a later row the amount model refuses, the exception a caller
-    sees flips from ``UndatedSettleError`` to ``AmountUnresolvable``.  Both are
-    loud, both are named below, and neither is recoverable -- but "byte
-    identical" is a claim about VALUES, and this is the one place it is not
-    also a claim about which refusal arrives first.
+    Dating now happens WHOLLY BEFORE pricing, because the installment producer
+    runs first.  On a feed carrying BOTH a row with a broken settle day and a
+    row the amount model refuses, the exception a caller sees is
+    ``UndatedSettleError`` whichever comes first in the feed.  Plan step
+    X-au-g-2c had flipped that to ``AmountUnresolvable`` by pricing the whole
+    feed before dating any of it, and X-bl-2a flips it back.  Both are loud, both
+    are named below, and neither is recoverable -- but "byte identical" is a
+    claim about VALUES, and this is the one place it is not also a claim about
+    which refusal arrives first.
 
     **It asks the BATCH, and the reason is consistency rather than cost.**
     ``contributions_by_id`` is a comprehension over ``contribution_of``, so it
@@ -317,14 +339,25 @@ def get_payment_history(
     no longer reproducible.  It is named only because conflating the two is what
     kept N-266(a)'s bound alive as a "cycle" long after the path was deleted.
 
-    Each record carries all three of a loan payment's dates (see
-    :class:`~app.services.amortization_engine.PaymentRecord`): ``payment_date``
-    is the pay-period start (the funding basis), ``due_date`` is the
-    installment it satisfies, from the ONE derivation the genesis write walk
-    also uses (:func:`app.services.loan_loaders.loan_payment_due_date`), and
+    Each record carries all three of a loan payment's dates as the ONE value
+    that holds them (:class:`~app.services.amortization_engine.PaymentDates`),
+    taken WHOLE off its
+    :class:`~app.services.loan_ledger.PaymentInstallment` and derived nowhere
+    near here: ``period_start`` is the pay-period start (the funding basis),
+    ``due_date`` is the installment it satisfies, from the ONE derivation the
+    genesis write walk also uses
+    (:func:`app.services.loan_loaders.loan_payment_due_date`), and
     ``settled_on`` is the day the cash moved, from the ONE derivation the
     genesis fold dates that payment's principal by
-    (:func:`app.services.loan_ledger.payment_visible_on`).
+    (:func:`app.services.loan_ledger.payment_visible_on`).  *This copied the
+    three fields ACROSS -- from a* ``period_start`` *to a* ``payment_date``,
+    *two names for one fact -- until plan step* **balance:X-bl-2b** *made both
+    types compose the dates.*
+
+    The ``due_date`` here is the payment's OWN installment, never the schedule
+    slot :func:`app.services.amortization_engine.schedule_dates` may invent for it: the
+    slot is assigned by :func:`._engine_prep.prepare_payments_for_engine`, after
+    the escrow subtraction has keyed on the real one.
 
     **Deriving the DUE date or the CASH day from the pay period has cost a
     defect each** -- the first mis-dated a late payment to the following
@@ -333,18 +366,19 @@ def get_payment_history(
     basis has cost none: it decides only the replay's rate lookup, which finding
     **N-36** records as deliberate and step X-n owns.
 
-    **This function is the ONE place status and settle day are arbitrated, and
-    ``PaymentRecord.is_confirmed`` is derived from the result.**  ``status.is_settled``
-    decides whether the payment happened; the day is then REQUIRED, because
+    **Status and settle day are arbitrated ONE TIER DOWN, and since plan step
+    balance:X-bl-2a they are arbitrated once rather than agreeably twice.**
+    :func:`app.services.loan_ledger.payment_installments` reads the fold's own
+    settled set, then REQUIRES the day, because
     :func:`~app.utils.balance_predicates.settled_day` (inside
     ``payment_visible_on``) refuses a settled row carrying none rather than
     inventing one.  A row broken the other way -- Projected but still carrying a
-    stale day, which only a seam bypass can produce -- has that day dropped
-    here, so the record cannot report it as confirmed.  Status-first is the
-    same order the fold's loader uses
-    (:func:`app.services.loan_loaders.settled_income_shadows`, which filters on
-    ``status_id``), which is why the two producers cannot classify a broken row
-    differently.
+    stale day, which only a seam bypass can produce -- arrives in the PROJECTED
+    set and its day is never read, so the record cannot report it as confirmed.
+    ``PaymentRecord.is_confirmed`` is that absence.  What this file used to hold
+    was a second reading of the status column beside the loader's, and its
+    defence was that the two ran in the same ORDER -- a maintenance contract
+    where there is now one producer.
 
     Args:
         account_id: The debt account receiving payments.
@@ -392,38 +426,30 @@ def get_payment_history(
             stops being reachable from a door is a behaviour change even when
             every other reader still refuses.
     """
-    # Shadow-income transactions for this account across every period,
-    # ordered by period start for the chronological payment timeline.
-    # ``query_shadow_income`` owns the shared "what counts as shadow income"
-    # predicate; the explicit ``join(Transaction.pay_period)`` brings the
-    # PayPeriod alias into scope for the ``order_by`` (the builder's
-    # ``joinedload`` is the separate N+1-avoiding eager-load).
-    txns = (
-        query_shadow_income(account_id, basis.scenario_id)
-        .join(Transaction.pay_period)
-        .order_by(PayPeriod.start_date)
-        .all()
+    # The DATES, from the one producer that answers them (plan step
+    # balance:X-bl-2a).  It owns the query, the chronological order, and the
+    # three dates; this function's whole remaining job is to price the rows it
+    # hands back and pair each figure with its installment.
+    installments = payment_installments(
+        account_id, basis.scenario_id, payment_day,
+        # This function PRICES every row it is handed, so it is this call that
+        # states the amount model's eager set (plan step balance:X-bl-2a).  The
+        # date producer states none: it reads the pay period, which its own
+        # loader supplies.
+        options=pricing_load_options(),
     )
 
     # One valuation pass over the whole feed.  Indexed with ``[]`` because the
     # batch covers every id it was given, so a row it forgot to price raises
     # where it is read rather than defaulting to a fabricated figure.
-    priced = contributions_by_id(txns, basis)
+    priced = contributions_by_id(
+        [installment.income_shadow for installment in installments], basis,
+    )
 
     return [
         PaymentRecord(
-            payment_date=txn.pay_period.start_date,
-            due_date=loan_payment_due_date(txn, payment_day),
-            # The day the cash moved, read through the SAME accessor the fold
-            # dates this payment's principal by, so the resolver's
-            # "already happened" and the ledger's are one derivation and not
-            # two (plan step X-an).  ``None`` for a Projected shadow: its cash
-            # has not moved, and ``PaymentRecord.is_confirmed`` is exactly
-            # that absence.
-            settled_on=(
-                payment_visible_on(txn) if txn.status.is_settled else None
-            ),
-            amount=priced[txn.id],
+            dates=installment.dates,
+            amount=priced[installment.income_shadow.id],
         )
-        for txn in txns
+        for installment in installments
     ]

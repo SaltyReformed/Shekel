@@ -150,7 +150,7 @@ def _build_monthly_override(
       seeding this projection AND planned here, so its installment was paid
       twice.
     * The override MONTH is the payment's own due month
-      (:attr:`PaymentRecord.due_date`), matching the due-date dating
+      (:attr:`PaymentDates.due_date`), matching the due-date dating
       ``replay_schedule`` gives its rows and ``project_forward`` its forward
       rows.  Keying on the pay-period-start month instead would land each
       planned amount one month early -- a latent error whenever planned
@@ -181,12 +181,12 @@ def _build_monthly_override(
         # ONE predicate, shared with replay_schedule's as_of cap, so the split
         # is a property of one rule rather than of two comparisons that happen
         # to agree (plan step X-an).
-        if has_settled_by(payment.settled_on, as_of):
+        if has_settled_by(payment.dates.settled_on, as_of):
             continue
         # Key on the payment's own due month so the planned amount lands on
         # the same forward row project_forward generates (it advances from
         # replay's due-date-derived next_pay_date).
-        key = (payment.due_date.year, payment.due_date.month)
+        key = (payment.dates.due_date.year, payment.dates.due_date.month)
         override[key] = override.get(key, ZERO_MONEY) + payment.amount
     return override
 
@@ -277,7 +277,17 @@ def _build_forward_inputs(
     # remaining MONTHS (payment-count facts, identical under both
     # producers); its rows and balance are the fallback when no ledger view
     # is supplied.
-    replay = _replay_from_anchor(loan_inputs, periods, as_of)
+    # The replay reads three dates per payment and no amount, so it is handed
+    # the feed's DATES (plan step balance:X-bl-2b) -- an attribute read off the
+    # priced records this bundle carries for the forward override, never a
+    # second projection of them.
+    replay = _replay_from_anchor(
+        anchor_events=loan_inputs.anchor_events,
+        periods=periods,
+        payments=[payment.dates for payment in loan_inputs.payments or []],
+        payment_day=loan_inputs.loan_params.payment_day,
+        as_of=as_of,
+    )
 
     # Contractual P&I for the forward projection is the SAME current-
     # period level payment that drives ``LoanState.monthly_payment`` on

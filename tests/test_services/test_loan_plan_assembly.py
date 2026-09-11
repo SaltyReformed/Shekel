@@ -41,6 +41,7 @@ from tests._test_helpers import (
     loan_income_shadow,
 )
 from app.services.amount_ownership import declare_derived
+from app.models.amount_ownership import AmountOwnership
 
 #: The read instant for the early-settled-payment case ONLY -- deliberately
 #: later than the module-wide :data:`_AS_OF` below, because that case is about a
@@ -165,7 +166,7 @@ def _project_loan_payment(seed_user, db, loan, period, amount, due_date):
             to_account_id=loan.id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
-            amount=amount,
+            amount_ownership=AmountOwnership.own(amount),
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             category_id=None,
             name="Loan Payment",

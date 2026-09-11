@@ -48,6 +48,7 @@ from app.services import (
     transfer_service,
 )
 from app.services.settle_day import recorded_settle_day
+from app.models.amount_ownership import AmountOwnership
 
 logger = logging.getLogger(__name__)
 
@@ -92,11 +93,19 @@ def _apply_shadow_update(txn, txn_id, data):
     # ``transfers.mutations``: the transfer service's amount arm CLEARS the
     # relation that prices the row, so passing an echo would un-derive a
     # generated transfer on a save that touched only its status.
+    #
+    # **The TRANSLATION is this door's, since ruling R-BAL11** (plan step
+    # X-au-f): the service takes ONE ``amount_ownership`` where it took a figure
+    # plus a claim about who authored it.  A door is the layer that knows the
+    # difference -- it compares what came back against what it rendered -- so it
+    # says *the pair OWNS this figure* rather than handing down two facts.
+    # Saying NOTHING is spelled by omitting the key.
     svc_kwargs = {}
     amount_authored = figure_was_authored(data, "estimated_amount")
-    svc_kwargs["amount_authored"] = amount_authored
     if amount_authored:
-        svc_kwargs["amount"] = data["estimated_amount"]
+        svc_kwargs["amount_ownership"] = AmountOwnership.own(
+            data["estimated_amount"],
+        )
     if "settled_amount" in data:
         svc_kwargs["settled_amount"] = data["settled_amount"]
     if "status_id" in data:
@@ -113,6 +122,28 @@ def _apply_shadow_update(txn, txn_id, data):
     if "category_id" in data:
         svc_kwargs["category_id"] = data["category_id"]
     if "due_date" in data:
+        # **REFUSED on a GENERATED transfer** (finding **BAL-476**, plan step
+        # X-au-f).  This door answers a shadow PATCH by updating its PARENT, so
+        # a due date submitted here is a due date submitted for the transfer --
+        # and a generated transfer's due date is its DEFINITION's, which since
+        # X-au-f is also what prices it.  Clearing it leaves a row
+        # ``_stated_amount`` refuses, on nine render sites that carry no
+        # ``AmountUnresolvable`` handler.
+        #
+        # The predicate is the transfer's own
+        # (:attr:`~app.models.transfer.Transfer.due_date_is_its_definitions`),
+        # shared with the transfer PATCH's gate rather than restated, because
+        # this door is the one that was MISSED: the transfer route's gate chain
+        # never runs for a shadow, the transaction gate keys on ``template_id``
+        # which a shadow does not carry, and the dispatch to this function
+        # happens before either.
+        if txn.transfer.due_date_is_its_definitions:
+            return _error_transaction_response(
+                txn_id,
+                "This instance's due date comes from its recurring transfer, "
+                "which is also what prices it. Change the due day on the "
+                "recurring transfer to move every instance.",
+            )
         svc_kwargs["due_date"] = data["due_date"]
     # The settle-day correction (ruling R-ED), graded against the status the
     # PATCH leaves the row in -- a day submitted alongside a revert is dropped

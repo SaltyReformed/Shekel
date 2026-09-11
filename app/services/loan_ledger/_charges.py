@@ -43,8 +43,10 @@ def installment_slot(due: date) -> tuple[int, int]:
     **TWO further sites spell the same key inline rather than calling this, and
     naming them as sharers here was false until plan step X-au-g-2c-3b-2**: the
     tax reader's settled-slot merge (``balance_at._loan_interest._due_slot``) and
-    the resolver feed's collision key
-    (``loan_payment_service._engine_prep._redistribute_to_distinct_months``) each
+    the payment feed's collision key
+    (``amortization_engine.schedule_dates``, which was
+    ``loan_payment_service._engine_prep._redistribute_to_distinct_months`` until
+    plan step balance:X-bl-2a moved it into the pure engine) each
     write ``(due.year, due.month)`` themselves.  They agree today by coincidence
     of arithmetic, not by construction, and routing them here is a change to the
     installment identity across the whole loan architecture -- which is

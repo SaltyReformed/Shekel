@@ -918,7 +918,7 @@ class TestPulseStillDue:
                     to_account_id=savings.id,
                     pay_period_id=seed_periods[_CURRENT_IDX].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("400.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("400.00")),
                     status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                     category_id=None,
                     due_date=date(2026, 3, 24),

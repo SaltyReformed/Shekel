@@ -47,6 +47,7 @@ from app.services.investment_projection import (
 )
 from app.services.loan_loaders import query_shadow_income
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
+from app.utils.amount_relationships import pricing_load_options
 
 _ZERO = Decimal("0")
 
@@ -194,7 +195,9 @@ def _recorded_contributions(
         realized actual for a settled shadow, else its resolved amount.  ``{}``
         for an account with none.
     """
-    rows = query_shadow_income(account_id, basis.scenario_id).all()
+    rows = query_shadow_income(
+        account_id, basis.scenario_id, options=pricing_load_options(),
+    ).all()
     contributions = contributions_by_id(rows, basis)
     totals: dict[int, Decimal] = {}
     for txn in rows:

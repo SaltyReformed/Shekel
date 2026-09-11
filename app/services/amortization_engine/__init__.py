@@ -18,6 +18,12 @@ Split along the primitives/question seam (the C0302 root fix, same
 shape as the ``loan_resolver`` package) so existing imports from
 ``app.services.amortization_engine`` keep working unchanged:
 
+* :mod:`._dates` -- :class:`PaymentDates`, a loan payment's three dates as
+  ONE value.  The package's lowest leaf (stdlib only), so every tier that holds
+  a payment names its dates from one home: :class:`PaymentRecord` composes it
+  and so does the loader's
+  :class:`~app.services.loan_ledger.PaymentInstallment` (plan step
+  **balance:X-bl-2b**).
 * :mod:`._projection` -- the value records, the standard payment
   formula, the date helpers, and :func:`project_forward` itself.
   Per-month rate and contractual P&I come from the projection's
@@ -29,6 +35,7 @@ shape as the ``loan_resolver`` package) so existing imports from
   :func:`calculate_payoff_by_date`) built on the primitives.
 """
 
+from ._dates import PaymentDates
 from ._payoff import (
     PayoffRequest,
     calculate_payoff_by_date,
@@ -45,11 +52,14 @@ from ._projection import (
     calculate_monthly_payment,
     calculate_remaining_months,
     project_forward,
+    schedule_dates,
+    slotted_dates,
 )
 
 __all__ = [
     "AmortizationRow",
     "AmortizationSummary",
+    "PaymentDates",
     "PaymentRecord",
     "PayoffRequest",
     "PeriodTerms",
@@ -61,4 +71,6 @@ __all__ = [
     "calculate_remaining_months",
     "project_forward",
     "required_extra_for_projection",
+    "schedule_dates",
+    "slotted_dates",
 ]

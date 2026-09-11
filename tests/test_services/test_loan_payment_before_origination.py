@@ -31,6 +31,7 @@ from tests._test_helpers import (
     create_transfer,
     shadow_amount,
 )
+from app.models.amount_ownership import AmountOwnership
 
 # The suite's frozen today is 2026-03-20.  This loan closes 2026-03-01 -- in the
 # PAST, so periods on both sides of origination exist inside the seeded window.
@@ -256,7 +257,7 @@ class TestTheEditPathIsGuardedToo:
                 transfer_service.update_transfer(
                     xfer.id, seed_user["user"].id,
                     due_date=date(2026, 2, 1),
-                    amount=Decimal("999.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("999.00")),
                 )
 
             # No rollback: nothing may have been applied in the first place.

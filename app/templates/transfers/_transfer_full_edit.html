@@ -3,7 +3,11 @@
    Contains amount, status, category, notes, and quick status action buttons.
    Form submits via HTMX PATCH targeting the original cell by ID.
 
-   Expected context: xfer, statuses, categories, settled, retained.
+   Expected context: xfer, statuses, categories, budgets, settled, retained.
+   ``budgets`` is ``{transfer_id: what this transfer's amount IS}`` from
+   ``routes._render_helpers.transfer_budgets``; ``settled`` and ``retained``
+   come from ``transfer_settlement_amounts``.  Two producers rather than one
+   because the cell and the quick edit render a plan and no record.
    Optional: source_txn_id -- when opened from a shadow transaction cell,
    the form targets #txn-cell-<source_txn_id> instead of #xfer-cell-<xfer.id>.
 
@@ -75,7 +79,7 @@
       <div class="col">
         <label class="form-label mb-0 small">Amount</label>
         <input type="number" step="0.01" min="0.01" name="amount"
-               value="{{ xfer.amount }}"
+               value="{{ budgets[xfer.id] }}"
                class="form-control form-control-sm"
                placeholder="Amount"
                {{ 'disabled' if locked else '' }}>
@@ -91,9 +95,11 @@
            Rendering the companion from the SAME expression as the input means
            it keeps agreeing with the box when that expression becomes the
            resolved figure rather than the stored one -- the cutover moves both
-           or neither. #}
+           or neither.  **That expression is now the amount model's answer**
+           (X-au-f's reader leaf): both this and the box read ``budgets``, so
+           the two move together by construction rather than by review. #}
         <input type="hidden" name="amount_as_rendered"
-               value="{{ xfer.amount }}">
+               value="{{ budgets[xfer.id] }}">
       </div>
       {# **The ACTUAL: what the bank really moved.**
 
@@ -242,18 +248,46 @@
              placeholder="Notes">
     </div>
 
-    {# Due Date -- always rendered, pre-filled with the stored value, so a
-       user can add, change, or CLEAR a due date.  An empty submit loads as
-       an explicit None (TransferUpdateSchema strip_empty_strings maps "" to
-       None for nullable fields) and clears the parent and both shadows; an
-       existing due date is never clobbered by a save that leaves the
-       pre-filled value untouched. #}
+    {# Due Date -- an INPUT on an ad-hoc transfer, TEXT on a generated one.
+       The transaction twin in ``grid/_transaction_full_edit.html`` carries the
+       same split for the same reason.
+
+       **A generated transfer's due date is its DEFINITION's** (plan step
+       balance:X-au-f, finding BAL-476).  ``due_date`` is a member of
+       ``transfer_recurrence.DerivedTransferFields``, so generation computes it
+       from the rule and the period and every regeneration rewrites it -- an
+       edit here never survived a later template save.  Since X-au-f it is also
+       the date the transfer's PRICE is resolved on (amount rule 3), so
+       CLEARING it leaves a row no rule can price: the nine parent-transfer
+       render sites carry no ``AmountUnresolvable`` handler, which on the
+       transaction side was measured taking out the grid, the dashboard and the
+       companion from one row.  ``routes/transfers/mutations
+       ._reject_generated_due_date_edit`` is the backstop for a crafted request
+       or a stale form; this is what stops the form offering the act at all.
+
+       Where a transfer's due day genuinely moves, it moves on the TEMPLATE's
+       recurrence rule, which applies it to every instance.  An AD-HOC transfer
+       keeps the input: it owns its figure -- structurally, per
+       ``ck_transfers_adhoc_owns_amount`` -- so no rule reads its date and
+       clearing it prices nothing wrongly.  An empty submit there loads as an
+       explicit None (TransferUpdateSchema strip_empty_strings maps "" to None
+       for nullable fields) and clears the parent and both shadows. #}
     <div class="mb-2">
       <label class="form-label mb-0 small">Due Date</label>
+      {% if xfer.transfer_template_id is none %}
       <input type="date" name="due_date"
              value="{{ xfer.due_date.isoformat() if xfer.due_date is not none else '' }}"
              class="form-control form-control-sm"
              {{ 'disabled' if locked else '' }}>
+      {% else %}
+      <div class="form-control form-control-sm bg-body-secondary">
+        {{ xfer.due_date.strftime('%b %d, %Y') if xfer.due_date is not none else '--' }}
+      </div>
+      <div class="form-text small">
+        Set by this recurring transfer. Change it on the template to move
+        every instance.
+      </div>
+      {% endif %}
     </div>
 
     {# Settled on -- the civil day the money actually moved (ruling R-ED).

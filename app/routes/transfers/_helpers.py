@@ -9,7 +9,7 @@ constructed once at import time so every handler reuses the same instance
 
 import logging
 
-from flask import render_template, request
+from flask import request
 from flask_login import current_user
 
 from app.extensions import db
@@ -21,8 +21,10 @@ from app.schemas.validation import (
     TransferCreateSchema,
     TransferUpdateSchema,
 )
-from app.services.account_resolver import resolve_grid_account
-from app.routes._render_helpers import render_transaction_cell
+from app.routes._render_helpers import (
+    render_transaction_cell,
+    render_transfer_cell,
+)
 from app.utils.digit_strings import parse_row_id
 from app.utils.error_fragments import designed_error
 
@@ -197,11 +199,7 @@ def _stale_transfer_response(xfer_id):
         db.session.refresh(shadow)
         return render_transaction_cell(shadow, conflict=True)
 
-    account = resolve_grid_account(current_user.id, current_user.settings)
-    return render_template(
-        "transfers/_transfer_cell.html",
-        xfer=xfer, account=account, conflict=True,
-    )
+    return render_transfer_cell(xfer, conflict=True)
 
 
 def _error_transfer_response(xfer_id, message, status=400):
@@ -243,14 +241,7 @@ def _error_transfer_response(xfer_id, message, status=400):
             status,
         )
 
-    account = resolve_grid_account(current_user.id, current_user.settings)
-    return designed_error(
-        render_template(
-            "transfers/_transfer_cell.html",
-            xfer=xfer, account=account, error=message,
-        ),
-        status,
-    )
+    return designed_error(render_transfer_cell(xfer, error=message), status)
 
 
 def _render_post_mutation_cell(xfer, *, shadow_trigger, cell_trigger):
@@ -280,8 +271,5 @@ def _render_post_mutation_cell(xfer, *, shadow_trigger, cell_trigger):
         response = render_transaction_cell(shadow)
         return response, 200, {"HX-Trigger": shadow_trigger}
 
-    account = resolve_grid_account(current_user.id, current_user.settings)
-    response = render_template(
-        "transfers/_transfer_cell.html", xfer=xfer, account=account,
-    )
+    response = render_transfer_cell(xfer)
     return response, 200, {"HX-Trigger": cell_trigger}

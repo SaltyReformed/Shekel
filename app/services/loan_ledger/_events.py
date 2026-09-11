@@ -85,8 +85,16 @@ def confirmed_shadows_through(
     """
     return [
         shadow
+        # ``options=()``, and the reason covers the RETURNED rows and not only
+        # the filter below (plan step balance:X-bl-2a).  This reads
+        # ``payment_visible_on`` -- the ``settled_on`` column -- and its callers
+        # read the same rows: ``confirmed_loan_payment_history`` takes each
+        # shadow's due date and settlement, both of which are columns plus the
+        # pay period ``income_shadows`` loads itself.  No consumer of this list
+        # prices a row, which is what makes stating no pricing load correct
+        # rather than merely locally true.
         for shadow in loan_loaders.settled_income_shadows(
-            loan_account_id, scenario_id,
+            loan_account_id, scenario_id, options=(),
         )
         if payment_visible_on(shadow) <= as_of
     ]
@@ -114,7 +122,8 @@ def loan_event_stream(
     the event rather than recomputed downstream (plan step E1c), and it is the
     SAME strict ``anchor_date < due_date`` post-anchor boundary the resolver's
     replay uses (:func:`is_confirmed_payment_eligible`, fed the same derivation
-    via :attr:`PaymentRecord.due_date`) -- the two MUST stay on one derivation,
+    via :attr:`~app.services.amortization_engine.PaymentDates.due_date`) -- the
+    two MUST stay on one derivation,
     or the posted ledger and the replayed balance drift on which payments a given
     anchor subsumes.
 

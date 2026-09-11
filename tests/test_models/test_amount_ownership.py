@@ -57,7 +57,12 @@ import sqlalchemy.exc
 from sqlalchemy import insert
 
 from app import ref_cache
-from app.enums import AmountSourceEnum, StatusEnum
+from app.enums import (
+    AmountSourceEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.ref import AmountSource, FilingStatus, TransactionType
@@ -72,9 +77,17 @@ from tests._test_helpers import (
     settle_day_columns,
     settlement_columns,
 )
-from app.services.cash_ledger import resolve_transfer_amount, settled_cash_leg
+from app.services.cash_ledger import (
+    amount_basis,
+    resolve_transfer_amount,
+    settled_cash_leg,
+)
 from app.utils.balance_predicates import is_balance_contributing
 from app.services.row_valuation import settled_contribution
+from app.models.loan_payment_settings import LoanPaymentSettings
+from app.services import template_amount_service
+from app.services.amount_ownership import state_own_amount
+from app.models.transfer_template import TransferTemplate
 
 _MIGRATION = load_migration_module("b3f7c2a9d514_amount_ownership.py")
 _SHADOW_CUTOVER = load_migration_module(
@@ -85,6 +98,9 @@ _SALARY_CUTOVER = load_migration_module(
 )
 _TEMPLATE_CUTOVER = load_migration_module(
     "c8f3a5d2e714_a_template_row_reads_its_templates_series.py",
+)
+_TRANSFER_CUTOVER = load_migration_module(
+    "b7e4c1f38a20_a_generated_transfer_reads_its_definition.py",
 )
 
 
@@ -518,11 +534,14 @@ class TestOnePricingLink:
             db.session.add(xfer)
             db.session.flush()
 
-            # Period 1, not 0: the fixture already holds a non-override row for
-            # this template in period 0, and
-            # the undated generation index would raise on THAT
-            # instead -- a control that fires for the wrong reason proves
-            # nothing.
+            # Period 1, not 0, is a precaution that has outlived its cause and
+            # is kept because it costs nothing: while the fixture's period-0
+            # row was hand-built and undated, this undated row in the same
+            # paycheck met ``idx_transactions_template_scenario_undated`` first
+            # and the control fired for the wrong reason.  The fixture's row is
+            # the engine's now (plan step balance:X-cf) and answers an
+            # occurrence, so it sits in the other index and the two could not
+            # collide in any period.
             txn = _make_transaction(
                 data, data["periods"],
                 pay_period_id=data["periods"][1].id,
@@ -741,10 +760,29 @@ class TestTheCheapAccessorRefusesAnUnsettledRow:
         ``test_services/test_amount_source.py``).  Without the date the row
         refuses for the wrong reason and the test would pass while proving
         nothing about the missing FIGURE.
+
+        **It builds its OWN definition since plan step X-au-f**, and that is
+        this case being kept alive rather than tidied.  X-au-f gave the shared
+        ``seed_full_user_data`` transfer template a price SERIES -- every
+        app-side create door states one, and without it every generated transfer
+        in the suite became unpriceable -- which silently disarmed this control:
+        the refusal simply stopped firing and the case read DID NOT RAISE.  A
+        template with no version is the state the refusal is ABOUT, so the case
+        now constructs one instead of borrowing a fixture that no longer has it.
         """
         with app.app_context():
+            template = TransferTemplate(
+                user_id=seed_full_user_data["user"].id,
+                from_account_id=seed_full_user_data["account"].id,
+                to_account_id=seed_full_user_data["savings_account"].id,
+                name="States No Price",
+                default_amount=Decimal("100.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
             xfer = _make_transfer(
                 seed_full_user_data,
+                transfer_template_id=template.id,
                 due_date=date(2026, 3, 15),
                 amount_ownership=AmountOwnership.derived(
                     ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
@@ -756,7 +794,13 @@ class TestTheCheapAccessorRefusesAnUnsettledRow:
             with pytest.raises(
                 AmountUnresolvable, match="price series is EMPTY",
             ):
-                _ = resolve_transfer_amount(xfer)
+                _ = resolve_transfer_amount(
+                    xfer,
+                    amount_basis(
+                        seed_full_user_data["user"].id,
+                        seed_full_user_data["scenario"].id,
+                    ),
+                )
 
     def test_a_settlement_record_answers_for_a_derived_row(
         self, app, db, seed_user, seed_periods
@@ -898,8 +942,24 @@ class TestTheDowngradeRefusesToInventAFigure:
         Both columns are in the guard's loop, and a guard that checked only
         ``transactions`` would let a downgrade fail mid-DDL on the transfers
         ``SET NOT NULL`` -- after it had already dropped the constraints.
+
+        The fixture's own transaction is the ENGINE's row since plan step
+        balance:X-cf and so is derived, which is the state the FIRST arm
+        refuses; the guard raises at the first table it finds a NULL in, so
+        that row would answer for the transfer's arm.  The owner re-prices it
+        first -- the two acts the re-price door performs -- and the world is
+        then the one this case is about: every transaction owns its figure
+        and one transfer does not.
         """
         with app.app_context():
+            # Re-fetched by key: the fixture committed, so its instance is
+            # expired and an attribute set on it may never reach a flush.
+            fixture_row = db.session.get(
+                Transaction, seed_full_user_data["transaction"].id,
+            )
+            state_own_amount(fixture_row, Decimal("1200.00"))
+            fixture_row.is_override = True
+            db.session.flush()
             xfer = _make_transfer(
                 seed_full_user_data,
                 amount_ownership=AmountOwnership.derived(
@@ -1590,3 +1650,298 @@ class TestTheTemplateCutoverRestoresEachRowFromTheRightPlace:
                 AmountSourceEnum.TEMPLATE,
             )
             assert row.estimated_amount is None
+
+
+def _state_series(data, amount, effective_on=date(2026, 1, 1)):
+    """Add ONE amount version to the fixture's transfer template, directly.
+
+    **Not through ``template_amount_service.set_amount``**, and the reason is a
+    harness fact rather than a preference: the template belongs to the FIXTURE's
+    session, so a write through its relationship inside a fresh
+    ``app.app_context()`` appends an object that never flushes -- the ORM then
+    answers the new price while the database still holds only the fixture's,
+    and a probe reading SQL and an assertion reading the model disagree about
+    the same template.  Measured while building these cases.  The transaction
+    twin's cases add their versions the same way for the same reason.
+
+    Dated ``2026-01-01`` by default, which is BEFORE every ``due_date`` these
+    cases use and AFTER nothing -- the fixture's own version is stated at the
+    owner's today, so a due date in March resolves to this one and the two
+    versions together make the series' supersession observable rather than
+    incidental.
+
+    Args:
+        data: The ``seed_full_user_data`` payload.
+        amount: The price to state.
+        effective_on: The date it takes effect.
+
+    Returns:
+        The fixture's transfer template, for a caller that goes on to attach
+        loan-payment settings to it.
+    """
+    template = data["transfer_template"]
+    db.session.add(TemplateAmountVersion(
+        transfer_template_id=template.id,
+        effective_date=effective_on, amount=amount,
+    ))
+    return template
+
+
+class TestTheTransferCutoverRefusesRatherThanStrandingARow:
+    """Migration ``b7e4c1f38a20``'s PRE-FLIGHT, driven directly.
+
+    The transfer twin of :class:`TestTheTemplateCutoverRefusesRatherThanStrandingARow`,
+    and it grades the half that has no sibling: **the probe asks different
+    things of three CLASSES of row**, because the three have three producers
+    (ruling **R-BAL10**).  An ordinary generated transfer and a MANUAL loan
+    payment are priced by the definition's series and must agree with it; a
+    DERIVE-mode payment is priced by the LOAN and is asked only whether that
+    loan resolves.
+
+    **The manual arm is graded against series + the standing extra, not the
+    series alone**, and that is the distinction most able to go wrong silently:
+    a probe comparing against the series would name every manual payment
+    carrying an extra as stranded, and the upgrade would then refuse a
+    population that is entirely correct.
+    """
+
+    def test_a_clean_population_strands_nothing(
+        self, app, db, seed_full_user_data,
+    ):
+        """The ordinary shape: the row agrees with what its definition answers."""
+        with app.app_context():
+            data = seed_full_user_data
+            _state_series(data, Decimal("100.00"))
+            xfer = _make_transfer(
+                data, due_date=date(2026, 3, 1),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+            )
+            db.session.add(xfer)
+            db.session.commit()
+
+            assert _TRANSFER_CUTOVER.rows_the_declare_would_strand(
+                db.session.connection(),
+            ) == []
+
+    def test_a_transfer_whose_figure_DISAGREES_is_named(
+        self, app, db, seed_full_user_data,
+    ):
+        """The cutover deletes a COPY; a row where the two differ holds a FACT.
+
+        Its figure is ``$250.00`` against a definition stating ``$100.00``, so
+        emptying the column would move that row's amount by ``$150.00`` with
+        nothing to say so.
+        """
+        with app.app_context():
+            data = seed_full_user_data
+            _state_series(data, Decimal("100.00"))
+            xfer = _make_transfer(
+                data, due_date=date(2026, 3, 1),
+                amount_ownership=AmountOwnership.own(Decimal("250.00")),
+            )
+            db.session.add(xfer)
+            db.session.commit()
+
+            stranded = _TRANSFER_CUTOVER.rows_the_declare_would_strand(
+                db.session.connection(),
+            )
+            assert [row[0] for row in stranded] == [xfer.id]
+            assert "disagrees" in stranded[0][3]
+
+    def test_a_MANUAL_payment_stores_the_BASE_and_is_graded_against_it(
+        self, app, db, seed_full_user_data,
+    ):
+        """The standing extra is not in the stored figure, so it is not in the test.
+
+        ``routes/loan/payment_transfer`` opens the series at the typed BASE and
+        keeps the extra on the settings row -- *"added live to every payment, in
+        BOTH modes"* -- so a manual payment's row stores exactly what an
+        ordinary generated transfer's does.  Series ``$100.00``, standing extra
+        ``$25.00``, row ``$100.00``: a CORRECT row, and the probe must not name
+        it.
+
+        **A first draft of the probe graded this arm against ``series + extra``
+        and this case hand-built an ``own($125.00)`` row to match it** -- a shape
+        no writer in ``app/`` produces.  The case was green and blind, and the
+        probe it defended would have RAISED on every real manual payment
+        carrying an extra: migrations auto-run in the deploy pipeline, so that
+        is a failed deploy. Found by an adversarial review of this step.
+
+        What declaring the row DOES move is the PARENT's answer, from ``$100.00``
+        to ``$125.00`` -- the cash that leaves the bank (**R-BAL10**) -- while
+        its two legs already answered ``$125.00``, so the fold moves ``$0.00``.
+        """
+        with app.app_context():
+            data = seed_full_user_data
+            _state_series(data, Decimal("100.00"))
+            # Added DIRECTLY, for the reason ``_state_series`` states: the
+            # fixture's template is not in this context's session, so assigning
+            # through its ``settings`` relationship never flushes and the probe
+            # -- which reads SQL -- would not see the payment at all.
+            db.session.add(LoanPaymentSettings(
+                transfer_template_id=data["transfer_template"].id,
+                derive_from_loan=False, extra_principal=Decimal("25.00"),
+            ))
+            xfer = _make_transfer(
+                data, due_date=date(2026, 3, 1),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+            )
+            db.session.add(xfer)
+            db.session.commit()
+
+            assert _TRANSFER_CUTOVER.rows_the_declare_would_strand(
+                db.session.connection(),
+            ) == []
+
+    def test_a_DERIVE_payment_is_asked_for_a_LOAN_and_not_for_agreement(
+        self, app, db, seed_full_user_data,
+    ):
+        """Its stored figure is a snapshot, so a difference is the point.
+
+        A derive-mode payment stores what P&I + escrow came to when it was set
+        up and has been free to drift ever since -- that drift IS what this
+        cutover deletes.  Requiring agreement would refuse exactly the rows the
+        step exists for, so the probe asks only whether the loan resolves.  Here
+        the destination is the fixture's SAVINGS account, which carries no
+        ``LoanParams``, so the row is named for the reason that actually makes
+        it unpriceable.
+        """
+        with app.app_context():
+            data = seed_full_user_data
+            _state_series(data, Decimal("100.00"))
+            # Added DIRECTLY; see the sibling case.
+            db.session.add(LoanPaymentSettings(
+                transfer_template_id=data["transfer_template"].id,
+                derive_from_loan=True,
+            ))
+            xfer = _make_transfer(
+                data, due_date=date(2026, 3, 1),
+                amount_ownership=AmountOwnership.own(Decimal("999.99")),
+            )
+            db.session.add(xfer)
+            db.session.commit()
+
+            stranded = _TRANSFER_CUTOVER.rows_the_declare_would_strand(
+                db.session.connection(),
+            )
+            assert [row[0] for row in stranded] == [xfer.id]
+            assert "LoanParams" in stranded[0][3]
+
+    def test_an_OVERRIDDEN_transfer_is_not_in_the_population_at_all(
+        self, app, db, seed_full_user_data,
+    ):
+        """The owner's figure is kept, so it is neither declared nor graded.
+
+        Its figure disagrees with the definition by ``$150.00`` -- the shape the
+        second case above names -- and it is silent here, which is what says the
+        exclusion is on the PREDICATE rather than on the probe's reasons.
+        """
+        with app.app_context():
+            data = seed_full_user_data
+            _state_series(data, Decimal("100.00"))
+            xfer = _make_transfer(
+                data, due_date=date(2026, 3, 1), is_override=True,
+                amount_ownership=AmountOwnership.own(Decimal("250.00")),
+            )
+            db.session.add(xfer)
+            db.session.commit()
+
+            assert _TRANSFER_CUTOVER.rows_the_declare_would_strand(
+                db.session.connection(),
+            ) == []
+
+
+class TestTheTransferCutoverRestoresEachRowFromTheRightPlace:
+    """Migration ``b7e4c1f38a20``'s DOWNGRADE, and the ORDER of its two arms.
+
+    The transfer twin of
+    :class:`TestTheTemplateCutoverRestoresEachRowFromTheRightPlace`, with one
+    difference that is the whole reason it needs its own case: a transfer
+    carries no settlement column, so the exact restore reads its EXPENSE LEG's
+    record.  A restore that read the parent would find nothing and every settled
+    transfer would come back at its template's scalar.
+    """
+
+    def test_a_SETTLED_transfer_restores_EXACTLY_from_its_legs_record(
+        self, app, db, seed_full_user_data,
+    ):
+        """The exact arm, which is the one a transfer needs its own case for.
+
+        A transfer carries no settlement column: its money moves on its two
+        LEGS and each records what it did.  So the exact restore reads the
+        EXPENSE leg's ``settled_amount`` on the ``derived`` basis -- the figure
+        the app itself resolved at the moment of the settle, which IS the plan
+        this migration emptied.  A restore that looked for the record on the
+        PARENT would find nothing and every settled transfer would come back at
+        its template's scalar instead.
+
+        The definition states ``$100.00`` and the leg recorded ``$137.42``, so
+        the two arms cannot answer the same number by accident -- which is what
+        lets a reversed statement order, or a restore reading the wrong row,
+        fail on the FIGURE rather than on a count.
+        """
+        with app.app_context():
+            data = seed_full_user_data
+            _state_series(data, Decimal("100.00"))
+            xfer = _make_transfer(
+                data,
+                due_date=date(2026, 3, 1),
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+                ),
+            )
+            db.session.add(xfer)
+            db.session.flush()
+            db.session.add(Transaction(
+                user_id=data["user"].id,
+                account_id=data["account"].id,
+                pay_period_id=data["periods"][0].id,
+                scenario_id=data["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                transfer_id=xfer.id,
+                name="Expense leg",
+                due_date=date(2026, 3, 1),
+                settled_amount=Decimal("137.42"),
+                settled_basis_id=ref_cache.settlement_basis_id(
+                    SettlementBasisEnum.DERIVED,
+                ),
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(
+                        AmountSourceEnum.PARENT_TRANSFER,
+                    ),
+                ),
+            ))
+            db.session.commit()
+
+            _TRANSFER_CUTOVER.downgrade_rows(db.session.connection())
+            db.session.commit()
+            db.session.expire_all()
+
+            restored = db.session.get(Transfer, xfer.id)
+            assert restored.amount == Decimal("137.42")
+            assert restored.amount_source_id is None
+
+    def test_an_unsettled_transfer_restores_from_its_definitions_scalar(
+        self, app, db, seed_full_user_data,
+    ):
+        """Nothing recorded a plan for it, so the definition's own scalar answers."""
+        with app.app_context():
+            data = seed_full_user_data
+            xfer = _make_transfer(
+                data, due_date=date(2026, 3, 1),
+                amount_ownership=AmountOwnership.derived(
+                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
+                ),
+            )
+            db.session.add(xfer)
+            db.session.commit()
+
+            _TRANSFER_CUTOVER.downgrade_rows(db.session.connection())
+            db.session.commit()
+            db.session.expire_all()
+
+            restored = db.session.get(Transfer, xfer.id)
+            assert restored.amount == data["transfer_template"].default_amount
+            assert restored.amount_source_id is None

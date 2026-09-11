@@ -339,12 +339,6 @@ _TXN_TEMPLATE_KIND = RecurrenceConflictKind(
     regenerate_fn=recurrence_engine.regenerate_for_template,
     resolve_fn=recurrence_engine.resolve_conflicts,
     update_endpoint="templates.update_template",
-    # **"Use" states no figure for this kind since plan step balance:X-au-e**
-    # (ruling **R-JD**).  A generated transaction stores no amount, so the
-    # offer is "hand this row back to its definition" and the definition's own
-    # price series answers it on the row's due date.  The transfer kind still
-    # answers True; both answer False after plan step X-au-f.
-    use_states_a_figure=False,
 )
 
 

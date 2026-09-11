@@ -104,6 +104,7 @@ from tests._test_helpers import (
 )
 from app.services.settle_day import record_settle_day
 from app.services.amount_ownership import state_own_amount
+from app.models.amount_ownership import AmountOwnership
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +505,7 @@ class TestSyncIdempotency:
                     to_account_id=savings.id,
                     pay_period_id=seed_user["bootstrap_period"].id,
                     scenario_id=_scenario_id(seed_user),
-                    amount=Decimal("100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
                     status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                     category_id=None,
                 ),
@@ -604,7 +605,7 @@ class TestSyncReversal:
 
             # Edit the amount while Projected, then re-settle and re-post.
             transfer_service.update_transfer(
-                transfer.id, user_id, amount=Decimal("150.00"), amount_authored=True,
+                transfer.id, user_id, amount_ownership=AmountOwnership.own(Decimal("150.00")),
             )
             transfer_service.update_transfer(
                 transfer.id, user_id,

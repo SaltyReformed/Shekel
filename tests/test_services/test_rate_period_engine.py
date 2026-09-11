@@ -11,10 +11,9 @@ from decimal import Decimal
 
 import pytest
 
-from app.services.amortization_engine import RateChangeRecord
+from app.services.amortization_engine import PaymentDates, RateChangeRecord
 from app.services.rate_period_engine import (
     BalanceAnchor,
-    ConfirmedPayment,
     LoanTerms,
     build_rate_periods,
     monthly_due_date,
@@ -28,7 +27,7 @@ ORIGINATION = date(2020, 1, 1)
 
 def _confirmed(
     period_start: date, payment_day: int, settled_on: date | None = None,
-) -> ConfirmedPayment:
+) -> PaymentDates:
     """An ON-TIME confirmed payment: its pay period contains its due date.
 
     Derives the due date from the pay-period start, which is correct exactly
@@ -43,7 +42,7 @@ def _confirmed(
     cases where the two dates differ are exercised explicitly (the caller passes
     a day) rather than by accident.
     """
-    return ConfirmedPayment(
+    return PaymentDates(
         period_start=period_start,
         due_date=monthly_due_date(period_start, payment_day),
         settled_on=period_start if settled_on is None else settled_on,
@@ -265,7 +264,7 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 1, 1),
             ),
-            confirmed_payments=[
+            payments=[
                 _confirmed(d, 15)
                 for d in [date(2026, 2, 15)]
             ],
@@ -296,7 +295,7 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 1, 1),
             ),
-            confirmed_payments=[
+            payments=[
                 _confirmed(d, 15)
                 for d in [date(2026, 2, 15), date(2026, 3, 15)]
             ],
@@ -334,7 +333,7 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("380000.00"), as_of_date=date(2024, 11, 1),
             ),
-            confirmed_payments=[
+            payments=[
                 _confirmed(d, 15)
                 for d in [date(2024, 12, 15), date(2025, 2, 15)]
             ],
@@ -368,7 +367,7 @@ class TestReplaySchedule:
         )
         common = dict(
             periods=periods,
-            confirmed_payments=[
+            payments=[
                 _confirmed(d, 15)
                 for d in [date(2026, 2, 15)]
             ],
@@ -405,7 +404,7 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("100.00"), as_of_date=date(2026, 1, 1),
             ),
-            confirmed_payments=[
+            payments=[
                 _confirmed(d, 15)
                 for d in [date(2026, 2, 15)]
             ],
@@ -424,7 +423,7 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 1, 1),
             ),
-            confirmed_payments=[],
+            payments=[],
             payment_day=15,
             as_of=date(2026, 1, 20),
         )
@@ -440,7 +439,7 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 1, 15),
             ),
-            confirmed_payments=[
+            payments=[
                 _confirmed(d, 15)
                 for d in [date(2026, 1, 1), date(2026, 1, 15)]
             ],
@@ -476,7 +475,7 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 5, 22),
             ),
-            confirmed_payments=[
+            payments=[
                 _confirmed(d, 1)
                 for d in [date(2026, 5, 21)]
             ],
@@ -509,7 +508,7 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
             ),
-            confirmed_payments=[
+            payments=[
                 _confirmed(d, 1)
                 for d in [date(2026, 5, 21)]
             ],
@@ -532,7 +531,7 @@ class TestReplaySchedule:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
             ),
-            confirmed_payments=[
+            payments=[
                 _confirmed(d, 1)
                 for d in [date(2026, 6, 15)]
             ],
@@ -593,6 +592,92 @@ class TestMonthlyDueDate:
         assert monthly_due_date(date(2026, 12, 20), 1) == date(2027, 1, 1)
 
 
+class TestReplayTakesTheWholeFeed:
+    """An UNSETTLED payment in the feed is not replayed, and needs no filter.
+
+    **The control for plan step balance:X-bl-2b's one behavioural claim.**  That
+    step deleted the ``ConfirmedPayment`` type and the
+    ``settled_on is not None`` comprehension its caller
+    (``loan_resolver._periods._replay_from_anchor``) built it with, on the
+    measurement that :func:`is_confirmed_payment_eligible` already excludes an
+    unsettled payment: its ``has_settled_by`` term answers ``False`` for a
+    missing day by that predicate's own documented contract.  So a caller now
+    hands over its WHOLE feed, settled and projected alike.
+
+    A claim that a filter was redundant is exactly the claim a green suite does
+    not grade by itself -- the filtered and unfiltered feeds agree whether or
+    not the reasoning holds.  So the second test below makes the dropped payment
+    one that WOULD move the balance, by giving it a settle day and asserting the
+    answer changes.  Without that arm this class would pass over a
+    ``replay_schedule`` that silently ignored every payment.
+    """
+
+    _PERIODS_ANCHOR = BalanceAnchor(
+        balance=Decimal("300000.00"), as_of_date=date(2026, 1, 1),
+    )
+
+    def _replay(self, payments, as_of=date(2026, 3, 31)):
+        """Replay *payments* against the shared fixed-rate fixture."""
+        return replay_schedule(
+            periods=_fixed_loan_periods(),
+            anchor=self._PERIODS_ANCHOR,
+            payments=payments,
+            payment_day=15,
+            as_of=as_of,
+        )
+
+    def test_a_mixed_feed_answers_what_the_settled_half_alone_answers(self):
+        """Settled + projected in one feed == the settled ones on their own.
+
+        The identity the deleted filter used to guarantee, now a property of
+        the eligibility predicate.
+        """
+        settled = _confirmed(date(2026, 2, 15), 15)
+        projected = PaymentDates(
+            period_start=date(2026, 3, 15),
+            due_date=monthly_due_date(date(2026, 3, 15), 15),
+            settled_on=None,
+        )
+
+        mixed = self._replay([settled, projected])
+        settled_only = self._replay([settled])
+
+        assert mixed.balance_as_of == settled_only.balance_as_of
+        assert [row.payment_date for row in mixed.rows] == [
+            row.payment_date for row in settled_only.rows
+        ]
+
+    def test_the_dropped_payment_is_one_that_would_otherwise_replay(self):
+        """The non-vacuity arm: give the projected payment a day and it moves.
+
+        Everything else about it -- its period, its installment, its position
+        in the feed, the ``as_of`` -- is held constant, so the ONLY thing that
+        decided whether it replayed is the settle day the predicate reads.
+        """
+        settled = _confirmed(date(2026, 2, 15), 15)
+        installment = monthly_due_date(date(2026, 3, 15), 15)
+        projected = PaymentDates(
+            period_start=date(2026, 3, 15),
+            due_date=installment,
+            settled_on=None,
+        )
+        now_settled = PaymentDates(
+            period_start=date(2026, 3, 15),
+            due_date=installment,
+            settled_on=date(2026, 3, 15),
+        )
+
+        without = self._replay([settled, projected])
+        with_it = self._replay([settled, now_settled])
+
+        assert len(without.rows) == 1
+        assert len(with_it.rows) == 2
+        assert with_it.balance_as_of < without.balance_as_of, (
+            "the projected payment could never have moved the balance, so the "
+            "test above proves nothing about it being dropped"
+        )
+
+
 class TestReplayScheduleLatePayment:
     """A payment settled LATE replays at the installment it actually paid.
 
@@ -602,7 +687,7 @@ class TestReplayScheduleLatePayment:
     biweekly period, and that assumption breaks: deriving from the period start
     then returns the FOLLOWING month's installment.
 
-    ``ConfirmedPayment`` therefore carries all three dates, and the replay reads
+    ``PaymentDates`` therefore carries all three, and the replay reads
     each for its own job: the DUE date for the anchor boundary and the row's
     date, the PERIOD START for the rate, and the SETTLED day for the ``as_of``
     cap (the day the fold counts the payment's principal from -- plan step
@@ -627,8 +712,8 @@ class TestReplayScheduleLatePayment:
         result = replay_schedule(
             periods=periods,
             anchor=anchor,
-            confirmed_payments=[
-                ConfirmedPayment(
+            payments=[
+                PaymentDates(
                     period_start=date(2026, 5, 21),
                     due_date=date(2026, 5, 15),
                     settled_on=date(2026, 5, 21),
@@ -659,8 +744,8 @@ class TestReplayScheduleLatePayment:
         result = replay_schedule(
             periods=periods,
             anchor=anchor,
-            confirmed_payments=[
-                ConfirmedPayment(
+            payments=[
+                PaymentDates(
                     period_start=date(2026, 5, 7),
                     due_date=date(2026, 5, 15),
                     settled_on=date(2026, 5, 7),
@@ -690,8 +775,8 @@ class TestReplayScheduleLatePayment:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
             ),
-            confirmed_payments=[
-                ConfirmedPayment(
+            payments=[
+                PaymentDates(
                     period_start=date(2026, 5, 31),
                     due_date=date(2026, 6, 1),
                     settled_on=date(2026, 5, 28),
@@ -723,8 +808,8 @@ class TestReplayScheduleLatePayment:
             anchor=BalanceAnchor(
                 balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
             ),
-            confirmed_payments=[
-                ConfirmedPayment(
+            payments=[
+                PaymentDates(
                     period_start=date(2026, 5, 7),
                     due_date=date(2026, 5, 15),
                     settled_on=date(2026, 5, 20),
@@ -753,8 +838,8 @@ class TestReplayScheduleLatePayment:
         result = replay_schedule(
             periods=periods,
             anchor=anchor,
-            confirmed_payments=[
-                ConfirmedPayment(
+            payments=[
+                PaymentDates(
                     period_start=date(2026, 5, 7),
                     due_date=date(2026, 5, 15),
                     settled_on=date(2026, 5, 7),

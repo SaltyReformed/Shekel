@@ -259,8 +259,9 @@ engine already computes and `resolve_generation_plan` already carries to the wri
 present only when it differs. **`compute_due_date` is DELETED** -- it is the last reader of the
 endpoint-month scan R4a deleted from period selection (row D18) and the last place the disproved
 `due_dom < dom` next-month inference lives (R-R2). Two things follow that the old specification did
-not have: the write loop stops discarding `PlannedOccurrence.occurrence`
-(`recurrence_engine.py:342`, `transfer_recurrence.py:127`, the two producers of one fact), and
+not have: the write loop stops discarding `PlannedOccurrence.occurrence` (the two producers of one
+fact, one per ENGINE: `grep -rn 'due_date=compute_due_date' app/`, which is where the line numbers
+pointed before `recurrence_engine` became a PACKAGE), and
 **the index re-key this step used to carry SHIPPED at `R17`**, with the
 `RecurrenceCadenceUnsupported` retirement that rode on it. What remains here is the DATE split:
 `compute_due_date` reads a row's PERIOD, so two occurrences inside one paycheck -- storable since
@@ -274,11 +275,13 @@ loan payment shadow's stored value moves to `due_on` (it is the installment the 
 `loan_posting_service.backfill_all_loan_postings()`, the caveat `c4e91a7b2d38` already carries. Own
 PR. It also deletes a false claim: `compute_due_date`'s docstring names a "due-date backfill script"
 that no longer exists anywhere in `scripts/`. Scope, re-measured 2026-08-08 rather than inherited:
-**20 Python files touch the column in code**, 6 more name it only in prose, and 4 templates render
-it (two carrying `<input name="due_date">`, so the wire format moves too). The plan's four
-"highest-risk readers" were wrong about three of them -- `balance_at/_plan.py`,
-`rate_period_engine.py` and `loan_payment_service.py` hold **zero** column references between them
-and are R6 surfaces.
+**The Python files NAMING `due_date` in code** (census 51 code files `due_date` in `app/**/*.py`) --
+a SUPERSET of those touching the column, since the identifier is also a local and a kwarg, and the
+narrower AST census this once stated as 20 is not reproducible by a pattern -- more naming it only
+in prose, and templates render it (two carrying `<input name="due_date">`, so the wire format moves
+too). The plan's four "highest-risk readers" were wrong about three of them --
+`balance_at/_plan.py`, `rate_period_engine.py` and `loan_payment_service.py` hold **zero** column
+references between them and are R6 surfaces.
 
 **It must also re-examine `build_transient_rule`**, carried here from `R-F6`'s entry when that step
 was archived (2026-08-19, `conventions.md` rule 4: an overflow's destination is the OWNING step):
@@ -289,12 +292,14 @@ deletes that function.
 
 `loan_installment_date(...)` becomes the single derivation over the rule plus `due_on`.
 **There is no `recurrence_due_dates` table and there will not be**: R-R12 puts the installment on
-the ROW, where the ledger already reads it, rather than on the rule. 22 files carry `payment_day` (3
-doc-only, 2 the definition surface), and **19 of 22 already read it as the installment** -- exactly
-two make it a CASH day, `routes/loan/payment_transfer.py:175` and `loan_recurrence_sync.py:172`, and
-those two ARE D4's mechanism. Eight distinct producers of "when is this installment due" collapse
-into one; the plan previously counted them as one accessor plus a rule read. Kills D4.
-**This step needs its own review pass** -- it is the deepest cut into the ledger.
+the ROW, where the ledger already reads it, rather than on the rule. The files carrying
+`payment_day` in code (census 20 code files `payment_day` in `app/**/*.py`) -- EIGHT more name it
+only in prose, which a code census excludes by construction --
+**already read it as the installment, bar two** -- exactly two make it a CASH day, in
+`routes/loan/payment_transfer.py` and `loan_recurrence_sync.py`, and those two ARE D4's mechanism.
+Eight distinct producers of "when is this installment due" collapse into one; the plan previously
+counted them as one accessor plus a rule read. Kills D4. **This step needs its own review pass** --
+it is the deepest cut into the ledger.
 
 **R7 is THREE leaves**, ruled 2026-08-07: the cutover is the only irreversible-ish one, so the label
 and form work is not carried into it.
@@ -374,15 +379,16 @@ composes from `request.args` and its control is `disabled` when locked, so it re
 already. Ruling **R-R34**.
 
 **What the resolver deletes.** Nine of the ten `sync_recurring_payment_bounds` call sites go
-whole -- `params.py:330` / `:448`, `escrow_rates.py:170`, `payment_transfer.py:251` / `:277` /
-`:344` / `:418`, `_loan_posting.py:306` / `:387` -- and with them the double sync at create, the
-"idempotent WITHIN a day" caveat, and the stale bound D35 measures.
-**The census is of the CLOSING bound only**: all ten also call `_sync_loan_cadence`, whose write
-repairs three shapes a `payment_day` edit misses -- `create_params` calls no sync, a PAY-SCHEDULE
-change moves a `PERIOD`-unit rule's resolved bound (**D39**'s shape), and a cadence-unit edit moves
-`nominal_day`. After R7d the opening bound has THREE writers: `params.py:190`, `bind_rule_to_loan`
-at `payment_transfer.py:250` and `transfers/_instances.py:222`. Decide what repairs those three
-before deleting the path.
+whole -- in `params.py`, `escrow_rates.py`, `payment_transfer.py` and `_loan_posting.py`,
+regenerated by `grep -rn 'sync_recurring_payment_bounds(' app/`, whose eleventh hit is the
+DEFINITION, because THREE of the nine line numbers this sentence carried had drifted by
+2026-09-11 -- and with them the double sync at create, the "idempotent WITHIN a day" caveat, and the
+stale bound D35 measures. **The census is of the CLOSING bound only**: all ten also call
+`_sync_loan_cadence`, whose write repairs three shapes a `payment_day` edit misses --
+`create_params` calls no sync, a PAY-SCHEDULE change moves a `PERIOD`-unit rule's resolved bound
+(**D39**'s shape), and a cadence-unit edit moves `nominal_day`. After R7d the opening bound has
+THREE writers: `params.py`'s, and `bind_rule_to_loan`'s two, found by
+`grep -rn 'bind_rule_to_loan' app/`. Decide what repairs those three before deleting the path.
 
 **`owns_validity_window` SPLITS; it is not deleted.** It is one predicate because
 `_recurrence_form_refusals` states ONE writer owns both bounds -- a premise R-R29 makes false. It
@@ -624,29 +630,40 @@ guarded on the deferring placement precisely so a LEAD cannot silently inherit i
 `fires_on_day_of_month` stays `False` for it -- so its rows are dated from the funding payday, the
 same deliberate state the deferring placement carries under **D26**. Closes **D40**.
 
-- [ ] **R12 -- the deploy script's refusals get a test, and the image pins its locale.**
+- [ ] **R12 -- the image pins its locale.**
 **It also takes F-15** (**R-R54**, 2026-09-03): month names would follow the process locale if
 anything ever called `setlocale` -- nothing does, `$0.00` -- and ONE line, `LC_ALL` pinned in the
-image with a startup assertion, covers all 109 sites and every future one; it lands with the deploy
-predicates because that is where the image is asserted.
+image with a startup assertion, covers every site and every future one. The site COUNT is
+**R-R54**'s and is stated there, not restated here; it is not reproducible by any pattern this row
+could name, which rule 6 says is a reason to state no total.
 **Opened at plan step R9, by two independent adversarial reviewers of it.** R-F8 built
 `deploy/shekel-deploy.sh`'s two predicates -- `preflight_migrations`, which refuses a TARGET image
 that cannot resolve the database's stamp, and `repin_is_safe`, which after a failure decides whether
 re-pinning the previous image recovers or kills. Ruling **R-R27** rests R9's one-release drop of
 `ref.recurrence_patterns` on the second of those, and R9 deleted `TestDeliberateRefSeedSurplus`,
-which was the last EXECUTABLE statement of the hazard that refusal now covers. An executable guard
-was replaced by an unexercised one.
+which was the last EXECUTABLE statement of the hazard that refusal now covers. **That sentence USED
+to end "an executable guard was replaced by an unexercised one", and it was already false when
+written**: `repin_is_safe` is exercised by `test_it_refuses_and_leaves_the_pin_at_the_new_digest`
+and `test_a_compose_failure_also_refuses`, both of which observe the refusal AND the pin.
 
-**Nothing in the repository drives the script.** `.pre-commit-config.yaml` scopes to `^app/`,
-`^scripts/` and `^tools/`; CI lints `app/` and `scripts/`; `pytest` collects `tests/` and
-`tools/plan_gate`. `shellcheck` reads it but says nothing about behaviour.
+**THE SCRIPT IS DRIVEN, and this paragraph said otherwise for 25 days.**
+`tests/test_deploy/test_shekel_deploy_behaviour.py` shells out to the real `deploy/shekel-deploy.sh`
+with a stubbed `docker` on `PATH` and observes OUTCOMES; it landed at `398c332c` on 2026-08-08, nine
+days BEFORE `D41` was filed against its absence, and it is not `@pytest.mark.docker`, so CI runs it.
+Re-check with `grep -rln 'shekel-deploy.sh' tests/` rather than re-reading this sentence.
 
-The step DECIDES first where a shell harness runs -- a `tests/` module shelling out to `bash`, a
-`bats`-style suite with its own runner, or a Python port of the two predicates with the shell
-calling it -- and then covers at minimum: a stamp the target cannot resolve is refused; a stamp the
-OLD image cannot resolve refuses the re-pin; an unchanged stamp after a container that never started
-still re-pins; and an unreadable `alembic_version` is treated as unsafe. Each arm shown FIRING,
-which is the standard the arc's own verification file sets. Closes **D41**.
+**That decision was TAKEN and all four arms EXIST**: a `tests/` module shelling out to `bash` was
+the answer, and it already covers every arm this step listed as its minimum -- a stamp the target
+cannot resolve is refused (`test_a_target_older_than_the_database_is_refused_up_front`); a stamp the
+OLD image cannot resolve refuses the re-pin
+(`test_it_refuses_and_leaves_the_pin_at_the_new_digest`); an unchanged stamp after a container that
+never started still re-pins (`test_a_release_with_no_new_migrations_reverts_the_pin`); and an
+unreadable `alembic_version` is unsafe (`test_an_empty_listing_aborts_rather_than_assuming`), plus
+`TestThePreflightIsHonest` on `preflight_migrations` directly.
+**So `D41` is DISCHARGED and what remains of this step is `F-15`**: `LC_ALL` pinned in the image
+with a startup assertion, which is one line and no harness at all. The step is kept rather than
+withdrawn because that half is real and unbuilt; its deploy-predicate half is not work anybody still
+owes.
 
 **The semi-monthly case is ruling `R-R28`**, which lives in `rulings.md` like every other and is
 cited by step **R13** below. It was a PARAGRAPH here until `balance:X-ao-2a` -- outside this

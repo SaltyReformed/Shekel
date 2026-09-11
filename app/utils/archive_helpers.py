@@ -139,24 +139,35 @@ def transfer_template_has_paid_history(template_id: int) -> bool:
     future settled status are covered without enumeration.  Audit reference:
     CRIT-05 / E-22.
 
-    **It no longer mirrors :func:`template_has_paid_history`, which is stated
-    rather than left to be discovered.**  That twin dropped its
-    ``is_deleted`` filter at plan step balance:X-au-e (ruling **R-JE**),
-    because a soft-deleted settled TRANSACTION survives its template's hard
-    delete carrying a declaration nothing can price.  This one keeps the
-    filter, and the reason is that the same survivor is not yet reachable
-    here: a generated TRANSFER still stores its own amount, so a survivor with
-    a null ``transfer_template_id`` is priced by rule 1 off the column it
-    holds.  **Plan step balance:X-au-f is what changes that** -- it empties
-    ``transfers.amount`` for a generated transfer -- and that step owes this
-    predicate the same edit its twin has already taken.
+    **It MIRRORS :func:`template_has_paid_history` again, and plan step
+    balance:X-au-f is the edit this predicate was owed** (ruling **R-JE**).
+    That twin dropped its ``is_deleted`` filter at X-au-e because a
+    soft-deleted settled TRANSACTION survives its template's hard delete
+    carrying a declaration nothing can price.  This one kept the filter while
+    the same survivor was unreachable here -- a generated TRANSFER still stored
+    its own amount, so a survivor whose ``transfer_template_id`` the delete set
+    to NULL was priced by rule 1 off the column it held.  X-au-f empties that
+    column, so the survivor is reachable now -- and the failure comes EARLIER
+    than its transaction twin's, which is worth stating because a first draft of
+    this paragraph transplanted the twin's account.  On the ROW table the
+    survivor is left behind holding a declaration nothing can price; on THIS
+    table ``ck_transfers_adhoc_owns_amount`` (*a declaration requires a
+    template*) meets ``fk_transfers_transfer_template_id``'s ON DELETE SET NULL,
+    so the delete itself raises ``IntegrityError`` -- an unhandled 500 on the
+    delete route rather than a quietly unpriceable row.  Either way, filtering
+    the survivor out here is what lets that delete be attempted at all.
+
+    **A soft-deleted row is history like any other for THIS question**, which
+    is why the fix is dropping the filter rather than adding a repair: the
+    predicate asks whether anything settled against this definition, and
+    deleting the row that settled does not un-settle it.
 
     Args:
         template_id: The TransferTemplate.id to check.
 
     Returns:
-        True if at least one linked transfer has a settled status
-        and is not soft-deleted.
+        True if at least one linked transfer has a settled status, soft-deleted
+        ones included.
     """
 
     return db.session.query(
@@ -165,7 +176,6 @@ def transfer_template_has_paid_history(template_id: int) -> bool:
         .filter(
             Transfer.transfer_template_id == template_id,
             Status.is_settled.is_(True),
-            Transfer.is_deleted.is_(False),
         ).exists()
     ).scalar()
 

@@ -22,10 +22,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
-from app.models.ref import Status
-from app.models.transfer import Transfer
-from app.services import account_posting_service
-from app.services import posting_service
+from app.models.amount_ownership import AmountOwnership
 from app.services.transfer_service import _settle
 from app.services.transfer_service._amount import apply_amount_ownership
 from app.services.transfer_service._endpoints import (
@@ -34,9 +31,10 @@ from app.services.transfer_service._endpoints import (
 )
 from app.services.transfer_service._loan_posting import (
     _reject_installment_move_before_loan,
-    _resync_vacated_loan,
     _reverse_loan_payment_before_it_leaves,
-    _sync_loan_postings_if_loan,
+)
+from app.services.transfer_service._posting_sync import (
+    _reconcile_postings_after_update,
 )
 from app.services.transfer_service._ownership import (
     _get_owned_category,
@@ -65,62 +63,6 @@ from app.utils.log_events import (
 )
 
 logger = logging.getLogger(__name__)
-
-# The ``update_transfer`` kwargs whose change can alter a transfer's posted
-# double-entry ledger effect or its attribution, so a change to any of them
-# triggers a posting reconcile (Build-Order Step 2; see
-# ``posting_service.sync_transfer_postings``).  ``status_id`` flips the
-# settled/unsettled target; ``amount`` (the estimated amount) and
-# ``actual_amount`` together determine what the settled shadow is WORTH
-# (``COALESCE(actual_amount, estimated_amount)``) -- the magnitude posted;
-# ``pay_period_id`` moves the entry's period, so a settled period move
-# reconciles R2-correctly (the per-(account, period) reconcile reverses the old
-# period and posts the new) AND fires the effect-time self-heal for the Step-5
-# account-anchor corrections (F1).
-#
-# ``due_date`` IS here, and its inclusion is load-bearing: on a LOAN payment the
-# due date is the installment the payment satisfies, which the genesis write walk
-# dates every payment by (``loan_ledger.loan_event_stream``), orders on
-# (``loan_ledger.replay_loan_events``, which applies its strict
-# ``anchor_date < due_date`` post-anchor boundary against it) and keys its accrual
-# periods off -- so moving it changes which payments an anchor SUBSUMES, which
-# accrual period is charged, and therefore the POSTED balance.  Editing it
-# without a reconcile would leave the posted ledger disagreeing with every live
-# reader (the history rows, the payment
-# table, the resolver's replay), silently, until an unrelated chokepoint happened
-# to fire.  On a NON-loan transfer the cash reconcile is reconcile-to-target and
-# writes nothing, so listing it costs one idempotent no-op round-trip.
-#
-# The remaining kwargs (``category_id`` / ``name`` / ``notes`` / ``is_override``)
-# move none of these, so they raise no reconcile.  ``settle_day`` is deliberately
-# NOT here: it moves no leg AMOUNT, and an unsettled transfer has no postings to
-# re-date, so the set stays the cheap always-on pre-filter.  A SETTLED
-# settle-day edit IS posting-relevant since step E1a -- it moves the day every
-# posting counts from (the ``entry_date``, step C2's one clock) -- and
-# ``_reconcile_postings_after_update`` runs the full reconcile for that case
-# explicitly (the per-(period, date) reconcile re-dates the entries, finding
-# N-13) plus the two endpoint accounts' anchor-correction resync (F1).  The
-# reconcile is idempotent, so listing a field that did not move the effect is a
-# harmless no-op; this set is the cheap pre-filter that avoids a ledger
-# round-trip on a pure metadata edit.
-#
-# ``from_account_id`` / ``to_account_id`` ARE here, and they are plan step
-# R10-b's addition.  An endpoint move changes WHICH ledger accounts a settled
-# transfer's two legs sit on, which is a change of the posted effect in exactly
-# the sense this set names -- ``_posting_write.reconcile_periods`` takes the
-# per-ledger-account delta over the UNION of what is posted and what is
-# targeted, so the vacated accounts reverse to zero and the new ones post the
-# effect, converging in one pass.  What that reconcile does NOT reach is the
-# vacated accounts' own anchor corrections and, when the vacated destination was
-# an amortizing loan, that loan's genesis ledger; both are re-derived
-# explicitly in :func:`_reconcile_postings_after_update`.
-_POSTING_RELEVANT_FIELDS = frozenset(
-    {
-        "status_id", "amount", "settled_amount", "pay_period_id", "due_date",
-        "from_account_id", "to_account_id",
-    }
-)
-
 
 #: The kwargs a SETTLE owns outright when one runs.  Each is an input to
 #: :func:`app.services.transfer_service._settle.settle`, which writes all three
@@ -273,144 +215,6 @@ def _dispatch_settle(
         submitted=updates.get("settled_amount"),
         settle_day=updates.get("settle_day"),
     )
-
-
-def _reconcile_postings_after_update(
-    xfer: Transfer,
-    updates: dict[str, object],
-    vacated: "tuple[int, ...]" = (),
-    vacated_destination_id: "int | None" = None,
-) -> None:
-    """Bring the posting ledger back in step after an ``update_transfer`` edit.
-
-    Extracted from :func:`update_transfer` (which was at its branch/statement
-    budget) so the reconcile tail is one cohesive step.  Runs after every kwarg
-    is applied and the session is flushed:
-
-    * **Step-2 cash reconcile** when a magnitude / settled-sense / period field
-      changed (``_POSTING_RELEVANT_FIELDS``).  Placed here -- NOT inside
-      ``apply_status_to_all_three`` -- because ``actual_amount`` is applied AFTER
-      ``status_id`` and the grid shadow-edit path can settle and set an actual
-      in one call; the reconcile reads what the income shadow is worth,
-      so it must run once everything is in place or it would post the pre-edit
-      estimate.  ``xfer.status_id`` is the post-update status, so its
-      ``is_settled`` is the correct target sense.  Idempotent
-      reconcile-to-target: a settle posts the effect, a revert / cancel reverses
-      to zero, an unchanged effect writes nothing.
-    * **Loan-payment genesis reconcile** last (a no-op for a non-loan transfer):
-      a settle / revert / amount / actual / period edit of a loan payment
-      re-reconciles that loan's confirmed-payment splits (coupled on the running
-      balance) and its opening / true-up anchor corrections.
-    * **Full reconcile on a settled ``settled_on`` edit too (E1a / N-13)**: a
-      ``settled_on`` change moves the day every posting counts from (its
-      ``entry_date``, step C2's one clock) without changing any leg amount, so
-      the per-period reconcile used to write nothing and the entries kept
-      their stale dates.  The reconcile is per-(period, DATE) now: the
-      old-dated entries reverse at their own date, the effect re-posts at the
-      new settle date, and the loan sync's checked-projection assert verifies
-      the result -- so the fold and the ledger cannot disagree about WHEN.
-    * **Step-5 account-anchor resync on a settled ``settled_on`` edit (F1)**:
-      resync the two endpoint accounts' anchor corrections so a settled
-      ``settled_on`` move cannot strand a stale anchor correction (their
-      reconcile is anchor-walk-derived, not delta-keyed off this transfer).
-      Only for a SETTLED transfer (a projected one posts nothing); a no-op for
-      a loan endpoint (the account walk skips amortizing accounts).
-      ``pay_period_id`` needs no such branch -- it is in
-      ``_POSTING_RELEVANT_FIELDS``, so a period move reconciles R2-correctly
-      and self-heals via the cash reconcile above.  Fires on ANY settled
-      ``settled_on`` edit, not only a pure one: on the common settle path (status
-      + ``settled_on`` together) the reconcile's tail self-heal already covers
-      both endpoints, so these two idempotent walks are redundant there -- an
-      accepted, safe cost.  It is deliberately NOT narrowed to
-      ``not needs_reconcile``, because a future COMBINED edit (e.g. ``amount``
-      + ``settled_on``) could move the attribution in a way the delta-keyed
-      self-heal does not cover; an always-correct resync is the point of this
-      seam.
-
-    * **The accounts an ENDPOINT MOVE left behind (plan step R10-b), LAST**: the cash
-      reconcile above heals the LEGS by itself -- ``reconcile_periods`` takes
-      the per-ledger-account delta over the union of posted and target, so a
-      vacated ledger account reverses to zero in the same pass the new one
-      posts -- but two things it emits are scoped to the transfer's CURRENT
-      endpoints and reach no further.  ``sync_transfer_postings``' own
-      Step-5 self-heal names ``(from_account_id, to_account_id)``, so a vacated
-      account's opening / true-up corrections are re-derived here instead; and
-      when the vacated destination was an amortizing LOAN, that loan's genesis
-      ledger and its recurring payment's window both still count a payment it
-      no longer has (:func:`._loan_posting._resync_vacated_loan`).  Both walks
-      are idempotent and neither is gated on the transfer being settled: a
-      PROJECTED payment posts no cash but is still inside the payoff projection
-      the loan's window is bounded by, so a projected payment moving off a loan
-      moves that loan's payoff.
-
-    Args:
-        xfer: The updated, flushed :class:`Transfer`.
-        updates: The ``update_transfer`` kwargs that were applied.
-        vacated: The account IDs this update moved the transfer OFF
-            (:attr:`_Endpoints.vacated`); empty for every update that names no
-            account, which is every caller outside the recurrence engine and the
-            non-repeating propagation.
-        vacated_destination_id: Which of those was the DESTINATION, or ``None``.
-            Only that one can have been a loan whose payment set counted this
-            transfer; see the comment at the call.
-    """
-    # **The vacated walks below need no disjunct of their own**, and three
-    # adversarial reviews of this step each flagged the one that stood here.
-    # *vacated* is non-empty only when ``from_account_id`` or ``to_account_id``
-    # is in *updates*, and both are members of
-    # :data:`_POSTING_RELEVANT_FIELDS` -- so ``vacated`` implies
-    # ``needs_reconcile`` by MEMBERSHIP in that set, and ``or vacated`` could
-    # never be the term that admitted a call.  A guard no input can exercise is
-    # the shape this step deleted from both retention predicates; the
-    # implication is stated here instead, where the set it rests on is three
-    # definitions up and visible.
-    needs_reconcile = bool(_POSTING_RELEVANT_FIELDS & updates.keys())
-    settle_day_edited = "settle_day" in updates
-    if not (needs_reconcile or settle_day_edited):
-        return
-    current_status = db.session.get(Status, xfer.status_id)
-    # A settled ``settled_on`` edit moves the day the event counts from (step
-    # C2's one clock), which since step E1a IS a posting-relevant change: the
-    # per-(period, date) reconcile reverses the stale-dated entry and re-posts
-    # at the new settle date (finding N-13), and the loan sync's
-    # checked-projection assert then verifies the ledger against the walk.
-    if needs_reconcile or (settle_day_edited and current_status.is_settled):
-        posting_service.sync_transfer_postings(
-            xfer, settled=current_status.is_settled,
-        )
-        _sync_loan_postings_if_loan(xfer)
-    if settle_day_edited and current_status.is_settled:
-        account_posting_service.sync_account_anchor_postings(
-            xfer.from_account_id, xfer.scenario_id,
-        )
-        account_posting_service.sync_account_anchor_postings(
-            xfer.to_account_id, xfer.scenario_id,
-        )
-    # LAST, and the position is load-bearing rather than tidy: both walks below
-    # read the vacated account's ledger, and until ``sync_transfer_postings``
-    # above has reversed this transfer's legs off it that ledger still holds a
-    # net for a transfer with no shadow there.  Run first instead, the account
-    # walk raises ``PostingError`` -- *"Ledger account 8 holds a nonzero net for
-    # transfer ids [409] but no active shadow on account 1 resolves them;
-    # Transfer Invariant 1 is broken"* -- which is the invariant correctly
-    # reporting a ledger this function had not finished moving.  Measured on a
-    # production clone before the order was fixed.
-    for account_id in vacated:
-        account_posting_service.sync_account_anchor_postings(
-            account_id, xfer.scenario_id,
-        )
-    # The LOAN half is the vacated DESTINATION's alone, and that narrowing is a
-    # measurement rather than an economy.  A loan reached as a transfer's SOURCE
-    # carries that transfer's EXPENSE shadow, and a loan's payment set is
-    # ``loan_loaders.query_shadow_income`` -- INCOME shadows only -- so such a
-    # transfer was never one of the loan's payments and there is no split to
-    # re-derive when it leaves.  Its raw cash leg is reversed by
-    # ``sync_transfer_postings`` above, which takes the per-ledger-account delta
-    # over the union of posted and target.  Verified by removing the call: the
-    # legacy-loan-source case stays green either way, where the destination
-    # cases fail.
-    if vacated_destination_id is not None:
-        _resync_vacated_loan(vacated_destination_id, xfer.scenario_id)
 
 
 def _apply_remaining_fields(
@@ -706,33 +510,53 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
 
     # The AMOUNT's own refusal, hoisted for the same rule and by plan step
     # R10-b's adversarial review.  It ran at the arm that assigns it, two
-    # writes later -- so ``update_transfer(to_account_id=<other>,
-    # amount=Decimal("-5"))`` moved the pair between accounts and reversed a
-    # loan payment's split BEFORE deciding the amount was illegal.  Validating
-    # here leaves the refusal where every other one is: ahead of the first
-    # write.  ``None`` when the caller states no amount, which the arm below
-    # distinguishes by asking *updates*, not this value.
-    # WHO AUTHORED the figure (ruling **R-JR**).  POPPED so it never reaches
-    # ``fields_changed`` at the tail -- it is a fact ABOUT a field, not a field.
-    # REFUSED when a figure arrives without it: an earlier revision read
-    # ``updates.get(...)``, so a door that forgot the kwarg silently got
-    # ``False`` and both legs were DECLARED DERIVED, discarding an owner-typed
-    # figure.  This layer's safe default is the opposite of the route's, so
-    # absence must raise rather than resolve.
-    amount_authored = updates.pop("amount_authored", None)
-    if "amount" in updates and amount_authored is None:
-        raise ValueError(
-            "update_transfer was given an amount with no amount_authored. "
-            "Who authored a figure is a fact its caller states (ruling R-JR): "
-            "a door compares the submitted figure against the one it rendered, "
-            "and a service caller says whether it is the definition speaking. "
-            "Omitting it is not a neutral default -- it would hand both legs "
-            "back to the definition and discard an owner's typed figure."
-        )
-    amount = (
-        _validate_positive_amount(updates["amount"])
-        if "amount" in updates else None
-    )
+    # writes later -- so an update that moved the pair between accounts and
+    # stated a negative figure reversed a loan payment's split BEFORE deciding
+    # the amount was illegal.  Validating here leaves the refusal where every
+    # other one is: ahead of the first write.
+    #
+    # **ONE parameter since plan step X-au-f (ruling R-BAL11)**, where it was
+    # ``amount`` + ``amount_authored`` + the hand-back's ``is_override=False``.
+    # Those were three spellings of one question -- what prices this row -- and
+    # the trace that measured X-au-f's own claim about ``stated_override``
+    # found the third does NOT dissolve when the column empties; stating an
+    # ownership is what dissolves all three.
+    #
+    # **READ rather than POPPED, and a first revision of this step popped it.**
+    # TWO things downstream read ``updates.keys()``: the posting reconcile's
+    # ``_POSTING_RELEVANT_FIELDS`` test and the audit's ``fields_changed``.
+    # Popping took the amount out of both, so a settled transfer's re-price
+    # stopped reconciling its ledger and vanished from the audit trail. Nothing
+    # here applies fields by name, so the key rides harmlessly.
+    #
+    # **Presence is the question, not a sentinel value.** A first revision used
+    # one, reasoning from ``AmountOwnership``'s own rule that ``None`` means
+    # "stated nothing" on the ATTRIBUTE -- but that ambiguity is the mapped
+    # column pair's, and a kwargs dict answers "was this stated" by key. The
+    # sentinel also turned an explicit ``amount_ownership=None`` into an
+    # ``AttributeError``, where the parameter it replaced deliberately REFUSED
+    # the analogous absence with a message.
+    if "amount_ownership" in updates:
+        ownership = updates["amount_ownership"]
+        if ownership is None:
+            raise ValueError(
+                "update_transfer was given amount_ownership=None. A save that "
+                "says nothing about the amount OMITS the key (ruling R-BAL11); "
+                "an explicit None is a half-written statement, and applying it "
+                "would leave all three rows owning neither a figure nor a "
+                "relation -- the state ck_transfers_amount_ownership refuses."
+            )
+        if ownership.figure is not None:
+            # **The COERCED value is what gets written.**
+            # ``_validate_positive_amount`` returns ``Decimal(str(amount))``,
+            # and a first revision validated the figure and then applied the
+            # caller's raw ownership -- so one input produced two values and a
+            # ``float`` handed in here would have reached a ``Numeric(12,2)``
+            # column. Unreachable from the routes, which load Marshmallow
+            # ``Decimal``s, and a money-type guard the code deliberately had.
+            updates["amount_ownership"] = AmountOwnership.own(
+                _validate_positive_amount(ownership.figure),
+            )
 
     # ── is_override ────────────────────────────────────────────────
     # Applied FIRST, and the position is load-bearing rather than tidy: the
@@ -767,24 +591,15 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
         _reverse_loan_payment_before_it_leaves(rows.transfer)
     _apply_endpoint_move(rows, endpoints)
 
-    # ── amount, and WHO OWNS each row's figure ─────────────────────
-    # Asked for an ``is_override`` too, not only for an ``amount``: clearing
-    # the flag is the conflict resolver handing a row back to its definition,
-    # and a leg left OWNING its frozen figure through that act is the drift
-    # this step exists to make unconstructible (plan step X-au-g-2c-2).
-    if "amount" in updates or "is_override" in updates:
-        apply_amount_ownership(
-            rows, stated_amount=amount,
-            # Ruling **R-JR** (plan step X-au-h): whether a HUMAN typed this
-            # figure is a fact its caller states, not one this layer computes.
-            # Resolved and REFUSED above, so by here it is never ``None`` when
-            # a figure rides with it.
-            amount_authored=bool(amount_authored),
-            stated_override=(
-                bool(updates["is_override"])
-                if "is_override" in updates else None
-            ),
-        )
+    # ── WHO OWNS each of the three rows' figure ────────────────────
+    # Asked exactly when the caller STATED an ownership.  It used to fire on
+    # ``"amount" in updates or "is_override" in updates`` -- two keys, because
+    # clearing the flag was the conflict resolver's hand-back and neither key
+    # alone covered both acts.  One key covers both since ruling **R-BAL11**,
+    # and PRESENCE is what distinguishes *stated nothing* from *stated the
+    # definition's* now that the second carries no figure to test for.
+    if "amount_ownership" in updates:
+        apply_amount_ownership(rows, updates["amount_ownership"])
 
     # ── the SETTLE ─────────────────────────────────────────────────
     # When this update moves the transfer into the settled band, ONE act writes
@@ -965,17 +780,26 @@ def update_transfer(transfer_id, user_id, **kwargs):
                           ``Transfer`` has no ``settled_on`` column, only a
                           read-only property over its income leg, and the value
                           carries the day's basis as well as the day.
-        is_override    -- Override flag (transfer and both shadows).
-        amount_authored -- Whether a HUMAN authored the ``amount`` in this same
-                          call (ruling **R-JR**, plan step X-au-h).  Decides
-                          whether the two legs TAKE that figure or are
-                          re-declared derived, and is STATED because only a
-                          caller knows it: a DOOR compares the submitted figure
-                          against the one it rendered, a SERVICE caller knows
-                          whether the definition is speaking.  **REQUIRED
-                          whenever an ``amount`` rides with it** -- omitting it
-                          raises, because the two directions are not
-                          interchangeable and silence would discard a figure.
+        is_override    -- Override flag (transfer and both shadows).  It no
+                          longer says anything about who owns the amount; since
+                          plan step X-au-h it means exactly *this row is the
+                          OWNER's, not the rule's*.
+        amount_ownership -- WHAT PRICES this pair, as ONE value (ruling
+                          **R-BAL11**, plan step X-au-f): an
+                          :class:`~app.models.amount_ownership.AmountOwnership`
+                          that either OWNS a figure a human authored -- both
+                          legs then store it too, until plan step X-au-m makes a
+                          leg read its parent -- or DECLARES
+                          :attr:`~app.enums.AmountSourceEnum.TEMPLATE`, its
+                          definition's price, which re-declares both legs
+                          derived.  OMITTING the key means this save says
+                          nothing about the amount and leaves all three rows as
+                          they stand; that is not the same as passing an empty
+                          ownership, and the difference is the one that cost
+                          ``$174.10`` twice.  It REPLACES ``amount`` and
+                          ``amount_authored``, which were two spellings of the
+                          same question, and the conflict resolver's hand-back,
+                          which was a third.
 
     Any other kwargs are silently ignored (consistent with the
     BaseSchema EXCLUDE pattern).

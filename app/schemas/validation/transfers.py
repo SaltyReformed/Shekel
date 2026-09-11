@@ -201,14 +201,19 @@ class TransferUpdateSchema(BaseSchema):
     # save would have claimed a human re-priced the row (findings **N-436** and
     # **N-448**).  Comparing against what was RENDERED removes that dependency.
     #
-    # **It does NOT make this door indifferent to X-au-f, and an earlier
-    # revision of this comment claimed it did.**  Both transfer templates render
-    # the box and its companion from ``xfer.amount`` -- the raw column -- and
-    # Jinja renders ``None`` as the literal string ``"None"``, which this field
-    # rejects.  X-au-f owes those two templates the resolved figure, the way
-    # ``routes/transactions/forms`` already hands the transaction popover a
-    # ``budgets`` map.  Until it does, this comment is a statement about a
-    # future edit and not about today's code.
+    # **The debt this comment used to record is PAID, at plan step X-au-f-1.**
+    # It read: both transfer templates render the box and its companion from
+    # ``xfer.amount`` -- the raw column -- and Jinja renders ``None`` as the
+    # literal string ``"None"``, which this field rejects; so X-au-f owed those
+    # templates the resolved figure.  It does now.  Both forms read
+    # ``budgets[xfer.id]`` off ``_render_helpers.transfer_budgets``, and the box
+    # and its companion read the SAME expression, which is what makes the
+    # comparison above answer about a figure rather than about a column.
+    # Graded by
+    # ``test_a_DERIVED_transfer_renders_its_definitions_price_not_its_column``,
+    # which fails on the code that edit replaced.  What survives is the refusal
+    # itself: this field still rejects ``"None"``, so a template that regressed
+    # to the column would fail loudly at the door rather than silently.
     amount_as_rendered = fields.Decimal(
         places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False),
     )

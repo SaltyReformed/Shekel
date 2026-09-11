@@ -77,6 +77,8 @@ from tests.test_integration.test_loan_transfer_live_amount import (
     _build_derived_loan_transfer,
 )
 from app.services.row_valuation import settled_contribution, settled_figure
+from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import rendered_transfer_amount
 
 #: P&I 1,199.10 + escrow 300.00, the figure the freeze captures.
 _LIVE_PITI = Decimal("1499.10")
@@ -198,10 +200,13 @@ class TestTheSettleFreezeIsTheSERVICEs:
                 # deleted ``_manual_shadow_amount`` read it as its base -- a
                 # settle that wrote it would have made a later settle derive
                 # from its own output.  A derived shadow has no such column,
-                # so the cycle has nowhere to close; the stale figure it used
-                # to hold is on the PARENT, which a settle never writes.
+                # so the cycle has nowhere to close.  The stale figure it used
+                # to hold moved to the PARENT at X-au-g-2c-2 and is GONE at
+                # X-au-f, so there is no stored figure on either row for a
+                # settle to derive from -- which is the same claim with nothing
+                # left to violate it.
                 assert shadow.estimated_amount is None
-                assert shadow.transfer.amount == _STALE
+                assert shadow.transfer.amount is None
 
     def test_a_typed_figure_BEATS_the_freeze(
         self, app, db, seed_user, seed_periods,
@@ -297,7 +302,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("1325.00"),
+                amount_ownership=AmountOwnership.own(Decimal("1325.00")),
                 # The caller states that a HUMAN typed this figure (ruling
                 # R-JR, plan step X-au-h).  The route says it by comparing the
                 # submitted amount against the one it rendered; a service
@@ -305,7 +310,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
                 # fact -- it means only "this row is the owner's, not the
                 # rule's" -- so the retype this case is named for has to be
                 # stated rather than inferred from the flag.
-                amount_authored=True,
+
                 is_override=True,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
             )
@@ -461,9 +466,8 @@ class TestEveryDoorReachesTheSameFigure:
             version = xfer.version_id
             # Exactly what the rendered form carries back: the value already in
             # the box, unchanged, beside the status the user did change.
-            rendered_amount = str(xfer.amount)
+            rendered_amount = rendered_transfer_amount(xfer)
             period_id = xfer.pay_period_id
-            due = xfer.due_date
 
         response = auth_client.patch(
             f"/transfers/instance/{xfer_id}",
@@ -477,7 +481,14 @@ class TestEveryDoorReachesTheSameFigure:
                 # reproduce the very defect the case exists to prevent.
                 "amount_as_rendered": rendered_amount,
                 "pay_period_id": period_id,
-                "due_date": due.isoformat() if due else "",
+                # **No ``due_date``, and its absence is what a browser sends.**
+                # The popover renders a GENERATED transfer's due date as TEXT
+                # since plan step X-au-f (finding **BAL-476**): the date is its
+                # definition's and it is now what prices the row, so the form
+                # offers no input and the route REFUSES the field
+                # (``_reject_generated_due_date_edit``).  Posting it here would
+                # be testing a request no form can produce, against a gate that
+                # correctly answers 400.
                 "status_id": ref_cache.status_id(StatusEnum.DONE),
                 "version_id": version,
             },
@@ -682,35 +693,30 @@ class TestTheNamedVerbItself:
                 # ... and the day the money moved was not moved.
                 assert shadow.settled_on == first_day
 
-    def test_a_derived_freeze_emits_its_own_event(
+    # ``test_a_derived_freeze_emits_its_own_event`` lived here until plan step
+    # X-au-f, and it is DELETED with the event it graded (ruling **R-BAL12**).
+    # ``EVT_TRANSFER_AMOUNT_FROZEN``'s predicate was
+    # ``booked != rows.transfer.amount``; that column is EMPTY for a generated
+    # transfer now, so the comparison fired on EVERY settle including a plain
+    # savings transfer (finding **N-451**), and re-pointing it at the RESOLVED
+    # figure makes it fire on NONE -- the two sides then share one producer and
+    # the comparison is an identity.  An event that cannot fire is a fence the
+    # design made unnecessary, so it went with its predicate, its ``log_events``
+    # registration and this case rather than being kept as a green check that
+    # measures nothing.  What it recorded is on the row instead:
+    # ``settled_basis_id`` says whether a booked figure was the app's own
+    # resolution or a human's correction, for EVERY settle rather than for the
+    # subset a predicate happened to select.
+
+    def test_a_manual_payment_with_NO_extra_books_its_series_price(
         self, app, db, seed_user, seed_periods, caplog,
     ):
-        """The one money write no operator asked for must be on the record.
+        """A manual payment with no extra books what its DEFINITION states.
 
-        ``EVT_TRANSFER_AMOUNT_FROZEN`` exists because the figure booked differs
-        from the one the operator saw when the transfer was generated, and
-        nothing else records that it moved.  Without this case, deleting the
-        ``log_event`` call leaves the suite green.
-        """
-        with app.app_context():
-            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
-            with caplog.at_level(logging.INFO):
-                transfer_service.settle_transfer(
-                    xfer.id, seed_user["user"].id,
-                )
-                db.session.commit()
-
-        frozen = [
-            record for record in caplog.records
-            if getattr(record, "event", None) == "transfer_amount_frozen"
-        ]
-        assert len(frozen) == 1, "the freeze reports itself exactly once"
-        assert frozen[0].frozen_amount == str(_LIVE_PITI)
-
-    def test_a_manual_payment_with_NO_extra_reports_no_freeze(
-        self, app, db, seed_user, seed_periods, caplog,
-    ):
-        """The event means a derivation DECIDED something, not "a loan settled".
+        **Renamed at plan step X-au-f**, with the event it was named for
+        (ruling **R-BAL12**): "reports no freeze" described a log assertion that
+        no longer exists, and a name is the first thing the next reader trusts.
+        What survives is the money half, which is the half that could ever fail.
 
         A MANUAL payment with no standing extra books exactly what its transfer
         states, so nothing was derived over the operator's head and there is
@@ -737,21 +743,22 @@ class TestTheNamedVerbItself:
                 transfer_service.settle_transfer(xfer.id, seed_user["user"].id)
                 db.session.commit()
 
-            # It books the transfer's own figure, so nothing was derived over
-            # anybody's head.  Both halves asserted: a case that only checked
-            # the log would pass on a settle that booked the wrong number.
+            # It books what its DEFINITION states, so nothing was derived over
+            # anybody's head.  The log assertion that stood beside this went
+            # with ``EVT_TRANSFER_AMOUNT_FROZEN`` at plan step X-au-f (ruling
+            # **R-BAL12**); this half is the one that could ever fail, and the
+            # case is kept for it -- a manual payment with no extra must book
+            # its series price and not the loan's contract.
             for shadow in _shadows(xfer.id):
                 assert shadow.settled_amount == _STALE
 
-        assert not [
-            record for record in caplog.records
-            if getattr(record, "event", None) == "transfer_amount_frozen"
-        ]
-
-    def test_a_re_settle_honouring_a_RETAINED_correction_reports_no_freeze(
+    def test_a_re_settle_HONOURS_a_retained_correction(
         self, app, db, seed_user, seed_periods, caplog,
     ):
-        """A retained human figure is not a freeze, and must not be logged as one.
+        """A re-settle honours the figure a human retained.
+
+        **Renamed at plan step X-au-f** with ``EVT_TRANSFER_AMOUNT_FROZEN``
+        (ruling **R-BAL12**); the money assertion is what it always graded.
 
         Settle with a correction, revert -- which RELEASES the assertion and
         KEEPS what moved (plan step X-au-c3) -- then settle again with nobody
@@ -788,15 +795,12 @@ class TestTheNamedVerbItself:
             for shadow in _shadows(xfer.id):
                 assert settled_figure(shadow) == corrected
 
-        assert not [
-            record for record in caplog.records
-            if getattr(record, "event", None) == "transfer_amount_frozen"
-        ], "a retained correction is not a freeze"
-
-    def test_a_settle_carrying_a_CORRECTION_is_not_reported_as_a_freeze(
+    def test_a_settle_carrying_a_CORRECTION_books_the_humans_figure(
         self, app, db, seed_user, seed_periods, caplog,
     ):
-        """The control: the event means the DERIVATION decided the figure.
+        """A human's correction beats the derivation and is what gets booked.
+
+        **Renamed at plan step X-au-f** with the event (ruling **R-BAL12**).
 
         A human's correction beats the freeze, so the figure booked is theirs
         and no freeze happened.  Without this the event could be emitted on
@@ -804,17 +808,15 @@ class TestTheNamedVerbItself:
         """
         with app.app_context():
             xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
-            with caplog.at_level(logging.INFO):
-                transfer_service.settle_transfer(
-                    xfer.id, seed_user["user"].id,
-                    submitted=Decimal("1512.44"),
-                )
-                db.session.commit()
+            transfer_service.settle_transfer(
+                xfer.id, seed_user["user"].id,
+                submitted=Decimal("1512.44"),
+            )
+            db.session.commit()
 
-        assert not [
-            record for record in caplog.records
-            if getattr(record, "event", None) == "transfer_amount_frozen"
-        ]
+            db.session.expire_all()
+            for shadow in _shadows(xfer.id):
+                assert settled_figure(shadow) == Decimal("1512.44")
 
 
 class TestATransfersOfferIsWhatItsReSettleBOOKS:

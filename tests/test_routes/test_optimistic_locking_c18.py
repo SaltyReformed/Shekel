@@ -301,7 +301,7 @@ def _make_transfer(seed_user, period):
             to_account_id=savings.id,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
-            amount=Decimal("250.00"),
+            amount_ownership=AmountOwnership.own(Decimal("250.00")),
             status_id=projected.id,
             category_id=cat.id,
             name="Test Xfer",

@@ -47,12 +47,14 @@ Key differences from transaction recurrence:
 
 import logging
 from datetime import date
-from decimal import Decimal
 from typing import NamedTuple
 
+from app.enums import AmountSourceEnum
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
+from app.services.amount_ownership import derived_ownership
 from app.services._recurrence_common import (
     TemplateRowSelector,
     PlacedRow,
@@ -132,14 +134,19 @@ class DerivedTransferFields(NamedTuple):
     ``notes`` is absent for the opposite reason: it is the owner's, no
     definition states one, and destroying it is half of what this step fixes.
 
-    **``amount_source_id`` is absent, and that is the transfer half of ledger
-    row N-293.**  ``ck_transfers_amount_ownership`` pairs it with ``amount`` --
-    exactly one of the two is ever set -- and ``update_transfer``'s amount arm
-    clears it, so once plan step **X-au-f** empties ``amount`` for generated
-    transfers this diff would see ``None != default_amount``, send the amount,
-    and silently UN-derive the row.  No writer sets that column today, so the
-    state is unreachable; X-au-f is the step that creates it and the step that
-    owns this field's semantics.
+    **THE UN-DERIVE THIS CLASS PREDICTED IS WHY THE FIELD IS AN OWNERSHIP**,
+    and plan step **X-au-f** is where it came due.  The paragraph here read:
+    ``ck_transfers_amount_ownership`` pairs ``amount_source_id`` with ``amount``
+    -- exactly one of the two is ever set -- so once X-au-f empties ``amount``
+    for a generated transfer this diff would see ``None != default_amount``,
+    send the amount, and silently un-derive the row it had just converted.  That
+    is exactly what it did when the conversion was first traced.  What resolves
+    it is not a guard: the two columns are ONE mapped attribute
+    (:class:`~app.models.amount_ownership.AmountOwnership`, plan step X-au-k),
+    so the field this class carries IS the ownership, the diff compares
+    ownership against ownership, and a migrated row reads equal to what its
+    definition says rather than differing from it.  Ruling **R-BAL11** is the
+    same statement at the write door.
 
     Attributes:
         from_account_id: The account the money leaves, from the template.
@@ -153,8 +160,16 @@ class DerivedTransferFields(NamedTuple):
             name is derived from the ENDPOINTS and re-derived by the door that
             moves them.
         category_id: The template's category, or ``None``.
-        amount: The template's ``default_amount``.  A transfer has one amount
-            column, where a transaction splits estimated from settled.
+        amount_ownership: WHERE this transfer's amount comes from, as ruling
+            **R-FI**'s one attribute rather than a figure.  Since plan step
+            X-au-f it states ONE shape for every generated transfer --
+            ``derived`` naming :attr:`~app.enums.AmountSourceEnum.TEMPLATE` --
+            so the row carries a declaration and no figure, and its
+            definition's own effective-dated series prices it as of its due
+            date.  It was ``amount: Decimal``, the template's
+            ``default_amount``, copied onto every generated row; that copy is
+            the stale cache this arc deletes, and the transaction twin lost the
+            same field at plan step X-au-e.
         due_date: Derived from the rule and the period by
             :func:`~app.services.recurrence_engine.compute_due_date`.
     """
@@ -163,7 +178,7 @@ class DerivedTransferFields(NamedTuple):
     to_account_id: int
     name: str
     category_id: int | None
-    amount: Decimal
+    amount_ownership: AmountOwnership
     due_date: date | None
 
 
@@ -197,7 +212,7 @@ def _derive_row_fields(template, rule, period) -> DerivedTransferFields:
         to_account_id=template.to_account_id,
         name=template.name,
         category_id=template.category_id,
-        amount=template.default_amount,
+        amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
         due_date=compute_due_date(rule, period),
     )
 
@@ -225,7 +240,7 @@ def _derive_unruled_fields(template, xfer) -> DerivedTransferFields:
         to_account_id=template.to_account_id,
         name=template.name,
         category_id=template.category_id,
-        amount=template.default_amount,
+        amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
         due_date=xfer.due_date,
     )
 
@@ -293,14 +308,16 @@ def propagate_to_unruled_template(template, transfers) -> "list[int]":
             if getattr(xfer, field) != value
         }
         if changed:
-            # The DEFINITION is speaking, not a human (ruling **R-JR**, plan
-            # step X-au-h).  Stated rather than defaulted: the service refuses
-            # an amount with no authorship, because the two directions are not
-            # interchangeable -- an unauthored figure re-declares both legs
-            # derived, and a caller that meant the opposite would silently
-            # discard the owner's figure instead of failing.
+            # The DEFINITION is speaking, not a human.  It used to say so with
+            # an ``amount_authored=False`` kwarg riding beside a figure; the
+            # figure IS the statement now -- ``changed`` carries an
+            # ``amount_ownership`` and nothing else can express authorship
+            # (ruling **R-BAL11**, plan step X-au-f).  What the old kwarg
+            # guarded against -- a caller meaning the opposite and silently
+            # discarding an owner's figure -- has no shape left to take: there
+            # is no figure here to be unauthored.
             transfer_service.update_transfer(
-                xfer.id, template.user_id, amount_authored=False, **changed,
+                xfer.id, template.user_id, **changed,
             )
     return retained
 
@@ -696,10 +713,13 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
         }
         if not changed:
             continue
-        # The DEFINITION is speaking (ruling **R-JR**); see the maintain pass
-        # above for why this is stated rather than defaulted.
+        # The DEFINITION is speaking; see the propagate pass above.  The
+        # statement rides IN ``changed`` since ruling **R-BAL11** -- an
+        # ``amount_ownership`` naming TEMPLATE -- rather than beside it as an
+        # authorship kwarg, which is what makes the diff and the write one
+        # value instead of a figure plus a claim about it.
         transfer_service.update_transfer(
-            xfer.id, template.user_id, amount_authored=False, **changed,
+            xfer.id, template.user_id, **changed,
         )
         updated.append(xfer)
 
@@ -747,7 +767,7 @@ _PASS = MaintainActs(
 )
 
 
-def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
+def resolve_conflicts(transfer_ids, action, user_id):
     """Resolve override/delete conflicts after a regeneration.
 
     Routes all mutations through the transfer service so shadow
@@ -760,11 +780,18 @@ def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
 
     Args:
         transfer_ids: List of Transfer IDs to resolve.
-        action:       'update' -- clear override/delete, apply new amount.
+        action:       'update' -- hand the row back to its definition.
                       'keep' -- leave the transfer unchanged.
         user_id:      The requesting user's ID.  Transfers not owned by
                       this user are skipped.
-        new_amount:   The new default amount (required if action='update').
+
+    **It took a ``new_amount`` until plan step X-au-f** (ruling **R-JD**), and
+    the transaction twin lost the same parameter at X-au-e for the same reason.
+    "Use the new value" handed each row the template's figure to STORE; a
+    generated transfer stores no figure now, so the offer is *hand this row
+    back to its definition* and the definition's own effective-dated series
+    prices it as of the row's due date.  Passing a figure here would have
+    re-declared the row OWN, which is the state this cutover deletes.
     """
     if action == "keep":
         log_event(
@@ -803,19 +830,18 @@ def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
             if xfer.is_deleted:
                 transfer_service.restore_transfer(xfer_id, user_id)
 
-            # Build the update kwargs: clear override flag and apply
-            # the new amount if provided.  update_transfer propagates
-            # these to both shadow transactions atomically.
-            # ``amount_authored=False``: this is the owner handing the pair
-            # BACK to its definition (ruling **R-JR**), so any figure riding
-            # with it is the definition's price and not a human's retype.
-            # Stated even when no amount rides, because the resolver's two
-            # shapes should not read differently at the call site.
-            svc_kwargs = {"is_override": False, "amount_authored": False}
-            if new_amount is not None:
-                svc_kwargs["amount"] = new_amount
-
-            transfer_service.update_transfer(xfer_id, user_id, **svc_kwargs)
+            # The owner is handing the pair BACK to its definition, and since
+            # ruling **R-BAL11** that is ONE statement rather than a flag plus
+            # a figure plus a claim about who authored it: the ownership names
+            # TEMPLATE, so the parent stores nothing and reads its series and
+            # both legs re-declare their parent.  ``is_override=False`` rides
+            # with it still, because the flag means *this row is the OWNER's,
+            # not the rule's* (plan step X-au-h) and this act clears exactly
+            # that -- it no longer says anything about the amount.
+            transfer_service.update_transfer(
+                xfer_id, user_id, is_override=False,
+                amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
+            )
             resolved_count += 1
 
         db.session.flush()
@@ -826,5 +852,4 @@ def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
             user_id=user_id, action=action,
             resolved_count=resolved_count,
             skipped_count=skipped_count,
-            new_amount=str(new_amount) if new_amount is not None else None,
         )

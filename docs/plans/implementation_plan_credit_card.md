@@ -163,16 +163,22 @@ them, and the four `Grid / companion hard requirements` taken the same day are `
       concurrency, guard controls fire. Hazard checks: `template_id` partial unique unaffected;
       regeneration skips settled.
 - [ ] **CC3b**
-      `feat(cards)!: mark-credit is charge-to-card -- transaction-level cutover + live-pair migration` -- <!-- MD013 kept: the backticked commit SUBJECT is 96 characters on its own, so at this list's 6-space continuation indent no wrap reaches 100; the real fix is a shorter subject, which is CC3b's to decide. --> <!-- rumdl-disable-line MD013 -->
+      `feat(cards)!: mark-credit is charge-to-card -- transaction-level cutover + live-pair
+      migration` -- <!-- MD013 kept: the backticked commit SUBJECT is 96 characters on its own, so
+      at this list's 6-space continuation indent no wrap reaches 100; the real fix is a shorter
+      subject, which is CC3b's to decide. --> <!-- rumdl-disable-line MD013 -->
       delete mark/unmark routes + PATCH revert path; state machine: Projected loses `credit`,
       `credit: {credit}` terminal; minimal template/JS cutover (`data-can-charge`, `c` key, palette,
       badges' predicates); Alembic migration with in-migration backfill: per LIVE pair -- resolve
       target card (single; multiple -> lowest sort_order; zero -> CREATE the card inline per ruling
-      **R-CC6**), set provenance, retarget, status Paid + documented `paid_at` derivation, emit balanced
+      **R-CC6**), set provenance, retarget, status Paid + documented `paid_at` derivation, emit
+      balanced
       settled postings in-migration (loan-backfill precedent), delete payback; frozen settled pairs
-      untouched; downgrade restores via provenance. **With `CC3c` it owns `credit_card:N-351`** (re-filed from
+      untouched; downgrade restores via provenance. **With `CC3c` it owns `credit_card:N-351`**
+      (re-filed from
       `balance:N-243` 2026-09-03): a payback's amount is a stored derivation at both levels and
-      carries neither pricing link, and both die with the payback shape. Rework `test_credit_workflow.py` +
+      carries neither pricing link, and both die with the payback shape. Rework
+      `test_credit_workflow.py` +
       `test_c19_credit_payback_unique.py` (port lock/concurrency shapes). Reports move (settled
       spending now sees real categories at charge time) -- explained in-commit.
 - [ ] **CC3c** `feat(cards)!: envelope split tender + renames` -- rewrite `entry_credit_workflow.py`
@@ -201,16 +207,17 @@ them, and the four `Grid / companion hard requirements` taken the same day are `
   transfer flow: monthly rule `day_of_month = payment_due_day`, one active template per card.
   Straddling close/due periods: due-date-wins placement pinned.
 - [ ] **CC4b** `feat(cards): the payment you owe is the payment the card derives` -- a CARD rule
-      behind the amount resolver (`balance:X-au-b`, ruling **R-FI**), NOT another entry in
-      `live_amount_overrides`, which that arc deletes: projected payment amount = statement balance
-      at last close minus `reward_redemption` rows posted since close, floor 0; min mode substitutes
-      CC2a's minimum; fixed mode is a template amount the card owns. The card row stores no amount,
-      so nothing can hold a figure the derivation contradicts. Oracles: derived amount renders
-      identically on grid/card/checking; redemption after close reduces, before close does not (both
-      controls); floor-0. **It owns `N-311`** (re-filed from `balance` 2026-09-03): the CC payback
-      rows do not reconcile to what was actually paid to the card -- one ACH per real payment
-      against one payback per purchase, `$280.21` unexplained -- and the payment as a CARD rule is
-      the remedy.
+      behind the amount resolver (ruling **R-FI**; the balance step that built it is archived, so
+      read `app/services/cash_ledger/_amount_source.py` rather than a plan), NOT another entry in
+      `live_amount_overrides`, which that arc has already DELETED: projected payment amount =
+      statement balance at last close minus `reward_redemption` rows posted since close, floor 0;
+      min mode substitutes CC2a's minimum; fixed mode is a template amount the card owns. The card
+      row stores no amount, so nothing can hold a figure the derivation contradicts. Oracles:
+      derived amount renders identically on grid/card/checking; redemption after close reduces,
+      before close does not (both controls); floor-0. **It owns `N-311`** (re-filed from `balance`
+      2026-09-03): the CC payback rows do not reconcile to what was actually paid to the card -- one
+      ACH per real payment against one payback per purchase, `$280.21` unexplained -- and the
+      payment as a CARD rule is the remedy.
 - [ ] **CC4c** `feat(cards): underpayment warns and projects its finance charge` -- C7-style warning
       (payment < minimum due) + one-click "pay statement balance" (flips mode);
       `card_recurrence_sync` maintains ONE projected finance-charge expense
@@ -266,10 +273,10 @@ historical-only note), `models/transaction.py` (index + FK renamed), `models/tra
 `grid/_transaction_full_edit.html`, `grid/_transaction_quick_edit.html`,
 `grid/_transaction_entries.html`, `_keyboard_help.html`, `analytics/_balance_sheet.html`,
 `accounts/cash_detail.html`, `savings/_cockpit.html`. JS: `app.js` (markTxnCredit + `c` key);
-`command_palette.js` (Credit command, badge glyph). Tests: `test_credit_workflow.py` (~1,075 lines),
-`test_entry_credit_workflow.py` (~1,338), `test_c19_credit_payback_unique.py` (~1,141) -- reworked
-per CC3a-c; plus grid-template, state-machine, carry-forward, posting-lifecycle suites asserting
-Credit shapes.
+`command_palette.js` (Credit command, badge glyph). Tests:
+`tests/test_services/test_credit_workflow.py`, `test_entry_credit_workflow.py` (1,789),
+`test_c19_credit_payback_unique.py` (1,144) -- reworked per CC3a-c; plus grid-template,
+state-machine, carry-forward, posting-lifecycle suites asserting Credit shapes.
 
 ## Verification standard
 
