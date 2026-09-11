@@ -42,6 +42,7 @@ document says can run.
 """
 from __future__ import annotations
 
+import functools
 import io
 import re
 import tokenize
@@ -97,6 +98,7 @@ def census_paths(glob: str) -> list[Path] | None:
     )
 
 
+@functools.lru_cache(maxsize=None)
 def _python_text(source: str, mode: str) -> str:
     """Return the source with everything but one token class blanked out.
 
@@ -143,6 +145,17 @@ def _python_text(source: str, mode: str) -> str:
     return "\n".join(lines)
 
 
+@functools.lru_cache(maxsize=None)
+def _read(path: Path) -> str:
+    """Read one file, memoized.
+
+    The arm walks the same trees once per MARKER -- 28 of them over 533 files
+    in ``app/`` -- and tokenizing each file per marker took the gate from 90
+    seconds to 250.  A gate slow enough to skip is a gate that gets skipped.
+    """
+    return path.read_text(encoding="utf-8")
+
+
 def census_unreadable(paths: list[Path]) -> list[Path]:
     """Return the files the walk cannot decode.
 
@@ -154,7 +167,7 @@ def census_unreadable(paths: list[Path]) -> list[Path]:
     bad = []
     for path in paths:
         try:
-            path.read_text(encoding="utf-8")
+            _read(path)
         except (OSError, UnicodeDecodeError):
             bad.append(path)
     return bad
@@ -176,7 +189,7 @@ def census_count(pattern: re.Pattern[str], paths: list[Path], unit: str,
     total = 0
     for path in paths:
         try:
-            text = path.read_text(encoding="utf-8")
+            text = _read(path)
         except (OSError, UnicodeDecodeError):
             continue
         if token_filter:

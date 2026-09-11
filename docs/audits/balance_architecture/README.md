@@ -515,7 +515,7 @@ in SILENCE where a refused DELETE is loud.
   (**R-FI**), carrying **N-40**, **N-224**, **N-228**, **N-238**. It ticks with the last of its
   leaves. **It SUPERSEDES X-ar**, whose two stated premises tracing also refuted: its deletion set was
   unreachable (`live_amount_overrides` merges the salary and loan halves at
-  `cash_ledger/_amounts.py:684`, and the loan half feeds BOTH shadow legs, so the loan half being out
+  `cash_ledger/_amounts.py`, and the loan half feeds BOTH shadow legs, so the loan half being out
   of scope left nothing deletable), and it claimed **N-40**, which `../../plans/ledger.md` owned to
   `X-i2`. **It also WITHDRAWS `X-au-i`** (developer, 2026-08-21), which leaves the order as `X-ar`
   did: the CC payback is a PHANTOM the card arc's locked 2026-07-19 rulings already condemn -- "the
@@ -742,7 +742,7 @@ section 4, under their unchanged ids.*
   **N-135** (wrap both bare fact fields in their own types). Re-lands after X-ai.
 * [ ] **X-aj** `refactor(status): one status seam, and the fence is structural` -- rulings
   **R-DN**, **R-DO**, **R-DP**. Its merge half shipped as X-aj1 above, which ANSWERED
-  **N-145** (`transfer_service.py` at 999 of the 1000-line ceiling, blocking X-d): R-DN
+  **N-145** (`transfer_service` at the 1000-line ceiling, blocking X-d -- it is a PACKAGE since, largest module 823): R-DN
   ruled it and X-aj1 took the module to 987. That row is archived here rather than carried
   (2026-08-13) -- what survives is **N-152**'s claim that 987 is an answer and not a
   solution, and the structural remedy is the PACKAGE X-f2-c3 later built.
@@ -817,7 +817,7 @@ section 4, under their unchanged ids.*
   * [ ] **X-x2 THE FABRICATIONS** (R-CY) -- the branches that publish a figure the app did not
     compute take the raising accessor. **Its first arm is DONE and must not be rebuilt**: the
     anchor-cache substitutions died with the column at X-f1c3c (ruling R-EH), and an AST pass over
-    `main` finds no live read left -- only prose in 5 `app/` files. What REMAINS, re-measured against
+    `main` finds no live read left -- only prose (census 10 files `current_anchor_period_id` in `app/**/*.py`). What REMAINS, re-measured against
     `8d812662`: the fabricated `$0.00` in four producers, and `build_trend_periods`'
     `current_index = 0` into an empty list, still live at `routes/accounts/detail.py:228` and
     `analytics_view.py:485`.
@@ -1005,7 +1005,7 @@ section 4, under their unchanged ids.*
   that is precisely the form the first ruling specified and measurement rejected. The instrument is
   an open question the step's trace decides, and it must be shown FIRING on a planted defect.
 * [ ] **X-ah** `fix(routes): a query-string id is parsed like every other id` -- closes **N-142**.
-  The one submitted-id surface X-ae did not convert: 34 `request.args.get(..., type=int)` call sites
+  The one submitted-id surface X-ae did not convert: the `request.args.get(..., type=int)` calls (census 29 code lines `request\.args\.get\([^)]*type=int` in `app/**/*.py`; `X-ah`'s own marker counts every `type=int` coercion, which is 34)
   where Werkzeug catches the `ValueError` (so no crash) but the coercion is `int()` (so `'١٠٦'` is
   106, `' 2026 '` is 2026, `'1_0'` is 10). **It needs a per-site ruling, which is why it is a step**:
   the path parameters were all row ids and the schema fields all row ids, so each took one blanket
@@ -1163,7 +1163,7 @@ section 4, under their unchanged ids.*
   blindness is upstream, not a misconfiguration** (R0801 is a close-time checker over a similarity
   graph, so suppression accounting has no line to credit). The likely shape is a pre-commit arm that
   strips each disable in turn and fails if the tree stays clean without it; the instrument is not
-  ruled here and must be shown FIRING on a planted stale disable. **FIFTEEN live `duplicate-code`
+  ruled here and must be shown FIRING on a planted stale disable. **SIXTEEN live `duplicate-code`
   disables remain in `app/` and not one has been re-measured** (4 in `models/`, 5 in `routes/`, 6 in
   `services/`). The step's first deliverable is the census.
 * [x] **X-am** `7b0ddae8` -- the `Settled` ARCHIVE is DELETED (**R-HA**, which carries what `CC3b` owes). Closed **N-177**; as-built in `archive/x_am_as_built_2026-08-27.md`, entry in `archive/four_shipped_steps_2026-08-30.md`.
@@ -1195,12 +1195,12 @@ section 4, under their unchanged ids.*
   action is a trace**, because the two halves are different sizes and only one is obviously worth it.
   **The money half:** `Money`, a value type over `Decimal` that cannot be constructed from a `float`
   and whose rounding is a method carrying the app's rule, retiring W9901 and W9904 together.
-  **Re-measured 2026-08-25 (was "44 and 37"): 47 `Numeric(12, 2)` columns, 36 `.quantize(` sites,
+  **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 45 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
   17 bare.** Its trace must decide whether it lands at the ORM boundary (a `TypeDecorator`, so the
   blast radius is the type rather than the call sites) or as a hand conversion -- the
   `TypeDecorator` route is the one that makes the checkers redundant BY CONSTRUCTION.
   **The SCHEMA layer is the third surface and the only live money today** -- the corrected census
-  **N-212** cites, by AST parse of `app/schemas/` on 2026-08-25: **103 of 103 `fields.Decimal` carry
+  **N-212** cites (census 106 code lines `fields\.Decimal` in `app/schemas/**/*.py`), every one of which carries
   `places=` and NOT ONE passes `rounding=`**, so every one quantizes against `ROUND_HALF_EVEN` and
   disagrees with `round_money` at every half-cent boundary (marshmallow 4.3.0: `0.005 -> 0.00`,
   `4.345 -> 4.34`). It was **104 of 104** at `afbf3b3e`, the tree N-212 was written against, so its
