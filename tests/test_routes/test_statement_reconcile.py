@@ -878,7 +878,7 @@ class TestTheMatchPanePricesWhatIsTicked:
         ).get_data(as_text=True)
 
         assert "$0.04" in priced
-        assert f'name="residual-{line.id}"' in priced
+        assert f'name="consent-{line.id}"' in priced
         assert 'value="0.04"' in priced
 
     def test_a_search_reaches_a_row_outside_the_lines_period(
@@ -915,6 +915,81 @@ def _row_tokens(pane, line_id):
 
     return re.findall(
         rf'name="rows-{line_id}" value="([^"]+)"', pane,
+    )
+
+
+def _consent_options(pane, line_id):
+    """Return every consent OPTION the pane rendered, live or disabled.
+
+    Plan step ``bank_import:X-gp``.  :func:`~tests.test_routes._statement_forms
+    .reconcile_offerable` keeps what a browser could SUBMIT, which leaves out
+    a disabled option -- and whether a refused landing is still SHOWN is one
+    of the things this file grades.  This reads the options' values in
+    document order, hidden fields excluded.
+
+    **The scriptless PLACEHOLDER is not an option and is not returned.**  The
+    pane renders it as a disabled box with ``value=""`` in lockstep, so an
+    empty value is that placeholder by the template's own contract -- and a
+    reader that returned it let the lone-row case pass against a pane that
+    offered NO act (adversarial review 2026-09-11).  A real option carries
+    the figure, so none can be empty.
+
+    Args:
+        pane: The rendered MATCH pane.
+        line_id: The bank line it is about.
+
+    Returns:
+        The consent values, in document order.
+    """
+    return [
+        value for kind, value in re.findall(
+            rf'type="(radio|checkbox)"[^>]*name="consent-{line_id}"'
+            rf'\s+value="([^"]*)"',
+            pane,
+        )
+        if value
+    ]
+
+
+def _option_label(pane, value):
+    """Return the label text of the consent option carrying *value*.
+
+    Args:
+        pane: The rendered MATCH pane.
+        value: The option's submitted value, exactly as rendered.
+
+    Returns:
+        The text between that option's ``<label>`` and ``</label>``.
+
+    Raises:
+        AssertionError: When no option carries *value*, which would make an
+            assertion over its label vacuous.
+    """
+    after = pane.split(f'value="{value}"', 1)
+    assert len(after) == 2, f"no option carries {value!r}"
+    label = re.search(r"<label[^>]*>(.*?)</label>", after[1], re.DOTALL)
+    assert label is not None, f"the option carrying {value!r} has no label"
+    return label.group(1)
+
+
+def _uncategorized_rows(db, seed_user):
+    """Return every row R-FN's ordinary-row act could have minted.
+
+    Args:
+        db: The session.
+        seed_user: The seeded user bundle.
+
+    Returns:
+        The uncategorised, non-transfer transactions on the seeded account.
+    """
+    return (
+        db.session.query(Transaction)
+        .filter(
+            Transaction.account_id == seed_user["account"].id,
+            Transaction.category_id.is_(None),
+            Transaction.transfer_id.is_(None),
+        )
+        .all()
     )
 
 
@@ -1257,7 +1332,8 @@ class TestAProposedCardAppliesFromThisPageAndItsPaneLoads:
     """The near tier's own act, walked end to end on the Reconcile page.
 
     **Both halves were ungraded and an adversarial review measured it**: with
-    the page's hidden ``residual-<line>`` deleted the whole tracked suite
+    the page's hidden ``residual-<line>`` (``consent-<line>`` since plan step
+    ``bank_import:X-gp``) deleted the whole tracked suite
     stayed green at 4,516 passed, while the same mutation on the review
     queue's own input fails a case by name.  One of the two emission sites
     was checked and the other was not, and it is the newer one that a browser
@@ -1297,7 +1373,7 @@ class TestAProposedCardAppliesFromThisPageAndItsPaneLoads:
 
         fields = reconcile_form_fields(_page(auth_client, seed_user))
 
-        assert (f"residual-{line.id}", "0.03") in fields, (
+        assert (f"consent-{line.id}", "0.03") in fields, (
             "the card stated no difference, so the door would refuse the "
             "very act this tier exists to offer"
         )
@@ -1385,7 +1461,7 @@ class TestAProposedCardAppliesFromThisPageAndItsPaneLoads:
             "re-prices them, so unticking one changes the submission and "
             "re-prices nothing"
         )
-        assert f"residual-{line.id}" not in inside, (
+        assert f"consent-{line.id}" not in inside, (
             "the consent control is inside the element that replaces it, so "
             "ticking it discards the tick"
         )
@@ -2487,15 +2563,25 @@ class TestTheBooksAlreadyHoldSentenceIsONESpelling:
 
 
 class TestThePaneOffersWHEREADifferenceGoes:
-    """Plan step **bank_import:X-gj-3a**; rulings **R-GD(a)** and **R-FN**.
+    """Plan steps **bank_import:X-gj-3a** and **X-gp**; rulings **R-GD(a)**,
+    **R-FN** and **R-BI2**.
 
     A group's difference could only ever become an uncategorized row before
-    this step, whatever the owner knew about it.  On the developer's own data
+    X-gj-3a, whatever the owner knew about it.  On the developer's own data
     that is seven payroll deposits and seven `$0.04`-`$0.06` rows a year, with
     the salary row left permanently under what the employer paid -- while the
     two flat allowances beside it matched the bank exactly in all eleven of
     their occurrences, which is what makes *which member* an answerable
     question for a person and an underivable one for the app.
+
+    **ONE control whose options ARE the acts** (X-gp).  That step drew the
+    landing as a select inside the re-price wrapper and the consent as a box
+    outside it whose sentence was composed from the select, and the door
+    compared only the box's figure -- so *mint a `$0.05` row* and *write
+    `$2,473.43` to the salary row* submitted the SAME consent.  Every act is
+    one option now, labelled with what it writes, valued with the figure AND
+    the member (``consent-<line>``), and the cases below read that control
+    where they read the select.
 
     **No member is pre-selected** (developer, 2026-09-01): a group has nothing
     the app can point at to justify one, and an unjustified default on a money
@@ -2540,7 +2626,7 @@ class TestThePaneOffersWHEREADifferenceGoes:
             seed_user: The seeded user bundle.
             line: The bank line whose card is open.
             rows: The reviewed-row tokens the owner has ticked.
-            chosen: The token the attribution select names, or ``None``.
+            chosen: The consent value the owner's tick submits, or ``None``.
 
         Returns:
             The rendered pane, as text.
@@ -2548,7 +2634,7 @@ class TestThePaneOffersWHEREADifferenceGoes:
         body = [("csrf_token", "x")]
         body += [(f"rows-{line.id}", token) for token in rows]
         if chosen is not None:
-            body.append((f"difference_on-{line.id}", chosen))
+            body.append((f"consent-{line.id}", chosen))
         return auth_client.post(
             _match_url(seed_user["account"].id, line.id),
             data=MultiDict(body),
@@ -2557,27 +2643,12 @@ class TestThePaneOffersWHEREADifferenceGoes:
     def test_a_GROUP_with_a_difference_is_offered_the_choice(
         self, auth_client, db, seed_user,
     ):
-        """One option per ticked row, plus R-FN's ordinary row first."""
-        line, _, _ = self._a_payroll_deposit(seed_user, db)
-        tokens = _row_tokens(
-            self._pane(auth_client, seed_user, line), line.id,
-        )
+        """One option per ticked row, plus R-FN's ordinary row first.
 
-        pane = self._pane(auth_client, seed_user, line, rows=tokens)
-
-        assert f'name="difference_on-{line.id}"' in pane
-        assert 'value=""' in pane, "R-FN's ordinary row must be an option"
-        for token in tokens:
-            assert f'value="{token}"' in pane, (
-                "every ticked row must be nameable as the one that carries it"
-            )
-
-    def test_NOTHING_is_pre_selected(self, auth_client, db, seed_user):
-        """The developer's ruling of 2026-09-01, read off the rendered select.
-
-        A browser submits the option carrying ``selected``, and its FIRST
-        option when none does -- so a pre-selected member would be a money
-        decision the page made and the owner never saw.
+        **Each option's VALUE carries the figure and the member together**
+        (X-gp): the ordinary row's is the figure alone, and each member's is
+        the figure at that member's own row token -- so no two acts share a
+        value, which is the whole of ruling **R-BI2**.
         """
         line, _, _ = self._a_payroll_deposit(seed_user, db)
         tokens = _row_tokens(
@@ -2586,30 +2657,92 @@ class TestThePaneOffersWHEREADifferenceGoes:
 
         pane = self._pane(auth_client, seed_user, line, rows=tokens)
 
-        assert (f"difference_on-{line.id}", "") in reconcile_form_fields(pane)
+        options = _consent_options(pane, line.id)
+        assert options[0] == "0.05", (
+            "R-FN's ordinary row must be the FIRST option, valued with the "
+            f"figure alone: {options}"
+        )
+        for token in tokens:
+            assert f"0.05@{token}" in options, (
+                "every ticked row must be nameable as the one that carries it"
+            )
+        assert len(options) == len(set(options)) == len(tokens) + 1, (
+            f"two acts share one consent value: {options}"
+        )
+        assert f'name="consent-{line.id}"' in pane
+        assert re.search(
+            rf'type="radio"[^>]*name="consent-{line.id}"', pane,
+        ), "alternatives must be a radio group, so picking one unpicks the rest"
 
-    def test_a_LONE_row_is_offered_NO_choice(
+    def test_NOTHING_is_pre_selected(self, auth_client, db, seed_user):
+        """The developer's ruling of 2026-09-01, read off the rendered control.
+
+        A browser submits a radio only when it is checked, so the control:
+        the options are OFFERED and none is SUBMITTED.  It read the select's
+        default option until X-gp; a pre-selected member would be a money
+        decision the page made and the owner never saw, on either widget.
+        """
+        line, _, _ = self._a_payroll_deposit(seed_user, db)
+        tokens = _row_tokens(
+            self._pane(auth_client, seed_user, line), line.id,
+        )
+
+        pane = self._pane(auth_client, seed_user, line, rows=tokens)
+
+        assert any(
+            name == f"consent-{line.id}" and value
+            for name, value in reconcile_offerable(pane)
+        ), "the pane offered no consent option at all, so nothing is graded"
+        assert not [
+            value for name, value in reconcile_form_fields(pane)
+            if name == f"consent-{line.id}"
+        ], "an option is pre-selected"
+
+    def test_a_LONE_row_is_offered_ONE_act_and_no_choice(
         self, auth_client, db, seed_user,
     ):
         """Ruling **R-GD(a)**'s determinacy: there is nothing to pick.
 
-        A match naming one row is an assertion about that row, so the pane
-        renders no control -- and a select with one real option would ask a
-        question whose answer is already known.
+        A match naming one row is an assertion about that row, so the one
+        act is the bank's figure written to it: ONE option, a box rather than
+        a radio, valued with the figure alone -- a member is named only where
+        there are several to choose between.
         """
         line, _, _ = self._a_payroll_deposit(seed_user, db)
         tokens = _row_tokens(
             self._pane(auth_client, seed_user, line), line.id,
         )
+        # The difference the pane must state, from the scraped token's own
+        # figure against the staged line -- so the assertion below is an
+        # EXACT value and not a shape the scriptless placeholder could satisfy
+        # (adversarial review 2026-09-11).
+        expected = str(Decimal("2573.43") - Decimal(tokens[0].split(":")[2]))
 
         pane = self._pane(auth_client, seed_user, line, rows=tokens[:1])
 
-        assert f'name="difference_on-{line.id}"' not in pane
+        assert _consent_options(pane, line.id) == [expected], (
+            "a lone row must be offered exactly the one act, valued with the "
+            "figure alone"
+        )
+        assert (f"consent-{line.id}", expected) in reconcile_offerable(pane), (
+            "the one act is not a live control a browser could submit"
+        )
+        assert _option_label(pane, expected).strip().startswith("Write"), (
+            "the one act must be the bank's figure written to the row"
+        )
+        assert re.search(
+            rf'type="checkbox"[^>]*name="consent-{line.id}"'
+            rf'\s+value="{re.escape(expected)}"',
+            pane,
+        ), "one act is a box the owner can untick, not a lone radio"
 
     def test_a_group_that_ADDS_UP_is_offered_NO_choice(
         self, auth_client, db, seed_user,
     ):
-        """Nothing would be written wherever it landed."""
+        """Nothing would be written wherever it landed.
+
+        The figure still travels, as a HIDDEN ``0.00`` naming no member.
+        """
         line, _, _ = self._a_payroll_deposit(seed_user, db, amount="2573.38")
         tokens = _row_tokens(
             self._pane(auth_client, seed_user, line), line.id,
@@ -2618,7 +2751,10 @@ class TestThePaneOffersWHEREADifferenceGoes:
         pane = self._pane(auth_client, seed_user, line, rows=tokens)
 
         assert "These add up" in pane
-        assert f'name="difference_on-{line.id}"' not in pane
+        assert _consent_options(pane, line.id) == [], (
+            "an agreeing group was offered an act to consent to"
+        )
+        assert (f"consent-{line.id}", "0.00") in reconcile_form_fields(pane)
 
     def test_choosing_a_member_states_THAT_ROWS_two_figures(
         self, auth_client, db, seed_user,
@@ -2639,14 +2775,14 @@ class TestThePaneOffersWHEREADifferenceGoes:
             token for token in tokens if token.split(":")[1] == str(salary.id)
         )
 
-        pane = self._pane(
-            auth_client, seed_user, line, rows=tokens, chosen=salary_token,
-        )
+        pane = self._pane(auth_client, seed_user, line, rows=tokens)
 
-        # The CONSENT SENTENCE alone.  The row list and the sums line above it
-        # legitimately print every figure in this match, so a search over the
-        # whole pane would pass whatever the sentence said.
-        sentence = pane.split(f'for="residual-{line.id}"')[-1]
+        # THE SALARY OPTION'S OWN SENTENCE alone.  The row list, the sums line
+        # and the other options legitimately print every figure in this
+        # match, so a search over the whole pane would pass whatever the
+        # sentence said.  Read off the option whose VALUE names the salary
+        # row, so the label graded is the one that value was drawn with.
+        sentence = _option_label(pane, f"0.05@{salary_token}")
         assert "Data Manager" in sentence
         assert "$2,473.43" in sentence
         assert "$2,473.38" in sentence
@@ -2674,16 +2810,15 @@ class TestThePaneOffersWHEREADifferenceGoes:
         salary_token = next(
             token for token in tokens if token.split(":")[1] == str(salary.id)
         )
-        pane = self._pane(
-            auth_client, seed_user, line, rows=tokens, chosen=salary_token,
-        )
+        pane = self._pane(auth_client, seed_user, line, rows=tokens)
         page = _page(auth_client, seed_user)
-        # The consent box is an UNTICKED checkbox, so the pane's own submitted
-        # set leaves it out; ticking it is the owner's act and its value is
-        # the server's own figure, read off what the pane rendered.
+        # No option is ticked, so the pane's own submitted set carries no
+        # consent; ticking the salary option is the owner's act and its value
+        # is the server's own -- the figure at the salary row -- read off
+        # what the pane rendered.
         consent = next(
             pair for pair in reconcile_offerable(pane)
-            if pair[0] == f"residual-{line.id}"
+            if pair == (f"consent-{line.id}", f"0.05@{salary_token}")
         )
         fields = _choosing(
             reconcile_form_fields(page) + reconcile_form_fields(pane),
@@ -2701,35 +2836,127 @@ class TestThePaneOffersWHEREADifferenceGoes:
         assert allowance.settled_amount == Decimal("100.00"), (
             "the member they did not name must not move"
         )
-        assert not (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.account_id == seed_user["account"].id,
-                Transaction.category_id.is_(None),
-                Transaction.transfer_id.is_(None),
-            )
-            .all()
-        ), "nothing may be minted when a member carries the difference"
+        assert not _uncategorized_rows(db, seed_user), (
+            "nothing may be minted when a member carries the difference"
+        )
+
+    def test_the_ORDINARY_row_option_mints_and_moves_no_member(
+        self, auth_client, db, seed_user,
+    ):
+        """The other act, from the same pane, through its own option.
+
+        **The control for the case above and the whole of R-BI2**: the two
+        options carry DIFFERENT values, and each performs its own act.  Under
+        the two-control design both bodies submitted ``residual=0.05`` and
+        which act ran depended on a second field the consent did not bind.
+        """
+        line, salary, allowance = self._a_payroll_deposit(seed_user, db)
+        tokens = _row_tokens(
+            self._pane(auth_client, seed_user, line), line.id,
+        )
+        pane = self._pane(auth_client, seed_user, line, rows=tokens)
+        page = _page(auth_client, seed_user)
+        consent = next(
+            pair for pair in reconcile_offerable(pane)
+            if pair == (f"consent-{line.id}", "0.05")
+        )
+        fields = _choosing(
+            reconcile_form_fields(page) + reconcile_form_fields(pane),
+            f"verb-{line.id}", "match",
+        ) + [consent, ("ok", str(line.id))]
+
+        response = _post(auth_client, seed_user, fields, page, pane=pane)
+
+        assert response.status_code == 200
+        db.session.expire_all()
+        assert db.session.query(StatementMatch).count() == 1
+        assert salary.settled_amount == Decimal("2473.38"), (
+            "a member moved under the ordinary-row option"
+        )
+        assert allowance.settled_amount == Decimal("100.00")
+        minted = _uncategorized_rows(db, seed_user)
+        assert [row.settled_amount for row in minted] == [Decimal("0.05")], (
+            f"R-FN's ordinary row was not minted at the difference: {minted}"
+        )
+
+    def test_a_member_the_door_cannot_write_to_is_DISABLED_and_says_why(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **R-HW**'s shape one control down (X-gp).
+
+        The worked example ``_reject_unrepresentable_landing`` exists for: a
+        `+$2,060.00` deposit against a `+$2,050.00` salary row and a `-$50.00`
+        deduction row is `$60.00` short, and landing that on the DEDUCTION
+        would leave an expense row worth `+$10.00`.  The option is rendered,
+        disabled, with the door's own sentence -- and the other two options
+        stay live, which is the control against a pane that disabled all of
+        them.
+        """
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="2060.00",
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description="ACH DEPOSIT TOWN OF CLAYTON PAYROLL",
+        )
+        salary = a_transaction(
+            seed_user, name="Data Manager", amount="2050.00", income=True,
+        )
+        deduction = a_transaction(
+            seed_user, name="Union Dues", amount="50.00",
+        )
+        db.session.commit()
+        tokens = _row_tokens(
+            self._pane(auth_client, seed_user, line), line.id,
+        )
+        deduction_token = next(
+            token for token in tokens
+            if token.split(":")[1] == str(deduction.id)
+        )
+        salary_token = next(
+            token for token in tokens if token.split(":")[1] == str(salary.id)
+        )
+
+        pane = self._pane(auth_client, seed_user, line, rows=tokens)
+
+        live = {
+            value for name, value in reconcile_offerable(pane)
+            if name == f"consent-{line.id}"
+        }
+        assert f"60.00@{deduction_token}" not in live, (
+            "a landing the door refuses is offered as a live option"
+        )
+        assert f"60.00@{deduction_token}" in _consent_options(pane, line.id), (
+            "the refused landing vanished instead of saying why"
+        )
+        assert "moving the other way" in _option_label(
+            pane, f"60.00@{deduction_token}",
+        ), "the disabled option does not carry the door's own sentence"
+        assert {"60.00", f"60.00@{salary_token}"} <= live, (
+            "the options the door would accept are not live"
+        )
 
     def test_UNTICKING_the_named_member_does_not_refuse_the_owner(
         self, auth_client, db, seed_user,
     ):
         """The transition an owner actually performs, found by design review.
 
-        Name a member, then untick that member.  The change bubbles to
-        `.rec-match-picks` and fires this fragment, and the select -- which has
-        not been re-rendered yet -- posts its now-stale value beside a row list
-        that no longer holds it.  ``resolve_rows`` refuses exactly that shape,
-        correctly, so without ``_still_ticked`` the panel answers *"This match
-        says its difference belongs to a row it does not include.  Reload the
-        page and try again"* -- a sentence written for a crafted body, shown
-        for a legal click, on the screen whose whole job is to say what the
-        press would do.
+        Tick the option naming a member, then untick that member.  The change
+        bubbles to `.rec-match-picks` and fires this fragment, and the consent
+        control -- outside that wrapper, so not yet re-rendered -- posts its
+        now-stale value beside a row list that no longer holds it.
+        ``resolve_rows`` refuses exactly that shape, correctly, so a preview
+        that read the consent would answer *"This match says its difference
+        belongs to a row it does not include.  Reload the page and try
+        again"* -- a sentence written for a crafted body, shown for a legal
+        click, on the screen whose whole job is to say what the press would
+        do.  *A ``_still_ticked`` normalisation held this from X-gj-3a until
+        X-gp*; the preview drops the consent whole now, since it offers every
+        act rather than the one a member named.
 
         **Three rows, so that unticking one leaves TWO** and the honest answer
-        is R-FN's ordinary row.  With two rows the untick leaves ONE, where
-        R-GD's determinacy answers the question and the panel says *corrects*
-        -- also right, and not the arm this case is about.
+        offers R-FN's ordinary row.  With two rows the untick leaves ONE,
+        where R-GD's determinacy answers the question and the pane offers the
+        one act -- also right, and not the arm this case is about.
         """
         line, salary, _ = self._a_payroll_deposit(seed_user, db)
         a_transaction(
@@ -2746,14 +2973,17 @@ class TestThePaneOffersWHEREADifferenceGoes:
         assert len(kept) == 2, "this case needs two rows left after the untick"
 
         pane = self._pane(
-            auth_client, seed_user, line, rows=kept, chosen=salary_token,
+            auth_client, seed_user, line, rows=kept,
+            chosen=f"0.05@{salary_token}",
         )
 
         assert "does not include" not in pane
         assert "Reload the page" not in pane
-        assert "row with no category" in pane, (
-            "the panel must say what Apply would actually do, which is mint"
+        options = _consent_options(pane, line.id)
+        assert options and "@" not in options[0], (
+            "the panel must offer what Apply would actually do, which is mint"
         )
+        assert "row with no category" in _option_label(pane, options[0])
 
     def test_APPLY_refuses_an_attribution_naming_a_row_it_does_not_carry(
         self, auth_client, db, seed_user, seed_second_user,
@@ -2761,17 +2991,17 @@ class TestThePaneOffersWHEREADifferenceGoes:
         """The ownership question asked of the NEW field, at the MONEY door.
 
         **The pane is not where this is refused, and that is deliberate.**  A
-        fragment that writes nothing normalises a stale pointer rather than
-        refusing it (``_still_ticked``), because it cannot tell a crafted body
-        from an owner who has just unticked a row -- and for a read, both want
-        the same answer.  What must refuse is the door that WRITES, and it
-        does, before it reads the offer set at all.
+        fragment that writes nothing reads no consent at all (plan step
+        ``bank_import:X-gp``), because it cannot tell a crafted body from an
+        owner who has just unticked a row -- and for a read, both want the
+        same answer.  What must refuse is the door that WRITES, and it does,
+        before it reads the offer set at all.
 
         The row named here is a second owner's, so it is out of reach two ways
         over: not among the rows this body submitted, and not in this pass's
-        offer set.  Neither is stated about ``difference_on`` until something
-        asks, and a field added to a money door without an ownership case is
-        how the next one gets added without one.
+        offer set.  Neither is stated about the consent's member half until
+        something asks, and a field added to a money door without an
+        ownership case is how the next one gets added without one.
         """
         line, salary, allowance = self._a_payroll_deposit(seed_user, db)
         foreign = a_transaction(
@@ -2784,15 +3014,14 @@ class TestThePaneOffersWHEREADifferenceGoes:
         )
         pane = self._pane(auth_client, seed_user, line, rows=tokens)
         page = _page(auth_client, seed_user)
-        consent = next(
-            pair for pair in reconcile_offerable(pane)
-            if pair[0] == f"residual-{line.id}"
-        )
+        # The pane's own figure, at a row it never offered.
+        figure = _consent_options(pane, line.id)[0]
+        assert "@" not in figure, "the first option must be the figure alone"
         crafted = _choosing(
             reconcile_form_fields(page) + reconcile_form_fields(pane),
-            f"difference_on-{line.id}",
-            f"transaction:{foreign.id}:2473.38:{foreign.version_id}",
-        ) + [consent, ("ok", str(line.id))]
+            f"consent-{line.id}",
+            f"{figure}@transaction:{foreign.id}:2473.38:{foreign.version_id}",
+        ) + [("ok", str(line.id))]
         crafted = _choosing(crafted, f"verb-{line.id}", "match")
 
         # POSTED DIRECTLY, not through ``_post``: this body names a control
@@ -2809,6 +3038,14 @@ class TestThePaneOffersWHEREADifferenceGoes:
         assert salary.settled_amount is None
         assert allowance.settled_amount is None
         assert foreign.settled_amount is None
+        # **The OWNERSHIP refusal and not the no-consent one**, or a renamed
+        # field would leave this arm green while guarding nothing: a body
+        # whose consent is not read at all is also refused, with "These do not
+        # add up", and every assertion above holds (adversarial review
+        # 2026-09-11, the moved-door lesson).
+        assert "belongs to a row it does not include" in (
+            response.get_data(as_text=True)
+        )
 
 
 class TestTheSkippedTabIsWhereASkipIsFoundAndUndone:
@@ -3488,7 +3725,7 @@ class TestTheMatchPaneIsReachableWithNoScript:
     ):
         """Ruling **R-IA**: every match states the figure it was reviewed at.
 
-        The unopened card carries that figure as a hidden ``residual-<line>``;
+        The unopened card carries that figure as a hidden ``consent-<line>``;
         the pane carries it as the consent control.  Opening the card replaces
         one with the other, so a card opened this way has to be priced against
         the proposal's OWN rows -- a pane that opened empty would report
@@ -3499,13 +3736,13 @@ class TestTheMatchPaneIsReachableWithNoScript:
 
         page = _open(auth_client, seed_user, line.id)
 
-        assert f'name="residual-{line.id}"' in page, (
+        assert f'name="consent-{line.id}"' in page, (
             "the opened card submits no reviewed difference at all"
         )
         assert "These add up. Nothing is left over." in page, (
             "an exact proposal was not priced when its card was opened"
         )
-        assert page.count(f'name="residual-{line.id}"') == 1, (
+        assert page.count(f'name="consent-{line.id}"') == 1, (
             "the figure travels twice, so which one the door reads is the "
             "browser's choice"
         )

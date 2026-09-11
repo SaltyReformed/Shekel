@@ -782,8 +782,8 @@ def accept_match(
 
     Args:
         submission: What the owner accepted -- the ids, the state each row was
-            REVIEWED in, and the difference the screen showed for a group they
-            built by hand (:attr:`~._submission.MatchSubmission.accepted_difference`).
+            REVIEWED in, and what they agreed to about the difference
+            (:attr:`~._submission.MatchSubmission.consent`).
         scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
             **Required rather than defaulted**: a door that could build its own
             is a door a batch will accidentally call 215 times, which is the
@@ -812,12 +812,19 @@ def accept_match(
             # names rows the owner already had.  The one row this act can
             # bring into existence is a GROUP's residual, and
             # :func:`record_match` mints that itself.
-            residual=submission.accepted_difference,
-            # ...and where the owner said that residual BELONGS, which is what
-            # decides whether it is minted at all (plan step
-            # ``bank_import:X-gj-3a``).  ``resolve_rows`` above has already
-            # refused a submission whose attribution is not one of its own
-            # rows, so this key names a member of ``rows`` by construction.
+            #
+            # **The figure and the member are two halves of ONE submitted
+            # value** (plan step ``bank_import:X-gp``), read apart here
+            # because the writer takes the figure it compares and the subject
+            # it lands on as two facts.  ``resolve_rows`` above has already
+            # refused a submission whose consent names a row that is not one
+            # of its own, so the subject names a member of ``rows`` by
+            # construction, and the landing :func:`record_match` derives from
+            # it is the one the option the owner ticked was labelled with.
+            residual=(
+                None if submission.consent is None
+                else submission.consent.figure
+            ),
             attributed=submission.attributed_subject,
         ),
         matched,
