@@ -68,7 +68,7 @@ from app.services.recurrence import rule_occurrences
 # read door resolves at CALL time.  Patching this file's own imported
 # names would leave the composition calling the real ones.
 from app.services.recurrence import _reading
-from app.services.recurrence_engine import compute_due_date
+from app.services.recurrence import compute_due_date
 
 #: The cadence ``seed_periods_today`` builds and every figure below is
 #: hand-computed at: 14 days between paydays, 26 a year.  An explicit input

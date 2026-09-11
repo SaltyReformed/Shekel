@@ -29,7 +29,7 @@ shared pass resolves the generation plan (:func:`._plan.resolve_generation_plan`
 which lives here; a module under ``_recurrence_common`` reaching for it would
 close an import cycle, and reaching for it through a private module of another
 package is what ``shekel-private-module-import`` forbids.  The transfer engine
-already imports ``resolve_generation_plan`` and ``compute_due_date`` from this
+already imports ``resolve_generation_plan`` from this
 package and its own docstring calls itself "a deliberate parallel" of it, so
 the direction is established rather than new.  ``_recurrence_common`` keeps
 what is genuinely model-agnostic and free of a plan -- the classification, the

@@ -18,8 +18,9 @@ to the only two questions it is asked in production:
   this rule fire in?  (Plan step R4b-2 replaced ``match_periods`` with it; the
   capture keeps taking the PERIOD half, and dropping an unplaced occurrence
   here is what the deleted adapter did for it, so the blob is unmoved.)
-* :func:`app.services.recurrence_engine.compute_due_date` -- what date does the
-  generated row carry?
+* :func:`app.services.recurrence.compute_due_date` -- what date does the
+  generated row carry?  (In ``recurrence_engine`` until plan step R16-b-2
+  moved it down beside the occurrence walk, ruling R-R69.)
 
 Both are their module's public surface (their docstrings say so) and both are
 pure functions of a rule's columns plus a period list, so the baseline needs no
@@ -101,8 +102,7 @@ from app.services.recurrence import (
 # re-export, which silently turned the due-date firing control into the exact
 # thing this comment says to avoid -- a proof that the oracle can read its own
 # alias.  Caught by an adversarial review of that step.
-from app.services.recurrence_engine import _plan
-from app.services.recurrence import _reading
+from app.services.recurrence import _reading, _row_date
 from app.services.recurrence._months import clamped_day, month_ordinal
 
 from tests._test_helpers import rhythm_of
@@ -1082,7 +1082,7 @@ def capture_shape(
     return [
         f"{shape.label} idx={period.period_index:03d} "
         f"period={period.start_date.isoformat()}..{period.end_date.isoformat()} "
-        f"due={_plan.compute_due_date(rule, period).isoformat()}"
+        f"due={_row_date.compute_due_date(rule, period).isoformat()}"
         for period in matched
     ]
 

@@ -553,7 +553,7 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     PRECONDITION on the stored value, and plan step R7c-c re-words it without
     changing it (plan ledger row **D27**): the payment's recurrence rule must
     fire ON A DAY OF THE MONTH, so
-    :func:`app.services.recurrence_engine.compute_due_date` stamps each instance
+    :func:`app.services.recurrence.compute_due_date` stamps each instance
     with the installment date rather than falling back to ``period.start_date``
     (its no-day behaviour, and the origin of the legacy rows migration
     ``c4e91a7b2d38`` backfills).

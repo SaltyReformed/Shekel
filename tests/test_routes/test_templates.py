@@ -1590,7 +1590,7 @@ class TestPreviewRecurrence:
 
         What is unsavable now is the ``WEEK`` unit: a weekly occurrence is
         neither a payday nor a day of the month, so
-        ``recurrence_engine.compute_due_date`` has nothing to date its
+        ``recurrence.compute_due_date`` has nothing to date its
         generated rows from until plan step **R5**.
 
         Not reachable by clicking -- the picker never renders the WEEK unit --

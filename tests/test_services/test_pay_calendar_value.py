@@ -1959,7 +1959,7 @@ class TestTheContainmentRuleOnOnePeriod:
     Ruled at **R-PC31** and landed with plan step C4-a-3 for the three sites
     that open-coded ``start_date <= day <= end_date``: the purchase-date
     warning (``entry_service._sums.entry_list_view``), the recurrence engine's
-    base-month scan (``recurrence_engine._plan.compute_due_date``) and this
+    base-month scan (``recurrence.compute_due_date``) and this
     package's own ``_searches.containing_index``.
 
     **The five point cases below came from

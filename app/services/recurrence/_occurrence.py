@@ -58,7 +58,7 @@ What an occurrence IS, per unit
   is kept out of the offer set by
   :func:`~app.services.recurrence._frequency.has_row_date_coordinate`, because
   a weekly occurrence is neither a payday nor a day of the month and
-  ``recurrence_engine.compute_due_date`` can date a generated row from nothing
+  ``recurrence.compute_due_date`` can date a generated row from nothing
   else.  Plan step **R5** gives a row its own ``occurs_on`` and the unit
   becomes authorable by that deletion.  It is implemented here rather than
   refused because a partial function over an enum is the defect this redesign
