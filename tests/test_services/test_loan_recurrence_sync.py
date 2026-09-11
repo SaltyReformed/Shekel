@@ -229,15 +229,18 @@ class TestSyncRecurringPaymentBounds:
         5% is $526.46, and $12,000.00 at 5%/12 amortizes in exactly 24 payments
         at that figure -- so a borrower who has paid NOTHING is a full 24
         installments from zero PLUS the arrears.  Since plan step R16-b-2 the
-        sixteen skipped months from 2025-02-01 to 2026-06-01 each accrue their
-        $50.00 of interest (ruling R-R71: a skipped month owes its interest
-        whichever side of today it is on), $800.00 standing when the first
-        payment lands on 2026-07-01, which that payment and the next clear
-        before any principal moves; counting from there the balance reaches
-        zero on 2028-08-01 -- seven contractual installments and nineteen from
-        the extension, 20 months past the contractual 2027-01-01.  It read
-        2028-06-01 while the skipped months charged nothing (B-9's holds-flat,
-        repealed by the ruling).
+        seventeen skipped months from 2025-02-01 to 2026-06-01 each accrue
+        their $50.00 of interest (ruling R-R71: a skipped month owes its
+        interest whichever side of today it is on): with July's own charge,
+        $900.00 stands when the first payment lands on 2026-07-01, which
+        clears it and CAPITALIZES the $373.54 shortfall (balance $12,373.54);
+        the 08-01 payment then pays $474.90 of principal, and counting from
+        there the balance reaches zero on 2028-08-01 -- 26 payments, seven
+        contractual installments and nineteen from the extension, 20 months
+        past the contractual 2027-01-01.  It read 2028-06-01 while the skipped
+        months charged nothing (B-9's holds-flat, repealed by the ruling).
+        Re-derived with ``accrue_monthly_interest`` / ``apply_payment_cash``
+        after an adversarial review found this paragraph's first count wrong.
 
         **"Never paid" is a fact the OWNER states since plan step R16-b-2, and
         this fixture states it.**  Ruling **R-R64**: an occurrence the

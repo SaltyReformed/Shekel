@@ -175,8 +175,8 @@ payoff is the fold to zero, plan step C8d), and ``{_positions, _loan_interest} -
 _plan_fold -> {_plan, _fold}`` -- the forward model's BUILD and its FOLD, split
 at plan step R16-a when ``_plan`` passed the line ceiling, with the arrow one-way
 because ``_plan`` imports neither -- and ``_plan -> {_plan_definitions,
-_plan_records}``, ``_plan_definitions -> {_plan_records, _resolution}``, the
-second split of ``_plan`` at plan step R16-b-2 (the definition WALK that sums
+_plan_records}``, ``_plan_definitions -> {_plan_records, _resolution,
+_context}``, the second split of ``_plan`` at plan step R16-b-2 (the definition WALK that sums
 every recurring transfer into a loan, and the two RECORD types both halves
 share) -- a DAG with ``_fold`` at the producer floor, so no module imports a
 sibling that imports it back.  Every loan producer also

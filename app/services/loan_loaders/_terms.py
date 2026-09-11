@@ -35,7 +35,7 @@ from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
 from app.services.amortization_engine import RateChangeRecord
-from app.services.rate_period_engine import monthly_due_date
+from app.services.rate_period_engine import due_after_anchor, monthly_due_date
 from app.utils.dates import anchor_chronology_key
 
 from ._shadows import settled_income_shadows
@@ -522,23 +522,24 @@ def installment_for(
 def precedes_origination(params: LoanParams, installment: date) -> bool:
     """Return whether *installment* falls at or before the loan's origination.
 
-    **Ruling R-C's boundary, stated once** (plan step C9b, moved here at
-    R16-b-2).  A loan cannot receive a payment before it exists: such a
-    payment is ERASED by the fold -- it splits against a running balance of
-    zero and the origination anchor resets over it -- while the cash side still
-    debits the funding account.  The write door refuses it
-    (``transfer_service._loan_posting._reject_payment_before_origination``),
-    and since plan step R16-b-2 the forward plan's ESTIMATED tier asks the
-    same question of every occurrence a definition names, so the plan never
-    prices a row the door would refuse to write.  Two spellings of ``<=`` here
-    would be exactly the drift ``CLAUDE.md`` rule 14 names.
+    **Ruling R-C's boundary** (plan step C9b, moved here at R16-b-2).  A loan
+    cannot receive a payment before it exists: such a payment is ERASED by
+    the fold -- it splits against a running balance of zero and the
+    origination anchor resets over it -- while the cash side still debits the
+    funding account.  The write door refuses it
+    (``transfer_service._loan_posting._reject_payment_before_origination``).
 
-    **The boundary is ``<=``, not ``<``.**  A payment due exactly ON the
-    origination date is subsumed by that anchor's reset -- the same strict
-    ``anchor_date < due_date`` post-anchor rule the replay applies -- so it is
-    erased identically.  Swept and measured at C9b: due 02-01, 02-28 and 03-01
-    against a 03-01 origination all book ``$0.00`` principal; 03-02 pays down
-    ``$366.67``.
+    **It is the post-anchor boundary applied to the loan's FIRST assertion,
+    and is spelled through it** (ruling **R-R72**,
+    :func:`~app.services.rate_period_engine.due_after_anchor`): the
+    origination is a balance assertion like any true-up, and an installment
+    due at or before an assertion is inside it.  A payment due exactly ON the
+    origination date is subsumed by that anchor's reset, so the boundary is
+    ``<=`` -- swept and measured at C9b: due 02-01, 02-28 and 03-01 against a
+    03-01 origination all book ``$0.00`` principal; 03-02 pays down
+    ``$366.67``.  The forward plan honours the same refusal without calling
+    this: it drops every payment at or before the loan's LATEST assertion,
+    of which the origination is the earliest (``balance_at._plan.loan_plan``).
 
     Args:
         params: The loan's :class:`~app.models.loan_params.LoanParams`.
@@ -548,7 +549,7 @@ def precedes_origination(params: LoanParams, installment: date) -> bool:
     Returns:
         ``True`` when the fold would erase a payment on *installment*.
     """
-    return installment <= params.origination_date
+    return not due_after_anchor(params.origination_date, installment)
 
 
 def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:

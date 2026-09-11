@@ -15,8 +15,11 @@ The rulings it applies are stated on the functions: **R-R64** (an occurrence
 no row in any state answers is priced, past or future, bounded to the
 schedule), **R-R65** (the authored closing alone; the derived stop is the
 fold's own output), **R-R66** (``budget.transfers`` read for identity only),
-**R-R67** (the amount model's own arm), **R-R69** (dated as the row would be)
-and ruling R-C's origination bound.
+**R-R67** (the amount model's own arm) and **R-R69** (dated as the row would
+be).  The occurrences it prices are bounded BELOW by the caller: an occurrence
+due at or before the loan's latest assertion -- its origination at the
+earliest, which is ruling R-C's refusal -- is dropped by :func:`._plan.loan_plan`
+on the one post-anchor predicate (ruling **R-R72**).
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.  Seam-PRIVATE.
@@ -33,7 +36,6 @@ from app.services._recurrence_common import (
     rows_claiming,
 )
 from app.services.cash_ledger import DefinitionRow, definition_cash
-from app.services.loan_loaders import precedes_origination
 from app.services.recurrence import (
     Closing,
     compute_due_date,
@@ -94,32 +96,36 @@ def _answered_by_rows(
 
 
 def _unanswered_placements(
-    template, params, ctx: BalanceContext, through: date,
-) -> list:
+    template, ctx: BalanceContext, through: date,
+) -> list[tuple]:
     """Return *template*'s placeable occurrences through *through* that no row answers.
 
     Steps 1-3 of :func:`estimated_from_definitions`, for one definition:
     resolve the rule with the PURE resolver, narrow it to its AUTHORED closing
     (never the composed door -- see that function), place every occurrence
     on the paycheck its row would live in, drop the unplaceable (ruling
-    **R-R64**'s boundary), drop what falls at or before the loan's
-    origination (ruling R-C: the write door refuses such a row, so a pass
-    would not write it -- an adversarial review found a second definition
-    whose unlocked start predated its loan paying for months the loan did
-    not exist) and drop what a row of this definition already answers in
-    any state (:func:`_answered_by_rows`).
+    **R-R64**'s boundary) and drop what a row of this definition already
+    answers in any state (:func:`_answered_by_rows`).  An occurrence at or
+    before the loan's origination -- which the write door refuses (ruling
+    R-C), so a pass would not write it -- is NOT dropped here: the caller
+    drops every payment at or before the loan's latest assertion, and the
+    origination is the earliest of those (ruling **R-R72**).  An adversarial
+    review found a second definition whose unlocked start predated its loan
+    paying for months the loan did not exist; a second predicate here for
+    the same boundary was measured redundant by the review after it.
 
     Args:
         template: The recurring transfer definition, carrying a rule.
-        params: The loan's :class:`~app.models.loan_params.LoanParams`, for
-            the origination bound.
         ctx: The read pass -- its calendar places the occurrences, its
             scenario scopes the rows.
         through: The last day the walk covers.
 
     Returns:
-        The unanswered :class:`~app.services.recurrence.OccurrencePlacement`
-        values, ascending by occurrence, each with a period.
+        ``(placement, due)`` pairs -- each unanswered
+        :class:`~app.services.recurrence.OccurrencePlacement` (with a period)
+        and the date its row would carry -- ascending by occurrence.  The
+        date is derived ONCE here and threaded to the pricing rather than
+        derived again.
     """
     calendar = ctx.calendar()
     # The pass's memo: the composed door resolves this same rule to narrow it
@@ -140,19 +146,18 @@ def _unanswered_placements(
         ),
     )
     rule = template.recurrence_rule
-    placements = [
-        placement
+    dated = [
+        (placement, compute_due_date(rule, placement.period))
         for placement in projected_occurrence_placements(
             resolved, calendar, through=through,
         )
         if placement.period is not None
-        and not precedes_origination(
-            params, compute_due_date(rule, placement.period),
-        )
     ]
-    answered = _answered_by_rows(template, ctx.scenario_id, placements)
+    answered = _answered_by_rows(
+        template, ctx.scenario_id, [placement for placement, _due in dated],
+    )
     return [
-        placement for placement in placements
+        (placement, due) for placement, due in dated
         if not answered.blocks(placement)
     ]
 
@@ -200,11 +205,15 @@ def estimated_from_definitions(
     the PLANNED tier does with the overdue projected row generation would
     have written (ruling D1).
 
-    The walk's window is the contract's last installment plus the
-    post-contractual extension (:func:`_extension_dates`), the same horizon
-    the contract-only arm and the charge calendar use; a definition still
-    firing past it belongs to a loan the plan cannot retire, which
-    :func:`._plan_fold.plan_payoff_date` reports as ``None``.
+    The walk's window (*through*) is the caller's: :func:`._plan.loan_plan`
+    hands the later of the post-contractual extension's end
+    (``_plan._extension_dates``) and the same span past the read, so a
+    matured loan still owing is walked past today.  A definition still
+    firing past the window belongs to a loan the plan cannot retire, which
+    :func:`._plan_fold.plan_payoff_date` reports as ``None``.  An occurrence
+    the loan's latest assertion subsumes (due at or before it) is priced
+    here and dropped by the caller, on the one predicate its planned rows
+    are dropped on (ruling **R-R72**).
 
     Args:
         account: The loan account.  Must belong to ``ctx.user_id``.
@@ -229,10 +238,7 @@ def estimated_from_definitions(
     clamp_floor = as_of + _ONE_DAY
     estimated: list[PlannedPayment] = []
     for template in resolved.definitions:
-        for placement in _unanswered_placements(
-            template, resolved.params, ctx, through,
-        ):
-            due = compute_due_date(template.recurrence_rule, placement.period)
+        for placement, due in _unanswered_placements(template, ctx, through):
             cash = definition_cash(
                 DefinitionRow(
                     template=template,

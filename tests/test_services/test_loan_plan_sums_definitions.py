@@ -63,8 +63,11 @@ from tests._test_helpers import (
     create_settled_transfer,
     create_transfer,
     freeze_today,
+    insert_trueup_event,
+    loan_params_for,
     make_cadence_rule,
     make_every_period_rule,
+    rebuild_calendar,
     rhythm_of,
 )
 from tests.oracles.recurrence_baseline import MONTHLY, MONTHLY_FIRST
@@ -292,7 +295,7 @@ class TestAnOccurrenceNoRowAnswers:
         # ...and March is still CHARGED (rulings R-R37 and R-R71, finding
         # D53): the contract charges every month after the loan's last
         # balance assertion whether or not a payment lands in it, so the
-        # skipped month's $60.00 stands until April's payment clears it.
+        # skipped month's $50.12 stands until April's payment clears it.
         # Hand-checked from the $12,000 seed: Feb pays 1,975.15 principal
         # (10,024.85), March charges 50.12 and nothing pays, April's payment
         # clears 50.12 + 50.12 and pays 1,934.91 (8,089.94), then 40.45 /
@@ -318,12 +321,28 @@ class TestAnOccurrenceNoRowAnswers:
         loan, it names occurrences the write door would REFUSE
         (``_reject_payment_before_origination``), so a generate pass would
         not write them and the fold, which would erase such a payment against
-        a zero balance, must not price them.  An adversarial review of this
-        step found exactly this fixture paying for months the loan did not
-        exist; the shared predicate
-        (:func:`~app.services.loan_loaders.precedes_origination`) is what
-        stops it.  The occurrence ON the origination date is refused too.
+        a zero balance, must not price them.  The plan drops them as it drops
+        every payment at or before the loan's LATEST assertion, of which the
+        origination is the first (ruling R-R72, the one post-anchor
+        predicate :func:`~app.services.rate_period_engine.due_after_anchor`
+        the door's refusal is spelled through too), so the occurrence ON the
+        origination date is refused as well.
+
+        **The schedule is opened BEFORE the loan so that the boundary is
+        what this test measures.**  Its first version left ``seed_periods``'
+        2026-01-02 opening in place, under which 2025-11-01, 2025-12-01 and
+        the on-origination 2026-01-01 occurrence have no paycheck to live in
+        and are dropped by R-R64's schedule bound before any origination
+        predicate is asked -- an adversarial review deleted the predicate and
+        the test stayed green.  Opened at 2025-12-05, the 2026-01-01
+        occurrence IS placeable (the 12-19 paycheck covers it) and only the
+        assertion bound refuses it; 2025-11-01 and 2025-12-01 still precede
+        the schedule, which is the other boundary and not this one.
         """
+        # Opened before the loan exists: a loan's books open the day before
+        # its origination, and no calendar may open at or before an account's
+        # books (ruling balance:R-HG).
+        rebuild_calendar(seed_user["user"].id, date(2025, 12, 5), 16, 14)
         account, ctx = _loan(seed_user)
         _definition(seed_user, account, _LEVEL, name="Payment")
         early = _definition(
@@ -337,6 +356,9 @@ class TestAnOccurrenceNoRowAnswers:
         )
         db.session.commit()
         ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
+        # The precondition that makes the case discriminating: the schedule
+        # can place the on-origination occurrence, so nothing but R-C drops it.
+        assert ctx.calendar().span_containing(_ORIGINATION) is not None
 
         plan = loan_plan(account, ctx)
 
@@ -509,6 +531,10 @@ class TestTheChargeCalendarIsTheContracts:
 
         payoffs = {}
         for read_day in (date(2026, 4, 15), date(2026, 5, 15), date(2026, 6, 15)):
+            # A REAL later read: the clock moves with the read day, so the
+            # confirmed present is what that day's reader sees rather than
+            # an ``as_of`` past today's fallback.
+            freeze_today(monkeypatch, read_day)
             ctx = BalanceContext.build(seed_user["user"].id, read_day)
             plan = loan_plan(account, ctx)
             assert date(2026, 5, 1) in {c.on_date for c in plan.charges}, read_day
@@ -646,3 +672,115 @@ class TestTheChargeCalendarIsTheContracts:
         assert ahead[:len(forward)] == forward
         # ...and past the contract the extension is charged too, monthly.
         assert ahead[len(forward)] == date(2026, 8, 1)
+
+
+@pytest.mark.usefixtures("db", "seed_periods")
+class TestTheLatestAssertionIsTheBoundary:
+    """R-R72: the plan folds nothing the loan's latest assertion subsumes."""
+
+    def test_a_payment_the_latest_assertion_subsumes_is_not_folded(
+        self, seed_user, monkeypatch,
+    ):
+        """A projected row due at or before a true-up is inside that true-up.
+
+        Rows generated for 02-01, 03-01 and 04-01, all still projected, and
+        the owner asserts $12,000.00 on 04-10 -- nothing paid.  The settled
+        walk, once those rows settle, walks each and then RESETS at the
+        anchor, so their cash never reaches the post-assertion balance; the
+        plan must not fold them either, or settling the rows moves the
+        balance by their whole cash.  An adversarial review of this step
+        measured exactly that: $6,044.87 on 04-16 projected, $12,000.00 the
+        day the rows settled, and the payoff 2026-07-01 -> 2026-10-01.
+
+        Now the plan drops every payment due at or before 04-10 and charges
+        from 05-01 (both on ``due_after_anchor``), so the six level payments
+        from 05-01 clear the $12,000.00 on 2026-10-01 -- and settling the
+        three subsumed rows on 04-15 changes nothing: the balance on 04-16
+        and the payoff read the same before and after.
+        """
+        freeze_today(monkeypatch, date(2026, 4, 15))
+        account, _ctx = _loan(seed_user)
+        _schedule_through(seed_user, 14)
+        template = _definition(seed_user, account, _LEVEL, name="Payment")
+        _generate(seed_user, template)
+        insert_trueup_event(
+            loan_params_for(db.session, account.id), _PRINCIPAL,
+            date(2026, 4, 10),
+        )
+        db.session.commit()
+
+        def read():
+            ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
+            plan = loan_plan(account, ctx)
+            return (
+                min(p.due_date for p in plan.payments),
+                plan.charges[0].on_date,
+                balance_at.balance_at(account, ctx, _TOMORROW),
+                balance_at.loan_payoff_date(account, ctx),
+            )
+
+        projected = read()
+        assert projected == (
+            date(2026, 5, 1), date(2026, 5, 1), _PRINCIPAL, date(2026, 10, 1),
+        )
+
+        for occurrence in (date(2026, 2, 1), date(2026, 3, 1), date(2026, 4, 1)):
+            row = (
+                db.session.query(Transfer)
+                .filter(
+                    Transfer.transfer_template_id == template.id,
+                    Transfer.occurs_on == occurrence,
+                )
+                .one()
+            )
+            transfer_service.update_transfer(
+                row.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                settle_day=SettleDay(
+                    day=date(2026, 4, 15), basis=SettledDayBasisEnum.ENTERED,
+                ),
+            )
+        db.session.commit()
+
+        assert read() == projected
+
+    def test_a_matured_loan_with_a_live_definition_is_walked_past_the_read(
+        self, seed_user,
+    ):
+        """The definition walk's window reaches past today, not just past the contract.
+
+        A 10-year loan from 2005 matured in 2015 and its post-contractual
+        extension ran out in 2020, but it still owes $5,000.00 (asserted on
+        the read day) and a $500.00 monthly definition pays it.  An
+        adversarial review of this step found the walk's window ending at the
+        extension, so the plan held no occurrence at all and the payoff read
+        ``None`` where the definition clears the loan.  The window is now the
+        later of the extension's end and the same span past the read.
+
+        At 5%: 05-01 charges $20.83 and pays $479.17 of principal, and the
+        eleventh payment, $117.49 + $0.49, clears it on 2027-03-01.
+        """
+        account = create_loan_account(
+            seed_user, db.session, name="Matured Balloon",
+            principal=Decimal("240000.00"), term=120,
+            origination_date=date(2005, 1, 1), payment_day=1,
+        )
+        insert_trueup_event(
+            loan_params_for(db.session, account.id), Decimal("5000.00"), _AS_OF,
+        )
+        sweep = _definition(
+            seed_user, account, Decimal("500.00"), name="Sweep", bind=False,
+        )
+        sweep.recurrence_rule.starts_on = date(2026, 5, 1)
+        db.session.commit()
+        ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
+
+        plan = loan_plan(account, ctx)
+
+        estimates = _estimated(plan)
+        assert [p.due_date for p in estimates][:2] == [
+            date(2026, 5, 1), date(2026, 6, 1),
+        ]
+        assert estimates[-1].due_date >= date(2027, 3, 1)
+        assert [c.on_date for c in plan.charges][:1] == [date(2026, 5, 1)]
+        assert balance_at.loan_payoff_date(account, ctx) == date(2027, 3, 1)

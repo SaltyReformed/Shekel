@@ -253,8 +253,10 @@ def _debt_span_upper(
         # is in the past, and so is the contract-only estimate's extension, so
         # the plan holds no payment -- the model has no future payment to draw.
         # Since plan step R16-b-2 a matured loan WITH a live definition is not
-        # this case: the definition's occurrences are estimated until it
-        # stops, so ``payments`` is non-empty and the branch below answers.
+        # this case: the plan walks the definition past the read (its window
+        # is the later of the contract's extension and the same span past
+        # ``as_of``), so ``payments`` holds its occurrences and the branch
+        # below answers.
         # (``original_principal > 0`` and ``term_months > 0`` are DB check
         # constraints, so an EMPTY contractual schedule is not the case being
         # handled here.)
