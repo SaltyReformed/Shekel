@@ -1266,7 +1266,7 @@ section 4, under their unchanged ids.*
   **The census is RE-RUN, not remembered** -- it read "26 canonical accessors plus five, measured
   2026-08-23 and not to be re-taken" until 2026-09-11, by which point it was 27 plus seven and one
   of its claims was false. Canonical:
-  (census 27 lines `^def [a-z_]*_id\(` in `app/ref_cache/_accessors.py`).
+  (census 28 lines `^def [a-z_]*_id\(` in `app/ref_cache/_accessors.py`).
   **`acct_type_icon` and `acct_type_max_term` have no PRODUCTION
   caller** (census 0 code lines `acct_type_(icon\|max_term)` in `app/routes/**/*.py`) and are
   candidates for DELETION rather than folding -- with them the `_cache.acct_type_meta` map `init()`
