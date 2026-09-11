@@ -2,19 +2,18 @@
 
 ## Where this stands
 
-**JUST LANDED: `C14-e-1` (`f32c9d7a`) and `C14-e-2` (`ab5b26bc`)**, both `$0.00`. The pay rhythm
-became ONE value the derivation reads, and `budget.pay_schedule` gained the nominal grid's PHASE
-(**R-PC61**), which took the extend path's re-anchoring from 178 of 301 recorded paydays wrong under
-`prior` to 0. **IN FLIGHT: `C14-e-3`**, the leaf that MOVES MONEY -- the displacement goes live at
-the producer and the writer records the displaced day. It takes its own review pass and its own PR.
+**JUST LANDED: `C17-a` (`6caf56bc`, PR #310) and `C17-b-1` (`1ae0cd02`, PR #311)**, both `$0.00`. A
+pay schedule is a SEQUENCE OF ERAS: `budget.pay_eras` holds one row per *how I have been paid since*
+and `effective_from` IS the grid's phase (**R-PC66**); `_derive.py` gave up its forward continuation
+to `_projection.py`. **NEXT: `C17-b-2`**, the leaf that MOVES MONEY -- every reader asks the era
+covering its own day and anchors on that era's phase. It takes its own review pass and its own PR;
+`steps.md` carries the order of the leaves behind it.
 
 **BUILT AND TICKED**: `C1`; `C2` whole, which is one step under three names (`balance:X-l`,
-`recurrence:R-F12`), ticked at `C2-f3e`; `C3`; `C4` and its seven leaves, decomposed 2026-08-25
-because the leaves ARE the reader census row **P70**'s query-position count could not see; `C10` and
-`C11`, which came out of `C2-f3` for gating `C4` on work it does not depend on; `C13-a`, `C13-b`;
-and every `C14` leaf through `C14-e-2`. Section 4 carries each commit, and `steps.md` alone carries
-the ORDER. **A cold session starts at section 4**; the shared registries are `ledger.md`,
-`steps.md`, `conventions.md` and `verification.md`.
+`recurrence:R-F12`), ticked at `C2-f3e`; `C3`; `C4` whole; `C10` and `C11`, which came out of
+`C2-f3`; `C13-a`, `C13-b`; `C14` whole, archived 2026-09-11; `C17-a` and `C17-b-1`. Section 4
+carries each commit, and `steps.md` alone carries the ORDER. **A cold session starts at section 4**;
+the shared registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 
 ## The rulings
 
@@ -119,18 +118,31 @@ budget.pay_periods
 -- DROPPED [C4] with them: THREE constraints -- ck_pay_periods_date_order,
 --                         ck_pay_periods_positive_index, uq_pay_periods_user_index
 
-budget.pay_schedule            -- every OWNER with a payday has one, enforced at the
-  cadence_days  INT NOT NULL   -- WRITE DOOR (registration + generate), not backfilled once
+budget.pay_schedule            -- the OWNER's facts, one row per owner with a payday:
+  user_id       UNIQUE          -- rolling_enabled, rolling_target_periods, history_opens_on
+  -- DROPPED [C17-a]: cadence_days, shift_id, nominal_anchor -- the RHYTHM is an era's
+
+budget.pay_eras                -- [C17-a] one row per "how I have been paid since"
+  user_id       FK budget.pay_schedule.user_id RESTRICT  (fk_pay_eras_schedule)
+  effective_from DATE NOT NULL  -- the era's first NOMINAL payday, and so the grid's PHASE
+  kind_id       FK ref.pay_cadence_kinds          -- fixed_days; monthly, semi_monthly [C17-d]
+  cadence_days  INT NOT NULL    -- ck_pay_eras_cadence_range
+  shift_id      FK ref.business_day_shifts        -- the convention (R-PC47)
+  UNIQUE (user_id, effective_from)                -- uq_pay_eras_user_effective_from
 ```
 
-Everything else is derived, once, by one producer:
+An era governs from its `effective_from` to the next era's; the EARLIEST also runs backward below
+the record, bounded by `history_opens_on` (**R-PC66**). Everything else is derived, once, by one
+producer:
 
 ```text
 period_index = row_number() over (partition by user_id order by start_date) - 1
 end_date     = coalesce(lead(start_date) over (...) - 1,   -- the definition.  NOT
                                                            -- "- INTERVAL '1 day'", which
                                                            -- returns a timestamp
-                        start_date + cadence_days - 1)     -- the open last one
+                        projected_payday(start_date, era, 1) - 1)  -- the open last one:
+                                                           -- the day before the NEXT nominal
+                                                           -- payday, displaced (C14-c, C14-e-3)
 ```
 
 **The value type exists**: `PayCalendar` derives `(period_id, period_index, start_date, end_date)`
@@ -253,52 +265,23 @@ their only live specimen from them, which both `_staging` docstrings predict and
       `loan_recurrence_sync` is a WRITER and takes its own by design, so the rule carves it out or
       takes it from its caller. Collapses the +1 `C2-f3a` left on `/analytics/taxes`. Closes
       **P56**, **P69**.
-- [x] **C14 -- the pay schedule carries its shift convention** `5d14e4d4` -- the container ticked
-      with its last leaf `C14-f`; all eight leaves have shipped (rulings **R-PC47**, **R-PC57**,
-      **R-PC61**, **R-PC63**).
-- [x] **C14-a -- the shared business-day module.** `088339f5`. `app/utils/business_days.py`: the
-      weekend rule, the computed federal holiday set of `5 U.S.C. 6103(a)` under `6103(b)` and E.O.
-      11582, and ONE `shift_to_business_day` displacement, pure and reusing the
-      `BusinessDayShiftEnum` seeded at `recurrence:R2`. **What a later step must obey**: the
-      displacement may answer OUTSIDE `CALENDAR_DATE_MIN`..`MAX` and bounding it is the CALLER's,
-      and it REFUSES a non-member convention rather than defaulting one forward.
-- [x] **C14-b -- the convention column.** `229f0e23` -- gave the schedule its payday convention,
-      defaulting to `none` and asked on the four cadence templates (**R-PC56**), with NO CHECK
-      constraint (**R-PC59**): the floor is derived from a holiday set that MOVES and a CHECK
-      expression must be immutable, so the pair is refused at the column's one write door. Opened
-      **N-493** and **N-494**.
-- [x] **C14-c** `659260c0` -- ONE end rule: a projected period ends the day before the NEXT payday,
-      and `project_period_after` keeps its O(1) jump by probing the estimate's two NEIGHBOURS
-      (**R-PC57**). Opened **N-495**, **N-496**. **A LATER STEP MUST OBEY**: `projected_payday` is
-      the SINGLE body `C14-e` displaces, and the probe window's second premise is that the estimate
-      and its candidates share ONE anchor.
-- [x] **C14-d** `c1ce08b5` -- the floor asks `projected_payday` rather than restating
-      `latest + cadence` (**58** of 1,951 future paydays refused before, 0 after) and
-      `extend_pay_periods` hands the NOMINAL grid day; the grid became `_grid.py` (**R-PC60**).
-      Opened **PC-497**. **TWO OBLIGATIONS FOR `C14-e`**: the floor must read the STORED convention
-      and not the incoming `Rhythm.shift`, or a convention-changing batch closes the calendar under
-      the other; and the WRITER must record each element DISPLACED, or the extend is refused.
-- [x] **C14-e-1 -- the rhythm is ONE value.** `f32c9d7a`. `Rhythm` moved out of the session-holding
-      `pay_schedule_service` to the pure leaf `app/services/pay_rhythm.py`: pylint **R0401** refused
-      the package itself (`pay_calendar` -> `._loader` -> `pay_schedule_service`), and a second
-      identical pair inside it is rule 14's defect. Every producer takes the pair; `resolve_shift`
-      and its per-request duplicate query are DELETED. **A LATER STEP MUST OBEY**: the floor reads
-      the STORED convention, and nothing grades that until `C14-e-3`.
-- [x] **C14-e-2 -- the grid carries its own phase.** `ab5b26bc`, migration `a1c7e5d20f43`
-      (**R-PC61**). `budget.pay_schedule.nominal_anchor`, three of `C17`'s five era columns; extend
-      steps from it, not from its own last output. Closes **PC-497** fault 2 -- 178 of 301 wrong
-      under `prior` at a batch of ONE before, 0 after. **A LATER STEP MUST OBEY**: the anchor names
-      the BATCH THAT WROTE IT, not a piecewise owner's surviving grid (**N-492**), so
-      `nominal_payday_after` is asked against the paycheck's END.
-- [x] **C14-e-3 -- the shift goes live** `ed267298` -- every projected and backdated payday became
-      the nominal day displaced onto a business day, and the WRITER records the displaced day
-      (**PC-497** fault 1). **MOVED MONEY.** Closes **N-398**; **N-495**, **N-496**, **PC-497** and
-      **PC-498** did not close with it and re-point at `C17`.
-- [x] **C14-f -- the generate door asks one job's questions** `5d14e4d4` -- an owner who already
-      holds a rhythm is asked only how many more paychecks, a rebuild that skips a whole paycheck
-      asks first, and the gates moved to `pay_period_gates` (**R-PC63**, superseding **R-PC55**).
-      **P80 does NOT close**: `regenerate` still writes a 140-day gap at HTTP 200, so it re-points
-      at `C17` as an era question. **N-493** and **N-494** are NARROWED, not closed.
+**The `C14` span is ARCHIVED under rule 5** (2026-09-11) to
+`historical/pay_calendar_c14_as_built_2026-09-11.md`, one line each below; the COMMIT is the record.
+- [x] **C14 -- the pay schedule carries its shift convention.** `5d14e4d4`. The DECOMPOSED parent,
+      ticked with `C14-f` (**R-PC47**, **R-PC54**-**R-PC57**, **R-PC59**-**R-PC61**, **R-PC63**).
+- [x] **C14-a -- the shared business-day module.** `088339f5`. `app/utils/business_days.py`; its
+      displacement may answer OUTSIDE the calendar bounds (the CALLER bounds it) and REFUSES a
+      non-member convention rather than defaulting one.
+- [x] **C14-b -- the convention column.** `229f0e23`. Opened **N-493**, **N-494**.
+- [x] **C14-c -- ONE end rule.** `659260c0`. Opened **N-495**, **N-496**.
+- [x] **C14-d -- the floor asks `projected_payday`.** `c1ce08b5`. Opened **PC-497**.
+- [x] **C14-e-1 -- the rhythm is ONE value.** `f32c9d7a`.
+- [x] **C14-e-2 -- the grid carries its own phase.** `ab5b26bc`, migration `a1c7e5d20f43`. Closed
+      **PC-497** fault 2.
+- [x] **C14-e-3 -- the shift goes live.** `ed267298`. **MOVED MONEY.** Closed **N-398** and
+      **PC-497** fault 1 (the row was carried open through two re-points in error).
+- [x] **C14-f -- the generate door asks one job's questions.** `5d14e4d4`. **P80** re-pointed at
+      `C17` as an era question; **N-493**, **N-494** narrowed.
 - [ ] **C18 -- a payday may be recorded BEFORE the schedule's earliest, and a period below the books
       generates nothing** (ruling **R-PC62**; closes **PC-499**, **PC-500**).
       `_reject_backward_payday` bounds a batch after the LATEST payday, where its own docstring says
@@ -307,17 +290,58 @@ their only live specimen from them, which both `_staging` docstrings predict and
       the narrowed rule is not monotone. And what it admits must not GENERATE: a prepend wrote a
       `$531.94` Van Payment moving 173 figures. The bound is PER ACCOUNT (openings stagger 03-26 to
       06-26); the date lives on `budget.transfers.occurs_on`.
-- [ ] **C17 -- a pay schedule is a SEQUENCE OF ERAS** (ruling **R-PC58**; closes **P78**,
-      **N-492**). One row per *how I have been paid since* -- effective from, cadence, its KIND, the
-      phase anchor and the convention -- replacing the single cadence `budget.pay_schedule` holds
-      today. It exists because that single value is already wrong: `record_paydays` permits
-      *correct my cadence going forward*, so an owner can hold paydays 14 and 35 days apart under
-      one stored cadence of 7, and no producer can ask what cadence a PAST payday ran at
-      (**N-492**). An era carries a KIND as easily as a length, so this is also the calendar-monthly
-      schedule `recurrence:R13` needs and the door **P78**'s eight fixtures have never had -- one
-      relation serving three open rows rather than three migrations over one column. It is
-      deliberately NOT part of `C14`: it changes what a stored cadence MEANS and it touches the
-      pay-period writer.
+- [ ] **C17 -- a pay schedule is a SEQUENCE OF ERAS** (rulings **R-PC58**, **R-PC66**; split
+      2026-09-11 into four leaves, **R-PC69**). `budget.pay_eras` holds one row per
+      *how I have been paid since* -- `effective_from`, `kind_id`, `cadence_days`, `shift_id` --
+      beside a `budget.pay_schedule` that keeps only the owner's facts, and
+      **`effective_from` IS the grid's phase**: R-PC61's anchor is absorbed into it, not carried
+      beside it. An era governs from its `effective_from` to the next era's; the EARLIEST also runs
+      backward below the record, bounded by `history_opens_on`. The DECOMPOSED parent, ticking with
+      `C17-d`.
+- [x] **C17-a -- the relation.** `6caf56bc`, migration `6fc77e86d76f`. One era per owner backfilled,
+      phased on the record's opening; the three columns dropped; every reader takes the LATEST era's
+      rhythm where it took the row's (`$0.00`). A batch mints an era only where it STATES a rhythm
+      the covering era does not hold, and retires every era past the surviving record. Narrowed
+      **N-494** to the one top-up that restates an era; closed N-492's write half. Left
+      `pay_period_write.py` at 1,000 of 1,000 (**PC-507**).
+- [x] **C17-b-1 -- the forward continuation leaves `_derive.py`.** `1ae0cd02`. A pure move of
+      `project_period_after` and `covering_projection` into `pay_calendar/_projection.py`, between
+      `_derive` and `_searches`. Closed **PC-498**.
+- [ ] **C17-b-2 -- readers anchor on the era's phase.** **MOVES MONEY, OWN PR.** Every reader asks
+      `pay_rhythm.era_covering(eras, day)` for its OWN day and anchors on that era's
+      `effective_from` rather than on a recorded cash payday: `derive_periods`' last end,
+      `_projection.project_period_after`, `_backdated_paydays`, and `_reject_backward_payday`'s
+      floor. That restores `C14-c`'s premise that the probe window's estimate and its candidates
+      share ONE anchor (**N-495**). Worked: a last recorded payday of 2030-11-27 -- the nominal
+      11-28 Thanksgiving displaced under `prior` -- projects a next payday of 12-11 today where the
+      era's grid says 12-12, one paycheck and every boundary after it a day early; `$0.00` on
+      production, whose one era has convention `none`. Closes **N-495**, **PC-502**, **N-492**;
+      carries **N-496**, **PC-505**.
+- [ ] **C17-c -- the doors ask for the ERA.** The DECOMPOSED parent, split 2026-09-11 (**R-PC71**)
+      into the pure-move split of `pay_period_write.py` and the door rewrite it makes room for; it
+      ticks with `C17-c-2`.
+- [ ] **C17-c-1 -- `pay_period_write.py` leaves the ceiling.** A PURE move of part of the writer
+      (1,000 of pylint's 1,000 lines after `C17-a`, **PC-507**) into a sibling module, its own
+      commit and PR, `$0.00`. The CUT is a fork this leaf's session presents and the developer rules
+      before it lands (**R-PC60**, **R-PC69** precedents); PC-507's row names the candidate seam
+      (the batch shape against the doors) without deciding it. Closes **PC-507**.
+- [ ] **C17-c-2 -- the doors** (**R-PC64**, **R-PC67**, **R-PC70**). Registration and first-time
+      generate take the NOMINAL first payday with the cadence and convention; `regenerate` is the
+      era-mint door, its rebuilt tail the new era's grid, REFUSING a first payday that skips a whole
+      paycheck of the old era -- `reject_unconfirmed_gap`, `PayPeriodGapRequired`, `confirm_gap` and
+      the banner are DELETED, since a hole is unrepresentable; `reset` wipes eras with the periods.
+      That door is also the repair for an era a moved holiday set makes illegal (**R-PC70**: the
+      read path is loud, no sweep), so the recovery page offers it; and the top-up of an owner
+      truncated below their latest era's day, which restates that era and is judged, stops meeting
+      an unhandled `ValidationError` (**N-494**'s one surviving path). Closes **PC-504**, **P80**,
+      **N-493**, **N-494**.
+- [ ] **C17-d -- the day-of-month cadence KIND** (**R-PC68**; one commit with `recurrence:R13`).
+      `monthly` and `semi_monthly` join `ref.pay_cadence_kinds`; `_grid.nominal_payday`,
+      `cadence_steps_to` and `PayCadence.periods_per_year` branch on the era's kind, so a
+      semi-monthly owner's paydays land on the 1st and 15th and their year holds 24 rather than
+      `365.2425 / 15 = 24.35`. **MOVES MONEY** for such an owner; `$0.00` on production. P78's eight
+      fixtures go through the door. Closes **P78**; carries **N-399**, closing it only where the
+      kind ends `_month_ordinal`'s walk per prior payday (measured, not asserted).
 - [ ] **C15 -- the retire-later solve runs only when an assumption moved** (ruling **R-PC52**;
       closes **P60**). The readiness card re-solves the retire-later binary search -- about nine
       projection walks of pure compute no query cost covers -- on every refresh, so a slider-only
