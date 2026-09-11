@@ -661,12 +661,23 @@ in SILENCE where a refused DELETE is loud.
   `sync_purchase_postings`; **the step's first act is the ruling** on whether a CREATE may take it for
   the new purchase plus the parent's leg. Not `X-d`'s, which sits behind the cutover.
 * [ ] **X-bp** `refactor(templates): a template's default amount is its series` -- closes
-  **N-446**. `TransactionTemplate.default_amount` duplicates the amount SERIES with **17 Python and 6
-  template readers**, among them `obligations_aggregator.py`, which SKIPS a row when the column is
-  `None` or `0`; three live dependencies (a downgrade, `archive_profile`, the conflict chooser); and
-  for a SALARY template two routes write it as two quantities, NET and GROSS. No step deleted it and
-  `routes/templates/crud.py` claimed `X-au-e` would until PR #210. The column goes (**R-IY**), the 23
-  reader sites read the series, and the downgrade restores it from the series' opening version.
+  **N-446** and **N-450**.
+  **WIDENED 2026-09-11 to BOTH `default_amount` columns** (developer). `transaction_templates` and
+  `transfer_templates` each carry one, each beside an `amount_versions` series that already prices
+  the rows, and each written outside that series -- `routes/salary/profiles.py` on the transaction
+  side, `loan/payment_transfer.py`, `investment.py` and `_transfer_creation_helpers.py` on the
+  transfer side. **It is one design executed twice, so it is one step**: splitting it would mean
+  taking the same decision a second time and leaving one column live in between, with the transfer
+  half (N-450) repaired by a manual click for a derive-mode loan payment and by nothing at all for
+  an investment contribution.
+  Among the readers, `obligations_aggregator.py` SKIPS a row when the column is `None` or `0`;
+  three live dependencies remain (a downgrade, `archive_profile`, the conflict chooser); and for a
+  SALARY template two routes write it as two quantities, NET and GROSS. No step deleted it and
+  `routes/templates/crud.py` claimed `X-au-e` would until PR #210. The columns go (**R-IY**), every
+  site reads the series, and each downgrade restores its column from that series' opening version.
+  **The census is the row's** -- it counts the bare column name, so it spans both tables; the "17
+  Python and 6 template readers" this entry carried until 2026-09-11 was an attribute-only reading
+  of one of them.
 *`X-av` (the dated per-paycheck gross) and `X-at` (the tax year) moved to the `salary` arc on
 2026-09-03 (**R-SAL1**); their specifications are `../../plans/implementation_plan_salary.md`,
 section 4, under their unchanged ids.*

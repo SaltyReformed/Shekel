@@ -86,7 +86,8 @@ below once carried five line-range cites and every one of them had rotted by 202
 | `integrity_check` BA-03 / BA-04 -- the same property in weekly SQL | `scripts/integrity_check.py` | DELETED at `C4-c` and NOT replaced, which that file says at its own `:331` |
 | `uq_pay_periods_user_index` + `ck_pay_periods_date_order` | the schema | both DROPPED; `uq_pay_periods_user_start` is what stands |
 
-Regenerate with `grep -rn '_reject_overlapping_batch\|_pp_assert_structure\|BA-03\|uq_pay_periods_user' app/ tests/ scripts/`.
+Regenerate with `grep -rn
+'_reject_overlapping_batch\|_pp_assert_structure\|BA-03\|uq_pay_periods_user' app/ tests/ scripts/`.
 Not one of them would exist under the normalized model, because none would have a subject -- and the
 four that have gone went exactly that way, by their subject being removed rather than by being
 argued with.
