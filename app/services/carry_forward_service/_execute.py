@@ -8,6 +8,7 @@ envelope branch must roll the whole batch back.
 """
 
 import logging
+from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
@@ -19,6 +20,7 @@ from app.models.transaction import Transaction
 from app.services import posting_service, transfer_service
 from app.services.amount_ownership import state_own_amount
 from app.services.cash_ledger import resolve_transaction_amount
+from app.services.recurrence_engine import compute_due_date
 from app.services.row_valuation import purchases_total
 from app.utils.balance_predicates import is_projected_clause
 from app.utils.log_events import BUSINESS, EVT_CARRY_FORWARD, log_event
@@ -447,9 +449,16 @@ def _resolve_or_create_target_row(source_txn, target_period,
             :class:`~app.services.pay_calendar.DerivedPeriod`.
         basis: The request's amount basis; its ``scenario_id`` is the scenario
             the rollover stays within.
-        recurrence_engine: The recurrence-engine module (passed in to
-            avoid a circular import at module top), used for the
-            ``GENERATE`` branch's ``generate_for_template`` call.
+        recurrence_engine: The recurrence-engine module, used for the
+            ``GENERATE`` branch's ``generate_for_template`` call.  It was
+            threaded "to avoid a circular import at module top", and **that
+            reason no longer holds**: this module now imports
+            ``compute_due_date`` from this same package at module top and
+            every import order resolves -- ``recurrence_engine`` imports
+            nothing from ``carry_forward_service``, only mentions it in a
+            comment.  Left threaded rather than deleted because dropping a
+            parameter is a signature change this step did not scope; doing so
+            is the cleanup this note exists to name.
         schedule: The request's
             :class:`~app.services.generation_schedule.GenerationSchedule`
             (``ctx.schedule``) -- the owner's whole pay-period schedule with
@@ -503,6 +512,109 @@ def _resolve_or_create_target_row(source_txn, target_period,
     )
 
 
+def _leftover_due_date(template, target_period) -> date:
+    """Return the day a leftover row of *template* is due in *target_period*.
+
+    **The date the definition's own rule gives for that paycheck** (developer
+    ruling 2026-09-06, from the option space this leaf put to them; the balance
+    arc's ruling id for it is reserved and NOT YET MINTED, so this cites the
+    ruling by date rather than by an id that does not resolve).  It goes
+    through :func:`~app.services.recurrence_engine.compute_due_date`, the one
+    producer of "what date does a row of this definition in this period carry"
+    -- shared with the transaction engine (``_amounts._derive_row_fields``)
+    and the transfer engine (``transfer_recurrence``), the two that outlive
+    this step.  *Two more callers were claimed here and never were*:
+    ``routes/transfers/_instances`` stopped calling it at plan step R2e-3, and
+    migration ``48e2c7ee593d`` froze a COPY of it rather than importing it.
+    The one-time ``occurs_on`` backfill script was a third caller as this was
+    written and is deliberately not listed: it is retired (2026-09-06) by the
+    step that merges immediately BEFORE this one, precisely BECAUSE this change
+    breaks the provenance filter it read a leftover row's missing date as.
+
+    A leftover row is therefore dated exactly as a row generation placed in
+    that paycheck would be -- defect and all: ledger row **recurrence:D18** is
+    that ``compute_due_date`` picks the wrong month at a cadence whose firing
+    month is neither of the paycheck's endpoints, and plan step
+    **recurrence:R5** fixes that for every caller at once.  Deriving a "better"
+    date here would be a second spelling of one value (``CLAUDE.md`` rule 14)
+    that R5 would then have to find.
+
+    **On the branch that owns this constructor the answer is a
+    COUNTERFACTUAL, and calling it "the definition's own date" would overstate
+    it.**  ``_create_target_override_row`` runs when the engine will NOT
+    generate here -- the yearly Father's Day envelope rolling into an
+    off-anniversary paycheck -- so there is no occurrence in this period for
+    the rule to date.  ``compute_due_date`` is a pure function of
+    ``(rule, period)`` and answers anyway, falling back to the rule's day of
+    month in the month the paycheck opens in, which can land outside the
+    paycheck entirely.  That is the price of one producer over a second
+    spelling, and it is deliberate: ``attribution_day`` clamps such a date back
+    into the period, so no period total and no period-end balance moves.
+
+    **Why the row is dated at all**, where it carried ``None`` until this step:
+    a row that names a recurring definition can be handed BACK to it -- that is
+    what ``recurrence_engine.resolve_conflicts``'s "use the template's amount"
+    does -- and a row priced by its definition resolves the series on its OWN
+    due date (amount rule 3).  An undated one is therefore unpriceable the
+    moment the owner presses that button, and ``AmountUnresolvable`` has no
+    handler on the grid, dashboard or companion path.  Reproduced against the
+    pre-fix producer, which is what
+    ``TestACarriedForwardLeftoverRowIsDated`` grades.
+
+    **The defect was live and UNREALISED**, measured 2026-09-06 rather than
+    assumed: zero rows carried ``template_id`` with a NULL ``due_date`` on the
+    dev database or on the 1034-row production clone, so nothing in the data
+    needed repairing and this step owes no backfill.
+
+    *The reason the old ``None`` gave does not carry over.*  It was that
+    copying the SOURCE row's date -- a past period's -- would render the new
+    row overdue.  True, and this is not that: ``compute_due_date`` is anchored
+    on the TARGET period, so the day it answers is at worst a few days outside
+    that paycheck rather than a whole rollover behind it.
+
+    **WHAT MOVED, traced rather than assumed.**  No figure changes and no
+    period total moves, because every consumer that places a row on a DAY goes
+    through ``DerivedPeriod.attribution_day``, which falls back to the period's
+    start for a dateless row and clamps a dated one into the period -- so the
+    two cases meet at the same day whenever the computed date lands outside.
+    Four surfaces do read the date and now behave differently for these rows,
+    and each is the leftover behaving like the canonical it stands in for:
+    ``reconcile_service._rows`` offers it from its due day rather than from the
+    period's start; ``balance_at._cash_fold`` steps the intra-period daily ramp
+    on that day; ``dashboard_service._pulse`` gives it a day on the street axis
+    instead of the "anytime this period" shelf; and
+    ``grid_view_service.due_captions_by_id`` renders a caption where it
+    rendered none.
+
+    Args:
+        template: The envelope's
+            :class:`~app.models.transaction_template.TransactionTemplate`.
+            Never ``None`` -- ``_build_carry_forward_context`` routes a row
+            into ``envelope_txns`` only when ``txn.template.is_envelope``.
+        target_period: The destination
+            :class:`~app.services.pay_calendar.DerivedPeriod`.
+
+    Returns:
+        The ``date`` the leftover row is due on.
+
+    Raises:
+        RecurrenceResolutionError: From ``compute_due_date``, when the rule
+            names a unit or a placement this application does not model.  It
+            propagates rather than being absorbed, which is the refusal every
+            other reader of that rule already makes.
+    """
+    rule = template.recurrence_rule
+    if rule is None:
+        # A definition whose cadence was CLEARED
+        # (``_recurrence_form_helpers._clear_recurrence_rule``) still states a
+        # price series, so its rows still need a date to resolve on -- but
+        # there is no rule left to date them from.  The paycheck's start is
+        # ``compute_due_date``'s OWN answer for a cadence that names no day of
+        # the month, so the two arms are one rule rather than two.
+        return target_period.start_date
+    return compute_due_date(rule, target_period)
+
+
 def _create_target_override_row(source_txn, target_period, scenario_id):
     """Create a fresh override row in *target_period* for the leftover.
 
@@ -518,13 +630,23 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
     from *source_txn* and is flagged ``is_override = True`` so (a) it is
     excluded from both partial unique generation indexes and never
     collides with a canonical or soft-deleted sibling, and (b) the recurrence engine
-    skips it on later passes (``_recurrence_common.OccurrenceClaims`` -- an
-    undated row claims its whole paycheck).  ``due_date`` is
-    left ``None``: the leftover is a manually-carried amount with no
-    scheduled date, and -- unlike the GENERATE path -- there is no
-    recurrence rule to derive one from, so copying the source's
-    past-period date would render the new row as overdue.  ``template_id``
-    is copied verbatim.
+    skips it on later passes (``_recurrence_common.OccurrenceClaims`` -- a row
+    answering no OCCURRENCE claims its whole paycheck).  ``template_id`` is
+    copied verbatim, and ``due_date`` is :func:`_leftover_due_date` -- the day
+    the definition's own rule places in *target_period*, which is what makes
+    the copied link safe to hand back to (see that function).  It was ``None``
+    until the developer's ruling of 2026-09-06.
+
+    **``occurs_on`` and ``due_date`` are different facts and only the second
+    moved.**  The occurrence is which firing of the cadence a row answers, and
+    this constructor still leaves it unset; the due date is the day the money
+    is owed, and amount rule 3 resolves the definition's price series on it.
+    Both partial unique generation indexes are keyed on ``occurs_on``, and the
+    undated one excludes ``is_override`` rows besides, so no UNIQUE index and
+    no CHECK reads ``due_date`` and dating the row can collide with nothing.
+    It is not true that the column is in no index at all -- these rows now
+    enter ``idx_transactions_due_date``, which is non-unique and exists to
+    serve range reads.
 
     No flush: the caller runs inside ``carry_forward_unpaid``'s
     ``no_autoflush`` block and an ``is_override`` row is index-safe in
@@ -553,7 +675,7 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
         category_id=source_txn.category_id,
         transaction_type_id=source_txn.transaction_type_id,
         amount_ownership=AmountOwnership.own(Decimal("0")),
-        due_date=None,
+        due_date=_leftover_due_date(source_txn.template, target_period),
         is_override=True,
         is_deleted=False,
     )

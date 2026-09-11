@@ -54,6 +54,8 @@ from tests.oracles.recurrence_baseline import (
 )
 from app.services.settle_day import record_settle_day
 from app.services.amount_ownership import state_own_amount
+from tests._test_helpers import state_template_price
+from tests._test_helpers import transfer_amount
 
 
 def _assert_shadows_valid(xfer):
@@ -92,7 +94,7 @@ def _assert_shadows_valid(xfer):
     for s in shadows:
         assert s.estimated_amount is None
         assert s.amount_source_id == parent_transfer_id
-        assert shadow_amount(s) == xfer.amount
+        assert shadow_amount(s) == transfer_amount(xfer)
         assert s.status_id == xfer.status_id
         assert s.pay_period_id == xfer.pay_period_id
         # due_date mirrors the parent (Transfer Invariant 3).
@@ -137,6 +139,7 @@ def make_template_with_rule(seed_user, cadence, **rule_kwargs):
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     # The definition first, then the cadence onto it (plan step R-F6).
     make_cadence_rule(
         template, cadence,
@@ -170,7 +173,7 @@ class TestTransferGeneration:
 
             assert len(created) == len(seed_periods)
             for xfer in created:
-                assert xfer.amount == Decimal("100.00")
+                assert transfer_amount(xfer) == Decimal("100.00")
                 assert xfer.name == "Test Transfer"
                 # Every-period has no day_of_month, so the due date falls
                 # back to the pay-period start (payday) -- the prior
@@ -233,6 +236,7 @@ class TestTransferGeneration:
             )
             db.session.add(template)
             db.session.flush()
+            state_template_price(template)
             db.session.refresh(template)
 
             created = transfer_recurrence.generate_for_template(
@@ -542,6 +546,7 @@ class TestTransferRegeneration:
 
             # Change the template amount.
             template.default_amount = Decimal("200.00")
+            state_template_price(template, Decimal("200.00"))
             db.session.flush()
 
             new_created = transfer_recurrence.regenerate_for_template(
@@ -560,7 +565,7 @@ class TestTransferRegeneration:
             ).all()
             assert {xfer.id for xfer in live} == old_ids
             for xfer in live:
-                assert xfer.amount == Decimal("200.00")
+                assert transfer_amount(xfer) == Decimal("200.00")
                 _assert_shadows_valid(xfer)
 
             # Both shadows of every row survived with their own ids -- the
@@ -650,6 +655,7 @@ class TestTransferRegeneration:
             db.session.flush()
 
             template.default_amount = Decimal("200.00")
+            state_template_price(template, Decimal("200.00"))
             db.session.flush()
 
             transfer_recurrence.regenerate_for_template(
@@ -670,7 +676,7 @@ class TestTransferRegeneration:
                 date(2026, 5, 15),
             ]
             for xfer in live:
-                assert xfer.amount == Decimal("200.00")
+                assert transfer_amount(xfer) == Decimal("200.00")
                 _assert_shadows_valid(xfer)
 
     def test_regenerate_raises_conflict_for_overridden(
@@ -729,6 +735,7 @@ class TestTransferRegeneration:
 
             # Change template amount and regenerate.
             template.default_amount = Decimal("200.00")
+            state_template_price(template, Decimal("200.00"))
             db.session.flush()
 
             transfer_recurrence.regenerate_for_template(
@@ -771,6 +778,10 @@ class TestTransferResolveConflicts:
             state_own_amount(xfer, Decimal("999.99"))
             db.session.flush()
 
+            # **"Use" carries no figure of its own since ruling R-JD** (plan step
+            # X-au-f), so the DEFINITION states the price this case asserts and
+            # the row lands on it by reading its series.
+            state_template_price(template, Decimal("999.99"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="keep", user_id=seed_user["user"].id,
             )
@@ -778,12 +789,21 @@ class TestTransferResolveConflicts:
 
             db.session.refresh(xfer)
             assert xfer.is_override is True
-            assert xfer.amount == Decimal("999.99")
+            assert transfer_amount(xfer) == Decimal("999.99")
 
     def test_resolve_update_clears_flags_and_applies_amount(
         self, app, db, seed_user, seed_periods
     ):
-        """action='update' clears flags and applies new_amount."""
+        """action='update' clears the flags and hands the row back to its definition.
+
+        **"Use" states no FIGURE for either kind since plan step X-au-f**
+        (ruling **R-JD**): a generated transfer stores none, so the offer is
+        *hand this row back*, and the definition's own effective-dated series
+        prices it on the row's due date.  It passed ``new_amount=$200.00`` and
+        asserted the row moved to it until then; the definition states
+        ``$200.00`` here instead, so the figure asserted is unchanged and it
+        now reaches the row by the mechanism that actually carries it.
+        """
         with app.app_context():
             template = self._make_template_with_rule(
                 seed_user, EVERY_PERIOD
@@ -802,17 +822,20 @@ class TestTransferResolveConflicts:
             state_own_amount(xfer, Decimal("999.99"))
             db.session.flush()
 
+# **"Use" carries no figure of its own since ruling R-JD** (plan step
+            # X-au-f), so the DEFINITION states the price this case asserts and
+            # the row lands on it by reading its series.
+            state_template_price(template, Decimal("200.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("200.00"),
             )
             db.session.flush()
 
             db.session.refresh(xfer)
             assert xfer.is_override is False
             assert xfer.is_deleted is False
-            assert xfer.amount == Decimal("200.00")
+            assert transfer_amount(xfer) == Decimal("200.00")
 
             # Shadows should also be synced.
             shadows = db.session.query(Transaction).filter_by(
@@ -844,16 +867,19 @@ class TestTransferResolveConflicts:
             db.session.flush()
 
             # Attempt resolve as second_user -- should be blocked.
+            # **"Use" carries no figure of its own since ruling R-JD** (plan step
+            # X-au-f), so the DEFINITION states the price this case asserts and
+            # the row lands on it by reading its series.
+            state_template_price(template, Decimal("999.99"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
                 user_id=second_user["user"].id,
-                new_amount=Decimal("50.00"),
             )
             db.session.flush()
 
             db.session.refresh(xfer)
             assert xfer.is_override is True
-            assert xfer.amount == Decimal("999.99")
+            assert transfer_amount(xfer) == Decimal("999.99")
 
     def test_cross_user_keep_blocked(
         self, app, db, seed_user, seed_periods, second_user
@@ -876,6 +902,10 @@ class TestTransferResolveConflicts:
             db.session.flush()
 
             # 'keep' with wrong user -- no-op by design (keep never modifies).
+            # **"Use" carries no figure of its own since ruling R-JD** (plan step
+            # X-au-f), so the DEFINITION states the price this case asserts and
+            # the row lands on it by reading its series.
+            state_template_price(template, Decimal("999.99"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="keep",
                 user_id=second_user["user"].id,
@@ -884,7 +914,7 @@ class TestTransferResolveConflicts:
 
             db.session.refresh(xfer)
             assert xfer.is_override is True
-            assert xfer.amount == Decimal("999.99")
+            assert transfer_amount(xfer) == Decimal("999.99")
 
     def test_same_user_update_succeeds(
         self, app, db, seed_user, seed_periods
@@ -906,16 +936,19 @@ class TestTransferResolveConflicts:
             state_own_amount(xfer, Decimal("999.99"))
             db.session.flush()
 
+# **"Use" carries no figure of its own since ruling R-JD** (plan step
+            # X-au-f), so the DEFINITION states the price this case asserts and
+            # the row lands on it by reading its series.
+            state_template_price(template, Decimal("50.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("50.00"),
             )
             db.session.flush()
 
             db.session.refresh(xfer)
             assert xfer.is_override is False
-            assert xfer.amount == Decimal("50.00")
+            assert transfer_amount(xfer) == Decimal("50.00")
 
     def test_mixed_ownership_list(
         self, app, db, seed_user, seed_periods, second_user
@@ -958,19 +991,22 @@ class TestTransferResolveConflicts:
             db.session.flush()
 
             # Resolve as user A -- only xfer_a should be modified.
+# **"Use" carries no figure of its own since ruling R-JD** (plan step
+            # X-au-f), so the DEFINITION states the price this case asserts and
+            # the row lands on it by reading its series.
+            state_template_price(template_a, Decimal("50.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer_a.id, xfer_b.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("50.00"),
             )
             db.session.flush()
 
             db.session.refresh(xfer_a)
             db.session.refresh(xfer_b)
             assert xfer_a.is_override is False
-            assert xfer_a.amount == Decimal("50.00")
+            assert transfer_amount(xfer_a) == Decimal("50.00")
             assert xfer_b.is_override is True
-            assert xfer_b.amount == Decimal("888.88")
+            assert transfer_amount(xfer_b) == Decimal("888.88")
 
 
 # --- Negative-Path Tests ---------------------------------------------------
@@ -1006,6 +1042,7 @@ class TestNegativePaths:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence,
@@ -1117,6 +1154,7 @@ class TestNegativePaths:
 
             # Change template amount and regenerate.
             template.default_amount = Decimal("200.00")
+            state_template_price(template, Decimal("200.00"))
             db.session.flush()
 
             transfer_recurrence.regenerate_for_template(
@@ -1233,6 +1271,7 @@ class TestShadowTransactionCreation:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence,
@@ -1322,6 +1361,7 @@ class TestShadowTransactionCreation:
 
             # Change amount and regenerate.
             template.default_amount = Decimal("300.00")
+            state_template_price(template, Decimal("300.00"))
             db.session.flush()
             transfer_recurrence.regenerate_for_template(
                 template, GenerationSchedule.for_period_ids(
@@ -1343,7 +1383,7 @@ class TestShadowTransactionCreation:
                 xfer = db.session.get(Transfer, xid)
                 assert xfer is not None
                 _assert_shadows_valid(xfer)
-                assert xfer.amount == Decimal("300.00")
+                assert transfer_amount(xfer) == Decimal("300.00")
 
     def test_no_orphaned_shadows_after_regeneration(
         self, app, db, seed_user, seed_periods
@@ -1359,6 +1399,7 @@ class TestShadowTransactionCreation:
             db.session.flush()
 
             template.default_amount = Decimal("250.00")
+            state_template_price(template, Decimal("250.00"))
             db.session.flush()
             transfer_recurrence.regenerate_for_template(
                 template, GenerationSchedule.for_period_ids(
@@ -1397,10 +1438,13 @@ class TestShadowTransactionCreation:
             state_own_amount(xfer, Decimal("999.99"))
             db.session.flush()
 
+            # **"Use" carries no figure of its own since ruling R-JD** (plan step
+            # X-au-f), so the DEFINITION states the price this case asserts and
+            # the row lands on it by reading its series.
+            state_template_price(template, Decimal("175.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("175.00"),
             )
             db.session.flush()
 
@@ -1440,6 +1484,7 @@ class TestResolveConflictsServiceRouting:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence,
@@ -1478,15 +1523,18 @@ class TestResolveConflictsServiceRouting:
             # legs following it -- which the assertions below do.
             db.session.flush()
 
+            # **"Use" carries no figure of its own since ruling R-JD** (plan step
+            # X-au-f), so the DEFINITION states the price this case asserts and
+            # the row lands on it by reading its series.
+            state_template_price(template, Decimal("200.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("200.00"),
             )
             db.session.flush()
 
             db.session.refresh(xfer)
-            assert xfer.amount == Decimal("200.00")
+            assert transfer_amount(xfer) == Decimal("200.00")
             assert xfer.is_override is False
 
             # Both shadows must match -- proves service routing, not
@@ -1531,17 +1579,20 @@ class TestResolveConflictsServiceRouting:
             db.session.refresh(xfer)
             assert xfer.is_deleted is True
 
+            # **"Use" carries no figure of its own since ruling R-JD** (plan step
+            # X-au-f), so the DEFINITION states the price this case asserts and
+            # the row lands on it by reading its series.
+            state_template_price(template, Decimal("300.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer_id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("300.00"),
             )
             db.session.flush()
 
             db.session.refresh(xfer)
             assert xfer.is_deleted is False
             assert xfer.is_override is False
-            assert xfer.amount == Decimal("300.00")
+            assert transfer_amount(xfer) == Decimal("300.00")
 
             shadows = db.session.query(Transaction).filter_by(
                 transfer_id=xfer_id
@@ -1574,15 +1625,18 @@ class TestResolveConflictsServiceRouting:
             state_own_amount(xfer, Decimal("350.00"))
             db.session.flush()
 
+            # **"Use" carries no figure of its own since ruling R-JD** (plan step
+            # X-au-f), so the DEFINITION states the price this case asserts and
+            # the row lands on it by reading its series.
+            state_template_price(template, Decimal("350.00"))
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="keep",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("200.00"),
             )
             db.session.flush()
 
             db.session.refresh(xfer)
-            assert xfer.amount == Decimal("350.00")
+            assert transfer_amount(xfer) == Decimal("350.00")
             assert xfer.is_override is True
 
     def test_all_five_invariants_hold_after_resolution(
@@ -1613,7 +1667,6 @@ class TestResolveConflictsServiceRouting:
             transfer_recurrence.resolve_conflicts(
                 [xfer.id], action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("150.00"),
             )
             db.session.flush()
 
@@ -1655,10 +1708,13 @@ class TestResolveConflictsServiceRouting:
             db.session.flush()
 
             ids = [created[0].id, created[1].id, created[2].id]
+            # **"Use" carries no figure of its own since ruling R-JD** (plan step
+            # X-au-f), so the DEFINITION states the price this case asserts and
+            # the row lands on it by reading its series.
+            state_template_price(template, Decimal("250.00"))
             transfer_recurrence.resolve_conflicts(
                 ids, action="update",
                 user_id=seed_user["user"].id,
-                new_amount=Decimal("250.00"),
             )
             db.session.flush()
 
@@ -1666,7 +1722,7 @@ class TestResolveConflictsServiceRouting:
                 xfer = db.session.get(Transfer, xfer_id)
                 assert xfer.is_deleted is False
                 assert xfer.is_override is False
-                assert xfer.amount == Decimal("250.00")
+                assert transfer_amount(xfer) == Decimal("250.00")
 
                 shadows = db.session.query(Transaction).filter_by(
                     transfer_id=xfer_id
@@ -1752,6 +1808,7 @@ class TestTransferMaintain:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         make_cadence_rule(template, EVERY_PERIOD, interval_n=1)
         db.session.refresh(template)
         rows = transfer_recurrence.generate_for_template(
@@ -1873,8 +1930,14 @@ class TestTransferMaintain:
             db.session.flush()
             # Narrow to the first SEVEN periods, so periods 7-9 lose their rows
             # and retire, and move the amount so the survivors are updated.
+            # The NAME is what makes the survivors UPDATE: a re-price alone
+            # writes no row since plan step X-au-f, because the row reads its
+            # definition's series rather than storing a copy of it.  The price
+            # moves too, and every survivor is asserted worth it below.
             template.recurrence_rule.end_date = last_covered_day(seed_periods[6])
+            template.name = "Narrowed Definition"
             template.default_amount = Decimal("155.00")
+            state_template_price(template, Decimal("155.00"))
             db.session.flush()
 
             with _LogCapture("app.services.transfer_recurrence") as cap:
@@ -1897,7 +1960,7 @@ class TestTransferMaintain:
             assert {x.pay_period_id for x in live} == {
                 p.id for p in seed_periods[:7]
             }
-            assert all(x.amount == Decimal("155.00") for x in live)
+            assert all(transfer_amount(x) == Decimal("155.00") for x in live)
             for xfer in live:
                 _assert_shadows_valid(xfer)
             # The created row is a NEW id in the emptied period, and it is the
@@ -2276,6 +2339,7 @@ class TestTransferMaintain:
             template.name = "Every Column Moved"
             template.category_id = category.id
             template.default_amount = Decimal("212.12")
+            state_template_price(template, Decimal("212.12"))
             db.session.flush()
             conflict = self._regenerate(template, seed_user, seed_periods)
 
@@ -2291,7 +2355,7 @@ class TestTransferMaintain:
                 assert xfer.to_account_id == elsewhere.id
                 assert xfer.name == "Every Column Moved"
                 assert xfer.category_id == category.id
-                assert xfer.amount == Decimal("212.12")
+                assert transfer_amount(xfer) == Decimal("212.12")
                 # The sixth is the rule's, and every-paycheck dates a row from
                 # its period's start.
                 assert xfer.due_date == db.session.get(
@@ -2363,12 +2427,13 @@ class TestTransferMaintain:
             self._settle_then_revert(recorded, seed_user, Decimal("58.00"))
 
             template.default_amount = Decimal("175.00")
+            state_template_price(template, Decimal("175.00"))
             db.session.flush()
             conflict = self._regenerate(template, seed_user, seed_periods)
 
             assert conflict is None, "an amount change re-attributes nothing"
             held = db.session.get(Transfer, recorded.id)
-            assert held.amount == Decimal("175.00")
+            assert transfer_amount(held) == Decimal("175.00")
             # The record it kept is untouched by the re-price: what MOVED and
             # what is PLANNED are different facts (plan step X-au-c3).
             legs = db.session.query(Transaction).filter_by(
@@ -2435,6 +2500,7 @@ class TestTransferMaintain:
                 seed_user, seed_periods,
             )
             template.default_amount = Decimal("133.70")
+            state_template_price(template, Decimal("133.70"))
             template.name = "Renamed Mid-Life"
             db.session.flush()
 
@@ -2469,15 +2535,23 @@ class TestTransferMaintain:
 
         If the diff were dropped and the whole definition sent every time, the
         test above would still be green on the version counters only by luck --
-        so this pins the other side: a real amount change DOES reach the door,
+        so this pins the other side: a real field change DOES reach the door,
         once per row, naming exactly the field that moved.
+
+        **The field is the NAME, and it was the AMOUNT until plan step X-au-f.**
+        That is not a substitution for convenience: a RE-PRICE no longer moves a
+        row at all, because the row carries an ownership naming its definition
+        and the definition's own series answers the figure -- so the diff sees
+        nothing changed and the pass correctly writes nothing.  The second arm
+        below asserts exactly that, which is the property this cutover is FOR
+        and which the old spelling of this case could not have stated.
         """
         with app.app_context():
             template, _, rows = self._template_with_rows(
                 seed_user, seed_periods,
             )
 
-            template.default_amount = Decimal("140.00")
+            template.name = "Renamed Definition"
             db.session.flush()
             with _LogCapture("app.services.transfer_service") as cap:
                 conflict = self._regenerate(template, seed_user, seed_periods)
@@ -2485,11 +2559,23 @@ class TestTransferMaintain:
             assert conflict is None
             updates = cap.find_all(EVT_TRANSFER_UPDATED)
             assert len(updates) == len(rows)
-            assert {tuple(r.fields_changed) for r in updates} == {("amount",)}
+            assert {tuple(r.fields_changed) for r in updates} == {("name",)}
+
+            # **A RE-PRICE writes NO row**, and every row is worth the new
+            # figure regardless: one producer, reached by reading rather than by
+            # copying.  Before this step the same act wrote every row and the
+            # copy was what made them agree.
+            state_template_price(template, Decimal("140.00"))
+            db.session.flush()
+            with _LogCapture("app.services.transfer_service") as cap:
+                conflict = self._regenerate(template, seed_user, seed_periods)
+
+            assert conflict is None
+            assert cap.find_all(EVT_TRANSFER_UPDATED) == []
             for xfer in db.session.query(Transfer).filter_by(
                 transfer_template_id=template.id,
             ):
-                assert xfer.amount == Decimal("140.00")
+                assert transfer_amount(xfer) == Decimal("140.00")
                 _assert_shadows_valid(xfer)
 
     def test_the_audit_event_separates_updated_created_and_removed(
@@ -2521,8 +2607,12 @@ class TestTransferMaintain:
             # periods 5-9 lose theirs -- four are empty and retire, and the
             # noted one is retained (4 removed, 1 retained).  Nothing is
             # created: every period the narrowed rule names already has a row.
+            # The NAME is what makes the survivors UPDATE; see the sibling
+            # case for why a re-price alone no longer writes a row.
             template.recurrence_rule.end_date = last_covered_day(seed_periods[4])
+            template.name = "Narrowed Definition"
             template.default_amount = Decimal("111.00")
+            state_template_price(template, Decimal("111.00"))
             db.session.flush()
 
             with _LogCapture("app.services.transfer_recurrence") as cap:
@@ -2542,8 +2632,16 @@ class TestTransferMaintain:
                 transfer_template_id=template.id,
             ).all()
             assert len(live) == 6
-            assert sorted(x.amount for x in live) == (
-                [Decimal("100.00")] + [Decimal("111.00")] * 5
+            # **All six, the RETAINED one included, and that changed at plan
+            # step X-au-f.**  The retained row kept ``$100.00`` while it STORED
+            # a figure the pass declined to rewrite; it stores none now, so its
+            # plan follows its definition like every other row's.  Being
+            # retained protects what the row RECORDED and its place in the
+            # ledger -- it is what stops the pass RETIRING a row holding an
+            # owner's note -- and a plan is not a record (plan step X-au-c3).
+            # An OVERRIDE would still keep its own figure; this row is not one.
+            assert sorted(transfer_amount(x) for x in live) == (
+                [Decimal("111.00")] * 6
             )
 
 
@@ -2572,6 +2670,7 @@ class TestRegenerateDeletionRoutedThroughService:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             template, cadence,
@@ -2821,6 +2920,7 @@ class TestATransferRecordsItsOccurrence:
         )
         db.session.add(template)
         db.session.flush()
+        state_template_price(template)
         make_cadence_rule(template, cadence, interval_n=1)
         db.session.refresh(template)
         return template

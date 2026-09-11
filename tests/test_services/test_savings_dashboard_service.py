@@ -38,7 +38,6 @@ from app.services.savings_dashboard_service._types import AccountProjection
 
 from tests._test_helpers import (
     all_periods,
-    amount_basis_for_scenario,
     current_pay_period,
     derived_span,
     last_covered_day,
@@ -921,7 +920,7 @@ class TestPaidOffFlag:
                     to_account_id=acct.id,
                     pay_period_id=seed_periods[7].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("1100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1100.00")),
                     status_id=rc.status_id(StatusEnum.DONE),
                     category_id=seed_user["categories"]["Rent"].id,
                 ),
@@ -982,7 +981,7 @@ class TestPaidOffFlag:
                     to_account_id=acct.id,
                     pay_period_id=seed_periods[7].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("500.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("500.00")),
                     status_id=rc.status_id(StatusEnum.DONE),
                     category_id=seed_user["categories"]["Rent"].id,
                 ),
@@ -1021,7 +1020,7 @@ class TestPaidOffFlag:
                     to_account_id=acct.id,
                     pay_period_id=seed_periods[7].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("1100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1100.00")),
                     status_id=rc.status_id(StatusEnum.PROJECTED),
                     category_id=seed_user["categories"]["Rent"].id,
                 ),
@@ -1105,37 +1104,22 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
     def _replay_says_paid_off(self, acct, scenario_id):
         """Return what the RETIRED date.max replay probe would have answered.
 
-        The exact call the old ``_loan_ever_paid_off`` made: no ``confirmed_view``
-        (so no ledger), no ``extra_principal``, ``as_of=date.max``.
+        The exact question the old ``_loan_ever_paid_off`` asked: no
+        ``confirmed_view`` (so no ledger), no ``extra_principal``,
+        ``as_of=date.max``.  Assembled by
+        :func:`tests._test_helpers.unseeded_replay_balance`, the suite's ONE
+        anchor replay, which is AMOUNT-FREE since plan step
+        **balance:X-bl-2b** -- this probe reads three dates per payment and no
+        figure, so it never loads the tier that prices one.
         """
         # Pylint: import-outside-toplevel -- the file-wide deferred-import
         # convention for test-local symbols.
         # pylint: disable=import-outside-toplevel
-        from app.services import loan_resolver
-        from app.services.loan_loaders import (
-            load_loan_anchor_facts, load_loan_params,
-        )
-        from app.services.loan_payment_service import load_loan_context
-        from app.services.loan_resolver._periods import _replay_from_anchor
-        from app.utils.money import round_money
+        from tests._test_helpers import unseeded_replay_balance
 
-        params = load_loan_params(acct.id)
-        loan_ctx = load_loan_context(
-            acct.id, amount_basis_for_scenario(scenario_id), params,
-        )
-        inputs = loan_resolver.LoanInputs(
-            params, load_loan_anchor_facts(params),
-            loan_ctx.payments, loan_ctx.rate_changes,
-        )
-        # The replay derivation directly (``LoanState.current_balance`` carried
-        # it until plan step D2a deleted the field): the same money-blind
-        # schedule-step probe the retired ``_loan_ever_paid_off`` ran.
-        replayed = round_money(_replay_from_anchor(
-            inputs,
-            loan_resolver.resolve_periods(params, inputs.rate_changes),
-            date.max,
-        ).balance_as_of)
-        return replayed == Decimal("0.00")
+        return unseeded_replay_balance(
+            acct.id, scenario_id, date.max,
+        ) == Decimal("0.00")
 
     def test_off_schedule_payoff_needs_no_trueup_band_aid(
         self, app, db, seed_user, seed_periods_today,
@@ -1538,7 +1522,7 @@ class TestDebtSummary:
                     to_account_id=paid_off.id,
                     pay_period_id=seed_periods[7].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("1100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1100.00")),
                     status_id=rc.status_id(StatusEnum.DONE),
                     category_id=seed_user["categories"]["Rent"].id,
                 ),
@@ -1580,7 +1564,7 @@ class TestDebtSummary:
                     to_account_id=acct.id,
                     pay_period_id=seed_periods[7].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("1100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1100.00")),
                     status_id=rc.status_id(StatusEnum.DONE),
                     category_id=seed_user["categories"]["Rent"].id,
                 ),
@@ -1872,7 +1856,7 @@ class TestPrincipalPaidFraction:
                     to_account_id=acct.id,
                     pay_period_id=seed_periods[7].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("1100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1100.00")),
                     status_id=rc.status_id(StatusEnum.DONE),
                     category_id=seed_user["categories"]["Rent"].id,
                 ),
@@ -1931,7 +1915,7 @@ class TestPrincipalPaidFraction:
                     to_account_id=paid_off.id,
                     pay_period_id=seed_periods[7].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("1100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1100.00")),
                     status_id=rc.status_id(StatusEnum.DONE),
                     category_id=seed_user["categories"]["Rent"].id,
                 ),
@@ -2223,7 +2207,7 @@ class TestDTI:
                     to_account_id=acct.id,
                     pay_period_id=seed_periods[7].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("1100.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("1100.00")),
                     status_id=rc.status_id(StatusEnum.DONE),
                     category_id=seed_user["categories"]["Rent"].id,
                 ),
@@ -5378,7 +5362,7 @@ class TestNoBaselineIsAnsweredOnceForEveryKind:
     the same commit, so the seven fabrications are gone with the state that
     produced them.
 
-    Unreachable in production -- ``auth_service.register_user`` writes a
+    Unreachable in production -- ``registration_service.register_user`` writes a
     baseline for every owner, nothing deletes or un-baselines one, and no path
     promotes a companion to owner -- which is precisely why it needs tests:
     nothing else would ever execute it.  The end-to-end arms live in
@@ -6573,7 +6557,6 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
         from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
-        from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
         from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
             PayCalendarError,
             calendar_for,
@@ -6625,17 +6608,15 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
-        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
-        from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
         from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
             PayCalendarError,
             calendar_for,
         )
+        from tests._test_helpers import strip_owner_schedule  # pylint: disable=import-outside-toplevel
         with app.app_context():
             user_id = seed_user["user"].id
-            # Periods FIRST: ``fk_pay_periods_schedule`` is ON DELETE RESTRICT.
-            db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
-            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
+            # Children FIRST: both schedule keys are ON DELETE RESTRICT.
+            strip_owner_schedule(db.session, user_id)
             db.session.commit()
 
             with pytest.raises(PayCalendarError, match="no pay calendar"):

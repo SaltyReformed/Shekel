@@ -10,7 +10,9 @@ scoped to these documents and the CI step that runs the custom pylint checkers -
 planning document is what runs the gate.
 **Rules 5, 6's "replaced, never appended" half and 8 are DISCIPLINES.** Saying which is which is the
 point: a safety that is not a predicate is not a safety, and labelling a discipline as one is the
-failure being guarded against.
+failure being guarded against. **Rule 6's CENSUS half became a predicate on 2026-09-11**
+(`_census.py`), which is why this paragraph names HALVES rather than rules: one rule holds both, and
+the line is what a reader needs.
 
 ## The shape
 
@@ -34,8 +36,8 @@ table each -- the third sat in THREE grammars across five documents no gate pars
 `R-EX` and `R-GW` each named two rulings. An arc's own argument shares no key, so THAT stays split.
 
 **A step's SPECIFICATION is argument, not registry.** `steps.md` carries the ORDER and one sentence
-per step; the 82 open specifications in one file would be ~1,150 lines, which is the master document
-this structure exists to avoid.
+per step; the open specifications in one file would run to thousands of lines, which is the master
+document this structure exists to avoid (their count is `steps.md`'s, graded there under rule 16).
 **The sentence is not a stub of the specification, it is the whole answer to "what is this step"** --
 rule 14 grades it, because an index that answers that question with a fragment sends the reader to a
 second document to learn what they came for, which is the cross-referencing this structure exists to
@@ -103,6 +105,36 @@ end.
    production is running are MEASUREMENTS, and the row names the command rather than a copy of its
    answer. A stored copy is a derived value beside no reconciler, which is the root cause several
    arcs here exist to remove.
+
+   **THAT SENTENCE NOW BINDS EVERY ROW, NOT ONLY THIS SECTION** (developer, 2026-09-11). A CENSUS --
+   any count a row asserts about the CODE -- is a marker the gate RE-RUNS:
+   ``(census <N> [code|comments] lines|files `<python regex>` in `<glob>`)``.
+   **The count lives INSIDE the marker**, because a number in the prose beside it is rule 14's two
+   homes again; `lines` and `files` are separate because conflating them is how
+   *20 branches in 12 modules* becomes one number. The walk is LINE-based, so write the pattern
+   against the token that survives a formatter's wrapping (`type=int`, not the whole call). The
+   optional FILTER restricts the walk to one token class, because a name-grep counts PROSE: `code`
+   blanks comments and every string literal, `comments` keeps only comments. A filter needs Python
+   3.12+ and the gate REFUSES rather than answering below it, because PEP 701 is what tells an
+   f-string's interpolated CODE from the prose beside it and the two tokenizers give different
+   figures for the same code. **`code` cannot see a name used as a STRING KEY**, so a column whose
+   routes read `data["col"]` is under-reported by those sites; count them with a second, UNFILTERED
+   marker, which goes in the step's SPECIFICATION when the index row is at its rule 4 cap -- where
+   `X-bp`'s went. A marker names a PATTERN and a PATH and never a COMMAND: executing a shell string
+   out of a Markdown file would make every planning document a code-execution surface for anyone who
+   can open a pull request, so the document gives the regex and `tools/plan_gate/_census.py` does
+   the walk, in-process, over the code trees only. **Measured before the rule was written**, on
+   2026-09-11: `X-al` said fifteen `duplicate-code` disables against 16, `X-ba` said twenty-six id
+   accessors against 27, `X-be` named a module at the 1000-line ceiling that had fallen to 857 while
+   missing one that had joined it, and `X-i1` counted FOUR context inputs of which `X-au-d` had
+   deleted one -- `0` matches. Every row was correctly OPEN; what had rotted was what each said
+   about the CODE, which a reader cannot tell apart without looking.
+   **This paragraph's own FIRST DRAFT had two numbers wrong** -- 17, and `X-ah`'s 34 called stale
+   against 38 -- because a name-grep counts PROSE: four docstrings discussing `type=int`, one
+   narrating a removed disable. `X-ah` was right all along, which is why the modes exist and why
+   this is not a quiet correction. **Where a census is not mechanical**, as
+   *seven batch callers that do not apply `pricing_load_options`* needs a caller set no regex knows,
+   the row keeps the command that regenerates the LIST and states no total.
 
 7. **A SHIPPED step's specification is a POINTER: it OPENS with its commit hash.** The hash's
    POSITION is the predicate, not its presence -- an Alembic revision id is hex too. A LIVE step is
@@ -195,10 +227,10 @@ end.
     there would put rules 5 and 13 in contradiction.
 
 14. **`steps.md` states the EXECUTION ORDER, and the order is graded against the graph it must
-    obey.** Rule 13's column is a CONSTRAINT and it under-determines the answer: 38 open steps are
-    legal to start at once, so the graph can say "any of these" and never "this one next". The
-    sequence is therefore a DECISION -- taken from each arc's own stated sequencing -- and rule 13
-    is what keeps that decision honest rather than what produces it.
+    obey.** Rule 13's column is a CONSTRAINT and it under-determines the answer by a wide margin
+    (`steps.md` states the READY count; a copy here is rule 16's arm 2), so the graph says "any of
+    these" and never "this one next". The sequence is therefore a DECISION -- taken from each arc's
+    own stated sequencing -- and rule 13 is what keeps that decision honest rather than produces it.
     **The `order` cell has exactly three spellings**: `#N`, `container` and `SHIPPED`. Ranks are
     dense from 1, so "the first row that is not done" is always the next step; a rank repeats only
     across an IDENTITY CLASS, for the reason rule 11 makes one share a tick state; and a step is

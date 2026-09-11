@@ -13,12 +13,13 @@ verbatim from the pre-split ``app/routes/transfers.py``.
 
 import logging
 
-from flask import jsonify, render_template, request
+from flask import jsonify, request
 from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership
 from app.models.category import Category
 from app.models.account import Account
 from app.models.scenario import Scenario
@@ -27,7 +28,6 @@ from app.models.ref import Status
 from app import ref_cache
 from app.enums import StatusEnum
 from app.services import status_seam, transfer_service
-from app.services.account_resolver import resolve_grid_account
 from app.services.settle_day import settle_day_from_columns
 from app.services.state_machine import finalised_edit_rejection
 from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
@@ -38,6 +38,7 @@ from app.utils.error_fragments import (
     flatten_schema_errors,
 )
 from app.routes._authored_figure import figure_was_authored
+from app.routes._render_helpers import render_transfer_cell
 from app.utils.rendered_figure import as_rendered_field
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import (
@@ -77,6 +78,69 @@ _TRANSFER_ADHOC_UNIQUE_INDEX = "uq_transfers_adhoc_dedupe"
 _LOCKED_EDIT_FIELDS = frozenset({
     "amount", "category_id", "pay_period_id", "due_date",
 })
+
+
+def _reject_generated_due_date_edit(xfer, data):
+    """Refuse a due-date edit on a transfer a recurring definition generated.
+
+    **The transfer twin of ``routes/transactions/_gates
+    ._reject_generated_due_date_edit``, and it arrives with the cutover that
+    makes it load-bearing** (finding **BAL-476**, plan step X-au-f).  A
+    generated transfer's due date is its DEFINITION's: it is a member of
+    ``transfer_recurrence.DerivedTransferFields``, computed from the rule and
+    the period and rewritten by the maintain splat on every regeneration -- so
+    an edit here never survived a later template save even before this step.
+    What this step adds is that the same date now resolves the transfer's PRICE
+    through amount rule 3, so the field has gone from an edit that did not last
+    to one that can leave a row no rule is able to price.
+
+    **The transaction side MEASURED what that costs**, and the measurement is
+    the reason this exists rather than a symmetry argument: ``_gates`` records
+    one dateless derived row taking out the grid, the dashboard and the
+    companion on a production clone, because ``AmountUnresolvable`` has no
+    handler on those paths.  A transfer reaches nine render sites through
+    ``_render_helpers.render_transfer_cell`` with the same absence of handlers.
+
+    **The PREDICATE is :attr:`~app.models.transfer.Transfer.due_date_is_its_definitions`
+    and lives on the row**, because the transfer has a SECOND edit door -- a
+    PATCH addressed to a shadow, answered by updating its parent -- and this
+    gate covered only one of them until an adversarial review said so.
+
+    **Keyed on PRESENCE rather than on emptiness**, exactly as its twin is:
+    moving the date is refused as well as clearing it, because a moved date
+    re-prices the transfer against a different point in its definition's series,
+    silently, and the next regeneration puts it back.
+
+    **An AD-HOC transfer is untouched.**  It owns its figure -- structurally,
+    per ``ck_transfers_adhoc_owns_amount`` -- so amount rule 1 answers it off a
+    column and no rule reads its date, which is why the form still offers it.
+
+    **A DERIVE-mode loan payment would survive a cleared date**, and it is
+    refused here anyway.  Rule 4's derive arm dates its installment through
+    ``loan_loaders.installment_for``, which is TOTAL: it falls back to the pay
+    period's start.  Carving that class out would make the gate's predicate
+    depend on a template's settings row, so the SAME act would be refused or
+    accepted depending on a mode the operator cannot see from this form -- and
+    the fallback is documented as correct only while the payment's period still
+    contains its due date, so accepting the edit would move which installment
+    the payment satisfies and with it the POSTED loan balance.
+
+    Args:
+        xfer: The Transfer being edited.
+        data: The schema-loaded PATCH payload.
+
+    Returns:
+        A designed 400 response tuple, or ``None`` when the edit may proceed.
+    """
+    if "due_date" not in data or not xfer.due_date_is_its_definitions:
+        return None
+    return _error_transfer_response(
+        xfer.id,
+        "This instance's due date comes from its recurring transfer, which is "
+        "also what prices it. Change the due day on the recurring transfer to "
+        "move every instance, or type an amount here to make this one's figure "
+        "its own.",
+    )
 
 
 def _reject_finalised_transfer_edit(xfer, data):
@@ -266,6 +330,13 @@ def update_transfer(xfer_id):
     error_response = (
         _grade_submitted_settle_day(xfer, data)
         or _reject_finalised_transfer_edit(xfer, data)
+        # AFTER the finalised lock, and the order is stated rather than
+        # incidental: ``due_date`` IS one of ``_LOCKED_EDIT_FIELDS``, so a
+        # finalised transfer submitting one must hear the LOCK -- the older and
+        # more specific refusal -- rather than "it comes from your recurring
+        # transfer".  The settle-day gate stays above both because the day is
+        # not a field the lock protects, which its own comment says.
+        or _reject_generated_due_date_edit(xfer, data)
         or _execute_transfer_update(xfer, data, amount_authored=amount_authored)
     )
     if error_response is not None:
@@ -374,7 +445,11 @@ def create_ad_hoc():
                 to_account_id=data["to_account_id"],
                 pay_period_id=data["pay_period_id"],
                 scenario_id=data["scenario_id"],
-                amount=data["amount"],
+                # An AD-HOC transfer OWNS its figure, and the schema says so:
+                # ``ck_transfers_adhoc_owns_amount`` refuses a declaration on a
+                # row carrying no template, because nobody generated it and no
+                # definition states its price.
+                amount_ownership=AmountOwnership.own(data["amount"]),
                 status_id=projected_id,
                 category_id=data["category_id"],
                 name=data.get("name"),
@@ -391,10 +466,7 @@ def create_ad_hoc():
         return _handle_adhoc_integrity(exc, data)
     logger.info("user_id=%d created ad-hoc transfer (id=%d)", current_user.id, xfer.id)
 
-    account = resolve_grid_account(current_user.id, current_user.settings)
-    response = render_template(
-        "transfers/_transfer_cell.html", xfer=xfer, account=account, wrap_div=True,
-    )
+    response = render_transfer_cell(xfer, wrap_div=True)
     return response, 201, {"HX-Trigger": "balanceChanged"}
 
 
@@ -615,11 +687,10 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
             after the caller's gates have graded the payload as submitted.
         amount_authored: Whether the ``amount`` in *data*, if any, is a figure a
             HUMAN typed (ruling **R-JR**).  Passed rather than re-derived
-            because the fact lives in the payload the caller already consumed,
-            and passed EXPLICITLY rather than left implicit in the presence of
-            an ``amount``: the service's rule is then its own statement instead
-            of a dependency on this door having stripped the echo, so a future
-            door that forgets is wrong in a way the service can still refuse.
+            because the fact lives in the payload the caller already consumed.
+            It is what this door TRANSLATES into the service's one parameter:
+            an authored figure becomes an ownership the pair OWNS, and an
+            echoed one becomes no statement about the amount at all.
 
     Returns:
         ``None`` on success -- the caller renders the updated cell -- or a
@@ -628,8 +699,8 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
     # An UNAUTHORED figure is not forwarded, the idiom
     # ``_update._grade_submitted_figure`` already applies to an echoed
     # ``settled_amount`` one box over: a figure nobody typed carries no
-    # information, so it is not an update.  It matters beyond tidiness -- the
-    # service's amount arm CLEARS the relation that prices the row, so
+    # information, so it is not an update.  It matters beyond tidiness -- an
+    # ownership stating a figure CLEARS the relation that prices the row, so
     # forwarding an echo would un-derive a generated transfer on a save that
     # touched only its notes.
     #
@@ -637,11 +708,21 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
     # the payload as SUBMITTED; see the caller for why that ordering is
     # load-bearing.  ``data`` is the caller's dict and this mutates it, which
     # matches ``_grade_submitted_figure``'s documented in-place contract.
-    if not amount_authored:
-        data.pop("amount", None)
+    #
+    # **The TRANSLATION is this door's, since ruling R-BAL11** (plan step
+    # X-au-f): the service takes ONE ``amount_ownership`` where it took a
+    # figure plus a claim about who authored it.  A door is exactly the layer
+    # that knows the difference -- it compares what came back against what it
+    # rendered -- so it says *the pair OWNS this figure* rather than handing
+    # down two facts for the service to combine.  Saying NOTHING is spelled by
+    # omitting the key, which is why the echo is popped rather than sent as an
+    # empty ownership.
+    figure = data.pop("amount", None)
+    if amount_authored and figure is not None:
+        data["amount_ownership"] = AmountOwnership.own(figure)
     try:
         transfer_service.update_transfer(
-            xfer.id, current_user.id, amount_authored=amount_authored, **data,
+            xfer.id, current_user.id, **data,
         )
         db.session.commit()
     except StaleDataError:
@@ -714,11 +795,7 @@ def _adhoc_dedupe_idempotent_response(data):
         "Duplicate ad-hoc transfer prevented; returning existing id=%d "
         "(idempotent success)", existing.id,
     )
-    account = resolve_grid_account(current_user.id, current_user.settings)
-    response = render_template(
-        "transfers/_transfer_cell.html",
-        xfer=existing, account=account, wrap_div=True,
-    )
+    response = render_transfer_cell(existing, wrap_div=True)
     return response, 201, {"HX-Trigger": "balanceChanged"}
 
 

@@ -38,7 +38,7 @@ def get_baseline_scenario(user_id: int) -> Scenario | None:
     obvious name fails loud, and reaching for the nullable reads as a decision.
 
     In production every OWNER has a baseline scenario created by
-    ``auth_service.register_user`` at sign-up, nothing in ``app/`` or
+    ``registration_service.register_user`` at sign-up, nothing in ``app/`` or
     ``scripts/`` deletes one or clears ``is_baseline``, and no path promotes a
     companion to owner -- so ``None`` means a COMPANION (who owns no budget
     rows by design; ``scripts/integrity_check`` DC-08 excludes that role for
@@ -91,7 +91,7 @@ def require_baseline_scenario(user_id: int) -> Scenario:
         raise BaselineMissingError(
             f"user {user_id} has no baseline scenario, so this cannot be "
             f"answered for them. Every owner gets one at registration "
-            f"(auth_service.register_user) and nothing deletes one, so "
+            f"(registration_service.register_user) and nothing deletes one, so "
             f"reaching this means the data was changed outside the app, or "
             f"the user is a companion (who owns no budget rows by design): "
             f"POST /grid/create-baseline repairs it, together with both "

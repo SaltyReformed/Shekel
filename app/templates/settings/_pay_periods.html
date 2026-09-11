@@ -2,8 +2,21 @@
    with the standalone pay_periods/generate.html page via
    _pay_periods_form.html (polyglot audit TPLB/TPL-09); the form_card
    title inside it is the section heading on both surfaces (S11). #}
-{% include "settings/_pay_periods_form.html" %}
+{# The two cards are EXCLUSIVE and together complete since plan step
+   pay_calendar:C14-f (ruling R-PC63, ledger row P80).  The Generate card
+   ESTABLISHES a rhythm; the manage card's Extend form CONTINUES one.  This
+   file used to include Generate UNCONDITIONALLY, so an owner who already held
+   a rhythm was shown both -- and the one that asks for a First Payday, a
+   cadence and a convention let them restate a phase they already had.  Three
+   such posts wrote paydays 196 days apart and derived a 196-day paycheck.
 
+   The condition is the same question the route asks (``_holds_paydays``), and
+   THE ROUTE IS THE CONTROL -- this is only the affordance, because P80's write
+   was a direct POST.  Keyed on ``pp_periods`` rather than on the schedule row,
+   because an owner truncated back to zero paydays keeps the row and must be
+   offered Generate again. #}
 {% if pp_periods %}
 {% include "settings/_pay_periods_manage.html" %}
+{% else %}
+{% include "settings/_pay_periods_form.html" %}
 {% endif %}

@@ -54,7 +54,7 @@ from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import paycheck_calculator
-from app.services.auth_service import _seed_tax_data_for_user
+from app.services.registration_service import _seed_tax_data_for_user
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.pay_calendar import calendar_for
 from app.services.payroll_basis import PayrollBasis

@@ -681,9 +681,11 @@ def nominal_payday_after(anchor: date, rhythm: Rhythm, day: date) -> date:
     not display one -- and from ``C14-e-3`` the floor is the DISPLACED day, so
     under a forward convention the grid day this answers is one displacement
     BELOW it: anchor 2030-11-14, cadence 14, ``next`` gives 2030-11-28 against
-    a floor of 2030-11-29.  That is ledger row **PC-497** fault 1, open and
-    owned by ``C14-e-3``, and it closes when ``_requested_paydays`` displaces
-    each element it records.  Nothing here discharges it.
+    a floor of 2030-11-29.  That was ledger row **PC-497** fault 1, and
+    ``C14-e-3`` CLOSED it at the writer rather than here:
+    ``pay_period_write._requested_paydays`` records each element displaced, so
+    the day this hands over and the floor that judges it are one value again.
+    Nothing here discharges it, and nothing here needs to.
 
     **Three candidates are enough, and it is a theorem rather than a margin.**
     The estimate satisfies ``nominal(estimate) <= day < nominal(estimate + 1)``
@@ -694,12 +696,13 @@ def nominal_payday_after(anchor: date, rhythm: Rhythm, day: date) -> date:
     ``pay_schedule_service.reject_shift_on_short_cadence`` holds a displacing
     convention above it -- so ``nominal(estimate + 2)``'s payday clears *day*
     under either convention.  The same theorem
-    :func:`~._derive.project_period_after` probes on.
+    :func:`~._projection.project_period_after` probes on.
 
     Args:
-        anchor: A day the owner's NOMINAL grid passes through --
-            ``budget.pay_schedule.nominal_anchor``.  It need NOT place *day*
-            on its own grid; see above.
+        anchor: A day the owner's NOMINAL grid passes through -- the
+            latest era's ``effective_from`` since plan step ``C17-a``
+            (``budget.pay_schedule.nominal_anchor`` before it).  It need NOT
+            place *day* on its own grid; see above.
         rhythm: The owner's cadence and payday convention.
         day: The day the answer's PAYDAY must fall after.  Callers pass the
             last paycheck's end.

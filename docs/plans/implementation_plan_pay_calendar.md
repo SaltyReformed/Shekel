@@ -74,15 +74,28 @@ disagreeing with `start_date` order is the balance resolver walking money out of
 Because the schema cannot make them agree, the application grew
 **five separate runtime fences that all police the same functional dependency**:
 
-| fence | cite |
-|---|---|
-| `_reject_overlapping_batch` -- one-directional, which IS row P2 | `pay_period_service.py:87-130` |
-| `PeriodCalendar.__post_init__` -- the same property at the value boundary | `recurrence/_calendar.py:162-182` |
-| `_pp_assert_structure` -- the same property in the test suite | `tests/_test_helpers.py:3367-3395` |
-| `integrity_check` BA-03 / BA-04 -- the same property in weekly SQL | `scripts/integrity_check.py:353-376` |
-| `uq_pay_periods_user_index` + `ck_pay_periods_date_order` | the schema |
+**FOUR OF THE FIVE ARE ALREADY GONE, and `C4-c` (`c703e1c7`) is what took them** -- which is this
+section's own argument arriving, not a correction to it. Re-derive rather than re-read: the table
+below once carried five line-range cites and every one of them had rotted by 2026-09-11.
 
-Not one of them would exist under the normalized model, because none of them would have a subject.
+| fence | where it stood | now |
+|---|---|---|
+| `_reject_overlapping_batch` -- one-directional, which IS row P2 | `pay_period_service.py` | DELETED; the file names it in prose only |
+| `PeriodCalendar.__post_init__` -- the same property at the value boundary | `recurrence/_calendar.py` | the module MOVED to `pay_calendar/_calendar.py`; the guard survives |
+| `_pp_assert_structure` -- the same property in the test suite | `tests/_test_helpers.py` | DELETED |
+| `integrity_check` BA-03 / BA-04 -- the same property in weekly SQL | `scripts/integrity_check.py` | DELETED at `C4-c` and NOT replaced, which that file says at its own `:331` |
+| `uq_pay_periods_user_index` + `ck_pay_periods_date_order` | the schema | both DROPPED; `uq_pay_periods_user_start` is what stands |
+
+Regenerate with:
+
+```bash
+grep -rn '_reject_overlapping_batch\|_pp_assert_structure\|BA-03\|uq_pay_periods_user' \
+     app/ tests/ scripts/
+```
+
+Not one of them would exist under the normalized model, because none would have a subject -- and the
+four that have gone went exactly that way, by their subject being removed rather than by being
+argued with.
 
 ## 2. Evidence
 
@@ -224,14 +237,15 @@ their only live specimen from them, which both `_staging` docstrings predict and
       parent, ticked at `C2-f3e`; that tick is also `balance:X-l` and `recurrence:R-F12`.
 - [x] **C2-f1 -- the three the calendar already answered.** `792e3b21`.
 - [ ] **C10 -- the salary package reads the OWNER's day.** Five sites answer "which paycheck am I
-      in" as `period_containing(date.today())` -- `routes/salary/_helpers.py:175` and `:256`,
-      `profiles.py:253`, `views.py:63`, `cockpit.py:284` -- having taken the derivation at
-      `C2-f2d-3` and kept the process clock. **`C2-f3a` CLOSED P49 and was wrong to**; its
-      adversarial design review caught that before the commit. Five one-line reads, in a step of
-      their own because a clock change on money-adjacent screens gets its own review.
-      **It grows the INSTRUMENT** (`balance:N-138`, re-keyed here 2026-09-03): a pylint checker
-      forbidding the process clock -- `date.today()`, `datetime.now()` -- outside one clock module,
-      so the five reads stay moved. Closes **P49**, **N-138**.
+      in" as `period_containing(date.today())` (census 5 code lines `period_containing` in
+      `app/routes/salary/**/*.py`), FOUR of whose line numbers this row carried had drifted by
+      2026-09-11 -- having taken the derivation at `C2-f2d-3` and kept the process clock.
+      **`C2-f3a` CLOSED P49 and was wrong to**; its adversarial design review caught that before the
+      commit. Five one-line reads, in a step of their own because a clock change on money-adjacent
+      screens gets its own review. **It grows the INSTRUMENT** (`balance:N-138`, re-keyed here
+      2026-09-03): a pylint checker forbidding the process clock -- `date.today()`,
+      `datetime.now()` -- outside one clock module, so the five reads stay moved. Closes **P49**,
+      **N-138**.
 - [ ] **C11 -- the LAYER predicate.** The four service modules that still open their own read pass
       take one instead -- `calendar_service`, `investment_dashboard_service/_context` and
       `/_orchestrator`, `tax_report_service` -- and the gate becomes the layer rule rather than a
@@ -239,37 +253,9 @@ their only live specimen from them, which both `_staging` docstrings predict and
       `loan_recurrence_sync` is a WRITER and takes its own by design, so the rule carves it out or
       takes it from its caller. Collapses the +1 `C2-f3a` left on `/analytics/taxes`. Closes
       **P56**, **P69**.
-- [ ] **C14 -- the pay schedule carries its shift convention** (rulings **R-PC47**,
-      **R-PC54**-**R-PC57**; closes **F-4** = **N-398**, and **P80**). The DECOMPOSED parent, split
-      into six leaves 2026-09-04 (**R-PC57**); it ticks with `C14-f`. A payday is a RECORDED FACT
-      that may fall off the cadence, and the shift is the employer's stated convention rather than
-      noise: 1 January 2026 fell on a holiday and was paid 31 December 2025, so 2025 was a
-      27-paycheck tax year and 2026 has 26, one gross paycheck across a year boundary that a
-      forecast counting nominal dates gets wrong in both years. `budget.pay_schedule` gains a
-      convention (none, preceding business day, following business day); ONE business-day module
-      holds the weekend rule and the computed US federal holiday set, called by the pay calendar's
-      projection here and by `recurrence:R8-d` for recurring cash dates, so that step SHRINKS to
-      consuming it. Which paycheck a monthly-cadence deduction skips moves with the shifted month,
-      which is why the step is a money step.
-      **The shift is applied AT THE PRODUCER, and that is what decides the leaf set** (**R-PC54**):
-      `_rhythm._paydays_between` takes its forward paydays by reading `.start_date` off the
-      `DerivedPeriod` values `_views.projected_paychecks` yields, so the payday a COUNT uses and the
-      payday a PERIOD opens on are ONE value with ONE producer already, and displacing only the
-      count would split it in two, which is rule 14's tell. Applying it at the producer instead
-      exposes three things in the derivation that are wrong once a payday can move, and each is a
-      `$0.00` REPAIR rather than a cost of the shift: the projected end
-      `start_date + cadence_days - 1` leaves **2026-01-14 in no period at all** under this step's
-      own worked example, which `PeriodWindow.__post_init__` refuses; `shift` is not injective, so
-      at cadence 1-3 it produces duplicate paydays `derive_periods` refuses outright; and two writer
-      paths feed a CASH date back into the rhythm, which would reintroduce the very drift the
-      convention exists to remove. `C14-c` and `C14-d` land those repairs BEFORE `C14-e` switches
-      the shift on. **`P78` is not this step's** (**R-PC58**): its eight fixtures need the door
-      `C17` builds. **A PHASE *IS* STORED HERE, at `C14-e-2`** (**R-PC61**), reversing R-PC54's
-      refusal of one: that ruling rested the refusal on the rhythm keeping its phase from the
-      recorded paydays "whose one bounded gap is an owner whose FIRST recorded payday was itself
-      shifted", and `PC-497` measured the gap COMPOUNDING instead once the writer records a
-      displaced day -- 178 of 301 recorded paydays wrong under `prior`. The stored phase is what
-      makes that sentence true again; the eras it belongs to still land at `C17`.
+- [x] **C14 -- the pay schedule carries its shift convention** `5d14e4d4` -- the container ticked
+      with its last leaf `C14-f`; all eight leaves have shipped (rulings **R-PC47**, **R-PC57**,
+      **R-PC61**, **R-PC63**).
 - [x] **C14-a -- the shared business-day module.** `088339f5`. `app/utils/business_days.py`: the
       weekend rule, the computed federal holiday set of `5 U.S.C. 6103(a)` under `6103(b)` and E.O.
       11582, and ONE `shift_to_business_day` displacement, pure and reusing the
@@ -304,13 +290,15 @@ their only live specimen from them, which both `_staging` docstrings predict and
       under `prior` at a batch of ONE before, 0 after. **A LATER STEP MUST OBEY**: the anchor names
       the BATCH THAT WROTE IT, not a piecewise owner's surviving grid (**N-492**), so
       `nominal_payday_after` is asked against the paycheck's END.
-- [ ] **C14-e-3 -- the shift goes live.** Every projected and backdated payday becomes the nominal
-      day displaced onto a business day, and the WRITER records the displaced day (**PC-497** fault
-      1, whose pin inverts). **MOVES MONEY**, its own review pass and its own PR. Closes **N-398**.
-- [ ] **C14-f -- the two-clause check.** The sweep warns when a recorded payday is off its predicted
-      day AND when consecutive recorded paydays are not one cadence apart (**R-PC55**); the second
-      clause is the one that sees a MISSING payday, which is what **P80**'s own worked example turns
-      out to be. Closes **P80**.
+- [x] **C14-e-3 -- the shift goes live** `ed267298` -- every projected and backdated payday became
+      the nominal day displaced onto a business day, and the WRITER records the displaced day
+      (**PC-497** fault 1). **MOVED MONEY.** Closes **N-398**; **N-495**, **N-496**, **PC-497** and
+      **PC-498** did not close with it and re-point at `C17`.
+- [x] **C14-f -- the generate door asks one job's questions** `5d14e4d4` -- an owner who already
+      holds a rhythm is asked only how many more paychecks, a rebuild that skips a whole paycheck
+      asks first, and the gates moved to `pay_period_gates` (**R-PC63**, superseding **R-PC55**).
+      **P80 does NOT close**: `regenerate` still writes a 140-day gap at HTTP 200, so it re-points
+      at `C17` as an era question. **N-493** and **N-494** are NARROWED, not closed.
 - [ ] **C18 -- a payday may be recorded BEFORE the schedule's earliest, and a period below the books
       generates nothing** (ruling **R-PC62**; closes **PC-499**, **PC-500**).
       `_reject_backward_payday` bounds a batch after the LATEST payday, where its own docstring says

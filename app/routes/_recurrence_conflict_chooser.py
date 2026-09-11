@@ -272,21 +272,11 @@ class RecurrenceConflictKind:
             name, so their shared signature moves in one commit or not at
             all.
         resolve_fn: The kind's ``resolve_conflicts(ids, action, user_id)``
-            callable, taking ``new_amount=`` as well when
-            *use_states_a_figure* is set.
+            callable.  Both kinds have the same three-argument shape since
+            plan step X-au-f (ruling **R-JD**); the transfer side carried a
+            fourth, ``new_amount=``, until then.
         update_endpoint: The kind's update-route endpoint, resolved with the
             template id for the chooser's Apply action.
-        use_states_a_figure: Whether this kind's "use" side hands the row a
-            FIGURE.  ``True`` for transfers, whose generated rows still store
-            their amount; ``False`` for transactions since plan step X-au-e,
-            where "use" hands the row back to its definition and the
-            definition's series prices it (ruling **R-JD**).  It drives two
-            things that must not drift apart: whether ``new_amount`` is passed
-            to ``resolve_fn``, and whether the chooser page offers a figure to
-            move to.  **It is a per-kind fact with a known death date** -- plan
-            step X-au-f empties ``transfers.amount`` for a generated transfer,
-            after which both kinds answer ``False`` and this field, its branch
-            below and the chooser's figure arm all go together.
     """
 
     model: Any
@@ -294,7 +284,6 @@ class RecurrenceConflictKind:
     regenerate_fn: Any
     resolve_fn: Any
     update_endpoint: str
-    use_states_a_figure: bool
 
 
 @dataclass(frozen=True)
@@ -321,20 +310,22 @@ class ConflictChooserContext:
         choices: The conflicted rows, already shaped and ordered
             (:func:`_build_conflict_choices`).
         template_name: The edited template's new name (framing sentence).
-        new_amount: The template's new amount.  It is the framing sentence's
-            figure for BOTH kinds -- the definition's price did change -- and
-            the "Use" side's figure only where *use_states_a_figure* is set.
+        new_amount: The template's new amount, the framing sentence's figure:
+            the definition's price did change, and that is what the page is
+            asking about.  It is NOT the "Use" side's figure for either kind --
+            "use" hands a row back to its definition (ruling **R-JD**).
         effective_from: The edit's effective date (framing sentence).
         action_url: Where Apply posts (the same update endpoint).
         cancel_url: Where Cancel returns (the list), abandoning the edit.
-        use_states_a_figure: Whether "use" moves the row to *new_amount*
-            (transfers) or hands it back to its definition to be priced from
-            the series on its own due date (transactions, since plan step
-            X-au-e -- ruling **R-JD**).  The page says different and
-            incompatible things in three places depending on which, and
-            saying the transfer's sentence about a transaction row would
-            promise a figure no writer writes.  Both kinds answer ``False``
-            after plan step X-au-f.
+
+    **A ``use_states_a_figure`` rode here until plan step X-au-f** (ruling
+    **R-JD**).  The page said different and incompatible things in three places
+    depending on it -- a transfer row moved to the new figure, a transaction
+    row was handed back to its definition -- and saying the transfer's sentence
+    about a transaction row would have promised a figure no writer writes.
+    Neither generated row stores a figure now, so there is one sentence, and
+    the flag, its three template branches and the resolver's ``new_amount``
+    went together.
     """
 
     choices: "list[ConflictChoice]"
@@ -343,7 +334,6 @@ class ConflictChooserContext:
     effective_from: date
     action_url: str
     cancel_url: str
-    use_states_a_figure: bool
 
 
 def render_recurrence_conflict_chooser(ctx: ConflictChooserContext, form) -> str:
@@ -370,7 +360,6 @@ def render_recurrence_conflict_chooser(ctx: ConflictChooserContext, form) -> str
         choices=ctx.choices,
         template_name=ctx.template_name,
         new_amount=ctx.new_amount,
-        use_states_a_figure=ctx.use_states_a_figure,
         effective_from=ctx.effective_from,
         echo=echo,
         action_url=ctx.action_url,
@@ -387,7 +376,6 @@ def apply_conflict_decisions(
     kind: RecurrenceConflictKind,
     conflict: RecurrenceConflict,
     decisions: dict[int, str],
-    new_amount: Decimal,
     user_id: int,
 ) -> None:
     """Apply the chooser's per-instance keep/use decisions.
@@ -402,22 +390,21 @@ def apply_conflict_decisions(
     ownership-checks every id and, on the transaction side, refuses transfer
     shadows.
 
-    **Whether "use" also states a FIGURE is the KIND's answer** (plan step
-    X-au-e, ruling **R-JD**).  A transfer's generated row still stores its
-    amount, so its resolver takes ``new_amount``; a transaction's does not
-    store one and its resolver has no such parameter to pass -- handing it one
-    would be a dead argument on the one kind that has already cut over.  Both
-    kinds answer ``False`` after plan step X-au-f and the branch goes with the
-    field.
+    **"Use" states NO figure, for EITHER kind, since plan step X-au-f**
+    (ruling **R-JD**).  It was the kind's own answer while a generated transfer
+    still stored its amount: that resolver took a ``new_amount`` and the
+    transaction's, cut over at X-au-e, did not.  Neither generated row stores a
+    figure now, so "use" means the same thing on both tables -- hand this row
+    back to its definition, and the definition's effective-dated series prices
+    it as of the row's own due date -- and the ``use_states_a_figure`` field,
+    the branch that read it and the chooser's figure arm went together.
 
     Args:
         kind: The row model / amount / resolver bundle; ``kind.resolve_fn``
-            and ``kind.use_states_a_figure`` are read here.
+            is read here.
         conflict: The caught :class:`RecurrenceConflict` (the id allow-list).
         decisions: The ``{row_id: "keep" | "use"}`` map from
             :func:`parse_conflict_decisions`.
-        new_amount: The template's new amount, applied to "use" ids by a kind
-            whose "use" states a figure and ignored by one whose does not.
         user_id: The requesting user's id (passed through for the ownership
             checks inside ``kind.resolve_fn``).
     """
@@ -430,10 +417,7 @@ def apply_conflict_decisions(
         rid for rid, choice in decisions.items()
         if choice == _DECISION_KEEP and rid in allowed
     ]
-    if kind.use_states_a_figure:
-        kind.resolve_fn(use_ids, "update", user_id, new_amount=new_amount)
-    else:
-        kind.resolve_fn(use_ids, "update", user_id)
+    kind.resolve_fn(use_ids, "update", user_id)
     kind.resolve_fn(keep_ids, "keep", user_id)
 
 
@@ -497,10 +481,9 @@ def regenerate_or_conflict_chooser(
       * Apply (chooser decisions present): resolve each conflicted instance
         per the user's keep/use choice, then return ``None`` so the caller
         commits the edit together with the resolutions.  What "use" DOES is
-        the kind's (``use_states_a_figure``): a transfer row moves to the new
-        figure, a transaction row is handed back to its definition and priced
-        from the series on its own due date (plan step X-au-e, ruling
-        **R-JD**).
+        the same for both kinds since plan step X-au-f: the row is handed
+        back to its definition and priced from the series on its own due date
+        (ruling **R-JD**).
       * First submit of an amount-changing edit (``amount_drives_instances``,
         the template STILL recurs, and ``default_amount`` differs from
         ``before.amount``): render the chooser, ROLL BACK the pending edit
@@ -601,7 +584,6 @@ def regenerate_or_conflict_chooser(
                 kind=kind,
                 conflict=conflict,
                 decisions=decisions,
-                new_amount=template.default_amount,
                 user_id=current_user.id,
             )
         elif (
@@ -633,7 +615,6 @@ def regenerate_or_conflict_chooser(
                     ),
                     template_name=template.name,
                     new_amount=template.default_amount,
-                    use_states_a_figure=kind.use_states_a_figure,
                     effective_from=effective_from,
                     action_url=url_for(
                         kind.update_endpoint, template_id=template.id,

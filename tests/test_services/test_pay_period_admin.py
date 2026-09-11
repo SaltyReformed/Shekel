@@ -37,6 +37,7 @@ from app.exceptions import PayPeriodLocked, ValidationError
 from app.models.pay_period import PayPeriod
 from app.services import (
     pay_period_admin,
+    pay_period_gates,
     pay_period_locks,
     pay_period_write,
     pay_schedule_service,
@@ -476,7 +477,7 @@ class TestTheGateRefusesAMapItCannotIndex:
 
             with pytest.raises(KeyError) as excinfo:
                 # pylint: disable=protected-access
-                pay_period_admin._gate_deletable_tail(
+                pay_period_gates.gate_deletable_tail(
                     saved, kept, False, partial,
                 )
             assert str(missing) in str(excinfo.value)
@@ -490,7 +491,7 @@ class TestTheGateRefusesAMapItCannotIndex:
             calendar = calendar_for(seed_user["user"].id)
             kept = calendar.period_by_id(periods[0].id)
             # pylint: disable=protected-access
-            doomed = pay_period_admin._gate_deletable_tail(
+            doomed = pay_period_gates.gate_deletable_tail(
                 calendar.saved(), kept, False,
                 pay_period_locks.classify_schedule_locks(
                     calendar, as_of=display_today(),

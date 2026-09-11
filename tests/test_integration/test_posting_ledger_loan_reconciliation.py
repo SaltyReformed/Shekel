@@ -151,6 +151,7 @@ from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import anchor_service, balance_at, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver, pay_period_write, posting_service, transfer_service
+from app.services import amortization_engine
 from app.services.loan_resolver._periods import _replay_from_anchor
 from app.utils.money import round_money
 from app.services.balance_at import _kernel as net_worth_kernel
@@ -569,27 +570,51 @@ def _resolver_balance(
     balance in until plan step D2a deleted its balance field entirely) -- so a
     production window here would make the "resolver" read the very ledger it is
     meant to cross-check, collapsing the parallel run to a tautology.  This
-    helper therefore builds the SAME ``LoanInputs`` and runs the replay
-    derivation directly, preserving the schedule-replay reference.  The
+    helper therefore runs the production replay derivation directly, on the
+    production feed, preserving the schedule-replay reference.  The
     production path is verified separately -- that it equals the
     ledger off-schedule is the read switch, pinned by
     ``TestReadSwitchProductionPath``.
+
+    **It takes its OWN inputs, and that is plan step balance:X-bl-2b** (finding
+    **N-432**).  The replay reads three dates per payment and NO amount, but
+    this assembled its feed through ``loan_payment_service.load_loan_context``,
+    which prices every row through the amount model -- so the reference's
+    import closure was **101 modules** where its own arithmetic needs **45**,
+    and an ``AmountUnresolvable`` could break a control that reads no figure.
+    Every module in that closure is a module this reference has to be right
+    about; the amount-free feed
+    (:func:`app.services.loan_ledger.payment_installments`) removes 56 of them.
     """
     params = loan_loaders.load_loan_params(loan_account_id)
     assert params is not None, "loan is not resolvable (no LoanParams)"
-    anchor_facts = loan_loaders.load_loan_anchor_facts(params)
-    ctx = loan_payment_service.load_loan_context(
-        loan_account_id, amount_basis_for_scenario(scenario_id), params,
+    # The DATES alone -- no pricing tier behind them.  ``options=()`` because
+    # nothing here traverses a relationship on the rows.
+    installments = loan_ledger.payment_installments(
+        loan_account_id, scenario_id, params.payment_day, options=(),
     )
-    inputs = loan_resolver.LoanInputs(
-        params, anchor_facts, ctx.payments, ctx.rate_changes,
+    periods = loan_resolver.resolve_periods(
+        params, loan_loaders.load_rate_changes(loan_account_id),
     )
     # The replay derivation directly (``LoanState.current_balance`` carried it
     # until plan step D2a deleted the field): unchanged as the oracle's
-    # independent schedule-replay reference.
-    periods = loan_resolver.resolve_periods(params, inputs.rate_changes)
+    # independent schedule-replay reference.  ``slotted_dates`` is the ONE
+    # biweekly-collision assignment, shared with the priced feed's
+    # ``prepare_payments_for_engine``, so the two cannot resolve a collision
+    # differently.  It is called MODULE-QUALIFIED on purpose: the roots control
+    # below reads this body's qualifiers, and a bare name would hide the
+    # dependency from it.
     return round_money(
-        _replay_from_anchor(inputs, periods, as_of).balance_as_of
+        _replay_from_anchor(
+            anchor_events=loan_loaders.load_loan_anchor_facts(params),
+            periods=periods,
+            payments=amortization_engine.slotted_dates(
+                [installment.dates for installment in installments],
+                params.payment_day,
+            ),
+            payment_day=params.payment_day,
+            as_of=as_of,
+        ).balance_as_of
     )
 
 
@@ -1627,12 +1652,23 @@ class TestOracleIsNotVacuous:
 # module outside that allowlist a ledger import is therefore already
 # impossible, and restating it here bought nothing.  What is left is the
 # question W9908 cannot ask: **does the resolver reference reach a ledger SEAM
-# at all?**  Measured 2026-09-01: of the reference's 91-module import closure,
-# 21 are inside W9908's allowlist and every one of those is ``app.models.*`` --
-# which that allowlist admits ON PURPOSE, because a model legitimately
-# references sibling models.  The check below asserts exactly that, and it
-# READS the checker's own constant rather than copying it, so the two cannot
-# drift.
+# at all?**  The check below asserts exactly that, and it READS the checker's
+# own constant rather than copying it, so the two cannot drift.
+#
+# **Re-measured 2026-09-09 (plan step balance:X-bl-2b), and the figure this
+# paragraph used to quote was not one this code produces.**  It read "of the
+# reference's 91-module import closure, 21 are inside W9908's allowlist and
+# every one of those is ``app.models.*``".  ZERO modules of the closure are
+# allowlist members, then or now: the allowlist holds the bare name
+# ``app.models`` (the package) and this check tests literal membership, so
+# ``app.models.account`` is not in it.  21 was the count of ``app.models.*``
+# modules -- 22 on the pre-step closure, 14 on this one -- which is a different
+# set.  The ``app.models`` exclusion below is therefore inert TODAY and kept
+# deliberately: the allowlist is read from the checker at run time, so a model
+# module added to it would land here, and a model legitimately references
+# sibling models.  What gives this check its teeth is not the exclusion but
+# ``test_the_closure_is_transitive_and_the_check_bites``, which plants a real
+# seam two hops out and asserts the closure reaches it.
 #
 # **Three hand-maintained lists were deleted to get here and none was
 # replaced**: a 12-token module-name DENYLIST (``_LEDGER_IMPORT_TOKENS``), a
@@ -1657,14 +1693,17 @@ class TestOracleIsNotVacuous:
 # away.  Neither exists today; both are why the VALUE control is the primary
 # one and this is not.
 #
-# **The reference's dependency is far larger than its arithmetic, and that is a
-# filed defect rather than a fact of life** (finding **N-432**).
-# ``_replay_from_anchor`` reads exactly three fields off each payment --
-# ``payment_date``, ``due_date``, ``settled_on`` -- and NO amount, so the whole
-# pricing tier this reference loads through ``load_loan_context`` contributes
-# nothing to its value.  Deleting the one import that pulls it in takes the
-# closure from 91 modules to 39.  The narrow check below is unaffected either
-# way; the finding is about the dependency, not about the check.
+# **The reference's dependency was far larger than its arithmetic, and plan
+# step balance:X-bl-2b closed that** (finding **N-432**).
+# ``_replay_from_anchor`` reads exactly three dates off each payment --
+# ``period_start``, ``due_date``, ``settled_on`` -- and NO amount, yet this
+# reference assembled its feed through ``load_loan_context``, which prices
+# every row: **101 modules at dev ``2625963a``, 46 here** (102 against 46 on
+# this tree, so the amount-free feed removes 56 like-for-like; the metric is
+# the one stated in ``app.services.loan_ledger._installments``).  The feed is
+# ``loan_ledger.payment_installments`` now, so a pricing refusal cannot break a
+# control that reads no figure.  The narrow check below was unaffected either
+# way; the finding was about the dependency, not about the check.
 
 #: The modules the resolver reference is assembled from -- the closure's roots.
 #:
@@ -1674,8 +1713,9 @@ class TestOracleIsNotVacuous:
 #: plan step X-au-g-2c-1 itself gave ``_resolver_balance`` a new producer and
 #: nothing here noticed until an adversarial review did.
 _RESOLVER_REFERENCE_ROOTS = (
+    "app.services.amortization_engine",
+    "app.services.loan_ledger",
     "app.services.loan_loaders",
-    "app.services.loan_payment_service",
     "app.services.loan_resolver",
 )
 
@@ -2032,7 +2072,9 @@ class TestResolverIsLedgerFree:
         )
         # The suite-side producers, named so their absence from the static
         # checks is a stated fact rather than an oversight.
-        assert from_app == {"loan_loaders", "loan_payment_service", "loan_resolver"}
+        assert from_app == {
+            "amortization_engine", "loan_ledger", "loan_loaders", "loan_resolver",
+        }
 
     def test_the_closure_is_transitive_and_the_check_bites(self):
         """A ledger SEAM import two hops from the roots is caught, by the closure.
@@ -2043,11 +2085,21 @@ class TestResolverIsLedgerFree:
         gone vacuous still passed it.  ``_import_closure`` takes its ``sources``
         now, so the real builder runs against a hypothetical tree.
 
-        The plant is two hops out (nothing in the roots names it) and the
-        assertion is that the closure REACHES the seam and reports the chain.
+        The plant is two edges out (no module of the roots names it directly)
+        and the assertion is that the closure REACHES the seam and reports the
+        chain.
+
+        **The plant MOVED at plan step balance:X-bl-2b, and the old one failing
+        is what said so.**  It was ``cash_ledger._amounts``, reached only
+        through ``loan_payment_service`` -- the pricing tier that step took OFF
+        this reference.  Once the reference stopped loading it the module left
+        the closure entirely and the guard above fired, refusing to grade a
+        plant it could no longer reach rather than passing vacuously.  This one
+        is inside the reference's own tier: ``loan_loaders._terms`` ->
+        ``ref_cache`` -> ``ref_cache._accessors``.
         """
         sources = _module_sources()
-        planted = "app.services.cash_ledger._amounts"
+        planted = "app.ref_cache._accessors"
         assert planted in sources
         clean = _import_closure(_RESOLVER_REFERENCE_ROOTS, sources)
         assert planted in clean and len(clean[planted]) > 2, (
@@ -2080,7 +2132,16 @@ class TestResolverIsLedgerFree:
         """
         sources = _module_sources()
         edges = _import_edges(sources)
-        assert "app.ref_cache" in edges["app.services.cash_ledger._amount_source"]
+        # **``_amount_rule`` since plan step X-au-f**, not ``_amount_source``:
+        # the CLASSIFICATION tier split into its own module when the resolver
+        # passed ``max-module-lines``, and ``_declared_relation`` -- the one
+        # reader of ``ref_cache`` on this path, which turns a stored
+        # ``amount_source_id`` back into the member the rules are written
+        # against -- went with it.  Re-pointed rather than deleted: the claim is
+        # that the resolver reads reference data BY ID, and that claim is now
+        # about the leaf that does it.
+        assert "app.ref_cache" in edges["app.services.cash_ledger._amount_rule"]
+        assert "app" not in edges["app.services.cash_ledger._amount_rule"]
         assert "app" not in edges["app.services.cash_ledger._amount_source"]
         closure = _import_closure(_RESOLVER_REFERENCE_ROOTS, sources)
         assert "app" not in closure

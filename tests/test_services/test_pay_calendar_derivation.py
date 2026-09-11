@@ -33,14 +33,14 @@ What is left is the half that was never about the columns:
 * the CADENCE control, which measures the one branch a regular schedule cannot
   show;
 * **the boundary arithmetic plan step ``C14-c`` corrected**, which needs a
-  payday that MOVES and so cannot be reached through the package at all while
-  the shift convention is off.  Those cases substitute the producer ``C14-e``
-  will ship -- the nominal rhythm displaced by the shipped
-  :func:`~app.utils.business_days.shift_to_business_day` -- and then drive the
-  REAL ``derive_periods`` and ``project_period_after``, so the candidate
-  window, the end rule and the selector are graded rather than the arithmetic
-  estimate alone (:func:`_displace_under` says why that distinction is
-  load-bearing).  Their control is
+  payday that MOVES.  **Those cases used to SUBSTITUTE the producer and now
+  state a displacing convention on the rhythm they pass** -- plan step
+  ``C14-e-3`` shipped the displacement, so ``rhythm_of(cadence, shift)``
+  reaches the same mechanism through the real function and the double it
+  replaced is DELETED.  A substitution that simulates a shipped producer is a
+  fence with a subject, and the subject went when the producer landed.  The
+  candidate window, the end rule and the selector are still what is graded,
+  rather than the arithmetic estimate alone.  Their control is
   ``test_the_OLD_end_rule_would_NOT_have_tiled``: the deleted
   ``start + cadence - 1`` agrees with the surviving rule everywhere no payday
   moves, so a suite that never displaced one would pass against the defect --
@@ -55,6 +55,7 @@ gave it one would be testing the fixture.
 """
 
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -90,15 +91,14 @@ from app.services.pay_calendar import (
 # ends rather than restating the arithmetic.  It is imported publicly above,
 # and the entry is corrected rather than dropped because the sentence it used
 # to carry -- *no application caller* -- was a measurement that expired.
-from app.services.pay_calendar import _derive
-from app.services.pay_calendar._derive import covering_projection
+from app.services.pay_calendar import _projection
+from app.services.pay_calendar._projection import covering_projection
 from app.utils.business_days import (
     shift_to_business_day,
     shortest_collision_free_cadence,
 )
 from tests._test_helpers import (
     all_periods,
-    displace_paydays_under,
     rhythm_of,
 )
 from tests.oracles.pay_calendar_derivation import (
@@ -475,7 +475,7 @@ class TestIrregularShapeSweep:
     def test_a_single_payday_derives_one_wholly_projected_period(self):
         """The state registration leaves a new owner in, spelled out.
 
-        ``auth_service.register_user`` writes one bootstrap payday, so this is
+        ``registration_service.register_user`` writes one bootstrap payday, so this is
         every new account's first calendar: one period, its end projected off
         the cadence because there is no second payday to close it.
         """
@@ -793,7 +793,7 @@ class TestTheCadenceControl:
     def test_it_fires_on_a_single_payday_schedule(self):
         """One period, whose only end is the projected one.
 
-        Every fresh signup is a one-payday owner (``auth_service.register_user``
+        Every fresh signup is a one-payday owner (``registration_service.register_user``
         writes one bootstrap payday), so this is the common shape rather than a
         corner.
         """
@@ -833,28 +833,25 @@ def _saved(anchor: date, cadence_days: int) -> "tuple[DerivedPeriod, ...]":
     return derive_periods([(1, anchor)], rhythm_of(cadence_days))
 
 
-def _displace_under(monkeypatch, shift: BusinessDayShiftEnum) -> None:
-    """Give the package plan step ``C14-e``'s producer for one test.
-
-    This module's name for :func:`tests._test_helpers.displace_paydays_under`,
-    which is where the simulation and its argument live.  It MOVED there at
-    plan step ``C14-d``, when a second suite needed the same substitution:
-    ``pay_period_write._reject_backward_payday``'s floor now calls the
-    producer, so the writer's tests grade the same mechanism, and a copied
-    simulation is two spellings of the world ``C14-e`` ships.
-
-    **The move also fixed it.**  The form written here patched
-    ``_derive.projected_payday`` alone, which was complete while
-    :mod:`app.services.pay_calendar._derive` held the only binding.  The
-    package re-exports the name since ``C14-d``, so one patch would leave the
-    derivation displaced and the writer nominal -- a state no convention can
-    produce.  The shared helper patches both.
-
-    Args:
-        monkeypatch: pytest's patcher.
-        shift: The convention to displace under.
-    """
-    displace_paydays_under(monkeypatch, shift)
+#: A LEGAL shape whose last end really moves, which the shared catalogue has
+#: none of.
+#:
+#: **Why it has to exist, and an adversarial review of ``C14-e-3`` is why.**
+#: :data:`~tests.oracles.pay_calendar_derivation.IRREGULAR_SHAPES` was written
+#: for the nominal world: measured 2026-09-06, not one of its ten non-empty
+#: shapes has a next projected payday on a closed day, EXCEPT
+#: ``one_day_periods`` -- whose cadence of 1 is below
+#: :func:`~app.utils.business_days.shortest_collision_free_cadence` and so may
+#: not carry a displacing convention at all (**R-PC59**).  So a sweep that
+#: paired the catalogue with ``prior`` graded exactly one shape, and that shape
+#: was an illegal pairing deriving a REVERSED period.  This one is ordinary:
+#: two fortnightly paydays whose next projection is 2030-11-28, Thanksgiving,
+#: which ``prior`` pays 2030-11-27 and ``next`` pays 2030-11-29.
+_THANKSGIVING_SHAPE = SimpleNamespace(
+    label="thanksgiving_projection",
+    paydays=((1, date(2030, 10, 31)), (2, date(2030, 11, 14))),
+    cadence_days=14,
+)
 
 
 class TestTheProjectedPaydayHasOneProducer:
@@ -905,7 +902,7 @@ class TestTheProjectedPaydayHasOneProducer:
         "shift", [BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT],
         ids=lambda s: s.name.lower(),
     )
-    def test_the_last_derived_end_FOLLOWS_the_producer(self, monkeypatch, shift):
+    def test_the_last_derived_end_FOLLOWS_the_producer(self, shift):
         """The ONE end rule, over every shape in the catalogue, DISPLACED.
 
         *The first form of this test compared ``derive_periods``' last end
@@ -922,25 +919,47 @@ class TestTheProjectedPaydayHasOneProducer:
         (``test_the_shape_derives_its_hand_computed_values``); this is the
         oracle for the moved one.
         """
+        shapes = (*IRREGULAR_SHAPES, _THANKSGIVING_SHAPE)
         nominal = {
             irregular.label: derive_periods(
                 irregular.paydays, rhythm_of(irregular.cadence_days),
             )
-            for irregular in IRREGULAR_SHAPES
+            for irregular in shapes
         }
-        _displace_under(monkeypatch, shift)
         moved = 0
+        floor = shortest_collision_free_cadence()
 
-        for irregular in IRREGULAR_SHAPES:
+        for irregular in shapes:
+            # A shape below the collision floor is swept under ``none``: the
+            # other pairing is one NO DOOR ADMITS (**R-PC59** --
+            # ``reject_shift_on_short_cadence``), because two nominal paydays
+            # would displace onto one.  An adversarial review of ``C14-e-3``
+            # found this sweep pairing the catalogue's ONE-DAY shape with
+            # ``prior`` and passing green on a period derived
+            # ``start 2030-11-15, end 2030-11-14`` -- reversed, because a
+            # sub-floor displacement can pull the next payday below its own
+            # start.  The ordering arm below is what stops that being green;
+            # this line is what keeps the sweep inside the world the app holds.
+            legal = (
+                shift if irregular.cadence_days >= floor
+                else BusinessDayShiftEnum.NONE
+            )
             derived = derive_periods(
-                irregular.paydays, rhythm_of(irregular.cadence_days),
+                irregular.paydays, rhythm_of(irregular.cadence_days, legal),
             )
             if not derived:
                 continue
             last = derived[-1]
             assert last.end_date == shift_to_business_day(
-                last.start_date + timedelta(days=irregular.cadence_days), shift,
+                last.start_date + timedelta(days=irregular.cadence_days), legal,
             ) - timedelta(days=1), irregular.label
+            # No period closes before it opens.  A legal pairing cannot produce
+            # one, the displacement being shorter than a cadence; that the
+            # derivation does not itself REFUSE the reversal is ledger row
+            # **PC-505**, reachable only through **N-493**'s reported hole.
+            assert all(
+                period.end_date >= period.start_date for period in derived
+            ), irregular.label
             # Every OTHER end is dictated by a recorded payday, so displacing
             # the producer must not touch one.
             assert derived[:-1] == nominal[irregular.label][:-1], irregular.label
@@ -953,24 +972,21 @@ class TestTheProjectedPaydayHasOneProducer:
 
 
 class TestTheGridIsNotTheProjection:
-    """Plan step ``C14-d``: two producers, and the substitution separates them.
+    """Plan step ``C14-d``: two producers, and a displacing convention separates them.
 
-    ``projected_payday`` returns ``nominal_payday``'s answer unchanged today,
-    so on the shipped path a test comparing them grades nothing -- which is
-    exactly why the split is asserted under ``C14-e``'s producer instead.
-    What the split is FOR is that a writer continuing a rhythm and a calendar
-    displaying a paycheck stop wanting the same day, and both callers exist:
-    ``pay_period_admin.extend_pay_periods`` takes the grid, ``derive_periods``
-    takes the projection.
+    They answered the same day until ``C14-e-3``, so a test comparing them
+    under ``none`` grades nothing -- which is why every case here states a
+    DISPLACING convention.  What the split is FOR is that a writer continuing a
+    rhythm and a calendar displaying a paycheck stop wanting the same day, and
+    both callers exist: ``pay_period_admin.extend_pay_periods`` takes the grid,
+    ``derive_periods`` takes the projection.
     """
 
     @pytest.mark.parametrize(
         "shift", [BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT],
         ids=lambda s: s.name.lower(),
     )
-    def test_the_TWO_DOORS_read_two_different_producers(
-        self, monkeypatch, shift,
-    ):
+    def test_the_TWO_DOORS_read_two_different_producers(self, shift):
         """The writer's binding displaces and the extend door's does not.
 
         **Read off the APPLICATION modules, and an adversarial review of this
@@ -999,24 +1015,27 @@ class TestTheGridIsNotTheProjection:
             anchor, rhythm, date(2030, 11, 27),
         ) == thanksgiving
 
-        _displace_under(monkeypatch, shift)
+        displacing = rhythm_of(14, shift)
 
         assert pay_period_admin.nominal_payday_after(
-            anchor, rhythm, pay_calendar.projected_payday(anchor, rhythm, 1)
+            anchor, displacing,
+            pay_calendar.projected_payday(anchor, displacing, 1)
             - timedelta(days=1),
         ) == thanksgiving, "the extend door must still hand over a GRID day"
-        assert pay_calendar.projected_payday(anchor, rhythm, 1) != thanksgiving
+        assert pay_calendar.projected_payday(
+            anchor, displacing, 1,
+        ) != thanksgiving
 
 
 class TestTheCoveringProbeToleratesAMovedBoundary:
-    """The probe, driven through the REAL producer under C14-e's substitution.
+    """The probe, driven through the shipped producer under a real convention.
 
     Ruling **R-PC57**: ``C14-c`` corrects the boundary arithmetic and the
     containment probe tolerates a moved boundary.  With the convention at
     ``none`` the arithmetic estimate is right on every call, so each
-    displacement case swaps in the producer ``C14-e`` will ship
-    (:func:`_displace_under`) and then calls the shipped
-    :func:`~app.services.pay_calendar._derive.project_period_after` -- which
+    displacement case STATES a displacing one on the rhythm it passes and then
+    calls the shipped
+    :func:`~app.services.pay_calendar._projection.project_period_after` -- which
     grades the candidate WINDOW and the end rule, not only the selector.
     """
 
@@ -1027,7 +1046,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         2028-09-07, a Thursday, so the estimate for 2028-09-10 is step 2 and
         step 2 is the answer, running to the day before 2028-09-21.
         """
-        found = _derive.project_period_after(
+        found = _projection.project_period_after(
             _saved(_HORIZON, 14), rhythm_of(14), date(2028, 9, 10),
         )
 
@@ -1037,9 +1056,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         assert found.period_id is None
         assert found.end_is_projected is True
 
-    def test_a_payday_paid_EARLY_is_found_at_the_LATER_neighbour(
-        self, monkeypatch,
-    ):
+    def test_a_payday_paid_EARLY_is_found_at_the_LATER_neighbour(self):
         """``prior`` pulls Thanksgiving 2030 back, and the division misses low.
 
         Hand-computed.  2028-08-10 + 60 * 14 = 2030-11-28, the fourth Thursday
@@ -1050,19 +1067,18 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         LATER neighbour is the one that covers it, and its span runs to the day
         before the next payday, 2030-12-12.
         """
-        _displace_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
         day = date(2030, 11, 27)
 
-        found = _derive.project_period_after(_saved(_HORIZON, 14), rhythm_of(14), day)
+        found = _projection.project_period_after(
+            _saved(_HORIZON, 14), rhythm_of(14, BusinessDayShiftEnum.PRIOR), day,
+        )
 
         assert (day - _HORIZON).days // 14 == _THANKSGIVING_STEPS - 1
         assert found.period_index == _THANKSGIVING_STEPS
         assert found.start_date == day
         assert found.end_date == date(2030, 12, 11)
 
-    def test_a_payday_paid_LATE_is_found_at_the_EARLIER_neighbour(
-        self, monkeypatch,
-    ):
+    def test_a_payday_paid_LATE_is_found_at_the_EARLIER_neighbour(self):
         """``next`` pushes the same payday forward, and the division misses high.
 
         The mirror of the case above, off the same anchor and the same nominal
@@ -1072,17 +1088,18 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         step 59's -- which now runs 2030-11-14 to 2030-11-28 rather than
         stopping at 2030-11-27.
         """
-        _displace_under(monkeypatch, BusinessDayShiftEnum.NEXT)
         day = _THANKSGIVING_NOMINAL
 
-        found = _derive.project_period_after(_saved(_HORIZON, 14), rhythm_of(14), day)
+        found = _projection.project_period_after(
+            _saved(_HORIZON, 14), rhythm_of(14, BusinessDayShiftEnum.NEXT), day,
+        )
 
         assert (day - _HORIZON).days // 14 == _THANKSGIVING_STEPS
         assert found.period_index == _THANKSGIVING_STEPS - 1
         assert found.start_date == date(2030, 11, 14)
         assert found.end_date == day
 
-    def test_the_displaced_projection_TILES_the_calendar(self, monkeypatch):
+    def test_the_displaced_projection_TILES_the_calendar(self):
         """No day falls in two paychecks and none falls in none.
 
         The property the deleted ``start + cadence - 1`` end breaks and this
@@ -1094,11 +1111,11 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         and an overlap.
         """
         for shift in (BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT):
-            _displace_under(monkeypatch, shift)
+            displacing = rhythm_of(14, shift)
             saved = _saved(_HORIZON, 14)
             walked, opens_at = [], saved[-1].end_date + timedelta(days=1)
             while len(walked) < 80:
-                period = _derive.project_period_after(saved, rhythm_of(14), opens_at)
+                period = _projection.project_period_after(saved, displacing, opens_at)
                 walked.append(period)
                 opens_at = period.end_date + timedelta(days=1)
 
@@ -1124,7 +1141,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         ids=["prior_double_covers", "next_leaves_a_hole"],
     )
     def test_the_OLD_end_rule_would_NOT_have_tiled(
-        self, monkeypatch, shift, real_end, damage,
+        self, shift, real_end, damage,
     ):
         """The control, forced to fire in BOTH directions.
 
@@ -1139,10 +1156,14 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         it a day early and leaves 2030-11-28 in no period.  Both arms end at
         ``PeriodWindow``, which refuses a hole and an overlap alike.
         """
-        _displace_under(monkeypatch, shift)
+        displacing = rhythm_of(14, shift)
         saved = _saved(_HORIZON, 14)
-        opening = _derive.project_period_after(saved, rhythm_of(14), date(2030, 11, 14))
-        following = _derive.project_period_after(saved, rhythm_of(14), date(2030, 11, 30))
+        opening = _projection.project_period_after(
+            saved, displacing, date(2030, 11, 14),
+        )
+        following = _projection.project_period_after(
+            saved, displacing, date(2030, 11, 30),
+        )
         old_rule_end = opening.start_date + timedelta(days=13)
 
         assert opening.start_date == date(2030, 11, 14)
@@ -1164,9 +1185,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
                 following,
             ))
 
-    def test_the_last_SAVED_end_follows_the_displaced_next_payday(
-        self, monkeypatch,
-    ):
+    def test_the_last_SAVED_end_follows_the_displaced_next_payday(self):
         """``derive_periods`` reads the same producer, so its last end moves too.
 
         The other half of the end rule, and the half a projection test cannot
@@ -1175,9 +1194,10 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         arrives 2030-11-27, so a calendar ending on 2030-11-14 runs to
         2030-11-26 -- not to 2030-11-27, which the deleted expression answers.
         """
-        _displace_under(monkeypatch, BusinessDayShiftEnum.PRIOR)
-
-        derived = derive_periods([(1, date(2030, 11, 14))], rhythm_of(14))
+        derived = derive_periods(
+            [(1, date(2030, 11, 14))],
+            rhythm_of(14, BusinessDayShiftEnum.PRIOR),
+        )
 
         assert derived[-1].end_is_projected is True
         assert derived[-1].end_date == date(2030, 11, 26)
@@ -1217,9 +1237,7 @@ class TestOneNeighbourEitherSideIsEnough:
         date(2026, 5, 16),
     )
 
-    def test_the_probe_finds_a_covering_period_at_every_cadence(
-        self, monkeypatch,
-    ):
+    def test_the_probe_finds_a_covering_period_at_every_cadence(self):
         """The window is wide enough, asserted against the SHIPPED function.
 
         Every cadence from the collision floor to a year, both displacing
@@ -1235,7 +1253,7 @@ class TestOneNeighbourEitherSideIsEnough:
         and the true index, so it graded the theorem and not the code, while
         its docstring claimed "every cadence from the floor up" over eight
         sampled ones.  An adversarial review of ``C14-c`` caught both.*  It now
-        calls :func:`~app.services.pay_calendar._derive.project_period_after`
+        calls :func:`~app.services.pay_calendar._projection.project_period_after`
         under the producer ``C14-e`` will ship, and asserts three things of the
         answer: it COVERS the day, its span is the two projected paydays either
         side, and the neighbour arms were actually exercised in both
@@ -1247,7 +1265,6 @@ class TestOneNeighbourEitherSideIsEnough:
         seen_low = seen_high = 0
 
         for shift in (BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT):
-            _displace_under(monkeypatch, shift)
             payday = (
                 lambda anchor, cadence, steps: shift_to_business_day(
                     anchor + timedelta(days=steps * cadence), shift,
@@ -1261,8 +1278,8 @@ class TestOneNeighbourEitherSideIsEnough:
                         closes = payday(anchor, cadence, steps + 1)
                         for day in (opens, opens + (closes - opens) // 2,
                                     closes - timedelta(days=1)):
-                            found = _derive.project_period_after(
-                                saved, rhythm_of(cadence), day,
+                            found = _projection.project_period_after(
+                                saved, rhythm_of(cadence, shift), day,
                             )
                             where = (shift, anchor, cadence, steps, day)
                             assert found.covers(day), where

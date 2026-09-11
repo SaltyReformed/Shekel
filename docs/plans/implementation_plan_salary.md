@@ -69,7 +69,8 @@ substituted tax year is never shown and a new year's brackets have no door (**N-
 of reach (**N-443**, **P62**). A fourth reader, the contribution tier, does not run the engine at
 all and divides the annual figure by the paycheck count (**D45**). The engine derives its own
 calendar where every other read-path consumer takes one (**P63**), and the module sat at pylint's
-ceiling until R-F16 took it to 873 (**P64**).
+ceiling until R-F16 took it to 873; it is back to 994 (**P64**), so the room that argument rests on
+is effectively gone.
 
 ## 2. Evidence
 
@@ -190,16 +191,24 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       the developer asked *"how would you design this from scratch"* and has not answered the lane's
       reply, so the design is undecided. Its id was cited in four files `S3-c` shipped before this
       row existed.
-- [ ] **S3-e** -- WIDEN THE ASK, then delete what it orphans. Every caller still passes
-      `calendar.saved()`, so the hold is still reached: ask the pricer for the paydays each surface
-      actually projects over, then delete `_year_averages`, `_complete_years`, `_held_employee`,
-      `_held_gross`, `salary_basis(beyond=)` and
-      `retirement_projection.build_employer_salary_basis`, making `employee_at` a lookup that RAISES
-      past the horizon. The producer shipped at `S3-d`; what is left is the ASK and the deletion.
-      `models_employee` is re-ruled here or deleted for `is_payroll_linked`: with no hold there is
-      no window to ask *did payroll pay this account on any priced payday* of. **MOVES MONEY** -- it
-      replaces every held figure with a priced one. Closes **N-541**, **N-544**, **N-545**,
-      **N-546**.
+- [ ] **S3-e -- the hold is DELETED** (the DECOMPOSED parent, split 2026-09-06 into the NO-MONEY
+      re-homing and the MONEY; **R-SAL16** carries the argument and **R-SAL15** the design).
+- [x] **S3-e-1** `b8ee429a` -- the two window-only questions re-homed and both members deleted: the
+      transfer-average boundary in `build_contribution_timeline` became the caller's `saved_through`
+      off `PayCalendar.horizon()`, and `_plan_for`'s gate became `is_payroll_linked` (**R-SAL17**).
+      **`prices()` was in NO census** and is why this leaf existed. NO FIGURE MOVED. **R-SAL18**
+      binds `S3-e-2` to `DerivedPeriod.is_projected`.
+- [ ] **S3-e-2** -- WIDEN THE ASK and delete what it orphans. The feed prices a payday ON DEMAND
+      through the pass's pricer (**R-SAL15**, which also refuses the window-and-RAISE design this
+      step was first specified with), so `_year_averages`, `_complete_years`, `_held_employee`,
+      `_held_gross`, `salary_basis(beyond=)` and `build_employer_salary_basis` all go and no caller
+      states a horizon. **MOVES MONEY, OWN PR, own harness.** Measured on a production clone (user
+      1, account 6, 5% employer flat, employer dollars past the `2028-08-23` horizon):
+      `/investment`'s 40-year chart `$200,779.31` -> `$394,634.68` (**+$193,855.37**), `/savings`'s
+      Horizon band `$44,122.87` -> `$52,750.94`, `/retirement` `$132,984.43` -> `$131,030.46` --
+      least on the surface that ALREADY projects a salary path past the horizon, which moves only by
+      the AS-OF difference this arc set out to close. The EMPLOYEE half is `$0.00`: no deduction of
+      his carries a `target_account_id`. Closes **N-541**, **N-544**-**N-546**.
 - [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (**R-SAL3**; findings **F-21**,
       **N-395**). `salary.paycheck_deductions.deductions_per_year` server-defaults to 26 and the
       form offers 26 / 24 / 12; it is never multiplied or divided, only compared, so it is a
@@ -241,8 +250,9 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       it changes what `/savings` and `/retirement` publish, and the merged producer gives
       `income_service`'s basis a threaded calendar, so
       **`balance:X-i1` and this step decide for each other**. It also owes the engine's package
-      split (**P64**): the module was at exactly 1000 lines until `recurrence:R-F16` took it to 873,
-      and this step's own growth is what would spend that room.
+      split (**P64**): `recurrence:R-F16` took it from 1000 to 873 and the growth since has spent
+      almost all of that -- `wc -l app/services/paycheck_calculator.py` reads **994**, SIX lines
+      under the ceiling, so this step splits the module before it adds to it rather than after.
 - [ ] **X-av -- the pay rate is a dated per-paycheck gross** (**balance:R-HW(b)**; findings
       **N-237**, **N-240**, **N-294**, **N-391**). The stored fact becomes what ONE paycheck pays,
       effective-dated, with `annual_salary` derived as `gross x periods_per_year` and shown beside

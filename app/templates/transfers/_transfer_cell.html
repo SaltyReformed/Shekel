@@ -2,7 +2,12 @@
 {# Transfer cell -- displays amount with direction arrow and status badge.
    Clicking opens the inline edit form via HTMX.
 
-   Expected context: xfer -- a Transfer object, account -- the active Account.
+   Expected context: xfer -- a Transfer object, account -- the active Account,
+   budgets -- ``{transfer_id: what this transfer's amount IS}``, from
+   ``routes._render_helpers.transfer_budgets``.  The figure is asked of the
+   amount model rather than read off ``xfer.amount`` because a generated
+   transfer stores no figure (plan step X-au-f); the transaction cell takes its
+   own ``budgets`` map for the same reason.
    Optional:
      wrap_div -- if true, wraps the cell in a <div id="xfer-cell-{{ xfer.id }}">.
      conflict -- if true, surfaces a warning indicator hint that the
@@ -25,7 +30,7 @@
      hx-swap="innerHTML"
      role="button"
      tabindex="0"
-     aria-label="{% if error_msg %}{{ error_msg }} {% elif is_conflict %}This transfer was changed by another action; click to retry. {% endif %}{{ xfer.name or 'Transfer' }}: {{ money(xfer.amount, cents=false) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
+     aria-label="{% if error_msg %}{{ error_msg }} {% elif is_conflict %}This transfer was changed by another action; click to retry. {% endif %}{{ xfer.name or 'Transfer' }}: {{ money(budgets[xfer.id], cents=false) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
      title="{% if error_msg %}{{ error_msg }} {% elif is_conflict %}This transfer was changed by another action -- click to retry. {% endif %}{{ xfer.name or 'Transfer' }}{% if xfer.notes %} -- {{ xfer.notes }}{% endif %}">
   {% if error_msg %}
   <i class="bi bi-exclamation-octagon text-danger small me-1"
@@ -44,9 +49,16 @@
     {% endif %}
   {% endif %}
 
-  {% if xfer.amount != 0 %}
-    <span class="font-mono">{{ "{:,.0f}".format(xfer.amount) }}</span>
-  {% endif %}
+  {#- No zero guard, and its DELETION is the point (plan step X-au-f-1).  This
+      read `{% if xfer.amount != 0 %}` and the branch was unreachable on both of
+      the resolver's arms: `ck_transfers_positive_amount` forces `amount > 0` on
+      a transfer that owns its figure, and
+      `ck_template_amount_versions_transfer_positive_amount` forces it on every
+      version of a series that prices one.  Its false branch drew the cell with
+      NO figure at all, so if it ever had become live it would have hidden money
+      rather than shown a zero -- an unreachable branch whose reachable
+      behaviour is a defect.  The two CHECKs are what make it unnecessary. -#}
+  <span class="font-mono">{{ "{:,.0f}".format(budgets[xfer.id]) }}</span>
 
   {# Status badge #}
   {% if xfer.status %}

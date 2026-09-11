@@ -153,7 +153,7 @@ class TestLoanPaymentPipeline:
                 # in, and the installment it satisfies.  The shadows here are
                 # on-time, so the due date is the payment_day of the period's
                 # own month or the next.
-                assert payment.due_date.day == params.payment_day
+                assert payment.dates.due_date.day == params.payment_day
 
             # Step 6: Verify the loan dashboard renders successfully
             # with payment-aware data.

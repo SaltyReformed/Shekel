@@ -60,6 +60,8 @@ from app.services.settle_day import (
     recorded_settle_day,
 )
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import rendered_transfer_amount
+from tests._test_helpers import transfer_amount
 
 
 def _create_savings_account(seed_user):
@@ -122,7 +124,7 @@ def _create_transfer(
             to_account_id=savings_acct.id,
             pay_period_id=seed_periods_today[0].id,
             scenario_id=seed_user["scenario"].id,
-            amount=amount,
+            amount_ownership=AmountOwnership.own(amount),
             status_id=projected.id,
             category_id=seed_user["categories"]["Rent"].id,
             transfer_template_id=template.id if template else None,
@@ -222,7 +224,7 @@ def _create_other_user_with_template():
             to_account_id=savings.id,
             pay_period_id=periods[0].id,
             scenario_id=scenario.id,
-            amount=Decimal("100.00"),
+            amount_ownership=AmountOwnership.own(Decimal("100.00")),
             status_id=projected.id,
             category_id=category.id,
             transfer_template_id=template.id,
@@ -729,8 +731,15 @@ class TestTemplateUpdate:
                 "the retained row must be exactly as the pass found it"
             )
             assert held.notes == "reconcile this one"
-            assert held.amount == Decimal("200.00"), (
-                "a retained row is left ALONE, not re-priced"
+            # **A retained row's PLAN follows its definition** -- it reads
+            # ``$275.00`` here, and it stored ``$200.00`` until plan step
+            # X-au-f.  Being RETAINED protects what the row RECORDED and its
+            # place in the ledger; it is what stops the pass re-attributing a
+            # row holding an owner's note. A plan is not a record (plan step
+            # X-au-c3), and the row never owned its figure: an OVERRIDE would
+            # still keep its own.
+            assert transfer_amount(held) == Decimal("275.00"), (
+                "a retained row's plan still follows its definition"
             )
 
     def test_transfer_amount_change_with_override_shows_chooser(
@@ -762,7 +771,7 @@ class TestTemplateUpdate:
             # Hand-edit the future transfer, shadow-safe via the service.
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("350.00"), amount_authored=True, is_override=True,
+                amount_ownership=AmountOwnership.own(Decimal("350.00")),  is_override=True,
             )
             db.session.commit()
             tid = template.id
@@ -810,7 +819,7 @@ class TestTemplateUpdate:
             )
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("350.00"), amount_authored=True, is_override=True,
+                amount_ownership=AmountOwnership.own(Decimal("350.00")),  is_override=True,
             )
             db.session.commit()
             tid, xfer_id = template.id, xfer.id
@@ -826,7 +835,7 @@ class TestTemplateUpdate:
             assert resp.status_code == 200
             db.session.expire_all()
             reloaded = db.session.get(Transfer, xfer_id)
-            assert reloaded.amount == Decimal("250.00")
+            assert transfer_amount(reloaded) == Decimal("250.00")
             assert reloaded.is_override is False
             # Both shadows mirror the realigned amount (invariant 3).
             shadows = (
@@ -945,6 +954,96 @@ class TestGridCells:
             assert response.status_code == 200
             assert b'name="amount"' in response.data
             assert b"200" in response.data
+
+    @pytest.mark.parametrize(
+        ("url_template", "expects_a_money_box"),
+        [
+            ("/transfers/cell/{}", False),
+            ("/transfers/quick-edit/{}", True),
+            ("/transfers/{}/full-edit", True),
+        ],
+        ids=["cell", "quick-edit", "full-edit"],
+    )
+    def test_a_DERIVED_transfer_renders_its_definitions_price_not_its_column(
+        self, app, auth_client, seed_user, seed_periods_today,
+        url_template, expects_a_money_box,
+    ):
+        """A transfer that stores NO figure still shows one, and it is the series'.
+
+        **The control plan step balance:X-au-f-1 exists to make possible**, and
+        the one that discriminates: it FAILS on the code this leaf replaces.
+        Every transfer in production today owns its figure, so a test built on
+        one grades nothing -- the column and the amount model return the same
+        `Decimal`, and reverting the leaf leaves it green. This one declares the
+        transfer DERIVED, which is the state plan step `X-au-f-3`'s migration
+        creates for 169 production rows: `budget.transfers.amount` is NULL, and a
+        template reading that column renders Jinja's `None` (finding **N-452**).
+
+        **The series states TWO prices and the assertion picks the one governing
+        the transfer's OWN due date**, so a fragment that resolved on the wrong
+        date -- today, the pay period's start, the newest version -- fails here
+        rather than agreeing by accident. `$450.00` is stated after the
+        transfer's due date and `$400.00` before it, so the answer is `$400.00`.
+
+        The money boxes are SCRAPED out of the response rather than compared
+        against a hand-built payload: the box and its `amount_as_rendered`
+        companion must read ONE expression, which is what ruling **R-JR**'s
+        authorship comparison rests on -- a box and a companion that could
+        resolve differently would report a re-price nobody made.
+        """
+        # Pylint: ``import-outside-toplevel`` (1/1) -- the module's import block
+        # is models and services; the amount model's write door and its enum are
+        # named only by this case.
+        # pylint: disable-next=import-outside-toplevel
+        from app.enums import AmountSourceEnum
+        # pylint: disable-next=import-outside-toplevel
+        from app.services import template_amount_service
+        # pylint: disable-next=import-outside-toplevel
+        from app.services.amount_ownership import declare_derived
+
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings)
+            xfer = _create_transfer(
+                seed_user, seed_periods_today, savings, template=template,
+            )
+            due = seed_periods_today[0].start_date
+            template_amount_service.set_amount(
+                template, Decimal("400.00"),
+                effective_on=due - timedelta(days=30),
+            )
+            template_amount_service.set_amount(
+                template, Decimal("450.00"),
+                effective_on=due + timedelta(days=30),
+            )
+            xfer.due_date = due
+            # The state X-au-f-3's migration writes: the definition prices this
+            # row, so the row stores no figure at all.
+            declare_derived(xfer, AmountSourceEnum.TEMPLATE)
+            db.session.commit()
+            assert xfer.amount is None
+
+            response = auth_client.get(url_template.format(xfer.id))
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            # The failure this guards is Jinja rendering the empty column into
+            # an attribute.  Scoped to `value="None"` rather than the bare word:
+            # the popover's category select legitimately offers `-- None --`,
+            # and a test that fails on THAT is failing for the wrong reason.
+            assert 'value="None"' not in html
+            if not expects_a_money_box:
+                # The display cell prints the figure without cents.
+                assert "400" in html
+                return
+            box = re.search(r'name="amount"[^>]*\bvalue="([^"]*)"', html)
+            companion = re.search(
+                r'name="amount_as_rendered"[^>]*\bvalue="([^"]*)"', html,
+            )
+            assert box is not None, "the amount box rendered no value at all"
+            assert companion is not None, "no amount_as_rendered companion"
+            assert Decimal(box.group(1)) == Decimal("400.00")
+            assert box.group(1) == companion.group(1)
 
     def test_get_full_edit(self, app, auth_client, seed_user, seed_periods_today):
         """GET /transfers/<id>/full-edit returns the full-edit form."""
@@ -1067,14 +1166,14 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "250.00", "amount_as_rendered": str(xfer.amount)},
+                data={"amount": "250.00", "amount_as_rendered": rendered_transfer_amount(xfer)},
             )
 
             assert response.status_code == 200
             assert response.headers.get("HX-Trigger") == "balanceChanged"
 
             db.session.refresh(xfer)
-            assert xfer.amount == Decimal("250.00")
+            assert transfer_amount(xfer) == Decimal("250.00")
 
     def test_resubmitting_an_unchanged_status_does_not_re_date_the_money(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1257,12 +1356,12 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "300.00", "amount_as_rendered": str(xfer.amount), "due_date": ""},
+                data={"amount": "300.00", "amount_as_rendered": rendered_transfer_amount(xfer), "due_date": ""},
             )
 
             assert response.status_code == 200
             db.session.refresh(xfer)
-            assert xfer.amount == Decimal("300.00")
+            assert transfer_amount(xfer) == Decimal("300.00")
             assert xfer.due_date is None
             shadows = (
                 db.session.query(Transaction)
@@ -1317,7 +1416,7 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "999.99", "amount_as_rendered": str(xfer.amount)},
+                data={"amount": "999.99", "amount_as_rendered": rendered_transfer_amount(xfer)},
             )
             assert response.status_code == 400
             body = response.data.decode()
@@ -1325,7 +1424,7 @@ class TestTransferInstance:
             assert "transfer" in body
 
             db.session.refresh(xfer)
-            assert xfer.amount == Decimal("200.00")
+            assert transfer_amount(xfer) == Decimal("200.00")
 
     @pytest.mark.parametrize("fragment", [
         "/transfers/quick-edit/{id}",
@@ -1407,7 +1506,7 @@ class TestTransferInstance:
             )
             assert "finalised" in response.data.decode()
             db.session.refresh(xfer)
-            assert xfer.amount == Decimal("200.00")
+            assert transfer_amount(xfer) == Decimal("200.00")
 
     def test_finalised_transfer_revert_and_amount_edit_allowed(
         self, app, auth_client, seed_user, seed_periods_today
@@ -1424,12 +1523,67 @@ class TestTransferInstance:
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"status_id": str(projected_id), "amount": "250.00", "amount_as_rendered": str(xfer.amount)},
+                data={"status_id": str(projected_id), "amount": "250.00", "amount_as_rendered": rendered_transfer_amount(xfer)},
             )
             assert response.status_code == 200
             db.session.refresh(xfer)
             assert xfer.status_id == projected_id
-            assert xfer.amount == Decimal("250.00")
+            assert transfer_amount(xfer) == Decimal("250.00")
+
+    def test_a_SHADOW_patch_retyping_the_amount_reprices_the_whole_pair(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The THIRD door onto a transfer's amount, and the one with no test.
+
+        A PATCH addressed to a transfer SHADOW is answered by updating its
+        PARENT, so a figure submitted here is a figure submitted for the
+        transfer -- and both legs must take it too (ruling **R-IO**: the figure
+        a human types always wins).
+
+        **This case exists because the door BROKE and nothing noticed.**  Plan
+        step X-au-f replaced ``update_transfer``'s ``amount`` +
+        ``amount_authored`` pair with one ``AmountOwnership`` (ruling
+        **R-BAL11**), and this door was not converted with the other two --
+        unknown kwargs are silently ignored, so a user retyping a transfer's
+        amount in the grid got a 200 and the figure they started with.  The only
+        shadow-amount case in the suite was its FINALISED sibling below, which
+        asserts a 400; the success path was graded by nothing, which is why a
+        green suite said the door worked.  Found by an adversarial review of
+        that step.
+
+        The pair is AD-HOC so the retype is the only thing moving the figure: a
+        generated transfer would resolve its definition's series and the case
+        could not tell a working door from a silently ignored one.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            xfer_id = xfer.id
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id)
+                .first()
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{shadow.id}",
+                data={
+                    "estimated_amount": "377.00",
+                    # What the box was RENDERED with, which is what makes this a
+                    # RETYPE rather than an echo (ruling R-JR).
+                    "estimated_amount_as_rendered": "200.00",
+                },
+            )
+            assert response.status_code == 200, response.data
+
+            db.session.expire_all()
+            reloaded = db.session.get(Transfer, xfer_id)
+            assert transfer_amount(reloaded) == Decimal("377.00")
+            legs = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id, is_deleted=False,
+            ).all()
+            assert len(legs) == 2
+            assert {shadow_amount(leg) for leg in legs} == {Decimal("377.00")}
 
     def test_finalised_transfer_shadow_amount_edit_rejected(
         self, app, auth_client, seed_user, seed_periods_today
@@ -1460,7 +1614,7 @@ class TestTransferInstance:
             assert "finalised" in response.data.decode()
 
             db.session.refresh(xfer)
-            assert xfer.amount == Decimal("200.00")
+            assert transfer_amount(xfer) == Decimal("200.00")
             shadows = (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id)
@@ -1618,7 +1772,7 @@ class TestTransferInstance:
 
             auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "999.00", "amount_as_rendered": str(xfer.amount)},
+                data={"amount": "999.00", "amount_as_rendered": rendered_transfer_amount(xfer)},
             )
 
             db.session.refresh(xfer)
@@ -2888,7 +3042,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "300.00", "amount_as_rendered": str(xfer.amount), "source_txn_id": str(shadow.id)},
+                data={"amount": "300.00", "amount_as_rendered": rendered_transfer_amount(xfer), "source_txn_id": str(shadow.id)},
             )
 
             assert resp.status_code == 200
@@ -2904,7 +3058,7 @@ class TestShadowContextResponse:
 
             # Verify the transfer amount was actually updated.
             db.session.refresh(xfer)
-            assert xfer.amount == Decimal("300.00")
+            assert transfer_amount(xfer) == Decimal("300.00")
 
             # Verify the shadow FOLLOWS the parent.  It holds no copy since
             # plan step X-au-g-2c-2; Transfer Invariant 3 is what it READS.
@@ -2990,7 +3144,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "350.00", "amount_as_rendered": str(xfer.amount)},
+                data={"amount": "350.00", "amount_as_rendered": rendered_transfer_amount(xfer)},
             )
 
             assert resp.status_code == 200
@@ -3002,7 +3156,7 @@ class TestShadowContextResponse:
             assert resp.headers.get("HX-Trigger") == "balanceChanged"
 
             db.session.refresh(xfer)
-            assert xfer.amount == Decimal("350.00")
+            assert transfer_amount(xfer) == Decimal("350.00")
 
     def test_invalid_source_txn_id_falls_back_gracefully(
         self, app, auth_client, seed_user, seed_periods_today
@@ -3019,7 +3173,7 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "400.00", "amount_as_rendered": str(xfer.amount), "source_txn_id": "999999"},
+                data={"amount": "400.00", "amount_as_rendered": rendered_transfer_amount(xfer), "source_txn_id": "999999"},
             )
 
             assert resp.status_code == 200
@@ -3030,7 +3184,7 @@ class TestShadowContextResponse:
 
             # Data still updated correctly.
             db.session.refresh(xfer)
-            assert xfer.amount == Decimal("400.00")
+            assert transfer_amount(xfer) == Decimal("400.00")
 
     def test_mismatched_source_txn_id_falls_back_gracefully(
         self, app, auth_client, seed_user, seed_periods_today
@@ -3064,7 +3218,7 @@ class TestShadowContextResponse:
                 f"/transfers/instance/{xfer_a.id}",
                 data={
                     "amount": "450.00",
-                    "amount_as_rendered": str(xfer_a.amount),
+                    "amount_as_rendered": rendered_transfer_amount(xfer_a),
                     "source_txn_id": str(shadow_b.id),
                 },
             )
@@ -3077,7 +3231,7 @@ class TestShadowContextResponse:
 
             # Transfer A still updated correctly.
             db.session.refresh(xfer_a)
-            assert xfer_a.amount == Decimal("450.00")
+            assert transfer_amount(xfer_a) == Decimal("450.00")
 
 
 # ── Unarchive Service Integration Tests (M1) ─────────────────────
@@ -3226,7 +3380,7 @@ class TestOneTimeTransfer:
                 .filter_by(transfer_template_id=tmpl.id)
                 .one()
             )
-            assert xfer.amount == Decimal("500.00")
+            assert transfer_amount(xfer) == Decimal("500.00")
             assert xfer.pay_period_id == seed_periods_today[1].id
             # The due date is the period's own start.  A ``Once`` rule used to
             # supply it through ``compute_due_date``, which returned exactly
@@ -3442,7 +3596,7 @@ class TestOneTimeTransfer:
                 .filter_by(transfer_template_id=tmpl.id)
                 .one()
             )
-            assert xfer.amount == Decimal("425.00")
+            assert transfer_amount(xfer) == Decimal("425.00")
             assert xfer.pay_period_id == seed_periods_today[1].id
 
     def test_non_repeating_without_a_period_is_refused(
@@ -3706,6 +3860,17 @@ class TestOneTimeTransfer:
         already moved; the same rule
         ``_recurrence_common.classify_maintain_work`` applies to every
         recurring template's regeneration applies here.
+
+        **What "history" IS moved one column at plan step X-au-f**, and the
+        assertion follows it.  This case asserted the transfer's stored
+        ``amount`` had not moved, which was history only while that column was
+        where a settled transfer's figure lived.  A settled transfer is declared
+        like any other now (ruling **R-JB**, the same rule the transaction
+        cutover took), so its PLAN reads its definition's current price -- and
+        what MOVED is recorded on its two legs, in ``settled_amount``, which is
+        the thing that must not change and the thing asserted below.  No balance
+        reader is affected either way: ``row_valuation.fixed_contribution``
+        answers a settled row from its record before any producer runs.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -3738,7 +3903,17 @@ class TestOneTimeTransfer:
             assert db.session.get(
                 TransferTemplate, tmpl.id,
             ).default_amount == Decimal("900.00")
-            assert db.session.get(Transfer, xfer_id).amount == Decimal("500.00")
+            # The PLAN follows the definition ...
+            assert transfer_amount(
+                db.session.get(Transfer, xfer_id),
+            ) == Decimal("900.00")
+            # ... and what MOVED is untouched, which is the immutability this
+            # case is named for.
+            legs = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id, is_deleted=False,
+            ).all()
+            assert len(legs) == 2
+            assert {leg.settled_amount for leg in legs} == {Decimal("500.00")}
 
     def test_a_hand_edited_transfer_does_not_follow_the_definition(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3760,7 +3935,7 @@ class TestOneTimeTransfer:
                 transfer_template_id=tmpl.id).one()
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("123.45"), amount_authored=True, is_override=True,
+                amount_ownership=AmountOwnership.own(Decimal("123.45")),  is_override=True,
             )
             db.session.commit()
             xfer_id = xfer.id
@@ -3857,7 +4032,7 @@ class TestOneTimeTransfer:
             # template at $650.00 while the Transfer and both shadows stayed at
             # $500.00, under a plain "updated." flash.
             assert after[0].name == "Renamed"
-            assert after[0].amount == Decimal("650.00")
+            assert transfer_amount(after[0]) == Decimal("650.00")
             assert {shadow_amount(s) for s in shadows} == {Decimal("650.00")}
 
     def test_recurring_transfer_idor_period(
@@ -4003,7 +4178,7 @@ class TestTransferTemplateHardDelete:
                     to_account_id=savings.id,
                     pay_period_id=seed_periods_today[1].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("200.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("200.00")),
                     status_id=paid_status.id,
                     category_id=seed_user["categories"]["Rent"].id,
                     transfer_template_id=template.id,
@@ -4054,7 +4229,7 @@ class TestTransferTemplateHardDelete:
                     to_account_id=savings.id,
                     pay_period_id=seed_periods_today[0].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("200.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("200.00")),
                     status_id=paid_status.id,
                     category_id=seed_user["categories"]["Rent"].id,
                     transfer_template_id=template.id,
@@ -4104,7 +4279,7 @@ class TestTransferTemplateHardDelete:
                     to_account_id=savings.id,
                     pay_period_id=seed_periods_today[0].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("250.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
                     status_id=received_status.id,
                     category_id=seed_user["categories"]["Rent"].id,
                     transfer_template_id=template.id,
@@ -4142,7 +4317,7 @@ class TestTransferTemplateHardDelete:
             assert surviving is not None
             assert surviving.status_id == received_status.id
             assert surviving.is_deleted is False
-            assert surviving.amount == Decimal("250.00")
+            assert transfer_amount(surviving) == Decimal("250.00")
 
             # Both shadows survive untouched (transfer invariant 1: a
             # transfer always has exactly two linked shadows).
@@ -4196,7 +4371,7 @@ class TestTransferTemplateHardDelete:
                     to_account_id=savings.id,
                     pay_period_id=seed_periods_today[0].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("250.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
                     status_id=received_status.id,
                     category_id=seed_user["categories"]["Rent"].id,
                     transfer_template_id=template.id,
@@ -4211,7 +4386,7 @@ class TestTransferTemplateHardDelete:
                     to_account_id=savings.id,
                     pay_period_id=seed_periods_today[1].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("250.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
                     status_id=projected_status.id,
                     category_id=seed_user["categories"]["Rent"].id,
                     transfer_template_id=template.id,
@@ -4252,7 +4427,7 @@ class TestTransferTemplateHardDelete:
             assert surviving.is_deleted is False
             # Hand-verified: original $250.00 stays exactly $250.00
             # (Decimal from string per coding standards).
-            assert surviving.amount == Decimal("250.00")
+            assert transfer_amount(surviving) == Decimal("250.00")
             assert surviving.transfer_template_id is None
 
             # Both shadows of the Received transfer survive untouched
@@ -4298,7 +4473,7 @@ class TestTransferTemplateHardDelete:
                         to_account_id=savings.id,
                         pay_period_id=seed_periods_today[i].id,
                         scenario_id=seed_user["scenario"].id,
-                        amount=Decimal("200.00"),
+                        amount_ownership=AmountOwnership.own(Decimal("200.00")),
                         status_id=db.session.query(Status).filter_by(
                         name="Projected"
                     ).one().id,
@@ -4607,12 +4782,12 @@ class TestTransferPeriodMove:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "250.00", "amount_as_rendered": str(xfer.amount), "version_id": xfer.version_id},
+                data={"amount": "250.00", "amount_as_rendered": rendered_transfer_amount(xfer), "version_id": xfer.version_id},
             )
             assert resp.status_code == 200
             assert resp.headers.get("HX-Trigger") == "balanceChanged"
             db.session.refresh(xfer)
-            assert xfer.amount == Decimal("250.00")
+            assert transfer_amount(xfer) == Decimal("250.00")
 
 
 

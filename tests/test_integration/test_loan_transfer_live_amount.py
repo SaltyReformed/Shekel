@@ -51,6 +51,7 @@ from tests._test_helpers import (
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.services.row_valuation import settled_contribution
+from app.services import template_amount_service
 
 
 def _derived_cash(seed_user, rows):
@@ -87,6 +88,26 @@ def _derived_cash(seed_user, rows):
         seed_user["user"].id, seed_user["scenario"].id,
     )
     return cash_ledger.amounts_by_id(rows, basis)
+
+def _state_price(template, figure):
+    """State *figure* as the template's price, through the one write door.
+
+    ``template_amount_service.set_amount`` is what every app-side create calls,
+    and since plan step X-au-f it is what prices the transfers a template
+    generates.  Dated at the epoch the suite's periods sit after, so every
+    generated row resolves to it whatever its own due date -- these cases grade
+    a MODE, not the series' time dimension, which
+    ``test_amount_source.TestTheTransferRule`` already owns.
+
+    Args:
+        template: The TransferTemplate to price.
+        figure: The amount it states.
+    """
+    template_amount_service.set_amount(
+        template, figure, effective_on=date(2000, 1, 1),
+    )
+    db.session.flush()
+
 
 def _build_derived_loan_transfer(seed_user, escrow_annual):
     """Create a $200k/6%/360 mortgage + a derive_from_loan recurring transfer.
@@ -130,10 +151,26 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
         # Deliberately stale stored amount -- the live override must win.
         default_amount=Decimal("1.00"),
     )
+    db.session.add(template)
+    db.session.flush()
+    # **The definition STATES its price through the one write door**, which is
+    # what every app-side transfer-template create does
+    # (``routes/transfers/templates``, ``routes/loan/payment_transfer``) and
+    # what a fixture had not needed to until plan step X-au-f.  A generated
+    # transfer stored its own figure before that step, so a MANUAL payment's
+    # base was read off the row's column and the series was never asked; the
+    # parent reads its definition now, and a template carrying a
+    # ``default_amount`` and no version states no price at all -- amount rule 3
+    # REFUSES it rather than falling back to that scalar (plan step X-au-a).
+    # Stated BEFORE the derive-mode settings are attached, because
+    # ``owns_its_amount`` is False for a derive-mode template and the write door
+    # reads the mode: that is the same order ``track_payment`` takes, and the
+    # versions stay as the record of what was stated while it was manual.
+    _state_price(template, template.default_amount)
     # derive_from_loan moved off transfer_templates into the 1:1
     # loan_payment_settings row (decision B); attach it via the relationship.
+    # AFTER the price above, for the reason stated there.
     template.settings = LoanPaymentSettings(derive_from_loan=True)
-    db.session.add(template)
     db.session.flush()
     # The definition first, then the cadence onto it (plan step R-F6).
     rule = make_cadence_rule(
@@ -189,15 +226,19 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
         assert overrides, "expected live overrides for the derive_from_loan transfer"
         assert all(v == Decimal("1499.10") for v in overrides.values())
 
-        # The stored transfer amounts are untouched (the stale $1.00),
-        # proving the amount is live-derived, not regenerated.
-        stored_amounts = {
-            xfer.amount
+        # **The stored transfer amounts are EMPTY**, which says what "untouched
+        # at the stale $1.00" used to say and says it more strongly: the figure
+        # is live-derived rather than regenerated because there is no stored
+        # figure left to regenerate.  Plan step X-au-f's migration is what
+        # emptied the column, and ``ck_transfers_amount_ownership`` is what
+        # makes the pairing below one statement rather than two.
+        stored = {
+            (xfer.amount, xfer.amount_source_id is None)
             for xfer in db.session.query(Transfer)
             .filter_by(scenario_id=scenario_id)
             .all()
         }
-        assert stored_amounts == {Decimal("1.00")}
+        assert stored == {(None, False)}
 
         # Raise escrow; the live override reflows without regeneration.
         escrow.annual_amount = Decimal("4800.00")
@@ -205,14 +246,14 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
 
         overrides_after = _derived_cash(seed_user, shadows)
         assert all(v == Decimal("1599.10") for v in overrides_after.values())
-        # Still no regeneration: stored transfer amounts unchanged.
+        # Still no regeneration, and still nothing stored to regenerate.
         stored_after = {
-            xfer.amount
+            (xfer.amount, xfer.amount_source_id is None)
             for xfer in db.session.query(Transfer)
             .filter_by(scenario_id=scenario_id)
             .all()
         }
-        assert stored_after == {Decimal("1.00")}
+        assert stored_after == {(None, False)}
 
 
 def test_non_derived_transfer_has_no_live_override(
@@ -476,16 +517,19 @@ def test_settling_derived_loan_payment_captures_live_amount(
             .first()
         )
         assert income_shadow is not None
-        # Pre-settle the shadow is worth the LIVE PITI, and the parent's stale
-        # $1.00 is what it would have shown before the cutover.  Asked of the
+        # Pre-settle the shadow is worth the LIVE PITI, and NEITHER the leg nor
+        # its parent stores a figure to have shown instead.  Asked of the
         # amount model, because ``settled_contribution`` REFUSES a derived row --
         # its name is the assertion, and a projected shadow no longer owns
-        # anything.
+        # anything.  The parent's stale $1.00 was here until plan step X-au-f
+        # emptied it; the assertion below is what replaces it, and it is the
+        # stronger one -- the live figure cannot be a stored copy when no copy
+        # is stored.
         assert _derived_cash(seed_user, [income_shadow])[
             income_shadow.id
         ] == Decimal("1499.10")
         assert income_shadow.estimated_amount is None
-        assert income_shadow.transfer.amount == Decimal("1.00")
+        assert income_shadow.transfer.amount is None
         income_shadow_id = income_shadow.id
         transfer_id = income_shadow.transfer_id
 
@@ -679,8 +723,14 @@ def test_manual_payment_with_extra_gets_base_plus_extra(
         # Flip to manual mode with a realistic typed base + a standing extra.
         template.settings.derive_from_loan = False
         template.settings.extra_principal = Decimal("100.00")
+        # The manual BASE is a STATED amount, so its definition holds it in the
+        # SERIES (plan step X-au-a) rather than in the ``default_amount``
+        # scalar.  Setting only the scalar priced this payment at the fixture's
+        # $1.00 + the extra once the parent started reading its definition --
+        # $101.00 against the $1,599.10 below, which is the figure this case
+        # has always asserted and which is unchanged.
         template.default_amount = Decimal("1499.10")
-        db.session.flush()
+        _state_price(template, Decimal("1499.10"))
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
                 BalanceContext.build(template.user_id), {p.id for p in seed_periods},
@@ -736,7 +786,8 @@ def test_manual_payment_without_extra_gets_no_override(
         template.settings.derive_from_loan = False
         template.settings.extra_principal = Decimal("0.00")
         template.default_amount = Decimal("1499.10")
-        db.session.flush()
+        # The manual base is the definition's SERIES (see the sibling case).
+        _state_price(template, Decimal("1499.10"))
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
                 BalanceContext.build(template.user_id), {p.id for p in seed_periods},
@@ -804,7 +855,8 @@ def test_a_DERIVE_payment_on_the_same_fixture_DOES_follow_the_escrow(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         template.default_amount = Decimal("1499.10")
-        db.session.flush()
+        # The manual base is the definition's SERIES (see the sibling case).
+        _state_price(template, Decimal("1499.10"))
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
                 BalanceContext.build(template.user_id), {p.id for p in seed_periods},
@@ -907,8 +959,14 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         )
         template.settings.derive_from_loan = False
         template.settings.extra_principal = Decimal("100.00")
+        # The manual BASE is a STATED amount, so its definition holds it in the
+        # SERIES (plan step X-au-a) rather than in the ``default_amount``
+        # scalar.  Setting only the scalar priced this payment at the fixture's
+        # $1.00 + the extra once the parent started reading its definition --
+        # $101.00 against the $1,599.10 below, which is the figure this case
+        # has always asserted and which is unchanged.
         template.default_amount = Decimal("1499.10")
-        db.session.flush()
+        _state_price(template, Decimal("1499.10"))
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
                 BalanceContext.build(template.user_id), {p.id for p in seed_periods},
@@ -937,14 +995,20 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         assert settled.settled_amount == Decimal("1599.10")
         # The manual BASE is untouched, so a second settle would freeze the
         # same 1,599.10 rather than 1,699.10: the derivation must never read
-        # its own output.  **That base is on a DIFFERENT ROW since plan step
-        # X-au-g-2c-2**, which is what makes the compounding cycle structurally
+        # its own output.  **That base is on the DEFINITION since plan step
+        # X-au-f**, which is what makes the compounding cycle structurally
         # impossible rather than merely not-currently-written: the manual arm
-        # reads the PARENT TRANSFER's figure, and a settle writes neither that
-        # nor the shadow's plan column -- the shadow has no plan column to
-        # write, which is the pairing CHECK saying so.
+        # reads the definition's SERIES, and a settle writes neither that nor
+        # any plan column on either row -- neither the shadow nor its parent has
+        # one left to write, which is the pairing CHECK saying so.  It read the
+        # PARENT's stored figure until X-au-f emptied it (X-au-g-2c-2 had moved
+        # it off the shadow first), so the base has moved one row further from
+        # anything a settle can touch.
         assert settled.estimated_amount is None
-        assert settled.transfer.amount == Decimal("1499.10")
+        assert settled.transfer.amount is None
+        assert template_amount_service.amount_as_of(
+            settled.transfer.template, settled.transfer.due_date,
+        ) == Decimal("1499.10")
 
 
 def test_each_shadows_cash_is_its_own_installments_pi(

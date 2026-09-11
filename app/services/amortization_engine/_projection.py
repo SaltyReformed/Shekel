@@ -23,6 +23,7 @@ keep importing from ``app.services.amortization_engine`` unchanged.
 """
 
 import calendar
+import dataclasses
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -35,122 +36,59 @@ from app.utils.money import (
     round_money,
 )
 
+from ._dates import PaymentDates
+
 
 @dataclass(frozen=True)
 class PaymentRecord:
-    """A single payment applied to a loan.
+    """A single payment applied to a loan: its DATES and what it cost.
 
     Used to replay actual or committed payments through the amortization
     schedule so projections reflect real payment history rather than
     assuming the contractual amount every month.
 
-    A loan payment carries THREE dates with DISTINCT jobs, and conflating any
-    two of them is a financial-correctness bug:
-
-    * ``settled_on`` -- the CASH day: when the money actually moved.  It is the
-      ONE answer to "has this payment already happened?", shared with the
-      posted ledger, which counts a payment's principal from exactly this day
-      (:func:`app.services.loan_ledger.payment_visible_on`, the fold's clock).
-      ``None`` for a payment that has not happened -- see ``is_confirmed``.
-    * ``payment_date`` -- the FUNDING basis: which pay period the payment is
-      booked in, i.e. which paycheck pays for it.  Drives the replay's rate
-      lookup, and it is the plan date of a payment whose cash has not moved.
-    * ``due_date`` -- the INSTALLMENT basis: which contractual monthly payment
-      this satisfies.  Drives the anchor boundary, the replayed row's date, and
-      ``next_pay_date``.
-
-    The funding basis and the installment basis differ whenever a payment is
-    settled LATE (past its due date, into the next biweekly pay period --
-    routine over a weekend or holiday).  Deriving the due date FROM the pay
-    period (the pre-fix behaviour) then reports the NEXT month's installment,
-    mis-dating the row and desyncing the replay from the genesis walk.
-
-    The CASH day differs from the funding basis in BOTH directions, and using
-    the funding basis for "has it happened" was finding **N-187** (plan step
-    **X-an**): a payment settled BEFORE its pay period begins was history to
-    the ledger and a forward projection to the resolver, so the same
-    installment was counted twice; a payment settled AFTER an evaluation date
-    inside its own pay period was history to the resolver and not to the
-    ledger, so it vanished from both the balance and the plan.
+    **It COMPOSES its dates rather than restating them** (plan step
+    **balance:X-bl-2b**, finding **N-432**).  The three dates and their
+    distinct jobs are :class:`._dates.PaymentDates`, the one home every tier
+    that holds a payment names them from; what this record adds is the AMOUNT,
+    which is the only part of a payment the pricing tier is qualified to
+    answer.  That is what lets a consumer of the CHRONOLOGY -- the schedule
+    replay, which reads three dates and no figure -- take a feed without the
+    amount model behind it, and it is why the loader's
+    :class:`~app.services.loan_ledger.PaymentInstallment` composes the same
+    value: the hand-off between the two is an attribute read rather than a
+    projection that could drift.
 
     Attributes:
-        payment_date: The payment's pay-period start (the funding basis above).
-            Matched to the schedule by year-month, not exact day, so
-            biweekly payment dates (e.g. 2026-03-06) correctly map to
-            the monthly schedule period (2026-03).
-        due_date: The monthly installment this payment satisfies (the
-            installment basis above).  Supplied by
-            :func:`app.services.loan_loaders.loan_payment_due_date` -- the one
-            derivation the genesis write walk uses too, so the posted ledger
-            and the replay can never drift on a payment's due date.
-        settled_on: The civil day the payment's cash moved (the cash basis
-            above), or ``None`` when it has not moved.  Supplied by
-            :func:`app.services.loan_ledger.payment_visible_on`, the same
-            derivation the fold dates the payment's principal by.
+        dates: The payment's :class:`~app.services.amortization_engine.PaymentDates`
+            -- its funding period, the installment it satisfies, and the day
+            its cash moved.  See that class for what each governs and for what
+            conflating any two of them costs.
         amount: The total payment amount (principal + interest).  Must
             be >= 0.  A zero amount represents a missed payment where
             only interest accrues (negative amortization).
     """
 
-    payment_date: date
-    due_date: date
-    settled_on: date | None
+    dates: PaymentDates
     amount: Decimal
-
-    @property
-    def is_confirmed(self) -> bool:
-        """Return whether this payment is historical fact rather than a plan.
-
-        **Derived, never stored** (plan step **X-an**).  A payment is confirmed
-        if and only if it carries the day its money moved -- the same
-        settled-iff-dated invariant
-        :func:`app.services.status_seam.apply_status_change` holds on the row
-        this record is built from, and :func:`app.utils.balance_predicates.settled_day`
-        refuses to break.  Storing the boolean beside the day would be a second
-        copy of one fact, free to disagree with it inside a record every
-        consumer reads.
-
-        **What that removes, precisely.**  Not the disagreement in the
-        DATABASE: there is deliberately no ``CHECK`` constraint (the predicate
-        lives in ``ref.statuses`` and a constraint cannot join), so a bulk
-        ``query.update`` bypassing the seam can still leave a settled day on a
-        Projected row.  What it removes is the disagreement in the RECORD, by
-        moving the arbitration to one boundary --
-        :func:`app.services.loan_payment_service.get_payment_history`, which
-        reads the STATUS and then requires the day, the same order the fold's
-        loader uses (``loan_loaders.settled_income_shadows``).  So the resolver
-        and the ledger cannot classify a payment differently even on a row a
-        bypass has broken.
-
-        Returns:
-            ``True`` for a settled payment (Paid or Received), ``False``
-            for a Projected one.
-        """
-        return self.settled_on is not None
 
     def __post_init__(self):
         """Validate payment record fields at construction time.
 
         Catches invalid data immediately rather than producing wrong
-        results deep in the schedule loop.
+        results deep in the schedule loop.  The three DATES validate
+        themselves (:meth:`PaymentDates.__post_init__`), so what is checked
+        here is this record's own two facts: that it was handed a dates value
+        at all, and its amount.
 
         Raises:
-            TypeError: If payment_date, due_date or a non-``None`` settled_on
-                is not a date, or amount is not a Decimal.
+            TypeError: If ``dates`` is not a :class:`PaymentDates`, or
+                ``amount`` is not a Decimal.
             ValueError: If amount is negative.
         """
-        if not isinstance(self.payment_date, date):
+        if not isinstance(self.dates, PaymentDates):
             raise TypeError(
-                f"payment_date must be a date, got {type(self.payment_date).__name__}"
-            )
-        if not isinstance(self.due_date, date):
-            raise TypeError(
-                f"due_date must be a date, got {type(self.due_date).__name__}"
-            )
-        if self.settled_on is not None and not isinstance(self.settled_on, date):
-            raise TypeError(
-                "settled_on must be a date or None, got "
-                f"{type(self.settled_on).__name__}"
+                f"dates must be a PaymentDates, got {type(self.dates).__name__}"
             )
         if not isinstance(self.amount, Decimal):
             raise TypeError(
@@ -310,6 +248,134 @@ def _advance_month(year: int, month: int, day: int) -> date:
         year += 1
     max_day = calendar.monthrange(year, month)[1]
     return date(year, month, min(day, max_day))
+
+
+def schedule_dates(due_dates: list[date], payment_day: int) -> list[date]:
+    """Return one DISTINCT monthly schedule slot per payment, in the order given.
+
+    Biweekly pay periods sometimes place two loan payments in the same calendar
+    month; a monthly amortization engine sums same-month payments, double-counting
+    that month and leaving the next empty.  This walks the payments in the order
+    given and hands each the first free month at or after its own due month, so
+    the engine sees one payment per month.  At most one extra payment per month
+    (~2x/year) is expected, so cascading collisions are not, but the inner loop
+    handles them.
+
+    **It returns SLOTS, not records, and the caller decides what to do with
+    them.**  It was ``loan_payment_service._engine_prep
+    ._redistribute_to_distinct_months`` until plan step **balance:X-bl-2a** -- a
+    rewrite of :class:`PaymentRecord` instances, which meant only a caller
+    holding PRICED records could ask the question.  The question is about dates
+    alone, so it is asked over dates alone, and the amount-free feed
+    (:func:`app.services.loan_ledger.payment_installments`) reaches the same
+    producer the priced path does.
+
+    **It lives HERE, in the pure primitives, and that is the second draft.**  It
+    first landed in ``loan_ledger._installments``, whose loaders put
+    ``loan_payment_service._engine_prep`` -- pure arithmetic, closure 14 -- on a
+    **42-module** closure to reach it (measured 2026-09-09).  That is the defect
+    this step exists to remove, so the rule sits beside
+    :func:`advance_to_next_payment_date`, the only thing it calls, where both
+    tiers already import it and neither loads a row to get it.
+
+    **Only the slot is invented; nothing here touches a fact.**  The funding
+    period and the cash day never enter, so a caller cannot accidentally
+    overwrite one with a slot -- the shape the previous version had to warn
+    against in prose.  Overwriting the funding period with the slot (the pre-fix
+    behaviour) costs a WRONG RATE PERIOD for that payment, which finding
+    **N-36** records as the reason the replay keeps its rate on the period start.
+
+    The collision key is the DUE MONTH, not the pay-period-start month: two pay
+    periods that both fall before the same ``payment_day`` (e.g. Apr 10 and
+    Apr 24, both due May 1) collide on the May schedule row, and the schedule and
+    the override map key everything by due month -- a pay-period-start key would
+    leave that collision unresolved and sum both into a single double payment.
+    *That key is written inline here rather than through
+    ``loan_ledger.installment_slot``, which spells the same ``(year, month)``:
+    routing the two together changes the installment identity across the whole
+    loan architecture, which is ``recurrence:R16-c``'s job and is deferred in
+    that function's own docstring.*
+
+    Args:
+        due_dates: Each payment's own installment date, in the order the caller
+            wants collisions resolved (the caller's order decides which payment
+            keeps a contested month, so it must be the chronology both the
+            replay and the priced feed use).
+        payment_day: The loan's contractual day-of-month due day, 1-31.  Only an
+            INVENTED slot uses it; a payment that keeps its own month keeps its
+            own date, day included.
+
+    Returns:
+        One slot date per element of ``due_dates``, positionally, all in
+        distinct calendar months.  A payment whose due month is uncontested gets
+        its own ``due_date`` back unchanged.
+    """
+    slots: list[date] = []
+    allocated_months: set[tuple[int, int]] = set()
+    for due in due_dates:
+        # A payment whose own month is free keeps its own DATE, day included --
+        # the uncontested case, which is every payment on both live loans.  A
+        # contested one walks forward a month at a time through
+        # ``advance_to_next_payment_date``, the project's one "next month, day
+        # clamped to this month's last" primitive, so a ``payment_day`` of 31
+        # lands on the 28th in February here exactly as it does in a forward
+        # projection.
+        slot = due
+        while (slot.year, slot.month) in allocated_months:
+            slot = advance_to_next_payment_date(slot, payment_day)
+        slots.append(slot)
+        allocated_months.add((slot.year, slot.month))
+    return slots
+
+
+def slotted_dates(
+    dates: list[PaymentDates], payment_day: int,
+) -> list[PaymentDates]:
+    """Return *dates* with each payment's due date replaced by its schedule SLOT.
+
+    The APPLICATION of :func:`schedule_dates` to a payment feed, and the ONE
+    statement of it (plan step **balance:X-bl-2b**).  Both feeds a loan has --
+    the PRICED one that
+    :func:`app.services.loan_payment_service.prepare_payments_for_engine`
+    prepares, and the amount-free one built on
+    :func:`app.services.loan_ledger.payment_installments` -- reach the slot
+    through here, so a collision cannot be resolved one way for the replay that
+    CONSUMES a month and another for the forward override that PLANS it.  That
+    disagreement is not hypothetical: split the two redistribution sets and one
+    planned payment is silently dropped (ruling **R-BAL7**).
+
+    **Only the INSTALLMENT moves.**  The funding period and the cash day are
+    facts and are carried through untouched -- overwriting the funding period
+    with a slot costs a WRONG RATE PERIOD for that payment, which finding
+    **N-36** records as the reason the replay keys its rate on the period start.
+
+    **The caller's ORDER decides which payment keeps a contested month**, and
+    this function does not sort: it walks *dates* as given.  The determinism
+    lives in the FEED (:func:`app.services.loan_ledger.payment_installments`
+    keys ``(pay_period.start_date, id)``), which is a precondition rather than
+    a property of this call.
+
+    Args:
+        dates: The payments' :class:`._dates.PaymentDates`, in the order
+            collisions are to be resolved.
+        payment_day: The loan's contractual day-of-month due day, 1-31.  Only
+            an INVENTED slot uses it; a payment that keeps its own month keeps
+            its own date, day included.
+
+    Returns:
+        One :class:`._dates.PaymentDates` per element of *dates*,
+        positionally, whose ``due_date`` values all fall in distinct calendar
+        months.  A payment whose due month is uncontested is returned
+        unchanged.
+    """
+    return [
+        dataclasses.replace(payment, due_date=slot)
+        for payment, slot in zip(
+            dates,
+            schedule_dates([payment.due_date for payment in dates], payment_day),
+            strict=True,
+        )
+    ]
 
 
 def advance_to_next_payment_date(
@@ -510,7 +576,7 @@ def _apply_override_payment(
     plan makes every near month an override month, so an override month can no
     longer swallow the extra.  There is no double-count: the standing extra is
     NOT baked into the override amount (it is a live parameter,
-    ``cash_ledger._loan_installment._shadow_live_amount`` /
+    ``cash_ledger._loan_installment._installment_cash`` /
     amount rule 4's MANUAL arm), so adding it here is its single application.
 
     Negative amortization (override below the period interest) is preserved as a

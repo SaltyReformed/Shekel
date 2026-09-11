@@ -11,6 +11,7 @@ from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.ref import AccountType
 from app.services import account_service
+from app.models.amount_ownership import AmountOwnership
 
 
 def _create_hysa_account(seed_user, db_session, name="My HYSA"):
@@ -451,7 +452,7 @@ class TestHysaDetailShadowTransactions:
                 to_account_id=account.id,
                 pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
-                amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 status_id=projected.id,
                 category_id=outgoing.id,
             ),

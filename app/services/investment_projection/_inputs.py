@@ -385,6 +385,7 @@ def build_contribution_timeline(
     contribution_transactions,
     periods,
     as_of,
+    saved_through,
 ):
     """Build ContributionRecords from the payroll feed and shadow transfers.
 
@@ -412,19 +413,20 @@ def build_contribution_timeline(
     The growth engine handles same-date aggregation (summing amounts,
     conservative is_confirmed rule) via its lookup dict.
 
-    **The path-1 gate is PRESENCE, not price** (an adversarial review of this
-    step moved it).  It read ``models_employee`` in a first build, which is
-    the priced half: a deduction fully consumed by its ``annual_cap`` across
-    the whole priced window prices to ``$0.00`` on every payday while being
-    genuinely configured, and so does a 12-per-year deduction on a saved
-    window shorter than a month holding no ordinal-1 payday -- reachable
-    because ``_month_ordinal`` counts over the owner's RHYTHM, not the
-    window, and ``PERIOD_BATCH_MIN`` is 1.  That fed the engine no records
-    at all, so its
+    **The path-1 gate is PRESENCE, not price** (an adversarial review of plan
+    step salary:R14-b moved it).  A first build asked *did any priced payday
+    pay this account*, which a genuinely configured deduction answers ``no``
+    to: one fully consumed by its ``annual_cap`` across the whole priced
+    window prices to ``$0.00`` on every payday, and so does a 12-per-year
+    deduction on a saved window shorter than a month holding no ordinal-1
+    payday -- reachable because ``_month_ordinal`` counts over the owner's
+    RHYTHM, not the window, and ``PERIOD_BATCH_MIN`` is 1.  That fed the
+    engine no records at all, so its
     ``periodic_contribution`` fallback applied the TRANSFER AVERAGE to periods
-    that should contribute nothing.  ``is_payroll_linked`` is the question the
-    gate means -- *is a deduction wired to this account* -- and the class
-    docstring draws exactly that distinction one field over.
+    that should contribute nothing.  :attr:`AccountPayrollFeed
+    .is_payroll_linked` is the question the gate means -- *is a deduction
+    wired to this account* -- and plan step **salary:S3-e-1** made it the
+    only one either consumer asks, for the reason that field states.
 
     **Path 1 stopped computing anything at plan step salary:R14-b.**  It ran
     each deduction's amount off the profile's stored annual salary and then
@@ -463,6 +465,39 @@ def build_contribution_timeline(
                                     the feed's hold rule answers.
         as_of:                      The read pass's clock; a period opening
                                     strictly before it is confirmed.
+        saved_through:              The last day the owner's SAVED schedule
+                                    covers
+                                    (:meth:`~app.services.pay_calendar
+                                    .PayCalendar.horizon`).  The boundary the
+                                    transfer average is added PAST and not
+                                    inside -- see path 1 for why the CALLER
+                                    states it.
+                                    **PRECONDITION: not ``None``, and it is
+                                    the horizon of the calendar *periods*
+                                    came from.**  ``horizon()`` is ``None``
+                                    only for a calendar with no saved period,
+                                    and every axis producer answers an EMPTY
+                                    window there -- ``_chart`` returns the
+                                    empty chart, ``resolve_projection_axis``
+                                    an empty window, ``build_horizon``
+                                    ``None`` -- so a non-empty *periods*
+                                    implies a real horizon and an arm for
+                                    ``None`` would be one that cannot fire
+                                    (``CLAUDE.md`` rule 1).  A ``None`` here
+                                    raises on the compare, which is the
+                                    failure this would rather have than
+                                    silently paying the average everywhere.
+                                    **The test is ONE-SIDED and the question
+                                    it implements is the FORWARD half alone.**
+                                    ``prices()`` also answered *below* the
+                                    calendar's first payday, where it added
+                                    the average; nothing can ask that here,
+                                    because ``projection_axis`` RAISES
+                                    *first_day* to
+                                    :meth:`~app.services.pay_calendar
+                                    .PayCalendar.opening_bound` and ``axis``
+                                    refuses below it, so no axis holds a
+                                    period that predates the schedule.
 
     Returns:
         list[ContributionRecord] sorted by contribution_date.  Empty
@@ -499,14 +534,28 @@ def build_contribution_timeline(
     # /retirement**, which an adversarial review of this fix separated and a
     # first draft of this comment ran together.  ``/investment``'s old
     # timeline domain was ``reported_periods()``, which IS
-    # ``calendar.saved()`` and so IS ``feed.prices()``'s domain: old and new
-    # coincide on both sides of the boundary.  ``/retirement`` passed NO
+    # ``calendar.saved()``: old and new coincide on both sides of the
+    # boundary.  ``/retirement`` passed NO
     # dated records at all, so every period there -- in-window included --
     # took the fallback, and in-window periods now get the deduction alone
     # plus whatever dated transfers exist.  That is a real change to the
     # readiness verdict, its levers and the /savings Horizon band, and it is
-    # NOT covered by this step's ``grid_balance_view`` measurement, which
+    # NOT covered by that step's ``grid_balance_view`` measurement, which
     # reads the balance seam only.
+    #
+    # **The boundary is the CALENDAR's, and plan step salary:S3-e-1 made the
+    # caller say so.**  It was ``feed.prices(payday)`` -- *did the engine
+    # price this payday* -- which answered the same days only because the
+    # feed was built over ``calendar.saved()`` and nothing else.  Plan step
+    # **salary:S3-e-2** lets a feed answer any payday it is asked, at which
+    # point that method would read ``True`` everywhere and this term would
+    # never be added again: an account funded by BOTH a deduction and
+    # transfers would silently lose its whole recurring-transfer stream from
+    # the forward walk, for the entire horizon.  The question was never about
+    # pricing.  It is *has the owner's schedule reached this day*, because
+    # that is what decides whether a dated transfer record could exist for
+    # it, so it is asked of the schedule.  The test is the FORWARD half only;
+    # the Args entry says why no axis can hold a period below the schedule.
     if feed.is_payroll_linked:
         beyond = _average_transfer_contribution(contribution_transactions)
         records.extend(
@@ -514,7 +563,7 @@ def build_contribution_timeline(
                 contribution_date=period.start_date,
                 amount=(
                     feed.employee_at(period.start_date)
-                    + (ZERO if feed.prices(period.start_date) else beyond)
+                    + (beyond if period.start_date > saved_through else ZERO)
                 ),
                 # Past periods are confirmed (the deduction was taken from the
                 # paycheck); future periods are projected.

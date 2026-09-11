@@ -101,6 +101,7 @@ from app.services.recurring_transfer_query import (
     StandingPayment,
     standing_installment_cash,
 )
+from app.utils.amount_relationships import pricing_load_options
 from app.utils.dates import add_months
 
 from ._context import BalanceContext, _memoize_once, require_scenario
@@ -477,7 +478,7 @@ def _estimated_from_contract(
             return
         # The installment's OWN escrow, on its OWN due date -- ruling D5's
         # contract time, the same date and function the PLANNED tier and the
-        # genesis split read (``_shadow_live_amount``), so an escrow version
+        # genesis split read (``_installment_cash``), so an escrow version
         # effective mid-horizon reaches every tier alike.
         escrow = escrow_calculator.escrow_monthly_as_of(fwd.escrow_lines, due)
         estimated.append(PlannedPayment(
@@ -601,7 +602,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
     )
 
     projected_shadows = loan_loaders.projected_income_shadows(
-        account.id, ctx.scenario_id,
+        account.id, ctx.scenario_id, options=pricing_load_options(),
     )
     # The pass's OWN loan derivation, not a second one built here: this line
     # called ``live_loan_transfer_amounts`` directly while the cash fold built a

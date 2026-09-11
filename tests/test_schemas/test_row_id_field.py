@@ -26,7 +26,12 @@ from app.schemas.validation import _helpers, _recurrence
 from app.schemas.validation._helpers import RowId
 from app.schemas.validation.transactions import TransactionCreateSchema
 from app.schemas.validation.merchant_rules import SubmittedAnswer
-from app.services.statement_match import ReviewedRow, RowKind, RuleAnswer
+from app.services.statement_match import (
+    ReviewedDifference,
+    ReviewedRow,
+    RowKind,
+    RuleAnswer,
+)
 
 
 #: Field types that CONTAIN another field rather than declaring one
@@ -287,10 +292,11 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({
     # and ``ck_pay_schedule_history_opens_range`` bound one window; it holds a
     # day, never an id.
     "history_opens_on_field",
-    # A money figure read through the statement package's own strict
-    # reader (plan step bank_import:X-f6d-4), so the row-id question does
-    # not arise: it holds a signed decimal, never an id.
-    "ReviewedFigureField",
+    # A DATE -- the day an owner was last paid, bounded to the application's
+    # own calendar (plan step pay_calendar:C14-e-3).  Shared by the four doors
+    # that state a payday, so one range holds them all; it holds a day, never
+    # an id.
+    "payday_field",
 })
 
 #: Every marshmallow field spelling the package declares that is not an
@@ -339,9 +345,20 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({
 #: cannot derive from ``RowId`` either.  :meth:`TestNoIdFieldWasMissed
 #: ::test_the_reviewed_row_field_is_strict_about_the_ids_it_carries` asserts
 #: the strictness on BOTH of its counters directly.
+#: **``ReviewedDifferenceField`` is here on the same terms again** (plan step
+#: ``bank_import:X-gp``): the consent value carries a figure and, where the
+#: owner named a member, that member's WHOLE row token -- so it carries the
+#: same two counters ``ReviewedRowField`` does and returns a value object.
+#: *It was ``ReviewedFigureField`` until that step and sat in
+#: :data:`_NON_INTEGER_FIELD_FACTORIES` as holding a signed decimal and never
+#: an id*; it holds ids now, so it moved here and
+#: :meth:`TestNoIdFieldWasMissed
+#: ::test_the_reviewed_difference_field_is_strict_about_the_ids_it_carries`
+#: asserts the strictness on both counters inside the member directly.
 _NON_INTEGER_FIELD_SPELLINGS = frozenset({
     "Boolean", "Date", "Decimal", "Nested", "RuleAnswerField",
-    "PurchaseDestination", "ReviewedRowField", "String",
+    "PurchaseDestination", "ReviewedDifferenceField", "ReviewedRowField",
+    "String",
 })
 
 #: Every field-class spelling in the validation package that is STRICT about
@@ -699,6 +716,71 @@ class TestNoIdFieldWasMissed:
             cash_amount=Decimal("2473.38"), version_id=1,
         )
 
+    def test_the_reviewed_difference_field_is_strict_about_the_ids_it_carries(
+        self,
+    ):
+        """``ReviewedDifferenceField`` carries a member's ROW and REVISION too.
+
+        :meth:`test_the_reviewed_row_field_is_strict_about_the_ids_it_carries`
+        one field over (plan step ``bank_import:X-gp``).  The consent value
+        names the member the difference lands on as that member's whole row
+        token, so the two counters that field grades are inside this one as
+        well -- and a laxer reading here would let a body land a re-price on
+        ``'007'`` where its own ``rows`` entry says ``7``, which the door then
+        compares as whole values and cannot see agree.
+
+        The FIGURE half is graded here too, for the same ``NaN`` reason: the
+        consent gate compares with ``!=``.
+        """
+        from app.schemas.validation.statements import (  # pylint: disable=import-outside-toplevel
+            ReviewedDifferenceField,
+        )
+
+        field = ReviewedDifferenceField()
+        for lax in ("\u0661\u0662", " 12 ", "+12", "1_0", "007", "-5", "0"):
+            with pytest.raises(ValidationError):
+                field.deserialize(f"0.05@transaction:{lax}:-180.00:1")
+            with pytest.raises(ValidationError):
+                field.deserialize(f"0.05@transaction:12:-180.00:{lax}")
+        for figure in ("NaN", "Infinity", "-Infinity", "1E+5", "1_0", "",
+                       "0x10", " -0.05", "-0.05 ", "--1", "-0.05\n"):
+            with pytest.raises(ValidationError):
+                field.deserialize(figure)
+            with pytest.raises(ValidationError):
+                field.deserialize(f"{figure}@transaction:12:-180.00:1")
+            with pytest.raises(ValidationError):
+                field.deserialize(f"0.05@transaction:12:{figure}:1")
+        for shape in ("0.05@transaction:12:-180.00", "0.05@ledger:12:-180.00:1",
+                      "0.05@transaction:12:-180.00:1@purchase:7:2.00:1",
+                      "0.05@", "@", "@transaction:12:-180.00:1", "::::"):
+            with pytest.raises(ValidationError):
+                field.deserialize(shape)
+        with pytest.raises(ValidationError):
+            field.deserialize(None)
+        # ...and what it DOES accept: a figure alone, and a figure at a member
+        # of either kind.
+        assert field.deserialize("-0.05") == ReviewedDifference(
+            figure=Decimal("-0.05"),
+        )
+        assert field.deserialize("0.05@transaction:12:-180.00:3") == (
+            ReviewedDifference(
+                figure=Decimal("0.05"),
+                on_row=ReviewedRow(
+                    kind=RowKind.TRANSACTION, row_id=12,
+                    cash_amount=Decimal("-180.00"), version_id=3,
+                ),
+            )
+        )
+        assert field.deserialize("-9.99@purchase:7:2473.38:1") == (
+            ReviewedDifference(
+                figure=Decimal("-9.99"),
+                on_row=ReviewedRow(
+                    kind=RowKind.PURCHASE, row_id=7,
+                    cash_amount=Decimal("2473.38"), version_id=1,
+                ),
+            )
+        )
+
     def test_the_rule_answer_field_is_strict_about_the_id_it_carries(self):
         """``RuleAnswerField`` names a TEMPLATE and is graded like a row id.
 
@@ -810,12 +892,12 @@ class TestNoIdFieldWasMissed:
         """
         # pylint: disable=import-outside-toplevel -- resolved here so the
         # registry above stays a plain frozenset of names.
-        from app.schemas.validation import auth, pay_periods, statements
+        from app.schemas.validation import auth, pay_periods
 
         modules = {
             "_auth_email_field": auth,
-            "ReviewedFigureField": statements,
             "history_opens_on_field": pay_periods,
+            "payday_field": pay_periods,
         }
         for factory_name in _NON_INTEGER_FIELD_FACTORIES:
             module = modules.get(factory_name)

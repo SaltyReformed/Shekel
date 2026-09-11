@@ -28,7 +28,7 @@ from app.services.auth_service import hash_password
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services import account_service
-from app.services.cash_ledger import resolve_transfer_amount
+from app.services.cash_ledger import amount_basis, resolve_transfer_amount
 from app.services.row_valuation import settled_contribution
 from app.models.amount_ownership import AmountOwnership
 
@@ -201,8 +201,9 @@ class TestEffectiveAmountDecimal:
         db.session.add(xfer)
         db.session.flush()
 
-        assert isinstance(resolve_transfer_amount(xfer), Decimal)
-        assert resolve_transfer_amount(xfer) == Decimal("200.00")
+        basis = amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+        assert isinstance(resolve_transfer_amount(xfer, basis), Decimal)
+        assert resolve_transfer_amount(xfer, basis) == Decimal("200.00")
 
     def test_transfer_active_returns_decimal(self, app, db, seed_user, seed_periods):
         """An active transfer resolves to its own amount, as a Decimal."""
@@ -222,8 +223,9 @@ class TestEffectiveAmountDecimal:
         db.session.add(xfer)
         db.session.flush()
 
-        assert isinstance(resolve_transfer_amount(xfer), Decimal)
-        assert resolve_transfer_amount(xfer) == Decimal("200.00")
+        basis = amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+        assert isinstance(resolve_transfer_amount(xfer, basis), Decimal)
+        assert resolve_transfer_amount(xfer, basis) == Decimal("200.00")
 
 
 # ── Section 2: IDOR -- Transfer Account Ownership ────────────────────
@@ -504,7 +506,7 @@ class TestBalanceWithTransfers:
                 to_account_id=savings_acct.id,
                 pay_period_id=seed_periods[1].id,
                 scenario_id=seed_user["scenario"].id,
-                amount=Decimal("200.00"),
+                amount_ownership=AmountOwnership.own(Decimal("200.00")),
                 status_id=projected.id,
                 category_id=seed_user["categories"]["Rent"].id,
                 name="To Savings",
@@ -553,7 +555,7 @@ class TestBalanceWithTransfers:
                 to_account_id=account.id,
                 pay_period_id=seed_periods[1].id,
                 scenario_id=seed_user["scenario"].id,
-                amount=Decimal("300.00"),
+                amount_ownership=AmountOwnership.own(Decimal("300.00")),
                 status_id=projected.id,
                 category_id=seed_user["categories"]["Rent"].id,
                 name="From Savings",
@@ -601,7 +603,7 @@ class TestBalanceWithTransfers:
                 to_account_id=savings_acct.id,
                 pay_period_id=seed_periods[1].id,
                 scenario_id=seed_user["scenario"].id,
-                amount=Decimal("500.00"),
+                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 status_id=projected.id,
                 category_id=seed_user["categories"]["Rent"].id,
                 name="Cancelled",

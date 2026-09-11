@@ -48,7 +48,6 @@ from inspect import signature
 import pytest
 
 from app.models.pay_period import PayPeriod
-from app.models.pay_schedule import PaySchedule
 from app.services import pay_period_write, pay_schedule_service
 from app.services.pay_calendar import (
     PayCalendar,
@@ -56,7 +55,13 @@ from app.services.pay_calendar import (
     calendar_at_schedule,
     calendar_for,
 )
-from tests._test_helpers import all_periods, rhythm_of
+from tests._test_helpers import (
+    all_periods,
+    era_of,
+    restate_fixture_era,
+    rhythm_of,
+    strip_owner_schedule,
+)
 
 #: ``seed_periods``' first payday, restated so the assertions below name a value
 #: rather than a bare literal.  Changing the fixture without changing this is
@@ -198,18 +203,13 @@ class TestItLoadsTheOwnersWholeSchedule:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            db.session.query(PayPeriod).filter_by(user_id=user_id).delete(
-                synchronize_session=False,
-            )
-            # Periods FIRST: ``fk_pay_periods_schedule`` is ON DELETE RESTRICT
-            # since plan step C4-b-2, so the parent cannot go under live
-            # children.  The schedule ROW goes too, and since plan step C3-b it
-            # has to be said: the cadence rule makes every batch that records a
-            # payday store one, so "no paydays" does not imply "no cadence".
-            # The owner this test is about has neither.
-            db.session.query(PaySchedule).filter_by(user_id=user_id).delete(
-                synchronize_session=False,
-            )
+            # Children FIRST: ``fk_pay_periods_schedule`` and
+            # ``fk_pay_eras_schedule`` are ON DELETE RESTRICT, so the parent
+            # cannot go under live children.  The schedule ROW goes too, and
+            # since plan step C3-b it has to be said: the era rule makes every
+            # batch that records a payday state a rhythm, so "no paydays" does
+            # not imply "no rhythm".  The owner this test is about has neither.
+            strip_owner_schedule(db.session, user_id)
             db.session.commit()
 
             # The premise, asserted rather than assumed: this owner really
@@ -242,7 +242,7 @@ class TestItLoadsTheOwnersWholeSchedule:
                 synchronize_session=False,
             )
             db.session.commit()
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7), None)
+            restate_fixture_era(user_id, date(2026, 1, 2), CADENCE + 7)
             db.session.commit()
 
             calendar = calendar_for(user_id)
@@ -335,7 +335,7 @@ class TestTheCadenceComesFromTheScheduleService:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7), None)
+            restate_fixture_era(user_id, date(2026, 1, 2), CADENCE + 7)
             db.session.commit()
 
             assert calendar_for(user_id).rhythm.cadence_days == CADENCE + 7
@@ -366,7 +366,7 @@ class TestTheCadenceComesFromTheScheduleService:
             user_id = seed_user["user"].id
             before = calendar_for(user_id)
 
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7), None)
+            restate_fixture_era(user_id, date(2026, 1, 2), CADENCE + 7)
             db.session.commit()
             after = calendar_for(user_id)
 
@@ -416,13 +416,14 @@ class TestTheDerivedCalendarDivergesFromTheStoredColumns:
         ``routes/pay_periods.py`` reaching ``upsert_schedule`` even when the
         batch created nothing -- as the door that rewrites a cadence without
         touching a period.  Plan step **C3-b** closed it: the route goes
-        through ``pay_period_write.record_paydays``, which upserts the cadence
-        only when it is recording paydays.  ``upsert_schedule`` has exactly one
-        caller in ``app/`` and that is it, verified 2026-08-11.  What survives
-        is a direct database write -- which is what makes this a CONTROL for a
-        value the reader must answer for rather than a reproduction of a
-        reachable bug, and it is why the fixture below calls the service twice
-        instead of driving a route.
+        through ``pay_period_write.record_paydays``, which persists the rhythm
+        only when it is recording paydays -- as an ERA since plan step
+        ``pay_calendar:C17-a``, whose writer ``mint_era`` has exactly one
+        caller in ``app/`` and that is it.  What survives is a direct era
+        restatement -- which is what makes this a CONTROL for a value the
+        reader must answer for rather than a reproduction of a reachable bug,
+        and it is why the fixture below restates the era twice instead of
+        driving a route.
 
         **The baseline is the horizon this calendar answered a statement
         earlier**, not a stored column: plan step ``pay_calendar:C4-c`` dropped
@@ -443,7 +444,7 @@ class TestTheDerivedCalendarDivergesFromTheStoredColumns:
 
             # LENGTHENED: the derived horizon runs a week further out, so
             # generation places rows in days it did not reach before.
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(CADENCE + 7), None)
+            restate_fixture_era(user_id, date(2026, 1, 2), CADENCE + 7)
             db.session.commit()
             assert calendar_for(user_id).horizon() == (
                 baseline + timedelta(days=7)
@@ -452,7 +453,7 @@ class TestTheDerivedCalendarDivergesFromTheStoredColumns:
             # SHORTENED: eleven days of the last paycheck stop being covered by
             # any period at all, and the day that was the horizon is now past
             # the end of the schedule.
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(3), None)
+            restate_fixture_era(user_id, date(2026, 1, 2), 3)
             db.session.commit()
             shorter = calendar_for(user_id)
             assert shorter.horizon() == baseline - timedelta(days=11)
@@ -562,11 +563,15 @@ class TestCalendarAtSchedule:
 
             stored = calendar_at_schedule(
                 user_id,
-                pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE), None, None),
+                pay_schedule_service.ScheduleFacts(
+                    (era_of(date(2026, 1, 2), CADENCE),), None,
+                ),
             )
             supplied = calendar_at_schedule(
                 user_id,
-                pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE + 7), None, None),
+                pay_schedule_service.ScheduleFacts(
+                    (era_of(date(2026, 1, 2), CADENCE + 7),), None,
+                ),
             )
 
             assert supplied != stored
@@ -597,7 +602,9 @@ class TestCalendarAtSchedule:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            cadence_less = pay_schedule_service.ScheduleFacts(rhythm_of(None), None, None)
+            cadence_less = pay_schedule_service.ScheduleFacts(
+                (era_of(date(2026, 1, 2), None),), None,
+            )
 
             with pytest.raises(PayCalendarError, match="must be a plain int"):
                 calendar_at_schedule(user_id, cadence_less)
@@ -627,10 +634,15 @@ class TestCalendarAtSchedule:
             stated = date(2020, 6, 1)
 
             bounded = calendar_at_schedule(
-                user_id, pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE), stated, None),
+                user_id,
+                pay_schedule_service.ScheduleFacts(
+                    (era_of(date(2026, 1, 2), CADENCE),), stated,
+                ),
             )
             unbounded = calendar_at_schedule(
-                user_id, pay_schedule_service.ScheduleFacts(rhythm_of(CADENCE), None, None),
+                user_id, pay_schedule_service.ScheduleFacts(
+                    (era_of(date(2026, 1, 2), CADENCE),), None,
+                ),
             )
 
             assert bounded.history_opens_on == stated

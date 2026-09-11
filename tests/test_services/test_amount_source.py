@@ -65,7 +65,15 @@ from app.services.cash_ledger import (
     resolve_transaction_amount,
     resolve_transfer_amount,
 )
-from app.services.cash_ledger._amount_source import _RELATION_RULES, _RULE_ANSWERS
+from app.services.cash_ledger import transfer_amount_rule
+from app.services.cash_ledger._amount_rule import (
+    _RELATION_RULES,
+    _TRANSFER_RELATION_RULES,
+)
+from app.services.cash_ledger._amount_source import (
+    _RULE_ANSWERS,
+    _TRANSFER_RULE_ANSWERS,
+)
 from tests._test_helpers import (
     write_past_the_amount_seam,
     add_escrow_line,
@@ -399,15 +407,50 @@ def _declare_loan_payment_derived(xfer):
 class TestTheDispatchIsTotal:
     """Every rule has an answer, and the enum is the list of rules."""
 
-    def test_every_amount_rule_has_an_answer(self):
-        """The dispatch table covers the enum exactly -- no rule, no orphan.
+    def test_every_amount_rule_has_an_answer_in_one_of_the_two_tables(self):
+        """The two dispatch tables cover the enum exactly -- no rule, no orphan.
 
         The predicate behind the module's "TOTAL dispatch" claim.  A member
         added to :class:`AmountRule` without an answer would raise a ``KeyError``
         at the lookup rather than silently taking whichever branch happened to
         be last, and this is what says so before a row does.
+
+        **It became a UNION at plan step X-au-f-2**, where ruling **R-BAL10**
+        moved rule 4 off the transaction dispatch onto the transfer's.  Written
+        as a union rather than as ``set(AmountRule) - {LOAN_PAYMENT}`` on the
+        transaction table: a set defined by SUBTRACTION claims members nobody
+        censused, and the union states the property that is actually wanted --
+        every rule is answerable somewhere.
         """
-        assert set(_RULE_ANSWERS) == set(AmountRule)
+        assert set(_RULE_ANSWERS) | set(_TRANSFER_RULE_ANSWERS) == set(
+            AmountRule,
+        )
+
+    def test_each_table_answers_exactly_the_rules_its_rows_can_take(self):
+        """And the union does not let a rule land in only ONE table by accident.
+
+        The union above is satisfied by a rule wired into either table, so on
+        its own it would pass a LOAN_PAYMENT wired only into the transaction
+        dispatch -- which is the state plan step X-au-f-2 exists to leave.  The
+        two key sets are therefore named, so a member added to
+        :class:`AmountRule` arrives with a decision about BOTH tables rather
+        than defaulting into whichever one someone edited.
+
+        A TRANSACTION cannot take rule 4 (its parent transfer answers it) and a
+        TRANSFER can take neither rule 2 (a salary profile names a transaction
+        template) nor rule 5 (a transfer has no parent transfer).
+        """
+        assert set(_RULE_ANSWERS) == {
+            AmountRule.OWN,
+            AmountRule.SALARY,
+            AmountRule.TEMPLATE,
+            AmountRule.TRANSFER,
+        }
+        assert set(_TRANSFER_RULE_ANSWERS) == {
+            AmountRule.OWN,
+            AmountRule.TEMPLATE,
+            AmountRule.LOAN_PAYMENT,
+        }
 
     def test_every_declarable_relation_has_a_rule(self):
         """Every relation a row may DECLARE refines into one of the five rules.
@@ -422,6 +465,22 @@ class TestTheDispatchIsTotal:
         of here.
         """
         assert set(_RELATION_RULES) == set(AmountSourceEnum)
+
+    def test_every_relation_a_TRANSFER_can_declare_has_a_rule(self):
+        """The transfer classifier's half, added with its table at X-au-f-2.
+
+        A transfer may declare exactly one of the two members -- TEMPLATE -- so
+        its refinement table holds one entry and PARENT_TRANSFER is refused by
+        name in :func:`transfer_amount_rule` rather than reaching a lookup that
+        would raise a bare ``KeyError``.  Asserting the set both ways is what
+        makes a NEW member arrive with a decision here too: a finance charge
+        that can price a transfer needs an entry, and one that cannot needs the
+        refusal above extended to say so.
+        """
+        assert set(_TRANSFER_RELATION_RULES) == {AmountSourceEnum.TEMPLATE}
+        assert set(AmountSourceEnum) - set(_TRANSFER_RELATION_RULES) == {
+            AmountSourceEnum.PARENT_TRANSFER,
+        }
 
 
 class TestWhichRulePricesARow:
@@ -474,17 +533,47 @@ class TestWhichRulePricesARow:
         txn = _template_row(seed_user, seed_periods[0], template, is_income=True)
         assert amount_rule(txn) is AmountRule.SALARY
 
-    def test_a_loan_payment_shadow_beats_the_transfer_rule(
+    def test_a_loan_payment_SHADOW_is_priced_by_its_parent_like_any_other(
         self, app, db, seed_user, seed_periods,
     ):
-        """LOAN_PAYMENT is tested first, because a loan payment IS a transfer.
+        """The precedence this used to assert is DELETED, not re-ordered.
 
-        The second precedence control, and its inverse is the defect plan step
-        X-au-f's specification names: a loan-payment shadow that placed as a
-        plain transfer would be priced from its parent instead of from the loan.
+        It read *LOAN_PAYMENT is tested first, because a loan payment IS a
+        transfer* -- rule 4 intercepted a loan payment's two legs and priced
+        them from the loan while every other shadow read its parent.  Ruling
+        **R-BAL10** (plan step X-au-f-2) puts the answer on the PARENT, so
+        there is no precedence left at this table: a shadow's rule is
+        TRANSFER whatever its parent is, which is R-JM's one chain.  The
+        loan payment's own rule is asserted at the transfer one table over
+        (:class:`TestTheLoanPaymentRule`).
+
+        Kept as a case rather than deleted with the precedence, because *this
+        row does not take rule 4* is exactly what a re-introduced refinement
+        would break, and it is a derive-mode payment -- the shape that DID take
+        it.
         """
         shadow, _rows = _loan_payment(seed_user, seed_periods[0], derive=True)
-        assert amount_rule(shadow) is AmountRule.LOAN_PAYMENT
+        assert amount_rule(shadow) is AmountRule.TRANSFER
+
+    def test_a_loan_payment_TRANSFER_beats_the_series_rule(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """LOAN_PAYMENT is tested first, because a loan payment HAS a series.
+
+        The precedence control R-BAL10 moved here from the shadow, and its
+        inverse is finding **N-263**: a loan-payment transfer that placed as a
+        plain template row would be priced from its definition's series --
+        which in DERIVE mode is refused outright (``owns_its_amount`` is False)
+        and in MANUAL mode silently drops the standing extra.
+
+        The parent is DECLARED here, which is what makes the refinement
+        reachable: a transfer carrying its own figure takes rule 1 first,
+        whatever its template says (**R-IO**).
+        """
+        _shadow, rows = _loan_payment(seed_user, seed_periods[0], derive=True)
+        assert transfer_amount_rule(rows[0].transfer) is (
+            AmountRule.LOAN_PAYMENT
+        )
 
     def test_a_generic_transfer_shadow_is_priced_by_its_parent(
         self, app, db, seed_user, seed_periods,
@@ -649,7 +738,7 @@ class TestTheDeclarationDecides:
         declare_derived(xfer, AmountSourceEnum.PARENT_TRANSFER)
         db.session.flush()
         with pytest.raises(AmountUnresolvable, match="no parent transfer"):
-            resolve_transfer_amount(xfer)
+            resolve_transfer_amount(xfer, _basis_for(seed_user))
 
 
 class TestWhatEachRuleAnswers:
@@ -860,7 +949,7 @@ class TestTheTransferRule:
             seed_user, db.session, seed_user["account"], savings,
             seed_periods[0], amount=Decimal("75.00"),
         )
-        assert resolve_transfer_amount(xfer) == Decimal("75.00")
+        assert resolve_transfer_amount(xfer, _basis_for(seed_user)) == Decimal("75.00")
 
     def test_a_generated_transfer_answers_its_definitions_series(
         self, app, db, seed_user, seed_periods,
@@ -873,7 +962,7 @@ class TestTheTransferRule:
             seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
         )
         assert xfer.amount is None
-        assert resolve_transfer_amount(xfer) == _OLD_PRICE
+        assert resolve_transfer_amount(xfer, _basis_for(seed_user)) == _OLD_PRICE
 
     def test_a_later_transfer_of_the_same_template_answers_the_later_price(
         self, app, db, seed_user, seed_periods,
@@ -895,7 +984,7 @@ class TestTheTransferRule:
             seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_NEW_PRICE,
         )
         assert seed_periods[0].start_date < _PRICE_FELL_ON < xfer.due_date
-        assert resolve_transfer_amount(xfer) == _NEW_PRICE
+        assert resolve_transfer_amount(xfer, _basis_for(seed_user)) == _NEW_PRICE
 
     def test_a_generated_transfer_that_carries_a_figure_owns_it(
         self, app, db, seed_user, seed_periods,
@@ -918,7 +1007,7 @@ class TestTheTransferRule:
         assert template_amount_service.amount_as_of(
             template, _DUE_UNDER_OLD_PRICE,
         ) == _OLD_PRICE
-        assert resolve_transfer_amount(xfer) == Decimal("111.11")
+        assert resolve_transfer_amount(xfer, _basis_for(seed_user)) == Decimal("111.11")
 
     @pytest.mark.parametrize("status", [
         StatusEnum.DONE, StatusEnum.CANCELLED,
@@ -942,7 +1031,7 @@ class TestTheTransferRule:
         )
         xfer.status_id = ref_cache.status_id(status)
         db.session.flush()
-        assert resolve_transfer_amount(xfer) == _OLD_PRICE
+        assert resolve_transfer_amount(xfer, _basis_for(seed_user)) == _OLD_PRICE
 
 
 class TestEveryRefusalFires:
@@ -1058,7 +1147,7 @@ class TestEveryRefusalFires:
         db.session.flush()
         _declare_transfer_derived(xfer)
         with pytest.raises(AmountUnresolvable, match="series is EMPTY"):
-            resolve_transfer_amount(xfer)
+            resolve_transfer_amount(xfer, _basis_for(seed_user))
 
     def test_an_own_row_carrying_no_figure_is_refused(
         self, app, db, seed_user, seed_periods,
@@ -1106,7 +1195,7 @@ class TestEveryRefusalFires:
             with pytest.raises(
                 AmountUnresolvable, match="owns its amount and carries none",
             ):
-                resolve_transfer_amount(xfer)
+                resolve_transfer_amount(xfer, _basis_for(seed_user))
             state_own_amount(xfer, Decimal("75.00"))
 
 
@@ -1143,7 +1232,7 @@ class TestTheLoanPaymentRule:
         """
         shadow, rows = _loan_payment(seed_user, seed_periods[0], derive=False)
         basis = _basis_for(seed_user)
-        assert amount_rule(shadow) is AmountRule.LOAN_PAYMENT
+        assert transfer_amount_rule(shadow.transfer) is AmountRule.LOAN_PAYMENT
         assert resolve_transaction_amount(shadow, basis) == Decimal("1300.00")
 
     def test_a_manual_payment_answers_the_same_base_with_and_without_an_extra(
@@ -1265,8 +1354,10 @@ class TestTheBatchTier:
         # reach different rules.  This asked ``basis.loans.live_cash`` on both
         # until plan step X-au-g-2c-2 deleted that method; the dispatch is the
         # thing the assertion was always about, so it is asserted directly.
+        # The loan payment's rule is asked of its PARENT since plan step
+        # X-au-f-2 (ruling R-BAL10) -- the shadow reads that answer.
         assert amount_rule(paycheck) is AmountRule.SALARY
-        assert amount_rule(shadow) is AmountRule.LOAN_PAYMENT
+        assert transfer_amount_rule(shadow.transfer) is AmountRule.LOAN_PAYMENT
         # And neither derivation can answer the other's row, which is what
         # "apart" means: not two empty maps, but two that cannot cross.
         assert income_service.salary_net_for(

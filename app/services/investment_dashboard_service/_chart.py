@@ -90,6 +90,9 @@ def _run_growth_projection(
             contribution_transactions=ctx.shadow_contributions,
             periods=periods,
             as_of=ctx.balance_ctx.as_of,
+            # The pass's own calendar, so the boundary this axis runs past is
+            # the same one the seam reports over (plan step salary:S3-e-1).
+            saved_through=ctx.balance_ctx.calendar().horizon(),
         ),
         salary_basis=ctx.feed.salary_basis(),
     )

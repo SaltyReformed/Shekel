@@ -23,6 +23,7 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
+    AmountSourceEnum,
     SettledDayBasisEnum,
     SettlementBasisEnum,
     StatusEnum,
@@ -50,12 +51,17 @@ from app.services import (
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.cash_ledger import contribution_of
+from app.services.cash_ledger import (
+    contribution_of,
+    resolve_transaction_amount,
+)
 from app.services.row_valuation import settled_contribution, settled_figure
 from tests._test_helpers import (
     amount_basis_for,
     create_account_of_type,
     default_settle_day,
+    derived_span,
+    make_cadence_rule,
     settle_day_columns,
     settled_day_basis_id,
     settlement_basis_id,
@@ -63,6 +69,7 @@ from tests._test_helpers import (
     state_template_price,
 )
 from tests._test_helpers import make_every_period_rule
+from tests.oracles.recurrence_baseline import ANNUAL, MONTHLY
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -640,7 +647,7 @@ def _create_transfer_in_period(seed_user, seed_periods, period_index=0):
             to_account_id=savings.id,
             pay_period_id=seed_periods[period_index].id,
             scenario_id=seed_user["scenario"].id,
-            amount=Decimal("200.00"),
+            amount_ownership=AmountOwnership.own(Decimal("200.00")),
             status_id=projected.id,
             category_id=seed_user["categories"]["Rent"].id,
             name="CF Transfer",
@@ -846,7 +853,7 @@ class TestCarryForwardShadowTransactions:
                     to_account_id=savings2.id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("150.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("150.00")),
                     status_id=projected.id,
                     category_id=seed_user["categories"]["Rent"].id,
                     name="CF Transfer 2",
@@ -1212,7 +1219,7 @@ class TestCarryForwardOverrideSiblingTransfers:
                     to_account_id=savings.id,
                     pay_period_id=seed_periods[0].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=template.default_amount,
+                    amount_ownership=AmountOwnership.own(template.default_amount),
                     status_id=projected.id,
                     category_id=template.category_id,
                     name=template.name,
@@ -1229,7 +1236,7 @@ class TestCarryForwardOverrideSiblingTransfers:
                     to_account_id=savings.id,
                     pay_period_id=seed_periods[1].id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=template.default_amount,
+                    amount_ownership=AmountOwnership.own(template.default_amount),
                     status_id=projected.id,
                     category_id=template.category_id,
                     name=template.name,
@@ -3708,3 +3715,284 @@ class TestPreviewCarryForwardParityWithMutating:
                 ).one()
             )
             assert target.estimated_amount == predicted_after
+
+
+class TestACarriedForwardLeftoverRowIsDated:
+    """A leftover row carries the date its definition resolves it on.
+
+    **Developer ruling 2026-09-06** (the balance arc id is reserved and not
+    yet minted, so this names the ruling by date rather than by an id that
+    does not resolve).
+    ``_create_target_override_row`` copied its source's ``template_id`` and
+    wrote ``due_date = None``.  That row can be handed BACK to its definition
+    -- ``recurrence_engine.resolve_conflicts``'s "use the template's amount"
+    empties its figure and declares it derived -- and a derived row is priced
+    by amount rule 3, which resolves the definition's series on the ROW's own
+    due date.  So the undated row became unpriceable the moment the owner
+    pressed that button, and ``AmountUnresolvable`` has no handler on the
+    grid, dashboard or companion path: one such row took all three out.
+
+    Measured before the fix: ZERO rows in that state on the dev database and
+    on a 1034-row production clone, so the defect was live and unrealised
+    rather than sitting in the data.
+    """
+
+    def _dated_monthly_envelope(self, seed_user, seed_periods):
+        """Return (template, canonical rows) for a monthly-on-the-15th envelope.
+
+        The cadence matters: an every-paycheck rule names no day of the month,
+        and ``compute_due_date`` dates such a row from its period's START --
+        which would make "the definition's date" and "the paycheck's start"
+        the same answer, and a case that cannot tell its two candidates apart
+        grades neither.
+        """
+        template = _create_envelope_template(
+            seed_user, name="Monthly Envelope",
+        )
+        # ``_create_envelope_template`` gives an every-paycheck rule; this
+        # cadence has to name a day, so the rule is re-authored.
+        db.session.delete(template.recurrence_rule)
+        db.session.flush()
+        db.session.refresh(template)
+        make_cadence_rule(template, MONTHLY, fires_on_day=15)
+        db.session.refresh(template)
+        created = recurrence_engine.generate_for_template(
+            template,
+            GenerationSchedule.for_period_ids(
+                BalanceContext.build(seed_user["user"].id),
+                {p.id for p in seed_periods},
+            ),
+            seed_user["scenario"].id,
+        )
+        db.session.flush()
+        return template, created
+
+    def _roll_into_a_period_whose_only_row_is_gone(
+        self, seed_user, seed_periods, template, created,
+    ):
+        """Force the CREATE branch and return the fresh override row.
+
+        Soft-deleting the target's canonical is one of the two states
+        ``_classify_leftover_target`` answers CREATE for (the other is a
+        finalised row), and it is the one that needs no settlement record.
+        """
+        # A monthly cadence fires in only some of ten biweekly paychecks, so
+        # the two ends are taken from the rows the engine actually placed
+        # rather than from fixed period indices.
+        by_period = {p.id: p for p in seed_periods}
+        placed = sorted(created, key=lambda t: t.due_date)
+        source, target_canonical = placed[0], placed[1]
+        target_period = by_period[target_canonical.pay_period_id]
+        oracle_due = target_canonical.due_date
+        # Soft-deleting the target's only row is one of the two states
+        # ``_classify_leftover_target`` answers CREATE for; the other is a
+        # finalised row, and this one needs no settlement record.
+        target_canonical.is_deleted = True
+        db.session.commit()
+
+        carry_forward_service.carry_forward_unpaid(
+            source.pay_period_id, target_period.id,
+            seed_user["scenario"].id,
+            balance_ctx=BalanceContext.build(seed_user["user"].id),
+        )
+        db.session.commit()
+
+        fresh = (
+            db.session.query(Transaction)
+            .filter_by(
+                template_id=template.id,
+                pay_period_id=target_period.id,
+                scenario_id=seed_user["scenario"].id,
+                is_deleted=False,
+            ).one()
+        )
+        assert fresh.id != source.id
+        assert fresh.is_override is True
+        return fresh, oracle_due, target_period
+
+    def test_the_row_takes_the_date_its_definition_places_in_that_paycheck(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The leftover is dated like the definition's OWN row in that paycheck.
+
+        Graded against the row the ENGINE generated there.  **That is a
+        different call PATH, not a different producer** -- the engine's date
+        comes from ``_amounts._derive_row_fields``, which calls the same
+        ``compute_due_date`` -- so this equality grades rule 14's "one walk"
+        claim (the two sites cannot drift) and NOT the date's correctness.
+        The correctness half is the two assertions below it: the rule was
+        authored to fire on the 15th, and no paycheck in this schedule opens
+        on a 15th, so both are facts about the fixture that hold whatever
+        ``compute_due_date`` answers.
+        """
+        with app.app_context():
+            template, created = self._dated_monthly_envelope(
+                seed_user, seed_periods,
+            )
+            fresh, oracle_due, target_period = (
+                self._roll_into_a_period_whose_only_row_is_gone(
+                    seed_user, seed_periods, template, created,
+                )
+            )
+
+            assert fresh.due_date is not None
+            assert fresh.due_date == oracle_due
+            # The rule fires on the 15th and no paycheck in this schedule
+            # opens on one -- so "the definition's day" and "the paycheck's
+            # start" are genuinely different answers here, which is what makes
+            # the equality above a measurement rather than a coincidence.
+            assert fresh.due_date.day == 15
+            assert fresh.due_date != derived_span(target_period).start_date
+
+    def test_a_definition_with_no_cadence_dates_the_row_from_the_paycheck(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A CLEARED cadence still states a price, so its row still needs a date.
+
+        The paycheck's start is ``compute_due_date``'s own answer for a
+        cadence that names no day of the month, so the two arms of
+        ``_leftover_due_date`` are one rule rather than two.
+        """
+        with app.app_context():
+            template = _create_envelope_template(
+                seed_user, name="Father's Day", with_rule=False,
+            )
+            _create_envelope_txn(seed_user, seed_periods[0], template)
+            db.session.commit()
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            fresh = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).one()
+            )
+            assert fresh.is_override is True
+            assert fresh.due_date == derived_span(seed_periods[1]).start_date
+
+    def test_handing_the_leftover_back_to_its_definition_leaves_it_priceable(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """THE CONTROL: the act that used to strand the row now prices it.
+
+        ``resolve_conflicts(action="update")`` is the chooser's "use the
+        template's amount".  It clears the override flag and calls
+        ``declare_derived``, which empties the row's figure -- so from here
+        amount rule 3 prices the row off its definition's series, resolved on
+        the row's own due date.
+
+        Before the producer was fixed this raised ``AmountUnresolvable``
+        from ``_stated_amount``'s no-due-date arm, and every screen that
+        prices a row without catching it went down with it.
+        """
+        with app.app_context():
+            template, created = self._dated_monthly_envelope(
+                seed_user, seed_periods,
+            )
+            fresh, _, _ = self._roll_into_a_period_whose_only_row_is_gone(
+                seed_user, seed_periods, template, created,
+            )
+            fresh_id = fresh.id
+
+            recurrence_engine.resolve_conflicts(
+                [fresh_id], action="update",
+                user_id=seed_user["user"].id,
+            )
+            db.session.commit()
+
+            handed_back = db.session.get(Transaction, fresh_id)
+            # The hand-back really happened: no figure of its own, and the
+            # relation that prices it named.  Without these the pricing
+            # assertion below would pass on a row that never became derived.
+            assert handed_back.is_override is False
+            assert handed_back.estimated_amount is None
+            assert handed_back.amount_source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+
+            # THE GRADED LINE, and it is first for a reason: with the producer
+            # mutated back to ``due_date=None`` this call raises
+            # ``AmountUnresolvable`` from ``_stated_amount``'s no-due-date arm.
+            # Asserting the date ahead of it would fail the case one line
+            # earlier and leave the pricing itself ungraded, which is a control
+            # that never runs the code it names.
+            priced = resolve_transaction_amount(
+                handed_back, amount_basis_for(handed_back),
+            )
+            assert priced == Decimal("100.00")
+            assert handed_back.due_date is not None
+
+    def test_a_definition_that_does_not_fire_in_that_paycheck_still_dates_it(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """THE BRANCH THIS CONSTRUCTOR EXISTS FOR, and its answer is a
+        counterfactual.
+
+        ``_create_target_override_row``'s own docstring names it: "a yearly
+        Father's Day envelope rolling into an off-anniversary period".  The
+        rule names NO occurrence in the target paycheck, so there is no
+        definition-placed row for the leftover to be dated like --
+        ``compute_due_date`` is a pure function of ``(rule, period)`` and
+        answers anyway, from the rule's day of month in the month the paycheck
+        opens in.  The date can therefore fall OUTSIDE the target paycheck.
+
+        That is the price of one producer over a second spelling and it is
+        paid deliberately: ``DerivedPeriod.attribution_day`` clamps such a date
+        back into the period, so no period total and no period-end balance
+        moves.  What the row gains is the thing it had no way to get before --
+        a date its definition's price series can be resolved on.
+        """
+        with app.app_context():
+            template = _create_envelope_template(
+                seed_user, name="Father's Day", with_rule=False,
+            )
+            # A cadence that fires in JUNE, against a schedule running
+            # 2026-01-02 to 2026-05-21 -- so the engine places no row in any
+            # seed period and the CREATE branch is the only one reachable.
+            make_cadence_rule(
+                template, ANNUAL, fires_on_day=15, fires_in_month=6,
+            )
+            db.session.refresh(template)
+            _create_envelope_txn(seed_user, seed_periods[0], template)
+            db.session.commit()
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            fresh = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id,
+                    pay_period_id=seed_periods[1].id,
+                    scenario_id=seed_user["scenario"].id,
+                    is_deleted=False,
+                ).one()
+            )
+            assert fresh.is_override is True
+            assert fresh.due_date is not None
+            # The authored day survives; the MONTH is the counterfactual.
+            assert fresh.due_date.day == 15
+
+            # The point of dating it: the hand-back now prices.
+            recurrence_engine.resolve_conflicts(
+                [fresh.id], action="update", user_id=seed_user["user"].id,
+            )
+            db.session.commit()
+            handed_back = db.session.get(Transaction, fresh.id)
+            assert handed_back.estimated_amount is None
+            assert resolve_transaction_amount(
+                handed_back, amount_basis_for(handed_back),
+            ) == Decimal("100.00")

@@ -23,7 +23,13 @@ deleted both pages, which left those two readers with no caller in ``app/``
 (finding **bank_import:BI-479**); ``bank_import:X-gi-3`` deleted them.  Every
 case here now drives the LIVE readers,
 :func:`~app.schemas.validation.statement_reconcile.reconcile_payload` and
-:func:`~app.schemas.validation.statement_reconcile.reconcile_match_payload`.
+:func:`~app.schemas.validation.statement_reconcile.reconcile_match_payload`
+-- with ONE declared exception, ``TestAMatchMayNameAsManyRowsAsThePassOFFERS
+.test_a_match_naming_more_than_a_hundred_LINES_loads_too``, which hand-builds
+its payload because no reader can produce it: ``reconcile_match_payload``
+emits exactly one ``line_ids`` member on every path there is.  It grades the
+shape ``bank_import:X-gn`` will make submittable, and it is named here rather
+than left to contradict this paragraph silently.
 
 **The split was not the deletion BI-479 prescribed, and the difference is
 measured.**  That row said the classes reaching the schemas THROUGH the two
@@ -62,7 +68,12 @@ from app.schemas.validation.merchant_rules import (  # pylint: disable=protected
     SubmittedAnswer,
     rule_payload,
 )
-from app.services.statement_match import RuleAnswer
+from app.services.statement_match import (
+    ReviewedDifference,
+    ReviewedRow,
+    RowKind,
+    RuleAnswer,
+)
 from app.schemas.validation.statements import (
     StatementMatchSchema,
     NEW_ENVELOPE,
@@ -127,10 +138,18 @@ def _load(form):
 class TestTheDifferenceTheOwnerAccepted:
     """Plan step ``bank_import:X-f6d-4``: the one field that is not per-row.
 
-    The consent box is rendered DISABLED with ``value=""`` in lockstep, so an
+    The consent control submits nothing until an option is ticked, and the
+    scriptless placeholder is rendered DISABLED with ``value=""``, so an
     unticked group, and a browser with no JavaScript, both submit nothing at
     all.  What this grades is that the three states are distinguishable on the
     wire and that a hostile spelling cannot reach the door as a figure.
+
+    **The field carries the member beside the figure since plan step
+    ``bank_import:X-gp``** (ruling **R-BI2**): ``residual-<line>`` and
+    ``difference_on-<line>`` became one ``consent-<line>`` whose value is a
+    :class:`~app.services.statement_match.ReviewedDifference` token.  Every
+    case below that graded the figure grades the same figure inside that
+    value, and the cases on the row half are new.
 
     **It grades ``reconcile_match_payload`` since plan step
     ``bank_import:X-gi-3``**, and ``hand_match_payload`` before that, and
@@ -152,26 +171,81 @@ class TestTheDifferenceTheOwnerAccepted:
             ("rows-11", "transaction:42:-180.00:1"),
         ]))
 
-        assert loaded["residual"] is None
+        assert loaded["consent"] is None
 
     def test_a_ticked_group_carries_the_figure_it_showed(self):
-        """A signed decimal, read into a ``Decimal`` for the door to compare."""
+        """A signed decimal, read into a ``Decimal`` for the door to compare.
+
+        **Naming no member**, which is what *record it as a row with no
+        category* submits and what every surface but the MATCH pane submits.
+        """
         loaded = _load_one_card(_form([
             ("rows-11", "transaction:42:2473.38:1"),
             ("rows-11", "transaction:43:100.00:1"),
-            ("residual-11", "0.05"),
+            ("consent-11", "0.05"),
         ]))
 
-        assert loaded["residual"] == Decimal("0.05")
+        assert loaded["consent"] == ReviewedDifference(figure=Decimal("0.05"))
+
+    def test_a_consent_naming_a_MEMBER_carries_both_halves(self):
+        """Plan step ``bank_import:X-gp``: the figure AND the member, as one.
+
+        The member is read through the SAME reader a ``rows`` entry is, so
+        the value the door compares against the row list is the whole
+        reviewed row rather than a bare id.
+        """
+        loaded = _load_one_card(_form([
+            ("rows-11", "transaction:42:2473.38:1"),
+            ("rows-11", "transaction:43:100.00:1"),
+            ("consent-11", "0.05@transaction:42:2473.38:1"),
+        ]))
+
+        assert loaded["consent"] == ReviewedDifference(
+            figure=Decimal("0.05"),
+            on_row=ReviewedRow(
+                kind=RowKind.TRANSACTION, row_id=42,
+                cash_amount=Decimal("2473.38"), version_id=1,
+            ),
+        )
+
+    @pytest.mark.parametrize("spelling, why", [
+        ("0.05@transaction:٤٢:2473.38:1", "a non-ASCII digit run as the id"),
+        ("0.05@transaction:42:2473.38:007", "a zero-padded revision"),
+        ("0.05@transaction:42:NaN:1", "a NaN figure inside the member"),
+        ("0.05@ledger:42:2473.38:1", "a kind of row that does not exist"),
+        ("0.05@transaction:42:2473.38", "a member with three fields"),
+        ("0.05@transaction:42:2473.38:1@purchase:7:-9.99:1", "two members"),
+        ("@transaction:42:2473.38:1", "a member with no figure"),
+        ("0.05@", "a separator with nothing after it"),
+    ])
+    def test_a_hostile_MEMBER_is_refused(self, spelling, why):
+        """The row half is exactly as strict as a ``rows`` entry.
+
+        Each of these would be refused inside ``rows``; a laxer reading here
+        would let a body land a difference on a row the row list could not
+        have carried, which is the shape ruling **R-IA** measured at
+        `$2,572.36` one field over.
+
+        Args:
+            spelling: What a crafted body sends.
+            why: What is wrong with it, for the failure message.
+        """
+        with pytest.raises(ValidationError) as caught:
+            _load_one_card(_form([
+                ("rows-11", "transaction:42:2473.38:1"),
+                ("consent-11", spelling),
+            ]))
+
+        assert "consent" in caught.value.messages, why
 
     def test_a_NEGATIVE_difference_is_read_as_one(self):
         """The bank took more than the rows say, which is the expense arm."""
         loaded = _load_one_card(_form([
             ("rows-11", "transaction:42:-180.00:1"),
-            ("residual-11", "-0.06"),
+            ("consent-11", "-0.06"),
         ]))
 
-        assert loaded["residual"] == Decimal("-0.06")
+        assert loaded["consent"] == ReviewedDifference(figure=Decimal("-0.06"))
 
     @pytest.mark.parametrize("spelling, why", [
         ("NaN", "compares unequal to every figure, so a guard becomes a no-op"),
@@ -181,6 +255,7 @@ class TestTheDifferenceTheOwnerAccepted:
         ("1_0", "a spelling the row token on this same form refuses"),
         ("+0.05", "a leading plus the row token refuses"),
         (" 0.05 ", "surrounding whitespace the row token refuses"),
+        ("0.05\n", "a trailing newline, which a `$` anchor matched before"),
     ])
     def test_a_hostile_spelling_is_REFUSED(self, spelling, why):
         """Each of these reaches the field from a crafted POST.
@@ -199,11 +274,11 @@ class TestTheDifferenceTheOwnerAccepted:
         """
         with pytest.raises(ValidationError) as caught:
             _load_one_card(_form([
-                        ("rows-11", "transaction:42:-180.00:1"),
-                ("residual-11", spelling),
+                ("rows-11", "transaction:42:-180.00:1"),
+                ("consent-11", spelling),
             ]))
 
-        assert "residual" in caught.value.messages, why
+        assert "consent" in caught.value.messages, why
 
     def test_a_SUB_CENT_figure_is_read_verbatim_and_left_to_the_door(self):
         """The reader is about the FORMAT; the VALUE is the door's question.
@@ -218,10 +293,10 @@ class TestTheDifferenceTheOwnerAccepted:
         """
         loaded = _load_one_card(_form([
             ("rows-11", "transaction:42:-180.00:1"),
-            ("residual-11", "0.054"),
+            ("consent-11", "0.054"),
         ]))
 
-        assert loaded["residual"] == Decimal("0.054")
+        assert loaded["consent"] == ReviewedDifference(figure=Decimal("0.054"))
 
     def test_an_EMPTY_consent_box_is_UNTOUCHED_rather_than_malformed(self):
         """This module's founding principle, on the newest control.
@@ -233,10 +308,10 @@ class TestTheDifferenceTheOwnerAccepted:
         """
         loaded = _load_one_card(_form([
             ("rows-11", "transaction:42:-180.00:1"),
-            ("residual-11", ""),
+            ("consent-11", ""),
         ]))
 
-        assert loaded["residual"] is None
+        assert loaded["consent"] is None
 
     def test_a_REPEATED_consent_cannot_desynchronise_the_item(self):
         """One consent per item, so a repeated key keeps the first.
@@ -248,11 +323,36 @@ class TestTheDifferenceTheOwnerAccepted:
         """
         loaded = _load_one_card(_form([
             ("rows-11", "transaction:42:-180.00:1"),
-            ("residual-11", "0.05"),
-            ("residual-11", "-999.00"),
+            ("consent-11", "0.05"),
+            ("consent-11", "-999.00"),
         ]))
 
-        assert loaded["residual"] == Decimal("0.05")
+        assert loaded["consent"] == ReviewedDifference(figure=Decimal("0.05"))
+
+    def test_the_OLD_two_field_shape_states_NO_consent(self):
+        """A page drawn before plan step ``bank_import:X-gp`` fails CLOSED.
+
+        A stale tab still posts ``residual-<line>`` and ``difference_on-<line>``.
+        A reader that honoured the first would mint a row where the owner had
+        named a member in the second; ignoring both leaves the body stating no
+        consent, which the door refuses with the remedies named.  **The
+        control**: the same body under the new name loads a consent, so this
+        is not passing because nothing loads.
+        """
+        stale = _load_one_card(_form([
+            ("rows-11", "transaction:42:2473.38:1"),
+            ("rows-11", "transaction:43:100.00:1"),
+            ("residual-11", "0.05"),
+            ("difference_on-11", "transaction:42:2473.38:1"),
+        ]))
+        current = _load_one_card(_form([
+            ("rows-11", "transaction:42:2473.38:1"),
+            ("rows-11", "transaction:43:100.00:1"),
+            ("consent-11", "0.05@transaction:42:2473.38:1"),
+        ]))
+
+        assert stale["consent"] is None
+        assert current["consent"] is not None
 
 
 
@@ -467,6 +567,74 @@ class TestThePassIsBounded:
             _load(_form(pairs))
 
         assert "600 things to apply" in str(raised.value)
+
+
+class TestAMatchMayNameAsManyRowsAsThePassOFFERS:
+    """Plan step ``bank_import:X-go``: the schema stopped capping members.
+
+    **The FIRING CONTROL for that deletion.**  ``_MAX_MATCH_MEMBERS = 100``
+    stood on both of :class:`~app.schemas.validation.statements
+    .StatementMatchSchema`'s lists until the developer ruled it out on
+    2026-09-06, and nothing graded it -- so nothing would notice it being put
+    back, and nothing said why it should not be.
+
+    **What it was for is held by two bounds that already existed**, each where
+    its own truth lives, which is why deleting it removes no protection:
+
+    * the DOMAIN bound -- ``_resolve.resolve_rows`` looks every submitted row
+      up in the pass's own offer set and refuses anything else by name, and
+      ``load_lines`` does the same for lines.  Graded by
+      ``test_accept.TestEveryOtherRefusalFires`` (a cancelled row, a card
+      purchase, an unknown line, a row another match already claims);
+    * the RESOURCE bound -- ``MAX_FORM_MEMORY_SIZE`` (500,000, Flask's default,
+      which this app never sets) refuses the body before this schema sees it,
+      and :data:`MAX_BATCH_ITEMS` bounds the ACTS.  It is the BINDING one:
+      ``MAX_CONTENT_LENGTH`` is larger, so for a urlencoded body it never
+      fires.  Measured 2026-09-06 at the CRAFTED 22-byte tick: that budget
+      carries 22,727 ticks, costing 50-54 ms in one item and 57-132 ms spread
+      across the 500-item ceiling, all of which ``resolve_rows`` then refuses.
+      The schema's own docstring carries the two drafts this corrects.
+
+    **And the cap had begun to contradict the screen**, which is what made it
+    a defect rather than merely redundant: since plan step
+    ``bank_import:X-gi-1`` the scriptless MATCH pane offers EVERY unexplained
+    row on the account as a tickbox, so an account past 100 of them rendered
+    controls this schema would refuse -- ruling **R-HW**'s *a control that
+    cannot succeed*.
+    """
+
+    #: Comfortably past the deleted ceiling, and past any real group: ruling
+    #: **R-FS**'s largest measured shape is a payroll deposit against three.
+    _PAST_THE_OLD_CAP = 150
+
+    def test_a_match_naming_more_than_a_hundred_rows_LOADS(self):
+        """The ceiling is gone, asserted where it used to fire."""
+        form = _form([
+            (f"rows-{_LINE}", f"transaction:{index}:-1.00:1")
+            for index in range(1, self._PAST_THE_OLD_CAP + 1)
+        ])
+
+        loaded = _load_one_card(form)
+
+        assert len(loaded["rows"]) == self._PAST_THE_OLD_CAP
+
+    def test_a_match_naming_more_than_a_hundred_LINES_loads_too(self):
+        """Both lists carried the cap, so both are asserted.
+
+        ``line_ids`` is one member per card today, and
+        ``bank_import:X-gn`` is the step that lets a match name a second bank
+        line -- so a cap here would bound that step's own shape rather than
+        anything the wire carries now.
+        """
+        loaded = StatementBatchSchema().load({
+            "matches": [{
+                "line_ids": [str(index) for index in
+                             range(1, self._PAST_THE_OLD_CAP + 1)],
+                "rows": ["transaction:1:-1.00:1"],
+            }],
+        })
+
+        assert len(loaded["matches"][0]["line_ids"]) == self._PAST_THE_OLD_CAP
 
 
 class TestTheBatchSchemaRefusesWhatItDoesNotDeclare:

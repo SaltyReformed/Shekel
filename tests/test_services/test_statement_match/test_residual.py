@@ -51,11 +51,11 @@ from app.models.transaction import Transaction
 from app.services import statement_match
 from app.services.statement_match import RowKind
 from app.services.statement_match._candidates import purchase_candidate
-from app.services.statement_match._variance import (
+from app.services.statement_match._landing import (
     DifferenceLanding,
-    MatchSides,
     corrected_figure,
 )
+from app.services.statement_match._sides import MatchSides
 
 from ._builders import (
     accepted_acts,
@@ -1237,8 +1237,10 @@ class TestAFigureThisAppCannotStoreIsRefused:
     """A door that SUMS is not bounded by the columns it sums.
 
     Every figure descends from a ``Numeric(12, 2)`` column, but a match may
-    name up to 100 of them per side -- so the total, and the difference derived
-    from it, can leave the domain any one of them lives in.  Reaching the
+    name ANY NUMBER of them per side -- plan step ``bank_import:X-go`` deleted
+    the schema's member cap, so this refusal is the only bound on that SUM --
+    and the total, and the difference derived from it, can leave the domain any
+    one of them lives in.  Reaching the
     database with one is ``NumericValueOutOfRange``, which is not a
     ``ValidationError`` and therefore escapes the per-item SAVEPOINT: it kills
     the WHOLE pass and every item that had landed beside it.  Reproduced by
@@ -2167,7 +2169,7 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
     ):
         """The pointer is compared as a WHOLE reviewed value, not by subject.
 
-        A body whose ``difference_on`` names the salary row at a figure its own
+        A body whose consent names the salary row at a figure its own
         ``rows`` entry does not carry is describing two states of one row --
         finding **N-336**'s shape with both halves inside one submission -- and
         a subject-only comparison would accept it and re-price against
@@ -2182,8 +2184,11 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
         )
         crafted = replace(
             submission,
-            attributed_to=replace(
-                submission.attributed_to, cash_amount=Decimal("9999.99"),
+            consent=replace(
+                submission.consent,
+                on_row=replace(
+                    submission.consent.on_row, cash_amount=Decimal("9999.99"),
+                ),
             ),
         )
 
@@ -2202,16 +2207,26 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
         The two are different questions -- *whose* and *how much* -- and a
         widening that let the first stand in for the second would put a
         re-price of any size one press away with nothing reviewed.
+
+        **Since plan step ``bank_import:X-gp`` the two travel as ONE value**,
+        so *named a member, agreed to nothing* is a body the wire cannot
+        express (``a_submission`` refuses to build it, and the schema refuses
+        the token).  What is expressible, and what this now grades, is a
+        member named beside the WRONG figure: the gate compares the figure
+        half whatever the member half says, so a re-price cannot ride in on
+        a stale consent because the owner also said whose it was.
         """
         line, salary, allowance = self._a_payroll_deposit(seed_user)
 
         with pytest.raises(ValidationError) as caught:
             _submit(
                 seed_user, lines=[line], transactions=[salary, allowance],
+                residual="0.04",
                 attributed=(RowKind.TRANSACTION, salary),
             )
 
-        assert "0.05" in str(caught.value)
+        assert "reviewed against a difference of +0.04" in str(caught.value)
+        assert "now comes to +0.05" in str(caught.value)
         assert salary.settled_amount is None
         assert not _minted(seed_user)
 

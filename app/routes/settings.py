@@ -30,7 +30,7 @@ from app.models.user import MfaConfig, User, UserSettings
 from app.services import (
     account_resolver,
     account_service,
-    pay_period_admin,
+    pay_period_gates,
     pay_period_locks,
     pay_schedule_service,
 )
@@ -169,7 +169,7 @@ def render_settings_dashboard(section, extra=None, status=200):
     the same function serves commands where such a block is meaningless.
 
     Every door that creates a user writes the row -- registration
-    (``auth_service.register_user``), the companion invite below, and
+    (``registration_service.register_user``), the companion invite below, and
     ``scripts/seed_companion.py`` -- so a missing one means the data was
     changed outside the application.  The two POST handlers that also
     create-if-missing keep doing so: a write door may author what it writes,
@@ -267,14 +267,19 @@ def _load_pay_periods_context(user_id):
         The section's context.  ``pp_periods`` is empty and ``pp_schedule`` is
         ``None`` for an owner with no schedule row -- the state the generate
         form exists to leave, and one the template already renders (it guards
-        every ``pp_schedule`` read).
+        every ``pp_schedule`` read).  ``pp_era`` is the owner's latest
+        :class:`~app.models.pay_era.PayEra` row, or ``None`` for an owner
+        holding no era, which since plan step ``pay_calendar:C17-a`` is also
+        the owner who gets no period rows: a calendar derives from eras.
     """
     schedule = pay_schedule_service.get_schedule(user_id)
+    facts = (
+        None if schedule is None
+        else pay_schedule_service.ScheduleFacts.of(schedule)
+    )
     period_rows = []
-    if schedule is not None:
-        calendar = calendar_at_schedule(
-            user_id, pay_schedule_service.ScheduleFacts.of(schedule),
-        )
+    if facts is not None:
+        calendar = calendar_at_schedule(user_id, facts)
         locks = pay_period_locks.classify_schedule_locks(
             calendar, as_of=display_today(),
         )
@@ -292,7 +297,13 @@ def _load_pay_periods_context(user_id):
     return {
         "pp_periods": period_rows,
         "pp_schedule": schedule,
-        "pp_can_reset": pay_period_admin.can_reset_pay_periods(user_id),
+        # The LATEST era's row, for the three forms that preselect the
+        # owner's payday convention (plan step pay_calendar:C17-a): the
+        # convention is an era's fact now, and the schedule row no longer
+        # carries one.  The ROW rather than the value, because a select is
+        # keyed on the wire id the row holds, exactly as ``pp_schedule`` was.
+        "pp_era": schedule.eras[-1] if facts is not None else None,
+        "pp_can_reset": pay_period_gates.can_reset_pay_periods(user_id),
     }
 
 

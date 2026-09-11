@@ -42,8 +42,9 @@ from app.models.tax_config import (
     TaxBracketSet,
 )
 from app.models.user import User, UserSettings
-from app.services.auth_service import (
-    DEFAULT_CATEGORIES,
+from app.services import pay_schedule_service
+from app.services.registration_service import DEFAULT_CATEGORIES
+from app.services.tax_seed_data import (
     DEFAULT_FEDERAL_BRACKETS,
     DEFAULT_FICA,
     DEFAULT_STATE_CHILD_DEDUCTIONS,
@@ -537,10 +538,10 @@ class TestSeedUserProvisioning:
             assert len(periods) == 4
             assert [derived_span(p).period_index for p in periods] == [0, 1, 2, 3]
             assert periods[0].start_date == display_today()
-            schedule = (
-                db.session.query(PaySchedule).filter_by(user_id=user.id).one()
-            )
-            assert schedule.cadence_days == BaseConfig.DEFAULT_PAY_CADENCE_DAYS
+            db.session.query(PaySchedule).filter_by(user_id=user.id).one()
+            assert pay_schedule_service.resolve_cadence(
+                user.id,
+            ) == BaseConfig.DEFAULT_PAY_CADENCE_DAYS
 
             account = (
                 db.session.query(Account).filter_by(user_id=user.id).one()

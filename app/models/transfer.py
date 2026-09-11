@@ -416,6 +416,39 @@ class Transfer(
         return self._income_shadow_settle_pair()[0]
 
     @property
+    def due_date_is_its_definitions(self) -> bool:
+        """Return whether this transfer's due date is stated by its DEFINITION.
+
+        **The fact behind finding BAL-476, in ONE place because the transfer has
+        TWO edit doors where a transaction has one.**  Its due date is a member
+        of ``transfer_recurrence.DerivedTransferFields``: generation computes it
+        from the rule and the period and every regeneration rewrites it, so an
+        edit never survived a later template save -- and since plan step
+        X-au-f the same date is what resolves the row's PRICE through amount
+        rule 3, so clearing it leaves a transfer no rule can answer.
+
+        Both doors refuse the field when this is true and each renders its own
+        message: the transfer PATCH
+        (``routes/transfers/mutations._reject_generated_due_date_edit``) and the
+        SHADOW PATCH, which answers a transfer by updating its parent
+        (``routes/transactions/_shadow_mutations``).  The second was missed by
+        an adversarial review's own account of this step, which is why the
+        predicate is a property rather than a line repeated at each door: the
+        transaction twin's single gate reads ``txn.template_id is None`` inline
+        and has no second door to drift from.
+
+        **It is not a refusal the SERVICE can make**, and that is why it lives
+        at the doors: the recurrence engine's maintain pass writes this very
+        column through ``update_transfer`` whenever a definition re-dates its
+        rows, so a service-tier refusal would refuse the DEFINITION along with
+        the human.  What differs is who is speaking, which only a door knows.
+
+        Returns:
+            ``True`` when a recurring definition generated this transfer.
+        """
+        return self.transfer_template_id is not None
+
+    @property
     def settle_day_columns(self):
         """Return ``(settled_on, settled_day_basis_id)`` off the income shadow.
 

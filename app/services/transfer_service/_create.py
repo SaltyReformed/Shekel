@@ -24,7 +24,6 @@ Flask-isolated like the rest of the package: plain data in, ORM rows out, no
 import logging
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 
 from app import ref_cache
 from app.enums import AmountSourceEnum, SettlementBasisEnum, TxnTypeEnum
@@ -217,7 +216,20 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
         to_account_id: Account money enters (income side).
         pay_period_id: Pay period for the transfer.
         scenario_id: Budget scenario.
-        amount: Transfer amount (positive Decimal).
+        amount_ownership: WHAT PRICES this transfer, as ONE value (ruling
+            **R-BAL11**, plan step X-au-f): an
+            :class:`~app.models.amount_ownership.AmountOwnership` that either
+            OWNS a positive figure -- an ad-hoc transfer, or one an operator
+            priced -- or DECLARES
+            :attr:`~app.enums.AmountSourceEnum.TEMPLATE`, meaning its
+            definition's effective-dated series prices it as of its own due
+            date.  It was a bare ``amount: Decimal`` until that step, which
+            could express only the first: a create door that cannot say *this
+            row is priced by its definition* has to write a figure and let a
+            later writer take it back, and the row is OWN in between.  Both
+            SHADOWS are born declaring their parent whatever this says
+            (:func:`_build_shadow`), which is what plan step X-au-g-2c-2 made
+            structural.
         status_id: Initial status (typically 'projected').
         category_id: Optional spending category mirrored to both
             shadows.  May be None.
@@ -252,7 +264,7 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
     to_account_id: int
     pay_period_id: int
     scenario_id: int
-    amount: Decimal
+    amount_ownership: AmountOwnership
     status_id: int
     category_id: int | None
     notes: str | None = None
@@ -281,13 +293,30 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         transfer.shadow_transactions backref).
 
     Raises:
-        ValidationError: If amount is non-positive, accounts are the
-            same, or any business rule is violated.
+        ValidationError: If a stated amount is non-positive, if a
+            born-SETTLED transfer states a relation rather than the figure
+            that moved, if the accounts are the same, or if any business rule
+            is violated.
         NotFoundError: If any referenced entity does not exist or
             does not belong to user_id.
     """
     # ── Validate inputs ────────────────────────────────────────────
-    amount = _validate_positive_amount(spec.amount)
+    # A stated figure is still refused when it is not positive; a spec that
+    # states a RELATION instead has no figure to grade, and its price is its
+    # definition's (ruling **R-BAL11**, plan step X-au-f).
+    amount = (
+        None if spec.amount_ownership.figure is None
+        else _validate_positive_amount(spec.amount_ownership.figure)
+    )
+    # **The COERCED ownership is what the row gets.**
+    # ``_validate_positive_amount`` returns ``Decimal(str(amount))``, and a
+    # first revision kept that value for the settlement record and the log
+    # while writing the caller's RAW ownership to the column -- one input, two
+    # values, in one function.
+    ownership = (
+        spec.amount_ownership if amount is None
+        else AmountOwnership.own(amount)
+    )
 
     if spec.from_account_id == spec.to_account_id:
         raise ValidationError(
@@ -322,6 +351,37 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     _get_owned_category(spec.category_id, spec.user_id)
     _get_owned_transfer_template(spec.transfer_template_id, spec.user_id)
     created_status = db.session.get(Status, spec.status_id)
+    # A born-SETTLED transfer must state what moved, so its spec must own a
+    # figure.  Every caller that births one is an ad-hoc or materialize door,
+    # and an ad-hoc transfer owns its amount structurally
+    # (``ck_transfers_adhoc_owns_amount``); the recurrence engine births
+    # Projected rows only.  So this refusal describes a state no writer in
+    # ``app/`` constructs -- and it is stated rather than assumed away, because
+    # the alternative to a figure is a settlement RECORD of ``None`` on both
+    # legs, which ``row_valuation.settled_figure`` then refuses to value.
+    #
+    # **Hoisted AHEAD of the first write**, with every other refusal: a first
+    # revision raised it after ``db.session.add`` and two flushes, in a function
+    # whose stated discipline is that a refusal never runs after a row exists.
+    #
+    # ``is not None`` for the reason the born-settled branch below states it:
+    # ``db.session.get`` answers ``None`` for a status id no row carries, and
+    # the FK is what refuses that at the flush.  A first hoist read the
+    # attribute unguarded and turned a bad id into an ``AttributeError`` here
+    # instead of the integrity error the caller gets today.
+    if (
+        amount is None
+        and created_status is not None
+        and created_status.is_settled
+    ):
+        raise ValidationError(
+            "A transfer created ALREADY SETTLED must state the figure that "
+            "moved, and this spec states a relation instead: a settlement "
+            "record says what the bank took, which a definition's price is "
+            "not. Create it Projected and settle it, or state the amount its "
+            "money moved at."
+        )
+
     # The settled-iff-dated rule, asked BEFORE any row exists.  It is the seam's
     # own predicate rather than a second statement of it (plan step X-f1b,
     # finding **N-183**): the seam cannot answer this case itself, because the
@@ -350,7 +410,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         status_id=spec.status_id,
         transfer_template_id=spec.transfer_template_id,
         name=transfer_name,
-        amount_ownership=AmountOwnership.own(amount),
+        amount_ownership=ownership,
         category_id=spec.category_id,
         notes=spec.notes,
         due_date=spec.due_date,
@@ -419,7 +479,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         to_account_id=spec.to_account_id,
         pay_period_id=spec.pay_period_id,
         scenario_id=spec.scenario_id,
-        amount=str(amount),
+        amount=str(amount) if amount is not None else None,
         status_id=spec.status_id,
         category_id=spec.category_id,
         transfer_template_id=spec.transfer_template_id,

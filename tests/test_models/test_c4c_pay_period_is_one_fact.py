@@ -84,6 +84,7 @@ from app.services.auth_service import hash_password
 from tests._test_helpers import (
     rhythm_of,
     load_migration_module,
+    restore_pay_schedule_rhythm_columns,
     run_migration_callable as _run,
 )
 
@@ -157,6 +158,20 @@ def _rebuilt_rows(session, user_id):
             " ORDER BY start_date"
         ), {"uid": user_id})
     ]
+
+
+def _downgrade_c4c(session):
+    """Run C4-c's ``downgrade()`` against a schedule row that still carries a cadence.
+
+    That statement rebuilds the stored end from
+    ``budget.pay_schedule.cadence_days``, which plan step ``pay_calendar:C17-a``
+    moved onto ``budget.pay_eras`` -- so C17-a's own downgrade runs first and
+    puts the column back with each owner's LATEST era's value, exactly as
+    Alembic's newest-first chain would.  Every read after it in this module is
+    SQL against the rebuilt columns, never the head mapper.
+    """
+    restore_pay_schedule_rhythm_columns(session)
+    _run(_M_C4C.downgrade, session)
 
 
 def _owner(db, email):
@@ -301,7 +316,7 @@ class TestTheDowngradeRebuildsTheDerivation:
         paydays, cadence = _off_cadence_calendar(db, user.id)
 
         with app.app_context():
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
 
             rebuilt = _rebuilt_rows(db.session, user.id)
 
@@ -332,7 +347,7 @@ class TestTheDowngradeRebuildsTheDerivation:
     ):
         """One row is both the first and the last, and the branches meet on it.
 
-        The registration bootstrap's own shape: ``auth_service.register_user``
+        The registration bootstrap's own shape: ``registration_service.register_user``
         records a batch, and an owner can sit on one payday until they generate
         more.  ``lead(start_date)`` is NULL there, so the end is the projection
         and the ordinal is 0 -- the two arms of the rebuild landing on a single
@@ -349,7 +364,7 @@ class TestTheDowngradeRebuildsTheDerivation:
         db.session.commit()
 
         with app.app_context():
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
 
             assert _rebuilt_rows(db.session, user.id) == [
                 (date(2026, 4, 3), date(2026, 4, 11), 0),
@@ -361,7 +376,7 @@ class TestTheDowngradeRebuildsTheDerivation:
         _off_cadence_calendar(db, user.id)
 
         with app.app_context():
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
 
             assert [row[2] for row in _rebuilt_rows(db.session, user.id)] == [
                 0, 1, 2,
@@ -400,7 +415,7 @@ class TestTheDowngradeRebuildsTheDerivation:
         db.session.commit()
 
         with app.app_context():
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
 
             # Owner A: the off-cadence schedule, ends unchanged by B existing.
             assert _rebuilt_rows(db.session, first.id) == [
@@ -443,25 +458,32 @@ class TestTheDowngradeRebuildsTheDerivation:
             num_periods=3, rhythm=rhythm_of(14),
         )
         db.session.commit()
+        # The ids are read HERE, on the outer session, and that session is
+        # then committed: reading them inside the nested context below would
+        # refresh the instances on the outer session and leave it idle in a
+        # transaction holding a share lock on ``auth.users`` -- which the
+        # rewind's key drop from the nested connection waits on.
+        owner_ids = (first.id, second.id)
+        db.session.commit()
 
         with app.app_context():
             expected = {
-                owner.id: [
+                owner_id: [
                     (period.start_date, period.end_date, period.period_index)
-                    for period in calendar_for(owner.id).saved()
+                    for period in calendar_for(owner_id).saved()
                 ]
-                for owner in (first, second)
+                for owner_id in owner_ids
             }
             # The premise: the application really does answer something for
             # both owners, so an empty calendar cannot make this vacuous.
-            assert len(expected[first.id]) == 3
-            assert len(expected[second.id]) == 3
+            assert len(expected[owner_ids[0]]) == 3
+            assert len(expected[owner_ids[1]]) == 3
 
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
 
-            for owner in (first, second):
-                assert _rebuilt_rows(db.session, owner.id) == expected[owner.id], (
-                    f"owner {owner.id}: the migration's SQL and "
+            for owner_id in owner_ids:
+                assert _rebuilt_rows(db.session, owner_id) == expected[owner_id], (
+                    f"owner {owner_id}: the migration's SQL and "
                     f"pay_calendar.derive_periods disagree about the span or "
                     f"the ordinal, so a downgraded database would not render "
                     f"what the app renders"
@@ -483,7 +505,7 @@ class TestTheDowngradeRebuildsTheDerivation:
         _off_cadence_calendar(db, user.id)
 
         with app.app_context():
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
 
             assert _columns(db.session) == [
                 "id", "user_id", "start_date", "created_at",
@@ -511,7 +533,7 @@ class TestTheDowngradeRebuildsTheDerivation:
 
         with app.app_context():
             before = _constraints(db.session)
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
 
             after = _constraints(db.session)
 
@@ -546,7 +568,7 @@ class TestTheDowngradeRebuildsTheDerivation:
         _off_cadence_calendar(db, user.id)
 
         with app.app_context():
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
 
             defs = {
                 name: db.session.execute(text(
@@ -597,7 +619,7 @@ class TestTheUpgradeWritesDownWhatItDISCARDS:
         _off_cadence_calendar(db, user.id)
 
         with app.app_context():
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
             # A stored end the paydays do not justify: period 0 runs to
             # 2026-01-15 by derivation and is written 2026-01-31.
             db.session.execute(text(
@@ -635,7 +657,7 @@ class TestTheUpgradeWritesDownWhatItDISCARDS:
         _off_cadence_calendar(db, user.id)
 
         with app.app_context():
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
 
             with caplog.at_level(
                 logging.WARNING, logger="alembic.runtime.migration",
@@ -675,7 +697,7 @@ class TestTheDowngradeIsNotUnconditionallyLossless:
 
         with app.app_context():
             with pytest.raises(IntegrityError) as excinfo:
-                _run(_M_C4C.downgrade, db.session)
+                _downgrade_c4c(db.session)
 
             assert "ck_pay_periods_date_order" in str(excinfo.value)
             db.session.rollback()
@@ -704,7 +726,7 @@ class TestTheDowngradeIsNotUnconditionallyLossless:
 
         with app.app_context():
             with pytest.raises(IntegrityError) as excinfo:
-                _run(_M_C4C.downgrade, db.session)
+                _downgrade_c4c(db.session)
 
             assert "ck_pay_periods_date_order" in str(excinfo.value)
             db.session.rollback()
@@ -729,7 +751,7 @@ class TestTheDowngradeIsNotUnconditionallyLossless:
 
         with app.app_context():
             with pytest.raises(IntegrityError):
-                _run(_M_C4C.downgrade, db.session)
+                _downgrade_c4c(db.session)
             db.session.rollback()
 
             assert _columns(db.session) == [
@@ -762,7 +784,7 @@ class TestTheRoundTripIsAFixedPoint:
             before_columns = _columns(db.session)
             before_constraints = _constraints(db.session)
 
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
             _run(_M_C4C.upgrade, db.session)
 
             assert _columns(db.session) == before_columns
@@ -780,10 +802,10 @@ class TestTheRoundTripIsAFixedPoint:
         _off_cadence_calendar(db, user.id)
 
         with app.app_context():
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
             once = _rebuilt_rows(db.session, user.id)
             _run(_M_C4C.upgrade, db.session)
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
 
             assert _rebuilt_rows(db.session, user.id) == once
 
@@ -804,7 +826,7 @@ class TestTheChainOrderBelowThisRevisionHolds:
         _off_cadence_calendar(db, user.id)
 
         with app.app_context():
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
             assert "uq_pay_periods_user_index" in _constraints(db.session)
 
             _run(_M_PHASE0.downgrade, db.session)
@@ -852,7 +874,7 @@ class TestTheChainOrderBelowThisRevisionHolds:
             source = handle.read()
 
         with app.app_context():
-            _run(_M_C4C.downgrade, db.session)
+            _downgrade_c4c(db.session)
 
             live = _constraints(db.session)
             for name in ("ck_pay_periods_positive_index",

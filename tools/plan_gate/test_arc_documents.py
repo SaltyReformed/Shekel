@@ -89,7 +89,49 @@ CAPS = {
     # 1350; 1280 is well under it.  It is the FIRST raise above the 1,200 this
     # document carried before the registries left, and it is taken together
     # with the archive rather than as a substitute for it.
-    "balance": 1280,
+    # **RAISED 1280 -> 1300 by the developer, 2026-09-09**, on rule 4's terms:
+    # a binding cap is his question, and this one bound TWO sessions in one
+    # evening.  `balance:X-bi-6a` + the `X-bi-6` rewrite put the README at
+    # 1272 against the 1260 floor, and the `X-au-f` lane independently
+    # abandoned filing a finding because rule 12 wants a README specification
+    # it could not fit.  **Rule 5's escape was spent first and is now empty**:
+    # the ten archivable entries the 2026-09-05 raise censused were taken with
+    # that raise, and no completed span remains.  The 3.4-lines-per-open-step
+    # calibration still allows ~1350, so this stays well under it.
+    # **It does NOT clear the whole queue, and that is stated rather than
+    # discovered**: the `X-au-f` lane owes a further 8-12 lines for the leaf-2
+    # re-split, which would land at 1280-1284 against this cap's own 1280
+    # floor.  The next raise is therefore already foreseeable and is the
+    # developer's again.
+    # **RAISED 1300 -> 1330 by the developer, 2026-09-10**, and the foreseen
+    # raise one comment up arrived within the hour: he merged `X-au-f-2` and
+    # `X-au-f-3` into ONE cutover leaf, so two specifications collapsed into
+    # one and the lane's delta measured 24 lines, putting the README at 1296
+    # against the 1300 cap's 1280 floor.  **Rule 5's escape was spent FIRST
+    # and this time it was NOT empty** -- the claim that it was, written at
+    # the 1300 raise, was stale: 12 multi-line shipped entries hold 37 lines,
+    # of which 19 are PROTECTED by "a later step must obey" clauses
+    # (`X-au-g-2a`, `X-bl-2a`, `X-bl-2b`, `X-bx`) that a line census cannot
+    # see.  **That census said 22 recoverable and it was WRONG: the true
+    # figure is 18, and 17 were taken.**  It counted a trailing BLANK line and
+    # a following HEADING as entry content, so `X-f1` and `X-bh-2` -- already
+    # one-line pointers -- were scored as condensable.  Re-measured by counting
+    # only INDENTED non-blank continuation lines.  The ruling is unaffected (an
+    # 18-line escape is still non-empty and still short of the 24-line delta),
+    # but the number is corrected here rather than left standing, because a
+    # false figure in a rationale is the defect this project treats as equal to
+    # a code bug.  The archive pass took 17 rather than 18 deliberately: `X-bz`
+    # keeps a second line because its sentinel is a LIVE operational fact about
+    # what a rollback does, and a pointer would bury it.  The developer ruled
+    # ARCHIVE
+    # AND RAISE (2026-09-10), the same pairing as 2026-09-05: this raise
+    # unblocks the lane at 1296 against a 1310 floor, and the archive pass
+    # follows it rather than substituting for it, landing the README near
+    # 1274 with ~36 lines of slack.  The archive is SEQUENCED AFTER the
+    # lane's merge deliberately -- both edit the same README region, and
+    # doing them at once manufactures the conflict two sessions have twice
+    # avoided.  The 3.4-lines-per-open-step calibration still allows ~1350.
+    "balance": 1330,
     # **RAISED 850 -> 900 by the developer, 2026-09-03**, on rule 4's terms and
     # by the same calibration that raised the balance README.  The cap BOUND
     # while minting `recurrence:R7d-h`: the document sat at 843 with 23 open

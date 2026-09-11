@@ -65,23 +65,16 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import (
-    balance_at,
-    loan_loaders,
-    loan_payment_service,
-    loan_resolver,
-    transfer_service,
-)
-from app.services.loan_resolver._periods import _replay_from_anchor
+from app.services import balance_at, transfer_service
 from app.utils.dates import add_months, display_today
-from app.utils.money import round_money
 from tests._test_helpers import (
     add_escrow_line,
-    amount_basis_for_scenario,
     create_loan_account,
     loan_params_for,
+    unseeded_replay_balance,
 )
 from app.services.row_valuation import settled_contribution
+from app.models.amount_ownership import AmountOwnership
 
 
 # -- Hand-computed reference values -----------------------------------------
@@ -230,7 +223,7 @@ def _create_piti_transfer(  # pylint: disable=too-many-arguments,too-many-positi
             to_account_id=to_account_id,
             pay_period_id=pay_period_id,
             scenario_id=scenario_id,
-            amount=amount,
+            amount_ownership=AmountOwnership.own(amount),
             status_id=projected_id,
             category_id=category_id,
             notes="C14 PITI transfer",
@@ -262,32 +255,22 @@ def _income_shadow(transfer_id: int, loan_account_id: int) -> Transaction:
 def _resolve_balance(
     account_id: int, loan_params, scenario_id: int, as_of: date,
 ) -> Decimal:
-    """Load the resolver inputs and return the anchor-replay balance.
+    """Load the replay inputs and return the anchor-replay balance.
 
     The window the deleted ``LoanState.current_balance`` carried on this
-    (unseeded) path (plan step D2a): the anchor + confirmed-payment replay
-    (``_replay_from_anchor``), the same production derivation that still seeds
-    the schedule composer's starting state.  Loads mirror the production
-    bundle: anchor FACTS via :func:`loan_loaders.load_loan_anchor_facts` (the
-    origination opening SYNTHESIZED from params plus every stored true-up /
-    tracking-start assertion -- never a raw ``LoanAnchorEvent`` query, which
-    since the read switch would miss the synthesized origination), and the
-    payment feed via :func:`loan_payment_service.load_loan_context`.
+    (unseeded) path (plan step D2a):
+    :func:`tests._test_helpers.unseeded_replay_balance`, the suite's ONE
+    assembly of the anchor + settled-payment replay, which is AMOUNT-FREE since
+    plan step **balance:X-bl-2b** (finding **N-432**) -- the replay reads three
+    dates per payment and no figure, so an ``AmountUnresolvable`` can no longer
+    break a control here that never looks at an amount.
+
+    ``loan_params`` is taken and unused: every caller holds it, and the helper
+    re-loads it from the account id (one loader call, no query the callers do
+    not already make).
     """
-    anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
-    context = loan_payment_service.load_loan_context(
-        account_id, amount_basis_for_scenario(scenario_id), loan_params,
-    )
-    inputs = loan_resolver.LoanInputs(
-        loan_params, anchor_events, context.payments,
-        context.rate_changes,
-    )
-    periods = loan_resolver.resolve_periods(
-        inputs.loan_params, inputs.rate_changes,
-    )
-    return round_money(
-        _replay_from_anchor(inputs, periods, as_of).balance_as_of
-    )
+    del loan_params  # identity carried by account_id; kept for call clarity
+    return unseeded_replay_balance(account_id, scenario_id, as_of)
 
 
 # -- Test class -------------------------------------------------------------

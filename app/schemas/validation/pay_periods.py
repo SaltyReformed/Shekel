@@ -5,8 +5,8 @@ step **X-ad-a** is why: registration became a fifth door onto the same two
 rules, so a literal copied once more would have been five statements of one
 bound.  Each pair is imported from whoever OWNS the rule rather than restated
 here -- the cadence pair from the model carrying the matching CHECK constraint
-(:data:`~app.models.pay_schedule.CADENCE_DAYS_MIN` /
-:data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`), the batch pair from the
+(:data:`~app.models.pay_era.CADENCE_DAYS_MIN` /
+:data:`~app.models.pay_era.CADENCE_DAYS_MAX`), the batch pair from the
 writer whose transaction does the work
 (:data:`~app.services.pay_period_write.PERIOD_BATCH_MIN` /
 :data:`~app.services.pay_period_write.PERIOD_BATCH_MAX`), and, since plan step
@@ -34,7 +34,7 @@ from app import ref_cache
 from app.config import BaseConfig
 from app.enums import BusinessDayShiftEnum
 from app.exceptions import ValidationError as AppValidationError
-from app.models.pay_schedule import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
+from app.models.pay_era import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
 from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
@@ -112,8 +112,8 @@ class BusinessDayShiftField(_RefEnumField):
     id travelling under the name ``shift`` is the natural mistake, and it is
     one that would move a money date.  The conversion happens once here and
     once in
-    :func:`~app.services.pay_schedule_service.upsert_schedule`, at the two
-    edges of the wire.
+    :func:`~app.services.pay_schedule_service.mint_era`, at the two edges of
+    the wire.
 
     Whether the cadence beside it can CARRY the chosen convention is a
     property of the pair rather than of this field, so it is refused by
@@ -232,6 +232,43 @@ def num_periods_field(**kwargs) -> fields.Integer:
     return fields.Integer(validate=_PERIOD_BATCH_RANGE, **kwargs)
 
 
+def payday_field(**kwargs) -> fields.Date:
+    """Return a which-day-were-you-paid field bounded by the app's calendar.
+
+    **Plan step ``pay_calendar:C14-e-3``, and the bound is not cosmetic.**
+    The four doors that state a payday -- registration's *last payday*,
+    ``/pay-periods/generate``'s *start date*, and regenerate's and reset's
+    *corrected first payday* -- each declared a bare
+    :class:`marshmallow.fields.Date` while every other persisted date in this
+    application is held to
+    :data:`~app.utils.dates.CALENDAR_DATE_MIN` ..
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX`, ``history_opens_on`` included
+    (:func:`history_opens_on_field`, one function below).
+
+    That was survivable while a payday was only compared and stored.  It stops
+    being survivable when a payday is DISPLACED: the shift reads
+    :func:`~app.utils.business_days.federal_holidays`, which computes the
+    FOLLOWING year's New Year spillover, so a stated payday in year 9999 leaves
+    ``datetime``'s own domain and raises ``ValueError`` -- not
+    ``ValidationError`` -- out of the service tier and into a 500 on a public
+    form.  ``is_business_day``'s docstring says the bound is stated rather than
+    guarded because "no in-app caller can reach that"; ``C14-e-3`` made a
+    caller that can, and an adversarial review of that step found it.  The
+    remedy is the DOOR, not a guard in the calendar: bounding the input is what
+    makes that sentence true again rather than fencing a state the door should
+    never have admitted.
+
+    Args:
+        **kwargs: Forwarded to :class:`marshmallow.fields.Date` -- the
+            per-schema half of the declaration (``required``, and
+            registration's own ``error_messages``).
+
+    Returns:
+        The field, carrying the shared calendar-range validator.
+    """
+    return fields.Date(validate=_HISTORY_OPENS_RANGE, **kwargs)
+
+
 def history_opens_on_field(**kwargs) -> fields.Date:
     """Return a when-did-these-paychecks-start field bounded by the column's CHECK.
 
@@ -264,7 +301,7 @@ def history_opens_on_field(**kwargs) -> fields.Date:
 class PayPeriodGenerateSchema(BaseSchema):
     """Validates POST data for generating pay periods."""
 
-    start_date = fields.Date(required=True)
+    start_date = payday_field(required=True)
     num_periods = num_periods_field(
         load_default=BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
     )
@@ -332,13 +369,22 @@ class PayPeriodRegenerateSchema(BaseSchema):
     and ``shift`` are required because regenerate establishes (and persists)
     the new rhythm, and a door that would silently restate one half on a
     missing input must not.
+
+    **``confirm_gap`` is a SECOND confirmation and deliberately not the first**
+    (plan step ``pay_calendar:C14-f``, developer ruling 2026-09-07 on ledger
+    row **P80**).  ``confirm_discard`` acknowledges rows being DESTROYED;
+    ``confirm_gap`` acknowledges a hole being CREATED -- a batch that skips at
+    least one whole paycheck, which this is the only door that can write.  They
+    are asked about different facts, so one Boolean carrying both would confirm
+    a 196-day gap the owner was never shown.
     """
 
-    new_start_date = fields.Date(required=True)
+    new_start_date = payday_field(required=True)
     num_periods = num_periods_field(required=True)
     cadence_days = cadence_days_field(required=True)
     shift = shift_field(required=True)
     confirm_discard = fields.Boolean(load_default=False)
+    confirm_gap = fields.Boolean(load_default=False)
 
     @validates_schema
     def validate_rhythm(self, data, **kwargs):
@@ -357,7 +403,7 @@ class PayPeriodResetSchema(BaseSchema):
     ``load_default=False``; the route refuses an unconfirmed reset).
     """
 
-    new_start_date = fields.Date(required=True)
+    new_start_date = payday_field(required=True)
     num_periods = num_periods_field(required=True)
     cadence_days = cadence_days_field(required=True)
     shift = shift_field(required=True)

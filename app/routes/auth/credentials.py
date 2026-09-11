@@ -31,7 +31,7 @@ from app.enums import RoleEnum
 from app.extensions import db, limiter
 from app.models.user import MfaConfig
 from app.schemas.validation import LoginSchema, RegisterSchema
-from app.services import auth_service, pay_rhythm
+from app.services import auth_service, pay_rhythm, registration_service
 from app.exceptions import AuthError, ConflictError, ValidationError
 from app.routes.auth._bp import auth_bp
 from app.routes.auth._helpers import (
@@ -231,7 +231,7 @@ def register():
         # returned the user (audit-finding F-085 / commit C-14
         # required no signature change here -- the route was simply
         # discarding the value).
-        user = auth_service.register_user(auth_service.RegistrationSpec(
+        user = registration_service.register_user(registration_service.RegistrationSpec(
             email=email,
             password=register_data["password"],
             display_name=register_data["display_name"],

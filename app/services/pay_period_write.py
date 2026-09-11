@@ -102,17 +102,27 @@ the same -- it is a property of where each column is valued, not of how the
 window was chosen -- but the reassurance must not be read as "only a partial
 view sees this".
 
-The cadence rule
-================
+The cadence rule, which became the ERA rule
+============================================
 
-``budget.pay_schedule.cadence_days`` is a FORECAST setting: after this arc its
-one job is projecting past the last recorded payday.  **A batch that CREATED at
-least one payday persists the cadence it created them at; a batch that created
-none leaves it alone** (developer ruling 2026-08-10, closing findings **P12**
-and **P29**).  The alternative trigger weighed and rejected -- "at least two
-paydays, or the owner's first" -- silently discards a REQUIRED form input: a
-regenerate at ``num_periods=1, cadence_days=30`` would build a 14-day paycheck
-and say nothing.
+A rhythm is an ERA's fact since plan step ``pay_calendar:C17-a`` (ruling
+**R-PC58**): ``budget.pay_eras`` holds one row per *how I have been paid
+since*, and ``budget.pay_schedule`` carries no cadence.  **A batch that
+CREATED at least one payday MINTS an era at its first payday when it states a
+rhythm the era covering that day does not hold, and a batch that created none,
+or that continues the covering era on its own grid, writes no era**
+(``pay_era_write.era_to_mint``).  The first half is the cadence rule
+as ruled 2026-08-10 (closing findings **P12** and **P29**), whose rejected
+trigger -- "at least two paydays, or the owner's first" -- silently discarded
+a REQUIRED form input.  The second half is the era relation's: a CONTINUING
+batch writes nothing, so the rolling top-up no longer re-judges a stored pair
+on every ``/grid`` render (ledger row **N-494**, closed), and a cadence
+changed going forward no longer re-describes every past payday (**N-492**).
+
+A recording batch retires every era taking effect AFTER the last payday it
+leaves standing -- none of them describes a payday that stands -- and a batch
+that leaves no payday standing retires every era.  A batch that records
+nothing retires none: truncating a tail leaves the declared rhythm as it was.
 
 **Ledger row P28 -- "the horizon the app projects" disagreeing with "the end
 stored on the last row" -- has no subject at all since C4-c**: there is one
@@ -135,7 +145,13 @@ from datetime import date, datetime
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.services import pay_calendar, pay_rhythm, pay_schedule_service
+from app.services import (
+    pay_calendar,
+    pay_era_write,
+    pay_period_gates,
+    pay_rhythm,
+    pay_schedule_service,
+)
 from app.utils.log_events import (
     BUSINESS,
     EVT_PAY_PERIODS_GENERATED,
@@ -205,18 +221,47 @@ def reject_out_of_range_batch_size(num_periods: int) -> None:
         )
 
 
+@dataclass(frozen=True)
+class SpanReplacement:
+    """What a door REPLACING A SPAN tells the writer about the act.
+
+    Plan step **pay_calendar:C14-f**.  ``regenerate`` and ``reset`` do not
+    merely extend a schedule -- they drop periods and record others in ONE
+    operation, the distinction ``retiring_ids`` already drew -- and this pairs
+    that with the owner's answer about the hole such a replacement can leave.
+    Both are facts the DOOR supplies about the ACT rather than parts of the
+    payday batch.  A parameter object per the project rule for a public
+    function past the argument bound, and the grouping is real: a door that
+    retires nothing can never need the second.
+
+    Attributes:
+        retiring_ids: ``budget.pay_periods.id`` values to DELETE in the same
+            operation.  The caller has already run the gates that decide they
+            may go; this carries them out, so the refusals see the operation's
+            final payday set.  An id that is not the owner's is inert.
+        gap_confirmed: The owner has been shown that the replacement skips at
+            least one whole paycheck, and accepted it.
+    """
+
+    retiring_ids: "frozenset[int] | set[int]" = frozenset()
+    gap_confirmed: bool = False
+
+
 def record_paydays(
     user_id: int,
     first_payday: date,
     num_periods: int,
     rhythm: pay_rhythm.Rhythm,
-    retiring_ids: "set[int] | None" = None,
+    replacing: "SpanReplacement | None" = None,
 ) -> "list[PayPeriod]":
     """Record a batch of paydays.
 
-    **The one door that adds to ``budget.pay_periods``.**  It records paydays
-    (``first_payday``, then every ``cadence_days`` after it, ``num_periods``
-    times) and persists the cadence when the batch actually recorded something.
+    **The one door that adds to ``budget.pay_periods``.**  It records the days
+    the owner's grid names -- ``first_payday``, then every ``cadence_days``
+    after it, ``num_periods`` times -- each DISPLACED onto a business day under
+    the stored convention since plan step ``pay_calendar:C14-e-3``
+    (:func:`_requested_paydays`), and persists the rhythm when the batch
+    actually recorded something.
     A payday already on the table is skipped rather than duplicated, so
     re-running with the same start and a larger count legitimately extends the
     schedule.
@@ -255,38 +300,45 @@ def record_paydays(
     else to get right.
 
     It also absorbed ``establish_schedule``, and that collapse is the cadence
-    rule working.  "Create the periods" and "record the cadence they run at"
-    used to be two calls a caller composed, which is how one door could do the
-    first without the second (finding **P29**) and another could do the second
-    without the first (finding **P12**).  With the rule inside, they are one
-    operation and neither half has a door of its own.
+    rule working -- the ERA rule since plan step ``C17-a``.  "Create the
+    periods" and "record the rhythm they run at" used to be two calls a caller
+    composed, which is how one door could do the first without the second
+    (finding **P29**) and another could do the second without the first
+    (finding **P12**).  With the rule inside, they are one operation and
+    neither half has a door of its own: whether the batch MINTS an era is
+    :func:`~app.services.pay_era_write.era_to_mint`'s answer, asked of
+    the same read the floor uses.
 
     Args:
         user_id: The owning user's id.
-        first_payday: The batch's first payday -- the day money arrived, never
-            a period boundary computed from one.
+        first_payday: The batch's first payday, read as a day on the owner's
+            NOMINAL grid -- never a period boundary computed from one, and
+            since ``C14-e-3`` never necessarily a day money moved either: it
+            is what the batch is SPACED from and, when the batch mints an
+            era, that era's ``effective_from`` and so its phase, while the
+            row recorded for it is that day displaced.  Under ``none`` they
+            are the same day, and the gap between what a form ASKS for and
+            what this reads it as is ledger row **pay_calendar:PC-504**,
+            owned by ``C17-c``.
         num_periods: How many paydays the batch covers, including any that
             already exist.
         rhythm: How often this owner is paid and what payroll does when a
             payday lands on a closed day
             (:class:`~app.services.pay_rhythm.Rhythm`).  The batch's
-            paydays are spaced by its cadence, and the whole pair is persisted
-            in one statement when the batch records at least one new payday;
-            ignored otherwise.  It arrives as a PAIR rather than two arguments
-            because the two carry a joint rule -- plan step **C14-b**, rulings
-            **R-PC54** and **R-PC56**.  Four of this door's five callers are
-            forms that state a rhythm; the fifth continues the stored one,
-            which since plan step ``C14-e-1`` it reads off the
-            :class:`~app.services.pay_calendar.PayCalendar` it already built
-            rather than through a scalar query of its own.
-        retiring_ids: ``budget.pay_periods.id`` values to DELETE as part of the
-            same operation, for the two doors that replace a span rather than
-            extend one.  The caller has already run whatever gates decide they
-            may go; this only carries them out, so that the refusals below see
-            the operation's final payday set.  Any id that is not one of
-            *user_id*'s own periods is silently inert -- it names no row this
-            function can reach.  Defaults to retiring nothing.
-
+            paydays are spaced by its cadence, and the whole pair becomes an
+            ERA in one statement when the batch records at least one new
+            payday on a rhythm the covering era does not hold (the era rule,
+            in the module docstring); ignored otherwise.  It arrives as a
+            PAIR rather than two arguments because the two carry a joint rule
+            -- plan step **C14-b**, rulings **R-PC54** and **R-PC56**.  Four
+            of this door's five callers are forms that state a rhythm; the
+            fifth continues the stored one, which since plan step ``C14-e-1``
+            it reads off the :class:`~app.services.pay_calendar.PayCalendar`
+            it already built rather than through a scalar query of its own.
+        replacing: What this batch REPLACES, when it replaces a span rather
+            than extending one (:class:`SpanReplacement`).  ``None`` -- every
+            door but regenerate and reset -- retires nothing and confirms
+            nothing.
     Returns:
         The newly created :class:`~app.models.pay_period.PayPeriod` objects,
         flushed so their ids are assigned, ``start_date`` ascending.  Empty when
@@ -297,40 +349,41 @@ def record_paydays(
         ValidationError: *first_payday* is not a plain ``date``; *num_periods*
             is outside :data:`PERIOD_BATCH_MIN` .. :data:`PERIOD_BATCH_MAX`
             (:func:`reject_out_of_range_batch_size`); *rhythm*'s cadence
-            falls outside ``ck_pay_schedule_cadence_range``
+            falls outside ``ck_pay_eras_cadence_range``
             (:func:`~app.services.pay_schedule_service.reject_out_of_range_cadence`);
             *rhythm* pairs a displacing convention with a cadence too short
             to carry it
-            (:func:`~app.services.pay_schedule_service.reject_shift_on_short_cadence`);
-            or the batch's earliest new payday falls before the forward-only
-            floor (:func:`_reject_backward_payday`).  **Every one of them is
-            asked before a statement is issued**, which is what lets
-            :func:`_apply` promise that a refused batch deletes nothing and
-            leaves the stored rhythm alone.
+            (:func:`~app.services.pay_schedule_service.reject_shift_on_short_cadence`)
+            -- asked only of a batch that STATES an era, since plan step
+            ``C17-a``; or the batch's earliest new payday falls before the
+            forward-only floor (:func:`_reject_backward_payday`).  **Every one
+            of them is asked before a statement is issued**, which is what
+            lets :func:`_apply` promise that a refused batch deletes nothing
+            and leaves the stored rhythm alone.
     """
-    # The door's four preconditions, together and ahead of every statement --
-    # including ahead of the arithmetic below, which turns *cadence_days* into
-    # dates.  The cadence bound and the cadence-convention pairing are asked
-    # through the column's own owner rather than restated here: two copies of a
-    # rule are two chances for the schema tier, the service tier and the
-    # database to disagree.
+    # The door's preconditions, ahead of every statement -- and the first
+    # three ahead of the arithmetic below, which turns *cadence_days* into
+    # dates.  The cadence bound is asked through the column's own owner rather
+    # than restated here: two copies of a rule are two chances for the schema
+    # tier, the service tier and the database to disagree.
     _reject_undatable_payday(first_payday)
     reject_out_of_range_batch_size(num_periods)
     pay_schedule_service.reject_out_of_range_cadence(rhythm.cadence_days)
-    pay_schedule_service.reject_shift_on_short_cadence(rhythm)
 
     current = _owner_paydays(user_id)
-    doomed = retiring_ids or frozenset()
+    replacing = replacing or SpanReplacement()
+    doomed = replacing.retiring_ids or frozenset()
     retiring = [period_id for period_id, _payday in current if period_id in doomed]
     surviving_paydays = {
         payday for period_id, payday in current if period_id not in doomed
     }
+    retired_paydays = {
+        payday for period_id, payday in current if period_id in doomed
+    }
 
     new_paydays = [
         payday
-        for payday in _requested_paydays(
-            first_payday, num_periods, rhythm.cadence_days,
-        )
+        for payday in _requested_paydays(first_payday, num_periods, rhythm)
         if payday not in surviving_paydays
     ]
     # The floor reads the RHYTHM the owner's LAST SURVIVING PAYCHECK currently
@@ -346,21 +399,44 @@ def record_paydays(
     # compute its floor under the new one while ``derive_periods`` still closes
     # the existing calendar under the old, which is the disagreement between
     # fence and boundary C14-d exists to end, re-entering through the argument
-    # list.  One read answers both halves (``resolve_schedule``), where the
-    # cadence half alone used to.
+    # list.
     stored = pay_schedule_service.resolve_schedule(user_id)
-    _reject_backward_payday(
-        surviving_paydays, new_paydays,
-        None if stored is None else stored.rhythm,
+    stored_rhythm = None if stored is None else stored.rhythm
+    _reject_backward_payday(surviving_paydays, new_paydays, stored_rhythm)
+    # The floor's MIRROR at the other end, and it lives in the gates module
+    # while being called from HERE (plan step C14-f): it is an overridable,
+    # owner-answerable predicate, which is that module's subject -- and calling
+    # it from the one writer is what makes every door inherit it, which is the
+    # half P80 shows you cannot leave to the doors.
+    pay_period_gates.reject_unconfirmed_gap(
+        surviving_paydays, retired_paydays, new_paydays, stored_rhythm,
+        replacing.gap_confirmed,
     )
 
+    # The ERA rule (module docstring): a recording batch supersedes every era
+    # past the last surviving payday and is judged against the ones that
+    # stand -- keyed on the RECORD, not the mint's day, so a batch continuing
+    # an earlier era still retires a later one it left with no payday.
+    era = None
+    if new_paydays:
+        era = pay_era_write.era_to_mint(
+            pay_era_write.eras_describing(stored, surviving_paydays),
+            first_payday, rhythm,
+        )
+    # The pairing is judged only where a rhythm is STATED (plan step C17-a,
+    # closing ledger row N-494): a continuing batch hands back its era's own
+    # pair, and re-judging it was the top-up's read-path 500 from /grid.
+    if era is not None:
+        pay_schedule_service.reject_shift_on_short_cadence(era.rhythm)
     created = _apply(
         _PaydayChange(
             user_id=user_id,
             retiring=retiring,
             recording=new_paydays,
-            rhythm=rhythm,
-            nominal_anchor=first_payday,
+            era=era,
+            eras_after=(
+                max(surviving_paydays) if surviving_paydays else None
+            ),
         ),
     )
     log_event(
@@ -369,7 +445,19 @@ def record_paydays(
         user_id=user_id,
         count=len(created),
         retired=len(retiring),
-        start_date=first_payday.isoformat(),
+        # The day RECORDED and the grid day it came from, which stopped being
+        # one value at ``C14-e-3``.  ``start_date`` named ``first_payday``
+        # alone, so under a displacing convention the event named a day no row
+        # holds; it is the first row actually created now, and the day an era
+        # was minted from rides beside it -- ``None`` when the batch continued
+        # the era it found.
+        start_date=(
+            created[0].start_date.isoformat() if created
+            else first_payday.isoformat()
+        ),
+        era_minted_from=(
+            None if era is None else era.effective_from.isoformat()
+        ),
         cadence_days=rhythm.cadence_days,
         shift=rhythm.shift.value,
     )
@@ -421,7 +509,7 @@ def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
     ``user_write_lock.lock_user_writes`` it cannot see FEWER rows than the gate
     did, which is the direction that matters: no period the caller refused to
     delete can be missing here.  It is not the SAME set, and a first draft said
-    it was: ``POST /pay-periods/generate`` and ``auth_service.register_user``
+    it was: ``POST /pay-periods/generate`` and ``registration_service.register_user``
     both reach :func:`record_paydays` without taking that lock (finding
     **P71**), so a concurrent generate can commit a payday between the gate's
     read and this one and this read sees a SUPERSET.  A row this read gained is
@@ -451,8 +539,8 @@ def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
             user_id=user_id,
             retiring=retiring,
             recording=[],
-            rhythm=None,
-            nominal_anchor=None,
+            era=None,
+            eras_after=None,
         ),
     )
     return len(retiring)
@@ -485,44 +573,38 @@ class _PaydayChange:
             :func:`_owner_paydays` read, so the OWNER scoping is structural
             rather than a property of the two callers.
         recording: The paydays to create, already filtered of any that exist.
-        rhythm: The cadence and payday convention to persist, iff *recording*
-            is non-empty.  ``None`` when nothing is recorded, where the stored
-            pair stands.  One value rather than two nullable columns because
-            the two carry a joint rule and a row written through two
-            statements passes through a state neither statement means (see
-            :func:`~app.services.pay_schedule_service.upsert_schedule`).
-        nominal_anchor: The day this batch's grid passes through -- its own
-            ``first_payday``, persisted beside the rhythm on the same terms
-            (plan step ``pay_calendar:C14-e-2``).  **DERIVED here rather than
-            accepted from a door**, which is what makes a phase off the
-            batch's own grid unrepresentable instead of refused: every caller
-            spaces its batch from ``first_payday``, so that day is a point on
-            the grid the batch is written on, whether the door STATED it (the
-            four form doors, where it is the day the owner typed) or COMPUTED
-            it (extend, where it is one cadence past the stored phase and
-            therefore the same grid).  ``None`` when nothing is recorded, on
-            exactly the terms *rhythm* above states: a batch that writes no
-            payday states no phase, and the stored one stands.
+        era: The :class:`~app.services.pay_rhythm.Era` this batch MINTS, or
+            ``None`` when it records nothing or continues the era covering
+            its first payday on that era's own grid
+            (:func:`~app.services.pay_era_write.era_to_mint`).  One
+            value, because a row written through two statements passes
+            through a state neither means.  Its ``effective_from`` is the
+            batch's own ``first_payday``, a point on the grid the batch is
+            written on whether the door STATED it or COMPUTED it.
+        eras_after: The last payday the batch leaves standing, or ``None``
+            when it leaves none (``reset``'s shape): every era taking effect
+            AFTER it is retired before the mint, all of them for ``None``.
+            Derived by :func:`record_paydays` from the payday sets it
+            computed, so no door can claim a wipe it did not perform.
     """
 
     user_id: int
     retiring: "list[int]"
     recording: "list[date]"
-    rhythm: "pay_rhythm.Rhythm | None"
-    nominal_anchor: "date | None"
+    era: "pay_rhythm.Era | None"
+    eras_after: "date | None"
 
 
 def _apply(change: _PaydayChange) -> "list[PayPeriod]":
-    """Carry out one payday change: delete, persist the cadence, insert.
+    """Carry out one payday change: delete, mint the era, insert.
 
     **Every refusal a route RENDERS has already happened**, in
     :func:`record_paydays`, which is what lets truncate keep promising it
     deletes nothing on a refusal and what makes the module docstring's "a
     refusal leaves nothing behind" true of this module rather than of its
-    callers.  Nothing here refuses anything: the cadence bound is asked at the
-    door, ahead of the arithmetic that turns it into dates, and
-    ``upsert_schedule`` re-asks it as the column's own writer.  The order that
-    remains is forced only by the unique key:
+    callers.  Nothing here refuses anything: the bounds are asked at the door
+    and ``mint_era`` re-asks them as the column's own writer.  The order that
+    remains is forced only by the keys:
 
     1. DELETE what is retired -- one bulk statement, scoped by OWNER as well as
        by id, so the scoping is structural rather than a property of the two
@@ -530,15 +612,18 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
        payday being retired and re-recorded in the same operation -- which is
        what regenerate and reset do -- cannot collide on
        ``uq_pay_periods_user_start``.
-    2. Persist the rhythm -- the cadence, the payday convention and the
-       grid's phase, in one statement (the rule: only a batch that RECORDS a
-       payday).
-    3. INSERT one row per recorded payday.
+    2. Make sure the owner's ``budget.pay_schedule`` row exists, when the
+       batch records anything: both era and payday keys target it.
+    3. RETIRE every era taking effect after the last surviving payday (the
+       era rule) BEFORE the mint, so ``uq_pay_eras_user_effective_from``
+       cannot collide on a day being restated; then MINT the era, when the
+       batch states one.
+    4. INSERT one row per recorded payday.
 
-    ``expire_all`` runs LAST, and only when something was deleted: the bulk
-    ``DELETE`` runs with ``synchronize_session=False``, so any row the wider
-    request already loaded would otherwise stay in the identity map naming a
-    row that is gone.
+    ``expire_all`` runs LAST, when a row was deleted or an era minted: the
+    bulk ``DELETE`` synchronises nothing and ``PaySchedule.eras`` is
+    view-only, so a row the wider request already loaded would otherwise name
+    a period that is gone or the eras it had BEFORE the mint.
 
     Args:
         change: The whole change (:class:`_PaydayChange`).
@@ -547,22 +632,26 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
         The newly created rows, flushed, ``start_date`` ascending.
 
     Raises:
-        ValidationError: ``upsert_schedule`` refuses the cadence.  Unreachable
-            from :func:`record_paydays`, which asks the same bound through the
-            same function before any statement is issued; kept because
-            ``upsert_schedule`` is the column's one writer and owns the refusal.
+        ValidationError: ``mint_era`` refuses the cadence or the pairing.
+            Unreachable from :func:`record_paydays`, which asks the same
+            bounds before any statement is issued; kept because ``mint_era``
+            is the column's one writer and owns the refusal.
     """
     if change.retiring:
         db.session.query(PayPeriod).filter(
             PayPeriod.user_id == change.user_id,
             PayPeriod.id.in_(change.retiring),
         ).delete(synchronize_session=False)
+    retired_eras = 0
     if change.recording:
-        pay_schedule_service.upsert_schedule(
-            change.user_id, change.rhythm, change.nominal_anchor,
+        pay_schedule_service.ensure_schedule_row(change.user_id)
+        retired_eras = pay_era_write.retire_eras(
+            change.user_id, change.eras_after,
         )
+        if change.era is not None:
+            pay_era_write.mint_era(change.user_id, change.era)
     created = _create_periods(change.user_id, change.recording)
-    if change.retiring:
+    if change.retiring or retired_eras or change.era is not None:
         db.session.expire_all()
     return created
 
@@ -658,35 +747,65 @@ def _reject_undatable_payday(payday: date) -> None:
 
 
 def _requested_paydays(
-    first_payday: date, num_periods: int, cadence_days: int,
+    first_payday: date, num_periods: int, rhythm: pay_rhythm.Rhythm,
 ) -> "list[date]":
     """Return the paydays a batch asks for, whether or not they already exist.
 
-    **It asks the GRID producer rather than restating its arithmetic** (plan
-    step C14-d).  ``first_payday + timedelta(days=cadence_days * step)`` was
-    the fourth spelling of the payday rhythm, in the module whose OTHER
-    spelling this step deleted, and an adversarial review of ``C14-d`` found it
-    missing from the census that step corrected.  The body is
-    :func:`~app.services.pay_calendar.nominal_payday` verbatim, so routing it
-    moves no date and makes the census true by construction rather than by
-    prose.
+    **It asks the PRODUCER rather than restating its arithmetic** (plan step
+    C14-d).  ``first_payday + timedelta(days=cadence_days * step)`` was the
+    fourth spelling of the payday rhythm, in the module whose OTHER spelling
+    that step deleted, and an adversarial review of ``C14-d`` found it missing
+    from the census that step corrected.
 
-    **It stays NOMINAL, and that is not this function's decision to revisit.**
-    Whether the writer should RECORD each of these days displaced onto a
-    business day is ``C14-e``'s question and it moves money -- ledger row
-    **PC-497**.  Asking the grid rather than the projection leaves that question
-    exactly where it was: the grid producer is the one C14-e does not change.
+    **It RECORDS THE DISPLACED DAY since plan step ``C14-e-3``, which is
+    ledger row PC-497 fault 1** -- and this is where the ``$0.00`` stops.  It
+    ran the batch on the GRID and recorded what it spaced, so under a
+    displacing convention it wrote NOMINAL paydays where the projection showed
+    CASH ones.  The two disagreed at the door next to it: ``derive_periods``
+    closes the last saved paycheck on the DISPLACED day, so
+    :func:`_reject_backward_payday`'s floor is a cash day, and an extend
+    offering the nominal one was refused -- on a READ path, since
+    ``top_up_rolling_window`` reaches this door from ``/grid`` and
+    ``/dashboard`` and nothing registers a handler for ``ValidationError``.
+    The batch still runs on the GRID: every element is
+    ``projected_payday(first_payday, rhythm, step)``, which is the grid day
+    ``step`` cadences on DISPLACED, never the previous element displaced and
+    stepped from.  That is what keeps the progression from compounding, and it
+    is why this takes the whole :class:`~app.services.pay_rhythm.Rhythm` rather
+    than the cadence alone.
+
+    **``first_payday`` is READ as a point on the nominal grid, and at the four
+    form doors that is a reading rather than a guarantee.**  The extend door
+    hands a grid day by construction (``pay_calendar.nominal_payday_after``),
+    and :class:`_PaydayChange` stores whatever arrives as the phase, so the day
+    this spaces from and the day the next extend continues from are one value.
+    What no door establishes is that the day the OWNER typed is on payroll's
+    grid.  *An adversarial review of ``C14-e-3`` struck a sentence resting that
+    on the typed day being a business day and so its own displacement: being a
+    fixed point of the displacement does not make a day a grid point.*  Worked:
+    an owner really paid 2025-12-31, because payroll moved the 2026-01-01
+    nominal day back, types 2025-12-31 -- which is what the sign-up form asks
+    for -- and the batch records 2025-12-31, 2026-01-14, 2026-01-28 against a
+    truth of 2026-01-15 and 2026-01-29.  Every element after the first is a day
+    early, permanently.  That is ledger row **pay_calendar:PC-504**, owned by
+    ``C17``: an ERA carries the anchor the owner would have to state, and no
+    form asks for it today.
 
     Args:
-        first_payday: The batch's first payday.
+        first_payday: The batch's first NOMINAL payday.
         num_periods: How many paydays the batch covers.
-        cadence_days: Days between them.
+        rhythm: The owner's cadence and payday convention
+            (:class:`~app.services.pay_rhythm.Rhythm`).  The pair rather than
+            the cadence, because the days recorded are displaced under the
+            convention.
 
     Returns:
-        *num_periods* days, ascending, ``cadence_days`` apart.
+        *num_periods* days, ascending: the grid days ``rhythm.cadence_days``
+        apart from *first_payday*, each displaced onto a business day.  Under
+        :attr:`~app.enums.BusinessDayShiftEnum.NONE` that is the grid itself.
     """
     return [
-        pay_calendar.nominal_payday(first_payday, cadence_days, step)
+        pay_calendar.projected_payday(first_payday, rhythm, step)
         for step in range(num_periods)
     ]
 
@@ -731,18 +850,18 @@ def _reject_backward_payday(
     The home deleted here is this function's own ``latest_payday +
     cadence_days``, one of the five spellings*
     :func:`~app.services.pay_calendar.projected_payday` *censuses -- and this
-    module held TWO of them:* :func:`_requested_paydays` *routes to the grid
-    producer in the same step, so two of the five go and the census names
-    three.*
+    module held TWO of them:* :func:`_requested_paydays` *routed to the grid
+    producer in the same step, and to the PROJECTION at ``C14-e-3``, so two of
+    the five went and the census now names one.*
 
-    **Why it moves ``$0.00``, and the reason is STRUCTURAL rather than a fact
-    about stored data** -- an adversarial review of this step corrected a first
-    draft that rested it on every row holding ``none``, which any owner can
-    falsify in one POST through the four doors ``C14-b`` shipped.  The real
-    reason is that :func:`~app.services.pay_calendar.projected_payday` takes no
-    convention and nothing in the pay-calendar package reads one until
-    ``C14-e``, so it IS the grid today and no stored value can move a date
-    through it.
+    **``C14-d`` moved ``$0.00`` and this fence now MOVES MONEY, which is
+    ``C14-e-3``.**  That step's own ``$0.00`` was structural rather than a fact
+    about stored data -- an adversarial review corrected a first draft resting
+    it on every row holding ``none``, which any owner can falsify in one POST
+    through the four doors ``C14-b`` shipped -- because
+    :func:`~app.services.pay_calendar.projected_payday` took no convention and
+    nothing in the pay-calendar package read one.  It reads one now, so the
+    floor below is a DISPLACED day for any owner who has answered the question.
 
     **What the change buys is measured, not asserted** (probe over production's
     own schedule, 1,951 paydays from 2026-03-26 at cadence 14 out to
@@ -754,9 +873,9 @@ def _reject_backward_payday(
     floor on the nominal day and refuses the real one -- and the producer call
     refuses **0**.
 
-    **What ``C14-e`` must not get wrong here was written down by an
-    adversarial review of ``C14-d``, and plan step ``C14-e-1`` MOVED the floor
-    to it without being able to grade it.**  The floor reads the STORED rhythm
+    **The floor reads the STORED rhythm, an obligation written down by an
+    adversarial review of ``C14-d``, MOVED by ``C14-e-1`` without being
+    gradable, and GRADED at ``C14-e-3``.**  The floor reads the stored rhythm
     and not the batch's own
     :attr:`Rhythm.shift <app.services.pay_rhythm.Rhythm.shift>`.  The
     argument's rhythm is what the operation LEAVES BEHIND, and a batch that
@@ -768,14 +887,19 @@ def _reject_backward_payday(
     why; the convention now arrives from the same read rather than from a
     second one.
 
-    **The obligation is NOT discharged here, and saying so is the point.**
-    While :func:`~app.services.pay_calendar.projected_payday` returns the
-    nominal grid day, the stored convention and the batch's own select the
-    SAME floor, so no test can tell this function from the one that reads the
-    wrong half -- an obligation marked discharged with nothing grading it is
-    worse than one left open, because the next reader stops looking.
-    ``C14-e-3`` switches the displacement on and lands the case that
-    distinguishes them, and that is the step that may tick it.
+    **Nothing could grade that until ``C14-e-3``, which is why it stayed an
+    obligation for two steps.**  While
+    :func:`~app.services.pay_calendar.projected_payday` returned the nominal
+    grid day the stored convention and the batch's own selected the SAME floor,
+    so no test could tell this function from one reading the wrong half -- and
+    an obligation marked discharged with nothing grading it is worse than one
+    left open, because the next reader stops looking.  With the displacement
+    live the two part company, and
+    ``TestTheFloorReadsTheSTOREDConventionAndNotTheBatchS`` lands both
+    directions: stored ``prior`` with an incoming ``next`` must ACCEPT a payday
+    on 2030-11-27 (reading the batch's half refuses a day the owner was really
+    paid), and stored ``next`` with an incoming ``prior`` must REFUSE it
+    (reading the batch's half splits a paycheck they already hold).
 
     **Under ``next`` it still refuses those 58, and that is ledger row N-495
     rather than a half-fix.**  Those refusals are the ones whose ANCHOR was
@@ -784,8 +908,9 @@ def _reject_backward_payday(
     it, and the floor inherits exactly the error the derived end has.  That is
     the point of asking the producer -- the fence can no longer be wrong in a
     way the calendar is not -- and the one home left to repair is the anchor,
-    which **N-495** owns and ``C14-e`` may not fix without widening ``C14-c``'s
-    probe window.
+    which **N-495** owns and no step may fix without widening ``C14-c``'s
+    probe window -- ``C14-e-3`` deliberately did not, and
+    :func:`~app.services.pay_calendar.projected_payday` carries why.
 
     **Why it is not two days, and an adversarial review of C3-b is why.**  That
     step's first cut bounded at ``latest_payday +
@@ -811,8 +936,8 @@ def _reject_backward_payday(
             batch's own**, which is the whole of the paragraph above: the
             question is how far the existing calendar already reaches.
             ``None`` only beside an empty payday set -- an owner with no
-            ``budget.pay_schedule`` row, who by ``fk_pay_periods_schedule``
-            has no paydays either -- where there is no floor to apply.  The
+            era, and so no rhythm (every batch that records a payday mints
+            one when none covers it) -- where there is no floor to apply.  The
             early return below is what makes that safe, and it has to be,
             because the producer takes a rhythm.
 

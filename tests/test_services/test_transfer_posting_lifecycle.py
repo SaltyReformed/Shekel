@@ -53,6 +53,7 @@ from tests._test_helpers import (
     linked_ledger_account,
 )
 from app.services import cash_ledger
+from app.models.amount_ownership import AmountOwnership
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +101,7 @@ def _create_projected_transfer(seed_user, from_account, to_account, amount):
             to_account_id=to_account.id,
             pay_period_id=seed_user["bootstrap_period"].id,
             scenario_id=seed_user["scenario"].id,
-            amount=amount,
+            amount_ownership=AmountOwnership.own(amount),
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             category_id=None,
         ),

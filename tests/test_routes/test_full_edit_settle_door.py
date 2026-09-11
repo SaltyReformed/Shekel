@@ -50,13 +50,13 @@ from tests._test_helpers import (
     an_asserted_day,
     an_entered_day,
     create_envelope_txn,
+    generate_row_of,
     net_posted_by_day,
     settlement_basis_id,
 )
 from app.services import status_seam, transaction_service
-from app.services.cash_ledger import contribution_of
+from app.services.cash_ledger import contribution_of, resolve_transaction_amount
 from app.services.row_valuation import settled_contribution, settled_figure
-from app.models.amount_ownership import AmountOwnership
 
 
 def _plan_worth(txn):
@@ -113,6 +113,17 @@ def _full_edit_save(auth_client, txn, status_id, **overrides):
     matter runs, which is the same trap the finalised arm above exists to
     avoid: seven cases here failed on that refusal the moment the gate landed,
     all of them testing the settle and none of them testing the date.
+
+    **The amount it posts is the one the popover RENDERS, which is the amount
+    model's answer and not the raw column** (plan step balance:X-cf).  The
+    template's box reads ``budgets[txn.id]`` --
+    :func:`~app.services.cash_ledger.amounts_by_id`, the resolved figure --
+    and a GENERATED row stores no figure of its own, so the column is ``None``
+    there and a payload built from it posts the string ``"None"``, which the
+    schema refuses with a 422 before the settle runs.  Every fixture this
+    suite settles is generated now, so that is the browser this helper has to
+    model; while the fixtures owned their figures the two spellings agreed
+    and the wrong one went unnoticed.
     """
     payload = {
         "version_id": str(txn.version_id),
@@ -120,7 +131,8 @@ def _full_edit_save(auth_client, txn, status_id, **overrides):
         "notes": txn.notes or "",
     }
     if not txn.status.is_immutable:
-        payload["estimated_amount"] = str(txn.estimated_amount)
+        rendered = str(resolve_transaction_amount(txn, amount_basis_for(txn)))
+        payload["estimated_amount"] = rendered
         # **The amount box's companion, carrying what the form RENDERED into
         # it** (ruling R-JR, plan step balance:X-au-h).  The popover posts both,
         # and equal values are what a browser sends when the user did not touch
@@ -132,7 +144,7 @@ def _full_edit_save(auth_client, txn, status_id, **overrides):
         # the row's amount and the suite would go on passing while modelling a
         # browser that does not exist.  That is the trap this docstring's other
         # two paragraphs already describe, on a third field.
-        payload["estimated_amount_as_rendered"] = str(txn.estimated_amount)
+        payload["estimated_amount_as_rendered"] = rendered
         payload["pay_period_id"] = str(txn.pay_period_id)
         if txn.template_id is None:
             payload["due_date"] = (
@@ -195,9 +207,13 @@ class TestTheDropdownBooksWhatTheRowCost:
             assert reloaded.status_id == ref_cache.status_id(StatusEnum.DONE)
             # A ``purchases`` record stores NO figure -- the row's own entries
             # state it (plan step X-au-c3) -- so the accessor is what answers,
-            # and the row's PLAN is untouched beside it.
+            # and the row's PLAN is untouched beside it: still its definition's
+            # $80.00, resolved the way every reader resolves it (the row is
+            # generated, so the raw column is ``None`` and says nothing).
             assert settled_figure(reloaded) == Decimal("48.98")
-            assert reloaded.estimated_amount == Decimal("80.00")
+            assert resolve_transaction_amount(
+                reloaded, amount_basis_for(reloaded),
+            ) == Decimal("80.00")
             assert settled_contribution(reloaded) == Decimal("48.98")
             assert reloaded.settled_on == display_today()
             # The ledger books what the row cost, not what it budgeted.
@@ -362,30 +378,50 @@ class TestTheFieldWritesFlushInsideTheExceptionNet:
         period is not locked because the LOCK reads the row's current status,
         which is still Projected when the save arrives.
 
+        **The two rows are UNDATED -- ``occurs_on IS NULL`` -- and that is the
+        whole of what makes this case a case.**  Plan step R17 keyed the
+        generation index on the occurrence a row answers, which a move never
+        changes, so the engine's own DATED rows cannot collide however late the
+        flag is written; only a row in ``idx_transactions_template_scenario_
+        undated`` -- keyed on its PAYCHECK -- still can, and that is the
+        pre-R17 shape no producer writes any more and production still holds
+        (six rows, per finding REC-516).  Both rows are the engine's, then put
+        into that shape the way ``test_recurrence_engine`` models the same
+        legacy rows (plan step balance:X-cf); when this suite last built them
+        by hand it got the shape by accident, and a fixture generated the
+        modern way silently stopped grading the ordering -- the review of that
+        conversion found it, and this sentence is why the rows are undated on
+        purpose.
+
+        **And the row stays an ENVELOPE, with no purchases against it.**  The
+        flush the ordering is about is the guard's ``entries`` read -- a
+        one-to-many the ORM autoflushes before querying -- and only an
+        envelope reaches it: ``tracks_purchases`` is asked first, and its
+        ``template`` read is a by-key many-to-one the ORM serves from the
+        identity map with no flush at all.  This case used to switch the
+        template to non-envelope, so the guard never flushed and the flag
+        could be written anywhere without a collision: measured 2026-09-11,
+        it passed with the flag moved below the guard AND with the flag
+        deleted outright, in that shape.  An envelope with no purchases still
+        settles on the MANUAL branch (``settles_from_entries`` needs both
+        halves), so the typed figure is honoured exactly as before.
+
         Shown to FIRE: moving ``is_override`` back below the guard raises
-        ``IntegrityError`` out of the handler.
+        ``IntegrityError`` out of the handler (re-measured 2026-09-11 on the
+        undated envelope pair: red with the flag below the guard, green with
+        it above).
         """
         with app.app_context():
             source = create_envelope_txn(
                 seed_user, db.session, seed_periods_today[3],
                 "Electricity", Decimal("300.00"),
             )
-            source.template.is_envelope = False
             # The destination period already holds this template's generated
             # row, non-override -- the state every future period is in.
-            occupant = Transaction(
-                template_id=source.template_id,
-                user_id=seed_periods_today[4].user_id,
-                pay_period_id=seed_periods_today[4].id,
-                scenario_id=source.scenario_id,
-                account_id=source.account_id,
-                status_id=source.status_id,
-                name=source.name,
-                category_id=source.category_id,
-                transaction_type_id=source.transaction_type_id,
-                amount_ownership=AmountOwnership.own(Decimal("300.00")),
-            )
-            db.session.add(occupant)
+            occupant = generate_row_of(source.template, seed_periods_today[4])
+            # The legacy shape the ordering hazard needs, on both rows.
+            source.occurs_on = None
+            occupant.occurs_on = None
             db.session.commit()
             source_id = source.id
 
@@ -811,8 +847,11 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
             # Still Paid: correcting an observation is not a status change.
             assert reloaded.status_id == paid_status
             assert reloaded.settled_on is not None
-            # And the PLAN is untouched -- two boxes, two facts.
-            assert reloaded.estimated_amount == Decimal("500.00")
+            # And the PLAN is untouched -- two boxes, two facts.  Resolved,
+            # because the row is generated and stores no figure of its own.
+            assert resolve_transaction_amount(
+                reloaded, amount_basis_for(reloaded),
+            ) == Decimal("500.00")
 
     def test_a_submitted_actual_on_a_derived_row_is_refused(
         self, app, db, auth_client, seed_user, seed_periods_today,

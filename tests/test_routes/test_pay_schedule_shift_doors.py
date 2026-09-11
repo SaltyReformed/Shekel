@@ -19,6 +19,7 @@ Nothing here asserts that a payday MOVED, and that is deliberate: C14-b lands
 the column and the doors with behaviour OFF.  ``C14-e`` is the leaf that
 applies the convention at the producer, and it is the one that moves money.
 """
+import re
 from datetime import timedelta
 
 import pytest
@@ -90,7 +91,7 @@ class TestTheControlIsRenderedOnAllFourDoors:
         assert response.status_code == 422
         assert b'name="shift"' in response.data
 
-    def test_the_settings_page_offers_it_on_all_three_of_its_forms(
+    def test_an_owner_with_a_rhythm_is_offered_it_on_regenerate_and_reset(
         self, auth_client,
     ):
         """Generate, regenerate and reset each carry the control.
@@ -106,9 +107,78 @@ class TestTheControlIsRenderedOnAllFourDoors:
         The page holds seven POST forms and only these three state a rhythm,
         which is the same distinction R-PC56's own first form got wrong when
         it named two doors and one of them was not one.
+
+        **The three are no longer on ONE page, and that is plan step
+        ``pay_calendar:C14-f``** (ruling **R-PC63**).  The generate card and
+        the manage card became EXCLUSIVE: an owner who holds no paydays is
+        offered generate and nothing else, and an owner who holds some is
+        offered regenerate and reset and never generate -- because generate is
+        where they could restate a phase they already had, which is ledger row
+        **P80**.  So the census splits across two owners, 2 here and 1 in the
+        case below, and each half stays counted EXACTLY for the reason above.
+
+        **It is two CASES and not one with two clients**: ``auth_client`` and
+        ``bare_auth_client`` both wrap the same ``client`` fixture and log in
+        over each other, so a case requesting both gets ONE session and
+        silently measures one owner twice.  A first draft of this pair did
+        exactly that and read 2 where it asserted 1.
         """
-        page = auth_client.get("/settings?section=pay-periods").data
-        assert page.count(b'name="shift"') == 3
+        continuing = auth_client.get("/settings?section=pay-periods").data
+        # Regenerate and reset -- and NOT generate, which is the change.
+        assert continuing.count(b'name="shift"') == 2
+        assert b"Generate Pay Periods" not in continuing
+
+    def test_an_owner_with_no_rhythm_is_offered_it_on_generate(
+        self, bare_auth_client,
+    ):
+        """The establishing half of the same census (plan step C14-f).
+
+        An owner holding no paydays is offered the generate card and no manage
+        card, so the control appears exactly once.  Counted exactly for the
+        reason the case above gives: a ``>=`` would let the card lose its
+        control and stay green.
+        """
+        establishing = bare_auth_client.get("/settings?section=pay-periods").data
+        assert establishing.count(b'name="shift"') == 1
+        assert b"Generate Pay Periods" in establishing
+
+
+class TestTheManageCardPreselectsTheLatestErasConvention:
+    """The regenerate and reset selects open on the owner's STORED answer.
+
+    Plan step ``pay_calendar:C17-a`` moved the convention from the schedule
+    row to the era, and the three templates read ``pp_era.shift_id`` where
+    they read ``pp_schedule.shift_id``; nothing graded the preselect before
+    (the census above counts ``name="shift"`` only), which is how a re-pointed
+    value could render every select back on ``none`` and pass.  Graded as the
+    rendered ``<option ... selected>`` for the stored id, TWICE on the page
+    (regenerate and reset), after a regenerate that stored ``prior``.
+    """
+
+    def test_a_stored_prior_is_the_selected_option_on_both_forms(
+        self, app, auth_client, seed_user,
+    ):
+        """A regenerate at ``prior`` and the manage card then opens on ``prior``."""
+        with app.app_context():
+            start = display_today() + timedelta(days=14)
+            assert auth_client.post("/pay-periods/regenerate", data={
+                "new_start_date": start.isoformat(),
+                "num_periods": "3",
+                "cadence_days": "14",
+                "shift": shift_form_value(BusinessDayShiftEnum.PRIOR),
+            }).status_code == 302
+            prior_id = ref_cache.business_day_shift_id(BusinessDayShiftEnum.PRIOR)
+            none_id = ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE)
+
+            page = auth_client.get("/settings?section=pay-periods").data
+
+            assert page.count(b'name="shift"') == 2
+            assert len(re.findall(
+                rb'<option value="%d"\s+selected>' % prior_id, page,
+            )) == 2, "both selects must open on the stored convention"
+            assert not re.findall(
+                rb'<option value="%d"\s+selected>' % none_id, page,
+            ), "and neither may snap back to none"
 
 
 class TestEachDoorPersistsTheAnswer:
@@ -271,9 +341,7 @@ class TestADoorRefusesAPairNoCalendarCanDerive:
 
             assert response.status_code == 302
             user_id = bare_user["user"].id
-            assert pay_schedule_service.get_schedule(
-                user_id,
-            ).cadence_days == 2
+            assert pay_schedule_service.resolve_cadence(user_id) == 2
 
 
 class TestAnUnmodelledConventionIsRefusedAtTheSchema:

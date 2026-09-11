@@ -156,7 +156,8 @@ The public surface, and what each piece is for:
   Undo button, from the door's own derivation, so the control names the money
   it is about to destroy.
 * The value types :class:`MatchProposal`, :class:`MatchSubmission`,
-  :class:`ReviewedRow`, :class:`CandidateRow`, :class:`BankLine`,
+  :class:`ReviewedRow`, :class:`ReviewedDifference`, :class:`CandidateRow`,
+  :class:`BankLine`,
   :class:`RowKind`,
   :class:`AcceptedMatch`, :class:`AcceptedGroup`, :class:`AcceptedRow`,
   :class:`ReviewedBatch`, :class:`BatchOutcome`, :class:`ReviewSet`, and
@@ -238,10 +239,9 @@ from ._offered_rules import (
 )
 from ._submission import (
     MatchSubmission,
+    ReviewedDifference,
     ReviewedRow,
     as_reviewed,
-    parse_figure,
-    spell_figure,
 )
 from ._near import NEAR_MISS_BOUND
 from ._pairing import DAY_WINDOW
@@ -254,7 +254,7 @@ from ._accepted_view import (
     accepted_register,
 )
 from ._placement import Placement, PlacementKind
-from ._preview import HandTotals, preview_hand_build
+from ._preview import DifferenceOption, HandTotals, preview_hand_build
 from ._rules import (
     CONTAINER_ANSWERS,
     LinePipeline,
@@ -339,6 +339,7 @@ __all__ = [
     "CreationBars",
     "MerchantAnswers",
     "Consent",
+    "DifferenceOption",
     "HandTotals",
     "DAY_WINDOW",
     "NEAR_MISS_BOUND",
@@ -373,6 +374,7 @@ __all__ = [
     "ReviewScope",
     "ReviewSet",
     "ReviewedBatch",
+    "ReviewedDifference",
     "ReviewedRow",
     "SkippedLine",
     "DirectoryAsk",
@@ -403,14 +405,12 @@ __all__ = [
     "candidates_for",
     "corrected_purchase_day",
     "rules_worth_offering",
-    "spell_figure",
     "create_purchase_from_line",
     "record_income_from_line",
     "destinations_for",
     "file_new_swipes",
     "matched_subjects",
     "merchant_directory",
-    "parse_figure",
     "merchant_label",
     "opened_match",
     "preview_hand_build",

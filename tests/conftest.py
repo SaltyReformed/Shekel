@@ -720,37 +720,35 @@ from app.models.user import User, UserSettings
 from app.models.scenario import Scenario
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
-from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
-    AccountType, FilingStatus, Status, TransactionType,
+    AccountType, FilingStatus,
 )
 from app.services import (
     account_service,
     pay_period_write,
-    pay_schedule_service,
 )
 from app.services.auth_service import hash_password
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     rhythm_of,
-    amount_basis_for_scenario,
+    mint_fixture_era,
     bind_db_clock_rewriter,
     create_loan_account,
     insert_trueup_event,
     make_appreciating_account,
-    make_every_period_rule,
+    make_expense_template,
     make_investment_account,
     open_books_before_the_first_assertion,
     open_owner_calendar,
     posted_loan_balance_at,
     rebuild_calendar,
+    generate_row_of,
     settle_day_columns,
+    state_template_price,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 # ---------------------------------------------------------------------------
@@ -1644,9 +1642,10 @@ def bare_user_with_cadence(db, bare_user):
     since plan step ``pay_calendar:C4-b-2``, ``fk_pay_periods_schedule``
     refuses a pay period whose owner holds no ``budget.pay_schedule`` row, so
     ``bare_user`` alone can no longer carry one.  This fixture is that rule
-    stated ONCE rather than an ``upsert_schedule`` line copied into each case
-    -- four of them today, and the fifth would be the one that copies it
-    wrongly.
+    stated ONCE rather than a schedule-and-era line copied into each case --
+    four of them today, and the fifth would be the one that copies it wrongly.
+    The era's day is inert for hand-built rows at plan step
+    ``pay_calendar:C17-a`` (``mint_fixture_era`` says why).
 
     The cadence is 14 and no case should assert on it: these owners' periods
     are written by hand and are deliberately inconsistent with any cadence.
@@ -1657,10 +1656,7 @@ def bare_user_with_cadence(db, bare_user):
         effect on the database, not a new key, so a case can swap this fixture
         in for ``bare_user`` without touching anything else it reads.
     """
-    pay_schedule_service.upsert_schedule(
-        bare_user["user"].id, rhythm=rhythm_of(14),
-        nominal_anchor=None,
-    )
+    mint_fixture_era(bare_user["user"].id, date(2026, 1, 2), 14)
     db.session.commit()
     return bare_user
 
@@ -1785,7 +1781,7 @@ def build_seed_user(db):
     # (``end_date``, ``period_index``) values the writer DERIVES -- and no
     # ``budget.pay_schedule`` row beside it, which is a state
     # ``pay_period_write.record_paydays`` cannot produce and
-    # ``auth_service.register_user`` therefore never produces either.  The
+    # ``registration_service.register_user`` therefore never produces either.  The
     # seeded owner was consequently the one shape production does not have:
     # paydays with no recorded cadence, pay-calendar finding **P8**, which
     # ``pay_schedule_service.resolve_schedule`` had to carry an inferring
@@ -2225,7 +2221,7 @@ def _build_cross_page_calendar_periods(db, user):
     # period's projected end.  Every other end is the day before the next
     # payday, which is what makes these rows a real calendar-monthly schedule
     # rather than a stored claim to be one.
-    pay_schedule_service.upsert_schedule(user.id, rhythm_of(31), None)
+    mint_fixture_era(user.id, date(first_year, 1, 1), 31)
 
     all_periods = (
         db.session.query(PayPeriod)
@@ -2324,8 +2320,9 @@ def seed_cross_page_account(app, db, seed_user):
         ``AccountAnchorHistory`` row + cache-column update, latest-wins
         per E-19 -- to the case's ``anchor_balance``.  ``seed_user``'s
         factory-default $1,000 anchor is irrelevant here.
-      * A single Projected envelope expense in the anchor period with
-        ``estimated_amount = expense_amount`` and the supplied entries
+      * A single Projected envelope expense in the anchor period, the
+        engine's own row of a definition whose stated price is
+        ``expense_amount`` (plan step balance:X-cf), and the supplied entries
         list, each entry dated ``anchor_period.start_date`` (so all
         entries fall on or before any month-end ``as_of`` the calendar
         surface evaluates).
@@ -2404,43 +2401,19 @@ def seed_cross_page_account(app, db, seed_user):
             db.session, account, anchor_period, anchor_balance,
         )
 
-        # Single Projected envelope expense in the anchor period.
-        # ``is_envelope=True`` is what makes the entries-aware
-        # reduction applicable -- a non-envelope template would short-
-        # circuit to ``effective_amount`` regardless of entries.
-        projected_status = (
-            db.session.query(Status).filter_by(name="Projected").one()
-        )
-        expense_type = (
-            db.session.query(TransactionType).filter_by(name="Expense").one()
-        )
-        groceries_cat = seed_user["categories"]["Groceries"]
-        template = TransactionTemplate(
-            user_id=user.id,
-            account_id=account.id,
-            category_id=groceries_cat.id,
-            transaction_type_id=expense_type.id,
-            name="PT-01 envelope expense",
-            default_amount=expense_amount,
+        # Single Projected envelope expense in the anchor period, generated by
+        # the engine from a definition that states its price and repeats
+        # every paycheck (plan step balance:X-cf).  ``is_envelope=True`` on
+        # the template is what makes the entries-aware reduction applicable
+        # -- a generated row defers to its template's flag -- while a
+        # non-envelope one would short-circuit to ``effective_amount``
+        # regardless of entries.
+        template = make_expense_template(
+            db.session, seed_user, amount=str(expense_amount),
+            name="PT-01 envelope expense", category_key="Groceries",
             is_envelope=True,
         )
-        db.session.add(template)
-        db.session.flush()
-
-        txn = Transaction(
-            template_id=template.id,
-            user_id=anchor_period.user_id,
-            pay_period_id=anchor_period.id,
-            scenario_id=scenario.id,
-            account_id=account.id,
-            status_id=projected_status.id,
-            name="PT-01 envelope expense",
-            category_id=groceries_cat.id,
-            transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(expense_amount),
-        )
-        db.session.add(txn)
-        db.session.flush()
+        txn = generate_row_of(template, anchor_period)
 
         # Entries all dated on anchor_period.start_date -- a date that
         # is on or before every month-end ``as_of`` the calendar
@@ -2615,31 +2588,16 @@ def cross_page_loan_unpaid_ctx(db, seed_user):
 def _unseeded_replay_balance(loan_id, scenario_id, as_of):
     """Return a loan's un-seeded schedule-replay balance (the pre-switch value).
 
-    The balance the resolver derives from its anchor replay ALONE -- no genesis
-    seed -- so a cross-page fixture can pin what a loan's scalar surfaces showed
-    BEFORE the read switch and assert the ledger diverges from it off-schedule.
+    :func:`tests._test_helpers.unseeded_replay_balance`, the suite's ONE
+    assembly of that replay (plan step **balance:X-bl-2b**).  Kept as a name
+    here because the cross-page fixtures below read like prose with it.
     """
     # Pylint: ``import-outside-toplevel`` -- the app services are loaded lazily,
     # the convention every helper in this conftest follows.
     # pylint: disable=import-outside-toplevel
-    from app.services import loan_loaders, loan_payment_service, loan_resolver
-    from app.services.loan_resolver._periods import _replay_from_anchor
-    from app.utils.money import round_money
+    from tests._test_helpers import unseeded_replay_balance
 
-    params = loan_loaders.load_loan_params(loan_id)
-    ctx = loan_payment_service.load_loan_context(
-        loan_id, amount_basis_for_scenario(scenario_id), params,
-    )
-    inputs = loan_resolver.LoanInputs(
-        params, loan_loaders.load_loan_anchor_facts(params),
-        ctx.payments, ctx.rate_changes,
-    )
-    # The replay derivation directly: ``LoanState.current_balance`` carried it
-    # until plan step D2a deleted the field (the seam folds displayed balances).
-    periods = loan_resolver.resolve_periods(params, inputs.rate_changes)
-    return round_money(
-        _replay_from_anchor(inputs, periods, as_of).balance_as_of
-    )
+    return unseeded_replay_balance(loan_id, scenario_id, as_of)
 
 
 @pytest.fixture()
@@ -3180,12 +3138,6 @@ def _build_full_user_data(db, seed_user, periods):
     scenario = seed_user["scenario"]
 
     # Look up reference data.
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="Expense").one()
-    )
-    projected_status = (
-        db.session.query(Status).filter_by(name="Projected").one()
-    )
     savings_acct_type = (
         db.session.query(AccountType).filter_by(name="Savings").one()
     )
@@ -3193,33 +3145,15 @@ def _build_full_user_data(db, seed_user, periods):
         db.session.query(FilingStatus).filter_by(name="single").one()
     )
 
-    # a) Recurrence rule + transaction template + transaction.
-    template = TransactionTemplate(
-        user_id=user.id,
-        account_id=account.id,
-        category_id=seed_user["categories"]["Rent"].id,
-        transaction_type_id=expense_type.id,
-        name="Rent Payment",
-        default_amount=Decimal("1200.00"),
+    # a) Recurrence rule + transaction template + transaction.  The
+    # definition states its price and its cadence, and the ENGINE writes its
+    # row in the first period (plan step balance:X-cf): the row is derived,
+    # dated and answers an occurrence, exactly as the app's own would be.
+    template = make_expense_template(
+        db.session, seed_user, amount="1200.00", name="Rent Payment",
     )
-    db.session.add(template)
-    db.session.flush()
-    # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_every_period_rule(db.session, template)
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=periods[0].user_id,
-        pay_period_id=periods[0].id,
-        scenario_id=scenario.id,
-        account_id=account.id,
-        status_id=projected_status.id,
-        name="Rent Payment",
-        category_id=seed_user["categories"]["Rent"].id,
-        transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("1200.00")),
-    )
-    db.session.add(txn)
+    rule = template.recurrence_rule
+    txn = generate_row_of(template, periods[0])
 
     # b) Savings goal.
     goal = SavingsGoal(
@@ -3257,6 +3191,12 @@ def _build_full_user_data(db, seed_user, periods):
         default_amount=Decimal("200.00"),
     )
     db.session.add(transfer_tpl)
+    db.session.flush()
+    # A definition STATES its price, as every app-side create door does.  Since
+    # plan step balance:X-au-f a generated TRANSFER stores no figure and is
+    # priced by this series on its own due date, so a template without one
+    # generates rows ``_stated_amount`` REFUSES.
+    state_template_price(transfer_tpl)
 
     # d) Salary profile.
     salary_profile = SalaryProfile(
@@ -3339,12 +3279,6 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
     periods = seed_second_periods
 
     # Look up reference data.
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="Expense").one()
-    )
-    projected_status = (
-        db.session.query(Status).filter_by(name="Projected").one()
-    )
     savings_acct_type = (
         db.session.query(AccountType).filter_by(name="Savings").one()
     )
@@ -3352,33 +3286,13 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
         db.session.query(FilingStatus).filter_by(name="single").one()
     )
 
-    # a) Recurrence rule + transaction template + transaction.
-    template = TransactionTemplate(
-        user_id=user.id,
-        account_id=account.id,
-        category_id=seed_second_user["categories"]["Rent"].id,
-        transaction_type_id=expense_type.id,
-        name="Second User Rent",
-        default_amount=Decimal("900.00"),
+    # a) Recurrence rule + transaction template + transaction, the engine's
+    # own row as in ``_build_full_user_data`` (plan step balance:X-cf).
+    template = make_expense_template(
+        db.session, seed_second_user, amount="900.00", name="Second User Rent",
     )
-    db.session.add(template)
-    db.session.flush()
-    # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_every_period_rule(db.session, template)
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=periods[0].user_id,
-        pay_period_id=periods[0].id,
-        scenario_id=scenario.id,
-        account_id=account.id,
-        status_id=projected_status.id,
-        name="Second User Rent",
-        category_id=seed_second_user["categories"]["Rent"].id,
-        transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("900.00")),
-    )
-    db.session.add(txn)
+    rule = template.recurrence_rule
+    txn = generate_row_of(template, periods[0])
 
     # b) Savings goal.
     goal = SavingsGoal(
@@ -3416,6 +3330,10 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
         default_amount=Decimal("150.00"),
     )
     db.session.add(transfer_tpl)
+    db.session.flush()
+    # Its price, stated as every app-side create door states it (see the
+    # calendar-anchored twin above).
+    state_template_price(transfer_tpl)
 
     # d) Salary profile.
     salary_profile = SalaryProfile(
@@ -3451,48 +3369,20 @@ def seed_entry_template(app, db, seed_user, seed_periods):
     """Create a template with is_envelope=True and a transaction.
 
     The template is an expense-type template tied to the seed_user's checking
-    account with a default amount of $500.  A single projected transaction is
-    created in the first pay period.
+    account with a stated price of $500.  The engine generates its single
+    projected row in the first pay period (plan step balance:X-cf), so the
+    row is derived and the $500 it is worth is the template's series' answer.
 
     Returns:
         dict with keys: template, transaction, category, recurrence_rule.
     """
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="Expense").one()
-    )
-    projected_status = (
-        db.session.query(Status).filter_by(name="Projected").one()
-    )
-
     category = seed_user["categories"]["Groceries"]
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=category.id,
-        transaction_type_id=expense_type.id,
-        name="Weekly Groceries",
-        default_amount=Decimal("500.00"),
-        is_envelope=True,
+    template = make_expense_template(
+        db.session, seed_user, amount="500.00",
+        name="Weekly Groceries", category_key="Groceries", is_envelope=True,
     )
-    db.session.add(template)
-    db.session.flush()
-    # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_every_period_rule(db.session, template)
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=seed_periods[0].user_id,
-        pay_period_id=seed_periods[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected_status.id,
-        name="Weekly Groceries",
-        category_id=category.id,
-        transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("500.00")),
-    )
-    db.session.add(txn)
+    rule = template.recurrence_rule
+    txn = generate_row_of(template, seed_periods[0])
     db.session.commit()
 
     return {
@@ -3585,6 +3475,17 @@ def _refresh_ref_cache_and_jinja_globals(app):
     from app.jinja_globals import register_ref_id_globals
 
     ref_cache.init(_db.session)
+    # ``init`` SELECTs every ``ref`` table and writes nothing, and the session
+    # it ran on is the fixture's OUTER one, which a test body's nested
+    # ``app.app_context()`` cannot reach.  Left as it is, that session sits
+    # idle in a transaction holding a share lock on each ``ref`` table until
+    # the test ends -- and a migration replay that drops a key onto one of
+    # them from the nested context (plan step ``pay_calendar:C17-a``'s
+    # downgrade, run by ``rewind_pay_schedule_rhythm`` and by
+    # ``test_pay_era.py`` directly) then waits on the cluster's
+    # ``lock_timeout`` and fails.  Ending the read-only transaction here
+    # releases the locks and changes nothing else.
+    _db.session.rollback()
     register_ref_id_globals(app)
 
 

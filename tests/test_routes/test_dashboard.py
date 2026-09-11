@@ -248,7 +248,7 @@ class TestDashboardPulseRendering:
                     to_account_id=savings.id,
                     pay_period_id=cur.id,
                     scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("200.00"),
+                    amount_ownership=AmountOwnership.own(Decimal("200.00")),
                     status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                     category_id=None,
                     due_date=cur.start_date + timedelta(days=4),

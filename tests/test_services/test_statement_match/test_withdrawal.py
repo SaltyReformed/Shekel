@@ -76,6 +76,7 @@ from ._builders import (
     an_answers,
     an_import,
 )
+from app.models.amount_ownership import AmountOwnership
 
 
 def _submit(
@@ -135,7 +136,7 @@ def _a_transfer(seed_user):
             to_account_id=_a_savings_account(seed_user).id,
             pay_period_id=seed_user["bootstrap_period"].id,
             scenario_id=seed_user["scenario"].id,
-            amount=Decimal("500.00"),
+            amount_ownership=AmountOwnership.own(Decimal("500.00")),
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             category_id=seed_user["categories"]["Groceries"].id,
             notes=None,

@@ -11,7 +11,7 @@ Tests for transaction template CRUD and recurrence preview:
 """
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -1835,7 +1835,24 @@ class TestPreviewRecurrence:
                 name="Expense"
             ).one()
             category = seed_user["categories"]["Rent"]
-            stated_start = date(2026, 7, 6)
+            # DERIVED, never a literal.  A seeded world "holds rows dated from
+            # ``display_today()``" (tests/conftest.py), and this module is not
+            # under the conftest that freezes the clock -- that one covers
+            # tests/test_services/ only.  A hardcoded day therefore sits inside
+            # the calendar when it is written and DECAYS INTO THE PAST as the
+            # window walks forward, at which point ``span_containing`` returns
+            # None and the assertion below dies on an AttributeError rather
+            # than reporting anything.  ``date(2026, 7, 6)`` did exactly that
+            # on 2026-09-07, when the seeded calendar opened 2026-07-13.
+            #
+            # One day past a span's start is mid-span for any cadence above a
+            # single day, so the normalisation this test checks is still
+            # exercised rather than collapsing into a no-op the way today's
+            # date would on the one day in fourteen that IS a span start.
+            own_span = calendar_for(
+                seed_user["user"].id
+            ).span_containing(display_today())
+            stated_start = own_span.start_date + timedelta(days=1)
             resp = auth_client.post("/templates", data={
                 "name": "Recurring IDOR Template",
                 "default_amount": "1500.00",
@@ -2540,7 +2557,9 @@ class TestTemplateHardDelete:
         settled row is still present after the route returns.
 
         ``Transaction.template_id`` is a FK with ``ON DELETE SET NULL``
-        (``app/models/transaction.py:132-134``), so the surviving
+        (cited by NAME rather than by line: the line number this carried was
+        already stale, and the 2026-09-06 ``__table_args__`` split moved the
+        surrounding file again), so the surviving
         RECEIVED row has its ``template_id`` cleared but its financial
         data -- amount, status, period -- is intact.  The financial
         history that CRIT-05 was destroying is preserved.

@@ -33,7 +33,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
-from app.services.auth_service import _seed_tax_data_for_user
+from app.services.registration_service import _seed_tax_data_for_user
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._inputs import _contribution_inputs_for_accounts
 from app.services.pay_calendar import PayCadence, PayCalendar, PayCalendarError
@@ -41,7 +41,7 @@ from app.services.payroll_basis import PayrollBasis
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_report_service import compute_tax_report
 
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import rhythm_of, strip_owner_schedule
 
 
 def _strip_every_payday(db, user_id):
@@ -61,10 +61,7 @@ def _strip_every_payday(db, user_id):
     is the order this helper always meant.
     """
     db.session.commit()
-    db.session.execute(text(
-        "DELETE FROM budget.pay_periods WHERE user_id = :u"), {"u": user_id})
-    db.session.execute(text(
-        "DELETE FROM budget.pay_schedule WHERE user_id = :u"), {"u": user_id})
+    strip_owner_schedule(db.session, user_id)
     db.session.commit()
 
 
@@ -462,10 +459,13 @@ class TestWhichOwnerTheSeamSERVESAndWhichItREFUSES:
             # infer it, and ``employee_by_payday == {}`` is the ``!= []``
             # class an adversarial review already rejected on this exact case.
             # What grades the refusal is the SIBLING case below, over an owner
-            # with no schedule row at all.
+            # with no schedule row at all.  A ``models_employee is False``
+            # line stood beside the map assertion until plan step
+            # salary:S3-e-1 deleted that property; it asserted nothing the
+            # empty map does not already imply, the property having been
+            # ``any(amount > 0)`` over it.
             assert inputs.investment_params is not None
             assert inputs.feed.employee_by_payday == {}
-            assert inputs.feed.models_employee is False
 
     def test_the_balance_seam_REFUSES_an_owner_with_no_schedule_row(
         self, app, db, seed_user, seed_periods,

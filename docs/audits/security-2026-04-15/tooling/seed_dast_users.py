@@ -81,9 +81,9 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
-from app.services.auth_service import (
+from app.services.auth_service import hash_password
+from app.services.registration_service import (
     RegistrationSpec,
-    hash_password,
     register_user,
 )
 from app.services.pay_calendar import calendar_for

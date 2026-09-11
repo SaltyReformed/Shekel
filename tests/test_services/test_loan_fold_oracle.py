@@ -375,7 +375,7 @@ class TestFoldMatchesPostingsAcrossTheShapeMatrix:
             # precedes the 2026-03-15 true-up, the boundary this shape names.
             params = loan_loaders.load_loan_params(loan.id)
             shadows = loan_loaders.settled_income_shadows(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, options=(),
             )
             assert loan_loaders.loan_payment_due_date(
                 shadows[0], params.payment_day,
@@ -407,7 +407,7 @@ class TestFoldMatchesPostingsAcrossTheShapeMatrix:
             db.session.commit()
             params = loan_loaders.load_loan_params(loan.id)
             shadows = loan_loaders.settled_income_shadows(
-                loan.id, seed_user["scenario"].id,
+                loan.id, seed_user["scenario"].id, options=(),
             )
             due = loan_loaders.loan_payment_due_date(
                 shadows[0], params.payment_day,

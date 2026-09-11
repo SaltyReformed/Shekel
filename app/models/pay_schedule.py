@@ -1,88 +1,42 @@
 """
 Shekel Budget App -- Pay Schedule Model (budget schema)
 
-One row per user holding the persisted pay-period cadence plus the
-continuous-rolling-window configuration.
+One row per user holding the configuration a pay schedule cannot derive from
+its own rows and that is the OWNER's rather than any one era's: the
+continuous-rolling-window settings, and how far back the owner's paychecks
+reach.
 
-A pay period stores only its ``start_date`` -- the payday, and since plan
-step ``pay_calendar:C4-c`` the whole of what that row records.  Its cadence
-is not on the period either (it is an argument to
-``pay_period_write.record_paydays``, which spaces the batch's paydays by it
-and then persists it here).  That means the extend / regenerate /
-rolling-top-up paths have nothing to continue an existing schedule FROM
-unless the cadence is persisted somewhere.  This table is that storage:
-the genuinely non-derivable configuration a user's schedule needs to grow
-itself forward.
+**The RHYTHM does not live here since plan step ``pay_calendar:C17-a``**
+(ruling **R-PC58**).  Until that step this row held one ``cadence_days``, one
+``shift_id`` and one ``nominal_anchor`` per owner, and every batch that
+recorded a payday overwrote all three -- so "correct my cadence going forward"
+silently re-described every PAST payday too (ledger row **N-492**).  A pay
+schedule is a SEQUENCE OF ERAS now: :class:`~app.models.pay_era.PayEra`
+holds one row per *how I have been paid since*, each carrying the cadence,
+its kind, the phase and the convention, and this row is the owner-level
+configuration those eras hang off through ``fk_pay_eras_schedule``.  The
+:attr:`PaySchedule.eras` relationship is how a reader that holds this row
+reaches them in one load.
 
-**It is also the INPUT to the last period's PROJECTED end**, the one value
-in a derived calendar that does not come from a payday -- every other end
-is the day before the next one.  So a write to this column moves the
-schedule's horizon, which is why only a batch that RECORDS a payday may
-make one (the cadence rule; findings **P12** and **P29**).  *It was the
-input to a stored ``end_date`` between plan steps C3-b and C4-c; the column
-is gone and the derivation reads this one directly, so the value's job did
-not change but the thing it feeds did.*
+**It still holds ``history_opens_on``** (plan step balance:X-bh-2, ruling
+**balance:R-IA** amended 2026-08-31): how far back the owner's paychecks
+reach, or ``NULL`` for an owner who has not said.  It is the OWNER's fact and
+not an era's -- it bounds the EARLIEST era's backward rhythm, and only that
+era has one -- so it stays here.  The app knows how often somebody is paid and
+cannot know when the job began, which is why it is asked rather than
+inferred.
 
-**Since plan step balance:X-bh-2 it holds a SECOND non-derivable fact**
-(ruling **balance:R-IA**, amended 2026-08-31): ``history_opens_on``, how far
-back the owner's paychecks reach, or ``NULL`` for an owner who has not
-said.  The table's subject is unchanged -- it is still the
-configuration a schedule cannot derive from its own rows -- and the two
-facts are the two ENDS of one rhythm: ``cadence_days`` says how far apart
-the paydays are, and this says where counting them backward stops.  The
-app knows the cadence and cannot know when the job began, which is why
-the second one is asked rather than inferred.
-
-**Since plan step pay_calendar:C14-e-2 it holds a THIRD non-derivable
-fact** (developer direction **R-PC61**): ``nominal_anchor``, a day the
-owner's NOMINAL pay grid passes through.  *This paragraph said the
-opposite until that step -- "the anchor start date is deliberately NOT
-stored here; it equals ``min(pay_periods.start_date)`` and has no
-consumer, so persisting it would only invite drift" -- and BOTH halves of
-that sentence expire at C14-e.*  It acquires a consumer: the extend and
-top-up paths continue the grid from it rather than from their own last
-output.  And it stops equalling ``min(start_date)``: under a displacing
-convention the recorded paydays are CASH days, so the nominal grid is not
-observable in ``budget.pay_periods`` at all, and the two are different
-facts -- what payroll INTENDS against what the bank DID -- rather than one
-value in two homes.
-
-``history_opens_on`` is NOT that value under another name, and neither is
-``nominal_anchor``: the first RECORDED payday is where the app's record
-opens, ``history_opens_on`` is where the owner's pay HISTORY opens, and
-``nominal_anchor`` is where the arithmetic GRID passes -- which is the
-whole distinction ledger row **N-390** measured at ``$14,103.84`` against
-a true ``$31,733.64``.
+**The row's own job is the same as it was**: a pay period stores only its
+``start_date`` -- the payday -- and the extend / regenerate / rolling-top-up
+paths have nothing to continue an existing schedule FROM unless the rhythm is
+persisted somewhere.  What changed is that "somewhere" is one era row per
+rhythm rather than three columns here.
 """
 
 from app.config import BaseConfig
 from app.extensions import db
 from app.models.mixins import CreatedAtMixin, UserScopedMixin
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
-
-
-#: Inclusive bounds on ``pay_schedule.cadence_days``, declared ONCE and read by
-#: the ``ck_pay_schedule_cadence_range`` CHECK below, by every Marshmallow field
-#: that accepts a cadence, and by
-#: :func:`app.services.pay_schedule_service.reject_out_of_range_cadence`, which
-#: the column's one writer asks.  They were six hand-copied literals until plan
-#: step X-ad-a, which added a seventh door (registration) and made the copying
-#: the defect: a bound stated in six places is six places to disagree, and the
-#: one that would have disagreed silently was the service's -- a cadence the
-#: schema never saw reaches the CHECK as a 500 rather than as a refusal the
-#: form can render.
-#:
-#: **One further copy survives on purpose**: ``pay_calendar._derive`` states the
-#: same pair as :data:`~app.services.pay_calendar.MIN_CADENCE_DAYS` /
-#: :data:`~app.services.pay_calendar.MAX_CADENCE_DAYS`.  That package is PURE by
-#: design -- no Flask symbol, no session, no clock -- which is what lets the
-#: pay-calendar arc's harness drive the derivation over production's paydays
-#: without a database, and importing this module would pull ``app.extensions``
-#: in and close a cycle through ``pay_schedule_service``.  So the two copies are
-#: deliberate, and they are held in step by a TEST rather than by memory:
-#: ``tests/test_models/test_pay_schedule.py::TestTheCadenceBoundHasOneValue``.
-CADENCE_DAYS_MIN = 1
-CADENCE_DAYS_MAX = 365
 
 # ``history_opens_on``'s window is NOT declared here, and that is the point of
 # this comment.  It is the window this application HAS a calendar for --
@@ -92,39 +46,35 @@ CADENCE_DAYS_MAX = 365
 # and was deleted: the same fact already carries two domain-named aliases
 # (``EFFECTIVE_DATE_*`` in the validation helpers, ``_STARTS_ON_*`` in the
 # recurrence resolver), and a third would have been a third name for one
-# number rather than a bound of this column's own.  ``cadence_days`` keeps its
-# constants above because 1..365 IS that column's own rule and nothing else's.
+# number rather than a bound of this column's own.  The cadence bound, which
+# IS one column's own rule, lives with that column on
+# :mod:`app.models.pay_era` since plan step ``pay_calendar:C17-a``.
 
 
 class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
-    """A user's persisted pay-period cadence and rolling-window config.
+    """A user's owner-level pay-schedule configuration.
 
     Exactly one row per user, enforced by ``uq_pay_schedule_user``
-    (UNIQUE on ``user_id``).  The row is created or refreshed by
-    ``pay_schedule_service.upsert_schedule`` whenever the schedule's
-    cadence is established (first generation) or changed (regenerate).
+    (UNIQUE on ``user_id``).  The row is created by
+    ``pay_schedule_service.ensure_schedule_row`` the first time a batch
+    records a payday for its owner, and never rewritten by a batch after
+    that: the rhythm a batch states is an era's fact
+    (:class:`~app.models.pay_era.PayEra`), and the two facts here are set by
+    their own doors (``set_rolling``, ``set_history_opening``).
 
     **Since plan step C4-b-2 it is also a foreign-key TARGET**, and that is
     what ``uq_pay_schedule_user`` makes legal:
     ``budget.pay_periods.user_id`` references ``user_id`` here through
-    ``fk_pay_periods_schedule``, ``ON DELETE RESTRICT``.  So a row cannot be
-    deleted while its owner holds a payday, and an owner cannot hold a payday
-    without one -- the invariant ledger rows **P8** and **P35** existed for,
-    moved out of ``resolve_schedule``'s inferring arm and into the schema.
-    A row WITHOUT paydays stays ordinary: ``pay_period_admin.reset_pay_periods``
+    ``fk_pay_periods_schedule``, ``ON DELETE RESTRICT``, and since plan step
+    ``pay_calendar:C17-a`` ``budget.pay_eras.user_id`` does the same through
+    ``fk_pay_eras_schedule``.  So a row cannot be deleted while its owner holds
+    a payday or an era, and an owner cannot hold either without one.  A row
+    WITHOUT paydays stays ordinary: ``pay_period_admin.reset_pay_periods``
     deletes every period and keeps this row, and that is the state it passes
     through.
 
     Columns:
 
-      ``cadence_days`` -- days between consecutive paydays (e.g. 14 for
-                          biweekly).  ``ck_pay_schedule_cadence_range``
-                          bounds it to
-                          :data:`CADENCE_DAYS_MIN`..:data:`CADENCE_DAYS_MAX`,
-                          the same two names the Marshmallow cadence
-                          fields and ``pay_schedule_service.upsert_schedule``
-                          read -- so the CHECK and every door in front of
-                          it state one bound rather than four.
       ``rolling_enabled`` -- continuous-rolling-window switch.  When
                           true, the on-request top-up keeps a target
                           number of periods generated ahead of today.
@@ -141,28 +91,27 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
                           whole rule; in one sentence, it is the FLOOR on
                           the backward payday rhythm and ``NULL`` means NOT
                           STATED, which counts only the recorded paydays.
-      ``shift_id`` -- what payroll does when a payday lands on a day no
-                          money moves on, keyed to ``ref.business_day_shifts``
-                          (``none`` / ``prior`` / ``next``).  ``NOT NULL``,
-                          and every row starts at ``none``, so the behaviour
-                          is off until an owner answers.  See the column
-                          comment below for why it carries no CHECK and no
-                          default.
       ``user_id`` -- from :class:`UserScopedMixin` (CASCADE FK to
                           ``auth.users.id``).
       ``created_at`` -- from :class:`CreatedAtMixin`.
+
+    Relationships:
+
+      ``eras`` -- the owner's :class:`~app.models.pay_era.PayEra` rows,
+                          ``effective_from`` ascending.  Joined by OWNER rather
+                          than by this row's primary key, because
+                          ``fk_pay_eras_schedule`` targets ``user_id``; the
+                          ``foreign()`` annotation says which side of that
+                          join is the key, since the column carries a second
+                          key to ``auth.users`` as well.
     """
 
     __tablename__ = "pay_schedule"
     __table_args__ = (
         # One schedule row per user.  Also the conflict target the
         # backfill migration's ``ON CONFLICT (user_id) DO NOTHING`` and
-        # the service's upsert rely on.
+        # the service's row-creating insert rely on.
         db.UniqueConstraint("user_id", name="uq_pay_schedule_user"),
-        db.CheckConstraint(
-            f"cadence_days BETWEEN {CADENCE_DAYS_MIN} AND {CADENCE_DAYS_MAX}",
-            name="ck_pay_schedule_cadence_range",
-        ),
         db.CheckConstraint(
             "rolling_target_periods > 0",
             name="ck_pay_schedule_positive_target",
@@ -182,7 +131,6 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    cadence_days = db.Column(db.Integer, nullable=False)
     rolling_enabled = db.Column(
         db.Boolean, nullable=False, default=False,
         server_default=db.text("false"),
@@ -227,139 +175,34 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
     # payday is therefore legal and means "no backward rhythm" -- which is the
     # honest answer for an owner whose first payday has not happened yet.
     #
+    # It is the OWNER's fact and not an era's (plan step pay_calendar:C17-a):
+    # only the EARLIEST era runs backward below the record, so a floor per era
+    # would be a column with one meaningful row.  It stays here, beside the
+    # rolling configuration, as the second fact a schedule cannot derive.
+    #
     # NOT NULL was not available.  Every existing row predates the column, and
     # there is no derivation to backfill one with: the first recorded payday is
     # a RECORD boundary, and writing it here would state as fact exactly the
     # guess ledger row N-390 measured at $14,103.84 against a true $31,733.64.
     history_opens_on = db.Column(db.Date, nullable=True)
-    # What payroll does when a payday lands on a weekend or a federal holiday
-    # (plan step pay_calendar:C14-b, rulings R-PC47 and R-PC56).  The
-    # vocabulary is the EXISTING ref.business_day_shifts seeded at
-    # recurrence:R2, which budget.recurrence_rules.shift_id already keys to,
-    # so a bill's cash date and a payday ask one question of one table.
-    #
-    # It carries NO server_default, and the reason is the same one that keeps
-    # every other ref comparison out of the schema: which integer means
-    # ``none`` is SEED DATA, not a schema constant, so a default written into
-    # the DDL would be a literal nobody can re-derive -- and the failure would
-    # be silent in the money-moving direction, a row defaulting to ``prior``
-    # displacing paydays its owner never asked to move.  The rule "a new
-    # schedule displaces nothing" is a business rule, so it lives at the one
-    # door that creates a row (``pay_schedule_service.upsert_schedule``),
-    # which resolves the id through ``ref_cache`` exactly as
-    # ``recurrence._authoring`` does for the same table.  A writer that
-    # forgets therefore gets a NOT NULL violation rather than a wrong
-    # convention.
-    #
-    # It carries NO CHECK either, and that is a DELIBERATE absence the
-    # developer ruled on 2026-09-05 rather than an omission (**R-PC59**).
-    # A displacing
-    # convention needs a cadence longer than the longest run of consecutive
-    # closed days, or two nominal paydays displace onto one day and
-    # ``pay_calendar._derive.derive_periods`` refuses the whole calendar.
-    # That floor is DERIVED from the holiday set -- see
-    # :func:`app.utils.business_days.shortest_collision_free_cadence`, which
-    # proves it is the longest closed run plus one -- and the holiday set is
-    # not fixed (``business_days.JUNETEENTH_FIRST_YEAR`` records it changing
-    # once inside this application's own calendar).  A CHECK expression must
-    # be IMMUTABLE, so a constraint could only freeze the number where nothing
-    # can recompute it.  The refusal is therefore
-    # ``pay_schedule_service.reject_shift_on_short_cadence``, asked by
-    # ``upsert_schedule`` -- the column's ONE writer, which writes the cadence
-    # and the convention in a single statement so the pair is judged against
-    # the state the operation leaves behind.
-    #
-    # A CHECK could not have been the primary refusal in any case, because it
-    # cannot name a FIELD: a constraint violation arrives as an IntegrityError
-    # with a constraint name, where a form needs the message attached to the
-    # control the owner chose.  That is what
-    # ``schemas.validation.pay_periods.validate_derivable_rhythm`` does, and it
-    # is the same reason plan step X-ad-a moved the cadence BOUND out from
-    # behind ``ck_pay_schedule_cadence_range`` and into the write door.
-    #
-    # **What a CHECK would still leave undone, stated because an earlier draft
-    # of this comment claimed the opposite about PostgreSQL and was wrong.**
-    # ``ADD CONSTRAINT`` without ``NOT VALID`` DOES scan every existing row, so
-    # a migration that re-adds the constraint at a new floor fails loudly on a
-    # row that has become illegal.  What is not re-evaluated is an IN-PLACE
-    # constraint over rows nobody updates.  The honest statement of the gap is
-    # therefore narrower and it applies to the DOOR as much as to a CHECK: a
-    # refusal asked only on write cannot see a stored row that a LATER holiday
-    # change made illegal, and nothing reconciles ``budget.pay_schedule``
-    # today.  That is a finding this step reports rather than a property it
-    # claims (adversarial design review, 2026-09-05).
-    shift_id = db.Column(
-        db.Integer,
-        db.ForeignKey(
-            "ref.business_day_shifts.id", ondelete="RESTRICT",
-            name="fk_pay_schedule_shift_id",
-        ),
-        nullable=False,
+    # The owner's eras, ascending.  ``primaryjoin`` spells the join on
+    # ``user_id`` because the era table carries TWO keys on that column -- the
+    # mixin's to ``auth.users`` and ``fk_pay_eras_schedule`` to this row --
+    # and the ORM cannot pick the relationship's path between them unasked.
+    # ``viewonly``: an era is written and retired by
+    # ``pay_schedule_service`` alone, never through this collection.
+    eras = db.relationship(
+        "PayEra",
+        primaryjoin="PaySchedule.user_id == foreign(PayEra.user_id)",
+        order_by="PayEra.effective_from",
+        viewonly=True,
+        lazy="select",
     )
-    # A day the owner's NOMINAL pay grid passes through (plan step
-    # pay_calendar:C14-e-2, developer direction R-PC61).  It is the phase of
-    # the arithmetic progression the paydays are generated on -- NOT a payday
-    # and not a record.  Three of the five columns R-PC58 specifies for C17's
-    # era row now live here (cadence, convention, phase); C17 adds
-    # ``effective_from`` and the cadence KIND and turns one row per owner into
-    # one row per era, which is a move this column makes with the other two
-    # rather than a scaffold C17 tears down.
-    #
-    # WHY IT IS NOT DERIVED, which is the objection this column has to answer.
-    # While every owner's convention is ``none`` it is DERIVABLE from the
-    # recorded rows, and a value the database already determines is rule 14's
-    # stored-derived defect.  *It is not an EQUALITY with any one of them, and
-    # an adversarial review of C14-e-2 struck a sentence claiming it equalled
-    # ``MIN(start_date)``: ``record_paydays`` rewrites this column from every
-    # batch's own first payday, so one press of Extend puts it far above the
-    # minimum.  The migration backfills ``MAX``, and what a reader should carry
-    # is that the anchor names the grid of the batch that WROTE it.*
-    # It stops being equal the moment a convention displaces: from C14-e-3 a
-    # recorded payday is a CASH day, so the nominal grid has no representation
-    # in that table -- the grid is what payroll INTENDS and the rows are what
-    # the bank DID, and R-PC47 says outright that a recorded payday may fall
-    # off the cadence.  Neither value determines the other, so this is one home
-    # for a second fact rather than a second home for one.
-    #
-    # WHAT IT DELETES, measured rather than asserted (this step's probe, over
-    # production's cadence 14 and opening payday 2026-03-26 against the real
-    # federal holiday set): the extend path stepped its grid from the LAST
-    # RECORDED payday, so under a displacing convention each batch re-anchored
-    # on the previous batch's cash day and the rhythm walked away from payroll's
-    # -- 178 of 301 recorded paydays wrong under ``prior`` with 8 days of final
-    # drift at a batch of ONE, which is the rolling top-up's steady state.  One
-    # Thanksgiving, the nominal 2030-11-28, re-phased everything after it.
-    # Anchored here instead the same simulation records 0 of 301 wrong.  That
-    # is ledger row PC-497 fault 2, and it is why R-PC54's "one bounded gap"
-    # premise was measured FALSE and then made true again.
-    #
-    # NULLABLE, and the null means one thing: this row states no phase.  The
-    # migration backfills ``MAX(start_date)`` per owner, so the only nulls it
-    # can leave are schedule rows holding ZERO paydays.  No consumer reaches
-    # one: the extend door refuses an owner with no recorded paydays before it
-    # reads this, and ``pay_period_write.record_paydays`` writes it on every
-    # batch that records a payday.  It is NOT NULL-able only because that
-    # owner exists, not because anything defaults it.
-    #
-    # *An earlier draft cited ``reset_pay_periods`` as where that owner comes
-    # from, which an adversarial review measured wrong: that door retires and
-    # re-records in ONE ``_apply``, so its zero-payday moment is
-    # intra-transaction and never observable.  The reachable source is the
-    # MIGRATION -- a schedule row whose periods were all removed before it
-    # ran.*
-    #
-    # **Nothing has to reconcile it against the rows**, which is the other
-    # half of the rule-14 answer: the extend door asks its producer against
-    # the last paycheck's END rather than against a recorded payday, so a
-    # phase that does not sit on the surviving rows' grid still yields a day
-    # that door's own floor admits.  There is no invariant here for a
-    # reconciler to enforce.
-    nominal_anchor = db.Column(db.Date, nullable=True)
     # user_id (UserScopedMixin) and created_at (CreatedAtMixin) render
     # at the table tail; see the mixin docstrings for the DDL contract.
 
     def __repr__(self):
         return (
-            f"<PaySchedule user={self.user_id} cadence={self.cadence_days} "
+            f"<PaySchedule user={self.user_id} "
             f"rolling={self.rolling_enabled}>"
         )

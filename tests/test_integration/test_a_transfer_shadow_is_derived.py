@@ -56,6 +56,11 @@ from tests.test_integration.test_transfer_settle_freeze import (
     _shadows,
 )
 from app.services.amount_ownership import state_own_amount
+from app.models.amount_ownership import AmountOwnership
+from app.services.amount_ownership import derived_ownership
+from tests._test_helpers import rendered_transfer_amount
+from datetime import date
+from app.services import template_amount_service
 
 #: P&I 1,199.10 + escrow 300.00 on the seeded $200k / 6% / 360mo mortgage.
 _CONTRACT = Decimal("1499.10")
@@ -144,28 +149,93 @@ class TestAShadowIsBornDerived:
                 db.session.flush()
 
 
+def _generated_pair(seed_user, seed_periods, series="500.00"):
+    """A TEMPLATE-LINKED transfer and both its legs, priced by its definition.
+
+    **The sibling of :func:`_plain_pair`, and the difference is load-bearing
+    rather than cosmetic since plan step X-au-f.**  An ad-hoc transfer may not
+    declare a relation at all -- ``ck_transfers_adhoc_owns_amount`` refuses it,
+    because nobody generated it and no definition states its price -- so a case
+    whose subject is *the definition speaking* cannot be built on one.  Before
+    X-au-f the definition spoke by sending a FIGURE, which an ad-hoc row could
+    accept; it speaks by stating an ``AmountOwnership`` now (ruling
+    **R-BAL11**), and the schema refuses that on a row with no template.  The
+    three cases that used ``_plain_pair`` for it were therefore asserting
+    against a shape the app cannot produce.
+
+    The price is stated through ``template_amount_service.set_amount``, the one
+    write door, which is what every app-side template create calls.
+    """
+    # pylint: disable-next=import-outside-toplevel
+    from app.models.transfer_template import TransferTemplate
+    # pylint: disable-next=import-outside-toplevel
+    from app.services import account_service
+
+    savings = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            name="Sinking Fund",
+            account_type_id=seed_user["account"].account_type_id,
+            anchor_balance=Decimal("100.00"),
+        ),
+    )
+    _db.session.flush()
+    template = TransferTemplate(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=savings.id,
+        name="Sinking Fund Contribution",
+        default_amount=Decimal(series),
+    )
+    _db.session.add(template)
+    _db.session.flush()
+    template_amount_service.set_amount(
+        template, Decimal(series), effective_on=date(2000, 1, 1),
+    )
+    xfer = create_transfer(
+        seed_user, _db.session, seed_user["account"], savings,
+        seed_periods[0], amount=Decimal(series),
+        due_date=seed_periods[0].start_date,
+    )
+    xfer.transfer_template_id = template.id
+    _db.session.flush()
+    return xfer, _shadows(xfer.id)
+
+
 class TestWhoOwnsTheFigureAfterAnEdit:
     """Ruling R-IO at the one door that states a transfer's amount."""
 
     def test_a_definition_driven_amount_moves_both_legs_and_writes_neither(
         self, app, db, seed_user, seed_periods,
     ):
-        """An amount stated without ``is_override`` leaves both legs derived.
+        """The DEFINITION's ownership leaves both legs derived, reading its series.
 
-        The recurrence maintain pass sends exactly this -- the definition's
-        figure, no ownership claim -- and it must not un-declare anything.  The
-        legs follow the new figure because they READ it, which is the copy and
-        its two repairs replaced by one arrow.
+        The recurrence maintain pass sends exactly this -- an
+        ``AmountOwnership`` naming TEMPLATE, no figure and no ownership claim
+        for the operator -- and it must not un-declare anything.  The legs
+        follow the new price because they READ it, which is the copy and its
+        two repairs replaced by one arrow.
+
+        **The caller states no FIGURE since plan step X-au-f** (ruling
+        **R-BAL11**): it sent ``amount=$400.00`` with an ``amount_authored``
+        of ``False``, which said *the definition re-priced this* by handing the
+        service the definition's own number to store.  The definition's number
+        lives in its SERIES now, so the act is to state WHO prices the row and
+        let the series answer -- and this case re-states the series to
+        ``$400.00`` first, so the figure it asserts is the same one it always
+        asserted and reaches the legs by the mechanism that actually carries it.
         """
         with app.app_context():
-            xfer, _legs = _plain_pair(seed_user, seed_periods)
+            xfer, _legs = _generated_pair(seed_user, seed_periods)
 
+            # The definition re-prices itself, through the one write door.
+            template_amount_service.set_amount(
+                xfer.template, Decimal("400.00"),
+                effective_on=xfer.due_date,
+            )
             transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id, amount=Decimal("400.00"),
-                # The DEFINITION states this figure, not a human (R-JR).  The
-                # service refuses an amount with no authorship, so the two
-                # directions are stated rather than one being a default.
-                amount_authored=False,
+                xfer.id, seed_user["user"].id,
+                amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
             )
             db.session.commit()
 
@@ -189,7 +259,7 @@ class TestWhoOwnsTheFigureAfterAnEdit:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=Decimal("400.00"), amount_authored=True,
+                amount_ownership=AmountOwnership.own(Decimal("400.00")),
                 is_override=True,
             )
             db.session.commit()
@@ -199,31 +269,57 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 assert owns_its_amount(leg) is True
                 assert shadow_amount(leg) == Decimal("400.00")
 
-    def test_clearing_the_flag_hands_a_taken_leg_back_with_no_new_amount(
+    def test_stating_the_definitions_ownership_hands_a_taken_leg_back(
         self, app, db, seed_user, seed_periods,
     ):
-        """``is_override=False`` alone re-declares both legs.
+        """The hand-back is an OWNERSHIP now, and the bare flag no longer is one.
 
         The conflict resolver's *use the definition* action sends exactly this
-        -- the flag cleared, and an amount only when the caller has a new one
-        (``transfer_recurrence.resolve_conflicts``).  The behaviour this
-        replaces resumed deriving the moment the flag cleared, because pricing
-        READ the flag; ownership is declared now, so somebody has to write it
-        back, and this is the case that says who.
+        (``transfer_recurrence.resolve_conflicts``).  **It sent
+        ``is_override=False`` and, when it had one, a figure, until plan step
+        X-au-f** -- and this case was named for that spelling.  Ruling
+        **R-BAL11** replaced the three parameters with one: the resolver states
+        ``derived_ownership(TEMPLATE)``, and a bare flag says nothing about the
+        amount at all, because the flag means *this row is the OWNER's, not the
+        rule's* (X-au-h) and no longer decides a price.
+
+        **That is the whole of what changed, and the ACT is unchanged**: the
+        pair goes back to being priced by its definition, both legs stop owning
+        the figure they were frozen at, and the drift this step exists to make
+        unconstructible stays unconstructible.  The behaviour this all replaces
+        resumed deriving the moment the flag cleared, because pricing READ the
+        flag; ownership is declared now, so somebody has to write it back, and
+        this is the case that says who.
 
         **A first draft of ``apply_amount_ownership`` ran only under
         ``"amount" in updates`` and did not reach this at all**, leaving both
         legs owning the figure they had been frozen at -- for ever, since no
-        later act would look at them again.  That is the drift this step exists
-        to make unconstructible, reintroduced by the step itself.
+        later act would look at them again.
+
+        The pair is TEMPLATE-linked because the act requires it: a definition
+        cannot speak for an ad-hoc transfer, and
+        ``ck_transfers_adhoc_owns_amount`` refuses the declaration outright.
         """
         with app.app_context():
-            xfer, _legs = _plain_pair(seed_user, seed_periods)
+            xfer, _legs = _generated_pair(seed_user, seed_periods)
             user_id = seed_user["user"].id
 
             transfer_service.update_transfer(
-                xfer.id, user_id, amount=Decimal("400.00"),
-                amount_authored=True, is_override=True,
+                xfer.id, user_id,
+                amount_ownership=AmountOwnership.own(Decimal("400.00")),
+                is_override=True,
+            )
+            db.session.commit()
+            assert all(
+                owns_its_amount(leg) for leg in _shadows(xfer.id)
+            )
+
+            # A BARE flag states nothing about the amount, so it leaves both
+            # legs exactly as they stand -- asserted, because "the hand-back
+            # moved to the ownership" is only true if the old spelling stopped
+            # performing it.
+            transfer_service.update_transfer(
+                xfer.id, user_id, is_override=False,
             )
             db.session.commit()
             assert all(
@@ -231,14 +327,15 @@ class TestWhoOwnsTheFigureAfterAnEdit:
             )
 
             transfer_service.update_transfer(
-                xfer.id, user_id, is_override=False,
+                xfer.id, user_id,
+                amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
             )
             db.session.commit()
 
             for leg in _shadows(xfer.id):
                 assert leg.estimated_amount is None
                 assert owns_its_amount(leg) is False
-                assert shadow_amount(leg) == Decimal("400.00")
+                assert shadow_amount(leg) == Decimal("500.00")
 
     def test_a_bare_period_move_does_NOT_freeze_a_legs_derivation(
         self, app, db, seed_user, seed_periods,
@@ -310,7 +407,7 @@ class TestWhoOwnsTheFigureAfterAnEdit:
             user_id = seed_user["user"].id
 
             transfer_service.update_transfer(
-                xfer.id, user_id, amount=_TYPED, amount_authored=True,
+                xfer.id, user_id, amount_ownership=AmountOwnership.own(_TYPED),
                 is_override=True,
             )
             db.session.commit()
@@ -365,8 +462,8 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 f"/transfers/instance/{xfer_id}",
                 data={
                     "version_id": str(xfer.version_id),
-                    "amount": str(xfer.amount),
-                    "amount_as_rendered": str(xfer.amount),
+                    "amount": rendered_transfer_amount(xfer),
+                    "amount_as_rendered": rendered_transfer_amount(xfer),
                     "pay_period_id":str(seed_periods[1].id),
                     "status_id": str(xfer.status_id),
                     "notes": "",
@@ -413,7 +510,7 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 data={
                     "version_id": str(xfer.version_id),
                     "amount": str(_TYPED),
-                    "amount_as_rendered": str(xfer.amount),
+                    "amount_as_rendered": rendered_transfer_amount(xfer),
                     "pay_period_id":str(xfer.pay_period_id),
                     "status_id": str(xfer.status_id),
                     "notes": "",
@@ -432,8 +529,8 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 f"/transfers/instance/{xfer_id}",
                 data={
                     "version_id": str(xfer.version_id),
-                    "amount": str(xfer.amount),
-                    "amount_as_rendered": str(xfer.amount),
+                    "amount": rendered_transfer_amount(xfer),
+                    "amount_as_rendered": rendered_transfer_amount(xfer),
                     "pay_period_id":str(seed_periods[1].id),
                     "status_id": str(xfer.status_id),
                     "notes": "",
@@ -477,7 +574,7 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 data={
                     "version_id": str(xfer.version_id),
                     "amount": str(_TYPED),
-                    "amount_as_rendered": str(xfer.amount),
+                    "amount_as_rendered": rendered_transfer_amount(xfer),
                     "pay_period_id":str(xfer.pay_period_id),
                     "status_id": str(xfer.status_id),
                     "notes": "",
@@ -494,8 +591,8 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 f"/transfers/instance/{xfer_id}",
                 data={
                     "version_id": str(xfer.version_id),
-                    "amount": str(xfer.amount),
-                    "amount_as_rendered": str(xfer.amount),
+                    "amount": rendered_transfer_amount(xfer),
+                    "amount_as_rendered": rendered_transfer_amount(xfer),
                     "pay_period_id":str(xfer.pay_period_id),
                     "status_id": str(xfer.status_id),
                     "notes": "escrow went up in March",
@@ -601,7 +698,7 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                 f"/transfers/instance/{xfer_id}",
                 data={
                     "amount": "400.00",
-                    "amount_as_rendered": str(xfer.amount),
+                    "amount_as_rendered": rendered_transfer_amount(xfer),
                     "status_id": str(xfer.status_id),
                     "notes": "",
                 },
@@ -631,19 +728,19 @@ class TestWhoOwnsTheFigureAfterAnEdit:
         existed to repair, reintroduced by the step that removed it.
         """
         with app.app_context():
-            xfer, _legs = _plain_pair(seed_user, seed_periods)
+            xfer, _legs = _generated_pair(seed_user, seed_periods)
             user_id = seed_user["user"].id
 
             transfer_service.update_transfer(
-                xfer.id, user_id, amount=Decimal("400.00"),
-                amount_authored=True, is_override=True,
+                xfer.id, user_id, amount_ownership=AmountOwnership.own(Decimal("400.00")),
+                is_override=True,
             )
             db.session.commit()
             transfer_service.update_transfer(
-                xfer.id, user_id, amount=Decimal("500.00"),
+                xfer.id, user_id, amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
                 # The definition re-prices the pair (R-JR): not a human, so the
                 # taken leg is handed back rather than left at a stale figure.
-                amount_authored=False,
+
             )
             db.session.commit()
 
@@ -659,13 +756,20 @@ class TestALoanPaymentsLegsReadTheLoan:
     def test_both_legs_are_worth_the_contract_not_the_stored_figure(
         self, app, db, seed_user, seed_periods,
     ):
-        """The parent's stale ``$1.00`` is not what either leg is worth.
+        """The definition's ``$1.00`` is not what either leg is worth.
 
-        The fixture's stored ``default_amount`` is a deliberately stale
-        ``$1.00``, so a leg worth ``$1.00`` is one the loan did not price.  Both
-        legs, because the cutover declares both -- a version declaring only the
-        checking side would leave the loan-side income leg answering the
-        parent, and that leg is the one the payment feed reads.
+        The fixture's definition states a deliberately stale ``$1.00``, so a leg
+        worth ``$1.00`` is one the loan did not price.  Both legs, because the
+        cutover declares both -- a version declaring only the checking side
+        would leave the loan-side income leg answering the parent, and that leg
+        is the one the payment feed reads.
+
+        **The parent stores NOTHING since plan step X-au-f**, and the assertion
+        below is what replaces ``xfer.amount == Decimal("1.00")``: the stale
+        figure the legs had to beat is not merely unread now, it is gone, and
+        what the legs must beat is the SERIES the definition still states.  The
+        discrimination is the same -- ``$1.00`` against the contract's
+        ``$1,499.10`` -- and one stored copy shorter.
         """
         with app.app_context():
             xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
@@ -674,7 +778,10 @@ class TestALoanPaymentsLegsReadTheLoan:
                 seed_user["user"].id, seed_user["scenario"].id,
             )
 
-            assert xfer.amount == Decimal("1.00")
+            assert xfer.amount is None
+            assert template_amount_service.amount_as_of(
+                xfer.template, xfer.due_date,
+            ) == Decimal("1.00")
             priced = amounts_by_id(legs, basis)
             assert set(priced.values()) == {_CONTRACT}
             for leg in legs:
@@ -706,8 +813,8 @@ class TestALoanPaymentsLegsReadTheLoan:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=_TYPED,
-                amount_authored=True,
+                amount_ownership=AmountOwnership.own(_TYPED),
+
                 is_override=True,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
             )
@@ -761,7 +868,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                amount=_TYPED, amount_authored=True, is_override=True,
+                amount_ownership=AmountOwnership.own(_TYPED),  is_override=True,
             )
             db.session.commit()
 

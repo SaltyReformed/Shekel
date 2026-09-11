@@ -347,7 +347,7 @@ def _loans(user_id, scenario_id, accounts):
         params = _guard(
             f"loan_params:{account.id}",
             lambda a=account: [
-                [str(p.due_date), _money(p.amount), p.is_confirmed]
+                [str(p.dates.due_date), _money(p.amount), p.dates.is_confirmed]
                 for p in loan_payment_service.load_loan_context(
                     a.id, amount_basis(user_id, scenario_id),
                     db.session.query(LoanParams)
@@ -442,8 +442,8 @@ def _dump_user(user_id):
             str(a.id): _guard(
                 f"payment_history:{a.id}",
                 lambda acc=a: [
-                    [str(p.payment_date), str(p.due_date), _money(p.amount),
-                     p.is_confirmed]
+                    [str(p.dates.period_start), str(p.dates.due_date),
+                     _money(p.amount), p.dates.is_confirmed]
                     for p in loan_payment_service.get_payment_history(
                         acc.id, amount_basis(user_id, scenario_id), 1,
                     )

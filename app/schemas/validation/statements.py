@@ -31,8 +31,8 @@ from app.schemas.validation._helpers import (
 from app.services.statement_import import supported_sources
 from app.services.statement_match import (
     NEW_ENVELOPE,
+    ReviewedDifference,
     ReviewedRow,
-    parse_figure,
 )
 from app.utils.digit_strings import parse_row_id
 
@@ -72,15 +72,6 @@ class StatementUploadSchema(BaseSchema):
     )
 
 
-#: The most ids one match may name on a side.  A bound rather than a limit
-#: anyone will meet: ruling **R-FS**'s largest measured shape is a payroll
-#: deposit against three rows, and the hand-build form posts a checkbox per
-#: row it renders -- so without a ceiling a crafted submission could ask the
-#: accept door to re-derive and settle an account's whole history in one
-#: request.  Generous enough that a real statement's biggest group is nowhere
-#: near it.
-_MAX_MATCH_MEMBERS: int = 100
-
 #: The most acts ONE reviewed pass may ask for (plan step
 #: ``bank_import:X-f6a-3c-2``).  **Measured, not chosen**: applying the
 #: developer's own statement -- 124 proposals and 91 recordable lines -- takes
@@ -93,12 +84,16 @@ _MAX_MATCH_MEMBERS: int = 100
 #: offers.
 #:
 #: **43 ms is an AVERAGE over acts naming one to four rows, not a bound on
-#: one.**  :data:`_MAX_MATCH_MEMBERS` lets a crafted item name 100 lines and
-#: 100 rows, each running its own settle door, so a hostile pass is bounded by
-#: ``MAX_CONTENT_LENGTH`` (512 KB, ``app/config.py``) rather than by this --
-#: measured, a body that size carries about 44,600 ticks and is refused, in
-#: 0.36 s, before any of them runs.  This ceiling is what keeps an ORDINARY
-#: pass inside the budget; that one is what keeps a crafted one out.
+#: one.**  An item may name any number of lines and rows, so a hostile pass is
+#: bounded by ``MAX_CONTENT_LENGTH`` (512 KB, ``app/config.py``) rather than by
+#: this.  This ceiling is what keeps an ORDINARY pass inside the budget; that
+#: one is what keeps a crafted one out, and
+#: :func:`~app.services.statement_match._resolve.resolve_rows` is what keeps
+#: either from naming a row the pass never offered.  *It said
+#: ``_MAX_MATCH_MEMBERS`` bounded a member at 100 until plan step
+#: ``bank_import:X-go`` deleted that cap; see
+#: :class:`StatementMatchSchema`'s own note for the measurement that
+#: replaces the one this paragraph used to quote.*
 #:
 #: **A bound that fires is REFUSED and said, never silently truncated.**  An
 #: import may carry ``_secu_csv.MAX_LINES`` = 20,000 lines, so an account can
@@ -228,15 +223,22 @@ class ReviewedRowField(fields.Field):
             raise self.make_error("invalid") from exc
 
 
-class ReviewedFigureField(fields.Field):
-    """One money figure a submission carries, in the format this screen emits.
+class ReviewedDifferenceField(fields.Field):
+    """What a match's consent control submitted: the difference it was
+    reviewed against, and the member it lands on, AS THE SCREEN SHOWED THEM.
 
     :class:`ReviewedRowField`'s sibling and, since plan step
-    ``bank_import:X-f6d-4``, its co-reader: both go through
-    :func:`~app.services.statement_match._submission.parse_figure`, so the two
-    money strings this one form submits are strict in exactly the same way.
-    See :attr:`StatementMatchSchema.residual` for what having two strictnesses
-    measurably cost.
+    ``bank_import:X-gp``, its co-reader for BOTH halves of the value: the
+    figure goes through
+    :func:`~app.services.statement_match._submission.parse_figure` and the
+    row through :meth:`~app.services.statement_match.ReviewedRow.from_token`,
+    inside :meth:`~app.services.statement_match.ReviewedDifference
+    .from_token`, so nothing submitted here is graded more laxly than the same
+    thing submitted in ``rows``.  *It was ``ReviewedFigureField`` and read the
+    figure alone until that step, beside a second field reading the member;
+    see :attr:`StatementMatchSchema.consent` for why one value replaced two.*
+    See :attr:`StatementMatchSchema.consent` too for what having two
+    strictnesses on one form measurably cost.
 
     ``None`` passes through untouched, because absence is a state the schema
     names (``load_default``) rather than a spelling this reads.
@@ -247,7 +249,7 @@ class ReviewedFigureField(fields.Field):
     }
 
     def _deserialize(self, value, attr, data, **kwargs):
-        """Return the figure *value* names.
+        """Return the reviewed difference *value* names.
 
         Args:
             value: The submitted string.
@@ -256,15 +258,13 @@ class ReviewedFigureField(fields.Field):
             **kwargs: Marshmallow's contract, unused.
 
         Returns:
-            Its :class:`~decimal.Decimal`.
+            The :class:`~app.services.statement_match.ReviewedDifference`.
 
         Raises:
-            ValidationError: When *value* is not a figure this app emitted.
+            ValidationError: When *value* is not a token this app emitted.
         """
-        if not isinstance(value, str):
-            raise self.make_error("invalid")
         try:
-            return parse_figure(value)
+            return ReviewedDifference.from_token(value)
         except ValueError as exc:
             raise self.make_error("invalid") from exc
 
@@ -309,16 +309,86 @@ class StatementMatchSchema(BaseSchema):
     act and reach the same door.
     """
 
-    line_ids = fields.List(
-        RowId(), required=False, load_default=list,
-        validate=validate.Length(max=_MAX_MATCH_MEMBERS),
-    )
-    rows = fields.List(
-        ReviewedRowField(), required=False, load_default=list,
-        validate=validate.Length(max=_MAX_MATCH_MEMBERS),
-    )
-    #: The DIFFERENCE this match states it was REVIEWED against (plan step
-    #: ``bank_import:X-f6d-4``, ruling **R-FN**).
+    #: **NEITHER LIST CARRIES A LENGTH CEILING**, and its absence is plan step
+    #: ``bank_import:X-go`` (developer, 2026-09-06).  ``_MAX_MATCH_MEMBERS =
+    #: 100`` stood on both until then, justified as stopping a crafted
+    #: submission asking "the accept door to re-derive and settle an account's
+    #: whole history in one request".  Both halves of that were already false:
+    #:
+    #: * the DOMAIN bound exists where the offer set does.
+    #:   :func:`~app.services.statement_match._resolve.resolve_rows` looks
+    #:   every submitted row up in the pass's own ``unmatched_rows`` and
+    #:   refuses anything else BY NAME, and
+    #:   :func:`~app.services.statement_match._resolve.load_lines` does the
+    #:   same for lines.  A body cannot reach an account's history at all; it
+    #:   reaches at most what this pass offered, which the server derived;
+    #: * the RESOURCE bound exists where the body does, and it is
+    #:   ``MAX_FORM_MEMORY_SIZE`` -- **500,000 bytes, Flask's own default,
+    #:   which this app never sets**.  Werkzeug's ``_parse_urlencoded`` weighs
+    #:   the body against it before this schema sees anything, and it is the
+    #:   BINDING one: ``MAX_CONTENT_LENGTH`` (524,288, ``app/config.py``) is
+    #:   larger, so for a urlencoded body it never fires.
+    #:   :data:`MAX_BATCH_ITEMS` beside them bounds the ACTS.
+    #:
+    #: **And it had started to contradict the screen.**  Since plan step
+    #: ``bank_import:X-gi-1`` the scriptless MATCH pane offers EVERY unexplained
+    #: row on the account as a tickbox
+    #: (:class:`~app.services.statement_match.MatchReach`), bounded only by the
+    #: span the recorded lines cover -- so an account holding more than 100 of
+    #: them rendered more controls than this would accept, which is ruling
+    #: **R-HW**'s *a control that cannot succeed*.  67 on the developer's own
+    #: account when the pane was measured (2026-08-30), so it had not yet
+    #: bitten; the list grows with the statement span.
+    #:
+    #: **THE WORST CASE IS NOT MULTIPLICATIVE, and that is what makes the
+    #: deletion safe.**  ``MAX_FORM_MEMORY_SIZE`` weighs the WHOLE BODY -- one
+    #: ``content_length`` against one number, with no per-field accounting for
+    #: a urlencoded body -- so :data:`MAX_BATCH_ITEMS` items each naming
+    #: unbounded members is UNCONSTRUCTIBLE: every item's ticks come out of one
+    #: 500,000-byte budget.  **The body was always the tighter bound**: 500
+    #: items x 100 members is 50,000 ticks, against a body that can carry
+    #: 22,727, so the deleted cap could never bind in aggregate and the door's
+    #: worst case is IDENTICAL before and after this step.
+    #:
+    #: Measured 2026-09-06, three runs per shape, at the CRAFTED tick --
+    #: ``rows-1=purchase:1:1:1&`` is **22 bytes**, where a browser's
+    #: ``rows-1234=transaction%3A4567%3A-178.32%3A1&`` is 43: ONE item carrying
+    #: the whole 22,727-tick budget costs **50-54 ms**, and 500 items sharing
+    #: it cost **57-132 ms**.  Every row in either is then refused by
+    #: ``resolve_rows``, because no pass offers them.
+    #:
+    #: *Three drafts of this note were wrong and the corrections are kept
+    #: because each was a different mistake.  The first quoted 21.8 ms and
+    #: asked only the single-item question -- the wrong question, since whether
+    #: the item ceiling MULTIPLIES is what decides safety.  The second answered
+    #: that but cited ``MAX_CONTENT_LENGTH``, a gate that never fires for these
+    #: bodies, and priced a BROWSER's tick while bounding a CRAFTED one, which
+    #: understated the budget by 1.86x.  Both were found by adversarial review
+    #: before this step was committed.  The figure the deleted block quoted --
+    #: 44,600 ticks in 0.36 s -- was measured against the retired
+    #: ``match-<i>-rows`` wire shape and is not any of these.*
+    #: Both lists, and the note above governs the pair: neither carries a
+    #: ceiling, for one reason, so they are spelled the same way.
+    line_ids = fields.List(RowId(), required=False, load_default=list)
+    rows = fields.List(ReviewedRowField(), required=False, load_default=list)
+    #: What this match's CONSENT control submitted: the DIFFERENCE it states
+    #: it was REVIEWED against, and the member it lands on, as ONE value
+    #: (plan steps ``bank_import:X-f6d-4`` and ``X-gp``; rulings **R-FN** and
+    #: **R-BI2**).
+    #:
+    #: **ONE field where there were two, and that is the whole of plan step
+    #: X-gp.**  This was ``residual``, the figure, beside ``difference_on``,
+    #: the member, until then -- and the door compared only the figure, so
+    #: the consent rendered under *record it as a row with no category* could
+    #: be submitted beside a member that re-priced a budget row instead: two
+    #: acts under one agreement, which ruling **R-IV** had accepted on the
+    #: strength of a DOM event and ``X-gi-2a`` falsified.  The pane draws one
+    #: control whose options ARE the acts and each option's value is this
+    #: field's whole value, so there is no second field left to pair
+    #: differently.  **The row half is graded by exactly the reader a member
+    #: of ``rows`` is** -- :class:`ReviewedRowField`'s own -- so a body cannot
+    #: land a difference on something the row list could not have contained,
+    #: and ``resolve_rows`` compares the two as whole reviewed values.
     #:
     #: **It used to be absent on every proposal the app itself offers**, and
     #: plan step ``bank_import:X-gj-1b`` inverted that: the accept door
@@ -330,13 +400,17 @@ class StatementMatchSchema(BaseSchema):
     #: would be
     #: (``app.services.statement_match._variance._reject_unaccepted_difference``).
     #: A ``required=True`` here would turn a scriptless owner's balanced
-    #: hand-built group into a 400 over the whole pass.
+    #: hand-built group into a 400 over the whole pass; and a value naming NO
+    #: member is what every surface but the Reconcile card's MATCH pane
+    #: sends, meaning what an absent attribution always meant -- a match
+    #: naming ONE row is answered by ruling **R-GD(a)**'s determinacy, and a
+    #: group naming no member mints **R-FN**'s ordinary row.
     #:
     #: **Read through the service's own strict reader, exactly as
-    #: :class:`ReviewedRowField` beside it is.**  A first version declared it
-    #: ``fields.Decimal(places=2)``, and an adversarial review measured what
-    #: that cost on 2026-08-23: marshmallow quantizes with the default context
-    #: rounding, which is ``ROUND_HALF_EVEN`` -- the mode
+    #: :class:`ReviewedRowField` beside it is.**  A first version declared the
+    #: figure ``fields.Decimal(places=2)``, and an adversarial review measured
+    #: what that cost on 2026-08-23: marshmallow quantizes with the default
+    #: context rounding, which is ``ROUND_HALF_EVEN`` -- the mode
     #: :mod:`app.utils.money` says must never be reached implicitly through a
     #: bare ``.quantize`` -- so ``"0.054"`` was silently REPAIRED into
     #: agreement with a true difference of ``0.05``, on the one field the
@@ -347,31 +421,14 @@ class StatementMatchSchema(BaseSchema):
     #: **No ``Range`` bound, and the reason is NOT the one a first version
     #: gave.**  That version said a bound was unnecessary because the
     #: difference is "bounded by the ``Numeric(12, 2)`` columns it is summed
-    #: from", which is arithmetically false -- a match may name up to
-    #: :data:`_MAX_MATCH_MEMBERS` of them per side.  The bound lives at the
+    #: from", which is arithmetically false -- a match may name any number of
+    #: them per side.  The bound lives at the
     #: DOOR instead
     #: (``app.services.statement_match._variance._reject_unstorable``), where
     #: the sum it must bound actually exists; a bound here could only refuse a
     #: figure the door was going to refuse anyway, since nothing is written
     #: unless this equals the door's own derivation.
-    residual = ReviewedFigureField(required=False, load_default=None)
-    #: WHICH member of this match the difference belongs to (plan step
-    #: ``bank_import:X-gj-3a``), as that row's own reviewed token.
-    #:
-    #: **The same field type as a member of ``rows`` above, deliberately.**
-    #: The control's value IS one of the row tokens the same body carries, so
-    #: reading it through a second, looser field would let a body attribute a
-    #: difference to something the row list could not have contained -- and
-    #: ``resolve_rows`` compares the two as whole values, which only holds if
-    #: both were read by one reader.
-    #:
-    #: ``load_default=None`` is what every surface but the Reconcile card's
-    #: MATCH pane relies on: a match naming ONE row needs no attribution
-    #: (ruling **R-GD(a)**), and a match naming several with none named is the
-    #: shape that mints **R-FN**'s ordinary row, which is what this screen did
-    #: for every group before this step.  A ``required=True`` here would 400
-    #: the whole pass for a hand-built group nobody had to attribute.
-    difference_on = ReviewedRowField(required=False, load_default=None)
+    consent = ReviewedDifferenceField(required=False, load_default=None)
 
 
 class StatementMatchReleaseSchema(BaseSchema):

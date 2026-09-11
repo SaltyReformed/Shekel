@@ -32,6 +32,7 @@ from app.utils.business_days import (
     federal_holidays,
     is_business_day,
     shift_to_business_day,
+    earliest_nominal_paid_after,
     shortest_collision_free_cadence,
 )
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
@@ -506,4 +507,60 @@ class TestTheShortestCollisionFreeCadence:
                 assert shift_to_business_day(
                     later, BusinessDayShiftEnum.NONE,
                 ) > shift_to_business_day(day, BusinessDayShiftEnum.NONE)
+                day += timedelta(days=1)
+
+
+class TestTheEarliestNominalPaidAfterADay:
+    """``earliest_nominal_paid_after``: :func:`shift_to_business_day`'s inverse.
+
+    Plan step **pay_calendar:C14-e-3**.  ``auth_service`` refuses a sign-up
+    payday whose paycheck has already ended and has to name the earliest one
+    that WOULD work; that day is one cadence below the answer here.
+    """
+
+    def test_under_NONE_it_is_always_the_next_day(self):
+        """No displacement, so the first day paid after *day* is *day* + 1."""
+        for day in (date(2026, 1, 1), date(2026, 5, 16), date(2026, 11, 26)):
+            assert earliest_nominal_paid_after(
+                day, BusinessDayShiftEnum.NONE,
+            ) == day + timedelta(days=1)
+
+    def test_under_PRIOR_it_can_be_LATER_than_the_next_day(self):
+        """Hand-computed: a Friday's next paid grid day is the Monday.
+
+        2026-05-15 is a Friday.  Under ``prior`` the grid days 05-16 and 05-17
+        are both paid on 05-15 itself, so neither falls AFTER it; the first
+        that does is Monday 2026-05-18.
+        """
+        assert earliest_nominal_paid_after(
+            date(2026, 5, 15), BusinessDayShiftEnum.PRIOR,
+        ) == date(2026, 5, 18)
+
+    def test_under_NEXT_it_can_be_EARLIER_than_the_next_day(self):
+        """Hand-computed: on a Sunday the answer is the preceding Saturday.
+
+        2026-05-17 is a Sunday.  Under ``next`` the grid day 2026-05-16 (the
+        Saturday) is paid on Monday 05-18, which is after 05-17 -- so the
+        answer is BELOW the day asked about, which is the case a ``day + 1``
+        formula gets wrong.
+        """
+        assert earliest_nominal_paid_after(
+            date(2026, 5, 17), BusinessDayShiftEnum.NEXT,
+        ) == date(2026, 5, 16)
+
+    def test_it_is_the_LEAST_such_day_over_a_full_year(self):
+        """The defining property, swept: it qualifies and its predecessor does not.
+
+        Asserted against :func:`shift_to_business_day` rather than against a
+        second implementation, so the two cannot drift -- which is the whole
+        reason the inverse lives in this module.
+        """
+        for shift in BusinessDayShiftEnum:
+            day = date(2026, 1, 1)
+            while day <= date(2026, 12, 31):
+                answer = earliest_nominal_paid_after(day, shift)
+                assert shift_to_business_day(answer, shift) > day, (shift, day)
+                assert shift_to_business_day(
+                    answer - timedelta(days=1), shift,
+                ) <= day, (shift, day)
                 day += timedelta(days=1)

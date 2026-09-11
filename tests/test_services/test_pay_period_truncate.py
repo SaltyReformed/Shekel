@@ -73,6 +73,7 @@ from tests._test_helpers import (
     seam_cash_balance_at,
 )
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
+from app.models.amount_ownership import AmountOwnership
 
 
 def _future_periods(db_session, seed_user, count=6, start=date(2026, 7, 3)):
@@ -185,7 +186,7 @@ def _make_adhoc_transfer(db_session, seed_user, to_account, period):
         to_account_id=to_account.id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
-        amount=Decimal("150.00"),
+        amount_ownership=AmountOwnership.own(Decimal("150.00")),
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         category_id=None,
     ))

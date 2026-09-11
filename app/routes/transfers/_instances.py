@@ -33,13 +33,14 @@ from flask import flash, redirect, url_for
 from flask_login import current_user
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import AmountSourceEnum, StatusEnum
 from app.exceptions import (
     NotFoundError,
     ValidationError as ShekelValidationError,
 )
 from app.extensions import db
 from app.models.transfer import Transfer
+from app.services.amount_ownership import derived_ownership
 from app.services import (
     loan_recurrence_sync, transfer_recurrence, transfer_service,
 )
@@ -156,7 +157,12 @@ def _materialize_one_time_transfer(template, start_period):
                 to_account_id=template.to_account_id,
                 pay_period_id=start_period.period_id,
                 scenario_id=scenario.id,
-                amount=template.default_amount,
+                # Its DEFINITION prices it (plan step X-au-f, ruling R-FI).
+                # It stored ``template.default_amount`` until then, which is
+                # the copy this cutover deletes: this row is template-linked,
+                # so it is generated exactly like a repeating one and reads its
+                # definition's series as of the ``due_date`` below.
+                amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 category_id=template.category_id,
                 name=template.name,

@@ -123,6 +123,7 @@ from datetime import date, timedelta
 from itertools import takewhile
 
 from ._calendar import PayCalendar
+from ._derive import projected_payday
 from ._grid import cadence_steps_to
 from ._searches import paydays_between
 from ._views import projected_paychecks
@@ -391,11 +392,70 @@ def _backdated_paydays(
     before 1 January of their earliest priced year is equivalent.
 
     ARITHMETIC rather than a walk from the anchor, for
-    :func:`~._derive.project_period_after`'s reason: the highest rhythm day in
+    :func:`~._projection.project_period_after`'s reason: the highest rhythm day in
     the span is one division away, so the loop below runs once per payday
     RETURNED rather than once per payday between the span and the record.  At
     the one-day cadence ``budget.pay_schedule`` admits, a January question
     asked of a 2029 record is 31 steps here and would be ~1,100 from the anchor.
+
+    **It DISPLACES since plan step ``C14-e-3``, and that half is what closes
+    ledger row N-398.**  It open-coded the rhythm twice --
+    ``opening + timedelta(days=steps * cadence)`` and ``day -= timedelta(days=
+    cadence)`` down the loop -- and ``C14-c`` REFUSED routing them to
+    :func:`~._derive.projected_payday` as unruled, because that would have made
+    the backward rhythm displace in a step that moved no money.  It is ruled
+    now: ``C14-e-3`` displaces *every projected and backdated payday*, so both
+    spellings are gone and this reads the same producer the forward half does.
+    **The forward half alone does not close N-398**: that row's own worked
+    example is the rhythm day 2026-01-01 that payroll really paid 2025-12-31,
+    which crosses a TAX YEAR -- so the wage base and every ``annual_cap`` turn
+    over between the nominal day and the real one, and only a backward walk
+    that displaces puts the paycheck in the year it was paid in.
+
+    **The GRID is walked and the DISPLACED day is FILTERED, so the walk runs
+    one cadence past the top of the span and not past the bottom.**  The
+    asymmetry is a theorem rather than a margin, and it rests on a
+    displacement being strictly shorter than a cadence
+    (:func:`~app.utils.business_days.shortest_collision_free_cadence` is the
+    longest closed run PLUS ONE, and
+    ``pay_schedule_service.reject_shift_on_short_cadence`` holds a displacing
+    convention above it).  Above the span: the first grid day past *upper*
+    can be paid at or below it -- ``prior`` does exactly that to the
+    2026-01-01 payroll paid 2025-12-31 -- while the NEXT one up is more than a
+    cadence past *upper* and cannot reach back that far, so ONE extra step is
+    both necessary and enough.  Below the span: :func:`~._grid.cadence_steps_to`
+    already answers the last grid day at or before *lower*, and every day below
+    THAT is a full cadence lower, so its payday is under *lower* however
+    ``next`` pushes it -- an extra step there is unreachable, and a first cut
+    of this function took one anyway.  Both halves are checked against a
+    brute-force reference over 4,000 randomised spans -- both conventions,
+    cadences from the collision floor to 40, spans to 800 days below the record
+    (``test_pay_calendar_rhythm.py``).  The result stays ASCENDING because
+    :func:`~app.utils.business_days.shift_to_business_day` is monotone and the
+    same floor forbids the collision that would flatten two grid days onto one.
+
+    **The two halves are partitioned by GRID INDEX and not by DAY, and an
+    adversarial review of ``C14-e-3`` is why.**  The saved half owns step
+    ``0`` -- the recorded opening payday itself -- so this one stops at step
+    ``-1``, and the ``min`` below is that bound rather than a guard.  A first
+    cut bounded only by the DAY ``opening - 1`` and argued that step ``0``
+    could never reach it, because ``opening`` is a day money moved and so is
+    its own displacement.  **That is false of every payday recorded BEFORE the
+    convention was chosen**, which is two POSTs of ``/pay-periods/generate``
+    away -- a door ``app/routes/pay_periods.py`` says out loud "reads as
+    first-time-only and is not".  Measured on a schedule opening 2026-11-26,
+    Thanksgiving, under ``prior``: November answered
+    ``(11-12, 11-25, 11-26)``, three paydays for an owner who holds two, the
+    2026 year-to-date read **25** against a true 24, and the phantom was the
+    DISPLACEMENT of the recorded opening standing beside the opening.  Its
+    direction is the one this module's own docstring says to avoid: an extra
+    paycheck reaches the FICA wage base and every ``annual_cap`` early, which
+    understates tax and OVERSTATES net.
+
+    Below step ``-1`` nothing can reach the record either: a grid day a whole
+    cadence under the opening cannot be pushed up to it, by the sub-cadence
+    bound above.  So the index bound and the day filter together select
+    exactly the days the saved half does not hold.
 
     Args:
         calendar: The owner's schedule.  Non-empty, and *first_day* is already
@@ -420,16 +480,25 @@ def _backdated_paydays(
     if upper < lower:
         return ()
     cadence = calendar.rhythm.cadence_days
-    # Negative, since ``upper`` is strictly below the anchor: the count of
-    # whole cadences from the record's opening payday back to the last rhythm
-    # day at or before ``upper``.
-    steps = cadence_steps_to(opening, cadence, upper)
-    day = opening + timedelta(days=steps * cadence)
-    descending = []
-    while day >= lower:
-        descending.append(day)
-        day -= timedelta(days=cadence)
-    return tuple(reversed(descending))
+    # The GRID indices whose PAYDAY can fall in ``[lower, upper]``.  Both
+    # counts are negative, ``upper`` being strictly below the anchor.  ONE
+    # extra step above and none below: a displacement is shorter than a
+    # cadence, so only the first grid day past ``upper`` can be paid back
+    # inside the span, and no day below the last one at or before ``lower``
+    # can be pushed up into it.  The docstring above carries the theorem.
+    first_step = cadence_steps_to(opening, cadence, lower)
+    # Never step ``0``: that index IS the recorded opening payday, which the
+    # SAVED half answers.  Under ``prior`` its displacement falls below
+    # ``upper`` and would stand beside it as a phantom paycheck.
+    last_step = min(cadence_steps_to(opening, cadence, upper) + 1, -1)
+    return tuple(
+        payday
+        for payday in (
+            projected_payday(opening, calendar.rhythm, steps)
+            for steps in range(first_step, last_step + 1)
+        )
+        if lower <= payday <= upper
+    )
 
 
 __all__ = [

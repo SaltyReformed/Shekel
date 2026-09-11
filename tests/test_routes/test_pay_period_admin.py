@@ -323,6 +323,12 @@ class TestRegenerateRoute:
                     "num_periods": "3",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
+                    # Plan step C14-f: this rebuild reopens the tail more than
+                    # a paycheck after the last kept payday, so the gap gate
+                    # asks.  These cases are about the REDIRECT and the tail
+                    # being populated, not about holes -- and posting the field
+                    # is what a browser does once the banner has been shown.
+                    "confirm_gap": "true",
                 },
             )
             assert resp.status_code == 302
@@ -335,10 +341,23 @@ class TestRegenerateRoute:
 class TestGenerateRoute:
     """POST /pay-periods/generate persists the cadence."""
 
-    def test_generate_persists_cadence(self, app, auth_client, seed_user):
-        """Generating captures the cadence in a pay_schedule row."""
+    def test_generate_persists_cadence(self, app, bare_auth_client, bare_user):
+        """Generating captures the cadence in a pay_schedule row.
+
+        **Re-pointed from ``seed_user`` to ``bare_user`` at plan step
+        ``pay_calendar:C14-f``** (ruling **R-PC63**).  The SUBJECT is
+        unchanged -- establishing a rhythm still captures its cadence -- and
+        what moved is which owner reaches that branch.  ``seed_user`` already
+        holds paydays, so this door now CONTINUES their rhythm and never
+        touches ``cadence_days``; asserting otherwise would be asserting that
+        an owner may restate a phase they already have, which is what ledger
+        row **P80** was.  ``bare_user`` holds none, so this is the ESTABLISH
+        path the case always meant to cover.  That an owner WITH a rhythm no
+        longer moves the cadence here is pinned in
+        ``test_pay_periods.py::test_generate_can_only_WIDEN_the_covered_interval``.
+        """
         with app.app_context():
-            resp = auth_client.post(
+            resp = bare_auth_client.post(
                 "/pay-periods/generate",
                 data={
                     "start_date": "2027-01-01",
@@ -348,9 +367,11 @@ class TestGenerateRoute:
                 },
             )
             assert resp.status_code == 302
-            schedule = pay_schedule_service.get_schedule(seed_user["user"].id)
+            schedule = pay_schedule_service.get_schedule(bare_user["user"].id)
             assert schedule is not None
-            assert schedule.cadence_days == 10
+            assert pay_schedule_service.resolve_cadence(
+                bare_user["user"].id,
+            ) == 10
 
 
 class TestScheduleRoute:
@@ -362,7 +383,7 @@ class TestScheduleRoute:
         """A valid post enables rolling and stores the target on the row."""
         with app.app_context():
             # A schedule row must exist first (generation captures cadence).
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
+            pay_schedule_service.ensure_schedule_row(seed_user["user"].id)
             db.session.commit()
             resp = auth_client.post(
                 "/pay-periods/schedule",
@@ -382,7 +403,7 @@ class TestScheduleRoute:
     ):
         """target_periods = 0 fails validation; the row stays unchanged."""
         with app.app_context():
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
+            pay_schedule_service.ensure_schedule_row(seed_user["user"].id)
             db.session.commit()
             resp = auth_client.post(
                 "/pay-periods/schedule",
@@ -476,7 +497,7 @@ class TestHistoryRoute:
         from a flush -- in a new instance.
         """
         with app.app_context():
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
+            pay_schedule_service.ensure_schedule_row(seed_user["user"].id)
             db.session.commit()
 
             resp = auth_client.post(
@@ -504,7 +525,7 @@ class TestHistoryRoute:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_schedule_service.upsert_schedule(user_id, rhythm_of(14), None)
+            pay_schedule_service.ensure_schedule_row(user_id)
             pay_schedule_service.set_history_opening(user_id, date(2023, 6, 3))
             db.session.commit()
 
@@ -530,7 +551,7 @@ class TestHistoryRoute:
         from an ordinary browser rather than from a crafted post.
         """
         with app.app_context():
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
+            pay_schedule_service.ensure_schedule_row(seed_user["user"].id)
             db.session.commit()
 
             resp = auth_client.post(
@@ -763,7 +784,7 @@ class TestRollingTriggerHooks:
             user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
             num_periods=2, rhythm=rhythm_of(14),
         )
-        pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
+        pay_schedule_service.ensure_schedule_row(seed_user["user"].id)
         pay_schedule_service.set_rolling(
             seed_user["user"].id, enabled=True, target_periods=target,
         )
@@ -796,7 +817,7 @@ class TestRollingTriggerHooks:
                 user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
                 num_periods=2, rhythm=rhythm_of(14),
             )
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
+            pay_schedule_service.ensure_schedule_row(seed_user["user"].id)
             db.session.commit()
             before = _period_count(db.session, seed_user["user"].id)
             resp = auth_client.get("/grid")
@@ -913,7 +934,7 @@ class TestOwnerOnlyAndUi:
         """The rolling controls reflect the saved schedule (checked + target)."""
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
+            pay_schedule_service.ensure_schedule_row(seed_user["user"].id)
             pay_schedule_service.set_rolling(
                 seed_user["user"].id, enabled=True, target_periods=40,
             )
@@ -1066,7 +1087,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
     periods and skipped every template, measured through this same HTTP door
     at 3 appended periods holding 0 template rows.
 
-    The seventh writer, ``auth_service.register_user``, has no HTTP door of
+    The seventh writer, ``registration_service.register_user``, has no HTTP door of
     its own here and is correct as it stands: no template can exist at
     registration, and the baseline scenario is created after that call, so a
     repopulation would return 0 on ``ctx.scenario is None``.
@@ -1157,6 +1178,12 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
                     "num_periods": "3",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
+                    # Plan step C14-f: this rebuild reopens the tail more than
+                    # a paycheck after the last kept payday, so the gap gate
+                    # asks.  These cases are about the REDIRECT and the tail
+                    # being populated, not about holes -- and posting the field
+                    # is what a browser does once the banner has been shown.
+                    "confirm_gap": "true",
                 },
             )
             assert resp.status_code == 302
@@ -1249,7 +1276,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
             num_periods=2, rhythm=rhythm_of(14),
         )
         make_expense_template(db_session, seed_user, amount="1200.00")
-        pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
+        pay_schedule_service.ensure_schedule_row(seed_user["user"].id)
         pay_schedule_service.set_rolling(
             seed_user["user"].id, enabled=True, target_periods=target,
         )

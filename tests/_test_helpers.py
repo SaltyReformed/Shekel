@@ -6,7 +6,6 @@ test file.  Import functions from here in test modules that need them.
 """
 
 import importlib.util
-import inspect
 import os
 import pathlib
 import re
@@ -24,10 +23,7 @@ from datetime import (
 from decimal import Decimal
 from app.enums import BusinessDayShiftEnum
 from app.models.amount_ownership import AmountOwnership
-from app.services import pay_calendar, pay_rhythm, pay_schedule_service
-from app.services.pay_calendar import _derive as pay_calendar_derive
-from app.services.pay_calendar import _searches as pay_calendar_searches
-from app.utils.business_days import shift_to_business_day
+from app.services import pay_calendar, pay_era_write, pay_rhythm, pay_schedule_service
 
 
 # The synthetic split-loan fixture shared verbatim by the three parallel
@@ -2281,6 +2277,103 @@ def loan_income_shadow(db_session, transfer_id, loan_account_id):
 #: statement in this repository that re-creates ``budget.pay_periods.end_date``
 #: and ``budget.pay_periods.period_index``.
 _C4C_REVISION_FILE = "b7a41e2c9d63_a_pay_period_is_one_fact.py"
+_C17A_REVISION_FILE = "6fc77e86d76f_a_pay_schedule_is_a_sequence_of_eras.py"
+
+
+def restore_pay_schedule_rhythm_columns(db_session):
+    """Put the rhythm columns back on ``budget.pay_schedule``, for one older statement.
+
+    :func:`restore_pay_period_derived_columns`' sibling, for the same reason.
+    Plan step ``pay_calendar:C17-a`` moved ``cadence_days``, ``shift_id`` and
+    ``nominal_anchor`` off the schedule row and onto ``budget.pay_eras``; four
+    older migrations read or write the first of those on the row --
+    ``af8254074bef``'s backfill, ``f1c8b3d5e920``'s, ``b7a41e2c9d63``'s
+    downgrade and ``f2b7c40d918e``'s -- and a test that drives one of their
+    callables against the test database meets ``UndefinedColumn`` where it
+    used to find the schema it expected.
+
+    **It adds the columns and fills them from each owner's LATEST era, and it
+    does NOT run C17-a's ``downgrade()``, which is the difference
+    :func:`relax_pay_schedule_shift_not_null` already argued for one column
+    over.**  That downgrade also DROPS ``budget.pay_eras``, and every reader
+    the head mapper has -- ``get_schedule``, ``calendar_for``, every fixture
+    that derives a span -- selects that table; a test whose subject is an old
+    statement reading the row's cadence would then break on every read it
+    makes afterwards.  What the old statement needs is the COLUMN, so that is
+    what comes back: three nullable columns, filled by the migration's own
+    ``_RESTORE_RHYTHM_SQL`` (the shipped statement, not a copy), with the era
+    table left standing and no key, CHECK or NOT NULL re-added.  A test that
+    then deletes a schedule row must retire the owner's eras first, exactly
+    as it must delete their paydays first.
+
+    Idempotent (``ADD COLUMN IF NOT EXISTS``), because a round-trip case
+    replays an older revision's ``downgrade`` twice.  Everything the sibling
+    helper says about scope, locks and the absence of a restore applies
+    unchanged, including ledger row ``balance:P79``.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that currently holds
+            the schedule table's locks.
+    """
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import text
+
+    db_session.commit()
+    if _pay_schedule_carries_a_cadence(db_session):
+        # Already restored -- by an earlier call, or by
+        # :func:`rewind_pay_schedule_rhythm`, after which the era table this
+        # would fill from is gone.
+        return
+    # Pylint: ``protected-access`` -- the migration's own restore statement,
+    # so this helper cannot drift from what the shipped downgrade writes.
+    restore_sql = load_migration_module(
+        _C17A_REVISION_FILE,
+    )._RESTORE_RHYTHM_SQL  # pylint: disable=protected-access
+    db_session.execute(text(
+        "ALTER TABLE budget.pay_schedule "
+        "ADD COLUMN cadence_days INTEGER, "
+        "ADD COLUMN shift_id INTEGER, "
+        "ADD COLUMN nominal_anchor DATE"
+    ))
+    db_session.execute(text(restore_sql))
+    db_session.commit()
+
+
+def rewind_pay_schedule_rhythm(db_session):
+    """Run plan step ``pay_calendar:C17-a``'s own ``downgrade()``.
+
+    The WHOLE rewind, for the few cases whose subject is an older revision's
+    statement against the schema exactly as that revision's chain leaves it:
+    the rhythm columns back on ``budget.pay_schedule`` with their ``NOT
+    NULL``, ``ck_pay_schedule_cadence_range`` and ``fk_pay_schedule_shift_id``
+    re-added, and ``budget.pay_eras`` DROPPED with ``ref.pay_cadence_kinds``.
+    A case that needs the CHECK to fire, or that drops ``budget.pay_schedule``
+    itself, needs this; a case that only reads the cadence off the row wants
+    :func:`restore_pay_schedule_rhythm_columns`, which leaves every head
+    reader working.  Call it FIRST: that helper skips once the columns exist,
+    and the restore statement it would run reads the table this drops.
+
+    It refuses a schedule row holding no era, as the shipped downgrade does.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that currently holds
+            the schedule table's locks.
+    """
+    run_migration_callable(
+        load_migration_module(_C17A_REVISION_FILE).downgrade, db_session,
+    )
+
+
+def _pay_schedule_carries_a_cadence(db_session):
+    """Return whether ``budget.pay_schedule.cadence_days`` exists right now."""
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import text
+
+    return bool(db_session.execute(text(
+        "SELECT 1 FROM information_schema.columns "
+        " WHERE table_schema = 'budget' AND table_name = 'pay_schedule' "
+        "   AND column_name = 'cadence_days'"
+    )).scalar())
 
 
 def restore_pay_period_derived_columns(db_session):
@@ -2332,6 +2425,11 @@ def restore_pay_period_derived_columns(db_session):
         db_session: The test ``db.session``, in the scope that currently holds
             this table's locks.
     """
+    # C4-c's downgrade rebuilds the stored end from
+    # ``budget.pay_schedule.cadence_days``, which plan step
+    # ``pay_calendar:C17-a`` moved onto the era relation -- so the schedule's
+    # rhythm columns come back FIRST, or the statement this replays cannot.
+    restore_pay_schedule_rhythm_columns(db_session)
     run_migration_callable(
         load_migration_module(_C4C_REVISION_FILE).downgrade, db_session,
     )
@@ -2702,12 +2800,13 @@ def shift_id_of(shift=BusinessDayShiftEnum.NONE):
     """Return the ``ref.business_day_shifts.id`` a member is stored as.
 
     For the handful of tests that build a
-    :class:`~app.models.pay_schedule.PaySchedule` row DIRECTLY rather than
-    through ``pay_schedule_service.upsert_schedule`` -- constraint cases, which
-    need a row the database will accept in every respect except the one under
-    test.  ``shift_id`` is ``NOT NULL`` with no server default (plan step
-    ``pay_calendar:C14-b``), so a row built without it fails on the wrong
-    constraint and the case passes for the wrong reason.
+    :class:`~app.models.pay_era.PayEra` row DIRECTLY rather than through
+    ``pay_era_write.mint_era`` -- constraint cases, which need a row
+    the database will accept in every respect except the one under test.
+    ``shift_id`` is ``NOT NULL`` with no server default (plan step
+    ``pay_calendar:C14-b``; the column moved from the schedule row to the era
+    at ``C17-a``), so a row built without it fails on the wrong constraint
+    and the case passes for the wrong reason.
 
     Args:
         shift: The convention, defaulting to
@@ -2754,99 +2853,131 @@ def rhythm_of(cadence_days, shift=BusinessDayShiftEnum.NONE):
     )
 
 
-def displace_paydays_under(monkeypatch, shift):
-    """Give the application plan step ``pay_calendar:C14-e``'s producer.
+def era_of(effective_from, cadence_days, shift=BusinessDayShiftEnum.NONE):
+    """Return a fixed-days :class:`~app.services.pay_rhythm.Era`.
 
-    **The SIMULATION every pre-C14-e case is graded against, and it is a
-    substitution rather than a fixture.**  With the convention still at
-    ``none``, ``pay_calendar.projected_payday`` answers the nominal rhythm,
-    every payday sits exactly on the arithmetic grid, and the neighbouring
-    candidates ``project_period_after`` offers can never win -- so a test
-    driving the real function would grade the estimate and nothing else.  What
-    ``C14-e`` changes is that ONE body: the nominal day displaced onto a
-    business day under the owner's convention.  Substituting exactly that and
-    then calling the REAL derivation, writer and admin doors grades the window,
-    the end rule, the selector and the floor against the mechanism itself.
-
-    It replaces a COLLABORATOR, never the code under test:
-    :func:`~app.utils.business_days.shift_to_business_day` is the shipped
-    displacement from plan step ``C14-a``, not a stand-in for one.
-
-    **THREE bindings are patched, and that is the whole reason this helper is
-    shared rather than copied.**  ``from ._derive import projected_payday`` in
-    the package's ``__init__`` makes a SECOND name for one function, and
-    ``pay_calendar._searches``' own ``from ._derive import projected_payday`` a
-    THIRD, so patching any of them alone leaves half the application displaced
-    and half of it nominal -- a world no convention can produce, and one a
-    green assertion could not tell from the real thing.
-    ``pay_calendar._derive`` is what ``derive_periods`` and
-    ``project_period_after`` call; ``pay_calendar`` is what
-    ``pay_period_write._reject_backward_payday`` calls since ``C14-d``;
-    ``pay_calendar._searches`` is what ``nominal_payday_after`` calls, which is
-    the extend door's grid-index producer since ``C14-e-2``.
-
-    *The third was found by a case that FAILED rather than by reading, and the
-    failure is the argument: with the floor displaced and the search nominal,
-    the door refused a perfectly ordinary extend with a message no correct
-    implementation and no real convention can produce.  That is exactly the
-    half-displaced world this paragraph already warned about, reached through a
-    binding it had not enumerated.  It MOVED once inside the same step, when
-    the grid-index search left ``pay_period_admin`` for the package -- so the
-    census is a thing to re-take rather than a list to trust, and eleven cases
-    went red the moment it was stale.*
-
-    **It displaces under the shift it is HANDED and not under
-    ``rhythm.shift``**, which is what the shipped producer will read, and the
-    difference is deliberate while ``C14-e-3`` is unshipped: a case that
-    displaces globally without storing a convention passes a rhythm whose
-    shift is ``NONE``, and reading the rhythm would silently turn the
-    simulation off.  ``C14-e-3`` DELETES this helper rather than reconciling
-    the two -- a double that simulates a shipped producer is a fence with a
-    subject, and the subject goes when the producer lands.
+    :func:`rhythm_of`'s sibling for the era relation (plan step
+    ``pay_calendar:C17-a``): the rhythm plus the day it took effect, which is
+    also the grid's phase.  The kind is the one member that exists,
+    ``FIXED_DAYS``, stated here once rather than at every call site.
 
     Args:
-        monkeypatch: pytest's patcher.
-        shift: The :class:`~app.enums.BusinessDayShiftEnum` member to displace
-            under.  ``NONE`` is legal and is the identity, which is what makes
-            it usable as a case's own control.
+        effective_from: The era's first nominal payday.
+        cadence_days: Days between the paydays.
+        shift: The convention, defaulting to
+            :attr:`~app.enums.BusinessDayShiftEnum.NONE` for
+            :func:`rhythm_of`'s reason.
 
     Returns:
-        The substituted producer, so a caller can state the day it expects
-        without re-deriving the displacement by hand.
+        The era.
     """
-    def _displaced(anchor, rhythm, steps):
-        """Displace the nominal rhythm day onto a business day."""
-        return shift_to_business_day(
-            anchor + _real_timedelta(days=steps * rhythm.cadence_days), shift,
-        )
+    # pylint: disable=import-outside-toplevel
+    from app.enums import PayCadenceKindEnum
 
-    # ``monkeypatch.setattr`` checks that the attribute EXISTS and never that
-    # the double matches it, so the day the real producer's shape moves, every
-    # case here would keep passing against a producer that never shipped.  It
-    # FIRED at plan step ``C14-e-1``, exactly as designed: the producer's
-    # second parameter became the ``Rhythm`` and this double still took a bare
-    # cadence.  Asserted rather than trusted, on
-    # an adversarial review's finding: this is the substitution's own
-    # expiry date, and it should be loud.
-    shipped = list(
-        inspect.signature(pay_calendar.projected_payday).parameters
+    return pay_rhythm.Era(
+        effective_from=effective_from,
+        kind=PayCadenceKindEnum.FIXED_DAYS,
+        rhythm=rhythm_of(cadence_days, shift),
     )
-    assert shipped == list(inspect.signature(_displaced).parameters), (
-        f"pay_calendar.projected_payday now takes {shipped}; this double "
-        f"still takes {list(inspect.signature(_displaced).parameters)}, so it "
-        f"no longer simulates the producer C14-e ships.  Update the double "
-        f"and every caller of this helper together."
+
+
+def mint_fixture_era(user_id, effective_from, cadence_days,
+                     shift=BusinessDayShiftEnum.NONE):
+    """Give *user_id* a schedule row and ONE era, without recording a payday.
+
+    The state every payday-holding owner has, for a fixture that then writes
+    its ``budget.pay_periods`` rows BY HAND -- a corrupt shape a checker must
+    catch, or a calendar-monthly schedule no door can yet write (ledger row
+    **P78**).  ``fk_pay_periods_schedule`` needs the row and a calendar needs
+    the era; the ordinary fixtures go through ``record_paydays``, which does
+    both, and this is the one line for the fixtures that cannot.
+
+    Plan step ``pay_calendar:C17-a``: it replaces the
+    ``upsert_schedule(user_id, rhythm, None)`` line those fixtures carried,
+    and it takes the era's day because an era has one.  The extend door steps
+    from that day and the era rule tests a batch's first payday against its
+    grid, so a fixture that later EXTENDS or RECORDS through the writer must
+    state a day on the grid it means; the derivation itself still anchors on
+    the recorded paydays at this leaf, so a hand-built schedule that is only
+    read never notices the day.
+
+    Args:
+        user_id: The owner.
+        effective_from: The era's first nominal payday.
+        cadence_days: Days between the paydays.
+        shift: The convention, defaulting to ``none``.
+
+    Returns:
+        The minted :class:`~app.models.pay_era.PayEra` row, flushed.
+    """
+    pay_schedule_service.ensure_schedule_row(user_id)
+    return pay_era_write.mint_era(
+        user_id, era_of(effective_from, cadence_days, shift),
     )
-    for module in (pay_calendar, pay_calendar_derive, pay_calendar_searches):
-        monkeypatch.setattr(module, "projected_payday", _displaced)
-    return _displaced
+
+
+def restate_fixture_era(user_id, effective_from, cadence_days,
+                        shift=BusinessDayShiftEnum.NONE):
+    """Replace every era *user_id* holds with ONE, without touching a payday.
+
+    The fixture form of "force the owner's stored cadence" for a case that
+    proves a reader takes the RHYTHM from storage rather than inferring it
+    from the rows: the paydays stay exactly where they are and only the era
+    moves.  Before plan step ``pay_calendar:C17-a`` that was one
+    ``upsert_schedule`` line; an era is a row per rhythm, so the honest
+    equivalent retires the owner's eras and mints the one the case states.
+
+    Args:
+        user_id: The owner.
+        effective_from: The era's first nominal payday.
+        cadence_days: Days between the paydays.
+        shift: The convention, defaulting to ``none``.
+
+    Returns:
+        The minted :class:`~app.models.pay_era.PayEra` row, flushed.
+    """
+    pay_schedule_service.ensure_schedule_row(user_id)
+    pay_era_write.retire_eras(user_id, None)
+    return pay_era_write.mint_era(
+        user_id, era_of(effective_from, cadence_days, shift),
+    )
+
+
+def strip_owner_schedule(db_session, user_id):
+    """Leave *user_id* as an owner who has never generated a schedule.
+
+    Every payday, every era and the ``budget.pay_schedule`` row go, in the
+    only order the keys admit: ``fk_pay_periods_schedule`` and, since plan
+    step ``pay_calendar:C17-a``, ``fk_pay_eras_schedule`` are both
+    ``ON DELETE RESTRICT``, so the children go before the parent.  Six cases
+    each spelled the first two deletes by hand before the era relation added a
+    third child; this is the one statement of the order so the seventh
+    cannot copy it wrongly.
+
+    Bulk deletes with ``synchronize_session=False``, so an instance the case
+    already loaded is not touched; the case commits or reads back as it
+    needs to.
+
+    Args:
+        db_session: The test ``db.session``.
+        user_id: The owner to strip.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.models.pay_era import PayEra
+    from app.models.pay_period import PayPeriod
+    from app.models.pay_schedule import PaySchedule
+
+    for model in (PayPeriod, PayEra, PaySchedule):
+        db_session.query(model).filter_by(user_id=user_id).delete(
+            synchronize_session=False,
+        )
 
 
 def registration_spec(**overrides):
     """Return a complete, valid :class:`RegistrationSpec` for service tests.
 
     The service-tier twin of :func:`register_form_data`, and it exists for the
-    same reason: ``auth_service.register_user`` takes one value object whose
+    same reason: ``registration_service.register_user`` takes one value object whose
     pay-calendar half arrived at plan step X-ad-a, and the tests that call it
     directly should not each restate what a valid sign-up looks like.
 
@@ -2865,7 +2996,7 @@ def registration_spec(**overrides):
             the rhythm and may not be combined with an explicit ``rhythm``.
 
     Returns:
-        The :class:`~app.services.auth_service.RegistrationSpec`.
+        The :class:`~app.services.registration_service.RegistrationSpec`.
 
     Raises:
         TypeError: Both ``rhythm`` and one of its halves were given, which
@@ -2874,7 +3005,7 @@ def registration_spec(**overrides):
     """
     # pylint: disable=import-outside-toplevel
     from app.config import BaseConfig
-    from app.services.auth_service import RegistrationSpec
+    from app.services.registration_service import RegistrationSpec
     from app.utils.dates import display_today
     halves = {
         key: overrides.pop(key)
@@ -3058,7 +3189,7 @@ def create_transfer(
             to_account_id=to_account.id,
             pay_period_id=period.id,
             scenario_id=scenario_id,
-            amount=amount,
+            amount_ownership=AmountOwnership.own(amount),
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             category_id=None,
             name=name,
@@ -3368,11 +3499,13 @@ def make_salary_profile(
 def create_envelope_txn(seed_user, db_session, period, name, estimated):
     """Create an entry-tracked (is_envelope) projected expense (flushed).
 
-    Builds a minimal Every-Period envelope template plus a Projected
-    expense instance in ``period`` on the seed user's account, so the
-    stereotyped template + instance construction is not copied per suite
-    (a duplicate-code finding).  The caller attaches entries via
-    :func:`add_entry` and commits.
+    Builds a minimal Every-Period envelope template and lets the engine
+    generate its Projected row in ``period`` (:func:`generate_row_of`), so the
+    stereotyped template + instance construction is not copied per suite (a
+    duplicate-code finding) and the row is the one the application makes
+    rather than a hand-built copy of it (plan step balance:X-cf).  The
+    envelope's budget is the template's stated price, which the derived row
+    reads; the caller attaches entries via :func:`add_entry` and commits.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -3383,45 +3516,13 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
         estimated: The envelope's estimated (budget) amount (Decimal).
 
     Returns:
-        The created :class:`~app.models.transaction.Transaction` (flushed).
+        The generated :class:`~app.models.transaction.Transaction` (flushed).
     """
-    # pylint: disable=import-outside-toplevel  -- same circular-dep
-    # avoidance as the loan helpers above.
-    from app import ref_cache
-    from app.enums import StatusEnum, TxnTypeEnum
-    from app.models.transaction import Transaction
-    from app.models.transaction_template import TransactionTemplate
-
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type_id,
-        name=name,
-        default_amount=estimated,
-        is_envelope=True,
+    template = make_expense_template(
+        db_session, seed_user, amount=str(estimated),
+        name=name, category_key="Groceries", is_envelope=True,
     )
-    db_session.add(template)
-    db_session.flush()
-    state_template_price(template)
-    # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_every_period_rule(db_session, template)
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type_id,
-        amount_ownership=AmountOwnership.own(estimated),
-        template_id=template.id,
-    )
-    db_session.add(txn)
-    db_session.flush()
-    return txn
+    return generate_row_of(template, period)
 
 
 def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -4056,6 +4157,115 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     db_session.add(txn)
     db_session.flush()
     return txn
+
+
+def generate_row_of(template, period):
+    """Generate the ONE row of *template* in *period* through the engine.
+
+    **The suite's one builder for a row of a definition** (plan step
+    balance:X-cf, developer ruling 2026-09-11, the row-level twin of
+    :func:`state_template_price`'s lesson).  A row that names a recurring
+    definition has exactly one constructor in the application:
+    ``recurrence_engine._generate._new_row``, which splats
+    :class:`~app.services.recurrence_engine.DerivedRowFields` -- the account,
+    name, category, type, amount OWNERSHIP and due date the definition derives
+    -- onto the identity columns, with ``occurs_on`` from the cadence walk.
+    This helper does not restate that line; it CALLS it, through
+    :func:`~app.services.recurrence_engine.generate_for_template` with a
+    window of exactly one paycheck (``GenerationSchedule.for_period_ids``,
+    the shape carry-forward's generate branch uses), and hands back what the
+    engine wrote.  So a fixture built here cannot disagree with the engine
+    about what such a row IS, and a column the engine derives tomorrow lands
+    on every fixture the day it lands on ``DerivedRowFields``.
+
+    **What the hand-built rows were.**  Sixty-eight sites in thirty-nine files
+    constructed ``Transaction(template_id=..., ...)`` by hand: undated (the
+    state the CHECK plan step balance:X-bv-2 binds refuses), and most of
+    them OWNING a figure with ``is_override=False`` -- the pre-X-au-e
+    shape, which no producer has written since a generated row became derived.
+    A control that hand-builds its subject stops grading the producer, and
+    every one of those sites was grading a row the application cannot make.
+
+    Two consequences follow from getting the engine's row, and each is the
+    point rather than a cost:
+
+    * **It is DERIVED.**  It stores no figure; its definition's price series
+      answers for it on its own due date, so a fixture states the figure it
+      expects through :func:`state_template_price` on the template.  A reader
+      that asks the raw ``estimated_amount`` column gets ``None`` here exactly
+      as it does on production, which is what such a reader deserves.
+    * **It answers an OCCURRENCE** (``occurs_on``), so
+      ``idx_transactions_template_scenario_occurrence`` holds over it, and a
+      second ask for the same paycheck writes nothing: the engine's claim
+      predicate (``_recurrence_common.OccurrenceClaims``) sees the first row
+      before the index ever could, which is the 0-rows refusal below.
+
+    A fixture wanting the OWNER's row -- a figure the human authored -- takes
+    ownership of the generated row the way the re-price door does
+    (``routes/transactions/mutations``: :func:`~app.services.amount_ownership.
+    state_own_amount` and ``is_override = True``), rather than building one.
+    A fixture wanting a SETTLED row settles this one, as the app does; the
+    engine only ever writes Projected.
+
+    The row is generated into the owner's BASELINE scenario, which is what
+    every door that generates passes; a fixture for another scenario is a
+    scenario test's subject and authors the pass itself.  Because the
+    baseline is the template owner's by construction, the engine's
+    cross-user scenario gate cannot be reached from here.
+
+    Args:
+        template: The flushed
+            :class:`~app.models.transaction_template.TransactionTemplate`.  It
+            must carry a cadence (``recurrence_rule``): a definition with rows
+            is one that repeats, and :func:`make_every_period_rule` is the
+            ordinary way a fixture gives it one.
+        period: The :class:`~app.models.pay_period.PayPeriod` row the
+            generated row is funded in.  Must be one of the owner's saved
+            periods.
+
+    Returns:
+        The :class:`~app.models.transaction.Transaction` the engine created,
+        flushed.
+
+    Raises:
+        ValueError: *template* has no cadence, or the engine wrote no row in
+            *period* -- its rule names no occurrence in that paycheck, or a
+            row already claims it -- or wrote more than one, which a cadence
+            firing several times inside one paycheck does and which is a
+            generation test's subject rather than a fixture's.  **The 2+
+            refusal leaves the rows it names FLUSHED**: the engine had
+            already written them when the count was taken.
+        RecurrenceWindowError: *period* is not one of the owner's saved
+            periods (``GenerationSchedule.for_period_ids``), which is how
+            another owner's paycheck is refused before any INSERT.
+        BaselineMissingError: The owner has no baseline scenario
+            (``BalanceContext.scenario_id``).
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services import recurrence_engine
+    from app.services.balance_at import BalanceContext
+    from app.services.generation_schedule import GenerationSchedule
+    if template.recurrence_rule is None:
+        raise ValueError(
+            f"template {template.id} ({template.name!r}) has no cadence, so "
+            "the engine generates nothing from it; give it one "
+            "(make_every_period_rule) before asking for its row"
+        )
+    ctx = BalanceContext.build(template.user_id)
+    created = recurrence_engine.generate_for_template(
+        template, GenerationSchedule.for_period_ids(ctx, [period.id]),
+        ctx.scenario_id,
+    )
+    if len(created) != 1:
+        raise ValueError(
+            f"the engine wrote {len(created)} rows of template {template.id} "
+            f"({template.name!r}) in pay period {period.id}, not one: its "
+            "rule names no occurrence in that paycheck or a row already "
+            "claims it (0), or it fires more than once there (2+)"
+        )
+    return created[0]
 
 
 def require_assertion_instant(at):
@@ -4973,7 +5183,9 @@ def state_template_price(template, amount=None, *, effective_on=None):
 
     **A fixture that constructs a template and stops has built a definition the
     application cannot build**, and since plan step balance:X-au-e that
-    difference is fatal rather than cosmetic.  Both doors that create a
+    difference is fatal rather than cosmetic -- for a TRANSFER template since
+    balance:X-au-f, which is the twin obligation this helper was written
+    anticipating.  Both doors that create a
     transaction template -- ``routes/templates/crud.create_template`` and
     ``routes/salary/profiles._salary_template`` -- call
     ``template_amount_service.set_amount`` immediately after the flush, so every
@@ -5486,12 +5698,34 @@ def make_cadence_rule(owner, cadence, **kwargs):
     )
 
 
-def make_expense_template(db_session, seed_user, amount="1200.00", is_active=True):
+def make_expense_template(
+    db_session, seed_user, amount="1200.00", is_active=True, *,
+    name="Rent", category_key="Rent", is_envelope=False,
+):
     """Create and flush an every-period expense template on the seed account.
 
     Shared by the pay-period CRUD test suites so the
     ``RecurrenceRule`` + ``TransactionTemplate`` construction block is
-    defined once.  The caller commits.
+    defined once.  The caller commits.  **It states the definition's price
+    and its cadence**, so what it returns is a definition the engine can
+    generate from -- the shape every real one has (:func:`state_template_price`
+    says why a bare template is not) -- and :func:`generate_row_of` is the
+    next line for a fixture that wants the definition's row.
+
+    Args:
+        db_session: The test session.
+        seed_user: The seed user fixture dict (or the second user's).
+        amount: The stated price, as a string.
+        is_active: Whether the definition is live.
+        name: The definition's name.  Keyword-only, with the name every
+            existing caller relied on, so widening this helper for the shared
+            fixtures (plan step balance:X-cf) changed no caller.
+        category_key: A key into ``seed_user["categories"]``.
+        is_envelope: Whether the definition's rows track purchases.
+
+    Returns:
+        The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
+        priced and carrying an every-paycheck rule.
     """
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention).
@@ -5505,11 +5739,12 @@ def make_expense_template(db_session, seed_user, amount="1200.00", is_active=Tru
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Rent"].id,
+        category_id=seed_user["categories"][category_key].id,
         transaction_type_id=expense_type.id,
-        name="Rent",
+        name=name,
         default_amount=Decimal(amount),
         is_active=is_active,
+        is_envelope=is_envelope,
     )
     db_session.add(template)
     db_session.flush()
@@ -5572,6 +5807,11 @@ def make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
     )
     db_session.add(template)
     db_session.flush()
+    # A definition STATES its price, exactly as ``routes/transfers/templates``
+    # does on every create.  Since plan step X-au-f a generated TRANSFER stores
+    # no figure either, so a bare-constructed transfer template generates rows
+    # nothing can price -- the transaction twin's obligation, one table over.
+    state_template_price(template)
     # The definition first, then the cadence onto it (plan step R-F6).
     make_every_period_rule(db_session, template)
     return template
@@ -5650,13 +5890,21 @@ def make_loan_payment_template(
         name=f"Loan Payment {loan_account.id}",
         default_amount=Decimal(amount),
     )
+    db_session.add(template)
+    db_session.flush()
+    # **Priced BEFORE the settings row is attached, and the order is the same
+    # one ``track_payment`` takes.**  ``template_amount_service.owns_its_amount``
+    # is False for a DERIVE-mode loan payment, so the write door would refuse a
+    # version stated after the flip -- and the versions a template already holds
+    # stay as the record of what was stated while it was manual, which is what
+    # a MANUAL payment's base is read from since plan step X-au-f.
+    state_template_price(template)
     # Attached through the relationship so it flushes with the template, the
     # way the route attaches it.
     template.settings = LoanPaymentSettings(
         derive_from_loan=derive_from_loan,
         extra_principal=Decimal(extra_principal),
     )
-    db_session.add(template)
     db_session.flush()
     # The definition first, then the cadence onto it (plan step R-F6).
     if cadence is None:
@@ -7200,7 +7448,7 @@ class PlantedPricing:
         """
         return self._overrides.get((template_id, pay_period_id))
 
-    def derive_cash(self, shadow, loan_account_id, extra_principal):
+    def derive_cash(self, due_date, period_start, loan_account_id, extra):
         """REFUSE: a planted basis cannot price a loan.
 
         :func:`planted_basis` puts this same object in ``AmountBasis.loans``,
@@ -7213,17 +7461,24 @@ class PlantedPricing:
         the rule under test" was the whole of the guarantee before this; a
         promise a test can break silently is not one.
 
+        **The signature took a payment SHADOW until plan step X-au-f-2**, where
+        ruling **R-BAL10** re-typed the real producer onto the two dating VALUES
+        so a parent TRANSFER could answer it.  A double whose signature has
+        drifted from its subject stops standing in for it, so this mirrors the
+        real one exactly.
+
         Args:
-            shadow: Ignored.
+            due_date: Ignored.
+            period_start: Ignored.
             loan_account_id: Ignored.
-            extra_principal: Ignored.
+            extra: Ignored.
 
         Raises:
             AssertionError: Always.
         """
         raise AssertionError(
             "A planted basis cannot price a loan payment: PlantedPricing "
-            "stands in for the SALARY derivation only. This row reached "
+            "stands in for the SALARY derivation only. This transfer reached "
             "AmountRule.LOAN_PAYMENT, so the case needs a real basis "
             "(amount_basis) over a seeded loan -- a planted map cannot grade "
             "a derivation."
@@ -7263,6 +7518,45 @@ def planted_basis(*rows, overrides=None):
         scenario_id=getattr(rows[0], "scenario_id", 0) if rows else 0,
         salary=planted,
         loans=planted,
+    )
+
+
+def transfer_amount(xfer):
+    """What one parent TRANSFER is worth -- its amount, resolved.
+
+    **The parent twin of :func:`shadow_amount`, and it exists for the same
+    reason one step later.**  That helper was written when plan step
+    X-au-g-2c-2 moved a SHADOW's figure from a column to a value; plan step
+    X-au-f does the same for the PARENT, so a case asserting
+    ``xfer.amount == Decimal(...)`` on a generated transfer is now comparing a
+    figure against ``None``.  What those cases were ABOUT -- what the transfer
+    is worth -- is asked of the amount model here.
+
+    An AD-HOC transfer still owns its figure, so this answers the same column it
+    always did for one; the helper is right for both kinds, which is what stops
+    a case having to know which it holds.
+
+    A FRESH basis per call, for the reason :func:`shadow_amount` states: a case
+    that edits a transfer and re-reads must see the new figure, and a basis
+    memoizes for the length of a read pass.
+
+    Args:
+        xfer: The transfer to price.
+
+    Returns:
+        The ``Decimal`` the transfer resolves to.
+
+    Raises:
+        AmountUnresolvable: From the amount model, for a transfer whose rule
+            cannot price it -- a refusal is never a fallback.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.cash_ledger import amount_basis, resolve_transfer_amount
+
+    return resolve_transfer_amount(
+        xfer, amount_basis(xfer.user_id, xfer.scenario_id),
     )
 
 
@@ -7439,7 +7733,7 @@ def open_owner_calendar(user_id, first_payday, num_periods=1, cadence_days=14):
 
     That pairing is one no application door can produce: ``record_paydays``
     upserts the owner's cadence in the same call that records a payday (the
-    cadence rule, plan step C3-b), and ``auth_service.register_user`` reaches
+    cadence rule, plan step C3-b), and ``registration_service.register_user`` reaches
     the table only through it.  So every one of those sites built the single
     owner shape production does not have -- pay-calendar finding **P8** -- and
     the derived columns they typed were free to disagree with the derivation
@@ -7714,6 +8008,41 @@ def pay_periods_hydrated():
         event.remove(Session, "loaded_as_persistent", _record)
 
 
+def rendered_transfer_amount(xfer) -> str:
+    """Return what the transfer FORM would have rendered in its amount box.
+
+    **What a route test must post as ``amount_as_rendered``**, and the ONE
+    spelling of it, because getting this wrong is how a route test stops
+    exercising the door it names.  The three transfer fragments read
+    ``budgets[xfer.id]`` off ``routes._render_helpers.transfer_budgets`` since
+    plan step balance:X-au-f-1 -- the amount model's answer, not the
+    ``budget.transfers.amount`` COLUMN -- so a payload built from that column
+    stopped being what a browser sends the moment X-au-f emptied it for a
+    generated transfer.
+
+    Sixteen call sites posted ``str(xfer.amount)`` until X-au-f, which was the
+    same string while every transfer owned its figure and became the literal
+    ``"None"`` the day the cutover landed.  ``TransferUpdateSchema`` then
+    refuses the field and the PATCH returns 422, so every one of those cases
+    would have been asserting against a rejected request rather than against
+    the authorship rule it was written for -- the shape
+    ``feedback_a_route_test_must_post_what_the_template_emits`` names.
+
+    Args:
+        xfer: The transfer whose form is being simulated.
+
+    Returns:
+        The rendered figure as the form's string, ready to post.
+    """
+    from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
+        amount_basis, resolve_transfer_amount,
+    )
+
+    return str(resolve_transfer_amount(
+        xfer, amount_basis(xfer.user_id, xfer.scenario_id),
+    ))
+
+
 def amount_basis_for(row):
     """Return the :class:`AmountBasis` that prices ONE row, for a test.
 
@@ -7975,3 +8304,74 @@ def _figure_column_of(row) -> str:
         if column in type(row).__table__.c:
             return column
     raise AttributeError(f"{type(row).__name__} carries no figure column")
+
+
+def unseeded_replay_balance(loan_id, scenario_id, as_of):
+    """Return a loan's UN-SEEDED schedule-replay balance -- the pre-switch value.
+
+    **The suite's ONE assembly of the anchor replay** (plan step
+    **balance:X-bl-2b**).  The balance the resolver derives from its anchor
+    replay ALONE -- no genesis seed, no ledger -- which is what a loan's scalar
+    surfaces showed BEFORE the read switch, and what five controls across four
+    files pin so they can assert the ledger DIVERGES from it off-schedule.
+
+    Each of those five spelled the four-step assembly itself, and this step made
+    the block longer rather than shorter, so they are one call now.  What that
+    removes is not lines but a CONTRACT stated five times: the replay's feed must
+    carry its schedule SLOT
+    (:func:`~app.services.amortization_engine.slotted_dates`), because the
+    forward override plans by that same slot and a feed the two disagree on
+    drops a planned payment.  Stated once, a caller cannot forget it.
+
+    **The reconciliation oracle deliberately does NOT call this**, and that is
+    the one duplication left standing.  ``test_posting_ledger_loan_reconciliation
+    ._resolver_balance`` keeps its own body because
+    ``test_the_roots_cover_what_the_reference_calls`` reads the modules the
+    reference depends on off THAT FUNCTION'S OWN AST -- a delegation to a helper
+    in this file would make the closure check grade an empty root set, which is
+    the vacuity that control exists to prevent.  The reason is written at that
+    function too.
+
+    **It is AMOUNT-FREE.**  The replay reads three dates per payment and no
+    figure, so the feed is ``loan_ledger.payment_installments`` and not the
+    priced ``load_loan_context``: a pricing refusal cannot break a control that
+    reads no amount, and the import closure is 46 modules rather than 102
+    (measured 2026-09-09; the metric is stated in
+    ``app.services.loan_ledger._installments``).
+
+    Args:
+        loan_id: The loan account to replay.
+        scenario_id: The budget scenario scoping its payment feed.
+        as_of: The evaluation date; the replay stops at the latest payment whose
+            CASH had moved by it.
+
+    Returns:
+        The replayed balance owed, rounded to the cent exactly as the deleted
+        ``LoanState.current_balance`` was.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services import loan_ledger, loan_loaders, loan_resolver
+    from app.services.amortization_engine import slotted_dates
+    from app.services.loan_resolver._periods import _replay_from_anchor
+    from app.utils.money import round_money
+
+    params = loan_loaders.load_loan_params(loan_id)
+    installments = loan_ledger.payment_installments(
+        loan_id, scenario_id, params.payment_day, options=(),
+    )
+    return round_money(
+        _replay_from_anchor(
+            anchor_events=loan_loaders.load_loan_anchor_facts(params),
+            periods=loan_resolver.resolve_periods(
+                params, loan_loaders.load_rate_changes(loan_id),
+            ),
+            payments=slotted_dates(
+                [installment.dates for installment in installments],
+                params.payment_day,
+            ),
+            payment_day=params.payment_day,
+            as_of=as_of,
+        ).balance_as_of
+    )

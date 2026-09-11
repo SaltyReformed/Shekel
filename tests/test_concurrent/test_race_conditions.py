@@ -37,7 +37,7 @@ from app.services import (
     pay_schedule_service,
 )
 from tests._test_helpers import (
-    rhythm_of,
+    mint_fixture_era,
     assert_pay_period_invariants,
     last_covered_day,
     linked_ledger_total,
@@ -573,7 +573,7 @@ class TestConcurrentRollingTopUp:
     @staticmethod
     def _enable_rolling(db_session, user_id, target):
         """Give the user a schedule row with rolling on at ``target``."""
-        pay_schedule_service.upsert_schedule(user_id, rhythm=rhythm_of(14), nominal_anchor=None)
+        mint_fixture_era(user_id, date(2026, 1, 2), 14)
         pay_schedule_service.set_rolling(
             user_id, enabled=True, target_periods=target,
         )
