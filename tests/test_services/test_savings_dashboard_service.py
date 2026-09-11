@@ -4526,7 +4526,7 @@ class TestNetWorthHorizon:
             # the second key that restated it).  The periods come off the pass
             # (pay-calendar plan step C2-f2d-3) rather than being threaded in.
             ctx = retirement_projection.build_projection_context(
-                BalanceContext.build(uid), horizon["dates"][-1], None, None,
+                BalanceContext.build(uid), horizon["dates"][-1], None,
             )
             projections = retirement_projection.project_accounts_with_batch(
                 ctx,

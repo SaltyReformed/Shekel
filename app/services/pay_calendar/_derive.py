@@ -225,6 +225,32 @@ class DerivedPeriod:
     end_date: date
     end_is_projected: bool
 
+    @property
+    def is_projected(self) -> bool:
+        """Whether this period lies PAST the owner's saved schedule.
+
+        **The period answers the question itself, and nothing passes the
+        boundary down** (ruling **R-SAL18**, plan step **salary:S3-e-2**).
+        The fact is already carried: :attr:`period_id` is ``None`` exactly
+        for a period :func:`~._views.axis_window` built from
+        :func:`~._views.projected_paychecks`, which opens at ``horizon + 1``
+        and stamps no row id because there is no row.  The consumer that
+        must know -- :func:`~app.services.investment_projection
+        .build_contribution_timeline`, which adds an account's average
+        recurring transfer only where the schedule has not reached -- used
+        to be HANDED that boundary as a ``saved_through`` date read off a
+        calendar that had to be the one the axis came from, a pairing an AST
+        census fenced.  Asking the period deletes the parameter, the wiring
+        and the census.  **A NAMED accessor and not a raw ``period_id``
+        read**, because pay-calendar plan step C2-f2c deliberately stopped
+        that consumer knowing how a period spells its primary key.
+
+        Returns:
+            ``True`` for a projection past the saved schedule, ``False`` for
+            a saved (materialised) period.
+        """
+        return self.period_id is None
+
     def covers(self, day: date) -> bool:
         """Return whether *day* falls inside this period's span.
 

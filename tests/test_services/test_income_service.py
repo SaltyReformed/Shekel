@@ -46,7 +46,6 @@ from app.services import (
     balance_at,
     income_service,
     paycheck_calculator,
-    savings_dashboard_service,
 )
 from app.services.tax_config_service import (
     load_tax_configs,
@@ -603,8 +602,8 @@ class TestThePerPeriodGrossIsTheENGINES:
             before = calendar.period_containing(_AS_OF_BEFORE_RAISE)
             after = calendar.period_containing(_AS_OF_AFTER_RAISE)
 
-            assert feed.gross_at(before.start_date) == _NO_RAISE_GROSS
-            assert feed.gross_at(after.start_date) == _RAISE_APPLIED_GROSS
+            assert feed.gross_at(before) == _NO_RAISE_GROSS
+            assert feed.gross_at(after) == _RAISE_APPLIED_GROSS
 
     def test_no_raise_yields_the_byte_identical_pre_fix_value(
         self, app, db, seed_user, seed_periods,
@@ -627,7 +626,7 @@ class TestThePerPeriodGrossIsTheENGINES:
             feed = self._feed_for(user_id, profile, account.id)
             calendar = calendar_for(user_id)
             after = calendar.period_containing(_AS_OF_AFTER_RAISE)
-            assert feed.gross_at(after.start_date) == _NO_RAISE_GROSS
+            assert feed.gross_at(after) == _NO_RAISE_GROSS
 
     def test_no_funding_job_REFUSES_rather_than_answering_zero(
         self, app, db, seed_user, seed_periods,
@@ -663,7 +662,7 @@ class TestThePerPeriodGrossIsTheENGINES:
             )[account.id]
 
             assert feed.funds_employer is False
-            assert feed.gross_at(seed_periods[0].start_date) is None
+            assert feed.gross_at(calendar_for(user_id).saved()[0]) is None
 
     # **``test_scenario_id_filter_scopes_lookup`` has no successor, and that
     # is the point rather than a gap.**  It pinned the deleted helper's
@@ -734,10 +733,10 @@ class TestConsumerIntegration:
                     calendar,
                 ).for_profile(profile).over(calendar.saved())
             }
-            payday = calendar.period_containing(bctx.as_of).start_date
+            current = calendar.period_containing(bctx.as_of)
 
-            assert engine[payday] == _RAISE_APPLIED_GROSS
-            assert seam_feed.gross_at(payday) == engine[payday]
+            assert engine[current.start_date] == _RAISE_APPLIED_GROSS
+            assert seam_feed.gross_at(current) == engine[current.start_date]
 
             # The scoping control: a non-investment account in the same user's
             # set gets NO feed, so the assertion above pins the

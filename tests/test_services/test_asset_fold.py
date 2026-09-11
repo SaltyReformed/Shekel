@@ -50,7 +50,6 @@ from app.enums import (
     CompoundingFrequencyEnum,
     DeductionTimingEnum,
 )
-from app.services import growth_engine
 from app.services.balance_at import (
     _asset_contributions,
     _asset_fold,
@@ -159,24 +158,21 @@ def _feed_for(seed_user, account, params=None):
     )[account.id]
 
 
-def _flat_feed(periods, amount, gross=None):
-    """A feed paying *amount* on every one of *periods*' paydays.
+def _flat_feed(amount, gross=None):
+    """A feed paying *amount* on EVERY period it is asked about.
 
     For the cases that drive :func:`_asset_contributions._dated_events`
     directly over periods no owner has -- the calendar-year limit rules, which
     need a schedule spanning New Year.  The engine cannot price a paycheck for
     a calendar nobody holds, and these cases are about the LIMIT walk rather
     than about what a paycheck pays, so the feed is stated rather than priced.
+    Flat over whatever period the fold asks, which is what a stated feed over
+    a map WAS before plan step salary:S3-e-2 (a flat map held its own figure
+    past its keys); a resolver says so directly.
     """
     return AccountPayrollFeed(
-        employee_by_payday={
-            period.start_date: Decimal(amount) for period in periods
-        },
-        gross_by_payday=(
-            {} if gross is None
-            else {period.start_date: Decimal(gross) for period in periods}
-        ),
-        is_payroll_linked=True,
+        employee=lambda period: Decimal(amount),
+        gross=None if gross is None else (lambda period: Decimal(gross)),
     )
 
 
@@ -1103,7 +1099,7 @@ class TestTheContributionTier:
 
         linked_but_zero = _view(
             account, ctx, periods, params=params,
-            feed=_flat_feed(periods, "0"),
+            feed=_flat_feed("0"),
         )
         no_feed_at_all = _view(account, ctx, periods, params=params)
         assert linked_but_zero == no_feed_at_all
@@ -1118,7 +1114,7 @@ class TestTheContributionTier:
         # reader would otherwise assume the fold is scoped to those three.
         paying = _view(
             account, ctx, periods, params=params,
-            feed=_flat_feed(periods, "500.00"),
+            feed=_flat_feed("500.00"),
         )
         assert paying != no_feed_at_all
 
@@ -1131,7 +1127,7 @@ class TestTheContributionTier:
         # builds none.
         assert _asset_contributions._plan_for(
             account, ctx.amounts(),
-            _inputs(params, _flat_feed(periods, "0")),
+            _inputs(params, _flat_feed("0")),
         ) is not None
         assert _asset_contributions._plan_for(
             account, ctx.amounts(), _inputs(params),
@@ -1194,7 +1190,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         """
         periods = self._periods(date(2026, 1, 2), 4)
         plan = _asset_contributions._ContributionPlan(
-            feed=_flat_feed(periods, "500.00"),
+            feed=_flat_feed("500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
             recorded_by_period={},
@@ -1236,7 +1232,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         """
         periods = self._periods(date(2026, 1, 2), 4)
         plan = _asset_contributions._ContributionPlan(
-            feed=_flat_feed(periods, "500.00"),
+            feed=_flat_feed("500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
             recorded_by_period={},
@@ -1296,7 +1292,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         """
         periods = self._periods(date(2026, 1, 2), 3)
         plan = _asset_contributions._ContributionPlan(
-            feed=_flat_feed(periods, "500.00"),
+            feed=_flat_feed("500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
             recorded_by_period={periods[0].period_id: Decimal("900.00")},
@@ -1316,7 +1312,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         periods = self._periods(date(2026, 12, 4), 4)
         events = _asset_contributions._dated_events(
             _asset_contributions._ContributionPlan(
-                feed=_flat_feed(periods, "500.00"),
+                feed=_flat_feed("500.00"),
                 employer_params=None,
                 annual_limit=Decimal("600.00"),
                 recorded_by_period={},

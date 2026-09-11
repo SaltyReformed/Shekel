@@ -30,10 +30,13 @@ a public signature to answer a question the loader can answer once, where the
 session is.  ``calculate_investment_inputs`` and
 :func:`build_contribution_timeline` are the readers; neither takes a period id
 now, and the period list left the first of them outright.  It also ended a
-shape collision this module could not have absorbed otherwise: it is shared by
-``/retirement``, which holds ORM rows spelling that key ``id``, and by
+shape collision this module could not have absorbed otherwise: it was shared
+by ``/retirement``, which then held ORM rows spelling that key ``id``, and by
 ``/investment``, which since C2-f2c holds
 :class:`~app.services.pay_calendar.DerivedPeriod`\\ s spelling it ``period_id``.
+*Both hold* ``DerivedPeriod``\\ *s since C2-f2d-3, and since plan step
+salary:S3-e-2 the feed hands the period to the paycheck engine, so that is
+the one type these readers take* (ruling **R-SAL19**).
 
 **And the DEDUCTION half arrives priced and dated since plan step
 salary:R14-b**, which is the same move a third time and the one that finishes
@@ -54,8 +57,11 @@ cap twice more beside the engine's -- ``_annual_cap_averaged`` evenly and
 ``_period_capped_total`` front-loaded.  All four spellings are deleted here.
 The engine's :class:`~app.services.paycheck_calculator.DeductionLine` already
 carries ``target_account_id``, so what one account's payroll puts in on one
-payday is a fold of the breakdown the engine already computed, and the
-:class:`AccountPayrollFeed` the loader hands over is that fold.
+payday is a fold of the breakdown the engine computes for it, and the
+:class:`AccountPayrollFeed` the loader hands over is that fold -- asked per
+period and priced on demand since plan step **salary:S3-e-2** (ruling
+**R-SAL15**), where it was two dictionaries over the saved calendar that
+HELD an invented figure past it.
 
 The root cause behind all three divergences was ONE shape: an adapter that
 flattens away everything varying PER PERIOD cannot answer a per-period
