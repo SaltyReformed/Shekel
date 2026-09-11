@@ -71,6 +71,7 @@ from app.services.statement_match._stating import (  # pylint: disable=protected
     _refuse_unknown_merchants,
 )
 
+from tests._test_helpers import generate_row_of
 from ._builders import (
     a_bank_line,
     a_later_period,
@@ -271,7 +272,7 @@ class TestWhatARuleResolvesTo:
         assert placement.select_value is None
 
     def test_a_TEMPLATE_answer_with_TWO_rows_here_refuses_to_guess(
-        self, app, db, seed_user,
+        self, app, db, seed_user, seed_periods,
     ):
         """A template does NOT always make exactly one row in a period.
 
@@ -280,16 +281,21 @@ class TestWhatARuleResolvesTo:
         2389.  Picking either would file money in a row the owner did not pick,
         so the placement says which pay period holds two and stops.
         """
-        first = a_transaction(seed_user, name="Groceries", is_envelope=True)
-        second = a_transaction(
-            seed_user, name="Groceries again", is_envelope=True,
+        first = a_transaction(
+            seed_user, name="Groceries", is_envelope=True,
+            period=seed_periods[0],
         )
         # Two rows from ONE template in ONE period, which is what production
-        # holds: the generation indexes are PARTIAL on
-        # ``is_override = FALSE``, so an override row sits beside the generated
-        # one.  Measured on a 2026-08-18 clone: transactions 2388 (override)
-        # and 2389 (generated), both template 22 in pay period 3.
-        second.template_id = first.template_id
+        # holds: an override row beside the generated one (2026-08-18 clone,
+        # transactions 2388 and 2389, both template 22 in pay period 3).  The
+        # app produces that pair two ways -- a carried-forward leftover, or a
+        # row the owner MOVED in from a neighbouring paycheck -- and this is
+        # the second: the engine's own row of the next paycheck, moved here
+        # by the two acts the move door performs (plan step balance:X-cf).
+        # Hand-linking a second engine row to this template would give two
+        # rows ONE occurrence, which the occurrence index refuses.
+        second = generate_row_of(first.template, seed_periods[1])
+        second.pay_period_id = seed_periods[0].id
         second.is_override = True
         db.session.flush()
         rule = StandingRule(
@@ -416,9 +422,9 @@ class TestWhatARuleResolvesTo:
         ``template_id`` is ``None``, exactly what a ``NULL`` rule template
         would compare equal to.
         """
-        envelope = a_transaction(seed_user, name="Groceries", is_envelope=True)
-        envelope.template_id = None
-        db.session.flush()
+        envelope = a_transaction(
+            seed_user, name="Groceries", is_envelope=True, template=False,
+        )
         rule = StandingRule(
             merchant_id=_MERCHANT, merchant="Capital One Credit Card", answer=RuleAnswer.NEVER,
         )
