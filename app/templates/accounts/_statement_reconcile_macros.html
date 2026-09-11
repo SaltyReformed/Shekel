@@ -156,15 +156,18 @@
        same degradation the retired workbench's own panel documented: nothing
        re-prices
        as you tick, so a group whose two sides disagree is refused at the door
-       with both sums named, and a group that balances records exactly as it
-       does with scripting on. #}
+       with both sums named -- and, since plan step bank_import:X-gi-2a, comes
+       back with the rows still ticked and the difference's acts offered, so
+       the next press can consent -- while a group that balances records
+       exactly as it does with scripting on. #}
     <noscript>
       <p class="small mb-0">
         <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab=tab.value, open=card.line.line_id, _anchor='rec-card-' ~ card.line.line_id) }}">Show
         the rows this could be</a>, which reopens this card here on its MATCH
         tab with every unexplained row on the account listed. Ticking them does
         not re-price without JavaScript: tick the rows that come to the same
-        total as the bank, and OK records the match.
+        total as the bank, and OK records the match; if they do not, OK shows
+        you the difference and asks you to agree to what happens to it.
       </p>
     </noscript>
   </div>

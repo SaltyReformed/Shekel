@@ -85,6 +85,8 @@ from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.routes.accounts._reconcile_query import (
     asked_for_everything,
     asked_to_open,
+    opened_ask,
+    read_match,
     requested_tab,
 )
 from app.routes.accounts._statement_doors import (
@@ -96,17 +98,12 @@ from app.routes.accounts._statement_doors import (
     run_statement_fragment_door,
     submitted_batch,
     submitted_item_count,
-    submitted_match,
 )
 from app.routes.accounts._statement_release import release_and_return
 from app.routes.accounts._statement_rules import record_submitted_rules
-from app.schemas.validation.statement_reconcile import (
-    reconcile_match_payload,
-    reconcile_payload,
-)
+from app.schemas.validation.statement_reconcile import reconcile_payload
 from app.schemas.validation.statements import (
     StatementBatchSchema,
-    StatementMatchSchema,
     StatementSkipReleaseSchema,
 )
 from app.services import balance_at, bank_agreement
@@ -131,12 +128,13 @@ from app.utils.error_fragments import designed_error
 _logger = logging.getLogger(__name__)
 
 #: One schema instance each, constructed at import like every sibling's.  The
-#: batch schema grades a whole pass; the match schema grades the ONE card the
-#: live-difference fragment is about, and it is the same schema the batch
-#: nests -- so a card priced by the fragment and the same card applied by the
-#: pass are graded by one set of rules.
+#: batch schema grades a whole pass.  **The match schema is
+#: :mod:`._reconcile_query`'s** since plan step ``bank_import:X-gi-2a``: it
+#: grades the ONE card a body is read for -- the card the live-difference
+#: fragment re-prices, and the card ``?open=`` names on Apply -- and it is
+#: the same schema the batch nests, so a card priced by either render and
+#: the same card applied by the pass are graded by one set of rules.
 _batch_schema = StatementBatchSchema()
-_match_schema = StatementMatchSchema()
 
 #: The Skipped tab's Undo names ONE act, exactly as the settled tabs' does, and
 #: it is a different schema over a different table (plan step
@@ -269,7 +267,7 @@ class _Answer:
     rules: object = None
 
 
-def _reconcile_context(account, scope, tab, answer: _Answer, opened_line) -> dict:
+def _reconcile_context(account, scope, tab, answer: _Answer, opened) -> dict:
     """Assemble what the Reconcile body renders, for the page and the POST.
 
     ONE builder, because the POST's answer IS the screen: a second assembly
@@ -285,11 +283,14 @@ def _reconcile_context(account, scope, tab, answer: _Answer, opened_line) -> dic
             before the pass, which is exactly what must not be shown after it.
         tab: Which tab is open (:class:`~app.services.statement_match.Tab`).
         answer: What this render has to say (:class:`_Answer`).
-        opened_line: The bank line whose MATCH pane renders in the document,
-            or ``None`` (:func:`~._reconcile_query.asked_to_open`).  **A parameter and not a
-            read**, for the reason ``tab`` is one: this builder runs after the
-            door has committed, so a reader here answers a malformed request
-            with a 404 over a pass that has already been applied.
+        opened: The bank line whose MATCH pane renders in the document and
+            what this request's form holds for it
+            (:class:`~app.services.statement_match.OpenedAsk`), or ``None``
+            (:func:`~._reconcile_query.opened_ask`).  **A parameter and not a
+            read**, for the reason ``tab`` is one: this builder runs after
+            the door has committed, so a reader here answers a malformed
+            request with a 404 -- or, since plan step ``bank_import:X-gi-2a``,
+            a schema refusal -- over a pass that has already been applied.
 
     Returns:
         The template context.
@@ -311,9 +312,10 @@ def _reconcile_context(account, scope, tab, answer: _Answer, opened_line) -> dic
         # read it and the template never asks.  *It said "only the two settled
         # tabs" until that ruling.*
         None if show_all else REGISTER_LIMIT,
-        # **WHICH card renders its rows in the document** (plan step
-        # ``bank_import:X-gi-1``, rulings **R-KA** and **R-BI1**).
-        opened_line=opened_line,
+        # **WHICH card renders its rows in the document, and what it holds**
+        # (plan steps ``bank_import:X-gi-1`` and ``X-gi-2a``, rulings
+        # **R-KA**, **R-BI1** and **R-BI3**).
+        opened=opened,
     )
     return {
         "account": account,
@@ -342,7 +344,7 @@ def _reconcile_context(account, scope, tab, answer: _Answer, opened_line) -> dic
     }
 
 
-def _answering(account, tab, unacted, opened_line):
+def _answering(account, tab, unacted, opened):
     """Return this door's own surface, as the callable every arm renders with.
 
     **A closure rather than a six-argument function**, which is the remedy a
@@ -367,9 +369,15 @@ def _answering(account, tab, unacted, opened_line):
         tab: Which tab is open.
         unacted: The sentence naming cards OK'd with no act named, or
             ``None``.
-        opened_line: The bank line whose MATCH pane renders in the document,
-            or ``None``.  Bound here with the other three because it is read
-            BEFORE the door for the reason :func:`~._reconcile_query.asked_to_open` records.
+        opened: The bank line whose MATCH pane renders in the document and
+            what the form holds for it
+            (:class:`~app.services.statement_match.OpenedAsk`), or ``None``.
+            Bound here with the other three because it is read BEFORE the
+            door for the reason :func:`~._reconcile_query.asked_to_open`
+            records -- and since plan step ``bank_import:X-gi-2a`` the
+            reading GRADES the body too, so a malformed field for the open
+            card is refused before anything is applied rather than raised
+            after the commit.
 
     Returns:
         ``(scope, *, outcome=None, error=None) -> response``.
@@ -398,7 +406,7 @@ def _answering(account, tab, unacted, opened_line):
                     outcome=outcome, error=error, unacted=unacted,
                     rules=rules,
                 ),
-                opened_line,
+                opened,
             ),
         )
         return body if error is None else designed_error(body, 400)
@@ -422,12 +430,15 @@ def statement_reconcile(account_id):
     """
     account = load_cash_account_or_404(account_id)
     tab = requested_tab()
-    opened_line = asked_to_open()
+    # **No form, so the pane is priced from the proposal the card offers**:
+    # a GET carries no body, and the ask says so rather than leaving it to a
+    # reader to infer (plan step ``bank_import:X-gi-2a``).
+    opened = opened_ask(asked_to_open())
     return render_template(
         "accounts/statement_reconcile.html",
         **_reconcile_context(
             account, ReviewScope.build(current_user.id, account_id), tab,
-            _Answer(), opened_line,
+            _Answer(), opened,
         ),
     )
 
@@ -476,17 +487,37 @@ def apply_statement_reconcile(account_id):
     scope = ReviewScope.build(current_user.id, account_id)
 
     payload, silent = reconcile_payload(request.form)
+    # **The open card is read from THIS body, before the door** (plan step
+    # ``bank_import:X-gi-2a``, finding **BI-478**).  The form the press came
+    # from holds that card's tickboxes and its consent control, so what it
+    # submitted for the card is what the answer prices the pane from -- a
+    # refused press comes back with the owner's rows ticked and the
+    # difference's acts offered, where it used to come back with the tier's
+    # proposal and every tick gone.  Read whether or not the card was OK'd,
+    # for :func:`~._reconcile_query.read_match`'s reason.
+    opened_line = asked_to_open()
+    submission, malformed = (
+        (None, None) if opened_line is None
+        else read_match(request.form, opened_line)
+    )
     render = _answering(
         account, tab,
         None if not silent else _OK_WITH_NO_ACT.format(
             count=len(silent), lines=", ".join(silent),
         ),
-        asked_to_open(),
+        opened_ask(opened_line, submission),
     )
     # **The grader runs before the door**, so a malformed body has written
     # nothing at all.  A malformed body is a pass-level refusal on purpose --
     # it is a fact about the SUBMISSION rather than about an act the owner
-    # reviewed, and no browser of ours produces one.
+    # reviewed, and no browser of ours produces one.  **The open card's own
+    # fields are graded under the same rule even where the card was not
+    # OK'd**: the batch never reads them then, and a pane priced after the
+    # commit from a body the schema would refuse is the door-before-reader
+    # trap :mod:`._reconcile_query` records, one field over.  The answer is
+    # the sentence over the card's baseline pane, and nothing applied.
+    if malformed is not None:
+        return render(scope, error=malformed)
     errors = _batch_schema.validate(payload)
     if errors:
         return render(scope, error=refusal_sentence(errors))
@@ -622,7 +653,9 @@ def state_reconcile_merchant_rules(account_id):
     # rules themselves.  That is a closed argument over one table rather than
     # an enumeration over an open set of writers.
     scope = ReviewScope.build(current_user.id, account_id)
-    render = _answering(account, tab, None, asked_to_open())
+    # **This door's form is the receipt's offer and carries no card**, so an
+    # ``?open=`` on it is priced from the proposal, as the GET is.
+    render = _answering(account, tab, None, opened_ask(asked_to_open()))
 
     outcome = record_submitted_rules(
         request.form, current_user.id, account_id, _logger,
@@ -651,8 +684,9 @@ def statement_reconcile_match(account_id, line_id):
     renders the answer beside the rows; the only door that writes is
     :func:`apply_statement_reconcile`.
 
-    **It takes the body Apply would send for THIS card**, read through the
-    same :func:`~app.schemas.validation.statements.reconcile_match_payload`,
+    **It takes the body Apply would send for THIS card**, read through
+    :func:`~._reconcile_query.read_match` -- the one reading Apply itself
+    uses for the card ``?open=`` names (plan step ``bank_import:X-gi-2a``) --
     so the difference on screen and the difference the door compares against
     are one derivation rather than two that agree by reading.
 
@@ -694,18 +728,16 @@ def statement_reconcile_match(account_id, line_id):
         abort(404)
 
     query = request.form.get(f"q-{line_id}", "")
-    payload = reconcile_match_payload(request.form, str(line_id))
-    errors = _match_schema.validate(payload)
-    if errors:
+    submitted, refusal = read_match(request.form, line_id)
+    if refusal is not None:
         return designed_error(
             render_template(
                 _MATCH_PANE, account=account,
                 opened=refused_match(subject),
-                refusal=refusal_sentence(errors),
+                refusal=refusal,
             ),
             400,
         )
-    submitted = _match_schema.load(payload)
     # NO event and NO commit.  Nothing was written, and a read pass that
     # logged would put a line in the audit trail for every checkbox on the
     # page.
@@ -723,7 +755,7 @@ def statement_reconcile_match(account_id, line_id):
             scope, review,
             MatchAsk(
                 subject=subject,
-                submitted=submitted_match(submitted),
+                submitted=submitted,
                 query=query,
                 reach=MatchReach.THE_PERIOD,
             ),
