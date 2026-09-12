@@ -1239,9 +1239,14 @@ class TestOnePaycheckProjectionPerProfilePerRender:
     fixture's payday count rather than of the code under test.
 
     The budget is ONE per active salary profile: a profile's paychecks are a
-    function of the profile and the calendar alone, so a second pricer for the
-    same one is a memo that was missed.
+    function of the profile, the calendar and the RAISE SET they are priced
+    under -- the third since plan step salary:S3-f-1 -- and every render here
+    prices the stored set alone, so a second pricer for the same profile is a
+    memo that was missed.
     :meth:`~app.services.balance_at.BalanceContext.paychecks` is that memo.
+    (A ``/retirement/readiness`` request carrying a per-raise probe, plan step
+    salary:S3-f, legitimately builds a second one under the probed set; that
+    request is not among these three renders.)
 
     **Plan step salary:S3-d moved the door and NARROWED what this class has
     left to catch, and the narrowing is worth stating.**  It counted

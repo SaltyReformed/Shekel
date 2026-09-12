@@ -176,7 +176,7 @@ def _anatomy_context(profile, period, periods, breakdown, calibration_active):
     # focused period against its predecessor's event (computed directly, no
     # full projection) and show the banner only on the run start.
     prev_raise_event = (
-        get_raise_event(profile, periods[pos - 1])
+        get_raise_event(profile.raises, periods[pos - 1])
         if pos > 0 else None
     )
     show_raise = salary_cockpit_service.raise_run_starts(

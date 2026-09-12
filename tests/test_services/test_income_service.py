@@ -25,13 +25,14 @@ Test fixture math (hand-computed):
   pre-Commit-17 value the off-engine sites returned.
 """
 
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 
 from app import ref_cache
-from app.enums import AmountSourceEnum
+from app.enums import AmountSourceEnum, RaiseTypeEnum
 from app.extensions import db
 from app.models.ref import FilingStatus, RaiseType, Status, TaxType, TransactionType
 from app.models.salary_profile import SalaryProfile
@@ -41,6 +42,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services.income_service import paycheck_pricing
 from app.services.pay_calendar import calendar_for, paydays_in_year_before
+from app.services.salary_raises import RaiseTerms, terms_of
 from app.services.projection_inputs import load_payroll_feeds
 from app.services import (
     balance_at,
@@ -1265,3 +1267,182 @@ class TestThePricerREFUSESAMismatchedOwner:
 
             with pytest.raises(ValueError, match="belongs to user"):
                 income_service.paycheck_pricing(foreign).for_profile(profile)
+
+
+# ── salary:S3-f-1: the pricer is keyed on the raise set ─────────────
+
+
+def _believed_through(row: SalaryRaise, terminal_year) -> RaiseTerms:
+    """The row's terms, believed through *terminal_year* instead.
+
+    The shape a what-if hands the engine (plan step salary:S3-f): the
+    production value with ONE term changed.
+    """
+    return replace(RaiseTerms.of(row), terminal_year=terminal_year)
+
+
+class TestThePricerIsKeyedOnTheRaiseSet:
+    """One pricer per profile PER RAISE SET, and the rows are one set.
+
+    Plan step **salary:S3-f-1** (ruling **R-SAL20**).
+    :meth:`~app.services.income_service.PaycheckPricing.for_profile` keyed on
+    the profile's id alone, and :class:`ProfilePaychecks` memoizes by payday
+    alone -- so a second raise set for one profile had nowhere to go but the
+    stored set's memo.  The key carries the terms now; ``None`` spells the
+    rows, which keeps every stored-plan render on the one pricer it always
+    built.
+    """
+
+    @staticmethod
+    def _profile_with_a_forever_raise(seed_user):
+        """``$104,000`` with a recurring 5% March raise from 2026, no end."""
+        profile = _create_profile(
+            seed_user["user"].id, seed_user["scenario"].id,
+        )
+        merit = db.session.query(RaiseType).filter_by(name="merit").one()
+        row = SalaryRaise(
+            salary_profile_id=profile.id, raise_type_id=merit.id,
+            effective_month=3, effective_year=2026,
+            percentage=Decimal("0.0500"), is_recurring=True,
+            terminal_year=None,
+        )
+        db.session.add(row)
+        db.session.commit()
+        db.session.refresh(profile)
+        return profile, row
+
+    @staticmethod
+    def _payday_in(calendar, year):
+        """A projected payday in *year*, off the calendar's own rhythm."""
+        axis = calendar.axis(calendar.opening_bound(), date(year, 12, 31))
+        return next(p for p in axis if p.start_date.year == year
+                    and p.start_date.month >= 6)
+
+    def test_every_spelling_of_the_stored_set_is_ONE_pricer(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``None``, the rows, and values carrying the rows' terms: one key.
+
+        The finding an adversarial review of this step made: keyed on the
+        caller's objects, the stored set had three spellings and each built a
+        pricer of its own -- the two-derivations-of-one-figure shape
+        ``PlanPoint`` refuses one tier up, and one the pricer-count gate
+        cannot see on a probe request, where a second pricer is also the
+        legitimate outcome.  The fourth spelling is the one S3-f-2's rail
+        will actually send: a probe carrying the stored end year unchanged.
+        """
+        with app.app_context():
+            profile, row = self._profile_with_a_forever_raise(seed_user)
+            paychecks = income_service.paycheck_pricing(
+                calendar_for(profile.user_id),
+            )
+            stored = paychecks.for_profile(profile)
+
+            assert paychecks.for_profile(profile, tuple(profile.raises)) is stored
+            assert paychecks.for_profile(profile, terms_of(profile.raises)) is stored
+            assert paychecks.for_profile(
+                profile, (_believed_through(row, row.terminal_year),),
+            ) is stored, (
+                "a probe carrying the STORED end year built a second pricer "
+                "for the stored set"
+            )
+
+    def test_the_rows_are_one_key_and_a_raise_set_is_another(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Same terms, same pricer; the rows' pricer is untouched by them."""
+        with app.app_context():
+            profile, row = self._profile_with_a_forever_raise(seed_user)
+            paychecks = income_service.paycheck_pricing(
+                calendar_for(profile.user_id),
+            )
+            stored = paychecks.for_profile(profile)
+            believed = paychecks.for_profile(
+                profile, (_believed_through(row, 2026),),
+            )
+
+            assert paychecks.for_profile(profile) is stored
+            assert believed is not stored, (
+                "a raise set other than the rows was served the rows' pricer"
+            )
+            # An EQUAL tuple built again is the same key: a probe repeated
+            # at one raise set must not build a second pricer.
+            assert paychecks.for_profile(
+                profile, (_believed_through(row, 2026),),
+            ) is believed
+            assert paychecks.for_profile(profile) is stored
+
+    def test_a_pricer_under_terms_prices_off_them(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The paychecks a keyed pricer answers are the terms', end to end.
+
+        A June 2028 payday: three applications of 5% on ``$104,000`` under
+        the rows (``$120,393.00 / 26 = $4,630.50``), one under terms believed
+        through 2026 (``$109,200.00 / 26 = $4,200.00``).
+        """
+        with app.app_context():
+            profile, row = self._profile_with_a_forever_raise(seed_user)
+            calendar = calendar_for(profile.user_id)
+            paychecks = income_service.paycheck_pricing(calendar)
+            june_2028 = self._payday_in(calendar, 2028)
+
+            assert paychecks.for_profile(profile).at(
+                june_2028,
+            ).earnings.gross_biweekly == Decimal("4630.50")
+            assert paychecks.for_profile(
+                profile, (_believed_through(row, 2026),),
+            ).at(june_2028).earnings.gross_biweekly == Decimal("4200.00"), (
+                "the pricer keyed on the terms priced the profile's rows"
+            )
+
+    def test_a_never_flushed_raise_is_priced_from_its_FK(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The X-bl invariance control's row: appended, never flushed, priced.
+
+        ``tests/manual/verify_amount_resolver.py`` appends a ``SalaryRaise``
+        with only its ``raise_type_id`` set to a loaded profile under
+        ``no_autoflush`` and prices every salary row through the pricer.
+        SQLAlchemy does not lazy-load a relationship on a pending instance,
+        so ``row.raise_type`` is ``None`` there; the type's name comes off the
+        FK through the ref cache instead, and the paycheck moves by the
+        raise.  A second adversarial review of S3-f-1 found the relationship
+        read raising ``AttributeError`` on exactly this row.
+        """
+        with app.app_context():
+            profile = _create_profile(
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.commit()
+            db.session.refresh(profile)
+            calendar = calendar_for(profile.user_id)
+            first = calendar.saved()[0]
+            before = income_service.paycheck_pricing(calendar).for_profile(
+                profile,
+            ).at(first).earnings.gross_biweekly
+
+            with db.session.no_autoflush:
+                pending = SalaryRaise(
+                    salary_profile_id=profile.id,
+                    raise_type_id=ref_cache.raise_type_id(
+                        RaiseTypeEnum.CUSTOM,
+                    ),
+                    effective_month=1, effective_year=first.start_date.year,
+                    flat_amount=Decimal("26000.00"), percentage=None,
+                    is_recurring=False, terminal_year=None,
+                )
+                profile.raises.append(pending)
+                # The relationship is unloaded on a pending instance, which
+                # is the state under test; ``no_autoflush`` is what keeps it
+                # pending through the pricing below.
+                assert pending.raise_type is None
+                after = income_service.paycheck_pricing(
+                    calendar,
+                ).for_profile(profile).at(first)
+                db.session.rollback()
+
+            # $26,000 a year is exactly $1,000.00 a paycheck over 26.
+            assert after.earnings.gross_biweekly == before + Decimal("1000.00")
+            assert after.period.raise_event == "CUSTOM +$26,000.00"
+

@@ -2,12 +2,15 @@
 Shekel Budget App -- Unit Tests for Paycheck Calculator
 
 Tests the recurring raise compounding logic in
-paycheck_calculator.apply_raises() and the full calculate_paycheck()
+salary_raises.apply_raises() (imported from its own module since plan step
+salary:S3-f-1, when the engine stopped importing it) and the full
+calculate_paycheck()
 pipeline including deductions, taxes, 3rd-paycheck detection, inflation,
 cumulative wages, and project_salary().
 """
 
 import pathlib
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -17,7 +20,6 @@ from app.services.exceptions import InvalidGrossPayError
 from app.services.tax_calculator import calculate_fica
 from app.models.salary_raise import SalaryRaise
 from app.services.paycheck_calculator import (
-    apply_raises,
     _is_third_paycheck,
     _month_ordinal,
     _inflation_years,
@@ -36,6 +38,7 @@ from app.services.paycheck_calculator import (
 )
 from app import ref_cache
 from app.enums import CalcMethodEnum, DeductionTimingEnum
+from app.services.salary_raises import RaiseTerms, apply_raises, terms_of
 from app.services.pay_calendar import (
     DerivedPeriod,
     PayCadence,
@@ -64,11 +67,6 @@ def _timing_id(name):
 # ── Fake Objects ─────────────────────────────────────────────────
 
 
-class FakeRaiseType:
-    def __init__(self, name="merit"):
-        self.name = name
-
-
 class FakeRaise:
     """Minimal stand-in for a SalaryRaise ORM object."""
 
@@ -85,7 +83,10 @@ class FakeRaise:
         # salary:S3-c: the walk reads it as a plain attribute now, so a
         # double without it no longer silently reads as "no end year".
         self.terminal_year = terminal_year
-        self.raise_type = FakeRaiseType()
+        # The one attribute the engine reads of the type -- what the model
+        # exposes as a property and ``RaiseTerms`` carries as a field (plan
+        # step salary:S3-f-1); it carried a type OBJECT until then.
+        self.raise_type_name = "merit"
 
 
 def _period(start_date, period_id=1):
@@ -4616,3 +4617,199 @@ class TestCalibrationSSCapIntegration:
                 f"Period {i+1}: SS expected 0.00 (over cap), got "
                 f"{results[i].taxes.social_security}"
             )
+
+
+# ── salary:S3-f-1: the basis NAMES its raise set ────────────────────
+
+
+class TestTheBasisNamesItsRaiseSet:
+    """Every engine read of a raise goes through ``basis.raises``.
+
+    Plan step **salary:S3-f-1** (ruling **R-SAL20**).  The engine read
+    ``basis.profile.raises`` at three sites -- the paycheck's own gross, the
+    FICA wage-base cumulative and a capped deduction's year-to-date -- and
+    badged the raise event off the profile too, so the only raise set a
+    paycheck could be priced under was the stored one.  A what-if over one
+    raise's end year (plan step salary:S3-f) needs all four to read the SAME
+    supplied set, or the verdict beside it is priced under two beliefs.
+
+    **Each case is one read, and each states the figure a read that still
+    went to the rows would produce**, so a site left on ``profile.raises``
+    fails the case that covers it rather than hiding behind the three that
+    happen to agree.  The fixture: ``$60,000``, one recurring 5% merit raise
+    every March from 2027 believed FOREVER on the rows, and TERMS carrying the
+    same raise believed through 2027 alone -- so a 2029 paycheck is priced
+    off ``$69,457.50`` (``60000 x 1.05^3``) under the rows and ``$63,000.00``
+    (one application) under the terms.
+    """
+
+    @staticmethod
+    def _rows_and_terms():
+        """The profile (raise believed forever) and the terms (through 2027)."""
+        forever = FakeRaise(
+            percentage="0.05", effective_month=3, effective_year=2027,
+            is_recurring=True, terminal_year=None,
+        )
+        through_2027 = FakeRaise(
+            percentage="0.05", effective_month=3, effective_year=2027,
+            is_recurring=True, terminal_year=2027,
+        )
+        profile = FakeProfile(
+            annual_salary=60000, raises=[forever], created_at=date(2026, 1, 1),
+        )
+        return profile, (through_2027,)
+
+    @staticmethod
+    def _periods_2029():
+        """26 biweekly 2029 periods from Friday 2029-01-05."""
+        start = date(2029, 1, 5)
+        return [
+            _period(start_date=start + timedelta(days=14 * i), period_id=i + 1)
+            for i in range(26)
+        ]
+
+    def test_no_terms_prices_the_profiles_own_rows(self):
+        """The default is the rows' own terms -- the stored plan, unchanged.
+
+        ``raises`` is the rows converted to ``RaiseTerms`` values, never the
+        rows themselves: the value's fields are the engine's whole contract
+        with a raise, so a walk reading anything else fails here rather than
+        pricing rows and values differently.
+        """
+        profile, _ = self._rows_and_terms()
+        basis = payroll_basis(profile, self._periods_2029())
+
+        assert basis.raise_terms is None
+        assert basis.raises == terms_of(profile.raises)
+        assert all(isinstance(term, RaiseTerms) for term in basis.raises)
+        # 2029-06: three applications (2027, 2028, 2029) of 5% on $60,000.
+        assert basis.annual_salary_on(date(2029, 6, 1)) == Decimal("69457.50")
+
+    def test_a_supplied_set_is_canonicalised_too(self):
+        """``raises`` is ``RaiseTerms`` values whichever arm supplied them.
+
+        A supplied set spelled with raise-shaped objects is converted like
+        the default arm's rows, so "the engine prices only the value" is a
+        property of the basis and not of its callers' care -- a second
+        adversarial review of this step found the first draft converting
+        only the default arm.
+        """
+        profile, terms = self._rows_and_terms()
+        believed = replace(
+            payroll_basis(profile, self._periods_2029()), raise_terms=terms,
+        )
+
+        assert believed.raises == terms_of(terms)
+        assert all(isinstance(term, RaiseTerms) for term in believed.raises)
+        assert believed.raises[0].terminal_year == 2027
+
+    def test_the_gross_is_priced_off_the_supplied_terms(
+        self, simple_tax_configs,
+    ):
+        """Site 1: the paycheck's own gross reads the terms, not the rows.
+
+        ``$63,000 / 26 = $2,423.08`` under the terms; a read that still went
+        to the rows would price ``$69,457.50 / 26 = $2,671.44``.
+        """
+        profile, terms = self._rows_and_terms()
+        periods = self._periods_2029()
+        june = periods[11]  # 2029-06-08
+        stored = payroll_basis(profile, periods)
+        believed = replace(stored, raise_terms=terms)
+
+        assert calculate_paycheck(
+            stored, june, simple_tax_configs,
+        ).earnings.gross_biweekly == Decimal("2671.44")
+        assert calculate_paycheck(
+            believed, june, simple_tax_configs,
+        ).earnings.gross_biweekly == Decimal("2423.08"), (
+            "the paycheck's gross was priced off the profile's rows, not the "
+            "raise set the basis names"
+        )
+
+    def test_the_raise_event_is_badged_off_the_supplied_terms(
+        self, simple_tax_configs,
+    ):
+        """The banner announces the set the paycheck was PRICED under.
+
+        March 2029 badges the forever raise on the rows; under terms believed
+        through 2027 it moved nothing that year and must badge nothing --
+        otherwise the surface announces a raise the gross beside it was not
+        priced with, the two-walks defect ``salary_raises`` records.
+        """
+        profile, terms = self._rows_and_terms()
+        periods = self._periods_2029()
+        march = periods[4]  # 2029-03-02
+        stored = payroll_basis(profile, periods)
+        believed = replace(stored, raise_terms=terms)
+
+        assert calculate_paycheck(
+            stored, march, simple_tax_configs,
+        ).period.raise_event == "MERIT +5.00%"
+        assert calculate_paycheck(
+            believed, march, simple_tax_configs,
+        ).period.raise_event == "", (
+            "the raise event was badged off the profile's rows while the "
+            "paycheck was priced off the basis's terms"
+        )
+
+    def test_the_wage_base_cumulative_reads_the_supplied_terms(self):
+        """Site 3: the year-to-date gross sums the terms' salary.
+
+        Ten prior 2029 paydays at ``$2,423.08`` sum to ``$24,230.80`` under
+        the terms.  Under the rows the January and February paydays carry two
+        applications (``$66,150.00 / 26 = $2,544.23``) and the March-May ones
+        three (``$2,671.44``): ``4 x 2,544.23 + 6 x 2,671.44 = $26,205.56``.
+        """
+        profile, terms = self._rows_and_terms()
+        periods = self._periods_2029()
+        eleventh = periods[10]  # 2029-05-25; ten paydays before it in 2029
+        stored = payroll_basis(profile, periods)
+        believed = replace(stored, raise_terms=terms)
+
+        assert _get_cumulative_wages(stored, eleventh) == Decimal("26205.56")
+        assert _get_cumulative_wages(believed, eleventh) == Decimal("24230.80"), (
+            "the FICA wage-base cumulative summed the profile's rows' salary, "
+            "not the raise set the basis names"
+        )
+
+    def test_a_capped_deductions_year_to_date_reads_the_supplied_terms(self):
+        """Site 2: the annual-cap replay prices prior paydays off the terms.
+
+        A 10% deduction capped at ``$2,500.00`` a year.  Under the terms the
+        ten prior paydays took ``10 x round($2,423.08 x 0.10) = $2,423.10``,
+        leaving ``$76.90`` of room, so the eleventh paycheck's line is
+        clamped to exactly that.  Under the rows they took
+        ``4 x 254.42 + 6 x 267.14 = $2,620.52``, past the cap, so the line is
+        ``$0.00`` -- which is also what a replay that read the rows while the
+        live gross read the terms would produce, so ``$76.90`` pins the
+        replay's raise set and not merely the paycheck's.
+        """
+        profile, terms = self._rows_and_terms()
+        profile.deductions = [FakeDeduction(
+            name="HSA", amount="0.10", calc_method="percentage",
+            annual_cap="2500",
+        )]
+        periods = self._periods_2029()
+        eleventh = periods[10]
+        stored = payroll_basis(profile, periods)
+        believed = replace(stored, raise_terms=terms)
+
+        def line_under(basis):
+            return _calculate_deductions(
+                _DeductionContext(
+                    basis, eleventh,
+                    gross_per_paycheck(
+                        basis.annual_salary_on(eleventh.start_date),
+                        basis.periods_per_year,
+                    ),
+                    _month_ordinal(basis.calendar, eleventh.start_date),
+                ),
+                _timing_id("pre_tax"),
+            )[0].amount
+
+        assert line_under(stored) == ZERO
+        assert line_under(believed) == Decimal("76.90"), (
+            "the capped deduction's year-to-date replay priced prior paydays "
+            "off the profile's rows, not the raise set the basis names"
+        )
