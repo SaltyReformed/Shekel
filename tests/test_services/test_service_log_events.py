@@ -82,7 +82,12 @@ from app.utils.log_events import (
     EVT_TRANSFER_SOFT_DELETED,
     EVT_TRANSFER_UPDATED,
 )
-from tests._test_helpers import make_every_period_rule, rhythm_of
+from tests._test_helpers import (
+    generate_row_of,
+    make_every_period_rule,
+    make_expense_template,
+    rhythm_of,
+)
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -409,45 +414,17 @@ class TestCreditWorkflowLogging:
 
 @pytest.fixture
 def _envelope_transaction(app, db, seed_user, seed_periods):
-    """Build a Projected envelope-tracked expense for entry tests."""
-    from app.models.ref import TransactionType  # noqa: WPS433
-    expense_type = db.session.query(
-        TransactionType,
-    ).filter_by(name="Expense").one()
-    projected = db.session.query(Status).filter_by(name="Projected").one()
+    """Build a Projected envelope-tracked expense for entry tests.
 
-    # Authored through the write door (plan step R7c-b): a rule naming only a
-    # pattern is a NOT NULL violation now, and ``make_every_period_rule``
-    # starts it on the schedule's OPENING payday -- ``seed_periods[0]``, the
-    # period this used to name directly.
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        name="Groceries Envelope",
-        default_amount=Decimal("400.00"),
-        is_envelope=True,
-        is_active=True,
+    The engine's own row of a priced, every-paycheck envelope definition
+    (:func:`generate_row_of`, plan step balance:X-cf), in the opening
+    paycheck.
+    """
+    template = make_expense_template(
+        db.session, seed_user, amount="400.00",
+        name="Groceries Envelope", category_key="Groceries", is_envelope=True,
     )
-    db.session.add(template)
-    db.session.flush()
-    # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_every_period_rule(db.session, template)
-
-    txn = Transaction(
-        user_id=seed_periods[0].user_id,
-        pay_period_id=seed_periods[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
-        template_id=template.id,
-        name="Groceries Envelope",
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("400.00")),
-    )
-    db.session.add(txn)
+    txn = generate_row_of(template, seed_periods[0])
     db.session.commit()
     return txn
 

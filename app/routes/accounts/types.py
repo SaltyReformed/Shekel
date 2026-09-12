@@ -18,7 +18,7 @@ the same 404 response as a non-existent row, matching the project's
 import logging
 
 from flask import abort, flash, redirect, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.extensions import db
 from app.models.account import Account
@@ -44,7 +44,6 @@ logger = logging.getLogger(__name__)
 
 
 @accounts_bp.route("/accounts/types", methods=["POST"])
-@login_required
 @require_owner
 def create_account_type():
     """Create a new account type owned by the current user.
@@ -97,7 +96,6 @@ def create_account_type():
 
 
 @accounts_bp.route("/accounts/types/<int:type_id>", methods=["POST"])
-@login_required
 @require_owner
 def update_account_type(type_id):
     """Update one of the current user's own account types.
@@ -221,7 +219,6 @@ def update_account_type(type_id):
 
 
 @accounts_bp.route("/accounts/types/<int:type_id>/delete", methods=["POST"])
-@login_required
 @require_owner
 def delete_account_type(type_id):
     """Delete one of the current user's own account types.

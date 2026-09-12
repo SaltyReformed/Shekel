@@ -25,7 +25,7 @@ import logging
 from decimal import Decimal
 
 from flask import abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.exceptions import ValidationError
 from app.extensions import db
@@ -81,7 +81,6 @@ _ACCOUNT_UPDATE_FIELDS = {"name", "account_type_id", "sort_order", "is_active"}
 
 
 @accounts_bp.route("/accounts")
-@login_required
 @require_owner
 def list_accounts():
     """Redirect the retired ``/accounts`` table to the unified cockpit.
@@ -101,7 +100,6 @@ def list_accounts():
 
 
 @accounts_bp.route("/accounts/new", methods=["GET"])
-@login_required
 @require_owner
 def new_account():
     """Display the account creation form.
@@ -160,7 +158,6 @@ def _setup_redirect_url(account, kind):
 
 
 @accounts_bp.route("/accounts", methods=["POST"])
-@login_required
 @require_owner
 def create_account():
     """Create a new account."""
@@ -282,7 +279,6 @@ def create_account():
 
 
 @accounts_bp.route("/accounts/<int:account_id>/edit", methods=["GET"])
-@login_required
 @require_owner
 def edit_account(account_id):
     """Display the account edit form.
@@ -312,7 +308,6 @@ def edit_account(account_id):
 
 
 @accounts_bp.route("/accounts/<int:account_id>", methods=["POST"])
-@login_required
 @require_owner
 def update_account(account_id):
     """Update an account's name, type and active flag.
@@ -488,7 +483,6 @@ def update_account(account_id):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/archive", methods=["POST"])
-@login_required
 @require_owner
 def archive_account(account_id):
     """Archive an account (soft delete).
@@ -544,7 +538,6 @@ def archive_account(account_id):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/unarchive", methods=["POST"])
-@login_required
 @require_owner
 def unarchive_account(account_id):
     """Unarchive an account.
@@ -609,7 +602,6 @@ def _archive_instead_of_delete(account, account_id, reason):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/hard-delete", methods=["POST"])
-@login_required
 @require_owner
 @fresh_login_required()
 def hard_delete_account(account_id):

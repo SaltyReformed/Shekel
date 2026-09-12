@@ -2725,54 +2725,28 @@ def _override_anchor(db_session, account, pay_period, anchor_balance):
 
 
 def _make_projected_envelope_expense(
-    db_session, *, seed_user, pay_period, estimated, account_id=None,
+    db_session, *, seed_user, pay_period, estimated, account=None,
     name="Groceries",
 ):
     """Create a Projected envelope expense in ``pay_period``.
 
-    Builds the ``is_envelope=True`` template + Transaction pair that
-    entries attach to.  Uses the user's Groceries category so the row
-    is consistent with the symptom #1 worked example.  ``account_id``
-    defaults to the seed user's checking account; pass an explicit id
-    when the txn should live on an account other than seed_user["account"].
+    The engine's own row of a priced, every-paycheck ``is_envelope=True``
+    definition (:func:`generate_row_of`, plan step balance:X-cf), which is
+    what entries attach to.  Uses the user's Groceries category so the row
+    is consistent with the symptom #1 worked example.  ``account`` defaults
+    to the seed user's checking account; pass the account when the row
+    should live elsewhere -- the engine puts a row on its DEFINITION's
+    account, so that is where the choice is made.
     """
-    from app.models.ref import Status, TransactionType  # pylint: disable=import-outside-toplevel
-    from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
-    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+    # pylint: disable=import-outside-toplevel
+    from tests._test_helpers import generate_row_of, make_expense_template
 
-    projected = db_session.query(Status).filter_by(name="Projected").one()
-    expense_type = (
-        db_session.query(TransactionType).filter_by(name="Expense").one()
+    template = make_expense_template(
+        db_session, seed_user, amount=estimated,
+        name=name, category_key="Groceries", is_envelope=True,
+        account=account,
     )
-    target_account_id = account_id or seed_user["account"].id
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=target_account_id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        name=name,
-        default_amount=estimated,
-        is_envelope=True,
-    )
-    db_session.add(template)
-    db_session.flush()
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=pay_period.user_id,
-        pay_period_id=pay_period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=target_account_id,
-        status_id=projected.id,
-        name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(estimated),
-    )
-    db_session.add(txn)
-    db_session.flush()
-    return txn
+    return generate_row_of(template, pay_period)
 
 
 #: The civil day every purchase :func:`_add_entry` writes is bought and settled
@@ -2983,7 +2957,7 @@ class TestCanonicalProducerRouting:
                 seed_user=seed_user,
                 pay_period=current_period,
                 estimated=Decimal("500.00"),
-                account_id=hysa.id,
+                account=hysa,
                 name="HYSA Groceries",
             )
             for amt in (Decimal("20.00"), Decimal("15.71"), Decimal("10.00")):

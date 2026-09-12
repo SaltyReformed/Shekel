@@ -22,7 +22,7 @@ import logging
 from datetime import datetime, timezone
 
 from flask import abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 
 
 @salary_bp.route("/salary/<int:profile_id>/checkpoint", methods=["POST"])
-@login_required
 @require_owner
 def save_ytd_checkpoint(profile_id):
     """Upsert a YTD tax checkpoint for a salary profile from a pay stub.

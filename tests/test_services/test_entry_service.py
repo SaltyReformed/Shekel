@@ -16,7 +16,6 @@ from app.extensions import db
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services import entry_service, pay_period_write
 from app.services.auth_service import hash_password
@@ -35,6 +34,9 @@ from tests._test_helpers import (
     rhythm_of,
     account_never_asserted,
     an_entered_day,
+    generate_row_of,
+    make_expense_template,
+    make_income_template,
     reassert_balance_on,
     settle_day_columns,
     settle_instant_on,
@@ -140,39 +142,12 @@ class TestCreateEntry:
     ):
         """Reject entry on a transaction whose template has track=False."""
         with app.app_context():
-            # Create a template with tracking disabled.
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
+            # A definition with tracking disabled, and its row.
+            template = make_expense_template(
+                db.session, seed_user, amount="1500.00",
+                name="Rent", category_key="Rent", is_envelope=False,
             )
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                name="Rent",
-                default_amount=Decimal("1500.00"),
-                is_envelope=False,
-            )
-            db.session.add(template)
-            db.session.flush()
-
-            txn = Transaction(
-                template_id=template.id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Rent",
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
-            )
-            db.session.add(txn)
-            db.session.flush()
+            txn = generate_row_of(template, seed_periods[0])
 
             with pytest.raises(ValidationError, match="does not support"):
                 entry_service.create_entry(
@@ -322,38 +297,13 @@ class TestCreateEntry:
     ):
         """Reject entry on an income transaction (even with tracking enabled)."""
         with app.app_context():
-            income_type = (
-                db.session.query(TransactionType).filter_by(name="Income").one()
+            # An INCOME definition flagged for tracking (the shape the form
+            # refuses and the model admits), and its row.
+            template = make_income_template(
+                db.session, seed_user, amount="3000.00",
+                name="Salary", category_key="Salary", is_envelope=True,
             )
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Salary"].id,
-                transaction_type_id=income_type.id,
-                name="Salary",
-                default_amount=Decimal("3000.00"),
-                is_envelope=True,
-            )
-            db.session.add(template)
-            db.session.flush()
-
-            txn = Transaction(
-                template_id=template.id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Salary",
-                category_id=seed_user["categories"]["Salary"].id,
-                transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("3000.00")),
-            )
-            db.session.add(txn)
-            db.session.flush()
+            txn = generate_row_of(template, seed_periods[0])
 
             with pytest.raises(ValidationError, match="income"):
                 entry_service.create_entry(
@@ -587,15 +537,8 @@ class TestCompanionAccess:
             # seed_entry_template belongs to seed_user.
             # seed_companion is linked to seed_user.
             # seed_second_user owns different data.
-            # Create a transaction owned by seed_second_user.
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
-            )
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            from app.models.pay_period import PayPeriod
-
+            # A row owned by seed_second_user: their definition, on their
+            # own calendar, written by the engine.
             periods = pay_period_write.record_paydays(
                 user_id=seed_second_user["user"].id,
                 first_payday=date(2026, 1, 2),
@@ -604,32 +547,12 @@ class TestCompanionAccess:
             )
             db.session.flush()
 
-            template = TransactionTemplate(
-                user_id=seed_second_user["user"].id,
-                account_id=seed_second_user["account"].id,
-                category_id=seed_second_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                name="Other Groceries",
-                default_amount=Decimal("400.00"),
+            template = make_expense_template(
+                db.session, seed_second_user, amount="400.00",
+                name="Other Groceries", category_key="Groceries",
                 is_envelope=True,
             )
-            db.session.add(template)
-            db.session.flush()
-
-            txn = Transaction(
-                template_id=template.id,
-                user_id=periods[0].user_id,
-                pay_period_id=periods[0].id,
-                scenario_id=seed_second_user["scenario"].id,
-                account_id=seed_second_user["account"].id,
-                status_id=projected.id,
-                name="Other Groceries",
-                category_id=seed_second_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("400.00")),
-            )
-            db.session.add(txn)
-            db.session.flush()
+            txn = generate_row_of(template, periods[0])
 
             companion = seed_companion["user"]
             with pytest.raises(NotFoundError):

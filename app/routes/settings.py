@@ -8,7 +8,7 @@ Settings dashboard consolidating all configuration sections.
 import logging
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app import ref_cache
 from app.enums import RoleEnum
@@ -106,7 +106,6 @@ _PP_MUTABLE_BADGE = ("Editable", "flag-chip")
 
 
 @settings_bp.route("/settings", methods=["GET"])
-@login_required
 @require_owner
 def show():
     """Display the settings dashboard."""
@@ -308,7 +307,6 @@ def _load_pay_periods_context(user_id):
 
 
 @settings_bp.route("/settings", methods=["POST"])
-@login_required
 @require_owner
 def update():
     """Update user settings."""
@@ -478,8 +476,8 @@ def _load_security_context():
 # --- Companion account management ----------------------------------------
 #
 # Companions are created, edited, deactivated, and reactivated here.
-# Every route below applies two guards on top of the module-level
-# @login_required + @require_owner decorators:
+# Every route below applies two guards on top of the application's login
+# gate and the @require_owner decorator:
 #   1. Target user must have role_id == COMPANION.  This rejects any
 #      attempt to edit another owner (or the current user).
 #   2. Target user's linked_owner_id must equal current_user.id.  This
@@ -588,7 +586,6 @@ def _render_companions_section(errors=None, form_values=None,
 
 
 @settings_bp.route("/settings/companions", methods=["POST"])
-@login_required
 @require_owner
 @fresh_login_required()
 def companion_create():
@@ -650,7 +647,6 @@ def companion_create():
 @settings_bp.route(
     "/settings/companions/<int:companion_id>/edit", methods=["POST"],
 )
-@login_required
 @require_owner
 @fresh_login_required()
 def companion_edit(companion_id):
@@ -709,7 +705,6 @@ def companion_edit(companion_id):
 @settings_bp.route(
     "/settings/companions/<int:companion_id>/deactivate", methods=["POST"],
 )
-@login_required
 @require_owner
 @fresh_login_required()
 def companion_deactivate(companion_id):
@@ -744,7 +739,6 @@ def companion_deactivate(companion_id):
 @settings_bp.route(
     "/settings/companions/<int:companion_id>/reactivate", methods=["POST"],
 )
-@login_required
 @require_owner
 @fresh_login_required()
 def companion_reactivate(companion_id):

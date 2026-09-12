@@ -19,17 +19,13 @@ from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
     EmployerContributionTypeEnum,
-    StatusEnum,
-    TxnTypeEnum,
 )
 from app.extensions import db
 from app.models.investment_params import InvestmentParams
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCadence, calendar_for
@@ -49,12 +45,13 @@ from tests._test_helpers import (
     all_periods,
     current_pay_period,
     derived_span,
+    generate_row_of,
     last_covered_day,
+    make_expense_template,
     make_investment_account,
     mark_purchase_settled,
     open_books_before_the_first_assertion,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 def _picture(user_id, as_of=None):
@@ -616,13 +613,17 @@ class TestTheDisplayedRates:
 
 
 def _add_envelope_expense_with_settled_entries_ret(
-    db_session, *, user_id, account, scenario_id, period, category_id,
+    db_session, *, seed_user, account, period, category_key,
     estimated, settled_amounts,
 ):
     """Create a Projected envelope expense with already-posted debit entries.
 
     Same shape as the helper used in the C8 year-end / investment
-    tests; copied here so this file stays standalone.
+    tests; copied here so this file stays standalone.  The envelope is the
+    engine's own row of a priced, every-paycheck definition on *account*
+    (:func:`generate_row_of`, plan step balance:X-cf) -- the engine puts a
+    row on its definition's account, which is why the definition is built
+    there -- and the purchases are then recorded against it.
 
     **Each purchase is dated on the account's own latest asserted day and
     routed through ``mark_purchase_settled``** (plan step S1-c, ruling
@@ -634,41 +635,18 @@ def _add_envelope_expense_with_settled_entries_ret(
     holds whatever day the suite runs on, which is the ``.claude/rules/testing``
     property N-131 and N-132 are both about.
     """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
-    template = TransactionTemplate(
-        user_id=user_id,
-        account_id=account.id,
-        category_id=category_id,
-        transaction_type_id=expense_type_id,
-        name="Retirement-side expense",
-        default_amount=estimated,
-        is_envelope=True,
+    template = make_expense_template(
+        db_session, seed_user, amount=estimated,
+        name="Retirement-side expense", category_key=category_key,
+        is_envelope=True, account=account,
     )
-    db_session.add(template)
-    db_session.flush()
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=scenario_id,
-        account_id=account.id,
-        status_id=projected_id,
-        name="Retirement-side expense",
-        category_id=category_id,
-        transaction_type_id=expense_type_id,
-        amount_ownership=AmountOwnership.own(estimated),
-    )
-    db_session.add(txn)
-    db_session.flush()
+    txn = generate_row_of(template, period)
 
     observed_on = cash_ledger.reconciled_through(account.id).observed_day
     for amt in settled_amounts:
         entry = TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id,
-            user_id=user_id,
+            user_id=seed_user["user"].id,
             amount=amt,
             description="Confirmed purchase",
             purchased_on=observed_on,
@@ -795,11 +773,10 @@ class TestRetirementProjectionEntryAware:
 
             _add_envelope_expense_with_settled_entries_ret(
                 db.session,
-                user_id=user.id,
+                seed_user=seed_user,
                 account=acct,
-                scenario_id=scenario.id,
                 period=current_period,
-                category_id=seed_user["categories"]["Groceries"].id,
+                category_key="Groceries",
                 estimated=Decimal("500.00"),
                 settled_amounts=(
                     Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),

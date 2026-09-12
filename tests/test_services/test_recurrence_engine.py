@@ -29,7 +29,6 @@ from app.enums import (
     BusinessDayShiftEnum,
     RecurrenceUnitEnum,
     SettlementBasisEnum,
-    StatusEnum,
     TxnTypeEnum,
 )
 from app.services import (
@@ -1247,6 +1246,17 @@ class TestGenerateForTemplate:
         (the re-keyed index stores the repeat), so what is left to grade is the
         property that ordering existed to protect -- a second pass over a
         populated repeat writes nothing and raises nothing.
+
+        **What distinguishes it from the case above is the UNDATED claim.**
+        The rows are the engine's own (plan step balance:X-cf), and then ONE
+        row per paycheck has its ``occurs_on`` cleared -- the pre-R17 shape a
+        backfill leaves where no occurrence claims a row, and the shape
+        carry-forward still writes -- so each paycheck is HELD by a row that
+        answers no occurrence (``OccurrenceClaims.held_undated``) beside two
+        that answer their own.  A second pass must write nothing: not the
+        two answered occurrences, and not the third, whose only claim on the
+        paycheck is the undated row's.  Measured: reading the undated row as
+        claiming nothing re-writes that third occurrence and this goes red.
         """
         with app.app_context():
             long_periods = pay_period_write.record_paydays(
@@ -1259,28 +1269,27 @@ class TestGenerateForTemplate:
             template = self._make_template_with_rule(
                 seed_user, MONTHLY, fires_on_day=15,
             )
-            # Occupy every period the rule fires in, exactly as a previous
-            # (pre-R4a) generation pass would have left them.
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            for period in long_periods:
-                db.session.add(Transaction(
-                    account_id=template.account_id,
-                    template_id=template.id,
-                    user_id=period.user_id,
-                    pay_period_id=period.id,
-                    scenario_id=seed_user["scenario"].id,
-                    status_id=projected_id,
-                    name=template.name,
-                    transaction_type_id=template.transaction_type_id,
-                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                    is_override=False,
-                    is_deleted=False,
-                ))
+            window = {p.id for p in long_periods}
+            populated = recurrence_engine.generate_for_template(
+                template, GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), window,
+                ), seed_user["scenario"].id,
+            )
             db.session.flush()
+            held = set()
+            for row in populated:
+                if row.pay_period_id not in held:
+                    row.occurs_on = None
+                    held.add(row.pay_period_id)
+            db.session.flush()
+            assert held == window, (
+                "every paycheck in the window must hold an undated row, or "
+                "this case no longer grades the period claim"
+            )
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {p.id for p in long_periods},
+                    BalanceContext.build(template.user_id), window,
                 ), seed_user["scenario"].id,
             )
 
@@ -2861,9 +2870,12 @@ class TestRegenerateForTemplate:
         sibling and declined to recreate it, so an unrelated edit silently
         removed a period's own bill.  Carry-forward produces exactly this shape
         -- ``carry_forward_service`` moves an unpaid row into the target period
-        with ``is_override = True`` precisely so it sits BESIDE the
-        rule-generated one (both generation indexes exclude override rows, so
-        the pair is permitted).
+        with ``is_override = True`` so it sits BESIDE the rule-generated one.
+        (What makes the pair STORABLE differs by shape: two dated rows answer
+        two occurrences, and the occurrence index has carried no
+        ``is_override`` clause since plan step X-au-h; only the undated index
+        still exempts the flag.  What the flag does here is keep the maintain
+        pass off the row.)
 
         Measured at 0 live instances on a production clone, so nothing moved
         when this shipped; the new answer is also the correct one, since the
@@ -2879,27 +2891,18 @@ class TestRegenerateForTemplate:
             )
             db.session.flush()
 
-            rule_row = created[0]
+            # The shape carry-forward leaves behind: the PREVIOUS paycheck's
+            # row carried into this one as an override sibling, beside the
+            # rule's own row.  Both rows are the engine's (plan step
+            # balance:X-cf); the carry is the move door's two acts, and the
+            # sibling's own figure is the owner's re-price, so the maintain
+            # pass's new price cannot reach it.
+            rule_row = created[1]
             rule_row_id = rule_row.id
-            period_id = rule_row.pay_period_id
-
-            # The shape carry-forward leaves behind: an override sibling in the
-            # same period, beside the rule's own row.
-            carried = Transaction(
-                account_id=rule_row.account_id,
-                template_id=template.id,
-                user_id=rule_row.user_id,
-                pay_period_id=period_id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=rule_row.status_id,
-                name=template.name,
-                category_id=template.category_id,
-                transaction_type_id=template.transaction_type_id,
-                amount_ownership=AmountOwnership.own(Decimal("55.00")),
-                is_override=True,
-                is_deleted=False,
-            )
-            db.session.add(carried)
+            carried = created[0]
+            carried.pay_period_id = rule_row.pay_period_id
+            carried.is_override = True
+            state_own_amount(carried, Decimal("55.00"))
             db.session.flush()
             carried_id = carried.id
 

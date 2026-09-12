@@ -22,7 +22,7 @@ from flask import (
     session as flask_session,
     url_for,
 )
-from flask_login import current_user, login_required, login_user, logout_user
+from flask_login import current_user, login_user, logout_user
 
 from marshmallow import ValidationError as MarshmallowValidationError
 
@@ -270,7 +270,6 @@ def register():
 
 
 @auth_bp.route("/logout", methods=["POST"])
-@login_required
 def logout():
     """End the user's session and redirect to login."""
     log_event(logger, logging.INFO, EVT_LOGOUT, AUTH,
