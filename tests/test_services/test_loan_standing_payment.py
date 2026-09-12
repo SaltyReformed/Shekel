@@ -11,8 +11,11 @@ Three properties are pinned here:
 
 * :func:`~app.services.recurring_transfer_query.standing_payment` reads what the
   definition says, and tells "no definition" from "a definition saying zero";
-* :func:`~app.services.recurring_transfer_query.standing_installment_cash` is total
-  over the three shapes a loan can be in, with the arithmetic stated;
+* the ESTIMATED tier prices an occurrence through the amount model's own arm
+  (:func:`~app.services.cash_ledger.definition_cash`, plan step R16-b-2, which
+  deleted the ``standing_installment_cash`` copy this module used to grade;
+  its three arms are graded against the row's own rule in
+  ``test_amount_source``);
 * **the payoff does not move when the future rows are deleted** -- the invariant
   the whole step exists to establish, exercised through the production door
   (``pay_period_admin.regenerate_pay_periods``) that presents that state.
@@ -29,7 +32,8 @@ from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.services import (
-    balance_at, loan_loaders, pay_period_write, template_amount_service,
+    balance_at, loan_loaders, loan_recurrence_sync, pay_period_write,
+    template_amount_service,
 )
 from app.services import transfer_recurrence
 from app.services.generation_schedule import GenerationSchedule
@@ -40,7 +44,8 @@ from app.services.balance_at._resolution import (
 )
 from app.services.recurring_transfer_query import (
     StandingPayment,
-    standing_installment_cash,
+    active_recurring_transfer_template,
+    active_recurring_transfer_templates,
     standing_payment,
 )
 from app.services.template_amount_service import owns_its_amount
@@ -85,12 +90,19 @@ def _loan(seed_user, escrow_annual=None):
 
 
 def _recurring_payment(seed_user, loan, base, *, derive=None, extra=None,
-                       stated=False, effective_on=None):
+                       stated=False, effective_on=None, name="Loan Payment"):
     """Attach an active recurring payment paying *base* into *loan*.
 
     Mirrors what ``routes/loan/payment_transfer.py`` writes: the definition
-    first, its ``loan_payment_settings`` row when the test needs a MODE, and the
-    cadence onto it last (plan step R-F6).
+    first, its ``loan_payment_settings`` row when the test needs a MODE, the
+    cadence onto it (plan step R-F6), and the loan's own START onto the
+    cadence (``bind_rule_to_loan``, plan step C9a) -- **the last since plan
+    step R16-b-2**.  ``fires_on_day=1`` alone starts the rule on the first 1st
+    the seed schedule reaches, 2024-02-01, two years before this loan exists;
+    ruling **R-R64** prices every occurrence the schedule places that no row
+    answers, as generation would write them, so a definition authored ahead
+    of its loan would pay for months the loan did not exist -- the shape the
+    door refuses and the fold used to hide by never pricing the past.
 
     *stated* opens the price SERIES through ``template_amount_service.set_amount``,
     the one write door, which is what makes the definition one that STATES its
@@ -102,7 +114,7 @@ def _recurring_payment(seed_user, loan, base, *, derive=None, extra=None,
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=loan.id,
-        name="Loan Payment",
+        name=name,
         default_amount=base,
     )
     if derive is not None or extra is not None:
@@ -117,7 +129,8 @@ def _recurring_payment(seed_user, loan, base, *, derive=None, extra=None,
             template, base,
             effective_on=_ORIGINATION if effective_on is None else effective_on,
         )
-    make_cadence_rule(template, MONTHLY, fires_on_day=1)
+    rule = make_cadence_rule(template, MONTHLY, fires_on_day=1)
+    loan_recurrence_sync.bind_rule_to_loan(rule, loan.id)
     db.session.flush()
     return template
 
@@ -133,13 +146,6 @@ def _contractual_pi(account):
         account.loan_params, loan_loaders.load_rate_changes(account.id),
     )
     return rows[0].payment
-
-
-def _standing(template, extra="0.00"):
-    """A :class:`StandingPayment` over *template*, as the producer builds one."""
-    return StandingPayment(
-        template=template, extra_principal=Decimal(extra),
-    )
 
 
 class TestStandingPayment:
@@ -176,10 +182,8 @@ class TestStandingPayment:
         assert standing == StandingPayment(
             template=template, extra_principal=Decimal("0.00"),
         )
-        # The PRICE is not on the value: it resolves per installment.
-        assert standing_installment_cash(
-            standing, Decimal("1293.96"), Decimal("616.99"), _AS_OF,
-        ) == Decimal("1910.95")
+        # The PRICE is not on the value: the tier resolves it per occurrence
+        # through the amount model (``cash_ledger.definition_cash``).
 
     def test_it_reads_the_mode_and_the_extra_from_the_settings_row(
         self, seed_user, db,  # pylint: disable=unused-argument
@@ -199,95 +203,76 @@ class TestStandingPayment:
         assert owns_its_amount(standing.template) is False
 
 
-class TestStandingInstallmentCash:
-    """The pricing rule, over each of the shapes a loan can be in."""
+class TestEveryDefinitionIntoAnAccount:
+    """:func:`active_recurring_transfer_templates`, plan step **R16-b-2** (R-R35).
 
-    def test_no_standing_payment_costs_the_contract_plus_its_escrow(self):
-        """``None`` -> P&I + escrow.  Nothing else is known about the loan."""
-        # 1293.96 + 616.99 = 1910.95
-        assert standing_installment_cash(
-            None, Decimal("1293.96"), Decimal("616.99"), _AS_OF,
-        ) == Decimal("1910.95")
+    The SET the ESTIMATED tier sums, where the standing payment is one row
+    of it.  One filter states both: the standing payment is the set's oldest
+    member, so the two cannot disagree about which definitions qualify.
+    """
 
-    def test_a_derived_price_costs_the_contract_plus_escrow_plus_the_extra(
-        self, seed_user, db,  # pylint: disable=unused-argument
+    def test_it_returns_every_active_ruled_definition_oldest_first(
+        self, seed_user, db,
     ):
-        """A definition that STATES no price -> P&I + escrow + extra.
-
-        That is what DERIVE mode means, so reading the contract here is the
-        row's own rule rather than a guess about it.  The stored scalar
-        (``$1.00``) is deliberately absurd and must not be read.
-        """
+        """Two definitions into one loan are both returned, ascending by id."""
         account, _ = _loan(seed_user)
-        template = _recurring_payment(
-            seed_user, account, Decimal("1.00"),
-            derive=True, extra=Decimal("250.00"),
+        first = _recurring_payment(
+            seed_user, account, Decimal("1910.95"), stated=True,
         )
-
-        # 1293.96 + 616.99 + 250.00 = 2160.95
-        assert standing_installment_cash(
-            _standing(template, "250.00"),
-            Decimal("1293.96"), Decimal("616.99"), _AS_OF,
-        ) == Decimal("2160.95")
-
-    @pytest.mark.parametrize("escrow", [Decimal("0.00"), Decimal("616.99")])
-    def test_a_stated_price_costs_that_price_plus_the_extra(
-        self, seed_user, db, escrow,  # pylint: disable=unused-argument
-    ):
-        """A STATED price -> the owner's figure + extra, never the servicer's.
-
-        **Swept over the ESCROW because a version of this test that passed only
-        ``0.00`` could not see the arm's one real trap.** A stated price is
-        escrow-INCLUSIVE -- an owner types the whole mortgage payment, and the
-        developer's own template states ``$1,910.95`` for a ``$1,293.96`` P&I
-        and a ``$616.99`` escrow -- so the escrow argument must NOT be added on
-        top of it; it is what the loan replay's charge backs out of principal.
-        With ``escrow=0.00`` alone the two spellings agree, and the case that
-        distinguishes them is the only one that matters.
-        """
-        account, _ = _loan(seed_user)
-        template = _recurring_payment(
-            seed_user, account, Decimal("300.00"), stated=True,
-        )
-
-        # 300.00 + 25.00 = 325.00 whatever the escrow, against a 531.94
-        # contractual installment the stated price overrides.
-        assert standing_installment_cash(
-            _standing(template, "25.00"), Decimal("531.94"), escrow, _AS_OF,
-        ) == Decimal("325.00")
-
-    def test_a_stated_price_is_resolved_AS_OF_the_installment(
-        self, seed_user, db,  # pylint: disable=unused-argument
-    ):
-        """A price stated for a FUTURE date must not reach earlier installments.
-
-        **The defect an adversarial review of this step found.** The first cut
-        read ``template.default_amount``, which
-        ``template_amount_service._resync_scalar`` puts on the NEWEST price the
-        series states rather than the price on a date -- so a rise stated as
-        effective in 2027 priced every 2026 installment at the 2027 figure.
-        Measured on a production clone before the fix: an owner stating
-        ``$700.00`` effective 2028-01-01 moved the Van Loan's derived payoff six
-        installments EARLY once its future rows were absent.
-        """
-        account, _ = _loan(seed_user)
-        template = _recurring_payment(
-            seed_user, account, Decimal("300.00"), stated=True,
-        )
-        template_amount_service.set_amount(
-            template, Decimal("700.00"), effective_on=date(2026, 6, 1),
+        second = _recurring_payment(
+            seed_user, account, Decimal("200.00"), stated=True, name="Extra",
         )
         db.session.flush()
-        # The scalar has moved to the NEWEST price; the series has not.
-        assert template.default_amount == Decimal("700.00")
 
-        standing = _standing(template)
-        assert standing_installment_cash(
-            standing, Decimal("531.94"), Decimal("0.00"), date(2026, 5, 1),
-        ) == Decimal("300.00")
-        assert standing_installment_cash(
-            standing, Decimal("531.94"), Decimal("0.00"), date(2026, 6, 1),
-        ) == Decimal("700.00")
+        templates = active_recurring_transfer_templates(
+            account.id, seed_user["user"].id,
+        )
+
+        assert [template.id for template in templates] == [first.id, second.id]
+        assert active_recurring_transfer_template(
+            account.id, seed_user["user"].id,
+        ) is templates[0]
+
+    def test_an_archived_or_rule_less_definition_is_not_in_the_set(
+        self, seed_user, db,
+    ):
+        """Inactive, or carrying no rule, is not a definition that pays forward."""
+        account, _ = _loan(seed_user)
+        kept = _recurring_payment(
+            seed_user, account, Decimal("1910.95"), stated=True,
+        )
+        archived = _recurring_payment(
+            seed_user, account, Decimal("300.00"), stated=True, name="Old",
+        )
+        archived.is_active = False
+        unruled = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=account.id,
+            name="One-off",
+            default_amount=Decimal("500.00"),
+        )
+        db.session.add(unruled)
+        db.session.flush()
+
+        templates = active_recurring_transfer_templates(
+            account.id, seed_user["user"].id,
+        )
+
+        assert [template.id for template in templates] == [kept.id]
+
+    def test_an_account_with_no_definition_answers_the_empty_set(
+        self, seed_user, db,  # pylint: disable=unused-argument
+    ):
+        """``[]`` here is ``None`` one function over; both mean the contract is the only estimate."""
+        account, _ = _loan(seed_user)
+
+        assert active_recurring_transfer_templates(
+            account.id, seed_user["user"].id,
+        ) == []
+        assert active_recurring_transfer_template(
+            account.id, seed_user["user"].id,
+        ) is None
 
 
 class TestEstimatedTierPricing:
@@ -359,6 +344,39 @@ class TestEstimatedTierPricing:
         # The stored 1.00 base is NOT read; the contract's P&I is.
         expected = contractual_pi + Decimal("616.99") + Decimal("100.00")
         assert estimated[0].cash == expected
+
+    def test_a_stated_price_is_resolved_AS_OF_each_occurrence(
+        self, seed_user, db,  # pylint: disable=unused-argument
+    ):
+        """A price stated for a FUTURE date must not reach earlier occurrences.
+
+        **The defect an adversarial review of plan step R7d-a found**, kept
+        as a property of the plan now that the copy it was found in is gone.
+        ``template.default_amount`` sits on the NEWEST price the series states
+        rather than the price on a date -- measured on a production clone, an
+        owner stating ``$700.00`` effective 2028-01-01 moved the Van Loan's
+        derived payoff six installments EARLY once its future rows were
+        absent.  The tier prices each occurrence through the amount model's
+        series arm on the date its row would carry, so the rise reaches the
+        06-01 installment and every later one, and no earlier one.
+        """
+        account, ctx = _loan(seed_user)
+        template = _recurring_payment(
+            seed_user, account, Decimal("300.00"), stated=True,
+        )
+        template_amount_service.set_amount(
+            template, Decimal("700.00"), effective_on=date(2026, 6, 1),
+        )
+        db.session.flush()
+        # The scalar has moved to the NEWEST price; the series has not.
+        assert template.default_amount == Decimal("700.00")
+
+        plan = loan_plan(account, ctx)
+
+        by_due = {p.due_date: p.cash for p in plan.payments if p.is_estimated}
+        assert by_due[date(2026, 5, 1)] == Decimal("300.00")
+        assert by_due[date(2026, 6, 1)] == Decimal("700.00")
+        assert by_due[date(2026, 7, 1)] == Decimal("700.00")
 
     def test_a_loan_with_no_recurring_payment_still_takes_the_contract(
         self, seed_user, db,  # pylint: disable=unused-argument
@@ -572,7 +590,7 @@ class TestTheEscrowPairingFoldsToTheSameBalance:
     def test_an_escrowing_loan_folds_like_its_escrow_free_twin(
         self, seed_user, db,  # pylint: disable=unused-argument
     ):
-        """Adding escrow to a contract-priced loan moves NO projected figure.
+        """Adding escrow to a contract-priced, CURRENT loan moves NO projected figure.
 
         Two identical loans, one escrowing `$7,403.88` a year (`$616.99` a
         month) and one escrowing nothing, both with no recurring payment so the
@@ -580,17 +598,37 @@ class TestTheEscrowPairingFoldsToTheSameBalance:
         servicer; it pays no principal, so the payoff and every projected
         balance must be identical.  Under the mutation this class exists for,
         the escrowing loan pays down `$616.99` a month faster.
+
+        **Both loans originate on the read day**, so no installment is
+        missed.  On the module's 2026-01-01 loan read at 2026-04-15 three
+        months are unpaid, and since plan step R16-b-2 a skipped month accrues
+        its charge -- interest AND escrow -- until a payment clears it (ruling
+        R-R71); a catch-up payment at the level cash then clears the escrow
+        arrears before principal, so a DELINQUENT escrowing loan genuinely
+        pays down slower than its twin, which is the servicer's arithmetic and
+        not the mutation.  The invariant this test states holds for a loan
+        that is current, which is the loan it now builds.
         """
-        escrowing, ctx = _loan(seed_user, escrow_annual=Decimal("7403.88"))
+        escrowing = create_loan_account(
+            seed_user, db.session, name="Escrowing",
+            principal=_PRINCIPAL, rate=_RATE, term=_TERM,
+            origination_date=_AS_OF, payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE,
+        )
+        add_escrow_line(
+            db.session, escrowing.id, "Property Tax", Decimal("7403.88"),
+            effective_date=_AS_OF,
+        )
         bare = create_loan_account(
             seed_user, db.session, name="No Escrow",
             principal=_PRINCIPAL, rate=_RATE, term=_TERM,
-            origination_date=_ORIGINATION, payment_day=1,
+            origination_date=_AS_OF, payment_day=1,
             account_type=AcctTypeEnum.MORTGAGE,
         )
+        db.session.flush()
         ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
 
-        dates = [date(2026, 5, 1), date(2026, 6, 1), date(2026, 7, 1)]
+        dates = [date(2026, 6, 1), date(2026, 7, 1), date(2026, 8, 1)]
         assert balance_at.positions(escrowing, ctx, dates) == \
             balance_at.positions(bare, ctx, dates)
         assert balance_at.loan_payoff_date(escrowing, ctx) == \

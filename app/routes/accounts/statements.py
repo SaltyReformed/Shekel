@@ -56,7 +56,7 @@ import logging
 from dataclasses import dataclass
 
 from flask import flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.enums import StatementBalanceEvidenceEnum, StatementSourceEnum
 from app.exceptions import (
@@ -113,7 +113,6 @@ _delete_schema = StatementImportDeleteSchema()
 
 
 @accounts_bp.route("/accounts/<int:account_id>/statements")
-@login_required
 @require_owner
 def statements(account_id):
     """Render what the bank has said about this account, and the upload form.
@@ -506,7 +505,6 @@ def _filing_sentence(filing) -> str:
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements", methods=["POST"],
 )
-@login_required
 @require_owner
 def import_statement(account_id):
     """Record an uploaded statement, and file what standing rules answer for.
@@ -719,6 +717,17 @@ def _removal_flash(account_id: int, removal) -> tuple:
     pairing.  Every figure here was counted as the act ran, because afterwards
     the rows are gone.
 
+    **Every figure the receipt carries is rendered, and each clause renders
+    only when its figure is non-zero.**  Two of them were not, until plan step
+    ``bank_import:X-gi-4`` (finding **N-470**): ``anchors_released`` and
+    ``merchants_forgotten`` were computed, typed and tested at the service
+    tier and read by nothing here -- the first with a docstring saying it was
+    "reported rather than silent".  A receipt field with no surface is a
+    promise the receipt does not keep, so both are in the flash and in the
+    event's own kwargs now, and each has a route case for the sentence being
+    PRESENT and a paired one for it being ABSENT, because a presence-only
+    assertion passes against a receipt that always prints it.
+
     **The event is emitted HERE rather than in the service**, because a
     business event asserting that an import was destroyed must not sit in the
     log when the transaction that would have destroyed it failed.  This is the
@@ -743,7 +752,9 @@ def _removal_flash(account_id: int, removal) -> tuple:
         matches_released=removal.matches_released,
         rows_removed=removal.rows_removed,
         cash_removed=str(removal.cash_removed),
+        anchors_released=removal.anchors_released,
         identity_forgotten=removal.identity_forgotten,
+        merchants_forgotten=removal.merchants_forgotten,
         skips_forgotten=removal.skips_forgotten,
     )
     released = (
@@ -773,6 +784,30 @@ def _removal_flash(account_id: int, removal) -> tuple:
         f"so re-importing this span will ask about those again."
         if removal.skips_forgotten else ""
     )
+    # **A checked balance that rested on these lines no longer stands**
+    # (:func:`~app.services.statement_import._anchor.release_anchors_from`).
+    # A stated balance is placed on a day by the lines at or before it, so a
+    # LATER import whose placement reached back over the lines just removed
+    # has lost its evidence, and the imports table now shows it "not placed".
+    # An account that had a checked bank balance and now has none is a change
+    # the owner should see stated here, not discover later.
+    unplaced = (
+        f"  {removal.anchors_released} other import(s) had placed a stated "
+        f"balance on these lines, so those placements were released and the "
+        f"account holds no checked balance from them; a later import can "
+        f"place one again."
+        if removal.anchors_released else ""
+    )
+    # **Merchants nothing has a reason to remember** (plan step
+    # ``bank_import:X-gd-1``): named by no surviving line and carrying no
+    # standing answer, so keeping them would be the table with no ceiling.
+    # A merchant the owner HAS answered for stays, answer and all, which is
+    # why the count is of the unanswered ones alone.
+    forgotten_merchants = (
+        f"  {removal.merchants_forgotten} merchant(s) were forgotten: nothing "
+        f"else named them and you had stated no rule for them."
+        if removal.merchants_forgotten else ""
+    )
     forgotten = (
         "  This was the last import for this account from that source, so the "
         "app no longer records which bank account it is; the next import will "
@@ -783,7 +818,8 @@ def _removal_flash(account_id: int, removal) -> tuple:
         f"Deleted the import of '{removal.file_name}' covering "
         f"{removal.period_start} to {removal.period_end}, and the "
         f"{removal.lines_removed} bank line(s) it had recorded."
-        f"{released}{removed_rows}{unskipped}{forgotten}",
+        f"{released}{removed_rows}{unskipped}{unplaced}{forgotten_merchants}"
+        f"{forgotten}",
         "info",
     )
 
@@ -791,7 +827,6 @@ def _removal_flash(account_id: int, removal) -> tuple:
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/delete", methods=["POST"],
 )
-@login_required
 @require_owner
 def delete_statement_import(account_id):
     """Undo one recorded import, so a refusal stops being terminal.
@@ -848,7 +883,6 @@ def delete_statement_import(account_id):
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/release", methods=["POST"],
 )
-@login_required
 @require_owner
 def release_filed_match(account_id):
     """Undo one match from this page's receipt, and come back to it.

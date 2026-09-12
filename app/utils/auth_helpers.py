@@ -63,11 +63,13 @@ logger = logging.getLogger(__name__)
 def _safe_user_id():
     """Return ``current_user.id`` if authenticated, else ``None``.
 
-    The ownership helpers run after ``@login_required`` in the normal
-    flow so ``current_user`` is always authenticated, but the access
-    decorators are also reachable in adversarial paths (a misordered
-    decorator stack, a future code path that drops ``@login_required``
-    by mistake, or test scaffolding that hits the helper directly).
+    The ownership helpers run after the application's login gate
+    (``app/login_gate.py``, a ``before_request`` hook that refuses every
+    anonymous request not declared public) so ``current_user`` is always
+    authenticated, but the access decorators are also reachable in
+    adversarial paths (an app built without the gate, ``LOGIN_DISABLED``
+    set on a throwaway app, or test scaffolding that hits the helper
+    directly).
     Returning ``None`` rather than raising on the
     ``AttributeError`` from an anonymous user keeps the audit log
     informative on every branch -- a missing ``user_id`` on a
@@ -80,8 +82,10 @@ def _safe_user_id():
 def require_owner(f):
     """Restrict a route to owner-role users only.
 
-    Must be applied AFTER ``@login_required`` so that
-    ``current_user`` is guaranteed to be authenticated.
+    Runs after the application's login gate (``app/login_gate.py``),
+    which is what guarantees ``current_user`` is authenticated here: no
+    view carries its own ``@login_required`` since plan step
+    ``bank_import:X-gi-4`` (ruling **R-BI4**).
     Companions receive 404 (not 403) per the project security
     response rule: "404 for both 'not found' and 'not yours.'"
 
@@ -98,8 +102,7 @@ def require_owner(f):
     Decorator order::
 
         @bp.route("/example")
-        @login_required      # runs first -- ensures authenticated
-        @require_owner       # runs second -- checks role
+        @require_owner       # the login gate has already run -- checks role
         def example():
             ...
     """
@@ -509,8 +512,7 @@ def fresh_login_required(max_age_minutes: int | None = None):
     Decorator order::
 
         @bp.route("/example", methods=["POST"])
-        @login_required           # outermost: must be authenticated
-        @require_owner            # then: must be the owner role
+        @require_owner            # the login gate has already run; owner role
         @fresh_login_required()   # then: must be recently re-authed
         def example():
             ...

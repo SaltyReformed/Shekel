@@ -301,6 +301,31 @@ class TestItSwallowsNothingElse:
             with pytest.raises(RecurrenceResolutionError, match="matches no"):
                 rule_occurrences(rule, calendar)
 
+    def test_an_unmodelled_unit_is_refused_before_an_empty_schedule_is_answered(
+        self, app,
+    ):
+        """The refusal is about the RULE, so no schedule state swallows it.
+
+        Until plan step R16-b-2 the empty-schedule ``None`` was answered
+        before the spec was read, so this pairing rendered as a rule that
+        never fires.  The order is pinned because the read pass's memo keys
+        an entry by the spec and must read it first; one order, not two.
+        """
+        with app.app_context():
+            empty = PayCalendar.from_paydays(
+                paydays=(), eras=eras_of((), 14), user_id=_USER_ID,
+                history_opens_on=None,
+            )
+            highest = max(
+                ref_cache.recurrence_unit_id(member)
+                for member in RecurrenceUnitEnum
+            )
+            rule = _rule(MONTHLY)
+            rule.unit_id = highest + 1000
+
+            with pytest.raises(RecurrenceResolutionError, match="matches no"):
+                resolved_recurrence(rule, empty)
+
     def test_another_owners_schedule_still_raises(self, app):
         """An anchor measured against the wrong schedule is plausibly WRONG.
 

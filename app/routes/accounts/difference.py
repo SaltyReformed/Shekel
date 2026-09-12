@@ -43,7 +43,7 @@ from datetime import date
 from decimal import Decimal
 
 from flask import render_template, request
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.exceptions import ValidationError
 from app.models.account import Account
@@ -278,7 +278,6 @@ def _anchor_difference_context(account: Account) -> dict:
 @accounts_bp.route(
     "/accounts/<int:account_id>/anchor-difference", methods=["GET"],
 )
-@login_required
 @require_owner
 def anchor_difference(account_id):
     """HTMX partial: the true-up editor's recorded-vs-ledger difference.

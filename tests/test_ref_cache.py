@@ -38,6 +38,7 @@ from app.enums import (
     PeriodPlacementEnum,
     PostingKindEnum,
     PostingSourceEnum,
+    RaiseTypeEnum,
     RecurrenceUnitEnum,
     SettlementBasisEnum,
     StatusEnum,
@@ -53,6 +54,7 @@ from app.models.ref import (
     PeriodPlacement,
     PostingKind,
     PostingSource,
+    RaiseType,
     RecurrenceUnit,
     Status,
     TransactionType,
@@ -1154,6 +1156,45 @@ class TestAcctCategoryMemberRefCache:
                     ref_cache.acct_category_member(1)
             finally:
                 ref_cache.init(db.session)
+
+
+class TestRaiseTypeMemberRefCache:
+    """The raise-type REVERSE lookup (plan step salary:S3-f-1, ruling R-SAL20).
+
+    ``raise_type_member`` inverts ``raise_type_id`` so
+    :attr:`app.models.salary_raise.SalaryRaise.raise_type_name` resolves a
+    raise's display name from the FK the row carries rather than from the
+    ``raise_type`` relationship -- which is ``None`` on a row that has never
+    been flushed, because SQLAlchemy does not lazy-load a relationship on a
+    pending instance.  The X-bl invariance control prices exactly such a
+    row, and a second adversarial review of S3-f-1 found the relationship
+    read breaking it.
+    """
+
+    def test_round_trips_every_member(self, app, db):
+        """Every member's id resolves back to that member, and only that one."""
+        with app.app_context():
+            for member in RaiseTypeEnum:
+                type_id = ref_cache.raise_type_id(member)
+                assert ref_cache.raise_type_member(type_id) is member, (
+                    f"{member.name}: id {type_id} did not round-trip"
+                )
+
+    def test_the_member_value_is_the_rows_name(self, app, db):
+        """``member.value`` IS ``ref.raise_types.name``, which is what makes the
+        cache a source of the display name at all."""
+        with app.app_context():
+            for row in db.session.query(RaiseType).all():
+                member = ref_cache.raise_type_member(row.id)
+                assert member is not None, f"ref.raise_types row {row.name!r} is not an enum member"
+                assert member.value == row.name
+
+    def test_an_unmodelled_type_id_answers_none(self, app, db):
+        """An id no member names answers ``None`` -- the caller reads the row's
+        own name for a hand-inserted type, never a 500."""
+        with app.app_context():
+            known = {ref_cache.raise_type_id(m) for m in RaiseTypeEnum}
+            assert ref_cache.raise_type_member(max(known) + 1000) is None
 
 
 class TestAmountSourceRefCache:

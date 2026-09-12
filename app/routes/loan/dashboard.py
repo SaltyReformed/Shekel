@@ -17,7 +17,7 @@ from datetime import date
 from decimal import Decimal, ROUND_DOWN
 
 from flask import abort, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app import ref_cache
 from app.enums import (
@@ -522,7 +522,6 @@ def _load_configured_loan_or_404(account_id):
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/balance-hero")
-@login_required
 @require_owner
 def balance_hero(account_id):
     """HTMX partial: the loan balance hero cell (D14 click-to-edit port).
@@ -550,7 +549,6 @@ def balance_hero(account_id):
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/anchor-form")
-@login_required
 @require_owner
 def anchor_form(account_id):
     """HTMX partial: the loan hero's dated true-up editor (D14).
@@ -580,7 +578,6 @@ def anchor_form(account_id):
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan")
-@login_required
 @require_owner
 def dashboard(account_id):
     """Loan detail page: the balance band, what-if levers, and the section cards."""

@@ -187,15 +187,19 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     for txn in projected_txns:
         if txn.transfer_id is not None:
             shadow_txns.append(txn)
-        elif txn.template is not None and txn.template.is_envelope:
+        elif txn.template_id is not None and txn.tracks_purchases:
             # Envelope ROLLOVER folds the unspent leftover into the
             # template's next-period canonical (created via
             # recurrence_engine.generate_for_template).  An ad-hoc
-            # envelope row (is_envelope set, no template) has no next
-            # canonical, so it intentionally falls through to the
-            # discrete bucket and moves whole, carrying its entries.
-            # Keep this check template-gated -- do NOT switch it to
-            # txn.tracks_purchases.
+            # envelope row (tracks purchases on its own say-so, no
+            # template) has no next canonical, so it intentionally falls
+            # through to the discrete bucket and moves whole, carrying its
+            # entries.  The template gate STAYS: a bare
+            # ``txn.tracks_purchases`` would sweep those rows into the
+            # rollover.  The envelope half reaches the one accessor rather
+            # than restating ``template.is_envelope`` beside it (plan step
+            # balance:X-bi-1, ruling R-IZ), and the gate reads the key
+            # rather than the relationship so an ad-hoc row costs no load.
             envelope_txns.append(txn)
         else:
             discrete_txns.append(txn)

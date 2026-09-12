@@ -16,19 +16,104 @@ from app.enums import TxnTypeEnum
 from app.models.amount_ownership import from_columns
 from app.models._transaction_table_args import transaction_table_args
 from app.models.mixins import (
+    CompanionVisibilityMixin,
     OptimisticLockMixin,
     SettleDatedMixin,
     SoftDeleteOverridableMixin,
     TimestampMixin,
-    TrackingVisibilityMixin,
 )
+
+
+class _NotAQueryExpression:
+    """What a :class:`_DerivedFlag` answers at CLASS level: a refusal.
+
+    Every comparison, comparator lookup, truth test and SQL coercion
+    raises, so ``filter_by(flag=True)``, ``Transaction.flag == True``,
+    ``Transaction.flag.is_(True)``, a bare ``where(Transaction.flag)`` and
+    an ORM-enabled ``insert(Transaction).values(flag=...)`` all fail to
+    BUILD rather than silently matching nothing.  ``hasattr`` still answers
+    ``True`` -- the declarative constructor asks it before
+    ``Transaction(flag=...)`` may reach the setter -- because merely
+    reaching the name is not the misuse; and a DUNDER lookup gets the
+    ordinary ``AttributeError``, so ``copy``, ``pickle`` and ``pydoc`` see
+    an object rather than a refusal.  What passes through is a STRING that
+    names the column -- ``order_by("is_envelope")``, ``text(...)`` -- which
+    is the raw-SQL boundary the column comment states.
+    """
+
+    __slots__ = ("_name",)
+
+    def __init__(self, name):
+        """Remember which flag this stands for, so the refusal can name it."""
+        self._name = name
+
+    def _refuse(self, *_args, **_kwargs):
+        """Raise the one refusal; bound below to every operator a query uses."""
+        raise TypeError(
+            f"{self._name} is a per-row derivation, not a column, so it "
+            "cannot key a query: the answer for a template-generated row is "
+            "its template's and lives on another table.  Load the rows and "
+            "ask each one."
+        )
+
+    __eq__ = _refuse
+    __ne__ = _refuse
+    __bool__ = _refuse
+    __hash__ = None
+    # SQLAlchemy's coercion asks for this before anything else, so a bare
+    # ``where(Transaction.flag)`` reaches the refusal by name rather than
+    # the generic "SQL expression element expected".
+    __clause_element__ = _refuse
+
+    def __getattr__(self, attr):
+        """Refuse ``.is_()``, ``.in_()`` and every other comparator lookup.
+
+        A dunder -- ``__deepcopy__``, ``__reduce_ex__``, ``__wrapped__`` --
+        and the slot itself get the ordinary ``AttributeError``: the first
+        so protocol probes behave, the second so an instance built by
+        ``__new__`` alone (what ``copy`` and ``pickle`` make) cannot recurse
+        through this method looking for the name it has not been given.
+        """
+        if attr == "_name" or attr.startswith("__"):
+            raise AttributeError(attr)
+        self._refuse()
+
+
+class _DerivedFlag(property):
+    """A per-row derivation whose class-level name is NOT a query expression.
+
+    A plain ``property`` reached at class level is a ``property`` object,
+    and that object compares ``False`` to everything: measured 2026-09-11,
+    ``Transaction.is_envelope == True`` was ``False`` and
+    ``query.filter_by(is_envelope=True)`` returned no rows with no error --
+    a silent wrong answer, which is worse than the wrong column it replaced.
+    This subclass answers a :class:`_NotAQueryExpression` at class level and
+    is otherwise a ``property``: ``setter`` works, a flag declared without
+    one refuses assignment, and instance reads run the derivation.
+
+    A ``hybrid_property`` was rejected: giving the derivation a SQL body
+    would be a second spelling of one rule (ruling **R-IZ**), and no query
+    keys on any of these flags or is planned to.
+    """
+
+    def __init__(self, fget=None, fset=None, fdel=None, doc=None):
+        # The same four positionals ``property`` takes, because
+        # ``property.setter`` rebuilds the descriptor as ``type(self)(...)``
+        # and this subclass has to survive that round trip.
+        super().__init__(fget, fset, fdel, doc)
+        self._qualname = fget.__qualname__
+
+    def __get__(self, obj, owner=None):
+        if obj is None:
+            return _NotAQueryExpression(self._qualname)
+        return super().__get__(obj, owner)
 
 
 class Transaction(
     OptimisticLockMixin,
     SettleDatedMixin,
     SoftDeleteOverridableMixin,
-    TrackingVisibilityMixin,
+    CompanionVisibilityMixin,
     TimestampMixin,
     db.Model,
 ):
@@ -369,6 +454,44 @@ class Transaction(
     amount_ownership = db.composite(
         from_columns, __estimated_amount, __amount_source_id,
     )
+    # WHETHER THIS ROW TAKES PURCHASE ENTRIES, on the row's OWN say-so -- and
+    # that is a fact only for an AD-HOC row (``template_id IS NULL``).  A
+    # template-generated row's answer is its DEFINITION's
+    # (``TransactionTemplate.is_envelope``): nothing writes this cell from the
+    # template and nothing may read it there, so on such a row it is DEAD.
+    # It stays because for an ad-hoc row it is CONSTITUTIVE -- an input
+    # nothing else can compute, ruling **R-IY**'s boundary -- and not a copy.
+    # Plan step ``balance:X-bi-5`` deletes the concept.
+    #
+    # **SEALED since plan step balance:X-bi-1** (ruling **R-JQ**; the seal
+    # over a pin, developer 2026-09-11), on the pattern ``__estimated_amount``
+    # set at X-au-k: the SQL name is unchanged and the column declaration
+    # identical (type, nullability, both defaults -- the autogenerate delta
+    # against ``origin/dev`` was empty; its POSITION in ``CREATE TABLE``
+    # moves, which is load-bearing nowhere here, see ``UserScopedMixin``),
+    # and the public name :attr:`is_envelope` is a PROPERTY whose read is
+    # :attr:`tracks_purchases` and whose write lands here.  So the dead cell
+    # has no public name to be read by.  ``txn.is_envelope`` on a
+    # template-generated row answers the TEMPLATE, in Python and in Jinja;
+    # ``Transaction.is_envelope`` is no column, so a query keyed on it does
+    # not build -- and neither does an ORM-enabled Core statement naming the
+    # attribute, ``insert(Transaction).values(is_envelope=...)``; a Core
+    # writer that must reach the cell says ``Transaction.__table__.c``.
+    # Keying on this cell read 4 envelopes where there are 238
+    # (``docs/design/from_scratch_architecture.md`` section 4.3, measured
+    # 2026-09-01 on a production restore) and a migration draft did exactly
+    # that.  What the seal cannot reach is SQL that names the column as a
+    # STRING -- a migration, a ``psql`` session, ``text()``, a string
+    # ``order_by`` -- which ruling **R-HJ** forbids and X-bi-5 makes
+    # unwritable.
+    #
+    # Double-underscored for the same reason its neighbours are: a guessed
+    # ``row._is_envelope`` binds a plain instance attribute that reaches no
+    # column, and the next read exposes the miss.
+    __is_envelope = db.Column(
+        "is_envelope", db.Boolean, nullable=False, default=False,
+        server_default="false",
+    )
     # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     transfer_id = db.Column(
         db.Integer,
@@ -466,12 +589,13 @@ class Transaction(
     # ``fk_transactions_reconciled_by``, in
     # :mod:`app.models._transaction_table_args`, for why a single-column one
     # cannot express the rule.
-    # is_envelope and companion_visible are provided by
-    # TrackingVisibilityMixin.  On an ad-hoc (template_id IS NULL) row
-    # they carry the row's own setting; on a template-generated row they
-    # are inert -- the resolved ``tracks_purchases`` /
-    # ``visible_to_companion`` properties below defer to the template so
-    # the template stays the single source of truth.
+    # companion_visible is provided by CompanionVisibilityMixin.  On an
+    # ad-hoc (template_id IS NULL) row it carries the row's own setting; on a
+    # template-generated row it is inert -- the resolved
+    # ``visible_to_companion`` property below defers to the template so the
+    # template stays the single source of truth.  It is the twin of the
+    # sealed ``is_envelope`` cell above and is NOT sealed, because
+    # ``companion_service`` keys SQL on it; see the mixin.
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
@@ -583,24 +707,64 @@ class Transaction(
         """True if this transaction is an expense."""
         return self.transaction_type_id == ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
-    @property
+    @_DerivedFlag
     def tracks_purchases(self):
         """True if individual purchase entries apply to this transaction.
 
-        Single source of truth for the "is this an envelope / entry-
-        capable row?" question across services, routes, and templates.
-        Resolution rule: a template-generated transaction defers to its
-        template's ``is_envelope`` flag (the template owns the setting for
-        every instance it generates); an ad-hoc transaction (no template)
-        uses its own ``is_envelope`` column.  Accesses the template
+        **The ONE accessor** for the "is this an envelope / entry-capable
+        row?" question across services, routes and templates (ruling
+        **R-JQ**, plan step ``balance:X-bi-1``): it DERIVES and is never
+        stored.  Resolution rule: a template-generated transaction defers
+        to its template's ``is_envelope`` flag (the template owns the
+        setting for every instance it generates); an ad-hoc transaction
+        (no template) uses its own sealed cell.  Accesses the template
         relationship only when ``template_id`` is set, so ad-hoc rows
         never trigger a lazy load.
+
+        A :class:`_DerivedFlag` rather than a hybrid, on purpose: no query
+        keys on this predicate and none is planned -- the settle path that
+        needs the purchase-tracked set (``X-bi-3``) answers it at a door,
+        not in a ``WHERE`` -- so a query written over the class-level name
+        refuses to build.
         """
         if self.template_id is None:
-            return self.is_envelope
+            return self.__is_envelope
         return self.template.is_envelope
 
-    @property
+    @_DerivedFlag
+    def is_envelope(self):
+        """Return :attr:`tracks_purchases`; the public name of the sealed cell.
+
+        This name exists so the ad-hoc doors can STATE the row's own setting
+        -- ``Transaction(is_envelope=True)``, a ``setattr`` over the PATCH
+        payload's field name, the form's checkbox -- without learning the
+        private column.  Its READ is the one accessor, so a reader that
+        reaches for the column name gets the derivation: on a
+        template-generated row that is the template's answer, never the
+        dead cell.  See the column comment for why (plan step
+        ``balance:X-bi-1``).
+
+        Returns:
+            Whether this row takes purchase entries.
+        """
+        return self.tracks_purchases
+
+    @is_envelope.setter
+    def is_envelope(self, value):
+        """Record the row's OWN purchase-tracking setting.
+
+        Lands on the sealed cell for any row.  On a template-generated row
+        the write is inert -- nothing reads the cell there -- and the
+        popover renders no control for it, so only a crafted PATCH reaches
+        this arm; a refusal was considered and left for ``X-bi-5``, which
+        deletes the cell (developer, 2026-09-11).
+
+        Args:
+            value: The setting, coerced by the column type.
+        """
+        self.__is_envelope = value
+
+    @_DerivedFlag
     def visible_to_companion(self):
         """True if a companion of the owner may see this transaction.
 
@@ -608,7 +772,10 @@ class Transaction(
         transaction defers to its template's ``companion_visible`` flag;
         an ad-hoc transaction uses its own ``companion_visible`` column.
         Accesses the template relationship only when ``template_id`` is
-        set.
+        set.  The same :class:`_DerivedFlag`, for the same reason: the
+        query that needs this rule in SQL (``companion_service``) keys on
+        the raw column and the template's, and this name must not offer a
+        silent third spelling.
         """
         if self.template_id is None:
             return self.companion_visible

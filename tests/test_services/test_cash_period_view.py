@@ -1117,7 +1117,7 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
         template = _make_salary_template(seed_user, profile)
         db.session.commit()
         period = seed_periods[5]
-        txn = _make_txn(seed_user, period, template=template, derived=True)
+        txn = _make_txn(seed_user, period, template=template)
         db.session.commit()
 
         view = period_view_of(

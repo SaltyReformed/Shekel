@@ -78,7 +78,7 @@ import logging
 from dataclasses import dataclass
 
 from flask import abort, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from app.exceptions import ValidationError
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
@@ -414,7 +414,6 @@ def _answering(account, tab, unacted, opened):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/statements/reconcile")
-@login_required
 @require_owner
 def statement_reconcile(account_id):
     """Render one tab of the Reconcile page.
@@ -446,7 +445,6 @@ def statement_reconcile(account_id):
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/reconcile", methods=["POST"],
 )
-@login_required
 @require_owner
 def apply_statement_reconcile(account_id):
     """Apply every card the owner OK'd, and answer with the screen.
@@ -604,7 +602,6 @@ def apply_statement_reconcile(account_id):
     "/accounts/<int:account_id>/statements/reconcile/merchants",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def state_reconcile_merchant_rules(account_id):
     """Record the standing answers the receipt's offer asked for.
@@ -672,7 +669,6 @@ def state_reconcile_merchant_rules(account_id):
     "/accounts/<int:account_id>/statements/reconcile/line/<int:line_id>/match",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def statement_reconcile_match(account_id, line_id):
     """Answer what one card's MATCH tab offers, and what its ticks come to.
@@ -768,7 +764,6 @@ def statement_reconcile_match(account_id, line_id):
     "/accounts/<int:account_id>/statements/reconcile/release",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def release_from_reconcile(account_id):
     """Undo one applied act and come back to the tab it was pressed on.
@@ -865,7 +860,6 @@ def _unskip_report(line_id: int) -> "tuple[str, str]":
     "/accounts/<int:account_id>/statements/reconcile/unskip",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def unskip_from_reconcile(account_id):
     """Undo one recorded skip and come back to the Skipped tab.
