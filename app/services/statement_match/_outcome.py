@@ -113,11 +113,11 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     receipt has fourteen things to say.**  ``skipped_count`` and
     ``already_skipped_count`` are the newest
     (ruling **bank_import:R-JG**, plan step ``bank_import:X-gj-4b``) and it is
-    here for the reason every count below it is: a skip is the one act on this
-    receipt that moves NO money, so folding it into any existing count would
-    put it under a caption that names a movement -- and leaving it out
-    altogether would render *"Nothing moved."* over a pass that emptied four
-    cards out of the inbox.  ``refunded_count`` (ruling
+    here for the reason every count below it is: a skip records a decision and
+    no figure, so folding it into any existing count would put it under a
+    caption that is false of it -- and leaving it out altogether would render
+    *"Nothing moved."* over a pass that emptied four cards out of the inbox.
+    ``refunded_count`` (ruling
     **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``) was the newest
     until then, and it is here for exactly ``deposited_count``'s reason one
     sentence down: a
