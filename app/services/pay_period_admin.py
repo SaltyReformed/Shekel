@@ -233,7 +233,7 @@ def extend_pay_periods(user_id, num_periods):
     # denies it a cadence question (finding P29 above) -- so it hands the
     # stored values straight back.
     rhythm = facts.rhythm
-    # WHERE THE LAST PAYCHECK ENDS -- ``_reject_backward_payday``'s own
+    # WHERE THE LAST PAYCHECK ENDS -- ``reject_backward_payday``'s own
     # subject, so the producer below answers a day the floor admits rather than
     # a second spelling of the floor.  Through ``final_covered_day`` and not
     # ``saved[-1].end_date``, which the destructive-doors census refuses and is

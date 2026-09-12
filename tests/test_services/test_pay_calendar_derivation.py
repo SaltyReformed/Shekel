@@ -89,7 +89,7 @@ from app.services.pay_calendar import (
 #
 # ``projected_payday`` was in this list until plan step ``C14-d``, which gave
 # it the application caller the list is drawn on:
-# ``pay_period_write._reject_backward_payday`` asks it where the last paycheck
+# ``pay_period_batch.reject_backward_payday`` asks it where the last paycheck
 # ends rather than restating the arithmetic.  It is imported publicly above,
 # and the entry is corrected rather than dropped because the sentence it used
 # to carry -- *no application caller* -- was a measurement that expired.
@@ -1058,7 +1058,7 @@ class TestTheGridIsNotTheProjection:
         equality whose two sides share one body.
 
         What is asserted now is the pair of bindings the two doors actually
-        call: ``pay_period_write._reject_backward_payday`` reaches
+        call: ``pay_period_batch.reject_backward_payday`` reaches
         ``pay_calendar.projected_payday`` and ``extend_pay_periods`` reaches
         ``pay_period_admin.nominal_payday_after``.  If ``C14-e`` displaces the
         second of those, the extend door starts recording cash dates again and
@@ -1399,7 +1399,7 @@ class TestTheGridDayAfterAHorizonIsTotal:
     construction -- the one value that cannot fail.  The defect the review
     found was exactly there: asked against the last recorded PAYDAY rather than
     against the paycheck's END, the producer answered a grid day BELOW
-    ``pay_period_write._reject_backward_payday``'s floor on 13 of the 14
+    ``pay_period_batch.reject_backward_payday``'s floor on 13 of the 14
     residues, and the extend door refused its own answer permanently, on a read
     path with no handler.
 
@@ -1443,7 +1443,7 @@ class TestTheGridDayAfterAHorizonIsTotal:
         """The seam the whole pairing rests on, pinned so a split would fire.
 
         ``extend_pay_periods`` asks against the last paycheck's END and
-        ``pay_period_write._reject_backward_payday`` bounds the batch at
+        ``pay_period_batch.reject_backward_payday`` bounds the batch at
         ``payday_after(eras, latest)``.  Those are the same value one day
         apart ONLY because :func:`derive_periods` closes the last saved period
         with that same producer -- so if a step ever moved one side and not
