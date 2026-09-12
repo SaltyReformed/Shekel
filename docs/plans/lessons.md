@@ -257,3 +257,10 @@ rationale, where a reader meets it at the moment it fires.
   had been right *for a reason it had not checked*. `bank_import:X-gi-1` MEASURED the cost by
   killing `?open=`: **8 of 10 no-script cases failed, 2 passed**, both survivors asserting absences
   over `status_code == 200` -- which proves a page rendered, not that the feature lives.
+- **A read-only fixture that SELECTs every `ref` table leaves its session idle-in-transaction
+  holding a share lock on each of them.** `pay_calendar:C17-a`'s migration replay dropped a key onto
+  `ref.pay_cadence_kinds` from a nested `app.app_context()` and waited out `lock_timeout` -- a
+  `LockNotAvailable` on a table no test was touching. The holder was `conftest`'s `ref_cache.init`,
+  whose reads had never been committed or rolled back. End a fixture's read transaction when its
+  reads are done (`tests/conftest.py`, the rollback after `ref_cache.init`); a test that reads a
+  fixture object's attribute after a commit re-opens that transaction too.
