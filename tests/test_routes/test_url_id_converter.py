@@ -77,17 +77,25 @@ class TestTheOversizedPathSegment:
     """The unauthenticated 500, and the reason this is a converter."""
 
     def test_an_oversized_digit_run_does_not_raise_out_of_routing(self, app):
-        """It answers 404 instead of raising ``ValueError`` before the view.
+        """It is refused instead of raising ``ValueError`` before the view.
 
         This is the arm that matters: the raise happened inside
         ``ctx.push()``, so it needed no session, no CSRF token and no account.
         ``app/error_handlers.py`` registers 400/403/404/429/500 and
         ``BaselineMissingError`` -- no ``ValueError`` arm -- so it surfaced as
         an unhandled 500 to an anonymous caller.
+
+        **The refusal is the login redirect, not a 404, since plan step
+        ``bank_import:X-gi-4``** (ruling **R-BI4**, developer 2026-09-11): an
+        anonymous request that matches no route is bounced by the login gate,
+        which runs after routing and so still sits downstream of the
+        ``ValueError`` this case exists to keep out.  It asserted 404 until
+        then; the arm graded is unchanged.
         """
         client = app.test_client()
         response = client.get(f"/accounts/{_oversized_digits()}/details")
-        assert response.status_code == 404
+        assert response.status_code == 302
+        assert response.headers["Location"].startswith("/login")
 
     def test_the_public_and_submodule_converter_are_one_class(self):
         """The import path this module depends on is the documented one.

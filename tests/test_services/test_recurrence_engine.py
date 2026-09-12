@@ -44,6 +44,7 @@ from app.services.pay_calendar import (
 )
 from app.services.recurrence import (
     RecurrenceResolutionError,
+    compute_due_date,
     fires_on_day_of_month,
     reauthor_rule,
     recurrence_spec,
@@ -4908,14 +4909,14 @@ class TestDueDateGeneration:
                 end_date=date(2026, 3, 26),
                 end_is_projected=False,
             )
-            result = recurrence_engine.compute_due_date(
+            result = compute_due_date(
                 rule_monthly, period,
             )
             assert result == date(2026, 3, 20)
 
             # Test with a cadence that names no day (every-period style).
             rule_every = build_rule(cadence=EVERY_PERIOD)
-            result = recurrence_engine.compute_due_date(
+            result = compute_due_date(
                 rule_every, period,
             )
             assert result == date(2026, 3, 13)
@@ -4964,7 +4965,7 @@ class TestDueDateGeneration:
             with pytest.raises(
                 RecurrenceResolutionError, match="generated row",
             ):
-                recurrence_engine.compute_due_date(weekly, period)
+                compute_due_date(weekly, period)
 
             # And what the refusal is standing in front of: the paycheck's own
             # start, which is not any date a weekly cadence from ``starts_on``

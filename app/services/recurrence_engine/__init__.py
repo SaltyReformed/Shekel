@@ -21,11 +21,15 @@ adapter too**: ``recurrence.rule_occurrences`` answers in
 ``(occurrence, period)`` pairs, generation carries the pair as far as the write
 loop, and an occurrence the schedule cannot host is REPORTED rather than
 dropped where nobody looks (plan ledger row **D7**).  A generated row's own
-DATE is still derived from its period by ``compute_due_date``, not from the
-occurrence -- that is plan ledger row **D18**, and plan step R5 owns it with the
-``due_date`` -> ``occurs_on`` split.  What survives here is the GENERATION half:
-gating, the per-period skip predicate, amount resolution, row creation, and the
-maintain / conflict state machine.
+DATE is still derived from its period by
+:func:`app.services.recurrence.compute_due_date`, not from the occurrence --
+that is plan ledger row **D18**, and plan step R5 owns it with the
+``due_date`` -> ``occurs_on`` split.  That function lived in this package's
+``_plan`` leaf until plan step R16-b-2 moved it down (ruling **R-R69**), so
+the balance seam can date an occurrence no row answers yet as the row would
+be.  What survives here is the GENERATION half: gating, the per-period skip
+predicate, amount resolution, row creation, and the maintain / conflict state
+machine.
 
 **And the schedule it is read against is the OWNER's, not the caller's**
 (plan step R4b).  Every entry point below takes a
@@ -49,8 +53,8 @@ template kind, which never reaches a resolver (plan step R2e-3 retired the
 The seam is the one the module's own sections already drew, and each leaf owns
 one question:
 
-  - ``_plan`` -- WHICH periods, and on what day: the gating + occurrence walk
-    (``resolve_generation_plan``) and ``compute_due_date``;
+  - ``_plan`` -- WHICH periods: the gating + occurrence walk
+    (``resolve_generation_plan``);
   - ``_amounts`` -- WHAT a row's definition says: :class:`DerivedRowFields`,
     the single statement of the columns a template derives, and which of ruling
     **R-FI**'s two states a generated row's amount is in.  It PRICED a paycheck
@@ -88,7 +92,6 @@ from app.services.recurrence_engine._pass import (
 from app.services.recurrence_engine._plan import (
     GenerationPlan,
     PlannedOccurrence,
-    compute_due_date,
     resolve_generation_plan,
 )
 
@@ -99,7 +102,6 @@ __all__ = [
     "PassReporting",
     "PlannedOccurrence",
     "can_generate_in_period",
-    "compute_due_date",
     "create_for_unclaimed_occurrences",
     "derived_by_occurrence",
     "generate_for_template",

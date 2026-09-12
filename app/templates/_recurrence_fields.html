@@ -355,7 +355,7 @@
    INSTALLMENT, which loan_recurrence_sync WRITES and rewrites on every
    payoff-affecting edit -- where the "Ends" row's bound is DERIVED and never
    stored (plan step R7d-f split the two).  Both rows read ONE identity
-   (loan_recurrence_sync.is_standing_loan_payment, asked once per render), so
+   (balance_at.is_standing_loan_payment, asked once per render), so
    they cannot lock on different sets; each carries its own flag so the
    template states nothing about why.
 

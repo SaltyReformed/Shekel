@@ -99,9 +99,12 @@ def _reject_payment_before_origination(
     fail loud on read (which would 500 a page for data the user was allowed to
     enter).
 
-    **The boundary is ``<=``, not ``<``.**  A payment due exactly ON the
-    origination date is subsumed by that anchor's reset -- the same strict
-    ``anchor_date < due_date`` post-anchor rule
+    **The boundary is ``<=``, not ``<``, and it is stated ONCE**
+    (:func:`~app.services.loan_loaders.precedes_origination`, since plan step
+    R16-b-2, which asks it of every occurrence the forward plan estimates so
+    the plan never prices a row this guard would refuse).  A payment due
+    exactly ON the origination date is subsumed by that anchor's reset -- the
+    same strict ``anchor_date < due_date`` post-anchor rule
     (:func:`~app.services.loan_ledger.replay_loan_events`) -- so it
     is erased identically.  Swept and measured: due 02-01, 02-28 and 03-01
     against a 03-01 origination all book $0.00 principal; 03-02 pays down
@@ -154,7 +157,7 @@ def _reject_payment_before_origination(
     installment = loan_loaders.installment_for(
         due_date, period.start_date, params.payment_day,
     )
-    if installment > params.origination_date:
+    if not loan_loaders.precedes_origination(params, installment):
         return
     raise ValidationError(
         f"Cannot pay '{to_account.name}' before it originates: this payment's "

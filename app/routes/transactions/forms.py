@@ -10,7 +10,7 @@ mutate state.
 from typing import NamedTuple
 
 from flask import render_template, request
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
@@ -41,7 +41,6 @@ from app.routes.transactions._helpers import (
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/cell", methods=["GET"])
-@login_required
 @require_owner
 def get_cell(txn_id):
     """HTMX partial: return the display-mode cell content for a transaction."""
@@ -52,7 +51,6 @@ def get_cell(txn_id):
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/quick-edit", methods=["GET"])
-@login_required
 @require_owner
 def get_quick_edit(txn_id):
     """HTMX partial: return the minimal inline amount input."""
@@ -82,8 +80,8 @@ def get_quick_edit(txn_id):
         # adversarial review found this one ungated: nothing in
         # ``app/templates`` or ``app/static/js`` links here any more
         # (``grid_edit.js`` keeps tier-1 inline editing only for the
-        # empty-cell quick-create), but the route is live under
-        # ``@login_required @require_owner``, so an owner reaching it by URL
+        # empty-cell quick-create), but the route is live behind the login
+        # gate and ``@require_owner``, so an owner reaching it by URL
         # was offered a control the PATCH door now always rejects. The census
         # in ``repays_card_spend``'s docstring said "two surfaces"; it was
         # three.
@@ -92,7 +90,6 @@ def get_quick_edit(txn_id):
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/full-edit", methods=["GET"])
-@login_required
 @require_owner
 def get_full_edit(txn_id):
     """HTMX partial: return the full edit popover form.
@@ -420,7 +417,6 @@ def _resolve_grid_cell():
 
 
 @transactions_bp.route("/transactions/new/quick", methods=["GET"])
-@login_required
 @require_owner
 def get_quick_create():
     """HTMX partial: return a quick-create input for an empty cell.
@@ -453,7 +449,6 @@ def get_quick_create():
 
 
 @transactions_bp.route("/transactions/new/full", methods=["GET"])
-@login_required
 @require_owner
 def get_full_create():
     """HTMX partial: return the full create popover form.
@@ -484,7 +479,6 @@ def get_full_create():
 
 
 @transactions_bp.route("/transactions/empty-cell", methods=["GET"])
-@login_required
 @require_owner
 def get_empty_cell():
     """HTMX partial: return the empty cell placeholder.

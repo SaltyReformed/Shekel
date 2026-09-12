@@ -123,10 +123,15 @@ def test_a_loan_with_no_recurring_payment_is_all_estimated_future_installments(
         assert payment.cash == row.payment
         assert payment.effective_date == payment.due_date
     # The escrow is the ACCRUAL's since plan step R16-a: a month impounds it, not
-    # a payment.  This loan escrows nothing, and there is exactly one charge per
-    # period the payments occupy.
+    # a payment.  This loan escrows nothing, and since plan step R16-b-2 the
+    # charge calendar is the CONTRACT's (ruling R-R71): every installment after
+    # the loan's last balance assertion -- the origination, here -- whether or
+    # not a payment lands in it, so the three MISSED months (02-01, 03-01,
+    # 04-01) are charged too, then every month the payments occupy.
     assert all(charge.escrow == Decimal("0.00") for charge in plan.charges)
-    assert [charge.on_date for charge in plan.charges] == plan_due
+    assert [charge.on_date for charge in plan.charges] == (
+        [row.payment_date for row in contractual] + extension_due
+    )
 
 
 def test_missed_installments_with_no_record_do_not_pay_the_loan_down(seed_user, db):
@@ -150,10 +155,16 @@ def test_missed_installments_with_no_record_do_not_pay_the_loan_down(seed_user, 
     assert folded[date(2026, 4, 30)] == _PRINCIPAL
     # Only the first FUTURE installment (05-01) begins to pay it down.
     assert folded[date(2026, 5, 1)] < _PRINCIPAL
-    # Concretely: interest = round(12000 * 0.06 / 12) = 60.00; principal =
-    # contractual P&I - 60.00.
+    # Concretely, and since plan step R16-b-2 the missed months ACCRUE
+    # (ruling R-R71: a skipped month owes its interest whichever side of today
+    # it is on): interest = round(12000 * 0.06 / 12) = 60.00 for each of
+    # 02-01, 03-01, 04-01 and 05-01, four months standing when the first
+    # payment lands; principal = contractual P&I - 240.00.  It was P&I - 60.00
+    # while the three missed months charged nothing (B-9's holds-flat, which
+    # this test used to pin and which the ruling repealed).
     first = plan.payments[0]
-    expected = _PRINCIPAL - (first.cash - Decimal("60.00"))
+    expected = _PRINCIPAL - (first.cash - Decimal("240.00"))
+    assert expected == Decimal("10204.85")
     assert folded[date(2026, 5, 1)] == expected
 
 
@@ -412,13 +423,19 @@ def test_two_payments_in_one_month_produce_ONE_charge_at_the_EARLIEST(
     assert charge.period.annual_rate == _RATE
     assert charge.escrow == Decimal("100.00")     # 1,200.00 a year
 
-    # And the whole plan holds one charge per occupied month, no more.
+    # And the whole plan holds one charge per month, every occupied month
+    # among them.  Not "no more": since plan step R16-b-2 the calendar is the
+    # contract's (ruling R-R71), so the three missed months before as_of are
+    # charged as well.
     occupied = {
         (payment.due_date.year, payment.due_date.month)
         for payment in plan.payments
     }
-    assert len(plan.charges) == len(occupied)
-    assert len({charge.on_date for charge in plan.charges}) == len(plan.charges)
+    charged = {
+        (charge.on_date.year, charge.on_date.month) for charge in plan.charges
+    }
+    assert occupied <= charged
+    assert len(charged) == len(plan.charges)
 
 
 def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(

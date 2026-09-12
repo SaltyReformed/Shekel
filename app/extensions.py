@@ -66,7 +66,7 @@ migrate = Migrate()
 
 # Session-based authentication
 login_manager = LoginManager()
-login_manager.login_view = "auth.login"  # Redirect target for @login_required
+login_manager.login_view = "auth.login"  # Where the login gate sends anonymous requests
 login_manager.login_message_category = "warning"
 
 # Session-fixation defence.  Flask-Login's default ("basic") flips the

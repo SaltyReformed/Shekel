@@ -17,7 +17,7 @@ import logging
 from datetime import date
 
 from flask import Response, abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -114,7 +114,6 @@ _AMOUNT_VERSION_ACTION = AmountVersionAction(
 
 
 @transfers_bp.route("/transfers")
-@login_required
 @require_owner
 def list_transfer_templates():
     """Redirect the retired /transfers list to the unified Recurring surface.
@@ -129,7 +128,6 @@ def list_transfer_templates():
 
 
 @transfers_bp.route("/transfers/new", methods=["GET"])
-@login_required
 @require_owner
 def new_transfer_template():
     """Display the transfer template creation form.
@@ -280,7 +278,6 @@ def _settle_create_references(data, start_period_id):
 
 
 @transfers_bp.route("/transfers", methods=["POST"])
-@login_required
 @require_owner
 def create_transfer_template():
     """Create a new transfer template with optional recurrence rule.
@@ -378,7 +375,6 @@ def create_transfer_template():
 
 
 @transfers_bp.route("/transfers/<int:template_id>/edit", methods=["GET"])
-@login_required
 @require_owner
 def edit_transfer_template(template_id):
     """Display the transfer template edit form."""
@@ -442,7 +438,6 @@ _TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
 
 
 @transfers_bp.route("/transfers/<int:template_id>", methods=["POST"])
-@login_required
 @require_owner
 def update_transfer_template(template_id):
     """Update a transfer template and regenerate future transfers.
@@ -600,7 +595,6 @@ def update_transfer_template(template_id):
     "/transfers/<int:template_id>/amount-versions/<int:version_id>/delete",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def delete_amount_version(template_id, version_id):
     """Withdraw one entry from a transfer template's amount history.
@@ -622,7 +616,6 @@ def delete_amount_version(template_id, version_id):
 
 
 @transfers_bp.route("/transfers/<int:template_id>/archive", methods=["POST"])
-@login_required
 @require_owner
 def archive_transfer_template(template_id):
     """Archive a transfer template (stops future generation, keeps history).
@@ -683,7 +676,6 @@ def archive_transfer_template(template_id):
 
 
 @transfers_bp.route("/transfers/<int:template_id>/unarchive", methods=["POST"])
-@login_required
 @require_owner
 def unarchive_transfer_template(template_id):
     """Unarchive a transfer template.
@@ -741,7 +733,6 @@ def unarchive_transfer_template(template_id):
 
 
 @transfers_bp.route("/transfers/<int:template_id>/hard-delete", methods=["POST"])
-@login_required
 @require_owner
 def hard_delete_transfer_template(template_id):
     """Permanently delete a transfer template if it has no payment history.

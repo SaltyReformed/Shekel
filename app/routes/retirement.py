@@ -9,7 +9,7 @@ import logging
 from datetime import date
 
 from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from marshmallow import ValidationError
 from sqlalchemy.exc import IntegrityError
 
@@ -69,7 +69,6 @@ _readiness_query_schema = RetirementReadinessQuerySchema()
 
 
 @retirement_bp.route("/retirement")
-@login_required
 @require_owner
 def dashboard():
     """The direction-D retirement readiness page.
@@ -180,7 +179,6 @@ def _pension_date_errors(eff_hire, eff_earliest, eff_planned):
 
 
 @retirement_bp.route("/retirement/pension")
-@login_required
 @require_owner
 def pension_list():
     """List pension profiles."""
@@ -203,7 +201,6 @@ def pension_list():
 
 
 @retirement_bp.route("/retirement/pension", methods=["POST"])
-@login_required
 @require_owner
 def create_pension():
     """Create a new pension profile."""
@@ -276,7 +273,6 @@ def create_pension():
 
 
 @retirement_bp.route("/retirement/pension/<int:pension_id>/edit")
-@login_required
 @require_owner
 def edit_pension(pension_id):
     """Display pension profile edit form."""
@@ -298,7 +294,6 @@ def edit_pension(pension_id):
 
 
 @retirement_bp.route("/retirement/pension/<int:pension_id>", methods=["POST"])
-@login_required
 @require_owner
 def update_pension(pension_id):
     """Update a pension profile."""
@@ -376,7 +371,6 @@ def update_pension(pension_id):
 
 
 @retirement_bp.route("/retirement/pension/<int:pension_id>/delete", methods=["POST"])
-@login_required
 @require_owner
 def delete_pension(pension_id):
     """Deactivate a pension profile."""
@@ -395,7 +389,6 @@ def delete_pension(pension_id):
 
 
 @retirement_bp.route("/retirement/readiness")
-@login_required
 @require_owner
 def readiness_fragment():
     """HTMX fragment: readiness verdict with optional what-if overrides.
@@ -472,7 +465,6 @@ def readiness_fragment():
 
 
 @retirement_bp.route("/retirement/settings", methods=["POST"])
-@login_required
 @require_owner
 def update_settings():
     """Save retirement assumptions (per-field capable; P3a).

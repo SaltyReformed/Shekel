@@ -88,7 +88,7 @@ from app.services.recurrence._frequency import (
 #: the first render rather than shipping a blank option.  ``WEEK`` is absent
 #: DELIBERATELY, and since plan step R8-a the reason is a LIVE one:
 #: :func:`~app.services.recurrence._frequency.has_row_date_coordinate` keeps the
-#: unit out of the offer set because ``recurrence_engine.compute_due_date`` has
+#: unit out of the offer set because ``recurrence.compute_due_date`` has
 #: no way to date a weekly row, so this map is never asked for it.  Plan step
 #: **R5** deletes that function; the leaf that adds the copy is the one that
 #: makes the unit authorable.

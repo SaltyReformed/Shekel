@@ -38,10 +38,8 @@ from app.services.recurrence import (
 # read door resolves at CALL time; patching this file's imported name would
 # leave the composition calling the real one.
 from app.services.recurrence import _reading
-from app.services.loan_recurrence_sync import (
-    bind_rule_to_loan,
-    is_standing_loan_payment,
-)
+from app.services.balance_at import is_standing_loan_payment
+from app.services.loan_recurrence_sync import bind_rule_to_loan
 from app.services.recurring_definition import (
     read_definition,
     resolved_definition,
@@ -131,7 +129,18 @@ def _second_transfer_into(seed_user, db_session, loan):
     first = make_loan_payment_template(db_session, seed_user, loan)
     first.name = f"App-bounded payment {loan.id}"
     db_session.flush()
-    second = make_loan_payment_template(db_session, seed_user, loan)
+    # The second is the generic form's shape -- a STATED sweep with no
+    # settings row -- and it states one dollar every PAYCHECK (the shared
+    # builder's cadence).  Since plan step R16-b-2 the forward plan SUMS every
+    # definition into the loan, so a second FULL payment here would retire
+    # the loan in half its term and move every payoff these cases pin
+    # (finding **D47** closing is the point, not a side effect); a dollar a
+    # paycheck is a real second definition whose fifty-odd dollars over the
+    # term the last installment's refund absorbs, so the loan's own stop
+    # stays where the contract puts it.
+    second = make_transfer_template(db_session, seed_user, loan, amount="1.00")
+    second.name = f"Owner-bounded sweep {loan.id}"
+    db_session.flush()
     return first, second
 
 

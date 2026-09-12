@@ -161,7 +161,7 @@ def validate_authorable_cadence(data):
     :func:`~app.services.recurrence.authorable_cadences` states now, and the
     only reading still refused is the ``WEEK`` unit -- whose occurrences are
     neither paydays nor days of the month, so
-    ``recurrence_engine.compute_due_date`` has nothing to date its rows from
+    ``recurrence.compute_due_date`` has nothing to date its rows from
     until plan step **R5** gives a generated row its own ``occurs_on``.  **The
     interval is no longer able to make a cadence unauthorable**, which is what
     the refusal's own copy had to stop saying.

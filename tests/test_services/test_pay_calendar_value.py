@@ -54,6 +54,7 @@ from app.services.pay_calendar import (
     containing_period,
     latest_started_period,
     paychecks_from,
+    span_starting_on_or_after,
 )
 from app.utils.dates import CALENDAR_DATE_MAX
 
@@ -1260,6 +1261,104 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
                 )
 
 
+class TestSpanStartingOnOrAfterProjectsPastTheHorizon:
+    """:func:`~app.services.pay_calendar.span_starting_on_or_after`, plan step **R16-b-2**.
+
+    ``period_starting_on_or_after``'s TOTAL companion, the pairing
+    ``span_containing`` already makes against ``period_containing``.  The
+    balance seam's ESTIMATED loan tier places a ``Monthly First`` occurrence on
+    "the NEXT paycheck" whether or not the schedule has reached it (ruling
+    **R-R69**), so the search has to keep answering past the horizon at the
+    owner's cadence.  Graded here and not only through that consumer, for the
+    reason the sibling class above gives.
+
+    ``BIWEEKLY`` saves paydays 01-02, 01-16, 01-30 and 02-13 (ids 10-13); the
+    last saved period covers 02-13..02-26 and the projection opens 02-27.
+    """
+
+    def test_inside_the_saved_schedule_it_is_the_saved_search(self):
+        """Where the schedule reaches, the answer is the saved period, id and all."""
+        cal = calendar()
+        found = span_starting_on_or_after(cal, date(2026, 1, 17))
+
+        assert found == cal.period_starting_on_or_after(date(2026, 1, 17))
+        assert found.period_id == 12
+        assert found.start_date == date(2026, 1, 30)
+
+    def test_a_day_after_the_last_saved_payday_opens_the_first_projection(self):
+        """Inside the LAST saved period, past its payday, the next paycheck is projected.
+
+        02-20 sits in the saved 02-13..02-26 period, so no saved period opens
+        on or after it; the answer is the first projected paycheck, which opens
+        the day after the saved horizon.
+        """
+        cal = calendar()
+        found = span_starting_on_or_after(cal, date(2026, 2, 20))
+
+        assert found.period_id is None
+        assert found.end_is_projected
+        assert found.start_date == cal.horizon() + timedelta(days=1)
+        assert found.start_date == date(2026, 2, 27)
+        assert found.period_index == 4
+
+    def test_a_day_inside_a_projected_span_steps_to_the_next_projection(self):
+        """Past the horizon and past a projected payday, the NEXT projection answers.
+
+        03-01 falls inside the projected 02-27..03-12 paycheck, so the first
+        span opening on or after it is the one after: 03-13.
+        """
+        cal = calendar()
+        found = span_starting_on_or_after(cal, date(2026, 3, 1))
+
+        assert found.period_id is None
+        assert found.start_date == date(2026, 3, 13)
+        assert found.end_date == date(2026, 3, 26)
+        assert found.period_index == 5
+
+    def test_a_projected_payday_itself_is_admitted(self):
+        """"On or after" is inclusive past the horizon exactly as it is inside it."""
+        cal = calendar()
+        found = span_starting_on_or_after(cal, date(2026, 3, 13))
+
+        assert found.start_date == date(2026, 3, 13)
+        assert found.period_index == 5
+
+    def test_it_agrees_with_the_walk_on_every_shape(self):
+        """The answer is what :func:`paychecks_from` yields first with ``start_date >= day``.
+
+        Two producers of "the next paycheck" would be ledger row **P6**'s
+        shape; this pins that the arithmetic search and the walk name the same
+        paycheck on every shape, on the horizon, one day past it, and a year
+        past it.
+        """
+        for name, paydays, cadence in SHAPES:
+            cal = calendar(paydays, cadence)
+            horizon = cal.horizon()
+            for probe in (
+                horizon, horizon + timedelta(days=1), horizon + timedelta(days=365),
+            ):
+                found = span_starting_on_or_after(cal, probe)
+                walked = next(
+                    period for period in paychecks_from(cal, probe)
+                    if period.start_date >= probe
+                )
+                assert found == walked, (name, probe, found, walked)
+
+    def test_a_day_below_the_opening_bound_is_the_first_saved_period(self):
+        """Nothing is projected BACKWARDS: the first paycheck opens on or after any earlier day."""
+        cal = calendar()
+        found = span_starting_on_or_after(cal, date(2020, 1, 1))
+
+        assert found.period_id == 10
+        assert found.start_date == date(2026, 1, 2)
+
+    def test_an_owner_with_no_payday_is_answered_none(self):
+        """An empty calendar has no payday to continue from."""
+        empty = PayCalendar.from_paydays([], rhythm_of(14), 7, history_opens_on=None)
+
+        assert span_starting_on_or_after(empty, date(2026, 1, 1)) is None
+
+
 class TestTheWindowTypeEnforcesItsOwnTwoInvariants:
     """Ledger rows **P24** and **P32**, made properties of the type (C2-c).
 
@@ -1987,7 +2086,7 @@ class TestTheContainmentRuleOnOnePeriod:
     Ruled at **R-PC31** and landed with plan step C4-a-3 for the three sites
     that open-coded ``start_date <= day <= end_date``: the purchase-date
     warning (``entry_service._sums.entry_list_view``), the recurrence engine's
-    base-month scan (``recurrence_engine._plan.compute_due_date``) and this
+    base-month scan (``recurrence.compute_due_date``) and this
     package's own ``_searches.containing_index``.
 
     **The five point cases below came from

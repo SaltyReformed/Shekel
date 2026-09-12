@@ -69,7 +69,7 @@ from tests._test_helpers import (
     transient_cadence_rule,
     validated_cadence,
 )
-from app.services import loan_recurrence_sync
+from app.services import balance_at, loan_recurrence_sync
 from tests.oracles.recurrence_baseline import (
     EVERY_N_PERIODS,
     MONTHLY,
@@ -1075,7 +1075,7 @@ class TestAnUpdateMayNotInvertTheWindow:
                 "precondition: the sync must have written an INVERTED pair, "
                 f"got starts_on={rule.starts_on} end_date={rule.end_date}"
             )
-            assert loan_recurrence_sync.is_standing_loan_payment(
+            assert balance_at.is_standing_loan_payment(
                 tpl, BalanceContext.build(seed_user["user"].id),
             ), "precondition: the app must own this definition's window"
 

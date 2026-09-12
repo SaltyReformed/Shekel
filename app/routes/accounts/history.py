@@ -20,7 +20,7 @@ arithmetic happens here or in the template.
 """
 
 from flask import render_template
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
@@ -187,7 +187,6 @@ def balance_history_context(
 @accounts_bp.route(
     "/accounts/<int:account_id>/balance-history", methods=["GET"],
 )
-@login_required
 @require_owner
 def balance_history(account_id):
     """HTMX partial: re-render the account's balance-assertion log.

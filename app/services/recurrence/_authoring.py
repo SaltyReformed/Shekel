@@ -220,7 +220,7 @@ def build_transient_rule(
     is the spec-to-row-to-spec round-trip that step removed.  What still needs
     a rule OBJECT is the frozen baseline oracle
     (``tests/oracles/recurrence_baseline``), because
-    ``recurrence_engine.compute_due_date`` takes one, plus the test helpers
+    ``recurrence.compute_due_date`` takes one, plus the test helpers
     and route-helper cases that hand a resolved rule to a producer without
     persisting it.  Plan step **R5** deletes ``compute_due_date``; this entry
     point is re-examined with the last caller rather than removed ahead of it.
