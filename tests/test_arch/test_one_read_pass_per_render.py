@@ -87,7 +87,8 @@ render at a time.
 **What this file therefore does NOT prove.** It counts read passes, not clock
 reads.  That gap was real and is now closed for these renders: until
 pay-calendar plan step C2-f2e, ``compute_pension_summary``,
-``compute_gap_net_biweekly`` and ``build_employer_salary_basis`` each called
+``compute_gap_net_biweekly`` and ``build_employer_salary_basis`` (since
+deleted at salary:S3-e-2) each called
 ``date.today()`` for themselves on the very renders below, so this file could
 be green while two cards disagreed across a New Year boundary (ledger row
 **P55**, measured at a salary path one year shorter across 2026-12-31 ->

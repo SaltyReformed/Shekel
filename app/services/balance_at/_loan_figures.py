@@ -256,7 +256,7 @@ def loan_standing_payment(
     (:func:`~app.services.balance_at._resolution.resolved_loan`), which loads
     it once per pass to price the loan's uncovered installments (plan step
     R7d-a).  Added at plan step ``recurrence:R7d-f`` for
-    :func:`app.services.loan_recurrence_sync.is_standing_loan_payment`, which
+    :func:`app.services.balance_at.is_standing_loan_payment`, which
     until then re-ran the same lookup beside a pass that already held it
     (plan ledger row **N-511**), and which cannot reach the resolution itself:
     ``_resolution`` is re-exported nowhere by design, so the identity a

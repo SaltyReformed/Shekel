@@ -8,6 +8,11 @@ independent data. Catches fixture bugs before they cascade into
 
 from decimal import Decimal
 
+import pytest
+
+from app import ref_cache
+from app.enums import AmountSourceEnum, StatusEnum
+from app.exceptions import RecurrenceWindowError
 from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
@@ -15,7 +20,15 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services import cash_ledger
+from tests._test_helpers import (
+    bare_expense_template,
+    definition_firing_twice_in_a_paycheck,
+    generate_row_of,
+    make_cadence_rule,
+    make_expense_template,
+)
 from tests.conftest import SEED_USER_BOOTSTRAP_START
+from tests.oracles.recurrence_baseline import MONTHLY
 
 
 class TestSeedSecondUser:
@@ -221,10 +234,23 @@ class TestSeedFullUserData:
         assert data["salary_profile"].scenario_id == data["scenario"].id
 
     def test_all_amounts_are_decimal(self, seed_full_user_data):
-        """All monetary values are Decimal, not float."""
+        """All monetary values are Decimal, not float.
+
+        The transaction is the ENGINE's row since plan step balance:X-cf, so
+        it stores no figure of its own and its worth is what the amount model
+        resolves from its definition's series -- which is the figure this
+        asserts the type of, rather than the raw column that is ``None`` on
+        every derived row.
+        """
         data = seed_full_user_data
         assert isinstance(data["template"].default_amount, Decimal)
-        assert isinstance(data["transaction"].estimated_amount, Decimal)
+        assert isinstance(
+            cash_ledger.resolve_transaction_amount(
+                data["transaction"],
+                cash_ledger.amount_basis(data["user"].id, data["scenario"].id),
+            ),
+            Decimal,
+        )
         assert isinstance(data["savings_goal"].target_amount, Decimal)
         assert isinstance(data["transfer_template"].default_amount, Decimal)
         assert isinstance(data["salary_profile"].annual_salary, Decimal)
@@ -285,12 +311,24 @@ class TestSeedFullSecondUserData:
     def test_distinguishable_amounts(
         self, seed_full_user_data, seed_full_second_user_data
     ):
-        """Monetary amounts differ between users for isolation test visibility."""
+        """Monetary amounts differ between users for isolation test visibility.
+
+        Each transaction is its owner's ENGINE row (plan step balance:X-cf),
+        priced by its own definition's series, so the two are compared as the
+        amount model resolves them rather than through a raw column that is
+        ``None`` on both -- which would have read as "equal" and passed nothing.
+        """
         a = seed_full_user_data
         b = seed_full_second_user_data
 
         assert a["template"].default_amount != b["template"].default_amount
-        assert a["transaction"].estimated_amount != b["transaction"].estimated_amount
+        assert cash_ledger.resolve_transaction_amount(
+            a["transaction"],
+            cash_ledger.amount_basis(a["user"].id, a["scenario"].id),
+        ) != cash_ledger.resolve_transaction_amount(
+            b["transaction"],
+            cash_ledger.amount_basis(b["user"].id, b["scenario"].id),
+        )
         assert a["savings_goal"].target_amount != b["savings_goal"].target_amount
         assert (
             cash_ledger.resolve_anchor(a["account"]).balance
@@ -350,3 +388,133 @@ class TestBothFullFixturesTogether:
         user_b_txn_names = {t.name for t in user_b_txns}
         assert data_b["transaction"].name in user_b_txn_names
         assert data_a["transaction"].name not in user_b_txn_names
+
+
+class TestGenerateRowOf:
+    """The suite's one builder for a row of a definition (plan step X-cf).
+
+    It hands back what the ENGINE wrote, so these grade that the row has the
+    engine's shape, that it is priced by its definition, and that each of the
+    builder's refusals fires on the cause its message names -- no cadence, a
+    paycheck the rule names no occurrence in, a paycheck a row already claims,
+    a cadence firing twice in one paycheck, and another owner's paycheck -- a
+    helper's refusal being code a green suite never runs otherwise.
+    """
+
+    def test_the_row_is_the_engines(self, app, db, seed_user, seed_periods):
+        """Derived, dated, answering an occurrence, Projected, not overridden.
+
+        Every column here is one the engine sets and a hand-built fixture used
+        to get wrong or leave empty: undated (the state the CHECK plan step
+        balance:X-bv-2 binds refuses), and the pre-X-au-e shape of an OWN
+        figure with ``is_override=False``.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            row = generate_row_of(template, seed_periods[1])
+            assert row.id is not None
+            assert row.template_id == template.id
+            assert row.pay_period_id == seed_periods[1].id
+            assert row.scenario_id == seed_user["scenario"].id
+            assert row.due_date is not None
+            assert row.occurs_on is not None
+            assert row.is_override is False
+            assert row.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert row.amount_ownership.figure is None
+            assert row.amount_ownership.source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+
+    def test_the_row_is_worth_what_its_definition_states(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The figure a fixture expects is the template's series' answer."""
+        with app.app_context():
+            template = make_expense_template(
+                db.session, seed_user, amount="1234.56",
+            )
+            row = generate_row_of(template, seed_periods[0])
+            assert cash_ledger.resolve_transaction_amount(
+                row,
+                cash_ledger.amount_basis(
+                    seed_user["user"].id, seed_user["scenario"].id,
+                ),
+            ) == Decimal("1234.56")
+
+    def test_a_definition_with_no_cadence_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A template that does not repeat has no row for the engine to write."""
+        with app.app_context():
+            template = bare_expense_template(db.session, seed_user)
+            with pytest.raises(ValueError, match="has no cadence"):
+                generate_row_of(template, seed_periods[0])
+
+    def test_a_second_row_in_the_same_paycheck_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The engine writes nothing where a row already claims the occurrence."""
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            generate_row_of(template, seed_periods[0])
+            with pytest.raises(ValueError, match="wrote 0 rows"):
+                generate_row_of(template, seed_periods[0])
+
+    def test_another_owners_paycheck_is_refused_before_any_write(
+        self, app, db, seed_user, seed_periods, seed_second_periods,
+    ):
+        """A period outside the owner's calendar never reaches the engine.
+
+        The refusal is the schedule's, one tier above the composite key
+        ``fk_transactions_owner_period`` that would refuse the INSERT -- so a
+        fixture cannot even ask for the cross-owner row a hand-built one used
+        to have to be refused by the database.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            with pytest.raises(RecurrenceWindowError):
+                generate_row_of(template, seed_second_periods[0])
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).count() == 0
+
+    def test_a_paycheck_the_rule_names_no_occurrence_in_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A monthly rule that starts AFTER the paycheck fires nowhere in it.
+
+        The 0-rows refusal's other cause, distinct from an already-claimed
+        paycheck: nothing was written before and nothing is written now.
+        """
+        with app.app_context():
+            template = bare_expense_template(db.session, seed_user)
+            make_cadence_rule(
+                template, MONTHLY, starts_on=seed_periods[5].start_date,
+            )
+            with pytest.raises(ValueError, match="wrote 0 rows"):
+                generate_row_of(template, seed_periods[0])
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).count() == 0
+
+    def test_a_cadence_firing_twice_in_one_paycheck_is_refused(
+        self, app, db, seed_user,
+    ):
+        """A monthly rule inside a 60-day paycheck names two occurrences.
+
+        The engine writes both -- a paycheck CAN hold two rows of one
+        definition (plan step R17) -- and the builder refuses to pick, because
+        which of the two a test means is a generation test's subject.  The two
+        rows stay flushed, as the docstring says they do.  The paycheck is
+        :func:`definition_firing_twice_in_a_paycheck`'s, pinned to a date: on
+        a today-relative calendar this case read THREE rows every summer.
+        """
+        with app.app_context():
+            template, period = definition_firing_twice_in_a_paycheck(
+                db.session, seed_user, name="Cadence Under Test",
+            )
+            with pytest.raises(ValueError, match="wrote 2 rows"):
+                generate_row_of(template, period)
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).count() == 2

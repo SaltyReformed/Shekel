@@ -25,7 +25,13 @@ import pytest
 from app.enums import StatusEnum
 from app.models.statement_line_skip import StatementLineSkip
 from app.services import statement_match
-from app.services.statement_match import Tab, reconcile_page, skip_line
+from app.services.statement_match import (
+    OpenedAsk,
+    RowKind,
+    Tab,
+    reconcile_page,
+    skip_line,
+)
 from app.services.statement_match._cards import CardKind
 from app.services.statement_match._sentence import for_skip
 from app.services.statement_match._accepted_view import (
@@ -40,7 +46,9 @@ from app.services.statement_match._create import (
 )
 from app.services.statement_match._creations import PurchaseCreation
 from app.services.statement_match._release import acts_of
+from app.services.statement_match._preview import NOTHING_TICKED
 from app.services.statement_match._scope import no_period_refusal
+from app.services.statement_match._submission import ReviewedDifference
 
 from .test_reads_lineless import _planted_lineless
 
@@ -1817,3 +1825,104 @@ class TestAnANSWEREDInflowIsPreFilledByItsRule:
 
         assert cards[0].sentence[0].text == "Choose"
         assert not any("refund" in note for note in cards[0].panel.notes)
+
+
+class TestTheOpenedPaneIsPricedFromTheAsk:
+    """Plan step ``bank_import:X-gi-2a``, finding **BI-478**, ruling **R-BI3**.
+
+    :func:`~app.services.statement_match.reconcile_page` took the line id
+    alone and priced every ``?open=`` pane from the proposal the card offers;
+    it takes an :class:`~app.services.statement_match.OpenedAsk` now, and the
+    pane is priced from what the ask says the form holds.  **The route tests
+    grade the page a browser receives; this grades the SEAM**, so a caller
+    handing the page a submission cannot have it silently priced from the
+    proposal instead.
+    """
+
+    @staticmethod
+    def _a_card_payment_and_a_payback(seed_user, db):
+        """Stage a parked `-$793.23` payment and one `-$93.23` payback.
+
+        Returns:
+            ``(line, payback)``.
+        """
+        an_envelope(seed_user)
+        line = an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        payback = a_transaction(
+            seed_user, name="Payback", amount="93.23",
+        )
+        db.session.commit()
+        return line, payback
+
+    def _opened(self, seed_user, ask):
+        """Return the Transfers tab's opened pane for *ask*."""
+        page = reconcile_page(
+            a_scope(seed_user), None, Tab.TRANSFERS, opened=ask,
+        )
+        assert page.opened is not None, "the card did not open at all"
+        return page.opened
+
+    def test_no_form_prices_the_proposal_which_for_a_parked_card_is_nothing(
+        self, app, db, seed_user,
+    ):
+        """``submitted=None`` is the GET: the card as it stands untouched."""
+        line, _ = self._a_card_payment_and_a_payback(seed_user, db)
+
+        opened = self._opened(seed_user, OpenedAsk(line_id=line.id))
+
+        assert opened.ticked == frozenset()
+        assert opened.consent is None
+        assert opened.totals.remedy == NOTHING_TICKED
+
+    def test_a_submission_prices_the_pane_from_ITS_rows(
+        self, app, db, seed_user,
+    ):
+        """The form's own tick is what the pane is priced against."""
+        line, payback = self._a_card_payment_and_a_payback(seed_user, db)
+        scope = a_scope(seed_user)
+        submitted = a_submission(
+            scope, lines=(line,), transactions=(payback,),
+        )
+
+        opened = self._opened(
+            seed_user, OpenedAsk(line_id=line.id, submitted=submitted),
+        )
+
+        assert opened.ticked == {(RowKind.TRANSACTION, payback.id)}
+        assert opened.totals.bank == Decimal("-793.23")
+        assert opened.totals.app == Decimal("-93.23")
+        assert opened.totals.difference == Decimal("-700.00")
+        assert [option.value for option in opened.totals.options] == [
+            "-700.00",
+        ], "the lone row's one act was not offered against the submitted rows"
+
+    def test_the_consent_is_carried_whole_and_never_read_by_the_preview(
+        self, app, db, seed_user,
+    ):
+        """Ruling **R-BI3**'s seam: the echo is the request's, the options
+        are the arithmetic's.
+
+        A consent to a figure the rows no longer come to is still CARRIED --
+        the template compares it against each option and picks none -- and
+        it changes nothing about which acts are offered.
+        """
+        line, payback = self._a_card_payment_and_a_payback(seed_user, db)
+        scope = a_scope(seed_user)
+        stale = a_submission(
+            scope, lines=(line,), transactions=(payback,), residual="-50.00",
+        )
+
+        opened = self._opened(
+            seed_user, OpenedAsk(line_id=line.id, submitted=stale),
+        )
+
+        assert opened.consent == ReviewedDifference(figure=Decimal("-50.00"))
+        assert [option.value for option in opened.totals.options] == [
+            "-700.00",
+        ]
+        assert all(
+            option.accepts != opened.consent for option in opened.totals.options
+        ), "an option equals a consent to a figure the rows do not come to"

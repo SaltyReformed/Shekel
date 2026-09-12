@@ -38,6 +38,29 @@ actually answer is *is this true of the tree I am grading*, which is right on
 Resolving ``origin/dev`` instead would need a remote the grader may not have
 and would answer the wrong question on a branch that has shipped a step and not
 yet ticked it -- the one case these arms exist to catch.
+
+**A merge being COMMITTED has two parents, and both are graded.**  While a
+conflicted ``git merge origin/dev`` is resolved and committed, ``HEAD`` is
+still the branch's old tip and dev's side is ``MERGE_HEAD``; the commit about
+to exist descends from both.  The pre-commit hook runs these arms in exactly
+that state, and the resolved ``steps.md`` rightly carries every tick dev made
+-- so asking ``HEAD`` alone refuses each of them as *work this tree does not
+carry*.  Measured on the first conflicted registry resync after this module
+merged (2026-09-11, `fix/rec516-undated-row-skip` taking dev at `584b30fa`):
+``balance:X-au-f-2``'s ``cb4239a2`` was an ancestor of ``MERGE_HEAD`` and not
+of ``HEAD``, and the arm refused a merge that was correct.  A CLEAN merge
+never reaches these arms locally: git commits it without running the
+``pre-commit`` hook, so nothing local grades it and CI grades it at PR time --
+a gap, not a reassurance.  **Installing git's ``pre-merge-commit`` hook type
+would NOT close it with this fix as written**: measured 2026-09-11 on git
+2.55, that hook runs on a clean merge with NO ``MERGE_HEAD`` (git writes merge
+state only when it stops) and names the merged head only as a
+``GITHEAD_<sha>`` environment variable, so :func:`graded_heads` would answer
+``("HEAD",)`` and refuse every tick dev made -- this defect reborn on the
+other hook type.  Closing the gap means teaching :func:`graded_heads` that
+signal too, which is separate work.  :func:`graded_heads` is the one place
+that decides which refs a grade is asked of, so the two arms cannot disagree
+about it.
 """
 from __future__ import annotations
 
@@ -96,9 +119,41 @@ def history_is_gradeable() -> bool:
     return _git("rev-parse", "--is-shallow-repository").stdout.strip() != "true"
 
 
+def graded_heads() -> tuple[str, ...]:
+    """Return the refs whose union is the history of the commit being graded.
+
+    Outside a merge that is ``HEAD``.  While a merge is being committed it is
+    ``HEAD`` and ``MERGE_HEAD`` together, because the commit about to exist
+    has both as parents -- see the module docstring for the resync this was
+    measured on.  ``MERGE_HEAD`` is asked of git rather than looked for on
+    disk because a worktree keeps it under ``.git/worktrees/<name>/``, and
+    ``rev-parse`` resolves it from either layout.
+
+    An OCTOPUS merge (three or more parents) is graded against its first
+    merged head only, since ``rev-parse MERGE_HEAD`` answers the first line of
+    that file.  Stated rather than handled: this history holds no such merge,
+    and the house resync is a two-parent ``git merge origin/dev``.
+    """
+    if _git("rev-parse", "-q", "--verify", "MERGE_HEAD^{commit}").returncode:
+        return ("HEAD",)
+    return ("HEAD", "MERGE_HEAD")
+
+
+def is_carried(sha: str, heads: tuple[str, ...] | None = None) -> bool:
+    """Return whether ``sha`` is reachable from any ref the grade is asked of.
+
+    ``heads`` lets an arm ask :func:`graded_heads` once and thread the answer
+    through every row, rather than re-asking git per shipped row.
+    """
+    return any(
+        not _git("merge-base", "--is-ancestor", sha, head).returncode
+        for head in (heads or graded_heads())
+    )
+
+
 def _commits() -> list[tuple[str, str]]:
-    """Return ``(sha, whole message)`` for every commit reachable from HEAD."""
-    out = _git("log", "HEAD", "--format=%H%x01%s%x02%b%x03").stdout
+    """Return ``(sha, whole message)`` for every commit reachable from :func:`graded_heads`."""
+    out = _git("log", *graded_heads(), "--format=%H%x01%s%x02%b%x03").stdout
     commits = []
     for record in out.split("\x03"):
         record = record.strip("\n")
@@ -111,7 +166,7 @@ def _commits() -> list[tuple[str, str]]:
 
 
 def shipped_commit_violations() -> list[str]:
-    """Rule 7: a SHIPPED row's hash resolves, and it is an ancestor of HEAD.
+    """Rule 7: a SHIPPED row's hash resolves, and it is an ancestor of :func:`graded_heads`.
 
     Catches a tick citing a commit that never merged -- a branch abandoned, a
     hash mistyped, or a row carried across a rebase -- which reads as finished
@@ -123,6 +178,7 @@ def shipped_commit_violations() -> list[str]:
     """
     if not history_is_gradeable():
         return []
+    heads = graded_heads()
     problems = []
     for row in registry.step_rows():
         if not row.shipped:
@@ -135,11 +191,11 @@ def shipped_commit_violations() -> list[str]:
                 f"({_RULE})",
             )
             continue
-        if _git("merge-base", "--is-ancestor", sha, "HEAD").returncode:
+        if not is_carried(sha, heads):
             problems.append(
                 f"{row.key} is SHIPPED at `{sha}`, which is not an ancestor of "
-                f"HEAD.  The step is ticked against work this tree does not "
-                f"carry ({_RULE})",
+                f"{' or '.join(heads)}.  The step is ticked against work "
+                f"this tree does not carry ({_RULE})",
             )
     return problems
 

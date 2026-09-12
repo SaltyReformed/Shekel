@@ -44,8 +44,7 @@ import sqlalchemy.exc
 
 from app import ref_cache
 from app.audit_infrastructure import AUDITED_TABLES
-from app.enums import StatementSourceEnum, StatusEnum, TxnTypeEnum
-from app.models.account import Account
+from app.enums import StatementSourceEnum
 from app.models.ref import AccountType
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.statement_match import (
@@ -53,13 +52,14 @@ from app.models.statement_match import (
     StatementMatchCreation,
     StatementMatchMember,
 )
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 from app.services import account_service
 from app.services.statement_match import matched_subjects
-from tests._test_helpers import load_migration_module
-from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import (
+    generate_row_of,
+    load_migration_module,
+    make_expense_template,
+)
 
 _MIGRATION = load_migration_module("c1e7d4b3a850_a_bank_line_is_this_row.py")
 
@@ -252,7 +252,9 @@ def _a_transaction(db, seed_user, name="Electricity"):
     **``seed_user`` creates NO transaction at all**, which is a trap this arc
     has already paid for once: a test in the previous leaf compared ``[] == []``
     and reported it as proof that nothing moved.  So these tests build their
-    own row rather than looking one up.
+    own row rather than looking one up -- the ENGINE's row of a definition
+    built for the purpose (:func:`generate_row_of`, plan step balance:X-cf),
+    not a hand-built copy of one.
 
     Args:
         db: The session fixture.
@@ -260,37 +262,15 @@ def _a_transaction(db, seed_user, name="Electricity"):
         name: The row's name, unique per template here.
 
     Returns:
-        The staged :class:`~app.models.transaction.Transaction`.  These are
+        The flushed :class:`~app.models.transaction.Transaction`.  These are
         SCHEMA tests, about the keys rather than about what the row is worth,
         so a plain projected expense is all they need.
     """
-    type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=type_id,
-        name=name,
-        default_amount=Decimal("25.00"),
-        is_envelope=False,
+    template = make_expense_template(
+        db.session, seed_user, amount="25.00",
+        name=name, category_key="Groceries",
     )
-    db.session.add(template)
-    db.session.flush()
-    txn = Transaction(
-        template_id=template.id,
-        user_id=seed_user['bootstrap_period'].user_id,
-        pay_period_id=seed_user["bootstrap_period"].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=type_id,
-        amount_ownership=AmountOwnership.own(Decimal("25.00")),
-    )
-    db.session.add(txn)
-    db.session.flush()
-    return txn
+    return generate_row_of(template, seed_user["bootstrap_period"])
 
 
 class TestASubjectBelongsToAtMostOneMatch:

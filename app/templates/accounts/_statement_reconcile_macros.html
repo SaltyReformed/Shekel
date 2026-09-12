@@ -115,8 +115,9 @@
        THEY ARE HIDDEN HERE AND VISIBLE IN THE PANE, and that is one rendering
        each rather than two of one thing: the fragment replaces this element
        whole (hx-target="this", outerHTML), so exactly one `rows-<line>` per
-       row and exactly one `residual-<line>` are in the form at every moment
-       -- these until the rows are looked at, the pane's own controls
+       row is in the form at every moment, and the `consent-<line>` in it is
+       EITHER this hidden figure OR the pane's own control (one box, or one
+       radio per act) -- these until the rows are looked at, the pane's
        afterwards.  They cannot coexist.
 
        THE ROWS MOVED IN HERE at that step and the reason is the re-price.
@@ -129,15 +130,16 @@
     <input type="hidden" name="rows-{{ card.line.line_id }}"
            value="{{ row | reviewed_token }}">
     {% endfor %}
-    <input type="hidden" name="residual-{{ card.line.line_id }}"
+    <input type="hidden" name="consent-{{ card.line.line_id }}"
            value="{{ card.panel.proposal | stated_difference }}">
-    {# NO `difference_on-<line>` HERE, and the asymmetry with the residual
-       above is the rule rather than an omission (plan step
-       bank_import:X-gj-3a). The FIGURE always travels, because R-IA requires
-       every match to state the difference it was reviewed against; WHERE that
-       difference lands is a choice, and not making one is a legal answer that
-       means R-FN's ordinary row. So a card OK'd from the summary without the
-       panel ever being opened does exactly what it did before this step. #}
+    {# THE CONSENT NAMES NO MEMBER HERE, and that is the value's meaning
+       rather than an omission (plan steps bank_import:X-gj-3a and X-gp).
+       The FIGURE always travels, because R-IA requires every match to state
+       the difference it was reviewed against; a proposal is exact or one
+       line against one row, so there is nothing to land or R-GD(a)'s
+       determinacy answers it, and `stated_difference` spells the figure
+       alone.  So a card OK'd from the summary without the panel ever being
+       opened does exactly what it did before either step. #}
     {% endif %}
     <p class="small text-body-secondary mb-0">
       <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
@@ -154,15 +156,18 @@
        same degradation the retired workbench's own panel documented: nothing
        re-prices
        as you tick, so a group whose two sides disagree is refused at the door
-       with both sums named, and a group that balances records exactly as it
-       does with scripting on. #}
+       with both sums named -- and, since plan step bank_import:X-gi-2a, comes
+       back with the rows still ticked and the difference's acts offered, so
+       the next press can consent -- while a group that balances records
+       exactly as it does with scripting on. #}
     <noscript>
       <p class="small mb-0">
         <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab=tab.value, open=card.line.line_id, _anchor='rec-card-' ~ card.line.line_id) }}">Show
         the rows this could be</a>, which reopens this card here on its MATCH
         tab with every unexplained row on the account listed. Ticking them does
         not re-price without JavaScript: tick the rows that come to the same
-        total as the bank, and OK records the match.
+        total as the bank, and OK records the match; if they do not, OK shows
+        you the difference and asks you to agree to what happens to it.
       </p>
     </noscript>
   </div>

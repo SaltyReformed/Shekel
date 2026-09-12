@@ -70,6 +70,13 @@ _TOKEN_FIELDS: int = 4
 #: ``!=``.  That is the money door silently opening, which is the class of hole
 #: plan step ``bank_import:X-f6a-1`` already shipped once.
 #:
+#: **Anchored with ``\Z`` and not ``$``** (plan step ``bank_import:X-gp``,
+#: adversarial review 2026-09-11): ``$`` matches before a TRAILING NEWLINE, so
+#: ``"0.05\n"`` passed as a figure from 2026-08-23 until then -- value-equal to
+#: ``"0.05"``, so it could not open the gate, but not the one spelling this
+#: note claims.  A row token was never reachable that way: its figure sits
+#: between two colons and its last field goes through ``parse_row_id``.
+#:
 #: Twelve integer digits and six decimal places bound it to what the producer
 #: can emit: every candidate's figure descends from ``Numeric(12, 2)`` columns
 #: (measured 2026-08-23 over all 804 candidates on a production clone -- 2
@@ -84,7 +91,7 @@ _TOKEN_FIELDS: int = 4
 #: ``test_candidates.TestEveryOFFEREDRowCanCarryItsOwnTokenBack`` round-trips
 #: the real offer set at both extremes of ``Numeric(12, 2)``.  Named by two
 #: adversarial reviews 2026-08-23.
-_FIGURE = re.compile(r"^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,6})?$")
+_FIGURE = re.compile(r"^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,6})?\Z")
 
 
 def spell_figure(value: Decimal) -> str:
@@ -101,11 +108,12 @@ def spell_figure(value: Decimal) -> str:
     ``bank_import:X-gj-1b`` put this in :mod:`._sides` and made
     :mod:`._submission` import it back.
 
-    Three callers spell a figure FOR THE WIRE and all three come through here:
-    this module's own reviewed row token, :attr:`~._preview.HandTotals
-    .consent`, and -- new at ``bank_import:X-gj-1b`` --
-    :func:`app.jinja_filters.stated_difference`, the difference a tier's
-    proposal states on the card that offers it.
+    Two tokens spell a figure FOR THE WIRE and both come through here:
+    :attr:`ReviewedRow.token`, and :attr:`ReviewedDifference.token`, which
+    since plan step ``bank_import:X-gp`` is the one writer behind every
+    consent value a surface emits -- the MATCH pane's options, the hidden
+    field an agreeing match carries, and the difference a tier's unopened
+    card states (:func:`app.jinja_filters.stated_difference`).
 
     **One other site spells a figure with ``:f`` and is deliberately NOT
     here**: :meth:`~._panel.MatchCandidates.matching` builds the text an
@@ -146,10 +154,13 @@ def spell_figure(value: Decimal) -> str:
 def parse_figure(raw: str) -> Decimal:
     """Return *raw* as a money figure, or refuse the spelling.
 
-    **The ONE strict money reader this screen's wire format has**, and it is
-    published because the screen submits money in two shapes: inside a row's
-    reviewed token, and as the difference the owner accepted for a hand-built
-    group (plan step ``bank_import:X-f6d-4``).  Reading them through two
+    **The ONE strict money reader this screen's wire format has**, read by
+    both token readers because the screen submits money in two shapes:
+    inside a row's reviewed token, and as the figure half of the difference
+    the owner accepted (plan steps ``bank_import:X-f6d-4`` and ``X-gp``).
+    *It was a package export until X-gp, when the schema field that read it
+    directly became a reader of the whole token instead.*  Reading them
+    through two
     readers is what an adversarial review measured on 2026-08-23 -- the token
     refused ``"1_0"``, ``"+0.05"`` and ``" 0.05 "`` while the schema field
     beside it on the same form took all three, and quantized a sub-cent figure
@@ -371,6 +382,151 @@ def as_reviewed(row: CandidateRow) -> ReviewedRow:
     )
 
 
+#: What separates the figure from the member it lands on in a
+#: :class:`ReviewedDifference` token.  It cannot occur inside either half: the
+#: figure is :data:`_FIGURE`'s alphabet, and a :attr:`ReviewedRow.token` is
+#: two digit runs, a figure and a :class:`~._offers.RowKind` value joined by
+#: :data:`_SEPARATOR`.  **A second character rather than a second use of the
+#: colon**, so the two halves read as two halves: ``-50.00@transaction:12:...``
+#: is a figure AT a row, where ``-50.00:transaction:12:...`` would read as a
+#: five-field row token, and :meth:`ReviewedRow.from_token` refuses those by
+#: count.
+_LANDING_SEPARATOR: str = "@"
+
+
+@dataclass(frozen=True)
+class ReviewedDifference:
+    """The difference a match was reviewed against, and WHERE it was reviewed
+    as going -- one value, because they are one decision.
+
+    Plan step ``bank_import:X-gp``, ruling **R-BI2**, superseding **R-IV**.
+
+    **The consent used to witness a PROJECTION of the act, and this is what
+    makes it witness the act.**  Until this step the MATCH pane drew TWO
+    controls for one decision: ``difference_on-<line>``, naming the member the
+    gap belongs to, and ``residual-<line>``, a box whose value was the FIGURE
+    and whose label was composed from the select at draw time.  The door
+    compared only the figure.  Worked, on the developer's own case: a bank
+    line of `-$793.23` against rows of `-$93.23` and `-$650.00`, a difference
+    of `-$50.00`.  Leave the select alone and a NEW uncategorised `-$50.00`
+    row is minted; name the `-$650.00` row and nothing is minted and that row
+    is re-priced to `-$700.00`.  Both bodies submitted ``residual=-50.00``, so
+    one consent stood for two acts with different consequences, and only a
+    DOM event -- the select sat inside the element whose change re-rendered
+    the box unticked -- kept a browser from pairing them.  **R-IV** accepted
+    that bound on the verified strength of the event; ``X-gi-2a`` renders the
+    pane on a page where nothing swaps, so the ground gave way and the
+    widening R-IV refused is the one this class is.
+
+    **The option the owner ticks IS the act.**  The pane renders one control
+    whose options are the acts, each labelled with the figures it writes, and
+    each option's value is one of these -- so the sentence the owner read and
+    the value the door reads are one rendering of one value, and a body
+    cannot pair the consent shown for *record it as a row with no category*
+    with a landing that re-prices a budget row instead.  There is no second
+    field for it to pair with.
+
+    **It carries the DIFFERENCE and not the figure the act writes**, and the
+    two are interchangeable only because every other input is pinned.  The
+    figure a member option writes is *the bank total less the OTHER members*
+    (:class:`~._landing.DifferenceLanding`); the bank total is a line's
+    identity, and every member's figure is in the row tokens the same body
+    carries, each reconciled by :func:`~._resolve._reject_moved_since_review`.
+    So a difference plus a row set determines what is written, and stating
+    the difference keeps :attr:`~._sides.MatchSides.difference` as the one
+    figure the gate compares -- for the pane's options, for the hidden field
+    an agreeing match carries, and for the figure a tier's unopened card
+    states (:func:`app.jinja_filters.stated_difference`), which names no row
+    because a match naming ONE row has nothing to choose.
+
+    **A consent cannot outlive the row set it was drawn for, and the premise
+    that makes that total is named because it is the one a later writer could
+    break.**  A figure with no row means MINT for a group and WRITE-TO-THE-ROW
+    for a lone row (:func:`~._landing._named_member`), and nothing in the
+    value says which; what keeps one body's consent from meaning the other act
+    is that adding or removing ANY row moves the difference, so the gate
+    refuses the stale figure.  That holds only because no candidate is worth
+    nothing: :func:`~._candidates.transaction_candidate` answers ``None`` at
+    zero, and ``ck_transaction_entries_positive_amount`` is ``amount <> 0``.
+    A zero-cash candidate would let a row join or leave a set under a consent
+    that still compares equal.
+
+    **A ``None`` row means what an absent attribution always meant**: for a
+    match naming one row, ruling **R-GD**'s determinacy answers the question
+    and the row is that one; for a group, nothing says which member and
+    **R-FN**'s ordinary uncategorised row is what closes the gap.  The pane's
+    *record it as a row with no category* option is spelled with a ``None``
+    row for exactly that reason -- it is the act a group performed before any
+    member could be named, and it takes no second spelling.
+
+    Attributes:
+        figure: The difference the screen showed, signed on
+            :attr:`~._sides.MatchSides.difference`'s convention.  A
+            PRECONDITION and never a payload: what the door writes is its own
+            derivation, and this is only ever compared against it.
+        on_row: The member the owner said the difference belongs to, as the
+            screen showed that row, or ``None``.  A POINTER into
+            :attr:`MatchSubmission.rows` carrying the whole reviewed value,
+            held to be one of them by :func:`~._resolve.resolve_rows`, so an
+            option rendered against a stale row is refused by the same guard
+            that refuses the row.
+    """
+
+    figure: Decimal
+    on_row: "ReviewedRow | None" = None
+
+    @property
+    def token(self) -> str:
+        """Return this decision as the single form value the pane renders.
+
+        **The wire format is stated ONCE, here, in both directions**, which is
+        :attr:`ReviewedRow.token`'s rule one grain up: this writes it and
+        :meth:`from_token` reads it, and the row half is
+        :attr:`ReviewedRow.token` itself rather than a second spelling of it.
+
+        Returns:
+            ``"<figure>"`` where no member is named, else
+            ``"<figure>@<kind>:<row_id>:<cash_amount>:<version_id>"``.
+        """
+        figure = spell_figure(self.figure)
+        if self.on_row is None:
+            return figure
+        return f"{figure}{_LANDING_SEPARATOR}{self.on_row.token}"
+
+    @classmethod
+    def from_token(cls, raw: str) -> "ReviewedDifference":
+        """Return the decision *raw* names, refusing anything it does not.
+
+        **Total over every ``str``**, for :meth:`ReviewedRow.from_token`'s
+        reason: nothing submitted reaches a ``Decimal()`` or an ``int()``
+        that could raise past this function.  Both halves go through the
+        readers that already grade them -- :func:`parse_figure` for the
+        figure, so ``"NaN"`` cannot jam the gate open, and
+        :meth:`ReviewedRow.from_token` for the row, so a lax id or revision
+        inside the landing is refused exactly as it is inside ``rows``.
+
+        Args:
+            raw: One submitted ``consent-<line>`` value.
+
+        Returns:
+            The :class:`ReviewedDifference` it names.
+
+        Raises:
+            ValueError: When *raw* is not a token this application emitted.
+                The schema field is what turns it into a 400; nothing else
+                calls this.
+        """
+        if not isinstance(raw, str):
+            raise ValueError("a reviewed difference must be submitted as text")
+        parts = raw.split(_LANDING_SEPARATOR)
+        if len(parts) > 2:
+            raise ValueError("a reviewed difference lands on at most one row")
+        figure = parse_figure(parts[0])
+        if len(parts) == 1:
+            return cls(figure=figure, on_row=None)
+        return cls(figure=figure, on_row=ReviewedRow.from_token(parts[1]))
+
+
 @dataclass(frozen=True)
 class MatchSubmission:
     """What the owner accepted: the lines, and the rows AS THEY WERE REVIEWED.
@@ -432,14 +588,22 @@ class MatchSubmission:
             radius -- ``posted_first`` cannot move, so WHETHER a purchase is
             re-dated is stable and only the day it moves TO can shift.
         rows: The app rows that explain them, each as the screen showed it.
-        accepted_difference: The DIFFERENCE the screen showed and the owner
-            agreed to, or ``None`` where they agreed to none -- which is every
-            proposal the app itself offers (plan step ``bank_import:X-f6d-4``,
-            ruling **R-FN**).
+        consent: What the owner agreed to about the DIFFERENCE -- the figure
+            the screen showed, and the member it lands on -- as one
+            :class:`ReviewedDifference`, or ``None`` where they agreed to
+            nothing (plan steps ``bank_import:X-f6d-4`` and ``X-gp``; rulings
+            **R-FN** and **R-BI2**).
+
+            **ONE value and not two fields, and that is the whole of plan step
+            X-gp.**  It was ``accepted_difference``, a ``Decimal``, beside
+            ``attributed_to``, a reviewed row, until then -- how MUCH and WHERE
+            as two facts the door read separately, so that two acts with
+            different consequences submitted one consent.
+            :class:`ReviewedDifference` carries the argument.
 
             **Named for the CONSENT rather than for the row**, because it
             gates both of the two things a difference can become: the bank's
-            figure written to the one row a match names, and
+            figure written to the member the match names, and
             :class:`~._accept.AcceptedMatch`'s ``residual`` -- the
             uncategorized row a GROUP's leftover becomes.  Calling it
             ``residual`` here made one word mean two things in one call
@@ -450,45 +614,31 @@ class MatchSubmission:
             is reconciled by
             :func:`~._resolve._reject_moved_since_review`, which compares each
             ROW against the state the screen described -- so no per-row figure
-            can drift between render and Apply.  The difference is arithmetic
-            the BROWSER performed over those rows, and no per-row guard can see
-            that arithmetic being wrong: a page that says ``-0.06`` over a door
+            can drift between render and Apply.  The difference is a
+            subtraction OVER those rows, and no per-row guard can see that
+            arithmetic being wrong: a page that says ``-0.06`` over a door
             that writes ``-1,006.00`` is finding **N-336** one tier up.
             :func:`~._variance.reject_unrecordable` is what reconciles it.
 
             Like everything else here it is a PRECONDITION and never a payload:
             the figure the door writes is its own
-            (:attr:`~._variance.MatchSides.difference`), derived inside the
-            same transaction from the rows the ids name.
-        attributed_to: The member the owner said the difference BELONGS to, as
-            the screen showed that row, or ``None`` where they named none
-            (plan step ``bank_import:X-gj-3a``).
+            (:attr:`~._sides.MatchSides.difference`), derived inside the same
+            transaction from the rows the ids name; and its row half is a
+            POINTER into :attr:`rows` held to be one of them by
+            :func:`~._resolve.resolve_rows`, compared as a whole reviewed
+            value, so a stale option is refused by the guard that refuses the
+            row.
 
-            **It is a POINTER into** :attr:`rows` **rather than a second copy
-            of a row**, and that is why it carries the whole reviewed value
-            instead of a bare ``(kind, row_id)``: a subject key would state
-            half of a row this submission already states whole, and the two
-            halves could then disagree about the figure the attribution was
-            chosen against.  Held to be one of :attr:`rows` by
-            :func:`~._resolve.resolve_rows`, so the pointer is exact --
-            equality over a frozen value, which compares the figure and the
-            revision too, so an option rendered against a stale row is refused
-            by the same guard that refuses the row.
-
-            **``None`` is what every surface but the Reconcile card's MATCH
-            pane sends, and it means what it always meant**: a match naming
-            several rows and no member has nothing to say which one the
-            difference belongs to, so it becomes **R-FN**'s ordinary accepted
-            row.  A match naming ONE row does not need it -- ruling
-            **R-GD(a)**'s determinacy answers it -- which is why the pane
-            renders the control only where there are several
-            (:class:`~._variance.DifferenceLanding`).
+            **A ``None`` row inside it is what every surface but the Reconcile
+            card's MATCH pane sends, and it means what an absent attribution
+            always meant**: a match naming ONE row is answered by ruling
+            **R-GD(a)**'s determinacy, and a group naming no member takes
+            **R-FN**'s ordinary accepted row.
     """
 
     line_ids: "frozenset[int]"
     rows: "frozenset[ReviewedRow]"
-    accepted_difference: "Decimal | None" = None
-    attributed_to: "ReviewedRow | None" = None
+    consent: "ReviewedDifference | None" = None
 
     @property
     def attributed_subject(self) -> "tuple[RowKind, int] | None":
@@ -499,11 +649,12 @@ class MatchSubmission:
         spelling of a row identity rather than two.
 
         Returns:
-            :attr:`ReviewedRow.subject` of :attr:`attributed_to`, or ``None``.
+            :attr:`ReviewedRow.subject` of the consent's row, or ``None``
+            where no consent was given or it names no member.
         """
-        if self.attributed_to is None:
+        if self.consent is None or self.consent.on_row is None:
             return None
-        return self.attributed_to.subject
+        return self.consent.on_row.subject
 
     @property
     def subjects(self) -> "dict[tuple[RowKind, int], ReviewedRow]":

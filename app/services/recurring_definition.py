@@ -63,15 +63,17 @@ closing bound the APP writes is read as the cache it is, not as the owner's
 word.**  Until plan step R7d-g deletes the stored copy, ten chokepoints write a
 loan payment's derived payoff into ``budget.recurrence_rules.end_date`` -- the
 authored bound's own column -- and the EDIT form locks the control, so for the
-definition :func:`~app.services.loan_recurrence_sync.is_standing_loan_payment`
+definition :func:`~app.services.balance_at.is_standing_loan_payment`
 names, that column is the app's to write.  Composed as authored it would be
 ANDed with the fresh derivation, and where the cache is EARLIER (plan ledger
 row **D35**'s measured shape: ``2029-01-22`` stored against ``2029-02-22``
 derived) the stale date would still bind.  So the door composes
 ``authored=NEVER_ENDS`` for that definition and the derived stop is the whole
-answer -- :func:`authored_closing` is that arm, stated once and read by the
-recurrence form's inverted-window refusal as well as by this door (plan step
-R7d-f).  A second recurring transfer into the same loan keeps whatever its
+answer -- :func:`~app.services.balance_at.authored_closing` is that arm,
+stated once and read by the recurrence form's inverted-window refusal, by
+this door (plan step R7d-f) and by the seam's forward plan (plan step
+R16-b-2, which moved the arm into the seam because the plan cannot import
+this module: ruling **R-R70**).  A second recurring transfer into the same loan keeps whatever its
 owner authored -- for as long as an older active transfer is the loan's
 payment; archive that one and the second is promoted, its column is written by
 the next chokepoint, and this door reads it as the cache from then on, which
@@ -123,73 +125,15 @@ pass its derived stop is resolved in cannot be two values that disagree.
 
 from dataclasses import replace
 
-from app.services.loan_recurrence_sync import (
-    is_standing_loan_payment,
-    loan_payment_window,
-)
-from app.services.balance_at import BalanceContext
+from app.services.loan_recurrence_sync import loan_payment_window
+from app.services.balance_at import BalanceContext, authored_closing
 from app.services.recurrence import (
-    NEVER_ENDS,
     Closing,
-    EndBound,
     RecurrenceOwner,
     ResolvedRecurrence,
     RuleReading,
     occurrence_placements,
-    resolved_recurrence,
 )
-
-
-def authored_closing(
-    template: RecurrenceOwner, authored: EndBound, ctx: BalanceContext,
-) -> EndBound:
-    """Return the closing bound the OWNER stated, as this door reads it.
-
-    **The one statement of ruling R-R56** (developer, 2026-09-04): for the
-    loan's STANDING payment -- the definition
-    :func:`~app.services.loan_recurrence_sync.is_standing_loan_payment` names
-    -- the ``end_date`` column is the chokepoints' cache of the derived payoff
-    and not the owner's word, so it is read as no authored bound at all and
-    the derived stop is the whole answer.  Every other definition's stored
-    bound is its owner's and returns unchanged.
-
-    **Two readers, and their sharing it is the point** (plan step R7d-f).
-    :func:`resolved_definition` composes it into the
-    :class:`~app.services.recurrence.Closing` every display reads, and
-    ``_recurrence_form_refusals.refuse_inverted_window`` grades the pair an
-    edit would leave stored against it.  While that refusal read the column
-    directly it carried a SKIP for the standing payment -- a loan cleared
-    before its first installment stores an inverted pair the owner has no
-    control to repair (plan step ``recurrence:R7d-h``) -- and the skip was a
-    second spelling of this arm.  Reading the arm's answer makes the skip
-    structurally unnecessary: the standing payment's authored half is
-    ``NEVER_ENDS``, which inverts against nothing.
-
-    It TAKES the column-read the caller already holds rather than reading the
-    two columns itself: the door's is the pure resolver's, the refusal's is
-    :func:`~app.services.recurrence.end_bound_from_columns`, and the resolver
-    reads the columns through that same function -- so this adds no spelling
-    of the column (``CLAUDE.md`` rule 14).
-
-    **R7d-g deletes this function with the column it reads around** (the
-    module docstring's third limit): once nothing writes the loan's payoff
-    into the authored bound's column, a stored bound is its owner's for every
-    definition and there is nothing left to read as a cache.
-
-    Args:
-        template: The definition.  See :func:`resolved_definition` for the
-            ownership contract.
-        authored: What the definition's two bound columns hold, already read
-            by the caller.
-        ctx: The read pass, for the loan's memoised resolution.
-
-    Returns:
-        :data:`~app.services.recurrence.NEVER_ENDS` for the loan's standing
-        payment, else *authored* unchanged.
-    """
-    if is_standing_loan_payment(template, ctx):
-        return NEVER_ENDS
-    return authored
 
 
 def resolved_definition(
@@ -214,7 +158,8 @@ def resolved_definition(
     the authored half is carried across from the value the pure resolver
     built rather than re-read off the rule: reading it twice would be a second
     spelling of the same column.  The one exception is ruling **R-R56** (see
-    the module docstring and :func:`authored_closing`): for the definition
+    the module docstring and :func:`~app.services.balance_at.authored_closing`):
+    for the definition
     whose closing bound the app itself writes, the stored bound is the
     chokepoints' cache of the derived payoff and is replaced by
     ``NEVER_ENDS``, so only the derived stop binds.
@@ -269,7 +214,10 @@ def resolved_definition(
     rule = getattr(template, "recurrence_rule", None)
     if rule is None:
         return None
-    resolved = resolved_recurrence(rule, ctx.calendar())
+    # The pass's memo, not a fresh resolution: the forward plan behind the
+    # derived stop below walks this same rule to sum the definition's
+    # occurrences (plan step R16-b-2), and one pass resolves one rule once.
+    resolved = ctx.resolved_recurrence_of(rule)
     if resolved is None:
         return None
     # The occurrence walk is deliberately NOT run first.  ``resolved_recurrence``
@@ -281,9 +229,10 @@ def resolved_definition(
     # this is the one resolution of the rule on the pass (``CLAUDE.md`` rule
     # 14), where a first build had the resolver derive it again on its own.
     derived = loan_payment_window(template, resolved, ctx)
-    # Ruling R-R56 (:func:`authored_closing`): the bound the APP writes is the
-    # cache, not the owner's word.  Asked unconditionally since plan step
-    # R7d-f, because the identity now costs nothing the resolver above has
+    # Ruling R-R56 (:func:`~app.services.balance_at.authored_closing`): the
+    # bound the APP writes is the cache, not the owner's word.  Asked
+    # unconditionally since plan step R7d-f, because the identity now costs
+    # nothing the resolver above has
     # not already paid -- it reads the pass's memoised loan resolution, which
     # ``loan_figures`` just filled (or filled with ``None`` for a savings
     # destination), and a transaction template answers before any lookup.
@@ -349,4 +298,4 @@ def read_definition(
     )
 
 
-__all__ = ["authored_closing", "read_definition", "resolved_definition"]
+__all__ = ["read_definition", "resolved_definition"]

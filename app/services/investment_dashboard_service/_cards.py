@@ -222,7 +222,7 @@ def _compute_employer_per_period(
     Args:
         inputs: The account's :class:`InvestmentInputs`.
         feed: The account's :class:`AccountPayrollFeed`, for the gross of the
-            paycheck its funding profile is paid on the current payday.
+            paycheck its funding profile is paid on the current period.
         current_period: The period covering the read pass's clock, or ``None``.
 
     Returns:
@@ -237,7 +237,7 @@ def _compute_employer_per_period(
     )
     return growth_engine.calculate_employer_contribution(
         inputs.employer_params, capped_contribution,
-        feed.gross_at(current_period.start_date),
+        feed.gross_at(current_period),
     )
 
 
@@ -307,7 +307,8 @@ def _compute_employer_funding(ctx: _ProjectionContext) -> dict:
     # No ``is not None`` conjunct on the type id: the column is
     # ``nullable=False``, so that arm could not fire -- the same rule this
     # commit applies when it deletes a membership guard in
-    # ``projection_inputs._employee_by_payday``.
+    # ``projection_inputs._employee_resolver`` (``_employee_by_payday`` when
+    # this was written).
     configured = (
         ctx.params is not None
         and ctx.params.employer_contribution_type_id != none_id

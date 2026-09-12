@@ -1040,15 +1040,15 @@ class TestAFeedIsTheSameWhoeverItIsLoadedBeside:
             alone = _contribution_inputs_for_account(checking, ctx)
             batched = _contribution_inputs_for_accounts([checking, roth], ctx)
 
-            # Non-vacuity: the batch really did price a feed to hand out.
-            # Stated on the priced MAP since plan step salary:S3-e-1 deleted
-            # ``models_employee``.  It is the SAME claim that property made --
-            # it was ``any(amount > 0)`` over exactly this map -- and a
-            # stronger one than the surviving ``is_payroll_linked`` would
-            # make, which is why the map and not the flag is asserted here.
+            # Non-vacuity: the batch really did hand out a feed that prices.
+            # Asked of the feed over the pass's saved periods since plan step
+            # salary:S3-e-2 (it was ``any(amount > 0)`` over a priced MAP,
+            # which S3-e-1 put here when it deleted ``models_employee``).  A
+            # stronger claim than the surviving ``is_payroll_linked`` would
+            # make, which is why the prices and not the flag are asserted.
             assert any(
-                amount > 0
-                for amount in batched[roth.id].feed.employee_by_payday.values()
+                batched[roth.id].feed.employee_at(period) > 0
+                for period in ctx.reported_periods()
             )
             # The arm: the account that cannot consume one carries none, in
             # BOTH shapes -- so the two reads are the same object's worth of
@@ -1593,6 +1593,13 @@ class TestBalanceAt:
         no longer reduces a future balance.  Pinned by the divergence -- the seam
         owes STRICTLY MORE than the contractual walk that over-credited -- so a
         regression back to the schedule walk would fire here.
+
+        Since plan step R16-b-2 (ruling R-R71) the seam also owes MORE than the
+        seed: every skipped month since the loan's latest assertion (its
+        origination, 2024-01-01) is CHARGED, and the first plan payment
+        capitalizes the shortfall (see
+        ``TestLiabilityOwedAtDates.test_forward_owed_credits_only_future_installments_not_overdue_ones``).
+        This asserted ``seam <= projection_seed`` until then.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1624,9 +1631,10 @@ class TestBalanceAt:
             assert overdue, "fixture must carry overdue unconfirmed installments"
 
             # The seam credits none of the overdue installments, so it owes MORE
-            # than the contractual walk, and still amortizes below its seed.
+            # than the contractual walk -- and, charging every one of the skipped
+            # months (R-R71), more than its seed.
             assert seam > contractual_walk
-            assert seam <= schedule.projection_seed
+            assert seam > schedule.projection_seed
 
     def test_investment_is_date_precise_and_meets_the_map_at_period_ends(
         self, app, db, seed_user, seed_periods_today,
@@ -1969,12 +1977,13 @@ class TestInvestmentContributions:
                 ),
             )
             assert with_ded == expected
-            # Non-vacuity: the feed really did price the deduction.  On the
-            # priced MAP since plan step salary:S3-e-1 deleted
-            # ``models_employee``; the property was this predicate.
+            # Non-vacuity: the feed really does price the deduction.  Asked
+            # over the pass's saved periods since plan step salary:S3-e-2 (it
+            # was ``any(amount > 0)`` over a priced MAP, put here at S3-e-1
+            # when ``models_employee`` went; the property was this predicate).
             assert any(
-                amount > 0
-                for amount in feeds_for_inv.employee_by_payday.values()
+                feeds_for_inv.employee_at(period) > 0
+                for period in after_ctx.reported_periods()
             )
 
             # Scope: a non-investment account in the same batch is untouched.
@@ -3877,16 +3886,30 @@ class TestLiabilityOwedAtDates:
     def test_amortizing_loan_amortizes_across_future_dates(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A mortgage's owed balance strictly declines across future sample dates."""
+        """A mortgage's owed balance strictly declines across future sample dates.
+
+        A mortgage originated a year ago whose $200,000 balance is asserted
+        TODAY -- the mid-life-import shape.  The assertion is what makes it
+        amortize: since plan step R16-b-2 (ruling R-R71) the plan charges every
+        contractual installment after the loan's LATEST assertion, so with only
+        its origination anchor the year of unrecorded installments would stand
+        as arrears and the balance would GROW (the shape
+        :meth:`test_forward_owed_credits_only_future_installments_not_overdue_ones`
+        pins).
+        """
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
-            acct, _params = _make_mortgage(
+            acct, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
             )
+            insert_trueup_event(
+                params, Decimal("200000.00"), anchor_date=date.today(),
+            )
+            db.session.commit()
             today = date.today()
             samples = [
                 today,
@@ -4094,16 +4117,22 @@ class TestLiabilityOwedAtDates:
         The batch shape the sole caller actually passes.  The amortizing account
         must amortize while the non-amortizing one holds flat, in the same result
         dict -- the case where the splice and the flat carry have to coexist.
+        The mortgage's $200,000 is asserted today so that it amortizes (see
+        :meth:`test_amortizing_loan_amortizes_across_future_dates`).
         """
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
-            acct, _params = _make_mortgage(
+            acct, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
             )
+            insert_trueup_event(
+                params, Decimal("200000.00"), anchor_date=date.today(),
+            )
+            db.session.commit()
             card = create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",
                 anchor_balance=Decimal("-500.00"),
@@ -4133,8 +4162,20 @@ class TestLiabilityOwedAtDates:
         (finding B-9); the band now folds the forward PLAN, which synthesizes only
         installments due AFTER today, so an overdue-unpaid one no longer shrinks a
         future point.  Pinned by the divergence from the contractual walk (the band
-        owes STRICTLY MORE, by the overdue principal the walk over-credited) and by
-        the amortization the FUTURE installments still produce.
+        owes STRICTLY MORE, by the overdue principal the walk over-credited).
+
+        **And the skipped year is CHARGED** (plan step R16-b-2, ruling R-R71,
+        finding D53): the plan charges every contractual installment after the
+        loan's latest assertion -- here its origination -- whether or not a
+        payment lands in it, so the twelve unpaid months' interest stands when
+        the first plan payment arrives, that payment clears interest before
+        principal, and the shortfall capitalizes.  The forward point therefore
+        owes MORE than today's balance, not less: on the frozen 2026-03-20
+        clock a $200,000 mortgage at 6.5% (P&I $1,264.14) reads $210,473.33 at
+        the next year's end.  Until R16-b-2 this asserted the opposite ("still
+        amortizes below today's balance"), which was B-9's "an overdue slot
+        with no record holds flat" -- a rule about what an unpaid installment
+        PAYS that had been read as a rule about what an unpaid month CHARGES.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -4172,8 +4213,10 @@ class TestLiabilityOwedAtDates:
             # The band credits NONE of the overdue installments, so its forward
             # point owes strictly more than the contractual walk that credited them.
             assert owed[acct.id][1] > contractual_walk
-            # It still amortizes the FUTURE installments below today's balance.
-            assert owed[acct.id][1] < owed[acct.id][0]
+            # And it CHARGES every one of the skipped months (R-R71), so the
+            # arrears capitalize at the first plan payment and the forward point
+            # owes more than today's balance.
+            assert owed[acct.id][1] > owed[acct.id][0]
 
     def test_today_point_ignores_overdue_rows_that_would_understate_the_debt(
         self, app, db, seed_user, seed_periods_today,

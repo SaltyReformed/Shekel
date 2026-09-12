@@ -53,20 +53,42 @@ renders, or a crafted id -- is in no list this walks, so it renders nowhere;
 :attr:`OpenedMatch.totals` carries the sentence, which is the door's own answer
 rather than a silent drop.
 
-**TWO CLAIMS ELSEWHERE REST ON A MECHANISM THIS MODULE REMOVES**, and both are
-narrower than they read (adversarial design review 2026-09-05).
-:func:`~._variance._reject_unaccepted_difference` argues that a consent ticked
-against one remedy and submitted under another is unconstructible BECAUSE the
-attribution select's change re-renders the box unticked -- and nothing swaps
-anything on the ``?open=`` render.  The body stays unconstructible on a
-narrower ground: the select needs :attr:`~._preview.HandTotals.choices`, which
-is empty unless a match names more than one row AND its sides disagree, and
-every proposal a tier offers is exact or one-to-one.  **``bank_import:X-gn``
-re-arms it** -- a match naming a second bank line is exactly that shape -- so
-that step owes the guard a re-reading.  The same docstring says a one-row NEAR
-MISS can no longer be corrected with scripting off; this pane gives that back,
-minus the watching-it-re-price, which is why its copy says the two sides are
-compared at the press.
+**A CLAIM ELSEWHERE USED TO REST ON A MECHANISM THIS MODULE REMOVES, and plan
+step ``bank_import:X-gp`` made it structural instead** (ruling **R-BI2**,
+superseding **R-IV**).  Until then
+:func:`~._variance._reject_unaccepted_difference` argued that a consent ticked
+against one remedy and submitted under another was unconstructible BECAUSE the
+attribution select's change re-rendered the box unticked -- and nothing swaps
+anything on the ``?open=`` render, so this pane held it only on the narrower
+ground that no proposal a tier offers is a group with a difference, which
+``bank_import:X-gn`` would have re-armed.  The consent is ONE value now, the
+figure and the member together (:class:`~._submission.ReviewedDifference`), so
+there is no second field for any render to pair differently and X-gn owes the
+guard nothing.  **What scripting off cannot do is consent to a set the render
+never priced, and the PRESS is what prices it** (plan step
+``bank_import:X-gi-2a``, finding **BI-478**).  The ``?open=`` render prices
+the proposal's rows and draws the one act for them, so a tier's near miss IS
+corrected from this page; a group the owner builds by hand here is priced only
+when Apply is pressed, and the door refuses a difference nothing has consented
+to.  Until X-gi-2a that refusal re-drew the pane from the PROPOSAL -- the
+page's builder handed it the line id and nothing else -- so every tick the
+owner had made was gone and, on a card no tier proposed, the pane came back at
+`$0.00`.  It is drawn from the SUBMITTED form now (:class:`OpenedAsk`), so the
+refusal comes back with the rows ticked, both totals, and the acts the
+difference can become; the second press carries the consent.  That is what
+this pane's copy says.
+
+**THE RE-DRAWN FORM ECHOES WHAT WAS SUBMITTED, FOR EVERY CONTROL WHOSE VALUE
+IS STILL ON OFFER** (ruling **bank_import:R-BI3**, developer 2026-09-11).  A
+submitted row renders ticked where the pass still offers it, and a submitted
+consent renders picked where an option's WHOLE value -- the figure and the
+member's reviewed row token -- equals it (:attr:`OpenedMatch.consent`).  That
+is not the pre-selection ruling **R-IU** forbids: the app picks nothing, it
+echoes the owner's own tick, and the value it echoes is one the server
+spelled.  A row tick that moves the difference leaves no option carrying the
+old value, so the pick clears exactly when the act it consented to is no
+longer the act on offer -- and survives a search keystroke, which changes no
+act at all.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in, a
 frozen dataclass out, no Flask import.  It READS and never writes --
@@ -77,7 +99,7 @@ refusals without the writes.
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ._panel import MatchCandidates
@@ -89,6 +111,7 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from ._preview import HandTotals
     from ._reads import CardSubject, ReviewSet
     from ._scope import ReviewScope
+    from ._submission import ReviewedDifference
 
 
 class MatchReach(enum.Enum):
@@ -126,8 +149,15 @@ class OpenedMatch:
             Every list this module can choose is a subsequence of
             :attr:`~._panel.MatchCandidates.every` in that one order, so the
             union with the ticked rows has one order and not two.
-        ticked: The ``(kind, row_id)`` of every row the request named, which
-            is what renders a box checked.
+        submitted: What the request said about this card, as the door would
+            be given it (:class:`~._submission.MatchSubmission`) -- the rows
+            it named and the difference it consented to.  **Carried whole,
+            and the two echoes are read off it** (:attr:`ticked`,
+            :attr:`consent`): the pane re-draws every control the way the
+            request submitted it, where the value is still on offer, and one
+            value carrying both halves is what keeps a row echo and a consent
+            echo from being drawn from two different bodies.  *It carried
+            ``ticked`` alone until plan step ``bank_import:X-gi-2a``.*
         query: What the owner typed into the search, or ``""``.  Echoed so the
             box survives its own re-render.
         re_fetches: Whether this pane will ask the server again.  **ONE field
@@ -155,10 +185,50 @@ class OpenedMatch:
     line: "BankLine"
     proposal: "MatchProposal | None"
     rows: "tuple[CandidateRow, ...]"
-    ticked: "frozenset[tuple[RowKind, int]]"
+    submitted: MatchSubmission
     query: str
     re_fetches: bool
     totals: "HandTotals | None"
+
+    @property
+    def ticked(self) -> "frozenset[tuple[RowKind, int]]":
+        """Return the ``(kind, row_id)`` of every row the request named.
+
+        What renders a row's box checked.  Read off :attr:`submitted` so the
+        rows drawn ticked and the rows the pane was priced against are one
+        set by construction -- and off
+        :attr:`~._submission.MatchSubmission.subjects`, the one producer of
+        *which rows a submission names*, rather than a second walk over the
+        rows (adversarial review 2026-09-11).
+
+        Returns:
+            The subjects, as :attr:`~._submission.ReviewedRow.subject` spells
+            them.
+        """
+        return frozenset(self.submitted.subjects)
+
+    @property
+    def consent(self) -> "ReviewedDifference | None":
+        """Return what the request said it consented to, or ``None``.
+
+        What renders a consent option PICKED (plan step
+        ``bank_import:X-gi-2a``, ruling **R-BI3**): the template draws
+        checked the one option whose whole value equals this, and nowhere
+        else.  **Read off** :attr:`submitted` **and never off**
+        :attr:`totals`, because the preview reads no consent at all (plan
+        step ``bank_import:X-gp``): it offers every act the difference can
+        become, and which of them the owner has already ticked is a fact
+        about the REQUEST, not about the arithmetic.  A consent naming a
+        member the rows no longer hold, or a figure the rows no longer come
+        to, equals no option and so picks none -- the same answer
+        :func:`~._preview.preview_hand_build` gives by ignoring it, reached
+        without a second reader of the value.
+
+        Returns:
+            The :class:`~._submission.ReviewedDifference`, or ``None`` where
+            the request stated none.
+        """
+        return self.submitted.consent
 
 
 def proposed_submission(subject: "CardSubject") -> MatchSubmission:
@@ -177,11 +247,10 @@ def proposed_submission(subject: "CardSubject") -> MatchSubmission:
         The :class:`~._submission.MatchSubmission`, naming this line and the
         proposal's rows -- or the line alone for a card no tier paired.
 
-        Its ``accepted_difference`` is ``None`` because nothing has been
-        consented to on a fresh render, and
-        :func:`~._preview.preview_hand_build` ignores the field in any case:
-        it computes the figure the owner is about to be shown, so reading one
-        back would be the screen agreeing with itself.
+        Its ``consent`` is ``None`` because nothing has been consented to on
+        a fresh render, and :func:`~._preview.preview_hand_build` ignores the
+        field in any case: it computes the figure the owner is about to be
+        shown, so reading one back would be the screen agreeing with itself.
     """
     proposal = subject.proposal
     return MatchSubmission(
@@ -190,9 +259,48 @@ def proposed_submission(subject: "CardSubject") -> MatchSubmission:
             () if proposal is None
             else (as_reviewed(row) for row in proposal.rows)
         ),
-        accepted_difference=None,
-        attributed_to=None,
+        consent=None,
     )
+
+
+@dataclass(frozen=True)
+class OpenedAsk:
+    """Which card the Reconcile PAGE opens, and what the request's form holds
+    for it.
+
+    Plan step ``bank_import:X-gi-2a``, finding **BI-478**.  **The page's half
+    of** :class:`MatchAsk`: the route can say which line was asked for and
+    what the body submitted for it, and nothing else -- the subject is
+    resolved from the pass the page itself derives, and the reach is fixed at
+    :attr:`MatchReach.EVERY_ROW` because that render has no search
+    (**R-BI1**).  Until this step :func:`~._reconcile.reconcile_page` took
+    the line id alone and priced the pane from
+    :func:`proposed_submission` on every render, including the one that
+    answers a refused Apply, which is how a refusal came to discard every
+    tick the owner had made.
+
+    Attributes:
+        line_id: The bank line whose MATCH pane renders in the document
+            (:func:`~app.routes.accounts._reconcile_query.asked_to_open`).
+        submitted: What the request's form holds for that card, as the door
+            would be given it (:class:`~._submission.MatchSubmission`) -- read
+            through the same reader and the same schema the live fragment's
+            body is -- or ``None`` where the request carries no form holding
+            this card at all: the page's GET, and the receipt's own rule form,
+            which posts no card.  ``None`` prices the pane against
+            :func:`proposed_submission`, the value twin of the hidden fields
+            an unopened card renders.  **An empty submission is not
+            ``None``**: a body whose every box for this card is unticked
+            submits no ``rows-<line>`` field, and that is the owner's answer
+            -- nothing ticked -- rather than an absence to fall back from.
+            **The route decides which it is, because only the route knows
+            what its form carries**; a reader inferring "no form" from the
+            absence of a field would read an owner who unticked everything as
+            an owner who never touched the card.
+    """
+
+    line_id: int
+    submitted: "MatchSubmission | None" = None
 
 
 @dataclass(frozen=True)
@@ -228,59 +336,6 @@ class MatchAsk:
     reach: MatchReach
 
 
-def _still_ticked(submission: MatchSubmission) -> MatchSubmission:
-    """Return *submission* with an attribution the owner has just unticked gone.
-
-    Plan step ``bank_import:X-gj-3a``, second pass.  **This is a TRANSIENT
-    BROWSER STATE and not a body the door will ever be asked to honour**, so
-    it is normalised here rather than refused.
-
-    The sequence is ordinary.  The owner names a member for the difference,
-    then unticks that member.  The change bubbles to ``.rec-match-picks`` and
-    fires the live fragment -- and the select, which has not been re-rendered
-    yet, posts its now-stale value alongside a ``rows-<line>`` list that no
-    longer holds it.  :func:`~._resolve.resolve_rows` refuses exactly that
-    shape, correctly and by design, so without this the panel would answer
-    *"This match says its difference belongs to a row it does not include.
-    Reload the page and try again"* -- a sentence written for a crafted body,
-    shown for a legal click, on the one screen whose whole job is to say what
-    the press would do.
-
-    **The swap that follows drops the option**, so the next body carries no
-    attribution and the state is self-correcting; what this removes is the one
-    render in between.
-
-    **It is NOT in the schema reader, and that is the whole of its placement**
-    (:func:`~app.schemas.validation.statement_reconcile
-    .reconcile_match_payload`): that reader is shared with APPLY, where
-    dropping a submitted attribution would silently change which of two money
-    acts the press performs.  It ran in the ROUTE until plan step
-    ``bank_import:X-gi-1`` gave the pane a second surface, and is here now so
-    that the pane's producer owns it rather than one of its callers.
-
-    **Only the FRAGMENT can make it fire**, and saying so is the correction:
-    the page builds its submission through :func:`proposed_submission`, which
-    sets ``attributed_to=None`` unconditionally, so on that path this returns
-    at its first guard every time.  A first draft justified the move as
-    "a normalisation one of two callers has to remember is one the other can
-    forget", which describes a state that cannot be constructed today.  What
-    the placement actually buys is that a LATER caller passing a real
-    submission inherits it (adversarial review 2026-09-05).
-
-    Args:
-        submission: What the render's body said.
-
-    Returns:
-        It unchanged, or without its ``attributed_to`` where that row is not
-        among the rows the same body ticked.
-    """
-    if submission.attributed_to is None:
-        return submission
-    if submission.attributed_to in submission.rows:
-        return submission
-    return replace(submission, attributed_to=None)
-
-
 def opened_match(
     scope: "ReviewScope", review: "ReviewSet", ask: MatchAsk,
 ) -> OpenedMatch:
@@ -300,12 +355,13 @@ def opened_match(
         The :class:`OpenedMatch`.
     """
     candidates = MatchCandidates.of(scope, review)
-    # **The stale attribution goes before anything is priced**, so a legal
-    # untick is not answered with a refusal written for a crafted body.
-    submitted = _still_ticked(ask.submitted)
-    ticked = frozenset(
-        (row.kind, row.row_id) for row in submitted.rows
-    )
+    # *A ``_still_ticked`` normalisation stood here until plan step
+    # ``bank_import:X-gp``*, dropping a consent whose member the owner had just
+    # unticked before the preview priced the body.  The preview reads no
+    # consent at all now -- it offers every act rather than the one a member
+    # named -- and drops the field itself, so the fence is gone rather than
+    # kept.
+    submitted = ask.submitted
     if ask.query.strip():
         offered = candidates.matching(ask.query)
     elif ask.reach is MatchReach.EVERY_ROW:
@@ -318,13 +374,20 @@ def opened_match(
         proposal=ask.subject.proposal,
         # **The offer UNION the owner's own picks**, walked over ``every`` so
         # one order serves both halves: ``for_line`` and ``matching`` are each
-        # a subsequence of it, so nothing is reordered by being widened.
+        # a subsequence of it, so nothing is reordered by being widened.  The
+        # picks are asked of the submission's own ``subjects``, the one
+        # producer of which rows it names.
         rows=tuple(
             row for row in candidates.every
             if (row.kind, row.row_id) in shown
-            or (row.kind, row.row_id) in ticked
+            or (row.kind, row.row_id) in submitted.subjects
         ),
-        ticked=ticked,
+        # **What the request said, carried whole and not read.**  The preview
+        # below ignores its consent and offers every act; the template draws
+        # PICKED the one option whose whole value equals it, so a search
+        # keystroke keeps a pick and a row tick that moves the difference
+        # clears it (plan step ``bank_import:X-gi-2a``, ruling **R-BI3**).
+        submitted=submitted,
         query=ask.query,
         # **THE REACH READ FOR WHAT IT IMPLIES**, and not a second fact: a
         # render that may be NARROWED by a later request is one that HAS later
@@ -362,7 +425,11 @@ def refused_match(subject: "CardSubject") -> OpenedMatch:
         line=subject.line,
         proposal=subject.proposal,
         rows=(),
-        ticked=frozenset(),
+        # **Nothing named and nothing consented to**, because the body that
+        # named them was refused whole: the pane draws no box checked.
+        submitted=MatchSubmission(
+            line_ids=frozenset({subject.line.line_id}), rows=frozenset(),
+        ),
         query="",
         re_fetches=True,
         totals=None,

@@ -263,10 +263,13 @@ class RecurrenceConflict(ShekelError):
                      deleted the row, and ``transaction_entries`` CASCADE, so
                      the purchases went with it), or the template's ACCOUNT
                      moved, which drags every purchase onto the new account and
-                     invalidates the statement link that cleared it.  **Unlike
-                     the other two, this list names rows the pass did not touch
-                     at all**, so abandoning the prompt is always the safe
-                     outcome.
+                     invalidates the statement link that cleared it.  A THIRD
+                     shape joined at finding **REC-516**: the row answers no
+                     occurrence at all (``occurs_on`` is NULL), so no rule ever
+                     named it, none dropped it, and the definition has moved
+                     past a row it cannot place.  **Unlike the other two, this
+                     list names rows the pass did not touch at all**, so
+                     abandoning the prompt is always the safe outcome.
     """
 
     def __init__(self, overridden=None, deleted=None, retained=None):

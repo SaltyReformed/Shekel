@@ -572,6 +572,38 @@ Found while X-f3b measured the ledger. Its two leaves are below.
 - [x] **R10-b** `ea776528` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
+- [ ] **R19 -- an UNDATED row is retained, never deleted** (finding **REC-516**, ruling **R-R63**).
+      The DECOMPOSED parent, split at the developer's 2026-09-08 ruling into the guard and the root
+      fix. `classify_maintain_work` read *this row answers no occurrence* as
+      *the rule dropped this occurrence* and routed a mutable, record-free undated row to
+      `work.retire` -- a HARD DELETE at `_maintain` and, worse, at `transfer_recurrence`, where
+      `delete_transfer(soft=False)` takes the parent AND BOTH SHADOWS.
+      **The delete was invisible to every count**: the create arm answered the freed occurrence in
+      the same pass, so the table was the same size afterwards
+      (`deleted_count: 1, created_count: 1`, every conflict count zero). Reachable because the only
+      thing that ever filled `occurs_on` on an existing row, `scripts/stamp_occurrences.py`, was
+      retired at `balance:X-bz`. Measured 2026-09-08: production reachable at 0 (its 6 undated
+      transactions are immutable and its 54 undated transfers are 3 immutable and 51 soft-deleted,
+      any restore of which arms one), the dev database at **598**.
+
+- [x] **R19-a** `2f6bab81` -- the guard: an undated row goes to `retained_ids`, so the pass leaves
+      it exactly as found and TELLS the owner. Retained rather than skipped silently because the
+      definition has moved past a row it cannot place: a template repriced `$100.00 -> $250.00`
+      leaves such a row at `$100.00` for good while suppressing the correctly-priced row its
+      paycheck would receive. Both controls were shown to FAIL against the pre-fix branch.
+
+- [ ] **R19-b -- `occurs_on` becomes NOT NULL**, which is what makes `R19-a`'s branch unreachable
+      rather than merely quiet. A template-linked non-override row always records the occurrence it
+      answers; `carry_forward_service` already achieves this by flagging its rows `is_override`, and
+      the one-time transfer branch (`routes/transfers/_instances._materialize_one_time_transfer`)
+      does not -- so it owes a rule for what occurrence a one-time transfer answers, its own date
+      being the obvious candidate. It deletes THREE fences: the NULL arm of `rows_claiming`'s claim
+      query, `R19-a`'s branch with the forward guard beside it, and
+      `idx_transfers_template_scenario_undated`. **Its backfill belongs in the migration** -- a
+      hand-run script is what left this reachable -- and **R-R46** is the obstacle to state and
+      answer: no migration here may import app code, because `build_test_template.py` replays the
+      chain from zero. Expect it to DECOMPOSE.
+
 - [ ] **R11 -- the LEAD placement: fund an occurrence from an EARLIER paycheck.**
 
 **Opened at plan step R8-a, out of what closing ledger row D20 left behind.** D20 said the placement
@@ -664,21 +696,25 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
 - [x] **R-F12** `4f134bf4` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R13 -- a DAY-OF-MONTH pay schedule** (ruling **R-R28**).
+- [ ] **R13 -- a DAY-OF-MONTH pay schedule** (rulings **R-R28**, **pay_calendar:R-PC68**). ONE
+      commit with `pay_calendar:C17-d`, whose specification (`implementation_plan_pay_calendar.md`,
+      section 4) is this step's; it ticks with that leaf and shares its rank.
 
-`budget.pay_schedule` holds one fact, `cadence_days`, and every payday is a fixed-length walk from
-the anchor. Semi-monthly pay is not: it is the 1st and the 15th (or the 15th and the last day), and
-`round(365.2425 / 15) = 24` gives an owner the right COUNT with paydays that drift through the
+Semi-monthly pay is the 1st and the 15th (or the 15th and the last day), and a fixed-length walk is
+not: `round(365.2425 / 15) = 24` gives an owner the right COUNT with paydays that drift through the
 month -- Jan 1, Jan 16, Jan 31, Feb 15. **Monthly already carries the identical limitation** (a
 30-day walk is not "the 1st"), and pay-calendar finding **F-4** records that `pay_periods` stores
 NOMINAL paydays generally, so this is one shape rather than a semi-monthly special case.
 
-The step gives the schedule a cadence KIND -- fixed-days, or one/two days of the month -- and
-branches THREE producers on it: `pay_period_write.record_paydays` (which spaces a batch),
-`pay_calendar._derive.derive_periods` (whose last period's end is cadence-projected), and
-`PayCadence.periods_per_year` (which must answer 24 without dividing). It is ranked last in this arc
-deliberately: it edits the pay-calendar package's core, which `pay_calendar:C2`'s remaining leaves
-are still moving, and nothing in either arc depends on it.
+Since `pay_calendar:C17-a` (`6caf56bc`) the schedule is a SEQUENCE OF ERAS and every era already
+carries a `kind_id` into `ref.pay_cadence_kinds`, holding its one member `fixed_days`. What this
+step adds is the `monthly` and `semi_monthly` members and the branch on the era's kind in the ONE
+arithmetic body `pay_calendar:C14-d` made of the grid -- `_grid.nominal_payday` and
+`cadence_steps_to` -- plus `PayCadence.periods_per_year` answering 24 and 12 without dividing. The
+batch writer and the derivation are not branched separately: both reach the grid. Re-derived cost of
+not having it (R-PC68): a semi-monthly owner on a 15-day walk is modelled `24.35` paychecks a year
+against a true 24. It was ranked last in this arc until 2026-09-11 because it edits the pay-calendar
+package's core; that package is now where it is filed.
 
 *`R14`, `R15` and `R18` -- the earnings-lines chain -- moved to the `salary` arc on 2026-09-03
 (**R-SAL1**, ruled with **R-SAL2** and **R-SAL3**); their specifications are

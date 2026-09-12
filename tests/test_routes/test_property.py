@@ -1069,8 +1069,16 @@ class TestPropertyEquityChartProducer:
         The empty-plan case, and it is not a degenerate: every contractual
         installment AND the ESTIMATED tail's post-contractual extension are in
         the past, so the plan synthesizes nothing.  The loan is not retired (it
-        owes $50,000) and has no derived payoff, so it takes the never-clears
-        branch -- which must fall back to today rather than index an empty plan.
+        owes $50,000, asserted TODAY) and has no derived payoff, so it takes the
+        never-clears branch -- which must fall back to today rather than index
+        an empty plan.
+
+        The $50,000 is asserted today rather than on the helper's default
+        (the day after origination) since plan step R16-b-2 (ruling R-R71): a
+        loan's forward plan charges every contractual installment after its
+        LATEST assertion, so a balance asserted in 2005 and never paid since
+        would carry 255 months of standing interest -- a delinquent balloon,
+        which is not what "still owing $50,000" means here.
         """
         freeze_today(monkeypatch, date(2026, 4, 20))
         today = date(2026, 4, 20)
@@ -1087,7 +1095,9 @@ class TestPropertyEquityChartProducer:
             )
             loan.collateral_account_id = prop.id
             db.session.commit()
-            insert_trueup_event(load_loan_params(loan.id), Decimal("50000.00"))
+            insert_trueup_event(
+                load_loan_params(loan.id), Decimal("50000.00"), anchor_date=today,
+            )
             db.session.commit()
 
             ctx = BalanceContext.build(prop.user_id, as_of=today)
@@ -1097,8 +1107,10 @@ class TestPropertyEquityChartProducer:
                 "or this does not exercise the empty-plan fallback"
             )
             assert empty.charges == [], (
-                "and a plan with no payments charges nothing -- a period the "
-                "plan does not pay in has no accrual (plan step R16-a)"
+                "and nothing is charged either: the plan charges every "
+                "contractual installment AFTER the loan's latest assertion "
+                "(ruling R-R71), and every installment of this term, its "
+                "extension included, precedes today's assertion"
             )
             figures = balance_at.loan_figures(loan, ctx)
             assert figures.payoff_date is None

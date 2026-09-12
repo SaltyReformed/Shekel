@@ -19,7 +19,7 @@ produces payloads :class:`~.statements.StatementBatchSchema` and
 :class:`~.statements.StatementMatchSchema` load, so the Reconcile page is
 graded by the SAME set of rules the review queue and the hand-build workbench
 were, and reaches the same applier.  A second schema would be free to grade
-``residual`` less strictly than the one beside it, which is what that field's
+``consent`` less strictly than the one beside it, which is what that field's
 own docstring records having cost once.  *Those two pages went at plan step
 ``bank_import:X-gi-2``, which left their FORM READERS -- ``batch_payload`` and
 ``hand_match_payload`` -- with no caller in ``app/`` (finding
@@ -73,24 +73,30 @@ _VERB_PREFIX = "verb-"
 #: and one token cannot be desynchronised from itself.
 _ROWS_PREFIX = "rows-"
 
-#: What a card's MATCH tab carries the accepted difference in, keyed by its
-#: BANK LINE.  The SERVER's own figure (:attr:`~app.services.statement_match
-#: .HandTotals.consent`), which the door re-derives and refuses if the two
-#: disagree.
-_RESIDUAL_PREFIX = "residual-"
-
-#: What a card's MATCH tab names the member that CARRIES that difference in,
-#: keyed by its BANK LINE (plan step ``bank_import:X-gj-3a``).  Its value is
-#: one of the very ``rows-<line>`` tokens the same body sends, and the empty
-#: string is the select's first option -- *a new row with no category* --
-#: which is the shape every group had before this step.
+#: What a card's MATCH tab carries the owner's CONSENT in, keyed by its BANK
+#: LINE: the difference the match was reviewed against AND the member it
+#: lands on, as one :class:`~app.services.statement_match.ReviewedDifference`
+#: token the server itself spelled, which the door re-derives and refuses if
+#: the figure disagrees.
 #:
-#: **Sent as an EMPTY string rather than omitted when nothing is chosen**,
-#: because a ``<select>`` always submits: the reader below is what turns that
-#: empty value back into an absence, exactly as it does for an untouched
-#: consent box, so the schema's ``load_default`` stays the one statement of
-#: what *nothing was said* means.
-_DIFFERENCE_ON_PREFIX = "difference_on-"
+#: **ONE field since plan step ``bank_import:X-gp``** (ruling **R-BI2**).  It
+#: was ``residual-<line>``, the figure, beside ``difference_on-<line>``, the
+#: member, and the door compared only the figure -- so the consent shown for
+#: one act could be submitted beside a member that performed another.  The
+#: pane's control now has one option per act, each valued with both halves,
+#: and this is the name every one of them submits under.  **Neither old name
+#: is read**, and that is fail-closed on purpose: a page drawn before this
+#: step still posts ``residual-<line>``, and a reader that honoured it would
+#: mint a row where the owner had named a member.  Ignored, the stale body
+#: states no consent and the door refuses it with the remedies named.
+#:
+#: **Sent as nothing, never as an empty string, when nothing is chosen**: the
+#: control is a set of radios or one box, and a browser submits a checkbox or
+#: radio only when it is ticked.  The reader below still turns an empty value
+#: into an absence, so a body carrying one is untouched rather than malformed
+#: and the schema's ``load_default`` stays the one statement of what *nothing
+#: was said* means.
+_CONSENT_PREFIX = "consent-"
 
 
 def _reconcile_creation(form, key: str, destination: str) -> dict:
@@ -127,22 +133,18 @@ def reconcile_match_payload(form, key: str) -> dict:
         key: The bank line's id, as submitted.
 
     Returns:
-        The item, carrying ``"residual"`` only where the consent box did and
-        ``"difference_on"`` only where the attribution select named a member.
-        **Omitted rather than sent as ``None``**, so the schema's own
-        ``load_default`` is the one statement of what absence means -- and an
-        EMPTY consent, or an unchosen member, is untouched rather than
-        malformed: a body carrying an empty control must not 400 the act over
-        a field nobody filled in.
+        The item, carrying ``"consent"`` only where the consent control
+        submitted a value.  **Omitted rather than sent as ``None``**, so the
+        schema's own ``load_default`` is the one statement of what absence
+        means -- and an EMPTY consent is untouched rather than malformed: a
+        body carrying an empty control must not 400 the act over a field
+        nobody filled in.
 
     """
     item = {"line_ids": [key], "rows": form.getlist(f"{_ROWS_PREFIX}{key}")}
-    residual = form.get(f"{_RESIDUAL_PREFIX}{key}")
-    if residual:
-        item["residual"] = residual
-    attributed = form.get(f"{_DIFFERENCE_ON_PREFIX}{key}")
-    if attributed:
-        item["difference_on"] = attributed
+    consent = form.get(f"{_CONSENT_PREFIX}{key}")
+    if consent:
+        item["consent"] = consent
     return item
 
 
@@ -153,7 +155,7 @@ def reconcile_payload(form) -> "tuple[dict, tuple[str, ...]]":
     one door**, which is what the retired ``hand_match_payload`` was for the
     workbench: the Reconcile page and the review queue applied the same acts
     through :func:`~app.services.statement_match.apply_reviewed`, and a second
-    SCHEMA would be free to grade ``residual`` less strictly than the one
+    SCHEMA would be free to grade ``consent`` less strictly than the one
     beside it.  Since plan step ``bank_import:X-gi-2`` this is the only reader
     of the three a request reaches, and since ``X-gi-3`` the only one there
     is.

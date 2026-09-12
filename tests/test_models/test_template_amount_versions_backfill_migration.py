@@ -41,13 +41,14 @@ from app.extensions import db as _db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.ref import TransactionType
 from app.models.scenario import Scenario
-from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from tests._test_helpers import (
     create_savings_account,
     create_transfer,
+    generate_row_of,
     load_migration_module,
+    make_every_period_rule,
     make_salary_profile,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -75,9 +76,14 @@ def _versions(template, column="transaction_template_id"):
     ), {"t": template.id}).fetchall()
     return [(row.effective_date, row.amount) for row in rows]
 
-
 def _template(seed_user, name="Geico", amount="165.30"):
-    """Create a plain recurring-expense template (no series yet)."""
+    """Create a plain recurring-expense template (no series yet).
+
+    It carries the every-paycheck cadence the engine needs to write its rows
+    (:func:`_row`) and NO price series: the series is what the backfill under
+    test must find EMPTY and then build, so the shared priced builders are
+    the wrong fixture here.
+    """
     expense = _db.session.query(TransactionType).filter_by(name="Expense").one()
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -89,31 +95,33 @@ def _template(seed_user, name="Geico", amount="165.30"):
     )
     _db.session.add(template)
     _db.session.flush()
+    make_every_period_rule(_db.session, template)
     return template
 
 
-def _row(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    seed_user, template, period, amount, due_date, *,
+def _row(  # pylint: disable=too-many-arguments
+    template, period, amount, due_date, *,
     status=StatusEnum.PROJECTED, is_override=False, is_deleted=False,
     scenario=None,
 ):
-    """Create one generated transaction for *template* with a stated shape."""
-    txn = Transaction(
-        account_id=template.account_id,
-        template_id=template.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=(seed_user["scenario"] if scenario is None else scenario).id,
-        status_id=ref_cache.status_id(status),
-        name=template.name,
-        category_id=template.category_id,
-        transaction_type_id=template.transaction_type_id,
-        amount_ownership=AmountOwnership.own(Decimal(amount)),
-        is_override=is_override,
-        is_deleted=is_deleted,
-        due_date=due_date,
-    )
-    _db.session.add(txn)
+    """Create one generated transaction for *template* with a stated shape.
+
+    The row is the ENGINE's (:func:`generate_row_of`, plan step balance:X-cf),
+    and the shape this migration MINED is then laid back onto it: the row
+    holds its own copy of the price (the pre-X-au-e stored figure the backfill
+    reads), the due date the case names, and the status, flags and scenario
+    that decide whether it is evidence.  The engine writes into the baseline;
+    a what-if row is moved after the fact, which is the one axis that case is
+    about.
+    """
+    txn = generate_row_of(template, period)
+    txn.amount_ownership = AmountOwnership.own(Decimal(amount))
+    txn.due_date = due_date
+    txn.status_id = ref_cache.status_id(status)
+    txn.is_override = is_override
+    txn.is_deleted = is_deleted
+    if scenario is not None:
+        txn.scenario_id = scenario.id
     _db.session.flush()
     return txn
 
@@ -176,7 +184,7 @@ class TestMinedHistory:
                 ("165.30", date(2026, 10, 1), StatusEnum.PROJECTED),
             ]
             for (amount, due, status), period in zip(prices, seed_periods):
-                _row(seed_user, template, period, amount, due, status=status)
+                _row(template, period, amount, due, status=status)
 
             _run_backfill()
 
@@ -197,13 +205,13 @@ class TestMinedHistory:
         """
         with app.app_context():
             template = _template(seed_user, name="Electricity", amount="300.00")
-            _row(seed_user, template, seed_periods[0], "300.00",
+            _row(template, seed_periods[0], "300.00",
                  date(2026, 4, 14), status=StatusEnum.DONE)
-            _row(seed_user, template, seed_periods[1], "222.22",
+            _row(template, seed_periods[1], "222.22",
                  date(2026, 5, 14), status=StatusEnum.DONE, is_override=True)
-            _row(seed_user, template, seed_periods[2], "370.00",
+            _row(template, seed_periods[2], "370.00",
                  date(2026, 6, 14), status=StatusEnum.DONE, is_override=True)
-            _row(seed_user, template, seed_periods[3], "300.00",
+            _row(template, seed_periods[3], "300.00",
                  date(2026, 7, 14))
 
             _run_backfill()
@@ -222,9 +230,9 @@ class TestMinedHistory:
         """
         with app.app_context():
             template = _template(seed_user, amount="165.30")
-            _row(seed_user, template, seed_periods[0], "999.99",
+            _row(template, seed_periods[0], "999.99",
                  date(2026, 4, 1), is_deleted=True)
-            _row(seed_user, template, seed_periods[1], "165.30",
+            _row(template, seed_periods[1], "165.30",
                  date(2026, 5, 1))
 
             _run_backfill()
@@ -244,8 +252,8 @@ class TestMinedHistory:
         """
         with app.app_context():
             template = _template(seed_user, amount="165.30")
-            _row(seed_user, template, seed_periods[0], "111.11", None)
-            _row(seed_user, template, seed_periods[1], "165.30",
+            _row(template, seed_periods[0], "111.11", None)
+            _row(template, seed_periods[1], "165.30",
                  date(2026, 5, 1))
 
             _run_backfill()
@@ -270,9 +278,9 @@ class TestMinedHistory:
             db.session.flush()
 
             template = _template(seed_user, amount="165.30")
-            _row(seed_user, template, seed_periods[0], "500.00",
+            _row(template, seed_periods[0], "500.00",
                  date(2026, 4, 1), scenario=what_if)
-            _row(seed_user, template, seed_periods[1], "165.30",
+            _row(template, seed_periods[1], "165.30",
                  date(2026, 5, 1))
 
             _run_backfill()
@@ -303,9 +311,9 @@ class TestEligibility:
             profile.template_id = template.id
             profile.is_active = True
             db.session.flush()
-            _row(seed_user, template, seed_periods[0], "2473.38",
+            _row(template, seed_periods[0], "2473.38",
                  date(2026, 4, 1), status=StatusEnum.RECEIVED)
-            _row(seed_user, template, seed_periods[1], "2562.67",
+            _row(template, seed_periods[1], "2562.67",
                  date(2026, 5, 1))
 
             _run_backfill()
@@ -387,7 +395,7 @@ class TestScalarTail:
         with app.app_context():
             template = _template(seed_user, name="Rogue Equipment", amount="2000.00")
             _stamp(template, "transaction_templates", created=date(2026, 7, 23))
-            _row(seed_user, template, seed_periods[0], "2000.00",
+            _row(template, seed_periods[0], "2000.00",
                  date(2026, 7, 30), is_override=True)
 
             _run_backfill()
@@ -407,7 +415,7 @@ class TestScalarTail:
         """
         with app.app_context():
             template = _template(seed_user, amount="180.00")
-            _row(seed_user, template, seed_periods[0], "165.30",
+            _row(template, seed_periods[0], "165.30",
                  date(2026, 4, 1), status=StatusEnum.DONE)
             _stamp(template, "transaction_templates", updated=date(2026, 6, 15))
 
@@ -436,7 +444,7 @@ class TestScalarTail:
                 (date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 1)),
                 seed_periods,
             ):
-                _row(seed_user, template, period, amount, due,
+                _row(template, period, amount, due,
                      status=StatusEnum.DONE)
             _stamp(template, "transaction_templates", updated=date(2026, 2, 15))
 
@@ -456,7 +464,7 @@ class TestScalarTail:
         """
         with app.app_context():
             template = _template(seed_user, name="Muddle", amount="180.00")
-            _row(seed_user, template, seed_periods[0], "165.30",
+            _row(template, seed_periods[0], "165.30",
                  date(2027, 4, 1), status=StatusEnum.DONE)
             _stamp(template, "transaction_templates", updated=date(2026, 6, 15))
 
@@ -481,9 +489,9 @@ class TestContradictoryEvidence:
         """
         with app.app_context():
             template = _template(seed_user, name="Collision", amount="150.00")
-            _row(seed_user, template, seed_periods[0], "100.00",
+            _row(template, seed_periods[0], "100.00",
                  date(2026, 1, 1))
-            _row(seed_user, template, seed_periods[1], "150.00",
+            _row(template, seed_periods[1], "150.00",
                  date(2026, 1, 1))
 
             with pytest.raises(RuntimeError, match="two different amounts"):
@@ -501,9 +509,9 @@ class TestContradictoryEvidence:
         """
         with app.app_context():
             template = _template(seed_user, name="Twice", amount="100.00")
-            _row(seed_user, template, seed_periods[0], "100.00",
+            _row(template, seed_periods[0], "100.00",
                  date(2026, 1, 1))
-            _row(seed_user, template, seed_periods[1], "100.00",
+            _row(template, seed_periods[1], "100.00",
                  date(2026, 1, 1))
 
             _run_backfill()
@@ -624,7 +632,7 @@ class TestIdempotency:
         """
         with app.app_context():
             template = _template(seed_user, amount="180.00")
-            _row(seed_user, template, seed_periods[0], "165.30",
+            _row(template, seed_periods[0], "165.30",
                  date(2026, 4, 1), status=StatusEnum.DONE)
             _stamp(template, "transaction_templates", updated=date(2026, 6, 15))
 

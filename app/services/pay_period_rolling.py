@@ -108,11 +108,15 @@ def top_up_rolling_window(user_id, as_of=None):
     schedule = pay_schedule_service.get_schedule(user_id)
     if schedule is None or not schedule.rolling_enabled:
         return []
+    # An owner holding the row and no ERA has stated no rhythm (plan step
+    # pay_calendar:C17-a), so there is nothing to continue; the same answer
+    # a row-less owner gets, one tier down.
+    facts = pay_schedule_service.ScheduleFacts.of(schedule)
+    if facts is None:
+        return []
 
     target = schedule.rolling_target_periods
-    if _future_period_count(
-        user_id, pay_schedule_service.ScheduleFacts.of(schedule), as_of,
-    ) >= target:
+    if _future_period_count(user_id, facts, as_of) >= target:
         return []
 
     # A deficit exists: serialize concurrent top-ups, then re-count under
@@ -120,16 +124,25 @@ def top_up_rolling_window(user_id, as_of=None):
     # and creates nothing.
     user_write_lock.lock_user_writes(user_id)
     # The schedule is RE-READ under the lock for the same reason the count is
-    # re-taken: it was loaded before the lock, the only writer of
-    # ``cadence_days`` takes this lock, and the count derives the LAST
-    # period's end from that cadence -- so a stale one moves a period in or
-    # out of the answer.  ``reread_schedule`` rather than ``get_schedule``
+    # re-taken: it was loaded before the lock, the only writer of an era
+    # takes this lock, and the count derives the LAST period's end from the
+    # latest era's cadence -- so a stale one moves a period in or out of the
+    # answer.  ``reread_schedule`` rather than ``get_schedule``
     # because the identity map would otherwise return the original values;
     # that door's docstring carries the argument.  The target is read from
     # the same re-read row, so the deficit is one snapshot rather than two.
     schedule = pay_schedule_service.reread_schedule(user_id)
+    facts = pay_schedule_service.ScheduleFacts.of(schedule)
+    if facts is None:
+        # The same owner the pre-lock read answered [] for -- a row and no
+        # era, which the migration leaves for a schedule whose paydays were
+        # all removed before it ran.  Re-asked under the lock because the
+        # value is optional wherever the row is re-read, not because a writer
+        # can produce the state between the two reads: the one door that
+        # retires every era (reset) mints its own in the same transaction.
+        return []
     deficit = schedule.rolling_target_periods - _future_period_count(
-        user_id, pay_schedule_service.ScheduleFacts.of(schedule), as_of,
+        user_id, facts, as_of,
     )
     if deficit <= 0:
         return []

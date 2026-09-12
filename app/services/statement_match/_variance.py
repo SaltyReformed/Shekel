@@ -74,7 +74,7 @@ is finding **N-336**'s lesson applied to the one number no other guard checks:
 screen described, so a per-row figure cannot drift -- but the SUM is a second
 derivation over those rows, and no per-row guard can see it being wrong.  So
 the submission carries what was shown
-(:attr:`~._submission.MatchSubmission.accepted_difference`) and
+(:attr:`~._submission.MatchSubmission.consent`) and
 :func:`reject_unrecordable` refuses the act when this module's own arithmetic
 disagrees.
 
@@ -395,47 +395,52 @@ def _reject_unaccepted_difference(
     scripting off, where the panel never re-renders and so can state no figure
     -- a real capability, removed to gate a write that does not happen.
 
-    **WHAT THIS CONSENT BINDS IS THE FIGURE AND NOT THE REMEDY, and the
-    developer ruled that bound KNOWN AND ACCEPTED on 2026-09-01** (ruling
-    **R-IV**, plan step ``bank_import:X-gj-3a``; found by adversarial code
-    review).  **The ruling is a ROW and not only this paragraph**: a docstring
-    is where the next author of THIS gate meets a decision, and not where a
-    reviewer auditing consent handling looks.  Since that
-    step a submission carries two things -- the difference agreed to, and the
-    member it lands on -- and this gate compares only the first against
-    :attr:`MatchSides.difference`.  So a body CAN pair the consent rendered
-    under *record the difference as a row with no category* with a
-    ``difference_on`` that re-prices a budget row instead: two acts the
-    :class:`~._preview.HandTotals` docstring itself calls *different acts with
-    different consequences*, under one agreement.
+    **THE CONSENT BINDS THE FIGURE AND THE REMEDY TOGETHER, because they
+    arrive as ONE value** (plan step ``bank_import:X-gp``, ruling **R-BI2**,
+    which SUPERSEDES **R-IV**).  From plan step ``bank_import:X-gj-3a`` until
+    then a submission carried two fields -- ``residual-<line>``, the figure,
+    and ``difference_on-<line>``, the member it lands on -- and this gate
+    compared only the first, so the consent rendered under *record the
+    difference as a row with no category* could be paired with an attribution
+    that re-priced a budget row instead: two acts with different
+    consequences under one agreement.  R-IV ruled that bound known and
+    accepted on the VERIFIED ground that the select sat inside the element
+    whose change re-rendered the box unticked -- a DOM event holding a money
+    consent together -- and ``X-gi-2a`` renders the pane on a page where
+    nothing swaps, which is the premise falsified.  What the developer refused
+    in every interim wording was hiding that, so the widening R-IV rejected
+    is what shipped: the pane draws ONE control whose options ARE the acts,
+    each labelled with the figures it writes, and each option's value is a
+    :class:`~._submission.ReviewedDifference` carrying the figure AND the
+    member.  The landing this gate's caller derives is read off that value's
+    row half (:class:`~._landing.DifferenceLanding`), and *accepted* here is
+    its figure half -- two halves of one thing the owner ticked, so there is
+    no second field for a body to pair differently.  Comparing the row half
+    against the derived landing would be comparing a value with itself; what
+    IS compared about it is that it names one of the submitted rows, as a
+    whole reviewed value, in :func:`~._resolve.resolve_rows`.
 
-    **A browser cannot produce it, and that was verified rather than
-    assumed**: the attribution select sits inside ``.rec-match-picks``, whose
-    change swaps ``closest .rec-match`` with ``outerHTML``, and the consent box
-    is inside that element -- so it always re-renders UNTICKED.  *Not on the
-    ``?open=`` pane, where nothing swaps; :mod:`._opened` states the narrower
-    ground that holds it there and `X-gn` must re-read.*  The only party who
-    can craft such a body is the account's own owner, on their own rows.  **Rejected: widening the
-    consent value to carry the remedy beside the figure.**  That is R-IA's rule
-    one field wider and it is not wrong -- it was refused because it changes
-    the wire format of a field two surfaces submit and one strict reader
-    grades, to close a path whose only traveller is the person consenting.
-    **What this DID remove, stated because the paragraph above would otherwise
-    read as though nothing was lost**: a one-line one-row NEAR MISS can no
-    longer be corrected with scripting off.  That is the ruling working rather
-    than a casualty of it -- with no script the panel never states the figure,
-    so the owner cannot have seen what would be written to their row -- but it
-    is a capability the exemption was silently providing, and the two surfaces
-    that used to promise it in their JavaScript-off wording no longer do.
+    **What scripting off can and cannot consent to is unchanged by this
+    step.**  A tier's proposal states its figure on the card that offers it
+    (``stated_difference``) and the ``?open=`` pane prices the proposal's rows
+    on its first render and draws the one act for them, so a near miss is
+    corrected with no script at all.  A set the owner builds BY HAND on that
+    pane is priced only at the press: nothing re-renders to state its
+    difference, so the owner cannot have seen what would be written, and a
+    difference is refused here while an exact set is recorded -- the ruling
+    of 2026-08-30 working, not a casualty of this step.  **The refusal is
+    what states it** since plan step ``bank_import:X-gi-2a``: the page
+    re-draws the pane from the submitted form, rows ticked and the acts
+    offered, so the next press can carry the consent this gate compares.
 
     Args:
         sides: What the two halves come to.
         rows: How many app rows the match names, for the sentence.
-        accepted: The difference the submission states it was reviewed
-            against, or ``None`` where it states none.  **A PRECONDITION and
-            never a payload**: what the door writes is
-            :attr:`MatchSides.difference`, derived here from the rows the ids
-            name, and this is only ever compared against it.
+        accepted: The figure the submission states it was reviewed against,
+            or ``None`` where it states none.  **A PRECONDITION and never a
+            payload**: what the door writes is :attr:`MatchSides.difference`,
+            derived here from the rows the ids name, and this is only ever
+            compared against it.
 
     Raises:
         ValidationError: Naming both sums and the difference.
@@ -455,10 +460,11 @@ def _reject_unaccepted_difference(
             # this sentence enumerates them because ruling **R-FZ(a)** makes a
             # refusal the service's own words: a screen that offers a control
             # the refusal does not mention teaches the owner that the app has
-            # fewer answers than it has.
-            "correct the one you know is wrong, say which of them the "
-            "difference belongs to, or tick the box to record it as a row "
-            "with no category that you can categorise later"
+            # fewer answers than it has.  Since ``X-gp`` two of the three are
+            # options of ONE control, and the sentence says so.
+            "correct the one you know is wrong, or choose what to do with "
+            "the difference: write it to the row it belongs to, or record it "
+            "as a row with no category that you can categorise later"
             if rows != 1
             else "tick the box to write your bank's figure to it"
         )
@@ -549,6 +555,43 @@ def _reject_unrepresentable_landing(
         )
 
 
+def landing_refusal(
+    landing: "DifferenceLanding", sides: MatchSides,
+) -> "str | None":
+    """Return why the difference cannot land where *landing* says, or ``None``.
+
+    Plan step ``bank_import:X-gp``.  **The pane offers every act as an option
+    of ONE control, so it has to ask this of every landing rather than of the
+    one the owner named** -- and an option the door would refuse is rendered
+    disabled with this sentence beside it, which is ruling **R-HW**'s shape
+    one control down: *a verb whose door does not exist renders its
+    explanation and no submitting control*.  A control whose submission can
+    never succeed is the shape this package has closed repeatedly, and an
+    option that vanished without a word would leave the owner unable to see
+    why a member they can plainly tick is not one the gap can land on.
+
+    :func:`_reject_unrepresentable_landing` stays the ONE statement of the
+    rule; this is that refusal read as a sentence, the way
+    :meth:`~._preview.HandTotals.refused` reads every other.  The refusals
+    that are about the PAIR or about EVERY ROW are landing-independent and the
+    pane asks them once, through :func:`reject_unrecordable` with no landing;
+    this is the one arm that differs per option.
+
+    Args:
+        landing: Where the difference would go under one option.
+        sides: What the two halves come to.
+
+    Returns:
+        The door's own sentence where that landing cannot hold the figure the
+        bank leaves it, else ``None``.
+    """
+    try:
+        _reject_unrepresentable_landing(landing, sides)
+    except ValidationError as exc:
+        return str(exc)
+    return None
+
+
 def reject_unrecordable(
     rows: "list[CandidateRow]",
     sides: MatchSides,
@@ -592,12 +635,14 @@ def reject_unrecordable(
         accepted: The difference the owner agreed to, or ``None``.
         landing: Where the difference would go
             (:class:`~._landing.DifferenceLanding`), or ``None`` where the
-            caller has not
-            derived one.  **Defaulted, and it is the one argument here that
-            is**: the doors that take a SUBMISSION derive the landing before
-            they refuse, and the two that BUILD their own match name a single
-            row each, where ruling **R-GD**'s determinacy answers the question
-            and there is nothing about the landing to refuse.
+            caller has not derived one.  **Defaulted, and it is the one
+            argument here that is**: the door that takes a SUBMISSION derives
+            the landing before it refuses; the two that BUILD their own match
+            name a single row each, where ruling **R-GD**'s determinacy
+            answers the question and there is nothing about the landing to
+            refuse; and the pane's preview asks the landing question of every
+            option separately (:func:`landing_refusal`) since plan step
+            ``bank_import:X-gp``, so it passes none here.
 
     Raises:
         ValidationError: From whichever arm fires, with the figures in it.

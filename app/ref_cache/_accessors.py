@@ -34,6 +34,7 @@ from app.enums import (
     LedgerAccountClassEnum,
     LedgerAccountKindEnum,
     LoanAnchorSourceEnum,
+    PayCadenceKindEnum,
     PeriodPlacementEnum,
     PostingKindEnum,
     PostingSourceEnum,
@@ -290,6 +291,59 @@ def business_day_shift_member(shift_id):
     ids = cache().enum_ids[BusinessDayShiftEnum]
     for member in BusinessDayShiftEnum:
         if ids[member] == shift_id:
+            return member
+    return None
+
+
+def pay_cadence_kind_id(member):
+    """Return the integer primary key for a PayCadenceKindEnum member.
+
+    What KIND of rhythm a pay era runs on (plan step ``pay_calendar:C17``,
+    ruling **R-PC58**).  Resolved at the one place an era is written --
+    ``pay_schedule_service.mint_era`` -- and compared by integer ID, never by
+    the string ``name``.
+
+    Args:
+        member: A ``PayCadenceKindEnum`` member
+                (e.g. ``PayCadenceKindEnum.FIXED_DAYS``).
+
+    Returns:
+        int -- the ``ref.pay_cadence_kinds.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid PayCadenceKindEnum member.
+    """
+    require_init()
+    return cache().enum_ids[PayCadenceKindEnum][member]
+
+
+def pay_cadence_kind_member(kind_id):
+    """Return the PayCadenceKindEnum member an id names, or ``None``.
+
+    :func:`pay_cadence_kind_id`'s INVERSE, read where a stored era row becomes
+    an :class:`~app.services.pay_rhythm.Era` value
+    (``pay_schedule_service.ScheduleFacts.of``), on the terms
+    :func:`business_day_shift_member` states for the vocabulary it shares
+    with the recurrence arc: a linear scan over a handful of members, and
+    ``None`` rather than a raise because the one asker turns the absence into
+    a refusal that names the row.
+
+    Args:
+        kind_id: A stored ``ref.pay_cadence_kinds.id``.
+
+    Returns:
+        The matching ``PayCadenceKindEnum`` member, or ``None`` -- either
+        because the id is not a row at all, or because it is a row this
+        application does not model.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+    """
+    require_init()
+    ids = cache().enum_ids[PayCadenceKindEnum]
+    for member in PayCadenceKindEnum:
+        if ids[member] == kind_id:
             return member
     return None
 

@@ -66,6 +66,7 @@ from app.services.cash_ledger import AmountBasis, amount_basis
 from app.services.income_service import PaycheckPricing, paycheck_pricing
 from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
 from app.services.pay_calendar import PayCalendar, PeriodWindow, calendar_for
+from app.services.recurrence import ResolvedRecurrence, resolved_recurrence
 from app.services.scenario_resolver import get_baseline_scenario
 
 if TYPE_CHECKING:
@@ -90,21 +91,23 @@ _Derived = TypeVar("_Derived")
 class BalanceContext:  # pylint: disable=too-many-instance-attributes
     """One read pass's pinned as-of, scenario, and memoized derivations.
 
-    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed because the
-    ten ARE one read pass's state and there is no smaller cohesive object
-    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and seven
+    Pylint: ``too-many-instance-attributes`` (12/7) -- suppressed because the
+    twelve ARE one read pass's state and there is no smaller cohesive object
+    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and nine
     MEMOS, each keyed by the thing it is a derivation of.  Bundling the memos
     behind a nested record would put an access level in front of state the
     seam fills from five different modules while creating a second object with
     no behaviour of its own.  It reached 8 at plan step C2-c, when the pay
     calendar became a pass-level derivation instead of an argument every caller
-    passed by hand, 9 at X-au-c2b (the amount basis) and 10 at **X-i4** (the
-    cash fold); plan step **X-i1** raises it further, because that step's
-    remaining inputs (the contribution feed, the standing extra, the
-    contractual schedule) are memos of exactly this kind.  The count is a
-    property of what a read pass IS rather than a threshold this class is
-    drifting past.  *The figure read ``(8/7)`` and "five MEMOS" until X-i4:
-    ``_amount_bases`` had joined without it being updated, which is the class
+    passed by hand, 9 at X-au-c2b (the amount basis), 10 at **X-i4** (the
+    cash fold), 11 at balance:X-au-d (the paycheck pricing) and 12 at
+    recurrence:**R16-b-2** (a rule's resolution); plan step **X-i1** raises it
+    further, because that step's remaining inputs (the contribution feed, the
+    standing extra, the contractual schedule) are memos of exactly this kind.
+    The count is a property of what a read pass IS rather than a threshold
+    this class is drifting past.  *The figure read ``(8/7)`` and "five MEMOS"
+    until X-i4, and ``(10/7)`` and "seven" until R16-b-2's adversarial review:
+    each time a memo had joined without it being updated, which is the class
     of claim this file's own ``scenario_id`` docstring already warns about.*
 
     Frozen: the pinned inputs (``user_id`` / ``scenario`` / ``as_of``) cannot be
@@ -115,14 +118,16 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     contexts with the same pins are equal whether or not either has resolved a
     loan yet.
 
-    **THREE derivations this module owns, three it stores in PUBLIC caches, and
+    **FIVE derivations this module owns, three it stores in PUBLIC caches, and
     ONE in a PRIVATE one.**  The WALK (:meth:`loan_walk`), the CALENDAR
-    (:meth:`calendar`) and the AMOUNT BASIS (:meth:`amounts`) derive from leaves
-    BELOW this module, which it imports outright, so all three stay private,
-    filled by this module's own methods.  *The count read "two" and named only
-    the first two until plan step X-i4, having missed ``amounts`` when X-au-c2b
-    added it -- the same omission the attribute-count note above records, one
-    sentence over.*  The RESOLUTION, PLAN and
+    (:meth:`calendar`), the AMOUNT BASIS (:meth:`amounts`), the PAYCHECK
+    PRICING (:meth:`paychecks`) and a rule's RESOLUTION
+    (:meth:`resolved_recurrence_of`) derive from leaves BELOW this module,
+    which it imports outright, so all five stay private, filled by this
+    module's own methods.  *The count read "two" and named only the first two
+    until plan step X-i4, having missed ``amounts`` when X-au-c2b added it, and
+    "three" until R16-b-2's review, having missed ``paychecks`` -- the same
+    omission the attribute-count note above records, one sentence over.*  The RESOLUTION, PLAN and
     PAYOFF caches (:attr:`loans` /
     :attr:`plans` / :attr:`payoffs`) are derived in the
     ``balance_at`` seam modules ABOVE it (``_resolution`` / ``_plan`` /
@@ -260,6 +265,11 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             nothing is handed a dict now -- :meth:`paychecks` is the accessor,
             exactly as :meth:`calendar` and :meth:`amounts` are for the two
             memos above.
+        _recurrences: The pass's per-rule resolution memo, keyed by
+            ``rule.id`` and filled by :meth:`resolved_recurrence_of`.  Private
+            because this module owns the derivation (it imports the pure
+            resolver, a leaf below the seam), and a ``None`` value is a
+            MEMOIZED "the owner has no pay periods", not an empty slot.
     """
 
     user_id: int
@@ -284,6 +294,9 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         default_factory=dict, repr=False, compare=False,
     )
     _amount_bases: "dict[int, AmountBasis]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    _recurrences: "dict[int, ResolvedRecurrence | None]" = field(
         default_factory=dict, repr=False, compare=False,
     )
     _paycheck_pricing: "dict[int, PaycheckPricing]" = field(
@@ -573,6 +586,68 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             self._calendars[self.user_id] = calendar_for(self.user_id)
         return self._calendars[self.user_id]
 
+    def resolved_recurrence_of(self, rule) -> "ResolvedRecurrence | None":
+        """Return what *rule* MEANS against this owner's calendar, resolving it once.
+
+        The memo that collapses a read pass's N resolutions of one rule to
+        one.  Plan step **R16-b-2** put it here: the composed door
+        (``recurring_definition.resolved_definition``) resolves a definition's
+        rule to narrow it by the loan's derived stop, and that stop is the
+        forward plan's zero crossing, which since R16-b-2 walks the SAME rule
+        under its authored closing to sum the definition's occurrences -- so
+        one page reading one loan payment resolved its rule twice on one pass,
+        the shape plan ledger row **N-511** counts and rule 14's ONE WALK
+        forbids.  Both readers take the pure resolution from here and each
+        applies its own closing to the value.
+
+        **A memo on the PASS, not a cache**, for the reason :meth:`calendar`
+        gives; and, like it, filled here rather than passed through, because
+        ``app.services.recurrence`` is a leaf below the seam.  Keyed by the
+        rule's id, so a TRANSIENT rule (the form preview's, ``id`` ``None``)
+        is resolved fresh and never stored -- it exists for one render and
+        names no row.
+
+        **A foreign rule never enters the memo with a VALUE, and no check here
+        is what makes that so.**  The pure resolver refuses a rule paired with
+        another owner's calendar -- ``RecurrenceResolutionError``, naming the
+        rule -- and it runs BEFORE the store on every miss, so a hit holding a
+        value is always the owner's own rule.  The one thing a foreign rule
+        can leave here is the ``None`` an EMPTY calendar answers, which
+        ``resolved_recurrence`` returns before the resolver's ownership check
+        runs; it carries nothing.  The composed door relies on that refusal
+        being the rule's own and reaching a caller first (before any account
+        is loaded), so a second, earlier refusal here would change which error
+        names the pairing; :func:`_memoize_once` carries its own check because
+        the derivations it stores do not refuse for themselves.
+
+        Args:
+            rule: The :class:`~app.models.recurrence_rule.RecurrenceRule` to
+                resolve, stored or transient.
+
+        Returns:
+            The :class:`~app.services.recurrence.ResolvedRecurrence` with the
+            AUTHORED closing alone, or ``None`` when the owner has no pay
+            periods -- the two answers
+            :func:`~app.services.recurrence.resolved_recurrence` gives.
+
+        Raises:
+            RecurrenceResolutionError: See
+                :func:`~app.services.recurrence.resolved_recurrence`; a rule
+                paired with another owner's pass is refused there.
+        """
+        # ``getattr``: the composed door's contract admits any object exposing
+        # ``recurrence_rule`` (its own fixtures build ``SimpleNamespace``
+        # stand-ins), and a rule with no id is resolved fresh like a
+        # transient one.
+        rule_id = getattr(rule, "id", None)
+        if rule_id is None:
+            return resolved_recurrence(rule, self.calendar())
+        if rule_id not in self._recurrences:
+            self._recurrences[rule_id] = resolved_recurrence(
+                rule, self.calendar(),
+            )
+        return self._recurrences[rule_id]
+
     def amounts(self) -> AmountBasis:
         """Return the pass's amount-model basis, building it once.
 
@@ -643,14 +718,14 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         prices no paycheck pays nothing for holding this.
 
         *Its per-payday memo means a caller CAN ask for a subset and pay for
-        only that; no consumer of this accessor does.*  All three -- the
-        payroll feeds and the two salary routes -- ask for
-        ``calendar.saved()``, the owner's whole saved schedule, because that
-        is the domain each of them reports over.  The place a subset is
-        actually asked for is
-        :meth:`~app.services.income_service.SalaryPricing.net_for`, which
-        prices the ONE period a row names; it reads its own pricer rather than
-        this one (ledger row **P63**).
+        only that.*  The two salary routes ask for ``calendar.saved()``, the
+        owner's whole saved schedule, because that is the domain each of them
+        reports over; the payroll feeds ask for whichever period a consumer
+        reads -- the balance seam's saved window, or a 40-year chart's axis
+        -- one at a time, since plan step salary:S3-e-2 (ruling
+        **R-SAL15**).  :meth:`~app.services.income_service.SalaryPricing
+        .net_for` prices the ONE period a row names, and reads its own pricer
+        rather than this one (ledger row **P63**).
 
         It is keyed by ``user_id`` for the reason :meth:`calendar` is, and it
         is built over that same memoized calendar so a pass cannot hold

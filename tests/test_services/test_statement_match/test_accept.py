@@ -290,8 +290,13 @@ class TestTheGroupMustSum:
 
         assert "0.05" in str(caught.value)
         # It says what to do about it, which is the half X-f6d-4 added: before
-        # that step the only advice was to go and edit a row.
-        assert "tick the box" in str(caught.value)
+        # that step the only advice was to go and edit a row.  *It said "tick
+        # the box" until plan step bank_import:X-gp*: a group's consent is one
+        # control whose OPTIONS are the acts now, and a refusal is the
+        # service's own words about the control it offers (R-FZ(a)), so the
+        # sentence names the choice and both acts.
+        assert "choose what to do with the difference" in str(caught.value)
+        assert "row with no category" in str(caught.value)
         assert salary.settled_on is None
         assert allowance.settled_on is None
 

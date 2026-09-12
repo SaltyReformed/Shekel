@@ -269,8 +269,7 @@ class TestRegenerateHappyPath:
                           )
             db.session.commit()
 
-            schedule = pay_schedule_service.get_schedule(user_id)
-            assert schedule.cadence_days == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == 7
             assert (
                 last_covered_day(new_periods[0]) - new_periods[0].start_date
             ).days + 1 == 7

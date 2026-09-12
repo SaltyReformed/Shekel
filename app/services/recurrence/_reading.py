@@ -235,7 +235,7 @@ def scheduling_day_of_month(rule: RecurrenceRule) -> int | None:
 
     **What ``budget.recurrence_rules.day_of_month`` HELD, derived from the
     columns that survive** (plan step R7c-c, developer ruling 2026-08-16 on
-    plan ledger row **D37**).  ``recurrence_engine.compute_due_date`` dates
+    plan ledger row **D37**).  ``recurrence.compute_due_date`` dates
     every generated row from that day and plan step **R5** is what deletes that
     function; this leaf drops the column four steps ahead of it, so the reader
     reads the derivation the write door was encoding the column FROM rather

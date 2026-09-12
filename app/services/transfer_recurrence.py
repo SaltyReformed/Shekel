@@ -60,10 +60,10 @@ from app.services._recurrence_common import (
     PlacedRow,
     log_resource_access_denied,
 )
+from app.services.recurrence import compute_due_date
 from app.services.recurrence_engine import (
     MaintainActs,
     PassReporting,
-    compute_due_date,
     create_for_unclaimed_occurrences,
     regenerate_definition,
     resolve_generation_plan,
@@ -171,7 +171,7 @@ class DerivedTransferFields(NamedTuple):
             the stale cache this arc deletes, and the transaction twin lost the
             same field at plan step X-au-e.
         due_date: Derived from the rule and the period by
-            :func:`~app.services.recurrence_engine.compute_due_date`.
+            :func:`~app.services.recurrence.compute_due_date`.
     """
 
     from_account_id: int
@@ -253,8 +253,13 @@ def propagate_to_unruled_template(template, transfers) -> "list[int]":
     money exactly once, and its single Transfer is materialised at create time
     rather than generated -- so a regeneration would find no rule, name no
     period, and RETIRE the row (that is defect **D16**, and why the route gates
-    the sweep on "the template IS or WAS recurring").  What is left is this: the
-    row is never retired, and everything else is the same rule.
+    the sweep on "the template IS or WAS recurring").  **Since finding
+    REC-516 that deletion is unreachable by a second route**: the one-time
+    transfer is created UNDATED, and an undated row is now retained rather
+    than retired.  The gate stays as defence in depth and because a retained
+    row still raises a conflict the owner would have no reason to see.  What is
+    left is this: the row is never retired, and everything else is the same
+    rule.
 
     **It exists because that "everything else" was NOT the same rule, and an
     adversarial review of plan step R10-b measured the gap.**  The route applied
@@ -360,7 +365,7 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
         is, where it sits, that it is the rule's own row, and that it is not
         yet an actual event.
 
-        The due date inside comes from ``recurrence_engine.compute_due_date``,
+        The due date inside comes from ``recurrence.compute_due_date``,
         the same shared helper the transaction engine uses: a rule with a
         day_of_month (monthly, quarterly, and -- via
         routes/loan/payment_transfer.py -- the mortgage payment, whose rule
@@ -407,7 +412,7 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     rebuilding them** (plan step R10-b, ruling **R-R19**), which is what the
     transaction engine's twin has done since plan step R10-a.
 
-    Three outcomes, one per period the pass considers:
+    Four outcomes, one per period the pass considers:
 
       1. the rule names the period and an auto-generated transfer is there --
          the fields that DIFFER from :class:`DerivedTransferFields` are applied
@@ -418,7 +423,13 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
          would;
       3. the rule NO LONGER names the period -- the transfer is removed through
          ``transfer_service.delete_transfer`` if it carries nothing, and
-         RETAINED as a conflict if the owner has records against it.
+         RETAINED as a conflict if the owner has records against it;
+      4. the transfer answers NO occurrence at all (``occurs_on`` is NULL) --
+         it is left exactly as found and RETAINED as a conflict (finding
+         **REC-516**).  This engine is where that matters most: its retire arm
+         destroys the parent AND BOTH SHADOWS, and the app's one live writer of
+         undated rows is a transfer one
+         (``routes/transfers/_instances._materialize_one_time_transfer``).
 
     Overridden and soft-deleted rows are conflicts wherever they sit, as
     before; immutable rows are never touched.

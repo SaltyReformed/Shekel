@@ -45,6 +45,7 @@ from app.services.pay_calendar import (
 )
 from app.services.recurrence import (
     RecurrenceResolutionError,
+    compute_due_date,
     fires_on_day_of_month,
     reauthor_rule,
     recurrence_spec,
@@ -4905,14 +4906,14 @@ class TestDueDateGeneration:
                 end_date=date(2026, 3, 26),
                 end_is_projected=False,
             )
-            result = recurrence_engine.compute_due_date(
+            result = compute_due_date(
                 rule_monthly, period,
             )
             assert result == date(2026, 3, 20)
 
             # Test with a cadence that names no day (every-period style).
             rule_every = build_rule(cadence=EVERY_PERIOD)
-            result = recurrence_engine.compute_due_date(
+            result = compute_due_date(
                 rule_every, period,
             )
             assert result == date(2026, 3, 13)
@@ -4961,7 +4962,7 @@ class TestDueDateGeneration:
             with pytest.raises(
                 RecurrenceResolutionError, match="generated row",
             ):
-                recurrence_engine.compute_due_date(weekly, period)
+                compute_due_date(weekly, period)
 
             # And what the refusal is standing in front of: the paycheck's own
             # start, which is not any date a weekly cadence from ``starts_on``
@@ -5564,6 +5565,94 @@ class TestARowRecordsItsOccurrence:
             assert db.session.query(Transaction).filter_by(
                 template_id=template.id,
             ).count() == len(created)
+
+    def test_a_maintain_pass_retains_an_undated_row_and_deletes_nothing(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Finding **REC-516**: the MAINTAIN pass, not the generate pass.
+
+        The case above pins that an undated row HOLDS its paycheck on
+        ``generate``.  Nothing pinned what ``regenerate`` does to the same row,
+        and it hard-deleted it: ``classify_maintain_work`` read *answers no
+        occurrence* as *the rule dropped this occurrence* and routed the row to
+        ``work.retire``, which is ``db.session.delete`` at ``_maintain`` and
+        ``delete_transfer(soft=False)`` at ``transfer_recurrence``.
+
+        **The row COUNT is deliberately not the assertion.**  Reproduced
+        2026-09-08, the pass deleted the row and the create arm answered the
+        freed occurrence in the same call -- ``deleted_count: 1,
+        created_count: 1``, every conflict count zero, and the table exactly
+        as large afterwards.  A count-based control passes on the defect, so
+        this asserts the ROW'S OWN ID survives.
+
+        **It also grades the claim the fix makes about itself**, which is the
+        one thing its own existence cannot: that a retained row STILL CLAIMS
+        its paycheck, so the create arm does not answer that period a second
+        time.  Retaining without the claim would trade the deletion for a
+        duplicate row -- the failure ``test_an_undated_row_claims_its_whole
+        _paycheck`` measured at 52 rows / ``$26,000``, and strictly worse than
+        the deletion being fixed here.
+
+        The developer ruled RETAIN over silent skip on 2026-09-08: the
+        definition has moved past such a row and cannot be applied to it, so
+        the owner is told rather than left with a row frozen at its old price.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert len(created) >= 2
+
+            # The exact shape both live databases carry: template-linked,
+            # Projected, not an override, not soft-deleted, and holding none
+            # of the owner's records -- so nothing but the branch under test
+            # stands between it and ``work.retire``.
+            victim = created[0]
+            victim_id = victim.id
+            victim_period = victim.pay_period_id
+            victim.occurs_on = None
+            db.session.flush()
+            assert victim.is_override is False
+            assert victim.is_deleted is False
+            assert victim.status.is_immutable is False
+            assert victim.notes is None
+            assert victim.settled_basis_id is None
+            assert victim.entries == []
+
+            with pytest.raises(RecurrenceConflict) as conflict:
+                recurrence_engine.regenerate_for_template(
+                    template, schedule, seed_user["scenario"].id,
+                )
+            db.session.flush()
+
+            assert victim_id in conflict.value.retained, (
+                "REC-516: the undated row was not reported to the owner, so "
+                "a row its definition has moved past is invisible"
+            )
+            assert db.session.query(Transaction).filter_by(
+                id=victim_id,
+            ).one_or_none() is not None, (
+                f"REC-516: the maintain pass HARD DELETED undated row "
+                f"{victim_id}, which answers no occurrence but which no rule "
+                f"stopped naming either"
+            )
+            # The claim the fix rests on: the retained row still HOLDS its
+            # paycheck, so nothing was written into it a second time.
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).count() == len(created), (
+                "the retained row stopped claiming its paycheck and the "
+                "create arm answered that period again"
+            )
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id, pay_period_id=victim_period,
+            ).count() == 1
 
     def test_the_predictor_reads_the_claims_of_rows_that_exist(
         self, app, db, seed_user, seed_periods

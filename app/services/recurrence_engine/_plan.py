@@ -2,14 +2,17 @@
 Shekel Budget App -- Recurrence Engine: WHICH periods a rule names
 
 The gating and occurrence-matching preamble both write paths share
-(:func:`resolve_generation_plan`), the two value types it answers in, and the
-rule-and-period derivation of a generated row's own date
-(:func:`compute_due_date`).
+(:func:`resolve_generation_plan`) and the two value types it answers in.
 
-Nothing here writes.  This leaf answers "where does this definition fire, and
-on what day", which is the question ``_generate`` and ``_maintain`` both have
-to ask before they can act, and asking it in one place is what stops the two
-from drifting on which periods a rule applies to.
+Nothing here writes.  This leaf answers "where does this definition fire",
+which is the question ``_generate`` and ``_maintain`` both have to ask before
+they can act, and asking it in one place is what stops the two from drifting
+on which periods a rule applies to.  **"On what day" left at plan step
+R16-b-2**: the rule-and-period derivation of a generated row's own date,
+``compute_due_date``, is :func:`app.services.recurrence.compute_due_date` now
+(ruling **R-R69**), because the balance seam's ESTIMATED loan tier has to date
+an occurrence no row answers yet exactly as the row would be dated, and the
+seam cannot reach this package without importing the write state machine.
 
 **"Where does this definition fire" is asked of the COMPOSED door since plan
 step R7d-c-2** (:func:`app.services.recurring_definition.read_definition`):
@@ -20,7 +23,6 @@ it only as the payoff some chokepoint had last cached into
 ``budget.recurrence_rules.end_date`` -- plan ledger row **D35**, the stale
 cache that dropped an installment.
 """
-import calendar as cal
 import logging
 from datetime import date
 from typing import NamedTuple
@@ -29,7 +31,6 @@ from app.models.recurrence_rule import RecurrenceRule
 from app import ref_cache
 from app.enums import StatusEnum
 from app.services.pay_calendar import DerivedPeriod
-from app.services.recurrence import scheduling_day_of_month
 from app.services.recurring_definition import read_definition
 from app.services._recurrence_common import check_scenario_ownership
 
@@ -314,113 +315,3 @@ def resolve_generation_plan(
         placements.append(PlannedOccurrence(placement.occurrence, period))
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     return GenerationPlan(rule, tuple(placements), projected_id)
-
-
-
-
-def compute_due_date(rule, period):
-    """Compute the due_date for a generated transaction.
-
-    Derives the calendar date the bill is actually due, using the
-    recurrence rule's scheduling day and optional due-day override.
-    Public (no leading underscore): the transfer engine, the transfers
-    preview route and a data migration all derive a row's due date through this
-    same pure helper, so it is deliberately part of this module's public
-    surface (like :func:`~app.services.recurrence.rule_occurrences`) rather
-    than a leading-underscore internal.
-
-    Source priority:
-      1. rule.due_day_of_month (if set and differs from the scheduling day)
-      2. the rule's SCHEDULING DAY (placed within the period's month context)
-      3. period.start_date (for a cadence that names no day of the month)
-
-    **The scheduling day is DERIVED rather than read off a column since plan
-    step R7c-c** (developer ruling 2026-08-16, plan ledger row **D37**).  It was
-    ``rule.day_of_month``, which the write door encoded from the rule's authored
-    columns and that step drops;
-    :func:`~app.services.recurrence.scheduling_day_of_month` answers the same
-    value from the columns that survive, and was measured equal to the stored
-    one for all 46 live rules on a production clone before the column went.
-    Both it and this function are deleted by plan step **R5**, which gives a
-    generated row its own ``occurs_on`` and ``due_on``.
-
-    Next-month convention: if due_day_of_month < the scheduling day, the due
-    date falls in the following calendar month.  Example: a rule scheduled on
-    the 22nd with due_day_of_month=1 means the bill is due on the 1st of the
-    next month after the scheduling month.
-
-    Month-end clamping: day values exceeding the month's last day are
-    clamped (e.g. day 31 in April becomes 30, day 30 in Feb becomes 28).
-
-    Args:
-        rule: The RecurrenceRule to date the row from.
-        period: The :class:`~app.services.pay_calendar.DerivedPeriod` the
-            transaction was assigned to.  It reads that period's payday and its
-            last covered day; both are DERIVED from the owner's payday set
-            since pay-calendar plan step C2-f3c, where they were the stored
-            columns plan step **C4-c** dropped.  Measured equal on production the
-            same day: 62 periods, zero disagreements.
-
-    Returns:
-        A date object representing the due date.
-
-    Raises:
-        RecurrenceResolutionError: When the rule names a unit or a placement
-            this application does not model -- see
-            :func:`~app.services.recurrence.scheduling_day_of_month`.  It could
-            not raise while it read a plain column; it now makes the same
-            refusal every other reader of this rule already makes, rather than
-            dating a row from a cadence nothing can read.
-    """
-    dom = scheduling_day_of_month(rule)
-    due_dom = rule.due_day_of_month
-
-    # A cadence that names no day of the month -- every-paycheck, every-N, and
-    # a monthly rule funded from the month's first paycheck -- is dated from
-    # its period's start.
-    if dom is None:
-        return period.start_date
-
-    # Determine the base month by finding which month within the period
-    # contains the scheduling-day target.  This is the LAST reader of the
-    # endpoint-month scan plan step R4a deleted from period selection, and it
-    # carries the same defect: at a cadence where the firing month is neither
-    # endpoint the row is dated in the wrong month entirely (plan ledger row
-    # D18).  Plan step R5 owns it, with the due-date model it rewrites.
-    #
-    # The containment test is the PERIOD's own rule since pay-calendar plan
-    # step C4-a-3 (``DerivedPeriod.covers``, ruling R-PC31); it was
-    # ``period.start_date <= target <= period.end_date`` open-coded here, one
-    # of the three sites that spelled it out.
-    base_year = period.start_date.year
-    base_month = period.start_date.month
-
-    for dt in (period.start_date, period.end_date):
-        last_day = cal.monthrange(dt.year, dt.month)[1]
-        target_day = min(dom, last_day)
-        target = date(dt.year, dt.month, target_day)
-        if period.covers(target):
-            base_year = dt.year
-            base_month = dt.month
-            break
-
-    if due_dom is None or due_dom == dom:
-        # No separate due date -- use day_of_month in the base month.
-        last_day = cal.monthrange(base_year, base_month)[1]
-        return date(base_year, base_month, min(dom, last_day))
-
-    # Next-month convention: due_day_of_month < day_of_month means the
-    # due date falls in the month after the scheduling month.
-    if due_dom < dom:
-        if base_month == 12:
-            due_year = base_year + 1
-            due_month = 1
-        else:
-            due_year = base_year
-            due_month = base_month + 1
-    else:
-        due_year = base_year
-        due_month = base_month
-
-    last_day = cal.monthrange(due_year, due_month)[1]
-    return date(due_year, due_month, min(due_dom, last_day))

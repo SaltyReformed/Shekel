@@ -36,9 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services import recurrence_engine
-from app.services.recurrence_engine import _plan
-from app.services.recurrence import _reading
+from app.services.recurrence import _reading, _row_date
 from tests.oracles import recurrence_baseline
 
 #: The committed snapshot.  Lives beside the harness that writes it.
@@ -230,16 +228,18 @@ class TestBaselineFiringControls:
         which left the control patching an alias the oracle happens to share --
         proving only that the oracle can read its own attribute, the exact
         failure the sibling control was written to avoid.  The oracle now
-        reaches ``compute_due_date`` through ``_plan`` for the same reason it
-        reaches ``rule_occurrences`` through ``_reading``.
+        reaches ``compute_due_date`` through its defining module for the same
+        reason it reaches ``rule_occurrences`` through ``_reading`` -- and that
+        module is ``recurrence._row_date`` since plan step R16-b-2 moved the
+        function out of the engine (ruling R-R69).
         """
         before = recurrence_baseline.capture_baseline()
-        real_compute = _plan.compute_due_date
+        real_compute = _row_date.compute_due_date
 
         def shifted(rule, period):
             return real_compute(rule, period) + timedelta(days=1)
 
-        monkeypatch.setattr(_plan, "compute_due_date", shifted)
+        monkeypatch.setattr(_row_date, "compute_due_date", shifted)
         after = recurrence_baseline.capture_baseline()
 
         assert after != before, (

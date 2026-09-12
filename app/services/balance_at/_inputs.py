@@ -125,10 +125,14 @@ def _contribution_inputs_for_accounts(
             ``account_type`` relationship available for the classifier.  They
             belong to ONE user (the caller's).  An empty list returns an empty
             map without issuing any query.
-        ctx: The read pass, for its memoized pay CALENDAR alone -- the domain
-            :func:`~app.services.projection_inputs.load_payroll_feeds` prices
-            the owner's paychecks over, and which it would otherwise derive
-            again, once per call and therefore once per ACCOUNT.
+        ctx: The read pass, for its paycheck PRICER alone
+            (:meth:`~app.services.balance_at.BalanceContext.paychecks`) --
+            the memo :func:`~app.services.projection_inputs.load_payroll_feeds`
+            builds each feed's resolvers over, so a payday is priced once per
+            profile per render rather than once per ACCOUNT.  It was the
+            memoized calendar until salary:S3-d, and the loader read the
+            saved window off it until salary:S3-e-2; it reads the owner off
+            it now and nothing else.
 
     Returns:
         ``{account_id: ContributionInputs}``, TOTAL over *accounts* -- an

@@ -58,7 +58,7 @@ What an occurrence IS, per unit
   is kept out of the offer set by
   :func:`~app.services.recurrence._frequency.has_row_date_coordinate`, because
   a weekly occurrence is neither a payday nor a day of the month and
-  ``recurrence_engine.compute_due_date`` can date a generated row from nothing
+  ``recurrence.compute_due_date`` can date a generated row from nothing
   else.  Plan step **R5** gives a row its own ``occurs_on`` and the unit
   becomes authorable by that deletion.  It is implemented here rather than
   refused because a partial function over an enum is the defect this redesign
@@ -258,7 +258,12 @@ from app.enums import (
     RecurrenceUnitEnum,
 )
 from app.exceptions import ShekelError
-from app.services.pay_calendar import DerivedPeriod, PayCalendar, paychecks_from
+from app.services.pay_calendar import (
+    DerivedPeriod,
+    PayCalendar,
+    paychecks_from,
+    span_starting_on_or_after,
+)
 from app.services.recurrence._months import (
     month_ordinal,
     months_per_step,
@@ -585,10 +590,18 @@ def _require_generable(resolved: ResolvedRecurrence) -> None:
         )
 
 
-def _placement_search(
+def _searches(
     calendar: PayCalendar, placement: PeriodPlacementEnum,
-) -> "Callable[[date], DerivedPeriod | None]":
-    """Return the schedule search *placement* names, refusing an unknown one.
+) -> "tuple[Callable[[date], DerivedPeriod | None], Callable[[date], DerivedPeriod | None]]":
+    """Return the ``(saved, projecting)`` searches *placement* names, refusing an unknown one.
+
+    ONE table from placement to search, since plan step R16-b-2's adversarial
+    review found two -- a saved one and a projecting one -- that a placement
+    added to one and not the other would have split.  Each rule names its
+    saved search (the schedule's own, answering ``None`` past the horizon,
+    which is what generation writes against) beside its TOTAL twin (the
+    calendar's span search, projecting at the owner's cadence, which the
+    balance seam's estimate places on).
 
     Resolved ONCE per composition rather than per occurrence, which is also
     what makes an unrecognised placement an eager refusal instead of one that
@@ -599,22 +612,39 @@ def _placement_search(
         placement: Which placement rule the recurrence uses.
 
     Returns:
-        The bound search method.
+        The bound saved search and the bound projecting search.
 
     Raises:
         RecurrenceGenerationError: When *placement* is not a member this
             engine has a rule for.
     """
     if placement is PeriodPlacementEnum.CONTAINING_DATE:
-        return calendar.period_containing
+        return calendar.period_containing, calendar.span_containing
     if placement is PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER:
-        return calendar.period_starting_on_or_after
+        return (
+            calendar.period_starting_on_or_after,
+            lambda day: span_starting_on_or_after(calendar, day),
+        )
     raise RecurrenceGenerationError(
         f"period placement {placement!r} has no rule.  Every member of "
         f"PeriodPlacementEnum must map an occurrence onto a period; "
         f"answering None instead would read as a schedule that cannot host "
         f"the row."
     )
+
+
+def _placement_search(
+    calendar: PayCalendar, placement: PeriodPlacementEnum,
+) -> "Callable[[date], DerivedPeriod | None]":
+    """Return the SAVED search *placement* names (:func:`_searches`' first half)."""
+    return _searches(calendar, placement)[0]
+
+
+def _span_search(
+    calendar: PayCalendar, placement: PeriodPlacementEnum,
+) -> "Callable[[date], DerivedPeriod | None]":
+    """Return the PROJECTING search *placement* names (:func:`_searches`' second half)."""
+    return _searches(calendar, placement)[1]
 
 
 def occurrences(
@@ -768,8 +798,37 @@ def occurrence_placements(
             :func:`occurrences` and :func:`place` refuse rather than answering
             ``()`` over a value they would reject.
     """
+    return _placements(
+        resolved, calendar, _placement_search(calendar, resolved.placement),
+        through=through,
+    )
+
+
+def _placements(
+    resolved: ResolvedRecurrence,
+    calendar: PayCalendar,
+    search: "Callable[[date], DerivedPeriod | None]",
+    *,
+    through: date | None,
+) -> tuple[OccurrencePlacement, ...]:
+    """Walk *resolved* through *through* and place each occurrence with *search*.
+
+    The one composition behind :func:`occurrence_placements` and
+    :func:`projected_occurrence_placements`, which differ only in the search
+    they hand in.  Refuses before the empty-schedule short-circuit, so both
+    callers refuse exactly what :func:`occurrences` and :func:`place` refuse.
+
+    Args:
+        resolved: The recurrence's two-axis meaning.
+        calendar: The owner's pay-period schedule.
+        search: The placement search, saved or projecting.
+        through: The last day to generate through; ``None`` means the saved
+            schedule's horizon.
+
+    Returns:
+        One :class:`OccurrencePlacement` per occurrence, ascending by date.
+    """
     _require_generable(resolved)
-    search = _placement_search(calendar, resolved.placement)
     horizon = calendar.horizon()
     if horizon is None:
         return ()
@@ -780,10 +839,64 @@ def occurrence_placements(
     )
 
 
+def projected_occurrence_placements(
+    resolved: ResolvedRecurrence,
+    calendar: PayCalendar,
+    *,
+    through: date,
+) -> tuple[OccurrencePlacement, ...]:
+    """Return every occurrence through *through*, placed on a SAVED OR PROJECTED paycheck.
+
+    :func:`occurrence_placements` for a reader that needs to know where a row
+    WOULD live rather than where one can be written: the balance seam's
+    ESTIMATED loan tier (plan step **R16-b-2**), which prices every occurrence
+    a definition names that no row answers, and dates it exactly as the row
+    would be dated (:func:`~app.services.recurrence.compute_due_date` over the
+    placed period, ruling **R-R69**) -- so the loan's payoff cannot move when
+    generation later writes that row.  Past the horizon the saved search
+    answers ``None`` and generation stops; this keeps placing at the owner's
+    cadence (:meth:`~app.services.pay_calendar.PayCalendar.span_containing`,
+    :func:`~app.services.pay_calendar.span_starting_on_or_after`), and a
+    projected period carries ``period_id = None`` so nothing can write against
+    it by mistake.
+
+    ``period`` is ``None`` for exactly one reason here: the occurrence falls
+    BEFORE the owner's first payday under ``CONTAINING_DATE``, where nothing is
+    projected backwards (the 2026-08-10 ruling).  That is the boundary ruling
+    **R-R64** carries: an occurrence the schedule cannot place is neither
+    generated nor estimated.  Under ``PERIOD_STARTING_ON_OR_AFTER`` such an
+    occurrence places on the FIRST paycheck, which is also what generation
+    does with it.
+
+    *through* is required, and deliberately has no default: the saved horizon
+    is a materialisation boundary, and a caller projecting past it must say
+    how far.
+
+    Args:
+        resolved: The recurrence's two-axis meaning.
+        calendar: The owner's pay-period schedule.
+        through: The last day to generate through.
+
+    Returns:
+        One :class:`OccurrencePlacement` per occurrence, ascending by date,
+        each placed on a saved or projected paycheck (``None`` only before the
+        opening bound under ``CONTAINING_DATE``).  Empty for a schedule with no
+        periods.
+
+    Raises:
+        RecurrenceGenerationError: See :func:`occurrence_placements`.
+    """
+    return _placements(
+        resolved, calendar, _span_search(calendar, resolved.placement),
+        through=through,
+    )
+
+
 __all__ = [
     "OccurrencePlacement",
     "RecurrenceGenerationError",
     "occurrence_placements",
     "occurrences",
     "place",
+    "projected_occurrence_placements",
 ]

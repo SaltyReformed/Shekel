@@ -416,9 +416,9 @@ class TestTheOutstandingSet:
             )
             db.session.flush()
             # An AD-HOC envelope rather than a second row off the shared
-            # template: both rows would answer no occurrence, and
-            # ``idx_transactions_template_scenario_undated`` holds one undated
-            # row per template per paycheck.
+            # template: the engine's row already answers this paycheck's
+            # occurrence, and ``idx_transactions_template_scenario_occurrence``
+            # holds one row per occurrence.
             txn_b = Transaction(
                 user_id=seed_periods[0].user_id,
                 pay_period_id=seed_periods[0].id,

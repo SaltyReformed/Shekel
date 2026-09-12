@@ -221,7 +221,7 @@ class TestTheOfferSetIsWhatTheAppCanHonour:
         """The single remaining gap, named so the step that closes it sees this.
 
         A weekly occurrence is neither a payday nor a day of the month, and
-        ``recurrence_engine.compute_due_date`` dates a generated row from
+        ``recurrence.compute_due_date`` dates a generated row from
         nothing else -- so every weekly row would carry the funding PAYDAY and
         the authored weekday would be discarded.  Plan step **R5** gives a row
         its own ``occurs_on``; :func:`has_row_date_coordinate` goes with the
@@ -295,7 +295,7 @@ class TestTheOfferSetIsWhatTheAppCanHonour:
         R8-a).  ``anchor_family`` RAISED for the ``WEEK`` unit, so
         ``scheduling_day_of_month`` inherited a refusal through
         ``fires_on_day_of_month``; stating that predicate directly made it
-        answer ``False``, which ``recurrence_engine.compute_due_date`` reads as
+        answer ``False``, which ``recurrence.compute_due_date`` reads as
         "date this row from its paycheck" -- so every weekly row would have
         been dated on the funding payday, silently, with the authored weekday
         discarded.  An existing migration case caught it, and this pins the

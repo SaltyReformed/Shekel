@@ -37,7 +37,7 @@ The next occurrence is the date the recurrence engine itself would assign
 to the next generated instance: the composed read door
 (``recurring_definition.read_definition``) walks the rule's cadence and places
 each occurrence on a pay period -- the SAME composition the generation seam
-makes since plan step R4b-2 -- and ``recurrence_engine.compute_due_date``
+makes since plan step R4b-2 -- and ``recurrence.compute_due_date``
 gives the instance's due date, so a row's "next date" is the date the grid
 cell it points at would carry.  **One divergence stands until plan step
 R7d-c-2**: generation still walks the rule's own bound
@@ -147,7 +147,7 @@ from app.services.recurrence import (
     describe,
     placed_periods,
 )
-from app.services.recurrence_engine import compute_due_date
+from app.services.recurrence import compute_due_date
 from app.services.recurring_definition import (
     read_definition,
     resolved_definition,

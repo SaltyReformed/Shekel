@@ -32,6 +32,7 @@ from app.services import (
     status_seam,
 )
 from tests._test_helpers import (
+    restate_fixture_era,
     rhythm_of,
     last_covered_day,
     settle_day_columns,
@@ -1022,11 +1023,11 @@ class TestTheBadgeReadsTheOWNERSStoredCadence:
                     if entry.name == "Every 2nd"
                 ]
 
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(14), None)
+            restate_fixture_era(seed_user["user"].id, date(2026, 1, 2), 14)
             db.session.commit()
             assert _badges() == [False]
 
-            pay_schedule_service.upsert_schedule(seed_user["user"].id, rhythm_of(30), None)
+            restate_fixture_era(seed_user["user"].id, date(2026, 1, 2), 30)
             db.session.commit()
             assert _badges() == [True]
 
