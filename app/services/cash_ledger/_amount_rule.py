@@ -331,9 +331,38 @@ def _is_loan_payment(xfer) -> bool:
     Returns:
         ``True`` when a loan payment's settings drive this transfer's cash.
     """
-    if xfer is None or xfer.template is None:
+    if xfer is None:
         return False
-    return xfer.template.settings is not None
+    return is_loan_payment_definition(xfer.template)
+
+
+def is_loan_payment_definition(template) -> bool:
+    """Return whether *template* is a loan-payment definition.
+
+    The template half of :func:`_is_loan_payment`, and the ONE reading of the
+    settings-row test (plan step **R16-b-2**, ruling **R-R67**): a
+    :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row hangs
+    off the definition.  The row classifier asks it of its template, and the
+    balance seam's estimate asks it of a definition whose row does not exist
+    yet (:func:`._amount_source.definition_cash`), so the two decide rule 4
+    the same way by construction.
+
+    ``getattr`` on the relationship rather than attribute access, for the
+    reason :func:`app.services.recurring_transfer_query.destination_account`
+    gives for the FK column: a recurring definition is a ``TransferTemplate``
+    or a ``TransactionTemplate``, the second carries no settings row at all,
+    and a kind-agnostic reader answers ``False`` for it rather than raising.
+
+    Args:
+        template: A transfer template, a transaction template, or ``None``
+            for a transfer with none.
+
+    Returns:
+        ``True`` when a loan payment's settings drive the definition's cash.
+    """
+    if template is None:
+        return False
+    return getattr(template, "settings", None) is not None
 
 
 # WHICH RULE a declared relation refines into, keyed by the relation itself.  The

@@ -21,7 +21,7 @@ from datetime import date, datetime, timezone
 from flask import (
     Blueprint, abort, redirect, render_template, request, url_for,
 )
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.routes import analytics_view
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -132,7 +132,6 @@ def _tab_shell_if_not_htmx(active_tab: str):
 
 
 @analytics_bp.route("/analytics")
-@login_required
 @require_owner
 def page():
     """Render the main analytics page with its lazy-loaded tab pills.
@@ -150,7 +149,6 @@ def page():
 
 
 @analytics_bp.route("/analytics/calendar")
-@login_required
 @require_owner
 def calendar_tab():
     """HTMX partial: calendar tab with month detail or year overview.
@@ -215,7 +213,6 @@ def calendar_tab():
 
 
 @analytics_bp.route("/analytics/taxes")
-@login_required
 @require_owner
 def taxes_tab():
     """HTMX partial: the Taxes tab (refund hero, W-2 preview, Schedule A).
@@ -296,7 +293,6 @@ def taxes_tab():
 
 
 @analytics_bp.route("/analytics/spending")
-@login_required
 @require_owner
 def spending_tab():
     """HTMX partial: the Spending tab (S14 "months lead" cockpit, D7).
@@ -367,7 +363,6 @@ def spending_tab():
 @analytics_bp.route("/analytics/variance")
 @analytics_bp.route("/analytics/trends")
 @analytics_bp.route("/analytics/year-end")
-@login_required
 @require_owner
 def retired_tab():
     """Redirect a retired Analytics tab URL to the main page (Slice 4).
@@ -384,7 +379,6 @@ def retired_tab():
 
 
 @analytics_bp.route("/analytics/income-statement")
-@login_required
 @require_owner
 def income_statement_tab():
     """HTMX partial: confirmed-ledger income statement (Statements pill).
@@ -494,7 +488,6 @@ def income_statement_tab():
 
 
 @analytics_bp.route("/analytics/balance-sheet")
-@login_required
 @require_owner
 def balance_sheet_tab():
     """HTMX partial: confirmed-ledger balance sheet as of a date.

@@ -16,7 +16,6 @@ bookmarks and links land on the surface that replaced it.
 """
 
 from flask import Blueprint, redirect, url_for
-from flask_login import login_required
 
 from app.utils.auth_helpers import require_owner
 
@@ -24,7 +23,6 @@ obligations_bp = Blueprint("obligations", __name__)
 
 
 @obligations_bp.route("/obligations")
-@login_required
 @require_owner
 def summary():
     """Redirect the retired /obligations page to the unified Recurring surface."""

@@ -61,9 +61,13 @@ from app.services.loan_loaders import (
     synthesize_origination_anchor,
 )
 from app.services.loan_payment_service import LoanContext, load_loan_context
+from app.services.recurrence import NEVER_ENDS, EndBound, RecurrenceOwner
+from app.models.transfer_template import TransferTemplate
+from app.services import recurring_transfer_query
 from app.services.recurring_transfer_query import (
     StandingPayment,
-    standing_payment,
+    destination_account,
+    loan_payment_config,
 )
 
 from ._confirmed_view import confirmed_view
@@ -126,7 +130,17 @@ class ResolvedLoan:
             slice of this row read through its own narrow accessor.  The plan
             needed the other two the moment it had to price an installment no
             row covers, and taking them from a second read would have let one
-            pass hold two answers about one definition.
+            pass hold two answers about one definition.  **It prices nothing
+            since plan step R16-b-2**: the plan sums :attr:`definitions`, and
+            this is the oldest of them, kept for the resolver's extra and the
+            identity the recurrence form locks on.
+        definitions: EVERY active recurring transfer paying into the loan
+            (:func:`~app.services.recurring_transfer_query.active_recurring_transfer_templates`),
+            oldest first, loaded ONCE here (plan step R16-b-2).  The forward
+            plan walks each on its own cadence; :attr:`standing` is the first
+            of them, so "which definitions pay in" and "which one is the
+            standing payment" are one query and cannot disagree.  ``[]`` for a
+            loan with no definition, whose plan is then the contract's.
     """
 
     params: LoanParams
@@ -134,6 +148,7 @@ class ResolvedLoan:
     context: LoanContext
     state: loan_resolver.LoanState
     standing: StandingPayment | None
+    definitions: list[TransferTemplate]
 
 
 def resolved_loan(
@@ -266,16 +281,15 @@ def resolve_loan_bundle(
       composer falls back to that replay, the pre-switch behaviour.  The loan's
       displayed BALANCE is not derived here at all (plan step D2a): the seam folds
       it from the same recorded events.
-    * **The loan's STANDING PAYMENT**, loaded ONCE here and threaded BOTH into
-      the resolve -- its ``extra_principal``, so ``state``'s schedule, payoff,
-      and interest are the COMMITTED plan-aware trajectory every summary surface
-      shows, matching the loan detail page (step 8,
-      ``docs/design/escrow_line_identity_refactor.md`` Sec. 16) -- and WHOLE
-      onto :attr:`ResolvedLoan.standing`, so the seam's forward plan prices
-      every installment past the materialized-shadow horizon from the same
-      definition without a second read (finding N-15, and plan step **R7d-a**
-      for the base and the mode).  ``None`` for a loan with no recurring
-      payment, and the injected extra is then ``0.00`` -- a safe no-op.
+    * **The loan's DEFINITIONS**, loaded ONCE here: every active recurring
+      transfer into it (:attr:`ResolvedLoan.definitions`, plan step R16-b-2),
+      which the seam's forward plan sums, and the oldest of them as the
+      STANDING PAYMENT, threaded into the resolve -- its ``extra_principal``,
+      so ``state``'s schedule, payoff, and interest are the COMMITTED
+      plan-aware trajectory every summary surface shows, matching the loan
+      detail page (step 8, ``docs/design/escrow_line_identity_refactor.md``
+      Sec. 16).  ``None`` for a loan with no recurring payment, and the
+      injected extra is then ``0.00`` -- a safe no-op.
 
     Returning the loaded ``context`` alongside the ``state`` is what removes the
     last reason for a consumer to re-load: the loan tile previously called
@@ -324,7 +338,21 @@ def resolve_loan_bundle(
     context = load_loan_context(
         account.id, ctx.amounts_or_none(), params,
     )
-    standing = standing_payment(account.id, account.user_id)
+    # ONE query for every definition into the loan (plan step R16-b-2); the
+    # standing payment is its oldest member, read off the same list rather
+    # than fetched again by ``standing_payment`` (finding N-511's shape).
+    # Reached through the module rather than an imported name, so the query
+    # is resolved at CALL time where it is defined -- which is where the
+    # "one lookup per pass" control counts it.
+    definitions = recurring_transfer_query.active_recurring_transfer_templates(
+        account.id, account.user_id,
+    )
+    standing = None
+    if definitions:
+        _derive, extra = loan_payment_config(definitions[0])
+        standing = StandingPayment(
+            template=definitions[0], extra_principal=extra,
+        )
     # The resolver takes the EXTRA alone -- it prices the contractual schedule
     # and an overpayment is the only part of the definition that moves it.  The
     # base and the mode go on the bundle for the forward plan, which prices
@@ -346,7 +374,167 @@ def resolve_loan_bundle(
         context=context,
         state=state,
         standing=standing,
+        definitions=definitions,
     )
+
+
+def is_standing_loan_payment(
+    template: RecurrenceOwner, ctx: BalanceContext,
+) -> bool:
+    """Return whether *template* is the STANDING payment of the loan it pays into.
+
+    **The ONE identity behind every per-bound rule the recurrence form applies
+    to a loan payment, read from the pass** (plan step R7d-f).  It replaced
+    ``owns_validity_window(template)``, which answered "does this module write
+    BOTH of this definition's bounds" -- a premise ruling **R-R29** made false
+    (only the OPENING bound stays written; the CLOSING bound is derived by
+    :func:`~app.services.loan_recurrence_sync.loan_payment_window` for EVERY
+    recurring transfer into a loan under **R-R35**) -- and which re-ran two
+    queries the pass already held (plan ledger row **N-511**:
+    ``load_loan_params`` after ``loan_figures`` had just proved the params
+    exist, and ``active_recurring_transfer_template`` after
+    ``resolved_loan(...).standing`` had memoised the very same lookup).  It
+    reads that memo (:func:`resolved_loan`), so the composed door, the form's
+    two locks, the three refusals and the forward plan read ONE producer and
+    the lookup runs once per pass however many of them ask.
+
+    **It lived in ``loan_recurrence_sync`` until plan step R16-b-2** (ruling
+    **R-R70**, developer 2026-09-11).  The forward plan
+    (:func:`~app.services.balance_at._plan.loan_plan`) sums every definition
+    paying into a loan and honours each one's AUTHORED closing, which for the
+    standing payment is :func:`authored_closing`'s ``NEVER_ENDS`` arm -- and
+    that module imports this seam, so the seam could not reach the identity
+    there without a cycle.  The question it answers is the seam's own ("is
+    this the payment the pass resolved the loan with"), so it lives beside the
+    memo it reads -- HERE rather than in ``_loan_figures`` beside
+    ``loan_standing_payment``, because the plan (``_plan``) reads it and
+    ``_loan_figures`` sits ABOVE the plan in the seam's internal DAG.
+
+    **What the identity decides is stated PER BOUND**, which is the split
+    R7d-f owed:
+
+    * The OPENING bound.  ``loan_recurrence_sync._sync_loan_cadence`` writes
+      and re-writes ``starts_on`` for this definition and no other -- the
+      loan's first contractual installment -- so its "Starts on" control
+      renders locked and a submission stating one is refused
+      (:data:`~app.routes._recurrence_form_refusals.LOAN_PAYMENT_BOUND_IS_DERIVED`).
+      A SECOND recurring transfer into the same loan has its start derived at
+      creation (``settle_first_occurrence``) and never re-synced afterwards --
+      plan ledger row **D50**, ruled at R7d-g -- so its control stays the
+      owner's.
+    * The CLOSING bound.  The loan's own payment runs to the payoff and has
+      NO authored stop: archiving is the door to stop it early (ruling
+      **R-R59**, developer 2026-09-05, taken at R7d-f).  Its "Ends" control
+      renders the composed door's derived answer, locked; a stated bound is
+      refused; and the column the chokepoints cache the payoff into is read as
+      that cache rather than as the owner's word (ruling **R-R56**,
+      :func:`authored_closing`) until R7d-g NULLs it.  A second transfer's
+      authored stop is its owner's and binds beside the derived one.
+
+    **"Standing" is the seam's own word**
+    (:func:`~app.services.recurring_transfer_query.standing_payment`): the
+    loan's ACTIVE recurring transfer, tie-broken oldest-first.  That search is
+    the one ruling **R-R35** wants deleted rather than answered; it survives
+    here because the opening bound's writer still targets it (**D50**).  It
+    stopped PRICING anything at plan step R16-b-2 (**D47**), which is the
+    half R-R35 was about.
+
+    **Not the same question as "is this a loan payment".**
+    :func:`~app.routes._recurrence_form_refusals.is_loan_payment` keeps the
+    settings-row reading, and correctly: what it decides is whether clearing
+    the recurrence would strand a standing ``extra_principal``, which is a
+    property of that row rather than of the loan's payment identity.
+
+    Args:
+        template: The ``TransactionTemplate`` or ``TransferTemplate`` a form
+            is rendering, a refusal is judging or the plan is summing.  A
+            transaction template can never pay into an account and answers
+            ``False`` before any query; ``getattr`` on the FK column
+            (:func:`~app.services.recurring_transfer_query.destination_account`)
+            is what keeps this kind-agnostic, the same way
+            :func:`~app.services.loan_recurrence_sync.loan_payment_window` is.
+            **Must belong to ``ctx.user_id``**: the pass refuses to memoise a
+            foreign loan (``ForeignAccountError`` from its store-once
+            primitive, ``_context._memoize_once``) rather than answering
+            about it.
+        ctx: The read pass.  Its per-loan resolution memo is where the
+            standing payment is read from, so a render or a refusal that has
+            already resolved the loan pays nothing more here; one that has not
+            resolves it once, and everything after it on the pass reads that.
+
+    Returns:
+        ``True`` when the destination is a configured loan and *template* is
+        the recurring transfer the seam resolves as that loan's payment.
+    """
+    if template.recurrence_rule is None:
+        return False
+    account = destination_account(template)
+    if account is None:
+        return False
+    resolved = resolved_loan(account, ctx)
+    if resolved is None or resolved.standing is None:
+        return False
+    return resolved.standing.template.id == template.id
+
+
+def authored_closing(
+    template: RecurrenceOwner, authored: EndBound, ctx: BalanceContext,
+) -> EndBound:
+    """Return the closing bound the OWNER stated, as the seam reads it.
+
+    **The one statement of ruling R-R56** (developer, 2026-09-04): for the
+    loan's STANDING payment -- the definition :func:`is_standing_loan_payment`
+    names -- the ``end_date`` column is the chokepoints' cache of the derived
+    payoff and not the owner's word, so it is read as no authored bound at all
+    and the derived stop is the whole answer.  Every other definition's stored
+    bound is its owner's and returns unchanged.
+
+    **Three readers, and their sharing it is the point.**
+    :func:`app.services.recurring_definition.resolved_definition` composes it
+    into the :class:`~app.services.recurrence.Closing` every display reads;
+    ``_recurrence_form_refusals.refuse_inverted_window`` grades the pair an
+    edit would leave stored against it; and, since plan step R16-b-2, the
+    forward plan (:func:`~app.services.balance_at._plan.loan_plan`) walks each
+    definition paying into a loan under this bound and NO derived one --
+    the derived stop is that fold's own output (ruling **R-R65**: the sum
+    honours the door's AUTHORED half).  While the refusal read the column
+    directly it carried a SKIP for the standing payment -- a loan cleared
+    before its first installment stores an inverted pair the owner has no
+    control to repair (plan step ``recurrence:R7d-h``) -- and the skip was a
+    second spelling of this arm.  Reading the arm's answer makes the skip
+    structurally unnecessary: the standing payment's authored half is
+    ``NEVER_ENDS``, which inverts against nothing.
+
+    **It lived in ``recurring_definition`` until plan step R16-b-2** (ruling
+    **R-R70**): that door imports this seam, and the plan is the seam's, so
+    the arm moved to the tier all three readers reach (``CLAUDE.md`` rule
+    14's placement clause).
+
+    It TAKES the column-read the caller already holds rather than reading the
+    two columns itself: the door's is the pure resolver's, the refusal's is
+    :func:`~app.services.recurrence.end_bound_from_columns`, and the resolver
+    reads the columns through that same function -- so this adds no spelling
+    of the column (``CLAUDE.md`` rule 14).
+
+    **R7d-g deletes this function with the column it reads around**: once
+    nothing writes the loan's payoff into the authored bound's column, a
+    stored bound is its owner's for every definition and there is nothing
+    left to read as a cache.
+
+    Args:
+        template: The definition.  See :func:`is_standing_loan_payment` for
+            the ownership contract.
+        authored: What the definition's two bound columns hold, already read
+            by the caller.
+        ctx: The read pass, for the loan's memoised resolution.
+
+    Returns:
+        :data:`~app.services.recurrence.NEVER_ENDS` for the loan's standing
+        payment, else *authored* unchanged.
+    """
+    if is_standing_loan_payment(template, ctx):
+        return NEVER_ENDS
+    return authored
 
 
 def contractual_schedule_from_origination(

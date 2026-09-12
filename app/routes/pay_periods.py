@@ -11,7 +11,7 @@ the settings "pay-periods" section.
 import logging
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.utils.auth_helpers import require_owner
 
@@ -176,7 +176,6 @@ def _append_periods(num_periods):
 
 
 @pay_periods_bp.route("/pay-periods/generate", methods=["GET"])
-@login_required
 @require_owner
 def generate_form():
     """Redirect to settings dashboard pay periods section."""
@@ -184,7 +183,6 @@ def generate_form():
 
 
 @pay_periods_bp.route("/pay-periods/generate", methods=["POST"])
-@login_required
 @require_owner
 def generate():
     """Generate pay periods from the submitted form data."""
@@ -341,7 +339,6 @@ def generate():
 
 
 @pay_periods_bp.route("/pay-periods/extend", methods=["POST"])
-@login_required
 @require_owner
 def extend():
     """Append pay periods to the end of the schedule."""
@@ -358,7 +355,6 @@ def extend():
 
 
 @pay_periods_bp.route("/pay-periods/truncate", methods=["POST"])
-@login_required
 @require_owner
 def truncate():
     """Delete the schedule tail beyond the chosen period."""
@@ -431,7 +427,6 @@ def truncate():
 
 
 @pay_periods_bp.route("/pay-periods/regenerate", methods=["POST"])
-@login_required
 @require_owner
 def regenerate():
     """Rebuild the not-yet-started future tail from a corrected start."""
@@ -522,7 +517,6 @@ def regenerate():
 
 
 @pay_periods_bp.route("/pay-periods/reset", methods=["POST"])
-@login_required
 @require_owner
 def reset():
     """Wipe and rebuild the entire schedule (first-time-setup correction).
@@ -573,7 +567,6 @@ def reset():
 
 
 @pay_periods_bp.route("/pay-periods/history", methods=["POST"])
-@login_required
 @require_owner
 def history():
     """Save how far back the owner's paychecks reach.
@@ -614,7 +607,6 @@ def history():
 
 
 @pay_periods_bp.route("/pay-periods/schedule", methods=["POST"])
-@login_required
 @require_owner
 def schedule():
     """Save the continuous-rolling-window configuration."""

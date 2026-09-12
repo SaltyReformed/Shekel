@@ -27,6 +27,7 @@ from app.services.row_valuation import settled_figure
 from app.services.entry_credit_workflow import sync_entry_payback
 from tests._test_helpers import (
     an_entered_day,
+    generate_row_of,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -238,26 +239,9 @@ class TestSyncEntryPayback:
         with app.app_context():
             user = seed_user["user"]
             template = seed_entry_template["template"]
-            projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
-            )
 
-            # Transaction in the last period -- no period follows it.
-            txn = Transaction(
-                template_id=template.id,
-                user_id=seed_periods[-1].user_id,
-                pay_period_id=seed_periods[-1].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Last Period Expense",
-                category_id=seed_entry_template["category"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-            )
-            db.session.add(txn)
-            db.session.flush()
+            # The definition's row in the LAST period -- no period follows it.
+            txn = generate_row_of(template, seed_periods[-1])
 
             self._create_credit_entry(txn, user, "100.00")
 
@@ -624,25 +608,9 @@ class TestPaybackCorrectness:
             txn1 = seed_entry_template["transaction"]
             user = seed_user["user"]
             template = seed_entry_template["template"]
-            projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
-            )
 
-            txn2 = Transaction(
-                template_id=template.id,
-                user_id=seed_periods[2].user_id,
-                pay_period_id=seed_periods[2].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Weekly Groceries",
-                category_id=seed_entry_template["category"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-            )
-            db.session.add(txn2)
-            db.session.flush()
+            # The same definition's row in a later period.
+            txn2 = generate_row_of(template, seed_periods[2])
 
             e1 = TransactionEntry(
                 transaction_id=txn1.id, account_id=txn1.account_id, user_id=user.id,

@@ -25,13 +25,14 @@ Test fixture math (hand-computed):
   pre-Commit-17 value the off-engine sites returned.
 """
 
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 
 from app import ref_cache
-from app.enums import AmountSourceEnum
+from app.enums import RaiseTypeEnum
 from app.extensions import db
 from app.models.ref import FilingStatus, RaiseType, Status, TaxType, TransactionType
 from app.models.salary_profile import SalaryProfile
@@ -41,6 +42,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services.income_service import paycheck_pricing
 from app.services.pay_calendar import calendar_for, paydays_in_year_before
+from app.services.salary_raises import RaiseTerms, terms_of
 from app.services.projection_inputs import load_payroll_feeds
 from app.services import (
     balance_at,
@@ -51,11 +53,14 @@ from app.services.tax_config_service import (
     load_tax_configs,
     load_tax_configs_for_year,
 )
+from app.services.amount_ownership import state_own_amount
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     all_periods,
     counting_calls,
     freeze_today,
+    generate_row_of,
+    make_every_period_rule,
     make_investment_account,
     payroll_basis,
 )
@@ -111,12 +116,34 @@ def _add_one_time_raise(
     return salary_raise
 
 
-def _make_salary_template(seed_user, profile, *, name="Paycheck"):
+def _make_salary_template(seed_user, profile, *, name="Paycheck", account=None):
     """Create an Income template and link ``profile`` to it.
 
     The producer treats a transaction as salary-linked iff its
     ``template_id`` maps to an active SalaryProfile for the scenario, so
     the test must set ``profile.template_id`` to the created template.
+
+    **It carries a cadence and states NO price**, and the second is not a
+    choice this fixture gets to make.  The cadence is what lets the engine
+    write the definition's rows (:func:`generate_row_of`, plan step
+    balance:X-cf).  A salary-linked definition's amount is DERIVED rather
+    than stated (``template_amount_service.owns_its_amount`` is False once
+    the profile names it), so ``set_amount`` on it would set the scalar and
+    open no series, and amount rule 3 refuses such a row at that arm before
+    any series is read (``_stated_amount``) -- which is what keeps a
+    dispatch that fell through to rule 3 from answering the scalar's
+    ``$4,000.00``, the profile's own no-raise net.  Measured under review
+    2026-09-11: ``_rule_within_definition`` mutated to answer TEMPLATE fails
+    here with that refusal, not with an empty-series one.
+
+    Args:
+        seed_user: The seeded owner bundle.
+        profile: The :class:`~app.models.salary_profile.SalaryProfile` that
+            prices this definition's rows; its ``template_id`` is set here.
+        name: The definition's name.
+        account: The account the paycheck lands on; the seed user's checking
+            account when omitted.  The engine puts a row on its definition's
+            account, so a case wanting the paycheck on an HYSA says so here.
     """
     income_type = (
         db.session.query(TransactionType).filter_by(name="Income").one()
@@ -124,7 +151,7 @@ def _make_salary_template(seed_user, profile, *, name="Paycheck"):
     category = next(iter(seed_user["categories"].values()))
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
+        account_id=(seed_user["account"] if account is None else account).id,
         category_id=category.id,
         transaction_type_id=income_type.id,
         name=name,
@@ -132,6 +159,8 @@ def _make_salary_template(seed_user, profile, *, name="Paycheck"):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    make_every_period_rule(db.session, template)
     profile.template_id = template.id
     db.session.flush()
     return template
@@ -139,28 +168,60 @@ def _make_salary_template(seed_user, profile, *, name="Paycheck"):
 
 def _make_txn(
     seed_user, period, *, template=None, type_name="Income",
-    status_name="Projected", is_override=False, estimated_amount="1.00",
-    derived=False,
+    status_name="Projected", owned_amount=None,
 ):
     """Create a single Transaction in ``period`` for the producer tests.
 
-    ``derived=True`` builds the row plan step **X-au-d** puts every
-    non-overridden salary row in: it DECLARES its definition
-    (:attr:`~app.enums.AmountSourceEnum.TEMPLATE`) and stores no figure at all,
-    so amount rule 2 prices it from the profile.  The default is the OWN shape
-    -- an ad-hoc row, or one a human re-priced -- where *estimated_amount* IS
-    the answer.  The two are one attribute on the model
-    (``ck_transactions_amount_ownership`` pairs them), which is why this is a
-    switch rather than two independent arguments.
+    Two arms, decided by whether a definition is named (plan step
+    balance:X-cf):
+
+    * **A row of a DEFINITION** (*template* given) is the ENGINE's row of it
+      in *period* (:func:`generate_row_of`): derived, dated, answering an
+      occurrence, Projected.  *type_name* is not read -- the row's type is
+      its definition's.  *status_name* other than Projected is then laid on
+      bare, and *owned_amount* makes it the OWNER's re-priced row through the
+      re-price door's two acts (``state_own_amount`` and ``is_override``).
+    * **An AD-HOC row** (no *template*) is constructed bare and OWNS
+      *owned_amount*, which it must state.
+
+    ``derived`` was a switch here until X-cf-3: with the engine writing the
+    row there is no other shape a non-overridden salary row can have, so the
+    flag named the only state and went.
+
+    Args:
+        seed_user: The seeded owner bundle.
+        period: The pay period the row is funded in.
+        template: The definition whose row is wanted, or ``None``.
+        type_name: The ad-hoc row's transaction type.
+        status_name: The status to give the row.
+        owned_amount: The figure the row OWNS, as a string.  On a definition's
+            row it means a human re-priced it; on an ad-hoc row it is the
+            row's own figure and is required.
+
+    Returns:
+        The flushed :class:`~app.models.transaction.Transaction`.
+
+    Raises:
+        ValueError: An ad-hoc row with no *owned_amount*: such a row states a
+            figure or it is not a row the schema admits.
     """
+    status = db.session.query(Status).filter_by(name=status_name).one()
+    if template is not None:
+        txn = generate_row_of(template, period)
+        if owned_amount is not None:
+            state_own_amount(txn, Decimal(owned_amount))
+            txn.is_override = True
+        txn.status_id = status.id
+        db.session.flush()
+        return txn
+    if owned_amount is None:
+        raise ValueError("an ad-hoc row owns its figure; pass owned_amount")
     txn_type = (
         db.session.query(TransactionType).filter_by(name=type_name).one()
     )
-    status = db.session.query(Status).filter_by(name=status_name).one()
     category = next(iter(seed_user["categories"].values()))
     txn = Transaction(
         account_id=seed_user["account"].id,
-        template_id=template.id if template is not None else None,
         user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
@@ -168,13 +229,7 @@ def _make_txn(
         name="producer-test txn",
         category_id=category.id,
         transaction_type_id=txn_type.id,
-        amount_ownership=(
-            AmountOwnership.derived(
-                ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-            )
-            if derived else AmountOwnership.own(Decimal(estimated_amount))
-        ),
-        is_override=is_override,
+        amount_ownership=AmountOwnership.own(Decimal(owned_amount)),
     )
     db.session.add(txn)
     db.session.flush()
@@ -229,10 +284,11 @@ class TestSalaryNetFor:
     ):
         """A salary-linked income row maps to what its PROFILE pays.
 
-        The row is built OWNING a deliberately wrong ``$1.00`` so the two
-        answers stay distinguishable at this tier: a producer reading the
-        column would answer ``$1.00`` and the profile answers ``$4,000.00``.
-        The DECLARED shape -- where the column is empty and the distinction is
+        The row is the engine's, RE-PRICED by its owner to a deliberately
+        wrong ``$1.00`` (the re-price door's two acts) so the two answers
+        stay distinguishable at this tier: a producer reading the column
+        would answer ``$1.00`` and the profile answers ``$4,000.00``.  The
+        DECLARED shape -- where the column is empty and the distinction is
         structural rather than measured -- is graded one tier up, by
         ``test_amount_source`` over the rule this producer is the body of.
         """
@@ -245,8 +301,7 @@ class TestSalaryNetFor:
 
             period = all_periods(user_id)[5]
             txn = _make_txn(
-                seed_user, period, template=template,
-                estimated_amount="1.00",
+                seed_user, period, template=template, owned_amount="1.00",
             )
             db.session.commit()
 
@@ -337,24 +392,30 @@ class TestSalaryNetFor:
                 default_amount=Decimal("50.00"),
             )
             db.session.add(other_template)
+            db.session.flush()
+            # The cadence the engine needs to write its row; no price, because
+            # nothing here prices this row and an empty series is what refuses
+            # a producer that tried.
+            make_every_period_rule(db.session, other_template)
             db.session.commit()
 
             periods = all_periods(user_id)
-            # Distinct periods avoid the (template, period, scenario)
-            # non-override unique index.
+            # Distinct periods: an every-paycheck definition names ONE
+            # occurrence per paycheck, and the engine writes each once.
             wanted = _make_txn(seed_user, periods[5], template=template)
             received = _make_txn(
                 seed_user, periods[6], template=template,
                 status_name="Received",
             )
             overridden = _make_txn(
-                seed_user, periods[7], template=template, is_override=True,
+                seed_user, periods[7], template=template, owned_amount="1.00",
             )
             non_salary = _make_txn(
                 seed_user, periods[5], template=other_template,
             )
             expense = _make_txn(
                 seed_user, periods[5], template=None, type_name="Expense",
+                owned_amount="1.00",
             )
             db.session.commit()
 
@@ -398,6 +459,8 @@ class TestSalaryNetFor:
                 default_amount=Decimal("100.00"),
             )
             db.session.add(unlinked)
+            db.session.flush()
+            make_every_period_rule(db.session, unlinked)
             db.session.commit()
             txn = _make_txn(
                 seed_user, all_periods(user_id)[3],
@@ -459,9 +522,7 @@ class TestLiveIncomeThroughBalanceResolver:
 
             periods = all_periods(user_id)
             period = periods[5]
-            row = _make_txn(
-                seed_user, period, template=template, derived=True,
-            )
+            row = _make_txn(seed_user, period, template=template)
             db.session.commit()
             assert row.estimated_amount is None
 
@@ -530,8 +591,7 @@ class TestLiveIncomeThroughBalanceResolver:
 
             period = all_periods(user_id)[5]
             _make_txn(
-                seed_user, period, template=template, is_override=True,
-                estimated_amount="1234.56",
+                seed_user, period, template=template, owned_amount="1234.56",
             )
             db.session.commit()
 
@@ -803,10 +863,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
                 (p for p in periods if p.start_date.year == 2027), None,
             )
             assert period_2027 is not None, "seed_periods_52 must reach 2027"
-            txn = _make_txn(
-                seed_user, period_2027, template=template,
-                estimated_amount="1.00",
-            )
+            txn = _make_txn(seed_user, period_2027, template=template)
             db.session.commit()
 
             # Engine-faithful expectations that isolate WHICH year's rate
@@ -908,10 +965,7 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
                 (p for p in periods if p.start_date.year == 2027), None,
             )
             assert period_2027 is not None, "seed_periods_52 must reach 2027"
-            txn = _make_txn(
-                seed_user, period_2027, template=template,
-                estimated_amount="1.00",
-            )
+            txn = _make_txn(seed_user, period_2027, template=template)
             db.session.commit()
 
             freeze_today(monkeypatch, date(2026, 6, 1))
@@ -1265,3 +1319,182 @@ class TestThePricerREFUSESAMismatchedOwner:
 
             with pytest.raises(ValueError, match="belongs to user"):
                 income_service.paycheck_pricing(foreign).for_profile(profile)
+
+
+# ── salary:S3-f-1: the pricer is keyed on the raise set ─────────────
+
+
+def _believed_through(row: SalaryRaise, terminal_year) -> RaiseTerms:
+    """The row's terms, believed through *terminal_year* instead.
+
+    The shape a what-if hands the engine (plan step salary:S3-f): the
+    production value with ONE term changed.
+    """
+    return replace(RaiseTerms.of(row), terminal_year=terminal_year)
+
+
+class TestThePricerIsKeyedOnTheRaiseSet:
+    """One pricer per profile PER RAISE SET, and the rows are one set.
+
+    Plan step **salary:S3-f-1** (ruling **R-SAL20**).
+    :meth:`~app.services.income_service.PaycheckPricing.for_profile` keyed on
+    the profile's id alone, and :class:`ProfilePaychecks` memoizes by payday
+    alone -- so a second raise set for one profile had nowhere to go but the
+    stored set's memo.  The key carries the terms now; ``None`` spells the
+    rows, which keeps every stored-plan render on the one pricer it always
+    built.
+    """
+
+    @staticmethod
+    def _profile_with_a_forever_raise(seed_user):
+        """``$104,000`` with a recurring 5% March raise from 2026, no end."""
+        profile = _create_profile(
+            seed_user["user"].id, seed_user["scenario"].id,
+        )
+        merit = db.session.query(RaiseType).filter_by(name="merit").one()
+        row = SalaryRaise(
+            salary_profile_id=profile.id, raise_type_id=merit.id,
+            effective_month=3, effective_year=2026,
+            percentage=Decimal("0.0500"), is_recurring=True,
+            terminal_year=None,
+        )
+        db.session.add(row)
+        db.session.commit()
+        db.session.refresh(profile)
+        return profile, row
+
+    @staticmethod
+    def _payday_in(calendar, year):
+        """A projected payday in *year*, off the calendar's own rhythm."""
+        axis = calendar.axis(calendar.opening_bound(), date(year, 12, 31))
+        return next(p for p in axis if p.start_date.year == year
+                    and p.start_date.month >= 6)
+
+    def test_every_spelling_of_the_stored_set_is_ONE_pricer(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``None``, the rows, and values carrying the rows' terms: one key.
+
+        The finding an adversarial review of this step made: keyed on the
+        caller's objects, the stored set had three spellings and each built a
+        pricer of its own -- the two-derivations-of-one-figure shape
+        ``PlanPoint`` refuses one tier up, and one the pricer-count gate
+        cannot see on a probe request, where a second pricer is also the
+        legitimate outcome.  The fourth spelling is the one S3-f-2's rail
+        will actually send: a probe carrying the stored end year unchanged.
+        """
+        with app.app_context():
+            profile, row = self._profile_with_a_forever_raise(seed_user)
+            paychecks = income_service.paycheck_pricing(
+                calendar_for(profile.user_id),
+            )
+            stored = paychecks.for_profile(profile)
+
+            assert paychecks.for_profile(profile, tuple(profile.raises)) is stored
+            assert paychecks.for_profile(profile, terms_of(profile.raises)) is stored
+            assert paychecks.for_profile(
+                profile, (_believed_through(row, row.terminal_year),),
+            ) is stored, (
+                "a probe carrying the STORED end year built a second pricer "
+                "for the stored set"
+            )
+
+    def test_the_rows_are_one_key_and_a_raise_set_is_another(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Same terms, same pricer; the rows' pricer is untouched by them."""
+        with app.app_context():
+            profile, row = self._profile_with_a_forever_raise(seed_user)
+            paychecks = income_service.paycheck_pricing(
+                calendar_for(profile.user_id),
+            )
+            stored = paychecks.for_profile(profile)
+            believed = paychecks.for_profile(
+                profile, (_believed_through(row, 2026),),
+            )
+
+            assert paychecks.for_profile(profile) is stored
+            assert believed is not stored, (
+                "a raise set other than the rows was served the rows' pricer"
+            )
+            # An EQUAL tuple built again is the same key: a probe repeated
+            # at one raise set must not build a second pricer.
+            assert paychecks.for_profile(
+                profile, (_believed_through(row, 2026),),
+            ) is believed
+            assert paychecks.for_profile(profile) is stored
+
+    def test_a_pricer_under_terms_prices_off_them(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The paychecks a keyed pricer answers are the terms', end to end.
+
+        A June 2028 payday: three applications of 5% on ``$104,000`` under
+        the rows (``$120,393.00 / 26 = $4,630.50``), one under terms believed
+        through 2026 (``$109,200.00 / 26 = $4,200.00``).
+        """
+        with app.app_context():
+            profile, row = self._profile_with_a_forever_raise(seed_user)
+            calendar = calendar_for(profile.user_id)
+            paychecks = income_service.paycheck_pricing(calendar)
+            june_2028 = self._payday_in(calendar, 2028)
+
+            assert paychecks.for_profile(profile).at(
+                june_2028,
+            ).earnings.gross_biweekly == Decimal("4630.50")
+            assert paychecks.for_profile(
+                profile, (_believed_through(row, 2026),),
+            ).at(june_2028).earnings.gross_biweekly == Decimal("4200.00"), (
+                "the pricer keyed on the terms priced the profile's rows"
+            )
+
+    def test_a_never_flushed_raise_is_priced_from_its_FK(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The X-bl invariance control's row: appended, never flushed, priced.
+
+        ``tests/manual/verify_amount_resolver.py`` appends a ``SalaryRaise``
+        with only its ``raise_type_id`` set to a loaded profile under
+        ``no_autoflush`` and prices every salary row through the pricer.
+        SQLAlchemy does not lazy-load a relationship on a pending instance,
+        so ``row.raise_type`` is ``None`` there; the type's name comes off the
+        FK through the ref cache instead, and the paycheck moves by the
+        raise.  A second adversarial review of S3-f-1 found the relationship
+        read raising ``AttributeError`` on exactly this row.
+        """
+        with app.app_context():
+            profile = _create_profile(
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.commit()
+            db.session.refresh(profile)
+            calendar = calendar_for(profile.user_id)
+            first = calendar.saved()[0]
+            before = income_service.paycheck_pricing(calendar).for_profile(
+                profile,
+            ).at(first).earnings.gross_biweekly
+
+            with db.session.no_autoflush:
+                pending = SalaryRaise(
+                    salary_profile_id=profile.id,
+                    raise_type_id=ref_cache.raise_type_id(
+                        RaiseTypeEnum.CUSTOM,
+                    ),
+                    effective_month=1, effective_year=first.start_date.year,
+                    flat_amount=Decimal("26000.00"), percentage=None,
+                    is_recurring=False, terminal_year=None,
+                )
+                profile.raises.append(pending)
+                # The relationship is unloaded on a pending instance, which
+                # is the state under test; ``no_autoflush`` is what keeps it
+                # pending through the pricing below.
+                assert pending.raise_type is None
+                after = income_service.paycheck_pricing(
+                    calendar,
+                ).for_profile(profile).at(first)
+                db.session.rollback()
+
+            # $26,000 a year is exactly $1,000.00 a paycheck over 26.
+            assert after.earnings.gross_biweekly == before + Decimal("1000.00")
+            assert after.period.raise_event == "CUSTOM +$26,000.00"
+

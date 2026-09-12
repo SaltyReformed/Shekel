@@ -7,7 +7,7 @@ verbatim from the pre-split ``app/routes/transfers.py``.
 """
 
 from flask import render_template
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.extensions import db
 from app.models.ref import Status
@@ -27,7 +27,6 @@ from app.routes.transfers._helpers import _get_owned_transfer
 
 
 @transfers_bp.route("/transfers/cell/<int:xfer_id>", methods=["GET"])
-@login_required
 @require_owner
 def get_cell(xfer_id):
     """HTMX partial: return the display-mode cell for a transfer."""
@@ -38,7 +37,6 @@ def get_cell(xfer_id):
 
 
 @transfers_bp.route("/transfers/quick-edit/<int:xfer_id>", methods=["GET"])
-@login_required
 @require_owner
 def get_quick_edit(xfer_id):
     """HTMX partial: return the inline amount edit form for a transfer."""
@@ -52,7 +50,6 @@ def get_quick_edit(xfer_id):
 
 
 @transfers_bp.route("/transfers/<int:xfer_id>/full-edit", methods=["GET"])
-@login_required
 @require_owner
 def get_full_edit(xfer_id):
     """HTMX partial: return the full edit popover form for a transfer."""

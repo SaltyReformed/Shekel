@@ -136,17 +136,18 @@ rows in, ``Decimal`` out; no Flask import, no writes.
 
 from __future__ import annotations
 
-from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from app.exceptions import AmountUnresolvable
-from app.services import template_amount_service
-from app.services.recurring_transfer_query import loan_payment_config
-from app.utils.money import round_money
 
 from ._amount_basis import AmountBasis
 from ._amount_rule import AmountRule, amount_rule, transfer_amount_rule
+from ._definition_cash import (
+    DefinitionRow,
+    _loan_payment_cash_from,
+    _stated_amount,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # Named for the annotation alone.  A runtime import would put the paycheck
@@ -425,93 +426,6 @@ def _own_figure(amount, kind: str, row_id: int) -> Decimal:
     return amount
 
 
-def _stated_amount(template, on_date: date | None, kind: str, row_id: int) -> Decimal:
-    """Return what *template* states for ``on_date``, refusing when it states nothing.
-
-    The series arm shared by rule 3 and by :func:`resolve_transfer_amount`, so
-    the two cannot come to disagree about what "the definition's price" means.
-    Resolution itself is ``template_amount_service.amount_as_of``: the newest
-    version at or before the date, holding FLAT before the earliest one, which
-    is what makes it total for a row generated into a historical period.
-
-    Three refusals, and all three are states the app can reach:
-
-    * **the definition does not own its amount**
-      (``template_amount_service.owns_its_amount`` is False -- a salary-linked
-      template, a derive-mode loan payment).  Its price is COMPUTED by something
-      else, so any versions it holds are dormant rather than authoritative.
-      **The test for this is not "is the series empty", and a control found the
-      difference**: a template switched from manual to derive-mode KEEPS the
-      versions stated while it was manual (X-au-a's stated behaviour -- they are
-      the record of what was stated then), so an emptiness test would answer a
-      derive-mode payment from a price nobody is stating any more.
-    * **no due date.**  ``due_date`` is nullable on both row tables and the
-      transfer edit form can clear it, so a row can carry no date to resolve
-      on.  A pay period's bounds are NOT a substitute -- a period begins up to
-      two weeks before the installment it funds (ruling D5's contract time), so
-      a price change inside that window would answer one figure here and
-      another everywhere else.
-    * **an empty series** on a definition that DOES own its amount: its creator
-      wrote the scalar without going through
-      ``template_amount_service.set_amount``, the one write door.  Nobody ever
-      stated a price, and X-au-a's own docstring names this refusal as the
-      reason it answers ``None`` instead of guessing.
-
-    Args:
-        template: The transaction or transfer template that states the price.
-        on_date: The row's own due date.
-        kind: ``"transaction"`` or ``"transfer"``, for the refusal message.
-        row_id: The row's id, named in the refusal.
-
-    Returns:
-        The stated amount on ``on_date``.
-
-    Raises:
-        AmountUnresolvable: When the definition's amount is derived rather than
-            stated, when the row has no due date, or when the series is empty.
-    """
-    if template is None:
-        raise AmountUnresolvable(
-            f"{kind.capitalize()} {row_id} names a template that could not be "
-            "loaded, so the definition that states its price is gone. The FK "
-            "is ON DELETE SET NULL, so the database cannot hold this pairing -- "
-            "it is a row whose template was hard-deleted in this same session "
-            "while the row still carried the id."
-        )
-    if not template_amount_service.owns_its_amount(template):
-        raise AmountUnresolvable(
-            f"{kind.capitalize()} {row_id} is priced by template "
-            f"{template.id}, whose own amount is DERIVED rather than stated -- "
-            "a salary-linked template, or a loan payment in derive mode. Its "
-            "price series is dormant and may still hold versions stated while "
-            "it owned its amount, so reading it here would answer a price "
-            "nobody is stating any more. The rule that prices this row is the "
-            "one that computes the definition's amount, and it had no answer."
-        )
-    if on_date is None:
-        raise AmountUnresolvable(
-            f"{kind.capitalize()} {row_id} is priced by template "
-            f"{template.id} and carries no due_date, so there is no date to "
-            "resolve its price on. Its pay period's bounds are not a "
-            "substitute: a period starts up to two weeks before the "
-            "installment it funds, so a price change inside that window would "
-            "answer differently here than everywhere else."
-        )
-    stated = template_amount_service.amount_as_of(template, on_date)
-    if stated is None:
-        raise AmountUnresolvable(
-            f"{kind.capitalize()} {row_id} is priced by template "
-            f"{template.id}, which states no amount for {on_date.isoformat()} "
-            "-- its price series is EMPTY. Either its amount is derived rather "
-            "than stated (template_amount_service.owns_its_amount is False), "
-            "or it was created without going through set_amount, the one write "
-            "door. There is deliberately no fallback to default_amount: that "
-            "scalar has no time dimension, so reading it here would price a "
-            "March row at June's figure."
-        )
-    return stated
-
-
 def _own_answer(txn, _basis: AmountBasis) -> Decimal:
     """Rule 1: the row states its own figure.
 
@@ -642,7 +556,7 @@ def _template_answer(txn, _basis: AmountBasis) -> Decimal:
     Raises:
         AmountUnresolvable: See :func:`_stated_amount`.
     """
-    return _stated_amount(txn.template, txn.due_date, "transaction", txn.id)
+    return _stated_amount(txn.template, txn.due_date, f"Transaction {txn.id}")
 
 
 def _transfer_own_answer(xfer, _basis: AmountBasis) -> Decimal:
@@ -689,7 +603,7 @@ def _transfer_template_answer(xfer, _basis: AmountBasis) -> Decimal:
     Raises:
         AmountUnresolvable: See :func:`_stated_amount`.
     """
-    return _stated_amount(xfer.template, xfer.due_date, "transfer", xfer.id)
+    return _stated_amount(xfer.template, xfer.due_date, f"Transfer {xfer.id}")
 
 
 def _loan_payment_cash(xfer, basis: AmountBasis) -> Decimal:
@@ -770,25 +684,14 @@ def _loan_payment_cash(xfer, basis: AmountBasis) -> Decimal:
         AmountUnresolvable: When a DERIVE-mode payment's loan will not resolve,
             or when a MANUAL payment's definition states no price.
     """
-    derive, extra = loan_payment_config(xfer.template)
-    if derive:
-        live = basis.loans.derive_cash(
-            xfer.due_date, xfer.pay_period.start_date,
-            xfer.to_account_id, extra,
-        )
-        if live is None:
-            raise AmountUnresolvable(
-                f"Transfer {xfer.id} is a DERIVE-mode loan payment and the "
-                "loan would not resolve, so its P&I has no answer. The "
-                f"destination account {xfer.to_account_id} carries no "
-                "LoanParams, or its schedule could not be built. The stored "
-                "figure is not a fallback: on a derive-mode payment it is a "
-                "snapshot of exactly the computation that just failed."
-            )
-        return live
-    return round_money(
-        _stated_amount(xfer.template, xfer.due_date, "transfer", xfer.id)
-        + extra
+    return _loan_payment_cash_from(
+        DefinitionRow(
+            template=xfer.template,
+            due_date=xfer.due_date,
+            period_start=xfer.pay_period.start_date,
+            to_account_id=xfer.to_account_id,
+        ),
+        basis, subject=f"Transfer {xfer.id}",
     )
 
 

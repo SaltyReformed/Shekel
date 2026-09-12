@@ -16,7 +16,7 @@ route boundary rather than inside it.
 import logging
 
 from flask import redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
@@ -147,7 +147,6 @@ def _load_recurring_view(user_id, ctx):
 
 
 @templates_bp.route("/templates")
-@login_required
 @require_owner
 def list_templates():
     """Render the unified Recurring surface.
@@ -184,7 +183,6 @@ def list_templates():
 
 
 @templates_bp.route("/templates/unit-preference", methods=["POST"])
-@login_required
 @require_owner
 def set_unit_preference():
     """Persist the Recurring surface's Monthly / Per-paycheck unit choice.
