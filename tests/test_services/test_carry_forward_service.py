@@ -61,7 +61,10 @@ from tests._test_helpers import (
     create_account_of_type,
     default_settle_day,
     derived_span,
+    generate_row_of,
     make_cadence_rule,
+    make_expense_template,
+    make_income_template,
     settle_day_columns,
     settled_day_basis_id,
     settlement_basis_id,
@@ -74,21 +77,24 @@ from app.models.amount_ownership import AmountOwnership
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
-                        status_name="Projected", template_id=None,
+                        status_name="Projected",
                         is_deleted=False, name="Test Expense",
                         amount="100.00", settled_amount=None):
-    """Create a test transaction in the given period.
+    """Create an AD-HOC test transaction in the given period.
+
+    It took a ``template_id`` until plan step balance:X-cf-3; a row of a
+    definition is the engine's (:func:`generate_row_of`) and this builder
+    can no longer spell one.
 
     Args:
         seed_user: The seed_user fixture dict.
         seed_periods: The seed_periods fixture list.
         period_index: Index into seed_periods for pay_period_id.
         status_name: Name of the status to look up.
-        template_id: Optional template FK.
         is_deleted: Soft-delete flag.
         name: Transaction display name.
         amount: Estimated amount as string.
-        actual_amount: Optional actual amount as string.
+        settled_amount: Optional figure a human typed at the settle.
 
     Returns:
         The created Transaction object (flushed, not committed).
@@ -113,7 +119,6 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
         # out here.
         **settle_day_columns(_settle_day),
         **settlement_columns(_settle_day, amount, settled_amount),
-        template_id=template_id,
         is_deleted=is_deleted,
     )
     db.session.add(txn)
@@ -554,22 +559,10 @@ class TestCarryForwardStatusRecheck:
         not collide with a rule-generated row in the target period.
         """
         with app.app_context():
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                account_id=seed_user["account"].id,
-                transaction_type_id=db.session.query(TransactionType)
-                    .filter_by(name="Expense").one().id,
-                name="Recurring Tpl",
-                default_amount=Decimal("100.00"),
+            template = _create_template(
+                seed_user, name="Recurring Tpl", category_key="Groceries",
             )
-            db.session.add(template)
-            db.session.flush()
-
-            txn = _create_transaction(
-                seed_user, seed_periods,
-                name="Linked", template_id=template.id,
-            )
+            txn = generate_row_of(template, seed_periods[0])
             assert txn.is_override is False
 
             count = carry_forward_service.carry_forward_unpaid(
@@ -917,34 +910,38 @@ class TestCarryForwardShadowTransactions:
 
 def _create_template(seed_user, name="Recurring Bill",
                      amount="100.00", category_key="Rent"):
-    """Create a TransactionTemplate without a recurrence rule.
+    """Create a priced, every-paycheck DISCRETE definition.
 
-    Used by override-sibling tests that hand-place rule-generated rows
-    rather than driving them through the recurrence engine.  Returns
-    the persisted template.
+    Used by the override-sibling and discrete-branch tests, whose rows are
+    the engine's own (:func:`generate_row_of`, plan step balance:X-cf) --
+    it built a rule-less template for rows placed by hand until X-cf-3.
+    Returns the persisted template.
     """
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="Expense").one()
+    return make_expense_template(
+        db.session, seed_user, amount=amount,
+        name=name, category_key=category_key,
     )
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"][category_key].id,
-        transaction_type_id=expense_type.id,
-        name=name,
-        default_amount=Decimal(amount),
-    )
-    db.session.add(template)
-    db.session.flush()
-    state_template_price(template)
-    return template
 
 
 class TestCarryForwardOverrideSibling:
     """Regression for the production bug: carry-forward into a target
     period that already holds a rule-generated row from the same
-    template.  The relaxed partial unique index permits a carried
+    template.  The undated partial unique index permits a carried
     is_override=True row to coexist with the rule-generated parent.
+
+    The rule-generated rows ARE rule-generated: the engine writes them
+    (plan step balance:X-cf), one per paycheck.  **The first case then
+    clears both rows' ``occurs_on``**, because the index whose exemption it
+    grades is the UNDATED one: a dated pair is storable by its two
+    occurrences whatever the flag says (the occurrence index has carried
+    no ``is_override`` clause since plan step X-au-h), so on dated rows the
+    carry could write the period and the flag in two statements and
+    nothing would collide.  The undated shape is a live one -- the backfill
+    leaves NULL every row no occurrence claims -- and it is the one the
+    production traceback came from.  Measured by the X-cf-3 review: the
+    discrete UPDATE split into two statements passes on a dated pair and
+    fails on this one with ``UniqueViolation`` on
+    ``idx_transactions_template_scenario_undated``.
     """
 
     def test_carries_into_target_with_existing_rule_generated(
@@ -957,29 +954,26 @@ class TestCarryForwardOverrideSibling:
             Key (template_id, pay_period_id, scenario_id)=(N, target, S)
             already exists.
 
-        Under the relaxed index the carried row is permitted because
+        Under the undated index the carried row is permitted because
         is_override=True is excluded from the partial uniqueness
-        predicate.
+        predicate -- and only because the carry writes the period and the
+        flag in ONE statement, which is what the pair being undated grades.
         """
         with app.app_context():
             template = _create_template(seed_user)
 
             # Rule-generated row in the source period (period 0) -- this
             # is what the user wants to carry forward.
-            source = _create_transaction(
-                seed_user, seed_periods, period_index=0,
-                template_id=template.id, name=template.name,
-                amount=str(template.default_amount),
-            )
+            source = generate_row_of(template, seed_periods[0])
             # Rule-generated row already in the target period (period 1)
             # -- placed by the recurrence engine before the user clicked
             # "Carry Fwd."  is_override=False because it is the canonical
             # next-period instance.
-            target_existing = _create_transaction(
-                seed_user, seed_periods, period_index=1,
-                template_id=template.id, name=template.name,
-                amount=str(template.default_amount),
-            )
+            target_existing = generate_row_of(template, seed_periods[1])
+            # The pre-R17 shape, laid on bare: each row claims its PAYCHECK
+            # rather than an occurrence (see the class docstring).
+            source.occurs_on = None
+            target_existing.occurs_on = None
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
@@ -1030,21 +1024,14 @@ class TestCarryForwardOverrideSibling:
         After carry-forward, the target period's projected expense
         subtotal should include both the rule-generated and the
         override-sibling row.  Balance projections must drop by the
-        full sum, not just one row's amount.
+        full sum, not just one row's amount.  The pair is DATED here --
+        two occurrences, the shape the engine writes today -- so this case
+        grades the money and its sibling above grades the index.
         """
         with app.app_context():
             template = _create_template(seed_user, amount="250.00")
-            _create_transaction(
-                seed_user, seed_periods, period_index=0,
-                template_id=template.id, amount="250.00",
-                name=template.name,
-            )
-            _create_transaction(
-                seed_user, seed_periods, period_index=1,
-                template_id=template.id, amount="250.00",
-                name=template.name,
-            )
-            db.session.flush()
+            generate_row_of(template, seed_periods[0])
+            generate_row_of(template, seed_periods[1])
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
@@ -2421,11 +2408,8 @@ class TestCarryForwardEnvelopeMixedBatch:
                 seed_user, name="Recurring Bill",
                 amount="50.00", category_key="Rent",
             )
-            discrete_source = _create_transaction(
-                seed_user, seed_periods, period_index=0,
-                template_id=discrete_template.id,
-                name=discrete_template.name,
-                amount="50.00",
+            discrete_source = generate_row_of(
+                discrete_template, seed_periods[0],
             )
 
             # Ad-hoc (no template).
@@ -2524,11 +2508,8 @@ class TestCarryForwardEnvelopeMixedBatch:
                 seed_user, name="Recurring Bill",
                 amount="50.00", category_key="Rent",
             )
-            discrete_source = _create_transaction(
-                seed_user, seed_periods, period_index=0,
-                template_id=discrete_template.id,
-                name=discrete_template.name,
-                amount="50.00",
+            discrete_source = generate_row_of(
+                discrete_template, seed_periods[0],
             )
 
             db.session.commit()
@@ -2681,38 +2662,11 @@ class TestCarryForwardEnvelopeIncomeFalse:
         is_override=True.  No settle, no entries-sum logic.
         """
         with app.app_context():
-            income_type = (
-                db.session.query(TransactionType)
-                .filter_by(name="Income").one()
+            template = make_income_template(
+                db.session, seed_user, amount="2500.00",
+                name="Paycheck", category_key="Salary", is_envelope=False,
             )
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Salary"].id,
-                transaction_type_id=income_type.id,
-                name="Paycheck",
-                default_amount=Decimal("2500.00"),
-                is_envelope=False,
-            )
-            db.session.add(template)
-            db.session.flush()
-
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            source = Transaction(
-                template_id=template.id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name=template.name,
-                category_id=template.category_id,
-                transaction_type_id=template.transaction_type_id,
-                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
-            )
-            db.session.add(source)
+            source = generate_row_of(template, seed_periods[0])
             db.session.commit()
             source_id = source.id
 
@@ -3477,11 +3431,7 @@ class TestPreviewCarryForwardDiscreteAndTransfer:
             template = _create_template(seed_user, name="Rent",
                                         amount="1200.00",
                                         category_key="Rent")
-            _create_transaction(
-                seed_user, seed_periods, period_index=0,
-                template_id=template.id, name=template.name,
-                amount="1200.00",
-            )
+            generate_row_of(template, seed_periods[0])
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
@@ -3547,11 +3497,7 @@ class TestPreviewCarryForwardOrdering:
                 seed_user, name="Rent", amount="1200.00",
                 category_key="Rent",
             )
-            _create_transaction(
-                seed_user, seed_periods, period_index=0,
-                template_id=discrete_t.id, name=discrete_t.name,
-                amount="1200.00",
-            )
+            generate_row_of(discrete_t, seed_periods[0])
 
             _create_transfer_in_period(seed_user, seed_periods, 0)
 

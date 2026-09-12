@@ -34,9 +34,11 @@ from app.services import (
 from tests._test_helpers import (
     restate_fixture_era,
     rhythm_of,
+    generate_row_of,
     last_covered_day,
     settle_day_columns,
     settlement_columns,
+    state_template_price,
 )
 from tests._test_helpers import default_settle_day, make_cadence_rule
 from tests._test_helpers import (
@@ -96,10 +98,14 @@ def _expense_type_id(db_session):
 
 def _add_transaction(
     db_session, seed_user, period, name, amount,
-    is_income=False, due_date=None, template=None,
+    is_income=False, due_date=None,
     is_deleted=False, status=StatusEnum.PROJECTED, settled_amount=None,
 ):
-    """Create a transaction for testing.
+    """Create an AD-HOC transaction for testing.
+
+    It took a ``template`` to link until plan step balance:X-cf-3; a row of
+    a definition is the engine's (:func:`generate_row_of`) and this builder
+    can no longer spell one.
 
     Args:
         db_session: Active database session.
@@ -109,7 +115,6 @@ def _add_transaction(
         amount: Estimated amount (Decimal or str).
         is_income: Whether this is income (default expense).
         due_date: Optional due_date override.
-        template: Optional template to link.
         is_deleted: Soft-delete flag.
         status: StatusEnum member; defaults to PROJECTED.  Mixed-status
             calendar tests (F-3 / W-065) pass DONE, CANCELLED, CREDIT
@@ -133,7 +138,6 @@ def _add_transaction(
     status_id = ref_cache.status_id(status)
     txn = Transaction(
         account_id=seed_user["account"].id,
-        template_id=template.id if template else None,
         user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
@@ -158,18 +162,30 @@ def _add_transaction(
 
 
 def _make_template_with_cadence(
-    db_session, seed_user, cadence, interval_n=1,
+    db_session, seed_user, cadence, interval_n=1, *, name="Template",
 ):
-    """Create a template with a recurrence rule of the given cadence.
+    """Create a priced template with a recurrence rule of the given cadence.
+
+    **The rule's first occurrence is the schedule's OPENING payday whatever
+    the cadence**, so every definition built here -- annual, quarterly,
+    every third paycheck -- names an occurrence in ``seed_periods[0]`` and
+    :func:`generate_row_of` writes its row there (plan step balance:X-cf).
+    The infrequency badge reads the CADENCE and nothing about the row's
+    date, so which day the cadence anchors on is not a fact these cases
+    grade; what they need is one paycheck every cadence fires in.
 
     Args:
         db_session: Active database session.
         seed_user: The seed_user fixture dict.
-        cadence: A ``tests.oracles.recurrence_baseline`` cadence
-            constant, or ``None`` for a template that does not repeat --
-            which since plan step R2e-3 means it names NO rule at all.
+        cadence: A ``tests.oracles.recurrence_baseline`` cadence constant.
+            A definition that does not repeat -- which since plan step
+            R2e-3 means it names NO rule at all -- is built by a case that
+            generates under a cadence and then CLEARS it, the way the edit
+            door does (``_clear_recurrence_rule``), since a rule-less
+            definition has rows only that way.
         interval_n: The authored interval, read only by the cadence that
             fixes none of its own.
+        name: The definition's name, which its rows carry.
 
     Returns:
         The created TransactionTemplate.
@@ -179,14 +195,17 @@ def _make_template_with_cadence(
         account_id=seed_user["account"].id,
         category_id=list(seed_user["categories"].values())[0].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        name="Template",
+        name=name,
         default_amount=Decimal("100.00"),
     )
     db_session.add(template)
     db_session.flush()
-    if cadence is not None:
-        # The definition first, then the cadence onto it (plan step R-F6).
-        make_cadence_rule(template, cadence, interval_n=interval_n)
+    state_template_price(template)
+    # The definition first, then the cadence onto it (plan step R-F6).
+    make_cadence_rule(
+        template, cadence, interval_n=interval_n,
+        starts_on=calendar_for(seed_user["user"].id).opening_bound(),
+    )
     return template
 
 
@@ -785,12 +804,9 @@ class TestIsInfrequent:
         """Template with Annual pattern is infrequent."""
         with app.app_context():
             template = _make_template_with_cadence(
-                db.session, seed_user, ANNUAL,
+                db.session, seed_user, ANNUAL, name="Annual",
             )
-            txn = _add_transaction(
-                db.session, seed_user, seed_periods[0], "Annual",
-                "1000.00", template=template, due_date=date(2026, 1, 5),
-            )
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
             assert _is_infrequent(txn, _BIWEEKLY) is True
 
@@ -798,12 +814,9 @@ class TestIsInfrequent:
         """Template with Quarterly pattern is infrequent."""
         with app.app_context():
             template = _make_template_with_cadence(
-                db.session, seed_user, QUARTERLY,
+                db.session, seed_user, QUARTERLY, name="Quarterly",
             )
-            txn = _add_transaction(
-                db.session, seed_user, seed_periods[0], "Quarterly",
-                "500.00", template=template, due_date=date(2026, 1, 5),
-            )
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
             assert _is_infrequent(txn, _BIWEEKLY) is True
 
@@ -811,12 +824,9 @@ class TestIsInfrequent:
         """Template with Semi-Annual pattern is infrequent."""
         with app.app_context():
             template = _make_template_with_cadence(
-                db.session, seed_user, SEMI_ANNUAL,
+                db.session, seed_user, SEMI_ANNUAL, name="Semi",
             )
-            txn = _add_transaction(
-                db.session, seed_user, seed_periods[0], "Semi",
-                "600.00", template=template, due_date=date(2026, 1, 5),
-            )
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
             assert _is_infrequent(txn, _BIWEEKLY) is True
 
@@ -832,27 +842,26 @@ class TestIsInfrequent:
         True.  Retiring the pattern is what made them agree.
         """
         with app.app_context():
+            # A rule-less definition holds rows only one way: they were
+            # generated under a cadence the owner then CLEARED, which is the
+            # edit door's act (``_clear_recurrence_rule``: dis-associate,
+            # and delete-orphan removes the rule).
             template = _make_template_with_cadence(
-                db.session, seed_user, None,
+                db.session, seed_user, EVERY_PERIOD, name="One-time",
             )
-            assert template.recurrence_rule is None
-            txn = _add_transaction(
-                db.session, seed_user, seed_periods[0], "One-time",
-                "200.00", template=template, due_date=date(2026, 1, 5),
-            )
+            txn = generate_row_of(template, seed_periods[0])
+            template.recurrence_rule = None
             db.session.commit()
+            assert template.recurrence_rule is None
             assert _is_infrequent(txn, _BIWEEKLY) is False
 
     def test_monthly_not_infrequent(self, app, seed_user, seed_periods, db):
         """Template with Monthly pattern is NOT infrequent."""
         with app.app_context():
             template = _make_template_with_cadence(
-                db.session, seed_user, MONTHLY,
+                db.session, seed_user, MONTHLY, name="Monthly",
             )
-            txn = _add_transaction(
-                db.session, seed_user, seed_periods[0], "Monthly",
-                "100.00", template=template, due_date=date(2026, 1, 5),
-            )
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
             assert _is_infrequent(txn, _BIWEEKLY) is False
 
@@ -860,12 +869,9 @@ class TestIsInfrequent:
         """Template with Every Period pattern is NOT infrequent."""
         with app.app_context():
             template = _make_template_with_cadence(
-                db.session, seed_user, EVERY_PERIOD,
+                db.session, seed_user, EVERY_PERIOD, name="Each Period",
             )
-            txn = _add_transaction(
-                db.session, seed_user, seed_periods[0], "Each Period",
-                "100.00", template=template, due_date=date(2026, 1, 5),
-            )
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
             assert _is_infrequent(txn, _BIWEEKLY) is False
 
@@ -901,12 +907,9 @@ class TestInfrequencyIsDerivedNotEnumerated:
         with app.app_context():
             template = _make_template_with_cadence(
                 db.session, seed_user,
-                EVERY_N_PERIODS, interval_n=3,
+                EVERY_N_PERIODS, interval_n=3, name="Every 3rd",
             )
-            txn = _add_transaction(
-                db.session, seed_user, seed_periods[0], "Every 3rd",
-                "300.00", template=template, due_date=date(2026, 1, 5),
-            )
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
             assert _is_infrequent(txn, _BIWEEKLY) is True
 
@@ -922,12 +925,9 @@ class TestInfrequencyIsDerivedNotEnumerated:
         with app.app_context():
             template = _make_template_with_cadence(
                 db.session, seed_user,
-                EVERY_N_PERIODS, interval_n=2,
+                EVERY_N_PERIODS, interval_n=2, name="Every 2nd",
             )
-            txn = _add_transaction(
-                db.session, seed_user, seed_periods[0], "Every 2nd",
-                "300.00", template=template, due_date=date(2026, 1, 5),
-            )
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
             assert _is_infrequent(txn, _BIWEEKLY) is False
 
@@ -944,12 +944,9 @@ class TestInfrequencyIsDerivedNotEnumerated:
         with app.app_context():
             template = _make_template_with_cadence(
                 db.session, seed_user,
-                EVERY_N_PERIODS, interval_n=2,
+                EVERY_N_PERIODS, interval_n=2, name="Every 2nd",
             )
-            txn = _add_transaction(
-                db.session, seed_user, seed_periods[0], "Every 2nd",
-                "300.00", template=template, due_date=date(2026, 1, 5),
-            )
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
             assert _is_infrequent(txn, _BIWEEKLY) is False
             assert _is_infrequent(txn, _MONTHLY_PAID) is True
@@ -965,12 +962,9 @@ class TestInfrequencyIsDerivedNotEnumerated:
         """
         with app.app_context():
             template = _make_template_with_cadence(
-                db.session, seed_user, MONTHLY,
+                db.session, seed_user, MONTHLY, name="Monthly",
             )
-            txn = _add_transaction(
-                db.session, seed_user, seed_periods[0], "Monthly",
-                "100.00", template=template, due_date=date(2026, 1, 5),
-            )
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
             for cadence in (_BIWEEKLY, _MONTHLY_PAID, PayCadence(cadence_days=7)):
                 assert _is_infrequent(txn, cadence) is False
@@ -1002,13 +996,9 @@ class TestTheBadgeReadsTheOWNERSStoredCadence:
         with app.app_context():
             template = _make_template_with_cadence(
                 db.session, seed_user,
-                EVERY_N_PERIODS, interval_n=2,
+                EVERY_N_PERIODS, interval_n=2, name="Every 2nd",
             )
-            _add_transaction(
-                db.session, seed_user, seed_periods[0], "Every 2nd",
-                "300.00", template=template,
-                due_date=seed_periods[0].start_date,
-            )
+            generate_row_of(template, seed_periods[0])
             db.session.commit()
             month = seed_periods[0].start_date
 
