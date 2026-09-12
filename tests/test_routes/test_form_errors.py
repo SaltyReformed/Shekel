@@ -380,7 +380,7 @@ class TestEveryRecurrenceRefusalIsHeard:
 
         What is unauthorable now is the ``WEEK`` unit, at either placement: a
         weekly occurrence is neither a payday nor a day of the month, so
-        ``recurrence_engine.compute_due_date`` has nothing to date its
+        ``recurrence.compute_due_date`` has nothing to date its
         generated rows from until plan step **R5**.
 
         The picker cannot offer it, so a user only reaches this by hand -- and

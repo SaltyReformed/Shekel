@@ -168,10 +168,15 @@ def extend_pay_periods(user_id, num_periods):
     ``effective_from``** (ruling **R-PC58**): the era's first nominal payday is
     a day its grid passes through by construction, so the ``nominal_anchor``
     column that used to be rewritten by every batch is gone and this door
-    steps from a day no batch rewrites.  What remains open is **N-495**, the
-    PROJECTION inheriting a displaced anchor, which this door does not reach
-    and ``C14-c``'s probe window forbids re-anchoring without widening --
-    ``C17-b``'s.
+    steps from a day no batch rewrites.  **N-495** -- the PROJECTION
+    inheriting a displaced anchor -- closed at ``C17-b-2``, which anchored
+    every reader on the era's phase; the horizon this door continues from is
+    on the era's grid since then, so the day it offers and the day the
+    calendar projects are one value for an owner whose latest era covers the
+    record.  *An owner truncated BELOW their latest era's first payday is the
+    exception: the calendar projects the era covering the horizon (ruling
+    **R-PC72**) while this door restates the latest era from the horizon, and
+    ``C17-c-2`` owns that door (ledger row **N-494**'s surviving path).*
 
     Args:
         user_id: The owning user's id.
@@ -219,15 +224,15 @@ def extend_pay_periods(user_id, num_periods):
             "Generate your first pay-period schedule before extending it."
         )
 
-    # The owner's stored rhythm, off the read above rather than out of a second
-    # query.  Its cadence is an ``int``, since plan step pay_calendar:C4-d
-    # (ruling R-PC45): a calendar carries a cadence or it is not built.  The
-    # CONVENTION arrives with it since plan step C14-e-1, which deleted the
-    # scalar ``resolve_shift`` this door used to pay for.  Extend CONTINUES a
-    # rhythm rather than stating one -- the same reading that denies it a
-    # cadence question (finding P29 above) -- so it hands the stored values
-    # straight back.
-    rhythm = calendar.rhythm
+    # The owner's latest era's rhythm, off the read above rather than out of a
+    # second query.  Its cadence is an ``int``, since plan step
+    # pay_calendar:C4-d (ruling R-PC45): a calendar carries a rhythm or it is
+    # not built.  The CONVENTION arrives with it since plan step C14-e-1, which
+    # deleted the scalar ``resolve_shift`` this door used to pay for.  Extend
+    # CONTINUES a rhythm rather than stating one -- the same reading that
+    # denies it a cadence question (finding P29 above) -- so it hands the
+    # stored values straight back.
+    rhythm = facts.rhythm
     # WHERE THE LAST PAYCHECK ENDS -- ``_reject_backward_payday``'s own
     # subject, so the producer below answers a day the floor admits rather than
     # a second spelling of the floor.  Through ``final_covered_day`` and not

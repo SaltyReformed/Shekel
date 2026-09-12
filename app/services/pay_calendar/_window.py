@@ -20,7 +20,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from ._derive import DerivedPeriod, PayCalendarError
+from ._derive import DerivedPeriod
+from ._eras import PayCalendarError
 from ._searches import _BY_START_DATE, containing_index, containing_period
 
 

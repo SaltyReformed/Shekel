@@ -57,11 +57,14 @@ from app.services import income_service, template_amount_service
 from app.services.amount_ownership import declare_derived, state_own_amount
 from app.services.cash_ledger import (
     AmountRule,
+    DefinitionRow,
     amount_basis,
     amount_rule,
     amounts_by_id,
     contribution_of,
     contributions_by_id,
+    definition_cash,
+    is_loan_payment_definition,
     resolve_transaction_amount,
     resolve_transfer_amount,
 )
@@ -1294,6 +1297,126 @@ class TestTheLoanPaymentRule:
         basis = _basis_for(seed_user)
         with pytest.raises(AmountUnresolvable, match="would not resolve"):
             resolve_transaction_amount(shadow, basis)
+
+
+def _row_of(xfer) -> DefinitionRow:
+    """The four pricing columns a written transfer carries, as the estimate sees them."""
+    return DefinitionRow(
+        template=xfer.template,
+        due_date=xfer.due_date,
+        period_start=xfer.pay_period.start_date,
+        to_account_id=xfer.to_account_id,
+    )
+
+
+class TestTheDefinitionPriceIsTheRowsOwnRule:
+    """:func:`~app.services.cash_ledger.definition_cash`, plan step **R16-b-2** (R-R67).
+
+    The balance seam's ESTIMATED loan tier prices an occurrence no row answers
+    yet, and the estimate must be what the row would resolve to -- or the
+    loan's payoff moves the moment generation writes the row.  Each test
+    prices a WRITTEN transfer twice: through the row's own rule and through
+    :func:`definition_cash` over the same four columns, and asserts the two
+    equal.  The equality is the property; the arithmetic each case pins is
+    the sibling class's, restated so a wrong shared arm cannot pass by
+    agreeing with itself.
+    """
+
+    def test_a_series_priced_definition_answers_the_rows_rule_3_figure(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Rule 3: the definition's series as of the row's due date, $178.00."""
+        savings = create_savings_account(
+            seed_user, db.session, "Money Market", Decimal("5000.00"),
+        )
+        xfer, _template = _generated_transfer(
+            seed_user, seed_periods[0], savings, due_date=date(2026, 2, 1),
+        )
+        basis = _basis_for(seed_user)
+        row = _row_of(xfer)
+
+        estimate = definition_cash(row, basis, subject="the estimate")
+
+        assert estimate == resolve_transfer_amount(xfer, basis)
+        assert estimate == _OLD_PRICE
+        assert not is_loan_payment_definition(xfer.template)
+
+    def test_a_derive_mode_loan_payment_answers_the_rows_rule_4_figure(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Rule 4, derive arm: P&I $1,199.10 + escrow $300.00 = $1,499.10."""
+        shadow, _rows = _loan_payment(seed_user, seed_periods[0], derive=True)
+        basis = _basis_for(seed_user)
+        row = _row_of(shadow.transfer)
+
+        estimate = definition_cash(row, basis, subject="the estimate")
+
+        assert estimate == resolve_transfer_amount(shadow.transfer, basis)
+        assert estimate == Decimal("1499.10")
+        assert is_loan_payment_definition(shadow.transfer.template)
+
+    def test_a_manual_loan_payment_with_an_extra_answers_the_rows_rule_4_figure(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Rule 4, manual arm: the stated $1,300.00 plus the standing $150.00."""
+        shadow, _rows = _loan_payment(
+            seed_user, seed_periods[0], derive=False, extra=Decimal("150.00"),
+        )
+        basis = _basis_for(seed_user)
+        row = _row_of(shadow.transfer)
+
+        estimate = definition_cash(row, basis, subject="the estimate")
+
+        assert estimate == resolve_transfer_amount(shadow.transfer, basis)
+        assert estimate == Decimal("1450.00")
+
+    def test_an_empty_series_refuses_and_names_the_subject(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """No contract fallback: the estimate refuses exactly where the row would.
+
+        ``standing_installment_cash`` answered the CONTRACT for a definition
+        whose series was empty, which this replaces; a figure nobody stated is
+        refused, and the message names what was being priced rather than a
+        row id it does not have.
+        """
+        savings = create_savings_account(
+            seed_user, db.session, "Never Priced", Decimal("5000.00"),
+        )
+        template = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings.id,
+            name="Never Stated",
+            default_amount=Decimal("42.00"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        basis = _basis_for(seed_user)
+        row = DefinitionRow(
+            template=template, due_date=date(2026, 2, 1),
+            period_start=seed_periods[0].start_date,
+            to_account_id=savings.id,
+        )
+
+        with pytest.raises(AmountUnresolvable, match="price series is EMPTY") as caught:
+            definition_cash(row, basis, subject="template 7's occurrence 2026-02-01")
+        assert "template 7's occurrence 2026-02-01" in str(caught.value)
+
+    def test_a_derive_mode_definition_with_no_loan_behind_it_refuses(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The derive arm's refusal fires for an occurrence exactly as for a row."""
+        savings = create_savings_account(
+            seed_user, db.session, "Not A Loan", Decimal("5000.00"),
+        )
+        shadow, _rows = _loan_payment(
+            seed_user, seed_periods[0], derive=True, to_account=savings,
+        )
+        basis = _basis_for(seed_user)
+
+        with pytest.raises(AmountUnresolvable, match="would not resolve"):
+            definition_cash(_row_of(shadow.transfer), basis, subject="the estimate")
 
 
 class TestAShadowWithNoParentRefuses:

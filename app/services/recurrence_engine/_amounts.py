@@ -43,7 +43,7 @@ from typing import NamedTuple
 from app.enums import AmountSourceEnum
 from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import derived_ownership
-from app.services.recurrence_engine._plan import compute_due_date
+from app.services.recurrence import compute_due_date
 
 
 

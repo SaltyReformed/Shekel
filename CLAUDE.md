@@ -9,11 +9,13 @@ Bootstrap 5
 **YOU ARE THE ONLY SAFEGUARD.** This project has no QA team and no human code reviewer. CI
 (`.github/workflows/ci.yml`: pylint + the full pytest suite) runs on every pull request and on
 pushes to `main`, and a branch protection rule on `main` blocks the merge until that `lint-and-test`
-check is green. CI is therefore an enforced pre-merge gate -- but it is only as good as the tests,
-and no human will catch a bad assertion or a missing case for you. The developer is a solo operator.
-If you miss a bug, skip an edge case, or take a shortcut, that defect ships to production. In a
-budgeting app, that means real money is mismanaged. Treat every line of code as if someone's rent
-payment depends on it being correct.
+check is green. (A pull request touching ONLY the planning documents and the plan gate runs the plan
+gate in place of the suite -- `tools/plan_gate/ci_scope.py` decides, and fails closed.) CI is
+therefore an enforced pre-merge gate -- but it is only as good as the tests, and no human will catch
+a bad assertion or a missing case for you. The developer is a solo operator. If you miss a bug, skip
+an edge case, or take a shortcut, that defect ships to production. In a budgeting app, that means
+real money is mismanaged. Treat every line of code as if someone's rent payment depends on it being
+correct.
 
 ## Rules
 
@@ -147,8 +149,10 @@ root; never silence it with a bare disable.
   and hard-blocks once `scripts/hooks/ENFORCE_PYLINT_FLOOR` exists (the 10.00/10 lock-in).
 - **Custom checkers:** `tools/pylint/shekel_checkers/` (+ tests), loaded via `.pylintrc`. Add one
   when a rule is an AST pattern rather than hoping a reviewer remembers it.
-- **CI + pre-commit** run `pylint app/` (checkers as hard `--fail-on`) and the full suite per PR;
-  `useless-suppression` is on, so a disable that suppresses nothing is itself a finding.
+- **CI + pre-commit** run `pylint app/` (checkers as hard `--fail-on`) and the full suite per PR (a
+  registry-only PR runs the plan gate in place of the suite; `tools/plan_gate/ci_scope.py` holds the
+  boundary and its census of test modules that read there); `useless-suppression` is on, so a
+  disable that suppresses nothing is itself a finding.
 - **Plan gate (`tools/plan_gate/`)** grades the PLANNING documents against
   `docs/plans/conventions.md` -- every finding names a live owner, an identity class shares one tick
   state, an unruled fork refuses a tick on either remedy, the index and the specifications agree
@@ -208,10 +212,12 @@ Paycheck Calculator (salary + raises - taxes - deductions). Status workflow:
 `projected -> done|received|credit|cancelled`, and every one of those back to `projected` (revert).
 No status is terminal.
 
-**Established patterns -- use these, do not reinvent:** Ownership helpers in
-`app/utils/auth_helpers.py`. Security response rule: 404 for both "not found" and "not yours."
-Structured logging via `log_event()`. Dependencies pinned in `requirements.txt` -- no new packages
-without approval.
+**Established patterns -- use these, do not reinvent:** Authentication is the login gate
+(`app/login_gate.py`, ruling `bank_import:R-BI4`): every route is gated by existing, NO view carries
+`@login_required` (gate: `tests/test_arch/test_the_login_gate_has_one_home.py`), and a route that
+must be public is named in `PUBLIC_ENDPOINTS`. Ownership helpers in `app/utils/auth_helpers.py`.
+Security response rule: 404 for both "not found" and "not yours." Structured logging via
+`log_event()`. Dependencies pinned in `requirements.txt` -- no new packages without approval.
 
 **Reference tables: IDs for logic, strings for display only.** Enums in `app/enums.py`, cached in
 `app/ref_cache/`. NEVER compare against string `name` columns in Python or Jinja (gate:
@@ -243,7 +249,10 @@ A task is NOT complete until ALL of these are true:
 2. Shadow transactions are never orphaned and never created without their sibling.
 3. Shadow amounts, statuses, and periods always equal the parent transfer's.
 4. No code path directly mutates a shadow. All mutations go through the transfer service.
-5. Balance calculator queries ONLY budget.transactions. NEVER also query budget.transfers.
+5. Balance calculator queries ONLY budget.transactions for money. NEVER also query budget.transfers
+   for a figure. Since `recurrence:R16-b-2` (**R-R66**) the forward loan plan reads budget.transfers
+   for OCCURRENCE IDENTITY alone -- which occurrences a definition's rows already answer, in any
+   state -- and no amount off any of them.
 
 **Invariant 3 is rule 14's known instance**: one value kept in two homes by a maintenance contract,
 and invariant 5 is why the mirror exists at all. Which clauses are already structural and which

@@ -20,7 +20,7 @@ import json
 from datetime import date
 
 from flask import abort, render_template, request
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.utils.auth_helpers import get_or_404, require_owner, log_refused_lookup
 from app.extensions import db
@@ -176,7 +176,7 @@ def _anatomy_context(profile, period, periods, breakdown, calibration_active):
     # focused period against its predecessor's event (computed directly, no
     # full projection) and show the banner only on the run start.
     prev_raise_event = (
-        get_raise_event(profile, periods[pos - 1])
+        get_raise_event(profile.raises, periods[pos - 1])
         if pos > 0 else None
     )
     show_raise = salary_cockpit_service.raise_run_starts(
@@ -248,7 +248,6 @@ def _salary_path_jsonable(path):
 
 
 @salary_bp.route("/salary")
-@login_required
 @require_owner
 def cockpit():
     """Render the salary cockpit for the primary (or selected) active profile.
@@ -339,7 +338,6 @@ def cockpit():
 
 
 @salary_bp.route("/salary/<int:profile_id>/anatomy/<int:period_id>")
-@login_required
 @require_owner
 def anatomy(profile_id, period_id):
     """Return the paycheck-anatomy fragment for a period (HTMX stepping).

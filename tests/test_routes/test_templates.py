@@ -1590,7 +1590,7 @@ class TestPreviewRecurrence:
 
         What is unsavable now is the ``WEEK`` unit: a weekly occurrence is
         neither a payday nor a day of the month, so
-        ``recurrence_engine.compute_due_date`` has nothing to date its
+        ``recurrence.compute_due_date`` has nothing to date its
         generated rows from until plan step **R5**.
 
         Not reachable by clicking -- the picker never renders the WEEK unit --
@@ -3513,8 +3513,14 @@ def _loan_payment_template(seed_user):
         default_amount=Decimal("500.00"),
         is_active=True,
     )
-    template.settings = LoanPaymentSettings(derive_from_loan=False)
     db.session.add(template)
+    db.session.flush()
+    # Priced BEFORE the settings row is attached, the order ``track_payment``
+    # takes, as every real manual payment is: the loan page's plan sums this
+    # definition's occurrences since plan step R16-b-2 and refuses a series
+    # nobody stated.
+    state_template_price(template)
+    template.settings = LoanPaymentSettings(derive_from_loan=False)
     db.session.commit()
     # The definition first, then the cadence onto it (plan step R-F6).
     rule = make_cadence_rule(
@@ -3871,7 +3877,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
     ``LoanPaymentSettings`` -- and on a 2026-08-14 production clone NEITHER of
     the developer's real loan payments carries that row, so both mortgages were
     clearable. The guard now asks the UNION with
-    ``loan_recurrence_sync.is_standing_loan_payment``, and the second case below is
+    ``balance_at.is_standing_loan_payment``, and the second case below is
     the one that was live: it is the production shape, and it FAILS against the
     predicate this step replaced.
     """

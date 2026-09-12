@@ -17,8 +17,8 @@ paid for**, and both were measured against this application:
   leaving 123 path parameters open.
 * A path segment of more than ``sys.get_int_max_str_digits()`` ASCII digits
   (4,300 by default) makes that ``int()`` raise ``ValueError`` **inside
-  ``url_adapter.match()``** -- before the view function, before
-  ``@login_required``, before any session exists.  ``app/error_handlers.py``
+  ``url_adapter.match()``** -- before the view function, before the login
+  gate (``app/login_gate.py``), before any session exists.  ``app/error_handlers.py``
   registers no ``ValueError`` arm, so it is an **unauthenticated** unhandled
   500, and it is reachable in production: ``gunicorn.conf.py`` sets
   ``limit_request_line = 8190``, and neither nginx config narrows the header

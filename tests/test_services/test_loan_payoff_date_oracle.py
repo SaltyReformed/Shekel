@@ -45,6 +45,7 @@ from app.services import (
     balance_at,
     loan_loaders,
     loan_payment_service,
+    loan_recurrence_sync,
     loan_resolver,
 )
 from app.services.balance_at._positions import memoized_payoff
@@ -246,7 +247,21 @@ def _create_loan(seed_user, period, origination_date, *, name):
 
 
 def _attach_derive_extra(seed_user, loan_account, extra):
-    """Attach a derive-from-loan recurring payment carrying a standing extra."""
+    """Attach a derive-from-loan recurring payment carrying a standing extra.
+
+    **Bound to the loan through the loan door's own sync since plan step
+    R16-b-2.**  ``fires_on_day=1`` alone starts the rule on the first 1st the
+    fixture schedule reaches, which is one or two months BEFORE the loan
+    originates; the loan door never leaves a payment there
+    (``bind_rule_to_loan`` writes ``starts_on`` as the first contractual
+    installment, plan step C9a).  Until R16-b-2 the fold never priced an
+    occurrence dated before ``as_of``, so those pre-origination occurrences
+    were invisible; ruling **R-R64** prices every occurrence the schedule
+    places that no row answers -- exactly as generation would write them --
+    so a definition authored ahead of its loan now pays for months the loan
+    did not exist, the shape the door exists to refuse.  Authoring as the door
+    does is what keeps the fixture a loan payment.
+    """
     user = seed_user["user"]
     # Authored through the write door (plan step R7c-b): the day the rule
     # fires on is its first occurrence's own day, so "the 1st" is stated as a
@@ -263,10 +278,14 @@ def _attach_derive_extra(seed_user, loan_account, extra):
     )
     db.session.add(template)
     db.session.commit()
-    # The definition first, then the cadence onto it (plan step R-F6).
+    # The definition first, then the cadence onto it (plan step R-F6), then
+    # the loan's own start onto the cadence, as ``routes/loan/payment_transfer``
+    # does.
     rule = make_cadence_rule(
         template, MONTHLY, fires_on_day=1,
     )
+    loan_recurrence_sync.bind_rule_to_loan(rule, loan_account.id)
+    db.session.commit()
 
 
 def _committed_payoff(loan_params, scenario_id, as_of, extra):

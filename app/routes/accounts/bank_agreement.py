@@ -35,7 +35,7 @@ from datetime import date
 
 from flask import abort, render_template, request
 from marshmallow import ValidationError
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
@@ -50,7 +50,6 @@ _day_schema = AgreementDaySchema()
 
 
 @accounts_bp.route("/accounts/<int:account_id>/statements/agreement")
-@login_required
 @require_owner
 def statement_agreement(account_id):
     """Render this account's books beside the bank's, day by day.
@@ -77,7 +76,6 @@ def statement_agreement(account_id):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/statements/agreement/day")
-@login_required
 @require_owner
 def statement_agreement_day(account_id):
     """Render what makes up one day's difference, on both sides.

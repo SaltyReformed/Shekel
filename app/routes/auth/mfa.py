@@ -24,7 +24,7 @@ from flask import (
     session as flask_session,
     url_for,
 )
-from flask_login import current_user, login_required, login_user
+from flask_login import current_user, login_user
 
 from cryptography.fernet import InvalidToken
 from marshmallow import ValidationError as MarshmallowValidationError
@@ -246,7 +246,6 @@ def mfa_verify():  # pylint: disable=too-many-return-statements
 
 
 @auth_bp.route("/mfa/setup", methods=["GET"])
-@login_required
 def mfa_setup():
     """Display the MFA setup page with QR code and manual key.
 
@@ -323,7 +322,6 @@ def mfa_setup():
 
 
 @auth_bp.route("/mfa/confirm", methods=["POST"])
-@login_required
 def mfa_confirm():
     """Verify a TOTP code and enable MFA for the current user.
 
@@ -481,7 +479,6 @@ def mfa_confirm():
 
 
 @auth_bp.route("/mfa/regenerate-backup-codes", methods=["POST"])
-@login_required
 def regenerate_backup_codes():
     """Generate and display new backup codes, replacing the old ones."""
     mfa_config = (
@@ -511,7 +508,6 @@ def regenerate_backup_codes():
 
 
 @auth_bp.route("/mfa/disable", methods=["GET"])
-@login_required
 def mfa_disable():
     """Display the MFA disable confirmation page.
 
@@ -531,7 +527,6 @@ def mfa_disable():
 
 
 @auth_bp.route("/mfa/disable", methods=["POST"])
-@login_required
 def mfa_disable_confirm():
     """Process MFA disable after verifying password and TOTP code.
 

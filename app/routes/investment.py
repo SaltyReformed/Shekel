@@ -17,7 +17,7 @@ import logging
 from decimal import Decimal
 
 from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app import ref_cache
 from app.enums import EmployerContributionTypeEnum, RecurrenceUnitEnum
@@ -61,7 +61,6 @@ _DEFAULT_SUGGESTED_AMOUNT = Decimal("500.00")
 
 
 @investment_bp.route("/accounts/<int:account_id>/investment")
-@login_required
 @require_owner
 def dashboard(account_id):
     """Investment/retirement account dashboard with growth projection."""
@@ -95,7 +94,6 @@ def dashboard(account_id):
 
 
 @investment_bp.route("/accounts/<int:account_id>/investment/growth-chart")
-@login_required
 @require_owner
 def growth_chart(account_id):
     """HTMX fragment: growth projection chart with adjustable horizon.
@@ -125,7 +123,6 @@ def growth_chart(account_id):
 
 
 @investment_bp.route("/accounts/<int:account_id>/investment/balance-hero")
-@login_required
 @require_owner
 def balance_hero(account_id):
     """HTMX partial: the investment balance hero cell (Loop B P1 C4).
@@ -177,7 +174,6 @@ def _resolve_salary_profile_url(action: str | None, profile_id: int | None):
     "/accounts/<int:account_id>/investment/create-contribution-transfer",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def create_contribution_transfer(account_id):
     """Create a recurring biweekly transfer to an investment account.
@@ -345,7 +341,6 @@ def create_contribution_transfer(account_id):
 
 
 @investment_bp.route("/accounts/<int:account_id>/investment/params", methods=["POST"])
-@login_required
 @require_owner
 def update_params(account_id):
     """Create or update investment parameters."""
