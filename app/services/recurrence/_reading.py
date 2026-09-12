@@ -453,18 +453,10 @@ def recurrence_spec_with_cadence(
     )
 
 
-def resolved_recurrence(
-    rule: RecurrenceRule, calendar: PayCalendar,
+def resolved_spec(
+    spec: RecurrenceSpec, calendar: PayCalendar,
 ) -> ResolvedRecurrence | None:
-    """Return what *rule* MEANS against its owner's schedule.
-
-    The first of :func:`read_rule`'s two steps, exposed on its own for the
-    callers that want the cadence and not its rows -- the Recurring surface's
-    archived drawer describes every archived definition and places none.
-
-    Composes the two readers in the module docstring's order: the rule's
-    authored state (:func:`recurrence_spec`, the same reader the write door's
-    partial-change idiom uses), resolved against the owner's schedule.
+    """Return what *spec* MEANS against its owner's schedule, or ``None`` for none.
 
     **This is where the empty-schedule refusal is answered rather than
     raised**, and only this one.
@@ -479,6 +471,50 @@ def resolved_recurrence(
     ruling is what closes the question of whether an empty schedule should
     exist at all.
 
+    **Split out of :func:`resolved_recurrence` at plan step R16-b-2** so the
+    read pass's resolution memo
+    (:meth:`~app.services.balance_at.BalanceContext.resolved_recurrence_of`)
+    can key an entry by the spec it reads ONCE and then resolve that same
+    value, instead of reading the rule's columns a second time inside the
+    resolver: a memo of a pure function is keyed by the function's inputs, and
+    this function IS that pure function, with the one answered refusal above
+    it.
+
+    Args:
+        spec: What the rule AUTHORS, as :func:`recurrence_spec` reads it.
+        calendar: The OWNER's WHOLE pay-period schedule, which the spec's first
+            occurrence is measured against.
+
+    Returns:
+        The :class:`~app.services.recurrence.ResolvedRecurrence`, or ``None``
+        when the owner's schedule holds no pay periods.
+
+    Raises:
+        RecurrenceResolutionError: When the spec cannot be resolved against
+            *calendar* -- an unmodelled pattern, a non-positive interval, a
+            day / month outside its column's domain, or a spec paired with
+            another user's schedule.
+    """
+    if not calendar.periods:
+        return None
+    return resolve(spec, calendar)
+
+
+def resolved_recurrence(
+    rule: RecurrenceRule, calendar: PayCalendar,
+) -> ResolvedRecurrence | None:
+    """Return what *rule* MEANS against its owner's schedule.
+
+    The first of :func:`read_rule`'s two steps, exposed on its own for the
+    callers that want the cadence and not its rows -- the Recurring surface's
+    archived drawer describes every archived definition and places none.
+
+    Composes the two readers in the module docstring's order: the rule's
+    authored state (:func:`recurrence_spec`, the same reader the write door's
+    partial-change idiom uses), resolved against the owner's schedule by
+    :func:`resolved_spec`, which is where the empty-schedule refusal is
+    answered rather than raised.
+
     Args:
         rule: The stored (or transient) recurrence rule.
         calendar: The OWNER's WHOLE pay-period schedule, which the rule's first
@@ -492,11 +528,17 @@ def resolved_recurrence(
         RecurrenceResolutionError: When the rule cannot be resolved against
             *calendar* -- an unmodelled pattern, a non-positive interval, a
             day / month outside its column's domain, or a rule paired with
-            another user's schedule.
+            another user's schedule -- or when its stored cadence names a unit
+            or placement this application does not model
+            (:func:`recurrence_spec`).  **The unreadable cadence is refused
+            BEFORE the empty schedule is answered**, since R16-b-2 split the
+            spec read out: it used to be answered ``None`` for an owner with
+            no pay periods and refused only once they had some.  A refusal
+            about the RULE does not depend on the schedule, so the order is
+            the one ``TestItSwallowsNothingElse`` argues for, and it is now
+            the same order the read pass's memo takes.
     """
-    if not calendar.periods:
-        return None
-    return resolve(recurrence_spec(rule), calendar)
+    return resolved_spec(recurrence_spec(rule), calendar)
 
 
 def read_rule(
@@ -790,6 +832,7 @@ __all__ = [
     "recurrence_spec",
     "recurrence_spec_with_cadence",
     "resolved_recurrence",
+    "resolved_spec",
     "rule_occurrences",
     "scheduling_day_of_month",
     "stored_cadence",

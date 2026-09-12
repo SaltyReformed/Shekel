@@ -66,7 +66,9 @@ from app.services.cash_ledger import AmountBasis, amount_basis
 from app.services.income_service import PaycheckPricing, paycheck_pricing
 from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
 from app.services.pay_calendar import PayCalendar, PeriodWindow, calendar_for
-from app.services.recurrence import ResolvedRecurrence, resolved_recurrence
+from app.services.recurrence import (
+    RecurrenceSpec, ResolvedRecurrence, recurrence_spec, resolved_spec,
+)
 from app.services.scenario_resolver import get_baseline_scenario
 
 if TYPE_CHECKING:
@@ -265,11 +267,12 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             nothing is handed a dict now -- :meth:`paychecks` is the accessor,
             exactly as :meth:`calendar` and :meth:`amounts` are for the two
             memos above.
-        _recurrences: The pass's per-rule resolution memo, keyed by
-            ``rule.id`` and filled by :meth:`resolved_recurrence_of`.  Private
-            because this module owns the derivation (it imports the pure
-            resolver, a leaf below the seam), and a ``None`` value is a
-            MEMOIZED "the owner has no pay periods", not an empty slot.
+        _recurrences: The pass's rule-resolution memo, keyed by the rule's
+            SPEC (what it authors, not which row it is -- see
+            :meth:`resolved_recurrence_of`).  Private because this module owns
+            the derivation (it imports the pure resolver, a leaf below the
+            seam), and a ``None`` value is a MEMOIZED "the owner has no pay
+            periods", not an empty slot.
     """
 
     user_id: int
@@ -296,7 +299,7 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     _amount_bases: "dict[int, AmountBasis]" = field(
         default_factory=dict, repr=False, compare=False,
     )
-    _recurrences: "dict[int, ResolvedRecurrence | None]" = field(
+    _recurrences: "dict[RecurrenceSpec, ResolvedRecurrence | None]" = field(
         default_factory=dict, repr=False, compare=False,
     )
     _paycheck_pricing: "dict[int, PaycheckPricing]" = field(
@@ -595,28 +598,54 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         rule to narrow it by the loan's derived stop, and that stop is the
         forward plan's zero crossing, which since R16-b-2 walks the SAME rule
         under its authored closing to sum the definition's occurrences -- so
-        one page reading one loan payment resolved its rule twice on one pass,
-        the shape plan ledger row **N-511** counts and rule 14's ONE WALK
-        forbids.  Both readers take the pure resolution from here and each
-        applies its own closing to the value.
+        one page reading one loan payment resolved its rule twice on one pass
+        (plan ledger row **N-511**'s shape; rule 14's ONE WALK forbids it).
+        Both readers take the pure resolution from here and each applies its
+        own closing to the value.
 
         **A memo on the PASS, not a cache**, for the reason :meth:`calendar`
-        gives; and, like it, filled here rather than passed through, because
-        ``app.services.recurrence`` is a leaf below the seam.  Keyed by the
-        rule's id, so a TRANSIENT rule (the form preview's, ``id`` ``None``)
-        is resolved fresh and never stored -- it exists for one render and
-        names no row.
+        gives, and filled here because ``app.services.recurrence`` is a leaf
+        below the seam.
+
+        **Keyed by what the rule SAYS, not by which row it is.**  The
+        resolution is a pure function of the rule's authored columns and the
+        pass's calendar (:func:`~app.services.recurrence.resolved_spec`), so
+        the spec IS the rule's input and an entry keyed by it cannot be served
+        for a different one.  A first cut keyed by ``rule.id``, and the merge
+        of plan step R7d-c-2 -- which has GENERATION read a rule through this
+        memo -- measured the proxy's cost: ``reauthor_rule`` rewrites columns
+        IN PLACE, so a rule edited and regenerated on one pass regenerated on
+        its pre-edit cadence (monthly, the 5th moved to the 19th: ``updated
+        5, deleted 0, created 0``).  No live route reached it only because
+        every edit route builds its pass AFTER its write: a gateless
+        convention maintaining the invariant the id key carried, which a key
+        that is the input carries for no rule (``CLAUDE.md`` rule 14).  A
+        re-authored rule misses on any pass, two rules stating one spec share
+        one resolution (the resolver cannot tell them apart either), and a
+        TRANSIENT rule (``id`` ``None``) needs no special case.  The spec is
+        read ONCE, as key and input: what ``resolved_spec`` exists for.  The
+        CALENDAR half is :meth:`calendar`'s memo, under the route convention.
+
+        **The same lens one memo over, left as found.**  :attr:`loans`,
+        :attr:`plans` and :attr:`payoffs` are keyed by account id and derive
+        from ROWS as well as from every paying definition's spec.  Under the
+        rows a generate pass CREATES they are invariant by construction
+        (ruling **R-R64**: an occurrence no row answers is priced as its row
+        would be, so writing that row changes nothing), which is why a pass
+        may read them BEFORE it writes; the maintain pass's UPDATE arm
+        re-dates rows the PLANNED tier reads and its RETIRE arm deletes them,
+        so after either -- as under any other write inside one pass -- they
+        are stale, guarded by the convention above since their key is rows.
 
         **A foreign rule never enters the memo with a VALUE, and no check here
-        is what makes that so.**  The pure resolver refuses a rule paired with
+        is what makes that so.**  The pure resolver refuses a spec paired with
         another owner's calendar -- ``RecurrenceResolutionError``, naming the
-        rule -- and it runs BEFORE the store on every miss, so a hit holding a
-        value is always the owner's own rule.  The one thing a foreign rule
-        can leave here is the ``None`` an EMPTY calendar answers, which
-        ``resolved_recurrence`` returns before the resolver's ownership check
-        runs; it carries nothing.  The composed door relies on that refusal
-        being the rule's own and reaching a caller first (before any account
-        is loaded), so a second, earlier refusal here would change which error
+        rule -- BEFORE the store on every miss, so a hit holding a value is
+        always the owner's own spec (``user_id`` is a field of the key); all a
+        foreign rule can leave is the ``None`` an EMPTY calendar answers ahead
+        of the ownership check, which carries nothing.  The composed door
+        relies on that refusal being the rule's own and reaching a caller
+        first, so a second, earlier refusal here would change which error
         names the pairing; :func:`_memoize_once` carries its own check because
         the derivations it stores do not refuse for themselves.
 
@@ -628,25 +657,18 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             The :class:`~app.services.recurrence.ResolvedRecurrence` with the
             AUTHORED closing alone, or ``None`` when the owner has no pay
             periods -- the two answers
-            :func:`~app.services.recurrence.resolved_recurrence` gives.
+            :func:`~app.services.recurrence.resolved_spec` gives.
 
         Raises:
             RecurrenceResolutionError: See
-                :func:`~app.services.recurrence.resolved_recurrence`; a rule
-                paired with another owner's pass is refused there.
+                :func:`~app.services.recurrence.resolved_spec`; a rule paired
+                with another owner's pass is refused there, and an unmodelled
+                stored cadence reading the key, as ``resolved_recurrence``.
         """
-        # ``getattr``: the composed door's contract admits any object exposing
-        # ``recurrence_rule`` (its own fixtures build ``SimpleNamespace``
-        # stand-ins), and a rule with no id is resolved fresh like a
-        # transient one.
-        rule_id = getattr(rule, "id", None)
-        if rule_id is None:
-            return resolved_recurrence(rule, self.calendar())
-        if rule_id not in self._recurrences:
-            self._recurrences[rule_id] = resolved_recurrence(
-                rule, self.calendar(),
-            )
-        return self._recurrences[rule_id]
+        spec = recurrence_spec(rule)
+        if spec not in self._recurrences:
+            self._recurrences[spec] = resolved_spec(spec, self.calendar())
+        return self._recurrences[spec]
 
     def amounts(self) -> AmountBasis:
         """Return the pass's amount-model basis, building it once.
