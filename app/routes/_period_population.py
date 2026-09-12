@@ -24,43 +24,42 @@ transfers went on answering ``2029-02-22`` where a fresh pass said
 ``2029-04-22``, with nothing raised).
 
 **What the post-write pass reads for the LOAN is the schedule mid-rebuild,
-and that is plan ledger row D46's mechanism, stated here because this is the
-one place that opens such a pass.**  The loan's forward plan prices a slot from
-its ROW where one exists and from the standing payment's ESTIMATE where none
-does -- but only for slots still AHEAD of ``as_of``; a slot behind it with no
-row is priced by neither tier (finding B-9's fix).  So an occurrence dated
-before ``as_of`` that no row answers at the moment the pass reads the loan
-makes the payoff read one installment LATE, and generation -- bounded by that
-reading -- writes one installment past the loan's life.  Measured on the
-branch that took the door (``$1,200`` at 3% over three months, installments
-2026-02-15 / 03-15 / 04-15, ``as_of`` 2026-03-01): the pass reads
-``ClosesOn(2026-05-15)``, writes FOUR rows, and a fresh pass over them reads
-``2026-04-15``.  Three doors reach that state.  ``reset_pay_periods`` wipes
-STARTED periods too, so the February row is gone when the repopulation reads
-the loan -- and until R7d-c-2 the column, synced before the wipe, bounded that
-generation at the true payoff, which this step gives up.  A payment created
-AFTER its first installment date has never had that row, and the loan door's
-own pre-generate sync wrote the same late payoff into the column, so that
-shape is as old as the column.  And a *Monthly First* payment authored on the
-generic transfer form is funded by the first paycheck on or after its
-contractual day, so between the two a regenerate retires a not-yet-started
-period holding a past slot's row.  ``regenerate_pay_periods`` alone cannot
-reach it for the loan door's own payment: that rule fires ON the contractual
-day (``CONTAINING_DATE``), a past slot's row sits in a period that has STARTED
-and is kept, and through that door on a production clone (2026-09-11) the
-window read in the hole was ``2029-02-22``, the same as before and after.
-``$0.00`` on the developer's data through every door -- both loan payments are
-``CONTAINING_DATE`` and every saved horizon stops years before either payoff.
-**Ruled 2026-09-11 (developer), root cause first**: the fold is to price every
-occurrence a definition names that no row IN ANY STATE answers, past or future,
-from the definition -- a deleted or cancelled row still answers its occurrence,
-so B-9's honest delinquency keeps its meaning and only "no record at all" stops
-meaning "unpaid" -- and that rule lands with the ESTIMATED tier's rewrite
-(plan step R16-b-2), AHEAD of the step that moved generation onto the door.
-Once the fold reads the plan that way the payoff no longer depends on whether
-generation has run, and this paragraph describes a state that cannot occur;
-``recurrence_engine._plan``'s docstring lists the shape beside the three
-others that leave the payoff off its fixed point.
+and until plan step R16-b-2 that was plan ledger row D46's mechanism, stated
+here because this is the one place that opens such a pass.**  The loan's
+forward plan priced a slot from its ROW where one existed and from the standing
+payment's ESTIMATE where none did -- but only for slots still AHEAD of
+``as_of``; a slot behind it with no row was priced by neither tier (finding
+B-9's fix).  So an occurrence dated before ``as_of`` that no row answered at
+the moment the pass read the loan made the payoff read one installment LATE,
+and generation bounded by that reading wrote one installment past the loan's
+life.  Measured on the first build of R7d-c-2 (``$1,200`` at 3% over three
+months, installments 2026-02-15 / 03-15 / 04-15, ``as_of`` 2026-03-01): the
+pass read ``ClosesOn(2026-05-15)`` and wrote FOUR rows.  ``reset_pay_periods``
+reached it because it wipes STARTED periods too, so the February row was gone
+when the repopulation read the loan -- and until R7d-c-2 the column, synced
+before the wipe, bounded that generation at the true payoff, which taking the
+door gave up: a REGRESSION, and why that build was held.  A payment created
+AFTER its first installment date reached the same state through the column
+(the loan door's own pre-generate sync wrote the same late payoff into it),
+and so did a *Monthly First* payment authored on the generic transfer form,
+funded by the first paycheck on or after its contractual day, so that between
+the two a regenerate retires a not-yet-started period holding a past slot's
+row.
+**Ruled 2026-09-11 (developer), root cause first (rulings R-R64, R-R65)**: the
+fold prices every occurrence a definition names that the schedule places and
+no row IN ANY STATE answers, past or future, from the definition -- a deleted
+or cancelled row still answers its occurrence, so B-9's honest delinquency
+keeps its meaning and only "no record at all" stops meaning "unpaid" -- and
+that rule shipped with the ESTIMATED tier's rewrite (plan step R16-b-2), AHEAD
+of the step that moved generation onto the door.  The payoff no longer depends
+on whether generation has run, so the hole this docstring describes is
+invisible to the fold: measured on the re-cut tree, 2026-09-11, the reset
+door's pass reads ``2026-04-15`` in the hole and writes three rows
+(``tests/test_services/test_loan_bound_at_generation.py``, the population
+door's reset case).  ``regenerate_pay_periods`` never reached it for the loan
+door's own payment even before: that rule fires ON the contractual day
+(``CONTAINING_DATE``), so a past slot's row sits in a period that has STARTED
+and is kept.
 
 The doors therefore RECORD and return -- ``extend_pay_periods``,
 ``regenerate_pay_periods``, ``reset_pay_periods`` and, through the first of

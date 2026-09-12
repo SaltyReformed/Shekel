@@ -38,6 +38,23 @@ bound ``2035-12-22`` wrote 65 rows to ``2031-08-22`` on the base tree against
 ``2027-08-22`` with the column left behind had the base tree's maintain pass
 retire nothing while the branch's retired 18 rows.
 
+**Cut twice.**  The first build (``de8d1a56``) was HELD, because its own
+adversarial review measured door-bounded generation writing one installment
+PAST a loan's life through the reset door: the forward plan priced a slot
+behind ``as_of`` that no row answered by neither tier, so a pass opened in
+the rebuild's hole read the payoff one installment late (plan ledger row
+**D46**).  The developer ruled root cause first (**R-R64**, **R-R65**): the
+plan prices every occurrence a definition names that the schedule places and
+no row in any state answers, past or future, and that rule shipped with plan
+step **R16-b-2** AHEAD of this one.  This module was re-cut on that tree, and
+:class:`TestThePopulationDoor` now carries the reset door as a control.  The
+harness re-run on that tree (its module docstring has the figures): the two
+live doors byte-identical again, and the planted second definition now stops
+at the SUMMED payoff ``2028-11-22`` on the branch (32 rows) where the base
+tree -- R16-b-2's fold without this step -- writes the Van's own rows to the
+column's ``2029-02-22`` and the sweep's to ``2031-08-22``: the sum reaches
+the rows only through generation taking the door.
+
 All money is ``Decimal`` from strings.
 """
 from __future__ import annotations
@@ -104,15 +121,19 @@ TODAY = date(2026, 2, 1)
 #: **``$1,200.00`` at 3%, and the figures are chosen so the level payment
 #: leaves NO RESIDUE**: ``$402.00`` three times clears it to the cent.  A
 #: first draft used ``$3,000.00`` at 5%, whose contract prices its last
-#: installment ``$1,008.35`` against a ``$1,008.34`` level payment, and the
-#: seam's two tiers disagree on that cent: the ESTIMATED tier prices the
-#: unwritten last slot at the contract's adjusted figure while the PLANNED
-#: tier prices the written row at the definition's level one, so writing the
-#: three rows left ``$0.01`` owing and moved the derived payoff a whole
-#: installment, ``2026-04-15`` -> ``2026-05-15``.  That is a finding about
-#: the fold's pricing of a loan's final installment, reported with this step
-#: rather than pinned by it; on a residue-free loan the bound is a fixed
-#: point, which is what :class:`TestOnePassIsAFixedPoint` grades.
+#: installment ``$1,008.35`` against a ``$1,008.34`` level payment.  On the
+#: tree this module was first cut against the seam's two tiers DISAGREED on
+#: that cent -- the ESTIMATED tier priced the unwritten last slot at the
+#: contract's adjusted figure, the PLANNED tier priced the written row at the
+#: level one -- so writing the three rows left ``$0.01`` owing and moved the
+#: derived payoff a whole installment, ``2026-04-15`` -> ``2026-05-15``.
+#: Since plan step R16-b-2 both tiers price through the amount model's one
+#: arm (ruling **R-R67**), so the cent is STABLE rather than a break in the
+#: fixed point: the payoff reads ``2026-05-15`` before the rows exist and
+#: after them, and a second generate writes nothing (measured on this tree,
+#: 2026-09-11).  It is still one installment late -- the derive arm bills
+#: the level payment where the contract bills the residual -- which is plan
+#: ledger row **REC-517**, owned by R16-f, ``$0.00`` live.
 ORIGINATION = date(2026, 1, 15)
 PAYMENT_DAY = 15
 PRINCIPAL = Decimal("1200.00")
@@ -121,6 +142,34 @@ TERM_MONTHS = 3
 PAYOFF = date(2026, 4, 15)
 PAST_PAYOFF = date(2026, 5, 15)
 INSTALLMENTS = (date(2026, 2, 15), date(2026, 3, 15), PAYOFF)
+
+#: What a SECOND recurring transfer into the loan pays each installment.
+#: **Small on purpose, and the arithmetic is the reason.**  Since plan step
+#: R16-b-2 the forward plan SUMS every definition paying into the loan, so a
+#: second full ``$402.00`` payment clears it on the SECOND installment
+#: (``$804.00`` against ``$1,200.00``: 02-15 leaves ``$399.00``, 03-15 clears
+#: it) and moves the payoff every case here pins -- the first cut of this
+#: module, on the tree before R16-b-2, used two full payments because the
+#: estimate then priced the standing payment alone.  At ``$50.00`` the loan
+#: still closes on 04-15: ``$452.00`` a month at 0.25% -- 02-15 charges
+#: ``$3.00`` and leaves ``$751.00``, 03-15 charges ``$1.88`` and leaves
+#: ``$300.88``, 04-15 charges ``$0.75`` and the ``$301.63`` owed clears --
+#: so an authored bound EARLIER than 04-15 is distinguishable from the
+#: loan's own stop, and one LATER is narrowed to it.  The same figure the
+#: sibling harness's fourth door plants.
+SECOND_PAYMENT = Decimal("50.00")
+
+#: What a second definition pays when the case WANTS the payoff to move:
+#: plan ledger row D47's shape, a second FULL payment.  ``$804.00`` a month
+#: against ``$1,200.00`` at 0.25% -- 02-15 charges ``$3.00`` and leaves
+#: ``$399.00``, 03-15 charges ``$1.00`` and the ``$400.00`` owed clears --
+#: so the loan closes on the SECOND installment, a month before the
+#: standing payment alone would close it.  An estimate that priced the
+#: standing payment alone (D47, the state before plan step R16-b-2) reads
+#: 04-15 here, which is what :class:`TestOnePassIsAFixedPoint`'s
+#: second-definition case asserts against before it generates a row.
+D47_PAYMENT = Decimal("402.00")
+D47_PAYOFF = date(2026, 3, 15)
 
 #: A stale cache one installment EARLIER than the payoff -- plan ledger row
 #: D35's measured shape, scaled onto this loan.
@@ -164,6 +213,25 @@ def _payment(db_session, seed_user, loan):
     """
     template = make_loan_payment_template(
         db_session, seed_user, loan, cadence=MONTHLY, fires_on_day=PAYMENT_DAY,
+    )
+    bind_rule_to_loan(template.recurrence_rule, loan.id)
+    return template
+
+
+def _second_payment(db_session, seed_user, loan, amount=SECOND_PAYMENT):
+    """A SECOND monthly transfer into *loan*, stating *amount*.
+
+    The generic transfer form's shape rather than the loan door's: a MANUAL
+    payment whose figure the owner typed, on the loan's own day.  Bound to
+    the loan the way the first is, so its opening bound is the contract's
+    first installment; its closing bound is its owner's, which is the point
+    of every case that builds one.  :data:`SECOND_PAYMENT` leaves the payoff
+    where it is; :data:`D47_PAYMENT` moves it, for the one case that needs
+    it to.
+    """
+    template = make_loan_payment_template(
+        db_session, seed_user, loan, amount=str(amount),
+        derive_from_loan=False, cadence=MONTHLY, fires_on_day=PAYMENT_DAY,
     )
     bind_rule_to_loan(template.recurrence_rule, loan.id)
     return template
@@ -373,6 +441,10 @@ class TestTheRulesOwnBoundStillBinds:
     The first transfer into a loan is the one the app bounds -- its column is
     the chokepoints' cache and the door reads it as such -- so a case about an
     AUTHORED bound needs a second definition, whose column nothing writes.
+    It pays :data:`SECOND_PAYMENT`, and that constant says why the loan still
+    closes on 04-15 with it: the plan sums both definitions (plan step
+    R16-b-2), so the pair below can tell an authored bound from the derived
+    one only while the second payment leaves the payoff where it is.
     """
 
     def test_an_EARLIER_authored_bound_is_not_widened_by_the_loan(
@@ -384,7 +456,7 @@ class TestTheRulesOwnBoundStillBinds:
             standing = _payment(db.session, seed_user, loan)
             standing.name = "The app-bounded payment"
             db.session.flush()
-            second = _payment(db.session, seed_user, loan)
+            second = _second_payment(db.session, seed_user, loan)
             db.session.commit()
             _restate_bound(
                 second.recurrence_rule, EndsOnDate(on=STALE_EARLY),
@@ -395,6 +467,10 @@ class TestTheRulesOwnBoundStillBinds:
             resolved = resolved_definition(second, _ctx(seed_user))
             assert resolved.closing.authored == EndsOnDate(on=STALE_EARLY), (
                 "precondition: the second definition's bound is its owner's"
+            )
+            assert resolved.closing.derived == ClosesOn(on=PAYOFF), (
+                "precondition: the second payment leaves the loan's own stop "
+                "on 04-15, or this pair could not tell authored from derived"
             )
             assert _plan(second, _ctx(seed_user)) == list(INSTALLMENTS[:2])
 
@@ -412,7 +488,7 @@ class TestTheRulesOwnBoundStillBinds:
             standing = _payment(db.session, seed_user, loan)
             standing.name = "The app-bounded payment"
             db.session.flush()
-            second = _payment(db.session, seed_user, loan)
+            second = _second_payment(db.session, seed_user, loan)
             db.session.commit()
             _restate_bound(
                 second.recurrence_rule, EndsOnDate(on=STALE_LATE),
@@ -649,22 +725,26 @@ class TestTheMaintainPassRetiresWhatTheLoanNoLongerJustifies:
 
 
 class TestOnePassIsAFixedPoint:
-    """The bound is folded over the rows the pass writes, and it does not move."""
+    """The bound is folded over the rows the pass writes, and it does not move.
+
+    Since plan step R16-b-2 this is so by CONSTRUCTION rather than by the two
+    tiers happening to agree: the ESTIMATED tier prices every occurrence a
+    definition names that the schedule places and no row in any state
+    answers (ruling **R-R64**), dated as its row would be (**R-R69**) and
+    through the one function the written row is priced by (**R-R67**), for
+    EVERY definition into the loan.  So a row this pass writes answers its
+    occurrence at the cash and the date the estimate already carried, and
+    the payoff read before the write is the payoff read after it.
+    """
 
     def test_generating_the_rows_does_not_move_the_bound_they_were_written_under(
         self, app, db, seed_user, seed_periods,
     ):
         """Generate, re-read, maintain, generate again: same stop, no new row.
 
-        The PLANNED tier prices a written row from its definition and the
-        ESTIMATED tier prices an unwritten slot from the same definition
-        (plan steps R7d-a and balance:X-au-f), so covering a slot with a row
-        changes no figure the fold reads -- for the loan's standing payment on
-        the contract's own cadence.  Measured on the harness's first door:
+        Measured on the harness's first door before R16-b-2 as well:
         ``2029-02-22`` before and after 101 rows, 0 created on the second
-        pass.  (A SECOND definition into the loan does move it, because the
-        estimate prices from the standing payment alone -- plan ledger row
-        **D47**, plan step R16-b-2's.)
+        pass, for the loan's standing payment on the contract's own cadence.
         """
         with app.app_context():
             loan = _short_loan(seed_user, db.session)
@@ -686,6 +766,104 @@ class TestOnePassIsAFixedPoint:
             assert again == []
             assert _occurrences_stored(template) == list(INSTALLMENTS)
 
+    def test_a_second_definition_does_not_move_the_bound_either(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Plan ledger row D47's shape, from generation's side.
+
+        On the tree this module was first cut against, a second definition's
+        rows moved the payoff EARLIER once written, because the estimate
+        priced from the standing payment alone: the harness's fourth door
+        landed two rows past the settled stop and the maintain pass retired
+        them.  Since R16-b-2 the estimate sums the second definition too, so
+        its rows are already priced before they exist.  The second payment
+        here is a FULL one (:data:`D47_PAYMENT`), so the sum moves the payoff
+        to 03-15 and the precondition is what an estimate blind to the
+        second definition fails: an adversarial review of the re-cut planted
+        that blindness and measured a ``$50.00`` second payment seeing
+        nothing, because it leaves the payoff where the standing payment
+        alone puts it.
+        """
+        with app.app_context():
+            loan = _short_loan(seed_user, db.session)
+            standing = _payment(db.session, seed_user, loan)
+            standing.name = "The app-bounded payment"
+            db.session.flush()
+            second = _second_payment(
+                db.session, seed_user, loan, amount=D47_PAYMENT,
+            )
+            db.session.commit()
+            before = resolved_definition(standing, _ctx(seed_user)).closing
+            assert before.derived == ClosesOn(on=D47_PAYOFF), (
+                "precondition: the summed estimate closes the loan on 03-15 "
+                "before any row exists; 04-15 is the standing payment alone"
+            )
+
+            first = _generate(standing, _ctx(seed_user))
+            db.session.commit()
+            first_second = _generate(second, _ctx(seed_user))
+            db.session.commit()
+            after = resolved_definition(standing, _ctx(seed_user)).closing
+            maintained = _maintain(standing, _ctx(seed_user))
+            maintained_second = _maintain(second, _ctx(seed_user))
+            db.session.commit()
+
+            assert sorted(row.occurs_on for row in first) == list(INSTALLMENTS[:2])
+            assert sorted(row.occurs_on for row in first_second) == list(INSTALLMENTS[:2])
+            assert after == before
+            assert maintained == []
+            assert maintained_second == []
+            assert _occurrences_stored(standing) == list(INSTALLMENTS[:2])
+            assert _occurrences_stored(second) == list(INSTALLMENTS[:2])
+
+    def test_the_rounding_cent_is_stable_rather_than_a_break(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Plan ledger row REC-517, pinned as the STABLE shape it is on this tree.
+
+        ``$3,000.00`` at 5% over three months: the contract's last installment
+        is ``$1,008.35`` and the level payment ``$1,008.34``.  The amount
+        model's derive arm bills the level payment on every installment,
+        the estimate is priced by that same arm (ruling **R-R67**), so three
+        installments leave ``$0.01`` owing and the fold needs a fourth: the
+        payoff reads 2026-05-15 -- ONE INSTALLMENT LATE, the contract's is
+        2026-04-15 -- before any row exists, the pass writes four rows, the
+        payoff still reads 2026-05-15, and a second pass writes nothing.
+        **The date pinned here is the DEFECT's, deliberately**: plan step
+        R16-f owns the residual (the contract bills it on the final
+        installment) and re-pins this case at 2026-04-15 and three rows.
+        What this module's first cut measured on the tree before R16-b-2 was
+        the two tiers PARTING on that cent (payoff 04-15 before the rows,
+        05-15 after); the cent is now one tier's, and it does not move.
+        """
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Leaves A Cent",
+                principal=Decimal("3000.00"), rate=Decimal("0.05000"),
+                term=TERM_MONTHS, origination_date=ORIGINATION,
+                payment_day=PAYMENT_DAY,
+            )
+            template = _payment(db.session, seed_user, loan)
+            db.session.commit()
+            one_late = date(2026, 5, 15)
+            before = resolved_definition(template, _ctx(seed_user)).closing
+            assert before.derived == ClosesOn(on=one_late), (
+                "REC-517: the level payment leaves a cent, so the fold needs a "
+                "fourth installment -- R16-f re-pins this at 2026-04-15"
+            )
+
+            first = _generate(template, _ctx(seed_user))
+            db.session.commit()
+            after = resolved_definition(template, _ctx(seed_user)).closing
+            again = _generate(template, _ctx(seed_user))
+            db.session.commit()
+
+            assert sorted(row.occurs_on for row in first) == [
+                *INSTALLMENTS, one_late,
+            ]
+            assert after == before
+            assert again == []
+
 
 class TestThePopulationDoor:
     """The route-shaped paths: new periods filled on a pass opened after the write."""
@@ -701,9 +879,9 @@ class TestThePopulationDoor:
         slot AHEAD of it, and the estimate re-synthesises each at the price
         the row carried.  So the stop read in the hole is the stop read
         before, and the rows come back exactly as they were.  A payment whose
-        slot is already past sits in a period that has started, which the
-        door keeps; the ``_period_population`` docstring carries the one
-        authorable shape this does not hold for.
+        slot is already past sits in a period that has started, which this
+        door keeps; the RESET door does not, and the case after this one is
+        that door.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -736,6 +914,67 @@ class TestThePopulationDoor:
             assert created == len(INSTALLMENTS)
             assert _occurrences_stored(template) == list(INSTALLMENTS)
             assert resolved_definition(template, _ctx(seed_user)).closing == before
+
+    def test_the_reset_door_writes_no_row_past_the_loans_life(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """Plan ledger row D46 as a control: the hole holds a PAST slot's row too.
+
+        ``reset_pay_periods`` wipes STARTED periods, so when the read is
+        2026-03-01 the February installment's row is gone when the pass the
+        route opens reads the loan.  On the tree this module was first cut
+        against, the estimate priced no slot behind ``as_of`` (finding B-9's
+        rule), so that pass read the payoff one installment LATE -- ``ClosesOn
+        (2026-05-15)`` -- and generation bounded by it wrote FOUR rows where
+        the column, synced before the wipe, had bounded HEAD's at three: the
+        regression that held the first build.  Ruling **R-R64** (shipped at
+        R16-b-2) has the plan price every occurrence no row in any state
+        answers, past or future, so the hole is invisible to the fold and
+        this door writes the loan's three installments and nothing past
+        them.  Measured on this tree 2026-09-11: closing ``2026-04-15`` in
+        the hole, 3 rows created, ``2026-04-15`` after.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            loan = _short_loan(seed_user, db.session)
+            template = _payment(db.session, seed_user, loan)
+            db.session.commit()
+            # Generated on TODAY (2026-02-01), with every installment ahead
+            # of the read, so the three rows exist whatever a past slot is
+            # priced at; what this case grades is the RESET below, read on a
+            # day the February slot is behind.
+            _generate(template, _ctx(seed_user))
+            db.session.commit()
+            assert _occurrences_stored(template) == list(INSTALLMENTS)
+
+            in_march = date(2026, 3, 1)
+            freeze_today(monkeypatch, in_march)
+            before = resolved_definition(
+                template, _ctx(seed_user, in_march),
+            ).closing
+            assert before.derived == ClosesOn(on=PAYOFF)
+
+            rebuilt = pay_period_admin.reset_pay_periods(
+                user_id, seed_periods[0].start_date, len(seed_periods),
+                rhythm_of(14),
+            )
+            db.session.flush()
+            assert _occurrences_stored(template) == [], (
+                "precondition: the reset took every row, the past one too"
+            )
+            in_the_hole = _ctx(seed_user, in_march)
+            assert resolved_definition(template, in_the_hole).closing == before
+
+            created = populate_periods_from_active_templates(
+                in_the_hole, {period.id for period in rebuilt},
+            )
+            db.session.commit()
+
+            assert created == len(INSTALLMENTS)
+            assert _occurrences_stored(template) == list(INSTALLMENTS)
+            assert resolved_definition(
+                template, _ctx(seed_user, in_march),
+            ).closing == before
 
     def test_new_periods_past_the_payoff_are_filled_only_while_the_loan_owes(
         self, app, db, seed_user, seed_periods,

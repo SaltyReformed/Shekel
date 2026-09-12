@@ -161,49 +161,48 @@ def resolve_generation_plan(
     folded ONCE per pass however many definitions pay into it, because the
     door reads the pass's memoised resolution; a transaction template, which
     pays into no account, costs the door no query at all.  The rule is
-    resolved once too: the door hands its resolved value to the resolver
-    rather than resolving it again (``CLAUDE.md`` rule 14, ONE WALK).
+    resolved once too: the pass memoises its resolution by the rule's SPEC
+    (``BalanceContext.resolved_recurrence_of``, plan step R16-b-2), so the
+    fold that sums the definition and the door that narrows it read one
+    value (``CLAUDE.md`` rule 14, ONE WALK) -- and a rule re-authored on the
+    pass is resolved afresh, which the merge of this step onto R16-b-2
+    measured the id-keyed first cut of that memo could not do: a regenerate
+    after an edit on one pass walked the pre-edit cadence.
 
     **What the bound is derived FROM is the loan's forward plan, and that
-    plan is folded over the rows this seam writes** (``balance_at._plan``: the
-    PLANNED tier is the loan's projected transfer shadows, the ESTIMATED tier
-    the standing payment's price on every contractual installment still AHEAD
-    of ``as_of`` that no row covers).  The loop closes on a FIXED POINT
-    exactly where the two tiers agree on a slot's DATE and PRICE: a row this
-    pass writes then covers its slot at the cash the estimate already charged,
-    so the payoff read before the write is the payoff read after it and a
-    second pass writes nothing.  Measured on a production clone (2026-09-11,
-    ``tests/manual/verify_loan_bound_at_generation.py``): ``2029-02-22``
-    before and after 101 rows, the maintain pass and a second generate both at
-    zero; and in ``tests/test_services/test_loan_bound_at_generation.py`` on a
-    loan whose level payment clears it to the cent.  Four shapes break the
-    agreement, every one of them measured, and none is made by this step --
-    each reached generation through the column one chokepoint later:
-
-    * an occurrence dated BEFORE ``as_of`` that no row answers when the pass
-      reads the loan -- the estimate never prices a past slot (finding B-9's
-      fix), so the payoff reads one installment late until the row exists.
-      A payment created after its first installment date, the reset door
-      (which wipes STARTED periods and their past-due rows before the
-      repopulation reads the loan), and a *Monthly First* payment whose
-      funding paycheck opens after its contractual day are the doors; on a
-      ``$1,200`` / 3% / 3-month loan at ``as_of`` 2026-03-01 the pass reads
-      2026-05-15, writes four rows, and a fresh pass reads 2026-04-15.  Plan
-      ledger row **D46**'s mechanism, stated at
-      :func:`app.routes._period_population.populate_new_periods`;
-    * a SECOND definition into the loan, which the estimate never prices
-      (plan ledger row **D47**, plan step R16-b-2): its rows move the payoff
-      earlier once written -- the harness's fourth door lands two rows past
-      the settled ``2028-12-22`` and the maintain pass retires them;
-    * a paycheck-dated row (*Monthly First*, or a ``due_day_of_month``),
-      whose PLANNED slot is the payday's date while the estimate's is the
-      contractual day;
-    * a contract whose adjusted LAST installment differs from the level
-      payment by a rounding cent (``$3,000.00`` at 5% over three months:
-      ``$1,008.35`` estimated against ``$1,008.34`` written), where the
-      written rows leave ``$0.01`` owing, the payoff reads one installment
-      later, and the next pass writes a full installment against that cent --
-      a row the maintain pass then KEEPS, since the fold names it.
+    plan is invariant under the rows this seam writes** (``balance_at._plan``:
+    the PLANNED tier is the loan's projected transfer shadows, the ESTIMATED
+    tier every occurrence a definition names that the schedule places and no
+    row in any state answers, past or future -- ruling **R-R64** -- dated as
+    its row would be, **R-R69**, and priced by the one function the written
+    row is priced by, **R-R67**, for EVERY definition into the loan, plan step
+    R16-b-2).  So a row this pass writes answers its occurrence at the cash
+    and the date the estimate already carried, the payoff read before the
+    write is the payoff read after it, and a second pass writes nothing: a
+    FIXED POINT by construction.  It was not always one.  This step's first
+    build (``de8d1a56``) landed on the tree before R16-b-2, where the
+    estimate priced the standing payment alone and no slot behind ``as_of``,
+    and its own review measured four shapes on which the tiers parted, one of
+    them a REGRESSION: a pass opened in the reset door's hole read the payoff
+    one installment late and wrote one row past a ``$1,200`` loan's life
+    where the column, synced before the wipe, had bounded HEAD's at three
+    (plan ledger row **D46**).  The developer ruled root cause first: R16-b-2
+    shipped AHEAD of this step carrying R-R64 (ruling **R-R65**), and the
+    step was re-cut on that tree.  Closed there: the past unanswered slot
+    (D46), the second definition (**D47**) and the paycheck-dated row.  What
+    remains is a cent, and it is stable rather than a break: on ``$3,000`` at
+    5% over three months the amount model's derive arm bills the level
+    ``$1,008.34`` where the contract bills ``$1,008.35`` on the last
+    installment, both tiers agree on it, ``$0.01`` is left owing and the
+    payoff reads one installment late before the rows exist and after them
+    (plan ledger row **REC-517**, owned by R16-f; ``$0.00`` live).  Each of
+    the three is pinned in
+    ``tests/test_services/test_loan_bound_at_generation.py`` on the re-cut
+    tree (2026-09-11): the reset door reads ``2026-04-15`` in its hole and
+    writes three rows; two full definitions into one loan close it on
+    ``2026-03-15`` before any row exists and generate to that stop; and the
+    ``$3,000`` loan reads ``2026-05-15``, writes four rows on the first pass
+    and none on the second.
 
     **It answers in ``(occurrence, period)`` pairs** (plan step R4b-2).  It
     used to answer in periods alone, so the date a row's cadence actually

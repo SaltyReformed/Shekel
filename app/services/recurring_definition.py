@@ -43,10 +43,14 @@ step R7d-c-2** (``recurrence_engine.resolve_generation_plan`` reads
 :func:`read_definition` over the pass its schedule carries), which was the one
 reader that MOVES MONEY; what still goes round it in ``app/`` is the form's
 live preview, which composes a transient rule from the request and is plan
-step R7d-f-2's, and two readers that ask no closing question at all -- the
-write door's refusal of the unresolvable and the opening-bound comparison in
-``loan_recurrence_sync._sync_loan_cadence``
-(:mod:`app.services.recurrence._closing` states the same census).
+step R7d-f-2's, two readers that ask no closing question at all -- the write
+door's refusal of the unresolvable and the opening-bound comparison in
+``loan_recurrence_sync._sync_loan_cadence`` -- and the balance seam's own
+definition walk (``balance_at._plan_definitions``, plan step R16-b-2), which
+must not take this door because the derived stop it would compose is that
+fold's own output (ruling **R-R65**); it reads the pass's memoised resolution
+of the rule and applies :func:`~app.services.balance_at.authored_closing`
+itself (:mod:`app.services.recurrence._closing` states the same census).
 
 What it does NOT do
 -------------------

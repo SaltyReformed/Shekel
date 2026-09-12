@@ -83,6 +83,27 @@ stated-amount edit on the payment's template, and every pay-period door --
 leaves the same shape, a column behind the fold.  The true-up is simply the
 cheapest way to move the payoff by a known amount.
 
+**Re-measured 2026-09-11 on the tree the step shipped on** -- R16-b-2 merged
+(``feat/r16-b-2`` at ``8c654712``), the clone ``shekel_r7dc2`` upgraded to
+``6fc77e86d76f``; base = that tree with generation ROUND the door, branch =
+through it.  DOORS 1 and 2 byte-identical: 101 and 78 rows, ``2048-12-01`` /
+``2029-02-22`` on every reading, the fixed point at zero on both trees.  DOOR
+3: base retires nothing (35 rows) against the branch's 18 (17 rows).  DOOR 4 is
+where R16-b-2 changed the question: the summed plan puts the Van's payoff at
+``2028-11-22`` with the ``$50.00`` sweep beside it, and on the base tree
+NEITHER definition's rows follow that -- the Van's 35 run to the column's
+``2029-02-22``, the sweep's 65 to ``2031-08-22``, and the maintain pass over
+both retires none of them -- where on the branch the sweep writes 32 rows to
+``2028-11-22`` and the Van's maintain pass RETIRES the three rows past it
+(``2028-12-22``, ``2029-01-22``, ``2029-02-22``: the door's extend ran before
+the sweep was planted, so the Van stood at its solo payoff's 35 rows), which
+is also what writes ``2028-11-22`` into the Van's column on the branch alone,
+because retiring a loan-payment row runs the chokepoint's sync.  The
+``D4-MAINTAINED`` COUNT lines carry the retirement (35 -> 32); ``maintain()``
+prints only what a pass creates.  The sum R16-b-2 folds reaches the ROWS only
+through this step.  DOOR 5: 34 against 35.  Outputs diffed from line 2: 104
+lines, every one in doors 3, 4 and 5.
+
 **The clone must be STAMPED.**  ``occurs_on`` is filled by
 ``scripts/stamp_occurrences.py``, which ``entrypoint.sh`` runs after migrations
 -- a clone brought up with ``flask db upgrade`` alone has it NULL on rows that
