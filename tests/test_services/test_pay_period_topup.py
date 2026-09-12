@@ -48,6 +48,7 @@ from scripts.integrity_check import (
 )
 from tests.conftest import SEED_USER_CADENCE_DAYS
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     era_of,
     rhythm_of,
     all_periods,
@@ -95,7 +96,7 @@ def _last_covered_day(user_id, period_id):
 
 def _future_periods(db_session, seed_user, count, start=_FUTURE_START):
     """Generate `count` biweekly future periods (indices 1..count)."""
-    periods = pay_period_write.record_paydays(
+    periods = record_paydays_across_a_hole(
         user_id=seed_user["user"].id,
         first_payday=start,
         num_periods=count,
@@ -212,7 +213,7 @@ class TestTopUpFastPaths:
         user_id = seed_user["user"].id
         with app.app_context():
             # 06-08..06-21 contains the frozen today (06-15).
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=user_id, first_payday=date(2026, 6, 8),
                 num_periods=1, rhythm=rhythm_of(14),
             )
@@ -433,7 +434,7 @@ class TestTheTopUpCountsOnTheOwnersDay:
         cadence_days = 14
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id, date(2026, 7, 3), 4, rhythm_of(cadence_days),
             )
             db.session.commit()
@@ -500,7 +501,7 @@ class TestTheCadenceThreadedIsTheOWNERSStoredOne:
             The owner's user id.
         """
         user_id = seed_user["user"].id
-        pay_period_write.record_paydays(user_id, _FUTURE_START, 3, rhythm_of(14))
+        record_paydays_across_a_hole(user_id, _FUTURE_START, 3, rhythm_of(14))
         # **A cadence change is a NEW ERA**, and its day is its phase (plan
         # step ``pay_calendar:C17-a``, ruling **R-PC58**): a 3-day grid
         # phased on the 14-day batch's opening would run 07-30, 08-02, and

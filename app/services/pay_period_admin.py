@@ -386,7 +386,7 @@ def truncate_pay_periods(
 
 
 def regenerate_pay_periods(
-    user_id, new_start_date, num_periods, rhythm, confirms=None,
+    user_id, new_start_date, num_periods, rhythm, confirm_discard=False,
 ):
     """Rebuild the not-yet-started, unlocked tail from a corrected start.
 
@@ -420,11 +420,29 @@ def regenerate_pay_periods(
     hold mints an era -- so the three doors that had a copy of this line have
     none.
 
+    **This is the ERA-MINT door** (ruling **R-PC64**; plan step
+    ``pay_calendar:C17-c-2a``).  An owner whose rhythm, convention or phase
+    changed states here where their next paycheck really lands and how they
+    are paid from it; the writer mints an era there when the stated rhythm
+    is one the covering era does not hold.  What it may state is bounded at
+    both ends by the writer, and the bounds are the OWNER'S PLAN rather than
+    this door's arithmetic: the first payday may not land inside a paycheck
+    they already have (the floor), and it may not skip a whole paycheck of
+    the plan (the ceiling, ruling **R-PC67**) -- so a corrected first payday
+    lands anywhere from the plan's next payday up to, not including, the one
+    after it.  *Until ``C17-c-2a`` the second bound was a CONFIRMATION --
+    ``Confirmations.gap``, threaded through here to
+    ``pay_period_gates.reject_unconfirmed_gap`` -- and a confirmed gap was
+    still a gap (ledger row **P80**); it is a refusal in
+    ``pay_period_batch`` now, asked of every batch, and this door threads
+    nothing for it.*
+
     Args:
         user_id: The owning user's id.
-        new_start_date: First payday of the rebuilt tail.  Must fall at
-            least one stored CADENCE after the last RETAINED period's PAYDAY
-            (``record_paydays``' forward-only rule, which re-checks it).  It
+        new_start_date: First payday of the rebuilt tail, read as a day on
+            the owner's NOMINAL grid.  Must fall on or after the plan's next
+            payday past the last RETAINED period's (the writer's floor) and
+            before the one after that (its ceiling); both re-check it.  It
             may fall INSIDE the retained schedule's projected coverage, which
             is what makes "correct my cadence going forward" expressible: the
             old guard bounded on the retained ``end_date`` -- a column plan
@@ -438,21 +456,12 @@ def regenerate_pay_periods(
             it differs from the era covering that day.  A PAIR rather than a
             bare cadence since plan step **C14-b**, because the two carry a
             joint rule the writer judges together.
-        confirms: Which overridable gates the owner has already cleared
-            (:class:`~app.services.pay_period_gates.Confirmations`); ``None``
-            means none of them.  ``discard`` is forwarded to the truncate step
-            -- when False and the rebuildable tail holds unrecoverable rows,
-            raise :class:`PayPeriodDiscardRequired` and change nothing.
-            ``gap`` rides through to
-            :func:`~app.services.pay_period_write.record_paydays`, where the
-            rule that a batch may not silently SKIP a whole paycheck sits
-            beside the floor every door inherits rather than on this one --
-            ledger row **P80** is what happens when that class of constraint is
-            written per door.  This is only the door that can currently REACH
-            it: the others either derive their start or retire every period
-            first.  Two fields and not one flag, because one acknowledges rows
-            destroyed and the other a hole created (plan step
-            ``pay_calendar:C14-f``).
+        confirm_discard: When True, proceed past the discard gate -- the
+            owner has acknowledged that the rebuildable tail holds rows
+            regeneration cannot reproduce.  Forwarded to the truncate step;
+            when False and the tail holds such rows, raise
+            :class:`PayPeriodDiscardRequired` and change nothing.  Hard locks
+            are never bypassed.
     Returns:
         The list of newly created :class:`~app.models.pay_period.PayPeriod`
         objects.
@@ -461,8 +470,9 @@ def regenerate_pay_periods(
         PayPeriodLocked: A locked period sits inside the rebuildable tail.
         PayPeriodDiscardRequired: The tail holds unrecoverable rows and
             ``confirm_discard`` is False.
-        ValidationError: ``new_start_date`` falls before the forward-only floor
-            (``record_paydays``' rule).
+        ValidationError: ``new_start_date`` falls before the forward-only
+            floor or at or past the plan's second projected payday
+            (``record_paydays``' two bounds).
     """
     # Serialize the whole rebuild -- boundary computation through the
     # truncate + regenerate -- for this user; re-entrant with the lock
@@ -498,19 +508,12 @@ def regenerate_pay_periods(
     # remaining reason: the gate below decides WHICH periods may go, and the
     # writer carries the delete out beside the create so every refusal is asked
     # of the payday set the operation leaves behind.
-    confirms = confirms or pay_period_gates.Confirmations()
     doomed = pay_period_gates.gate_deletable_tail(
-        saved, kept, confirms.discard, locks,
+        saved, kept, confirm_discard, locks,
     )
-    # ``confirm_gap`` rides through to the WRITER rather than being judged here
-    # (plan step C14-f): the gap rule lives beside the floor every door
-    # inherits, and this door is only the one that can currently reach it.
     return pay_period_write.record_paydays(
         user_id, new_start_date, num_periods, rhythm,
-        replacing=pay_period_write.SpanReplacement(
-            retiring_ids={period.period_id for period in doomed},
-            gap_confirmed=confirms.gap,
-        ),
+        retiring_ids={period.period_id for period in doomed},
     )
 
 
@@ -670,9 +673,7 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     # them.
     new_periods = pay_period_write.record_paydays(
         user_id, new_start_date, num_periods, rhythm,
-        replacing=pay_period_write.SpanReplacement(
-            retiring_ids=pay_period_write.owner_period_ids(user_id),
-        ),
+        retiring_ids=pay_period_write.owner_period_ids(user_id),
     )
     # Re-post the loan genesis (opening / true-up) corrections the period
     # CASCADE wiped: their source facts survived, so this re-derives them

@@ -10,28 +10,15 @@
 
 <h5 class="mt-4 mb-3"><i class="bi bi-sliders"></i> Manage Schedule</h5>
 
-{# TWO confirmations since plan step pay_calendar:C14-f, and pp_confirm.kind
-   says which.  "discard" acknowledges rows being DESTROYED; "gap" acknowledges
-   a hole being CREATED -- a batch skipping at least one whole paycheck, which
-   regenerate is the only door that can write.  Different facts, so different
-   banners and different hidden fields: one Boolean for both would confirm a
-   196-day gap the owner was never shown (ledger row P80).  A regenerate that
-   trips BOTH asks discard first -- it is raised before the delete -- and that
-   answer rides forward inside pp_confirm.params. #}
+{# ONE confirmation: the discard, acknowledging rows being DESTROYED.  A
+   second -- a hole being CREATED by a rebuild skipping a whole paycheck --
+   lived here from plan step pay_calendar:C14-f until C17-c-2a DELETED it
+   (ruling R-PC67, ledger row P80): a hole is REFUSED by the writer now, and
+   the refusal arrives as a flash naming the day the corrected first payday
+   must stay before.  pp_confirm carries op, count and params, and nothing
+   that says which confirmation it is, because there is one. #}
 {% if pp_confirm %}
 <div class="alert alert-warning" role="alert">
-  {% if pp_confirm.kind == 'gap' %}
-  <h6 class="alert-heading">
-    <i class="bi bi-exclamation-triangle"></i>
-    This leaves {{ pp_confirm.gap_days }} days with no paycheck
-  </h6>
-  <p class="mb-2">
-    Your last kept payday is {{ pp_confirm.after }} and the rebuilt schedule
-    would start {{ pp_confirm.resumes }}, so at least one whole paycheck is
-    missing between them. If you really were not paid in that time, confirm to
-    proceed. If you mistyped the first payday, cancel and correct it.
-  </p>
-  {% else %}
   <h6 class="alert-heading">
     <i class="bi bi-exclamation-triangle"></i>
     This will permanently discard {{ pp_confirm.count }} item(s)
@@ -41,24 +28,16 @@
     regenerated from your templates. Confirm to proceed, or cancel to keep
     them.
   </p>
-  {% endif %}
   <form method="POST" action="{{ url_for('pay_periods.' ~ pp_confirm.op) }}"
         class="d-inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     {% for key, value in pp_confirm.params.items() %}
     <input type="hidden" name="{{ key }}" value="{{ value }}">
     {% endfor %}
-    {% if pp_confirm.kind == 'gap' %}
-    <input type="hidden" name="confirm_gap" value="true">
-    <button type="submit" class="btn btn-warning btn-sm">
-      <i class="bi bi-calendar-x"></i> Confirm &amp; leave the gap
-    </button>
-    {% else %}
     <input type="hidden" name="confirm_discard" value="true">
     <button type="submit" class="btn btn-danger btn-sm">
       <i class="bi bi-trash"></i> Confirm &amp; discard
     </button>
-    {% endif %}
   </form>
   <a href="{{ url_for('settings.show', section='pay-periods') }}"
      class="btn btn-secondary btn-sm">Cancel</a>
@@ -156,13 +135,18 @@
       <div class="card-body">
         <h6 class="card-title">Regenerate the tail</h6>
         <p class="card-text text-muted small">
-          Rebuild the not-yet-started periods from a corrected payday and
-          cadence. Started and locked periods stay.
+          Rebuild the not-yet-started periods from a corrected scheduled
+          payday and cadence. Started and locked periods stay. The new first
+          payday may move your next paycheck but may not skip one.
         </p>
         <form method="POST" action="{{ url_for('pay_periods.regenerate') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          {{ render_field("new_start_date", "Corrected first payday",
-                          type="date", required=true) }}
+          {# The SCHEDULED day (plan step pay_calendar:C17-c-2a, ledger row
+             PC-504): this is the era-mint door, and the day typed here
+             becomes the new era's phase. #}
+          {{ render_field("new_start_date", "Corrected first scheduled payday",
+                          type="date", required=true,
+                          help_text=PAYDAY_NOMINAL_HELP) }}
           {{ render_field("num_periods", "Number of periods", type="number",
                           value="52", required=true,
                           input_attrs='min="1" max="260"', classes="rg") }}
@@ -313,7 +297,7 @@
     {% if pp_can_reset %}
     <p class="card-text text-muted small">
       Delete your ENTIRE schedule, including past and anchor periods, and
-      rebuild it from a corrected first payday. Your accounts and their
+      rebuild it from a corrected first scheduled payday. Your accounts and their
       balances are kept and re-anchored to the new schedule. This is for
       fixing a first-time setup mistake before any paychecks have settled
       and cannot be undone.
@@ -322,8 +306,10 @@
           class="row g-2 align-items-end">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="col-sm-4">
-        {{ render_field("new_start_date", "Corrected first payday",
-                        type="date", required=true, classes="rs") }}
+        {# The SCHEDULED day, for the regenerate card's reason. #}
+        {{ render_field("new_start_date", "Corrected first scheduled payday",
+                        type="date", required=true, classes="rs",
+                        help_text=PAYDAY_NOMINAL_HELP) }}
       </div>
       <div class="col-sm-3">
         {{ render_field("num_periods", "Number of periods", type="number",

@@ -133,8 +133,9 @@ def eras_describing(
     (:func:`~app.services.pay_calendar.first_payday_of`, its
     ``effective_from`` displaced under its own convention), so one whose
     first payday falls after the last surviving payday describes nothing the
-    batch keeps; the batch's new paydays all fall past that day
-    (``pay_period_batch``'s floor) and take their era from the mint decision.
+    batch keeps -- the earliest era excepted, which runs backward; the
+    batch's new paydays all fall past that day (``pay_period_batch``'s floor)
+    and take their era from the mint decision.
     ``retire_eras`` is handed this set, so what is judged against and what
     survives are one set.
 
@@ -149,18 +150,36 @@ def eras_describing(
     readers place a payday in cash days (:func:`~app.services.pay_calendar.era_index_at`),
     and the writer now agrees with them.
 
+    **The EARLIEST era stands whenever any payday does, since plan step
+    ``C17-c-2a``** (its adversarial review), and that is the readers' rule
+    too: ruling **R-PC66** has the earliest era run BACKWARD below the
+    record, so a surviving payday before its first payday is one it
+    describes, and :func:`~app.services.pay_calendar.era_index_at` places
+    such a day in it.  The state is a migrated one: ``C17-a``'s backfill
+    minted an owner's era at their opening payday less the anchor gap under
+    the convention the row held THEN, and an owner who opened on a closed
+    day under ``none`` and later corrected to ``next`` holds an era whose
+    first payday falls two days after their first record.  Truncated to
+    that opening period they stood with NO era on the first-payday test:
+    the next batch retired their only era and re-minted it from the day it
+    continued, and the ceiling (``pay_period_batch.reject_skipped_paycheck``)
+    had no plan to read.  They continue their era now, as every other owner.
+
     Args:
         stored: The owner's schedule facts before the batch, or ``None``.
         surviving_paydays: The paydays the batch leaves standing.
 
     Returns:
         The surviving eras, ``effective_from`` ascending; empty when nothing
-        survives or the owner holds no era.
+        survives or the owner holds no era, NON-EMPTY otherwise.
     """
     if stored is None or not surviving_paydays:
         return ()
     latest = max(surviving_paydays)
-    return tuple(e for e in stored.eras if first_payday_of(e) <= latest)
+    return tuple(
+        era for index, era in enumerate(stored.eras)
+        if index == 0 or first_payday_of(era) <= latest
+    )
 
 
 def era_to_mint(

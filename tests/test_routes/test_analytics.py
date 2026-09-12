@@ -27,6 +27,7 @@ from app.services import account_service, pay_period_write, status_seam
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     default_settle_day,
     settle_day_columns,
@@ -1354,7 +1355,7 @@ class TestCalendarYearView:
             # The BINDING went with the ``current_anchor_period_id`` line it
             # fed (ruling R-EH); the CALL is fixture setup and stays -- these
             # 26 periods ARE the third-paycheck year under test.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,

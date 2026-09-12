@@ -42,6 +42,7 @@ from app.services import transfer_service
 from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     last_covered_day,
     account_never_asserted,
@@ -206,7 +207,7 @@ class TestPulseHero:
         this grades the rendered value where that one graded a helper.
         """
         with app.app_context():
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=6,
@@ -350,7 +351,7 @@ class TestPulseChart:
         cover, which is the whole point.
         """
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=40,
@@ -380,7 +381,7 @@ class TestPulseChart:
         may simply not be offered (ruling **R-R31**).
         """
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=4,
@@ -409,7 +410,7 @@ class TestPulseChart:
         canvas's "next six months" aria-label is true for them.
         """
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=20,
@@ -529,7 +530,7 @@ class TestPulseTrough:
         (forward[0]) period's index.
         """
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=15,
@@ -656,7 +657,7 @@ class TestPulsePeak:
         current (forward[0]) period's index.
         """
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=15,
@@ -976,7 +977,7 @@ class TestPulseStillDue:
         fallback line then).
         """
         with app.app_context():
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=6,

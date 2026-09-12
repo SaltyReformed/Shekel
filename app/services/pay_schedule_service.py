@@ -349,7 +349,7 @@ def reread_schedule(user_id: int) -> PaySchedule:
 
 
 def reject_out_of_range_cadence(cadence_days: int) -> None:
-    """Refuse a cadence ``ck_pay_schedule_cadence_range`` would refuse.
+    """Refuse a cadence ``ck_pay_eras_cadence_range`` would refuse.
 
     **One implementation of the bound, two callers, and the second is why it
     is a function** (plan step X-ad-a).
@@ -700,11 +700,13 @@ def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
     and it was wrong in two ways at once.  It was CIRCULAR: since plan step
     C3-b :func:`app.services.pay_period_write.record_paydays` derives that same
     last end FROM this answer, so it read back the value it had produced and
-    could be neither right nor wrong.  And it was unbounded ABOVE, where
-    ``budget.pay_schedule.cadence_days`` is bounded to 1..365 by
-    ``ck_pay_schedule_cadence_range``: a hand-written period spanning more than
-    a year inferred a cadence ``app.services.pay_calendar`` refuses, and since
-    plan step C2-c that raise reaches every balance page as a bare 500.
+    could be neither right nor wrong.  And it was unbounded ABOVE, where the
+    stored cadence was bounded to 1..365 by the column's CHECK (then
+    ``budget.pay_schedule.cadence_days`` under ``ck_pay_schedule_cadence_range``;
+    ``budget.pay_eras.cadence_days`` under ``ck_pay_eras_cadence_range`` since
+    plan step ``C17-a``): a hand-written period spanning more than a year
+    inferred a cadence ``app.services.pay_calendar`` refuses, and since plan
+    step C2-c that raise reaches every balance page as a bare 500.
 
     What makes the arm unreachable is ``fk_pay_periods_schedule``, the key
     :class:`~app.models.pay_period.PayPeriod` carries: a pay period's owner has

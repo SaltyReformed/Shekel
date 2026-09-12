@@ -37,6 +37,7 @@ from tests._test_helpers import (
     freeze_today,
     make_expense_template,
     make_transfer_template,
+    record_paydays_across_a_hole,
     resolved_amount,
 )
 from app.services import cash_ledger
@@ -53,12 +54,30 @@ def _freeze(monkeypatch):
 
 
 def _future_periods(db_session, seed_user, count=6):
-    """Generate `count` future biweekly periods (after the bootstrap)."""
-    periods = pay_period_write.record_paydays(
-        user_id=seed_user["user"].id,
-        first_payday=date(2026, 7, 3),
-        num_periods=count,
-        rhythm=rhythm_of(14),
+    """Generate `count` future biweekly periods (after the bootstrap).
+
+    Two years past the 2024 opening payday, so the writer would refuse the
+    batch for skipping every planned paycheck between (plan step
+    ``pay_calendar:C17-c-2a``, ruling R-PC67); the hole is written through
+    the test tree's own helper for exactly that state.
+    """
+    periods = record_paydays_across_a_hole(
+        seed_user["user"].id, date(2026, 7, 3), count, rhythm_of(14),
+    )
+    db_session.commit()
+    return periods
+
+
+def _spanning_periods(db_session, seed_user, count=6):
+    """Generate `count` biweekly periods from 06-05, the paycheck holding FROZEN_TODAY.
+
+    For a REGENERATE: the 06-05 paycheck has started and is kept, so the
+    plan's next payday is 06-19 and a rebuild may open in ``[06-19, 07-03)``
+    -- where a rebuild over :func:`_future_periods`' block would keep only
+    the 2024 opening payday and be refused for skipping two years.
+    """
+    periods = record_paydays_across_a_hole(
+        seed_user["user"].id, date(2026, 6, 5), count, rhythm_of(14),
     )
     db_session.commit()
     return periods
@@ -202,12 +221,18 @@ class TestTruncateRoute:
         twice and the round trip never.
         """
         with app.app_context():
-            _future_periods(db.session, seed_user, count=6)
+            # A block the started 06-05 paycheck anchors, so the rebuild opens
+            # inside the writer's window (plan step C17-c-2a): the plan's next
+            # payday is 06-19 and Monday 06-22 moves it by three days.  Not
+            # Saturday 06-20: posted with ``prior`` it would be displaced past
+            # Juneteenth to Thursday 06-18, below the floor -- and a refusal
+            # also redirects, which is why the success flash is asserted.
+            _spanning_periods(db.session, seed_user, count=6)
             add_txn(db.session, seed_user, all_periods(
                 seed_user["user"].id,
             )[-1], "Cash", "50.00")
             db.session.commit()
-            start = (display_today() + timedelta(days=28)).isoformat()
+            start = date(2026, 6, 22).isoformat()
 
             confirm = auth_client.post("/pay-periods/regenerate", data={
                 "new_start_date": start,
@@ -231,9 +256,10 @@ class TestTruncateRoute:
 
             resp = auth_client.post("/pay-periods/regenerate", data={
                 key.decode(): value.decode() for key, value in echoed.items()
-            } | {"confirm_discard": "true"})
+            } | {"confirm_discard": "true"}, follow_redirects=True)
 
-            assert resp.status_code == 302
+            assert resp.status_code == 200
+            assert b"Rebuilt the schedule" in resp.data
             db.session.expire_all()
             assert pay_schedule_service.resolve_schedule(
                 seed_user["user"].id,
@@ -315,27 +341,56 @@ class TestRegenerateRoute:
     def test_rebuilds_tail_and_redirects(self, app, db, auth_client, seed_user):
         """Regenerate rebuilds the future tail from the corrected start."""
         with app.app_context():
-            _future_periods(db.session, seed_user, count=6)
+            _spanning_periods(db.session, seed_user, count=6)
             resp = auth_client.post(
                 "/pay-periods/regenerate",
                 data={
-                    "new_start_date": "2026-08-01",
+                    "new_start_date": "2026-06-20",
                     "num_periods": "3",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
-                    # Plan step C14-f: this rebuild reopens the tail more than
-                    # a paycheck after the last kept payday, so the gap gate
-                    # asks.  These cases are about the REDIRECT and the tail
-                    # being populated, not about holes -- and posting the field
-                    # is what a browser does once the banner has been shown.
-                    "confirm_gap": "true",
                 },
             )
             assert resp.status_code == 302
-            # Bootstrap (index 0) survives; the 6 future periods become 3.
+            # Bootstrap and the started 06-05 paycheck survive; the 5 future
+            # periods become 3.
             assert len(all_periods(
                 seed_user["user"].id,
-            )) == 4
+            )) == 5
+
+    def test_a_start_that_skips_a_paycheck_is_refused_whatever_the_form_posts(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A hole is REFUSED, and no field confirms it (plan step C17-c-2a).
+
+        Until this step the route rendered a second confirmation banner and
+        re-posted ``confirm_gap=true``; the field is ignored now (the
+        schema's P29 disposition), the writer's ceiling refuses the batch,
+        and the flash carries the day the owner must stay before.  The tail
+        is untouched: every refusal in ``record_paydays`` runs before its
+        first statement, so nothing was staged to roll back.
+        """
+        with app.app_context():
+            _spanning_periods(db.session, seed_user, count=6)
+            before = {p.start_date for p in all_periods(seed_user["user"].id)}
+            resp = auth_client.post(
+                "/pay-periods/regenerate",
+                data={
+                    "new_start_date": "2026-07-03",
+                    "num_periods": "3",
+                    "cadence_days": "14",
+                    "shift": shift_form_value(),
+                    "confirm_gap": "true",
+                },
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"must fall before 2026-07-03" in resp.data
+            assert b"Confirm &amp; leave the gap" not in resp.data
+            db.session.expire_all()
+            assert {
+                p.start_date for p in all_periods(seed_user["user"].id)
+            } == before
 
 
 class TestGenerateRoute:
@@ -575,7 +630,7 @@ class TestHistoryRoute:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=user_id,
                 first_payday=date(2026, 7, 3),
                 num_periods=3,
@@ -780,7 +835,7 @@ class TestRollingTriggerHooks:
         exists; idx 2 is the next future period.  A period not yet ended
         counts both, so the window starts at 2 and is short of ``target``.
         """
-        pay_period_write.record_paydays(
+        record_paydays_across_a_hole(
             user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
             num_periods=2, rhythm=rhythm_of(14),
         )
@@ -813,7 +868,7 @@ class TestRollingTriggerHooks:
     ):
         """GET /grid with rolling disabled leaves the schedule unchanged."""
         with app.app_context():
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
                 num_periods=2, rhythm=rhythm_of(14),
             )
@@ -1011,7 +1066,7 @@ class TestTheManageListIsTheDerivation:
         doctored fixture was standing in for.*
         """
         with app.app_context():
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id, first_payday=date(2026, 7, 3),
                 num_periods=1, rhythm=rhythm_of(14),
             )
@@ -1166,7 +1221,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
     ):
         """POST /pay-periods/regenerate fills the tail it just rebuilt."""
         with app.app_context():
-            _future_periods(db.session, seed_user, count=6)
+            _spanning_periods(db.session, seed_user, count=6)
             make_expense_template(db.session, seed_user, amount="1200.00")
             db.session.commit()
             before = {p.id for p in all_periods(seed_user["user"].id)}
@@ -1174,16 +1229,10 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
             resp = auth_client.post(
                 "/pay-periods/regenerate",
                 data={
-                    "new_start_date": "2026-08-01",
+                    "new_start_date": "2026-06-20",
                     "num_periods": "3",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
-                    # Plan step C14-f: this rebuild reopens the tail more than
-                    # a paycheck after the last kept payday, so the gap gate
-                    # asks.  These cases are about the REDIRECT and the tail
-                    # being populated, not about holes -- and posting the field
-                    # is what a browser does once the banner has been shown.
-                    "confirm_gap": "true",
                 },
             )
             assert resp.status_code == 302
@@ -1271,7 +1320,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
 
     def _rolling_deficit(self, db_session, seed_user, target=5):
         """A rolling owner short of *target*, holding an every-period template."""
-        pay_period_write.record_paydays(
+        record_paydays_across_a_hole(
             user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
             num_periods=2, rhythm=rhythm_of(14),
         )

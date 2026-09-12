@@ -48,6 +48,7 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     all_periods,
     an_entered_day,
@@ -3448,7 +3449,7 @@ class TestPeriodHeaderDateFormat:
 
     def _make_periods(self, db, seed_user, start_date, num_periods=6):
         """Helper: generate pay periods and set anchor to the first one."""
-        periods = pay_period_write.record_paydays(
+        periods = record_paydays_across_a_hole(
             user_id=seed_user["user"].id,
             first_payday=start_date,
             num_periods=num_periods,

@@ -172,6 +172,23 @@ PAYDAY_SHIFT_HELP = (
     "until you say otherwise."
 )
 
+#: What the four doors that ask for a PAYDAY tell the owner about which day
+#: to type (plan step ``pay_calendar:C17-c-2a``, closing ledger row
+#: **PC-504**).  The writer reads the day as a point on the owner's NOMINAL
+#: grid -- it is what a batch is spaced from and, when the batch mints an
+#: era, that era's ``effective_from`` and so its phase -- while every form
+#: asked for the day the owner was PAID.  Under a convention that moves a
+#: payday the two differ: an owner really paid 2025-12-31 because payroll
+#: moved the 2026-01-01 nominal day back typed 2025-12-31, and every later
+#: payday derived a day early, permanently.  So the question names the
+#: SCHEDULED day, in the same word the convention control uses, and this
+#: sentence is declared once for the reason the option list is.
+PAYDAY_NOMINAL_HELP = (
+    "The date on your pay schedule. If payroll paid that paycheck early or "
+    "late because the day fell on a weekend or holiday, enter the scheduled "
+    "day, not the day the money arrived."
+)
+
 
 def register_ref_id_globals(app: Flask) -> None:
     """Register every ID-derived Jinja global on the given Flask app.
@@ -248,6 +265,7 @@ def register_pay_calendar_bound_globals(app: Flask) -> None:
         # docstring draws.
         "PAYDAY_SHIFT_LABEL": PAYDAY_SHIFT_LABEL,
         "PAYDAY_SHIFT_HELP": PAYDAY_SHIFT_HELP,
+        "PAYDAY_NOMINAL_HELP": PAYDAY_NOMINAL_HELP,
         "CADENCE_DAYS_MIN": CADENCE_DAYS_MIN,
         "CADENCE_DAYS_MAX": CADENCE_DAYS_MAX,
         "PERIOD_BATCH_MIN": PERIOD_BATCH_MIN,

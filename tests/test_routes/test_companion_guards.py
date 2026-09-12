@@ -468,14 +468,20 @@ class TestMarkDoneCompanionAccess:
         db.session.flush()
 
         # A second period for the second owner, appended past their opening
-        # one through the writer, so it lands at index 1 because the writer
-        # DERIVED it rather than because this line typed it.  The transaction
-        # below lives in this period; its index is irrelevant to the
-        # companion-access assertion.
-        # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+        # one, so it lands at index 1 because the derivation placed it rather
+        # than because this line typed it.  The transaction below lives in
+        # this period; its index is irrelevant to the companion-access
+        # assertion.  Two years past the opening payday is a hole the writer
+        # refuses (plan step pay_calendar:C17-c-2a, ruling R-PC67), so the
+        # row comes through the tree's helper for exactly that state.
         from datetime import date  # pylint: disable=import-outside-toplevel
-        from tests._test_helpers import open_owner_calendar as _open_calendar
-        period = _open_calendar(second_user.id, date(2026, 1, 2))[0]
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            record_paydays_across_a_hole,
+            rhythm_of,
+        )
+        period = record_paydays_across_a_hole(
+            second_user.id, date(2026, 1, 2), 1, rhythm_of(14),
+        )[0]
 
         expense_type = (
             db.session.query(TransactionType)

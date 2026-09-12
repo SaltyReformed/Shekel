@@ -231,10 +231,10 @@ def _respace_paydays(db, user_id, cadence_days):
         first_payday=date(2026, 1, 2),
         num_periods=10,
         rhythm=rhythm_of(cadence_days),
-        replacing=pay_period_write.SpanReplacement(retiring_ids={
+        retiring_ids={
             pid for (pid,) in db.session.query(PayPeriod.id)
             .filter_by(user_id=user_id)
-        }),
+        },
     )
     db.session.commit()
 

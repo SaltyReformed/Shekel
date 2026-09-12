@@ -7976,6 +7976,105 @@ def open_owner_calendar(user_id, first_payday, num_periods=1, cadence_days=14):
     )
 
 
+def record_paydays_across_a_hole(user_id, first_payday, num_periods, rhythm):
+    """Record a batch the writer REFUSES for skipping a paycheck of the plan.
+
+    **Plan step ``pay_calendar:C17-c-2a`` (rulings R-PC67, R-PC76).**  A
+    batch whose first new payday falls at or past the SECOND payday the
+    owner's plan projects after their record leaves a whole paycheck
+    missing, and ``pay_period_write.record_paydays`` refuses it through
+    ``pay_period_batch.reject_skipped_paycheck`` -- from every door, which is
+    the point of asking it in the one writer.  So a hole is now a state no
+    application door can write, and :func:`rebuild_calendar`'s predicate
+    says where such a state is built: here, by hand, in one shared helper.
+
+    **Who needs it.**  ``seed_user`` opens its calendar at
+    :data:`~tests.conftest.SEED_USER_BOOTSTRAP_START` (2024-01-05) so the
+    seeded account has a paycheck to open in, and a case that then wants a
+    2026 block beside it -- two years of planned paychecks skipped -- was
+    writing it through the writer until this step.  Every such case is about
+    the 2026 rows, not the hole, and this keeps the rows, the ordinals and
+    the eras exactly as the writer used to leave them.  A case that means to
+    GRADE the refusal calls ``record_paydays`` and expects the
+    ``ValidationError``; a fixture whose batch the writer would ACCEPT is
+    refused here, so this helper cannot quietly become the default door.
+
+    **It composes the writer's own producers in the writer's order and skips
+    ONE refusal.**  The days are ``pay_period_batch.requested_paydays``'
+    (displaced under the rhythm, as the writer records them); the era rule is
+    the writer's (``pay_era_write.eras_describing`` / ``era_to_mint``), so a
+    batch stating a rhythm the covering era does not hold mints an era at its
+    first payday and one continuing the era mints none; the floor is asked of
+    the same list the writer hands it (the minted era's first payday in
+    front); the statements run in ``_apply``'s order (the schedule row, the
+    retire, the mint, the insert) and the session is expired when an era was
+    retired or minted.  What it does not ask is the ceiling, and it asserts
+    that the ceiling WOULD have fired.  What it does NOT reproduce: the
+    ``pay_periods_generated`` log event; the writer's own
+    ``reject_undatable_payday``, ``reject_out_of_range_batch_size`` and
+    ``reject_out_of_range_cadence`` (``mint_era`` re-asks the last for a
+    minting batch); and ``reject_shift_on_short_cadence`` at the writer
+    (``mint_era`` asks it too) -- a case grading any of them belongs on
+    ``record_paydays``.
+
+    Args:
+        user_id: The owning user's id.
+        first_payday: The batch's first NOMINAL payday.
+        num_periods: How many paydays the batch covers, existing ones included.
+        rhythm: The batch's :class:`~app.services.pay_rhythm.Rhythm`.
+
+    Returns:
+        The created :class:`~app.models.pay_period.PayPeriod` rows, payday
+        ascending and flushed -- ``record_paydays``' own answer shape.
+
+    Raises:
+        ValidationError: The floor refuses the batch (a payday inside a
+            paycheck the owner already has), exactly as the writer would.
+        AssertionError: The writer would have ACCEPTED this batch -- the
+            case should call ``record_paydays``.
+    """
+    from app.exceptions import ValidationError  # pylint: disable=import-outside-toplevel
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+    from app.services import pay_period_batch  # pylint: disable=import-outside-toplevel
+
+    held = {period.start_date for period in all_periods(user_id)}
+    requested = pay_period_batch.requested_paydays(first_payday, num_periods, rhythm)
+    new_paydays = [payday for payday in requested if payday not in held]
+    stored = pay_schedule_service.resolve_schedule(user_id)
+    standing = pay_era_write.eras_describing(stored, held)
+    era = None
+    if new_paydays:
+        era = pay_era_write.era_to_mint(standing, first_payday, rhythm)
+    pay_period_batch.reject_backward_payday(
+        held, new_paydays if era is None else [requested[0], *new_paydays],
+        None if stored is None else stored.eras,
+    )
+    try:
+        pay_period_batch.reject_skipped_paycheck(held, new_paydays, standing)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError(
+            f"record_paydays would accept a batch from {first_payday} x "
+            f"{num_periods} at {rhythm.cadence_days} days for user {user_id}; "
+            f"this helper is only for a batch that skips a paycheck of the "
+            f"plan.  Call pay_period_write.record_paydays instead."
+        )
+    pay_schedule_service.ensure_schedule_row(user_id)
+    retired = pay_era_write.retire_eras(
+        user_id, tuple(e.effective_from for e in standing),
+    )
+    if era is not None:
+        pay_era_write.mint_era(user_id, era)
+    created = [PayPeriod(user_id=user_id, start_date=payday) for payday in new_paydays]
+    db.session.add_all(created)
+    db.session.flush()
+    if retired or era is not None:
+        db.session.expire_all()
+    return created
+
+
 def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
     """Rebuild *user_id*'s WHOLE pay-period schedule through the reset door.
 
@@ -8127,25 +8226,29 @@ def rebuild_calendar_from_spans(user_id, spans):
     Returns:
         The owner's periods, payday ascending -- one per span.
 
+    **Every interior span is a HOLE the writer refuses** (plan step
+    ``pay_calendar:C17-c-2a``, ruling R-PC67): "January, April, July and
+    October" at a 31-day cadence skips two planned paychecks between each
+    pair, so the appends go through :func:`record_paydays_across_a_hole`,
+    the tree's one door for the state no application door writes.  Spans
+    the writer WOULD accept belong in :func:`rebuild_calendar`; that helper
+    says so by refusing them.
+
     Raises:
         ValidationError: Two spans open closer together than the last span's
             length, which is the forward-only rule
             ``pay_period_batch.reject_backward_payday`` states.
+        AssertionError: Two spans open within one planned paycheck of each
+            other, a batch the writer accepts -- use :func:`rebuild_calendar`.
     """
     from app.extensions import db  # pylint: disable=import-outside-toplevel
-    from app.services import (  # pylint: disable=import-outside-toplevel
-        pay_period_write,
-    )
 
     last_start, last_end = spans[-1]
     cadence_days = (last_end - last_start).days + 1
     rebuild_calendar(user_id, spans[0][0], 1, cadence_days)
     for start, _end in spans[1:]:
-        pay_period_write.record_paydays(
-            user_id=user_id,
-            first_payday=start,
-            num_periods=1,
-            rhythm=rhythm_of(cadence_days),
+        record_paydays_across_a_hole(
+            user_id, start, 1, rhythm_of(cadence_days),
         )
     # COMMIT the appends too.  :func:`rebuild_calendar` commits the opening
     # payday because the door it wraps leaves the transaction to its caller,

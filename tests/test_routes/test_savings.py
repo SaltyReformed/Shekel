@@ -36,6 +36,7 @@ from app.services import balance_at, pay_period_write, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     create_account_of_type,
     create_hysa_account,
@@ -412,7 +413,7 @@ class TestDashboard:
             # ~August 2026 (only 2 milestones would be displayed and
             # the assertion below would fail).
             start = date.today() - timedelta(days=14)
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,
@@ -460,7 +461,7 @@ class TestDashboard:
             # See test_dashboard_investment_account_shows_growth_projections
             # for why ``start`` is computed relative to today.
             start = date.today() - timedelta(days=14)
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,
@@ -509,7 +510,7 @@ class TestDashboard:
             # The BINDING went with the ``current_anchor_period_id`` line it
             # fed (ruling R-EH); the CALL is fixture setup and stays -- it is
             # what creates the periods this test projects over.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=start,
                 num_periods=40,

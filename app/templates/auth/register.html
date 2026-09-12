@@ -77,29 +77,36 @@
              Asking is the fix.  The question is the LAST payday, never the
              next: the period it opens covers today, so the new account's
              opening balance has a paycheck to sit in and there is no second
-             setup step.  ``max`` is a browser convenience -- the real bound
-             is ``registration_service._reject_impossible_first_payday``, which also
-             holds the lower end because that one depends on the cadence
-             chosen in the field below. #}
+             setup step.  The bound is
+             ``registration_service._reject_impossible_first_payday`` at both
+             ends -- the lower one depends on the cadence chosen in the field
+             below, and the upper one is not "today": the day asked for is the
+             SCHEDULED payday (plan step pay_calendar:C17-c-2a, ledger row
+             PC-504), which under "pay the business day before" can be
+             tomorrow for a paycheck already paid today, so a ``max`` of
+             today refused a legal answer and is gone. #}
           <hr class="my-4">
           <h2 class="h6 mb-1">Your pay schedule</h2>
           <p class="form-text mt-0 mb-3">
             Shekel budgets by paycheck, so it needs to know when yours arrive.
           </p>
           <div class="mb-3">
-            <label for="last_payday" class="form-label">When was your most recent payday?</label>
+            <label for="last_payday" class="form-label">What was your most recent scheduled payday?</label>
             <input type="date" class="form-control" id="last_payday" name="last_payday"
-                   required max="{{ today.isoformat() }}"
+                   required
                    value="{{ request.form.get('last_payday', '') }}">
             {# "The day money landed" was the first wording and it was WRONG at
                one boundary: on payday itself, before the deposit posts, the
                honest answer to that question is a fortnight ago -- which the
                service then refuses, because the paycheck it opens has already
                ended.  A pay period is bounded by the PAYDAY, not by when the
-               bank got around to it, so the question asks for the date on the
-               paycheck. #}
-            <div class="form-text">The date of your most recent paycheck, even
-              if it has not cleared yet.</div>
+               bank got around to it.  "The date of your most recent paycheck"
+               was the second wording and it named a CASH day where the writer
+               reads a day on the pay schedule's grid (PC-504); the sentence
+               below is PAYDAY_NOMINAL_HELP, declared once for all four doors
+               beside the convention control's own wording. #}
+            <div class="form-text">{{ PAYDAY_NOMINAL_HELP }} Even if that
+              paycheck has not cleared yet.</div>
           </div>
           <div class="mb-3">
             <label for="cadence_days" class="form-label">Days between paydays</label>

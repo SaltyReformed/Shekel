@@ -31,6 +31,7 @@ from app.services import (
 from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     account_never_asserted,
     an_entered_day,
@@ -539,7 +540,7 @@ class TestCompanionAccess:
             # seed_second_user owns different data.
             # A row owned by seed_second_user: their definition, on their
             # own calendar, written by the engine.
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=3,

@@ -30,7 +30,6 @@ import pytest
 
 from app.exceptions import (
     PayPeriodDiscardRequired,
-    PayPeriodGapRequired,
     PayPeriodLocked,
     ValidationError,
 )
@@ -40,7 +39,6 @@ from app.models.transaction import Transaction
 from app.routes._period_population import populate_new_periods
 from app.services import (
     pay_period_admin,
-    pay_period_gates,
     pay_period_write,
     pay_schedule_service,
 )
@@ -58,6 +56,7 @@ from tests._test_helpers import (
     last_covered_day,
     make_expense_template,
     populate_in_a_fresh_pass,
+    record_paydays_across_a_hole,
     seam_cash_balance_at,
 )
 
@@ -81,11 +80,10 @@ def _spanning_periods(db_session, seed_user, count=8):
     Index 4 (06-12..06-25) is the in-progress period; 1..3 are historical;
     5.. are the rebuildable future tail.
     """
-    periods = pay_period_write.record_paydays(
-        user_id=seed_user["user"].id,
-        first_payday=_SPAN_START,
-        num_periods=count,
-        rhythm=rhythm_of(14),
+    # Two years past the 2024 opening payday: a hole the writer refuses
+    # (plan step C17-c-2a, ruling R-PC67), built through the tree's helper.
+    periods = record_paydays_across_a_hole(
+        seed_user["user"].id, _SPAN_START, count, rhythm_of(14),
     )
     db_session.commit()
     return periods
@@ -112,25 +110,23 @@ def _regenerate_and_populate(user_id, **kwargs):
     Ruling **R-R38**: the pass may only be opened above the service layer, and
     only after the write.
 
-    **It CONFIRMS the gap gate by default, and that is a statement about these
-    FIXTURES rather than about the door** (plan step ``pay_calendar:C14-f``).
-    ``seed_periods`` anchors its schedule in 2024 while most cases here rebuild
-    from a 2026 date, so the batch skips years of paychecks -- one case
-    measured **847 days** between the last kept payday and the new start.  Real
-    usage keeps a prefix up to about today and restarts within a cadence or
-    two, which the gate never asks about.  These cases are about cadence
-    persistence, lock classification and repopulation, not about holes, so they
-    answer the question and move on.
-    **The gate's OWN cases deliberately do not use this helper** -- they call
-    the service directly, so nothing here can disarm them.
-    *That the corpus rebuilds across multi-year gaps at all is worth a look on
-    its own; it is `P78`'s shape and it is not this step's to fix.*
+    **It confirmed the gap gate by default from plan step
+    ``pay_calendar:C14-f`` until ``C17-c-2a`` deleted that gate** (ruling
+    **R-PC67**): a rebuild whose first payday skips a whole paycheck of the
+    owner's plan is REFUSED by the writer now, from every door, and there is
+    no answer that lets it through.  So every case here rebuilds from a day
+    inside the window the plan allows -- on or after the plan's next payday
+    past the last kept one, and before the one after that -- which is the
+    only rebuild a real owner can perform.  *The 2024 opening payday
+    ``seed_user`` carries sits years below those blocks; the fixtures that
+    record a 2026 block beside it write the hole through
+    :func:`~tests._test_helpers.record_paydays_across_a_hole`, and a rebuild
+    that keeps a 2026 prefix never sees it.*
 
     Args:
         user_id: The owning user's id.
         **kwargs: Forwarded to
             :func:`~app.services.pay_period_admin.regenerate_pay_periods`.
-            A ``confirms`` here REPLACES the default, gap answer included.
 
     Returns:
         The rebuilt periods, now populated.
@@ -156,7 +152,7 @@ class TestRegenerateHappyPath:
         with app.app_context():
             user_id = seed_user["user"].id
             # Index 1 starts ON the frozen today -- the current period.
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id, FROZEN_TODAY, num_periods=4, rhythm=rhythm_of(14),
             )
             db.session.commit()
@@ -382,6 +378,13 @@ class TestRegenerateWhenTheWholeScheduleIsRebuildable:
         falls through to the LAST one, which ``_delete_periods_after`` then
         selects nothing after.  The docstring has always claimed this
         "degrades to an append from ``new_start_date``"; nothing asserted it.
+
+        **The append is bounded like every batch** (plan step
+        ``pay_calendar:C17-c-2a``, ruling R-PC67): this case used to restart
+        an all-past schedule on 07-03, five paychecks past its last one, and
+        that is ledger row P80's set through the one door the writer still
+        let it through.  The plan's next payday after 02-13 is 02-27 and the
+        one after it 03-13, so 07-03 is refused and 02-27 appends.
         """
         user_id = bare_user["user"].id
         with app.app_context():
@@ -392,9 +395,15 @@ class TestRegenerateWhenTheWholeScheduleIsRebuildable:
             db.session.commit()
             old_ids = {p.id for p in old}
 
+            with pytest.raises(ValidationError, match="before 2026-03-13"):
+                pay_period_admin.regenerate_pay_periods(
+                    user_id, date(2026, 7, 3), 2, rhythm_of(14),
+                )
+            db.session.rollback()
+
             new_periods = pay_period_admin.regenerate_pay_periods(
-                user_id, date(2026, 7, 3), 2, rhythm_of(14),
-                          )
+                user_id, date(2026, 2, 27), 2, rhythm_of(14),
+            )
             db.session.commit()
 
             surviving = all_periods(user_id)
@@ -450,7 +459,7 @@ class TestRegenerateRefusals:
             new_periods = pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=new_start, num_periods=3,
                 rhythm=rhythm_of(14),
-                confirms=pay_period_gates.Confirmations(discard=True),
+                confirm_discard=True,
             )
             db.session.commit()
             assert [derived_span(p).period_index for p in new_periods] == [5, 6, 7]
@@ -541,15 +550,13 @@ class TestRegenerateResolvesItsFactsOnce:
             expected_ids = {period.id for period in periods}
             expected_ids.add(seed_user["bootstrap_period"].id)
 
-            # ``gap=True`` because this rebuild reopens the tail exactly one
-            # paycheck later than it stood, which plan step C14-f's gate asks
-            # about.  This case counts CLASSIFICATIONS, not holes, so it
-            # answers the question and carries on; the gate's own cases are
-            # below.
+            # The tail reopens where the plan's next payday falls (06-26);
+            # a day later than 07-09 would skip a whole paycheck and be
+            # refused (plan step C17-c-2a, ruling R-PC67).  This case counts
+            # CLASSIFICATIONS, not holes; the ceiling's own cases are below.
             pay_period_admin.regenerate_pay_periods(
-                user_id, new_start_date=date(2026, 7, 10), num_periods=3,
+                user_id, new_start_date=date(2026, 6, 26), num_periods=3,
                 rhythm=rhythm_of(14),
-                confirms=pay_period_gates.Confirmations(gap=True),
             )
             db.session.commit()
 
@@ -608,77 +615,142 @@ def _paydays(session, user_id):
     ]
 
 
-class TestTheGapGateAsksBeforeItSkipsAPaycheck:
-    """Plan step ``pay_calendar:C14-f``, developer ruling 2026-09-07.
+class TestABatchMayNotSkipAPaycheckOfThePlan:
+    """Plan step ``pay_calendar:C17-c-2a``, rulings **R-PC67** and **R-PC76**.
 
-    ``regenerate`` is the only door that can write ledger row **P80**'s state:
-    it KEEPS a prefix of the owner's history and states an unrelated start for
-    the new batch, so the two can be any distance apart.  Generate and extend
-    derive their start, and reset retires every period, so neither can gap.
+    ``regenerate`` is the era-mint door: it KEEPS a prefix of the owner's
+    history and states where the next paycheck lands, so the two can be any
+    distance apart -- and ledger row **P80**'s 196-day paycheck is what a
+    distance of more than one paycheck derives to.  The writer's ceiling
+    (``pay_period_batch.reject_skipped_paycheck``) refuses the first new
+    payday at or past the SECOND payday the plan projects after the last
+    kept one, so a hole is unrepresentable rather than confirmed: the
+    confirmation ``C14-f`` put here (``PayPeriodGapRequired``,
+    ``Confirmations.gap``) is gone, and no argument to this door restores it.
 
-    The gate ASKS rather than refuses because the app cannot tell a typo from a
-    true record: P80's own example meant ``2026-01-30`` and typed
-    ``2026-07-31``, but five weeks of unpaid leave is a real 35-day gap and
-    that record is correct.
+    The fixture keeps paydays through 06-12 (the paycheck holding
+    ``FROZEN_TODAY``), so the plan's next payday is 06-26 and the one after
+    it 07-10: the window a rebuild may open in is ``[06-26, 07-10)``.
     """
 
-    def test_a_batch_that_skips_a_paycheck_is_refused_until_confirmed(
+    def test_a_batch_that_skips_a_paycheck_is_refused_and_writes_nothing(
         self, app, db, seed_user,
     ):
-        """The unconfirmed call raises and writes NOTHING."""
+        """Opening ON the second planned payday is refused; the paydays are untouched."""
         with app.app_context():
             _spanning_periods(db.session, seed_user, count=8)
             user_id = seed_user["user"].id
             before = _paydays(db.session, user_id)
 
-            with pytest.raises(PayPeriodGapRequired) as caught:
+            with pytest.raises(ValidationError) as caught:
                 pay_period_admin.regenerate_pay_periods(
                     user_id, new_start_date=date(2026, 7, 10), num_periods=3,
                     rhythm=rhythm_of(14),
                 )
             db.session.rollback()
 
-            assert caught.value.resumes == date(2026, 7, 10)
+            assert "before 2026-07-10" in str(caught.value)
+            assert "2026-06-26" in str(caught.value)
             # Nothing written: the paydays are exactly as they were.
             assert _paydays(db.session, user_id) == before
 
-    def test_the_same_batch_goes_through_once_the_owner_confirms(
+    def test_the_day_before_the_second_planned_payday_is_the_last_allowed(
         self, app, db, seed_user,
     ):
-        """A CONFIRMED gap is recorded -- unpaid leave is a real fact."""
+        """07-09 is accepted where 07-10 is refused: the ceiling is exclusive.
+
+        The two directions of one bound.  07-09 is OFF the kept rhythm's
+        grid, so it is a phase correction and mints an era there; the
+        06-12 paycheck runs to 07-08, 27 days, which is what "I was paid
+        late, and from then on every fortnight" derives to.
+        """
         with app.app_context():
             _spanning_periods(db.session, seed_user, count=8)
             user_id = seed_user["user"].id
 
             pay_period_admin.regenerate_pay_periods(
-                user_id, new_start_date=date(2026, 7, 10), num_periods=3,
+                user_id, new_start_date=date(2026, 7, 9), num_periods=3,
                 rhythm=rhythm_of(14),
-                confirms=pay_period_gates.Confirmations(gap=True),
             )
             db.session.commit()
 
-            assert date(2026, 7, 10) in _paydays(db.session, user_id)
+            paydays = _paydays(db.session, user_id)
+            assert date(2026, 7, 9) in paydays
+            assert date(2026, 6, 26) not in paydays
+            facts = pay_schedule_service.resolve_schedule(user_id)
+            assert facts.eras[-1].effective_from == date(2026, 7, 9)
 
-    def test_a_re_phase_of_a_few_days_is_NEVER_asked_about(
+    def test_there_is_no_confirmation_that_lets_a_skipped_paycheck_through(
         self, app, db, seed_user,
     ):
-        """The unquestioned window is exactly one paycheck wide.
+        """The door has no gap answer to take: a hole is refused, not asked about."""
+        with app.app_context():
+            _spanning_periods(db.session, seed_user, count=8)
+            user_id = seed_user["user"].id
 
-        The floor is the first projected payday past the last kept one and the
-        gate is the SECOND, so correcting a phase by a day or two -- the thing
-        this door exists for -- raises nothing.  Without this case the gate
-        could be tightened to any tolerance and stay green.
+            with pytest.raises(TypeError):
+                pay_period_admin.regenerate_pay_periods(  # pylint: disable=unexpected-keyword-arg
+                    user_id, new_start_date=date(2026, 7, 10), num_periods=3,
+                    rhythm=rhythm_of(14), confirms=object(),
+                )
+            with pytest.raises(ValidationError):
+                pay_period_admin.regenerate_pay_periods(
+                    user_id, new_start_date=date(2026, 7, 10), num_periods=3,
+                    rhythm=rhythm_of(14), confirm_discard=True,
+                )
+            db.session.rollback()
+
+    def test_a_re_phase_of_a_few_days_is_NEVER_refused(
+        self, app, db, seed_user,
+    ):
+        """The window is exactly one paycheck wide.
+
+        The floor is the first projected payday past the last kept one and
+        the ceiling is the SECOND, so correcting a phase by a day or two --
+        the thing this door exists for -- raises nothing.  Without this case
+        the ceiling could be tightened to any tolerance and stay green.
         """
         with app.app_context():
             _spanning_periods(db.session, seed_user, count=8)
             user_id = seed_user["user"].id
 
             # The tail reopens exactly where it stood, which is the ordinary
-            # correction this door exists for.  No confirmation is passed, so
-            # a gate that asked here would fail this case.
+            # correction this door exists for.
             pay_period_admin.regenerate_pay_periods(
                 user_id, new_start_date=date(2026, 6, 26), num_periods=3,
                 rhythm=rhythm_of(14),
             )
             db.session.commit()
             assert date(2026, 6, 26) in _paydays(db.session, user_id)
+
+    def test_a_cadence_change_may_move_the_next_payday_but_not_skip_one(
+        self, app, db, seed_user,
+    ):
+        """Weekly from 07-03 is legal; weekly from 07-10 skips the 06-26 paycheck.
+
+        The ceiling reads the OLD era's plan -- the stored eras, not the
+        batch's rhythm -- because the question is which paycheck of the
+        rhythm the owner HAS would go missing.  A first draft keyed on the
+        batch's own cadence would let a 7-day batch open at 07-10 (only one
+        week past its own first paycheck) and derive a 28-day 06-12 paycheck
+        the owner never described.
+        """
+        with app.app_context():
+            _spanning_periods(db.session, seed_user, count=8)
+            user_id = seed_user["user"].id
+
+            with pytest.raises(ValidationError):
+                pay_period_admin.regenerate_pay_periods(
+                    user_id, new_start_date=date(2026, 7, 10), num_periods=3,
+                    rhythm=rhythm_of(7),
+                )
+            db.session.rollback()
+
+            pay_period_admin.regenerate_pay_periods(
+                user_id, new_start_date=date(2026, 7, 3), num_periods=3,
+                rhythm=rhythm_of(7),
+            )
+            db.session.commit()
+            assert _paydays(db.session, user_id)[-3:] == [
+                date(2026, 7, 3), date(2026, 7, 10), date(2026, 7, 17),
+            ]

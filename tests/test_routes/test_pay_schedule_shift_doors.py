@@ -31,6 +31,7 @@ from app.services import pay_schedule_service
 from app.utils.dates import display_today
 from tests._test_helpers import (
     all_periods,
+    rebuild_calendar,
     register_form_data,
     shift_form_value,
 )
@@ -160,6 +161,13 @@ class TestTheManageCardPreselectsTheLatestErasConvention:
     ):
         """A regenerate at ``prior`` and the manage card then opens on ``prior``."""
         with app.app_context():
+            # A record reaching today, so the rebuild opens inside the window
+            # the writer allows -- from the plan's next payday (today + 7) up
+            # to the one after it (plan step C17-c-2a, ruling R-PC67); over
+            # the seeded 2024 opening payday alone it would skip two years.
+            rebuild_calendar(
+                seed_user["user"].id, display_today() - timedelta(days=7), 2, 14,
+            )
             start = display_today() + timedelta(days=14)
             assert auth_client.post("/pay-periods/regenerate", data={
                 "new_start_date": start.isoformat(),
@@ -249,6 +257,8 @@ class TestEachDoorPersistsTheAnswer:
         """Correcting the tail is also how an owner changes their answer."""
         user_id = seed_user["user"].id
         with app.app_context():
+            # A record reaching today, for the reason the preselect case gives.
+            rebuild_calendar(user_id, display_today() - timedelta(days=7), 2, 14)
             start = display_today() + timedelta(days=14)
             response = auth_client.post("/pay-periods/regenerate", data={
                 "new_start_date": start.isoformat(),

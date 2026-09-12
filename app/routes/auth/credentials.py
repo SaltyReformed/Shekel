@@ -38,7 +38,6 @@ from app.routes.auth._helpers import (
     _first_validation_message,
     _is_safe_redirect,
 )
-from app.utils.dates import display_today
 from app.utils.log_events import (
     AUTH,
     EVT_LOGIN_FAILED,
@@ -53,13 +52,17 @@ logger = logging.getLogger(__name__)
 
 
 def _render_register_form():
-    """Render the registration form with the one bound that is not a constant.
+    """Render the registration form, from its four render sites.
 
-    The four render sites (the GET, the already-authenticated GET, the
-    schema-error re-render and the service-error re-render) go through here so
-    a fifth cannot forget it.  ``today`` is the USER's civil day (ruling
-    R-DH (b)): it caps the most-recent-payday input, and a payday cannot be in
-    the future on anyone's clock but theirs.
+    The GET, the already-authenticated GET, the schema-error re-render and
+    the service-error re-render go through here so a fifth cannot drift.
+    *It threaded ``today`` -- the USER's civil day, ruling R-DH (b) -- as a
+    ``max`` on the most-recent-payday input until plan step
+    ``pay_calendar:C17-c-2a``: the form asks for the SCHEDULED payday now
+    (ledger row **PC-504**), which under "pay the business day before" can be
+    tomorrow for a paycheck already paid today, so the cap refused a legal
+    answer and went; ``registration_service._reject_impossible_first_payday``
+    holds the real bound at both ends.*
 
     The cadence and horizon bounds are NOT passed here.  They are module
     constants, so they are Jinja globals registered once in ``create_app``
@@ -70,7 +73,7 @@ def _render_register_form():
     Returns:
         The rendered registration page.
     """
-    return render_template("auth/register.html", today=display_today())
+    return render_template("auth/register.html")
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])

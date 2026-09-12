@@ -108,6 +108,7 @@ from ._eras import (
     era_index_at,
     first_payday_of,
     payday_after,
+    planned_paydays_after,
     projected_payday,
 )
 from ._grid import cadence_steps_to, nominal_payday
@@ -164,6 +165,7 @@ __all__ = [
     "paydays_in_month_through",
     "payday_after",
     "paydays_in_year_before",
+    "planned_paydays_after",
     "period_by_id",
     "projected_payday",
     "saved_paydays_in_month_through",

@@ -18,7 +18,6 @@ from app.utils.auth_helpers import require_owner
 from app.extensions import db
 from app.exceptions import (
     PayPeriodDiscardRequired,
-    PayPeriodGapRequired,
     PayPeriodLocked,
     PayPeriodResetBlocked,
     PayPeriodUnresolved,
@@ -38,7 +37,6 @@ from app.schemas.validation import (
 from app import ref_cache
 from app.services import (
     pay_period_admin,
-    pay_period_gates,
     pay_period_write,
     pay_rhythm,
     pay_schedule_service,
@@ -198,30 +196,32 @@ def generate():
     # ``nominal_payday_after`` by way of the shared continue path -- so
     # ``start_date``, ``cadence_days`` and ``shift`` are not consulted for them.
     #
-    # **P80's write is unrepresentable THROUGH THIS DOOR, and P80 IS NOT
-    # CLOSED.**  This door accepted any payday at or after the owner's floor,
-    # so three posts naming unrelated days wrote
-    # ``[2026-01-02, 2026-01-16, 2026-07-31]`` at cadence 14 and derived a
-    # 196-day paycheck -- six months of rows filing into one grid column, with
-    # ``scripts/integrity_check.py`` reporting green.  That is shut here.
+    # **P80's write is unrepresentable THROUGH THIS DOOR** (this step) **and
+    # through every other since plan step ``pay_calendar:C17-c-2a``.**  This
+    # door accepted any payday at or after the owner's floor, so three posts
+    # naming unrelated days wrote ``[2026-01-02, 2026-01-16, 2026-07-31]`` at
+    # cadence 14 and derived a 196-day paycheck -- six months of rows filing
+    # into one grid column, with ``scripts/integrity_check.py`` reporting
+    # green.  That is shut here.
     #
     # *A first draft of this comment claimed P80 became UNWRITABLE, and this
     # step's own adversarial review measured that FALSE.*  ``regenerate``
-    # renders a "Corrected first payday" with no ceiling -- only
+    # rendered a "Corrected first payday" with no ceiling -- only
     # ``pay_period_batch.reject_backward_payday``'s FLOOR -- so the same
-    # irregular set is still writable in three form fields.  MEASURED through
-    # the real route on a clean owner: paydays
+    # irregular set stayed writable in three form fields: MEASURED through
+    # the real route on a clean owner, paydays
     # ``[2026-01-02 .. 2026-03-13, 2026-07-31, ...]``, a **140-day gap**, HTTP
-    # 200.  The root remedy is a CEILING where the floor already is, which
-    # would close every door at once rather than one at a time; whether an
-    # owner may legitimately record a GAP is an era question (**C17**) and the
-    # developer's to rule.  Until he does, **P80 stays OPEN**.
+    # 200.  The root remedy was a CEILING where the floor already is, closing
+    # every door at once rather than one at a time, and whether an owner may
+    # record a GAP at all was an era question (**C17**): ruling **R-PC67** said
+    # a hole is UNREPRESENTABLE, and ``C17-c-2a`` built the ceiling
+    # (``pay_period_batch.reject_skipped_paycheck``, asked of every batch by
+    # the one writer).  **P80 is CLOSED there.**
     #
     # The step was originally specified as a CHECK for that state
     # (**R-PC55**); a check is a reconciler for a duplication, and rule 14 says
-    # delete a home instead.  **R-PC55's supersession rides with R-PC63** --
-    # recorded in ``docs/plans/rulings.md``, not here; that registry commit is
-    # owed and this comment is not a substitute for it.
+    # delete a home instead.  **R-PC55's supersession rides with R-PC63** in
+    # ``docs/plans/rulings.md``.
     #
     # **The submitted fields are IGNORED rather than refused, and that is this
     # arc's own precedent rather than a shortcut.**  Plan step C3-b deleted
@@ -413,7 +413,6 @@ def truncate():
     except PayPeriodDiscardRequired as exc:
         db.session.rollback()
         return render_settings_dashboard("pay-periods", extra={"pp_confirm": {
-            "kind": "discard",
             "op": "truncate",
             "count": exc.count,
             "params": {
@@ -442,51 +441,30 @@ def regenerate():
             pay_rhythm.Rhythm(
                 cadence_days=data["cadence_days"], shift=data["shift"],
             ),
-            confirms=pay_period_gates.Confirmations(
-                discard=data["confirm_discard"], gap=data["confirm_gap"],
-            ),
+            confirm_discard=data["confirm_discard"],
         )
         # The rebuilt tail comes back EMPTY; this fills it.  See the extend
         # route for why the pass may only be opened here (ruling R-R38).
         populate_new_periods(current_user.id, new_periods)
     except (PayPeriodLocked, ValidationError) as exc:
-        # Rolled back for the reason the generate route states, and here it is
-        # not a nicety: ``regenerate_pay_periods`` DELETES the rebuildable tail
-        # before the writer validates the new start, so a refusal raised after
-        # that leaves the delete in the session.  Its own docstring promised
-        # "the route's rollback undoes the truncate too" and no route made the
-        # call -- an adversarial review of plan step C3-b found the gap.
+        # Rolled back for the reason the generate route states.  *Until plan
+        # step C3-b composed the truncate and the rebuild into ONE writer call
+        # this was load-bearing -- the tail was deleted before the new start
+        # was validated, and its docstring promised a rollback no route made
+        # (an adversarial review of C3-b found the gap).*  Every refusal in
+        # ``record_paydays`` now runs before its first statement, so what the
+        # rollback covers is the repopulation below it, which can raise after
+        # flushing, and the page this redirects to reading committed state.
+        #
+        # **A first payday that skips a whole paycheck lands HERE, as a
+        # refusal** (plan step ``pay_calendar:C17-c-2a``, ruling **R-PC67**).
+        # Until then it was a SECOND confirmation -- ``PayPeriodGapRequired``,
+        # a banner and a ``confirm_gap`` field -- and a confirmed gap was
+        # still a gap (ledger row **P80**).  The writer's ceiling refuses it
+        # with the day the owner must stay before, and the flash carries it.
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()
-    except PayPeriodGapRequired as exc:
-        # **The SECOND confirmation, and it raises AFTER the delete is staged**
-        # (plan step ``pay_calendar:C14-f``, ledger row **P80**).  Unlike the
-        # discard gate below, this one fires inside ``record_paydays``, which
-        # ``regenerate_pay_periods`` reaches only after ``_gate_deletable_tail``
-        # has handed it the doomed ids -- so the rollback here is load-bearing
-        # rather than tidy, exactly as the ValidationError arm above states.
-        #
-        # ``confirm_discard`` rides forward in the params: an owner who has
-        # already answered that question must not be asked it again by the
-        # banner this renders, and dropping it would loop the two gates against
-        # each other forever.
-        db.session.rollback()
-        return render_settings_dashboard("pay-periods", extra={"pp_confirm": {
-            "kind": "gap",
-            "op": "regenerate",
-            "gap_days": exc.gap_days,
-            "after": exc.after.isoformat(),
-            "resumes": exc.resumes.isoformat(),
-            "params": {
-                "new_start_date": data["new_start_date"].isoformat(),
-                "num_periods": data["num_periods"],
-                "cadence_days": data["cadence_days"],
-                # The WIRE spelling, for the discard banner's own reason below.
-                "shift": ref_cache.business_day_shift_id(data["shift"]),
-                "confirm_discard": str(data["confirm_discard"]).lower(),
-            },
-        }}, status=422)
     except PayPeriodDiscardRequired as exc:
         # The discard gate raises BEFORE the delete, so nothing is staged --
         # but this response re-renders the settings dashboard, which reads the
@@ -494,7 +472,6 @@ def regenerate():
         # rather than a session the service may have flushed into.
         db.session.rollback()
         return render_settings_dashboard("pay-periods", extra={"pp_confirm": {
-            "kind": "discard",
             "op": "regenerate",
             "count": exc.count,
             "params": {

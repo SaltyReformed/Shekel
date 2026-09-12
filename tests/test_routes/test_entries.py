@@ -27,6 +27,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     an_asserted_day,
     an_entered_day,
@@ -227,7 +228,7 @@ def _create_other_user_txn():
     db.session.add(category)
     db.session.flush()
 
-    periods = pay_period_write.record_paydays(
+    periods = record_paydays_across_a_hole(
         user_id=other_user.id,
         first_payday=date(2026, 1, 2),
         num_periods=3,

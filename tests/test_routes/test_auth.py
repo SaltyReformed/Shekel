@@ -1821,9 +1821,18 @@ class TestRegistration:
             body = response.data
 
             assert b'name="last_payday"' in body
-            assert b"When was your most recent payday?" in body
-            # A payday cannot be in the future, on the USER's clock.
-            assert f'max="{display_today().isoformat()}"'.encode() in body
+            # The SCHEDULED day, not the day the money arrived (plan step
+            # pay_calendar:C17-c-2a, ledger row PC-504), and the sentence
+            # every payday door shares says which.
+            assert b"What was your most recent scheduled payday?" in body
+            assert b"not the day the money arrived" in body
+            # No ``max`` on the USER's clock: under "pay the business day
+            # before" the scheduled day of a paycheck already paid today can
+            # be tomorrow, and the service holds the real bound at both ends.
+            payday_input = re.search(
+                rb'<input[^>]*name="last_payday"[^>]*>', body,
+            ).group(0)
+            assert b"max=" not in payday_input, payday_input
 
             assert b'name="cadence_days"' in body
             assert f'min="{CADENCE_DAYS_MIN}"'.encode() in body

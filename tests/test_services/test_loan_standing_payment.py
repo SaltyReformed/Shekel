@@ -50,6 +50,7 @@ from app.services.recurring_transfer_query import (
 )
 from app.services.template_amount_service import owns_its_amount
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     add_escrow_line,
     create_loan_account,
@@ -433,7 +434,7 @@ class TestPayoffDoesNotMoveWithMaterialisation:
         )
         # A calendar reaching past the loan's last contractual installment
         # (2026-07-01), so the rule genuinely names every future slot.
-        periods = pay_period_write.record_paydays(
+        periods = record_paydays_across_a_hole(
             user_id=seed_user["user"].id,
             first_payday=date(2026, 1, 2),
             num_periods=20,
@@ -551,8 +552,18 @@ class TestPayoffDoesNotMoveWithMaterialisation:
         assert far_horizon == near_horizon
 
     def _generate(self, seed_user, template, num_periods, first_payday=None):
-        """Create *num_periods* paydays and generate *template*'s rows into them."""
-        periods = pay_period_write.record_paydays(
+        """Create *num_periods* paydays and generate *template*'s rows into them.
+
+        The opening block sits beside ``seed_user``'s 2024 payday, a hole the
+        writer refuses (plan step ``pay_calendar:C17-c-2a``), so it goes
+        through the tree's helper; a later block CONTINUES the record and is
+        the writer's own.
+        """
+        record = (
+            pay_period_write.record_paydays if first_payday is not None
+            else record_paydays_across_a_hole
+        )
+        periods = record(
             user_id=seed_user["user"].id,
             first_payday=(
                 date(2026, 1, 2) if first_payday is None else first_payday

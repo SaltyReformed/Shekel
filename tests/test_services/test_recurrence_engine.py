@@ -69,6 +69,7 @@ from tests.oracles.recurrence_baseline import (
     ANNUAL,
 )
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     all_periods,
     an_entered_day,
     derived_span,
@@ -1604,7 +1605,7 @@ class TestALegacyScheduleHole:
         """
         last_covered = self._horizon(seed_user)
         later_start = last_covered + timedelta(days=self._GAP_DAYS)
-        later = pay_period_write.record_paydays(
+        later = record_paydays_across_a_hole(
             user_id=seed_user["user"].id,
             first_payday=later_start,
             num_periods=6,
@@ -1663,7 +1664,7 @@ class TestALegacyScheduleHole:
         with app.app_context():
             last_covered = self._horizon(seed_user)
             later_start = last_covered + timedelta(days=self._GAP_DAYS)
-            later = pay_period_write.record_paydays(
+            later = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=later_start,
                 num_periods=6,
@@ -3372,7 +3373,7 @@ class TestResolveConflicts:
             # Create template and transaction for user B (second_user).
             # second_user needs their own periods and template.
             from app.services import pay_period_service
-            periods_b = pay_period_write.record_paydays(
+            periods_b = record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=seed_periods[0].start_date,
                 num_periods=10, rhythm=rhythm_of(14),
