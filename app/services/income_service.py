@@ -37,8 +37,10 @@ forward past the horizon at the owner's cadence -- so the series is a MAP from
 payday to paycheck, defined wherever the rhythm reaches, and a caller asks for
 the paydays it actually reads.
 
-**One pricer per profile per read pass**, :class:`PaycheckPricing`, reached
-through :meth:`~app.services.balance_at.BalanceContext.paychecks`.  It replaced
+**One pricer per profile PER RAISE SET per read pass**, :class:`PaycheckPricing`,
+reached through :meth:`~app.services.balance_at.BalanceContext.paychecks` --
+per profile alone until plan step salary:S3-f-1, when the raise set became an
+input of the engine's basis.  It replaced
 the raw ``BalanceContext.payroll_breakdowns`` dict and the ``breakdowns=None``
 argument on :func:`~app.services.projection_inputs.load_payroll_feeds` that
 meant "no memo at all" -- the hole
@@ -88,6 +90,7 @@ from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
 from app.services.payroll_basis import PayrollBasis
 from app.services.pay_calendar import PayCalendar, calendar_for
+from app.services.salary_raises import terms_of
 from app.services.tax_config_service import configs_by_year, profile_tax_series
 
 
@@ -134,10 +137,14 @@ class ProfilePaychecks:
     **This value's OWN database work is all at construction; the PROFILE's
     need not be, and an adversarial review of plan step salary:S3-d corrected
     a sentence here that claimed otherwise.**
-    ``SalaryProfile.raises`` and ``.deductions`` are ``lazy="select"`` and
-    :func:`~app.services.paycheck_calculator.calculate_paycheck` reads both,
-    so whether the FIRST paycheck priced issues two more SELECTs depends on
-    how the caller loaded the profile, not on this class.
+    ``SalaryProfile.raises`` and ``.deductions`` are ``lazy="select"``.  The
+    deductions are read by
+    :func:`~app.services.paycheck_calculator.calculate_paycheck` on the FIRST
+    paycheck priced; the raises are read one call earlier since plan step
+    salary:S3-f-1, by :meth:`PaycheckPricing.for_profile` canonicalising the
+    raise set for its memo key, and the engine reads only that value.  Whether
+    either read issues a SELECT depends on how the caller loaded the profile,
+    not on this class.
     :func:`~app.services.projection_inputs.load_payroll_feeds` eager-loads
     them (``subqueryload`` on both); :meth:`SalaryPricing._profile_by_template`
     does not, and that is a pre-existing property of the amount model's
@@ -159,7 +166,9 @@ class ProfilePaychecks:
     ``None`` says.
     """
 
-    def __init__(self, profile, calendar: PayCalendar) -> None:
+    def __init__(
+        self, profile, calendar: PayCalendar, raise_terms=None,
+    ) -> None:
         """Pin the profile to its owner's calendar and load the tax series.
 
         Args:
@@ -171,6 +180,14 @@ class ProfilePaychecks:
                 set every calendar question the engine asks is answered from,
                 and the cadence it divides the salary by.  Must belong to the
                 SAME owner as *profile* (see the raise below).
+            raise_terms: The raise set to price under, as a tuple of
+                :class:`~app.services.salary_raises.RaiseTerms`, or ``None``
+                for the rows' own terms -- handed straight to
+                :attr:`~app.services.payroll_basis.PayrollBasis.raise_terms`
+                (plan step salary:S3-f-1, ruling **R-SAL20**).  A pricer is
+                one profile under ONE raise set: the per-payday memo below is
+                keyed by payday alone, so a set that differs is a different
+                pricer, which :meth:`PaycheckPricing.for_profile` keys on.
 
         Raises:
             ValueError: *profile* and *calendar* belong to different owners.
@@ -196,7 +213,7 @@ class ProfilePaychecks:
                 f"answers a plausible figure off the wrong schedule."
             )
         self._profile = profile
-        self._basis = PayrollBasis(profile, calendar)
+        self._basis = PayrollBasis(profile, calendar, raise_terms)
         self._series = profile_tax_series(profile.user_id, profile)
         self._by_payday: "dict[date, paycheck_calculator.PaycheckBreakdown]" = {}
 
@@ -294,10 +311,11 @@ class ProfilePaychecks:
 
 
 class PaycheckPricing:
-    """The read pass's ONE :class:`ProfilePaychecks` per salary profile.
+    """The read pass's ONE :class:`ProfilePaychecks` per profile per raise set.
 
     **Plan step salary:S3-d.**  Within ONE of these, a payday is priced once
-    by construction: :meth:`for_profile` memoizes per profile and
+    by construction: :meth:`for_profile` memoizes per profile and raise set
+    (per profile alone until plan step salary:S3-f-1) and
     :class:`ProfilePaychecks` memoizes per payday, so two consumers asking
     overlapping spans pay for the union and never for the overlap.  A consumer
     is HANDED one -- there is no ``breakdowns=None`` to forget, which is what
@@ -331,7 +349,11 @@ class PaycheckPricing:
                 :class:`~app.services.pay_calendar.PayCalendar`.
         """
         self._calendar = calendar
-        self._by_profile: "dict[int, ProfilePaychecks]" = {}
+        # Keyed by ``(profile id, canonical raise terms)``: a profile's
+        # paychecks are a function of the profile, the calendar AND the raise
+        # set they are priced under (plan step salary:S3-f-1), and every
+        # spelling of one set -- the rows, ``None``, values -- is ONE key.
+        self._by_profile: "dict[tuple, ProfilePaychecks]" = {}
 
     @property
     def calendar(self) -> PayCalendar:
@@ -349,23 +371,51 @@ class PaycheckPricing:
         """
         return self._calendar
 
-    def for_profile(self, profile) -> ProfilePaychecks:
+    def for_profile(self, profile, raise_terms=None) -> ProfilePaychecks:
         """Return this pass's :class:`ProfilePaychecks` for *profile*.
+
+        **Keyed on the raise set as well as the profile since plan step
+        salary:S3-f-1** (ruling **R-SAL20**), because that is what a
+        profile's paychecks are a function of.  Every production caller asks
+        for the rows today; a what-if over one raise's end year (plan step
+        **salary:S3-f**) asks for its terms and gets a pricer of its own,
+        memoized under them, so ten probes at one raise set share one pricer
+        and never a payday priced under another set.
+
+        **The key is CANONICAL, and it has to be.**  Whatever a caller spells
+        the set with -- ``None``, the rows, a tuple of
+        :class:`~app.services.salary_raises.RaiseTerms`, a probe carrying the
+        stored end year unchanged -- it is converted through
+        :func:`~app.services.salary_raises.terms_of` first, so two sets that
+        would price every payday identically are one key and one pricer.  An
+        adversarial review of this step measured that keying on the caller's
+        objects admitted three spellings of the STORED set, which is the
+        two-derivations-of-one-figure shape
+        :class:`~app.services.retirement_plan.PlanPoint` exists to refuse
+        (ledger row **P57**) one tier up.  The cost is that the rows are read
+        HERE rather than at the first paycheck: for a profile loaded without
+        its ``raises`` that is the same SELECT a call earlier, in the same
+        request.
 
         Args:
             profile: The :class:`~app.models.salary_profile.SalaryProfile`.
-                Its ``id`` is the memo key and its ``user_id`` must be the
-                owner the calendar belongs to.
+                Its ``id`` is half the memo key and its ``user_id`` must be
+                the owner the calendar belongs to.
+            raise_terms: The raise set to price under -- anything
+                :func:`~app.services.salary_raises.terms_of` accepts -- or
+                ``None`` for the profile's rows.
 
         Returns:
-            The profile's pricer -- the same object every time within one
-            pass, so nothing it has priced is priced again.
+            The profile's pricer under that raise set -- the same object every
+            time within one pass, so nothing it has priced is priced again.
         """
-        if profile.id not in self._by_profile:
-            self._by_profile[profile.id] = ProfilePaychecks(
-                profile, self._calendar,
+        terms = terms_of(profile.raises if raise_terms is None else raise_terms)
+        key = (profile.id, terms)
+        if key not in self._by_profile:
+            self._by_profile[key] = ProfilePaychecks(
+                profile, self._calendar, terms,
             )
-        return self._by_profile[profile.id]
+        return self._by_profile[key]
 
 
 def paycheck_pricing(calendar: PayCalendar) -> PaycheckPricing:

@@ -166,7 +166,7 @@ from app.services.pay_calendar import (
     paydays_in_year_before,
 )
 from app.services.payroll_basis import PayrollBasis, gross_per_paycheck
-from app.services.salary_raises import apply_raises, get_raise_event
+from app.services.salary_raises import get_raise_event
 from app.utils.deduction_cap import cap_period_amount
 from app.utils.money import round_money
 
@@ -340,8 +340,10 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
 
     Args:
         basis:        The :class:`PayrollBasis` -- this owner's salary profile
-                      (with loaded raises and deductions) bound to the pay
-                      CALENDAR their paychecks arrive on.  The calendar is
+                      (with its deductions) bound to the pay CALENDAR their
+                      paychecks arrive on, naming the RAISE SET the paycheck
+                      is priced under (plan step salary:S3-f-1; read through
+                      ``basis.raises``, never off the profile).  The calendar is
                       REQUIRED and carries both facts the engine needs beyond
                       the profile: the cadence it divides the salary by
                       (assuming biweekly would model a weekly-paid owner's
@@ -363,9 +365,8 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
     Returns:
         PaycheckBreakdown dataclass.
     """
-    # Step 1: Determine annual salary after raises.
-    profile = basis.profile
-    annual_salary = apply_raises(profile.annual_salary, profile.raises, period.start_date)
+    # Step 1: Determine annual salary after raises (off the basis's raise set).
+    annual_salary = basis.annual_salary_on(period.start_date)
 
     # Step 2: Gross biweekly -- the salary over the owner's paycheck count,
     # rounded once.  Deliberately NOT a function of the payday SET: that is
@@ -414,7 +415,7 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
         period=PeriodInfo(
             period.start_date, period.period_id,
             _is_third_paycheck(ded_ctx.month_ordinal),
-            get_raise_event(profile, period),
+            get_raise_event(basis.raises, period),
         ),
         earnings=Earnings(annual_salary, gross_biweekly, taxable_biweekly, net_pay),
         taxes=taxes,
@@ -916,8 +917,7 @@ def _cumulative_deduction_before(ded, ctx, pct_id):
         ordinal = _month_ordinal(basis.calendar, payday)
         if not _deduction_applies_at(ded, ordinal):
             continue
-        salary = apply_raises(profile.annual_salary, profile.raises, payday)
-        gross = gross_per_paycheck(salary, basis.periods_per_year)
+        gross = gross_per_paycheck(basis.annual_salary_on(payday), basis.periods_per_year)
         cumulative += _raw_deduction_amount(
             ded, gross, payday, profile, pct_id,
         )
@@ -972,23 +972,21 @@ def _get_cumulative_wages(basis, period):
     2026-08-31 amendment and the conservative direction.
 
     Args:
-        basis: The :class:`PayrollBasis` -- its profile prices each paycheck
-            and its calendar supplies the paydays.
+        basis: The :class:`PayrollBasis` -- its salary and raise set price
+            each earlier paycheck and its calendar supplies the paydays.
         period: The period being priced.  Its payday bounds the sum, which is
             STRICTLY before it, and its year is the window.
 
     Returns:
         The summed gross, ``ZERO`` for the year's first paycheck.
     """
-    profile = basis.profile
     cumulative = ZERO
 
     for payday in paydays_in_year_before(basis.calendar, period.start_date):
-        salary = apply_raises(profile.annual_salary, profile.raises, payday)
         # The SAME producer ``calculate_paycheck`` prices a paycheck with, so
         # the earlier grosses summed here match the per-period
         # ``gross_biweekly`` by construction rather than by two expressions
         # happening to agree.
-        cumulative += gross_per_paycheck(salary, basis.periods_per_year)
+        cumulative += gross_per_paycheck(basis.annual_salary_on(payday), basis.periods_per_year)
 
     return cumulative
