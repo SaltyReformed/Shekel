@@ -68,9 +68,10 @@ What this package offers
   An occurrence with no pay period means the SAVED schedule does not reach it,
   which since plan step C2-b2 is the only way to get one.
 * :func:`recurrence_spec` / :func:`read_rule` / :func:`resolved_recurrence` /
-  :func:`rule_occurrences` / :func:`placed_periods` -- the READ door,
-  symmetric with the write door: a rule's authored state back out, the one
-  resolve-then-place composition, each of its halves alone, and the projection
+  :func:`resolved_spec` / :func:`rule_occurrences` / :func:`placed_periods` --
+  the READ door, symmetric with the write door: a rule's authored state back
+  out, the one resolve-then-place composition, each of its halves alone (the
+  resolving half from a rule or from a spec already read), and the projection
   three surfaces take of the second.  Since plan step R4b-2 the generation
   seam, the Recurring surface, the form preview and the frozen baseline all
   answer from one call.
@@ -223,6 +224,7 @@ from app.services.recurrence._reading import (
     recurrence_spec,
     recurrence_spec_with_cadence,
     resolved_recurrence,
+    resolved_spec,
     rule_occurrences,
     scheduling_day_of_month,
     stored_cadence,
@@ -322,6 +324,7 @@ __all__ = [
     "recurrence_spec_with_cadence",
     "resolve",
     "resolved_recurrence",
+    "resolved_spec",
     "rule_occurrences",
     "scheduling_day_of_month",
     "selected_cadence",

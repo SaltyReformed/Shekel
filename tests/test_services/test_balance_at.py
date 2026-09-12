@@ -34,6 +34,7 @@ anchored in the past (period 2) or at the current period (period 4).
 """
 
 from collections import OrderedDict
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -72,6 +73,11 @@ from app.services.account_projection import (
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.income_service import paycheck_pricing
 from app.services.pay_calendar import DerivedPeriod, calendar_for
+from app.services.recurrence import (
+    build_transient_rule,
+    reauthor_rule,
+    recurrence_spec,
+)
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.balance_at._assertions import assertion_corrections
 from app.services.investment_projection import AccountPayrollFeed
@@ -109,6 +115,7 @@ from tests._test_helpers import (
     last_covered_day,
     loan_params_for,
     make_appreciating_account,
+    make_expense_template,
     make_investment_account,
     make_salary_profile,
     posted_loan_balance_at,
@@ -6020,6 +6027,97 @@ class TestTheReadPassOwnsTheReportingDomain:
             assert balance_at.grid_balance_view(
                 seed_user["account"], ctx,
             ).columns == {}
+
+
+class TestTheReadPassResolvesARuleByWhatItSays:
+    """Plan step **R16-b-2**: the rule-resolution memo is keyed by the SPEC.
+
+    ``resolved_recurrence_of`` collapses a pass's N resolutions of one rule to
+    one.  A first cut keyed the memo by ``rule.id``, and the merge of plan
+    step R7d-c-2 -- which has GENERATION read a rule through this memo --
+    measured what that proxy costs: ``reauthor_rule`` rewrites a rule's
+    columns IN PLACE, so a rule edited and regenerated on one pass was
+    regenerated on its pre-edit cadence.  The key is now the derivation's
+    actual input, the rule's spec, so a stale entry is unrepresentable.
+
+    Both controls read the memo's IDENTITY (``is``): a hit hands back the
+    stored object and a miss builds a new one, so identity is what tells the
+    two apart without patching the resolver.
+    """
+
+    def test_a_rule_re_authored_on_one_pass_is_resolved_afresh(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The write door moves the first occurrence; the same pass sees it.
+
+        With the id key the second read returned the first read's object and
+        ``after.starts_on`` still named the opening payday -- verified by
+        restoring that key and watching this fail.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id)
+            rule = template.recurrence_rule
+            before = ctx.resolved_recurrence_of(rule)
+            assert before.starts_on == seed_periods[0].start_date, (
+                "precondition: the every-period rule opens on the first payday"
+            )
+            reauthor_rule(
+                rule,
+                replace(
+                    recurrence_spec(rule),
+                    starts_on=seed_periods[1].start_date,
+                ),
+                ctx.calendar(),
+            )
+            db.session.flush()
+
+            after = ctx.resolved_recurrence_of(rule)
+            assert after is not before
+            assert after.starts_on == seed_periods[1].start_date
+
+            # Re-authored BACK to the first spec, the first entry is served:
+            # the key is the value, not "anything but the id" -- a memo
+            # bypassed entirely would pass the two assertions above and fail
+            # this one.
+            reauthor_rule(
+                rule,
+                replace(
+                    recurrence_spec(rule),
+                    starts_on=seed_periods[0].start_date,
+                ),
+                ctx.calendar(),
+            )
+            db.session.flush()
+            assert ctx.resolved_recurrence_of(rule) is before
+
+    def test_rules_stating_one_spec_share_one_resolution(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Two stored rules and a transient one, one spec, one entry.
+
+        The resolver cannot tell two rules with the same spec apart, so
+        neither does the memo; and a transient rule (``id`` ``None``) needs
+        no special case, because its spec is the key like any other's.
+        """
+        with app.app_context():
+            first = make_expense_template(db.session, seed_user, name="Rent")
+            second = make_expense_template(
+                db.session, seed_user, name="Groceries", category_key="Groceries",
+            )
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id)
+            first_spec = recurrence_spec(first.recurrence_rule)
+            assert first_spec == recurrence_spec(second.recurrence_rule), (
+                "precondition: the two definitions author one spec"
+            )
+            transient = build_transient_rule(first_spec, ctx.calendar())
+            assert transient.id is None, "precondition: unsaved"
+
+            resolved = ctx.resolved_recurrence_of(first.recurrence_rule)
+            assert ctx.resolved_recurrence_of(second.recurrence_rule) is resolved
+            assert ctx.resolved_recurrence_of(transient) is resolved
 
 
 class TestTheReadPassProjectsOverOneCalendar:
