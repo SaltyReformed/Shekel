@@ -159,7 +159,7 @@ class SkippedLine:
         line: The bank's own record of the movement
             (:class:`~._offers.BankLine`) -- the merchant, the posted day and
             the amount.  **Carried even though the caller supplied its id**,
-            for the reason :attr:`~._batch.AppliedItem.line_ids` is: a batch
+            for the reason :attr:`~._outcome.AppliedItem.line_ids` is: a batch
             reports per-item outcomes and pairs each with what was submitted,
             and an outcome that could not say which line it was about would
             have to be paired by position.

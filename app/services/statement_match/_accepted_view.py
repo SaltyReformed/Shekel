@@ -103,7 +103,7 @@ class AcceptedGroup:  # pylint: disable=too-many-instance-attributes
     would be the speculative shape ``CLAUDE.md`` rule 13 forbids.
     :class:`~._creations.PurchaseDestination`, :class:`~._offers.CandidateRow`,
     :class:`~._creations.CreatedPurchase` and
-    :class:`~._batch.BatchOutcome` carry the same disable for the same reason.
+    :class:`~._outcome.BatchOutcome` carry the same disable for the same reason.
 
     Attributes:
         match_id: The act, so the screen can offer to release it.

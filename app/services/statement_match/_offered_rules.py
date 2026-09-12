@@ -14,7 +14,7 @@ creatable lines over 21 merchants, so the page asked one question **86 times**
 * the rule was read off what was **OK'd**, and computed BEFORE the money door
   ran, so a per-item refusal rolled back inside its savepoint while the rule
   was written anyway -- auto-filing that merchant on the NEXT import with no
-  press.  Built from :attr:`~._batch.BatchOutcome.applied` here, a rule for a
+  press.  Built from :attr:`~._outcome.BatchOutcome.applied` here, a rule for a
   refused creation has no form to take;
 * N controls for one fact can state N different answers.  One offer per
   merchant leaves a contradiction no form to take either.  **The measured
@@ -274,7 +274,7 @@ def rules_worth_offering(
             loaded, each naming a ``line_id`` and the destination the card
             submitted.
         applied_line_ids: Every bank line the door actually explained, from
-            :attr:`~._batch.AppliedItem.line_ids`.
+            :attr:`~._outcome.AppliedItem.line_ids`.
         review: The pass the cards were drawn from, for each line's merchant.
         scope: The pass, whose ``destinations`` are the offer set a chosen id
             is resolved against.  **Resolved against the SCOPE's own set

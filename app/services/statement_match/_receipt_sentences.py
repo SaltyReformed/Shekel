@@ -29,7 +29,7 @@ both.  A count in prose is a derived value beside no reconciler:
 and that is the fact to re-derive rather than to trust this sentence for.*
 
 **Each names its act's FIGURE and its DAY**, which is ruling **R-GD(a)**'s
-rule and the reason :attr:`~._batch.AppliedItem.line_ids` is documented as a
+rule and the reason :attr:`~._outcome.AppliedItem.line_ids` is documented as a
 correlation key rather than a label: a ``bank_statement_lines`` id is opaque
 and appears nowhere the owner can see, so the sentence is what identifies the
 act on screen.
@@ -202,7 +202,7 @@ def skip_summary(skipped) -> str:
     """Return the sentence describing what skipping one line did.
 
     **It names the figure and the day, which is how the owner recognises the
-    act** -- :class:`AppliedItem`'s own rule, and ruling **R-GD(a)**'s: a
+    act** -- :class:`~._outcome.AppliedItem`'s own rule, and ruling **R-GD(a)**'s: a
     consent naming a count and no figure is a consent to an amount nobody
     stated.  A bank line's id is opaque and appears nowhere the owner can see.
 
