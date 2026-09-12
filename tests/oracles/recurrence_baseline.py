@@ -105,7 +105,9 @@ from app.services.recurrence_engine import _plan
 from app.services.recurrence import _reading
 from app.services.recurrence._months import clamped_day, month_ordinal
 
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import (
+    eras_of,
+)
 
 #: The baseline schedule's first payday.  A literal, and a LEAP year, so
 #: February 29 clamping is covered rather than assumed.
@@ -560,9 +562,10 @@ def build_shape_calendar(
         The :class:`~app.services.pay_calendar.PayCalendar` for
         :data:`SHAPE_USER_ID`.
     """
+    paydays = [(period.id, period.start_date) for period in periods]
     return PayCalendar.from_paydays(
-        paydays=[(period.id, period.start_date) for period in periods],
-        rhythm=rhythm_of(cadence_days),
+        paydays=paydays,
+        eras=eras_of(paydays, cadence_days),
         user_id=SHAPE_USER_ID,
         history_opens_on=None,
     )

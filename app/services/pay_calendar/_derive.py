@@ -12,8 +12,8 @@ that dependency, written once::
     end_date     = next_payday - 1
 
 where ``next_payday`` is the following row's ``start_date``, or -- for the
-last period, which has none -- the projection one cadence on
-(:func:`projected_payday`).  **Plan step C14-c made those ONE rule.**  The last
+last period, which has none -- the era grid's next planned payday
+(:func:`~._eras.payday_after`).  **Plan step C14-c made those ONE rule.**  The last
 end read ``start_date + cadence_days - 1``, which agrees with the first only
 while every payday sits exactly one cadence from its neighbour; since
 ``C14-e-3`` displaces one onto a business day the two part, and the day between falls in
@@ -66,29 +66,35 @@ package.*
 
 **Why the last end is a different KIND of value, and says so.**  Every other
 end is dictated by a fact -- the next RECORDED payday.  The last one has no
-successor row, so the payday it stops before is projected forward from
-``budget.pay_schedule.cadence_days`` (ruling 2026-08-08: "a projection stated
-as one").  The RULE over the two is identical since plan step ``C14-c``; what
-differs is whether the payday it reads is a record or a projection.
+successor row, so the payday it stops before is PROJECTED: the owner's era
+grid's next payday after the one the last record stands for
+(:func:`~._eras.payday_after`; ruling 2026-08-08: "a projection stated as one").  The
+RULE over the two is identical since plan step ``C14-c``; what differs is
+whether the payday it reads is a record or a projection.
 :attr:`DerivedPeriod.end_is_projected`
 is that statement, and it cannot be recomputed by a consumer holding one period
-out of its calendar.  It is not cosmetic: plan finding P12 -- a
-``/pay-periods/generate`` post naming an already-existing payday creates zero
-rows and still reaches ``upsert_schedule`` (``routes/pay_periods.py``), so the
-stored cadence is rewritten by a batch that wrote nothing -- moves this end and
-only this end, and today the stored column hides that.  Once the column is
-gone, the flag is the only thing on the value that distinguishes a horizon
-derived from a fact from one derived from a setting a no-op post can change.
+out of its calendar.  It is not cosmetic: a projected end moves when the era it
+is read from moves -- a batch that mints one, or retires one -- where an end
+dictated by a recorded payday does not, and the flag is the only thing on the
+value that says which kind a consumer holds.  *Until plan step ``C4-c`` a
+stored ``end_date`` hid that, and plan finding P12 -- a
+``/pay-periods/generate`` post naming an existing payday created zero rows and
+still rewrote the stored cadence -- was the door that moved it.*
 """
 
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from app.services.pay_rhythm import Rhythm
+from app.services.pay_rhythm import Era
 from app.utils.dates import pay_period_label, pay_period_range_label
 
-from ._eras import PayCalendarError, projected_payday, validate_cadence
+from ._eras import (
+    PayCalendarError,
+    first_payday_of,
+    payday_after,
+    validate_cadence,
+)
 
 
 @dataclass(frozen=True)
@@ -119,7 +125,7 @@ class DerivedPeriod:
             row; everything else here is derived from it and its neighbours.
         end_date: The last day the period covers -- the day before the NEXT
             payday, which for the last period is the projected one
-            (:func:`projected_payday`) rather than a recorded neighbour.  ONE
+            (:func:`~._eras.projected_payday`) rather than a recorded neighbour.  ONE
             rule since ``C14-c``; it read ``start_date + cadence_days - 1``
             there, the same day only while no payday can move.
         end_is_projected: Whether the payday :attr:`end_date` was taken from is
@@ -348,9 +354,9 @@ class DerivedPeriod:
 
 
 def derive_periods(
-    paydays: "Iterable[tuple[int | None, date]]", rhythm: Rhythm,
+    paydays: "Iterable[tuple[int | None, date]]", eras: "tuple[Era, ...]",
 ) -> tuple[DerivedPeriod, ...]:
-    """Derive an owner's whole pay calendar from their paydays and rhythm.
+    """Derive an owner's whole pay calendar from their paydays and eras.
 
     **Takes the owner's COMPLETE payday set, never a window.**  A period's end
     is its successor's payday, so the LAST payday in whatever list arrives here
@@ -386,10 +392,11 @@ def derive_periods(
     replaced it with ``pay_period_write._reject_backward_payday``, and **that
     floor is what closes this example** -- corrected 2026-08-11, because this
     paragraph named C3-b's coverage rule until the floor's own correction made
-    the citation wrong and the rule was then deleted.  The floor is one FULL
-    CADENCE past the latest payday, so on ``[01-02, 01-16]`` at cadence 14 the
-    earliest acceptable new payday is 01-30 and the 01-28 above is refused
-    outright.
+    the citation wrong and the rule was then deleted.  The floor is the era
+    grid's next payday after the one the latest record stands for
+    (:func:`~._eras.payday_after`, the same call that closes the last period here), so
+    on ``[01-02, 01-16]`` under an era from 01-02 at cadence 14 the earliest
+    acceptable new payday is 01-30 and the 01-28 above is refused outright.
 
     **What the floor buys is exactly that and no more, and a second adversarial
     review caught a first draft of this paragraph claiming more**: no write can
@@ -418,33 +425,39 @@ def derive_periods(
             :attr:`DerivedPeriod.period_id`.  Empty is a legal input and yields
             an empty calendar -- a user who has never generated a schedule, and
             the companion role, which by design holds no paydays of its own.
-        rhythm: How often this owner is paid and what payroll does when a
-            payday lands on a closed day, from ``budget.pay_schedule``
-            (:class:`~app.services.pay_rhythm.Rhythm`).  Read only for the LAST period's end;
-            every other end is dictated by the next payday, so a wrong rhythm
-            can move exactly one day in the result.  The cadence is validated
-            EAGERLY, before the paydays are looked at: a bad one is a bad
-            caller whether or not this particular owner has paydays yet, and
-            refusing it only when the data reaches the projection branch would
-            hide it until the day a user records their first payday.
-            **It was a bare ``cadence_days`` until ``C14-e-1``**, which
-            threaded the pair ahead of ``C14-e-3`` making
-            :func:`projected_payday` the nominal day displaced under the
-            owner's convention.  The two are one rhythm with one reader;
-            passing them apart would pair one owner's cadence with another's
-            convention.
-            **The cadence is not optional, since plan step C4-d** (ruling
-            **R-PC45**).  It was
-            ``int | None``, ``None`` being legal beside an empty payday set and
-            REFUSED beside a non-empty one -- a pairing this function policed at
-            runtime for every caller, in twenty lines, because the type would
-            not.  The absence it stood for was an owner with no
-            ``budget.pay_schedule`` row, and that owner now has no CALENDAR:
-            :func:`~._loader.calendar_for` refuses them rather than building an
-            empty one with no cadence, so nothing constructs the pair and there
-            is nothing here to refuse.  An owner with a schedule row and zero
-            paydays is unaffected and still ordinary -- they have a real
-            cadence and an empty calendar, which is what
+        eras: The owner's pay eras, ``effective_from`` ascending and
+            NON-EMPTY (:class:`~app.services.pay_rhythm.Era`, one per
+            ``budget.pay_eras`` row): each carries the day its rhythm took
+            effect, which is the grid's PHASE, and the rhythm itself.  Read
+            only for the LAST period's end -- every other end is dictated by
+            the next recorded payday -- and through :func:`~._eras.payday_after`, so
+            the end lands on the grid of the era covering the last payday
+            rather than one cadence past the day the bank happened to pay
+            (plan step ``pay_calendar:C17-b-2``; ledger rows **N-495**,
+            **N-492**).  Validated EAGERLY, before the paydays are looked at
+            (:func:`validate_eras`): a bad sequence is a bad caller whether or
+            not this owner has paydays yet, and refusing it only when the data
+            reaches the projection branch would hide it until the day a user
+            records their first payday.
+            **It was a single :class:`~app.services.pay_rhythm.Rhythm` until
+            ``C17-b-2``** -- the schedule row's one cadence and convention,
+            then the LATEST era's at ``C17-a`` -- and a bare ``cadence_days``
+            until ``C14-e-1``, which threaded the pair ahead of ``C14-e-3``
+            making :func:`~._eras.projected_payday` the nominal day displaced under
+            the owner's convention.  The sequence travels as one value for the
+            reason the pair did: passed apart, one owner's cadence could be
+            paired with another's convention or phase.
+            **It is not optional, since plan step C4-d** (ruling **R-PC45**).
+            The cadence was ``int | None``, ``None`` being legal beside an
+            empty payday set and REFUSED beside a non-empty one -- a pairing
+            this function policed at runtime for every caller, in twenty
+            lines, because the type would not.  The absence it stood for was
+            an owner with no ``budget.pay_schedule`` row, and that owner now
+            has no CALENDAR: :func:`~._loader.calendar_for` refuses them
+            rather than building an empty one with no rhythm, so nothing
+            constructs the pair and there is nothing here to refuse.  An owner
+            with an era and zero paydays is unaffected and still ordinary --
+            they have a real rhythm and an empty calendar, which is what
             ``pay_period_admin.reset_pay_periods`` passes through.
 
     Returns:
@@ -452,15 +465,15 @@ def derive_periods(
         0..n-1 in that order.  Empty for an empty payday set.
 
     Raises:
-        PayCalendarError: ``rhythm.cadence_days`` is not an ``int``
-            (``None`` included) or falls outside 1..365; a ``period_id`` is
-            neither an
-            ``int`` nor ``None``; a payday is not a ``datetime.date``, or is a
-            ``datetime.datetime`` (which is a ``date`` subclass and would
+        PayCalendarError: Anything :func:`validate_eras` refuses -- no era, an
+            era whose cadence is not an ``int`` (``None`` included) or falls
+            outside 1..365, or eras out of order; a ``period_id`` is neither
+            an ``int`` nor ``None``; a payday is not a ``datetime.date``, or
+            is a ``datetime.datetime`` (which is a ``date`` subclass and would
             silently give every derived end a time component); or a payday
             appears twice.
     """
-    validate_cadence(rhythm.cadence_days)
+    validate_eras(eras)
     # Sorted on the PAYDAY alone.  Sorting the pairs would break on a ``None``
     # id the moment two paydays tied -- and they cannot tie, which is checked
     # next, so keying the sort on the id would only hide that check.
@@ -477,8 +490,8 @@ def derive_periods(
             )
 
     if not ordered:
-        # No last period, so no projected end, so the cadence is unread.  It
-        # was still validated above, deliberately: a bad cadence is a bad
+        # No last period, so no projected end, so the eras are unread.  They
+        # were still validated above, deliberately: a bad sequence is a bad
         # caller whether or not this owner has paydays yet.
         return ()
 
@@ -488,10 +501,12 @@ def derive_periods(
         # ONE end rule, since plan step C14-c: a period runs to the day
         # before the NEXT payday.  All that differs for the last period is
         # where that payday comes FROM -- the projection rather than the
-        # record -- which is what ``end_is_projected`` says.
+        # record -- which is what ``end_is_projected`` says.  The projection
+        # is the ERA grid's next payday after the one this record stands for
+        # (``C17-b-2``), never one cadence past the recorded day itself.
         is_last = position == last_position
         next_payday = (
-            projected_payday(payday, rhythm, 1)
+            payday_after(eras, payday)
             if is_last
             else ordered[position + 1][1]
         )
@@ -505,6 +520,75 @@ def derive_periods(
             )
         )
     return tuple(derived)
+
+
+def validate_eras(eras: "tuple[Era, ...]") -> None:
+    """Refuse an era sequence no calendar can be derived from.
+
+    Plan step ``pay_calendar:C17-b-2``.  Held to :func:`~._eras.validate_cadence`'s
+    standard, and for the same reason: every reader below walks the sequence
+    without re-checking it, so a bad one refused here is refused once rather
+    than answered wrongly four ways.  Three things are refused, and each is a
+    state the storage already makes impossible for a STORED sequence -- so
+    reaching this means a caller assembled the tuple by hand and got it wrong,
+    and failing loud is the only safe disposition.
+
+    * **No era at all.**  An owner with a ``budget.pay_schedule`` row and no
+      era has stated no rhythm, and :func:`~._loader.calendar_for` refuses
+      them (ruling **R-PC45**'s principle, one relation over) -- so no absence
+      travels here for a reader to remember to test.
+    * **A cadence outside the column's bound**, per era, through
+      :func:`~._eras.validate_cadence`.
+    * **Eras out of order, in either coordinate.**  ``effective_from`` must
+      strictly ascend (``uq_pay_eras_user_effective_from`` and the loader's
+      ``ORDER BY`` hold that for a stored sequence), and so must each era's
+      FIRST PAYDAY -- its ``effective_from`` displaced under its own
+      convention (:func:`first_payday_of`) -- because every reader here
+      partitions the calendar on those days.  Two eras whose first paydays
+      coincided or crossed would give one of them no payday at all; the write
+      door's floor bounds a MINTING batch at its era's first payday (ruling
+      2026-09-11, after an adversarial review of ``C17-b-2`` drove a legal
+      sequence past a floor that saw only the batch's NEW paydays), which is
+      what makes the second bound a property of the doors.
+
+    Args:
+        eras: The candidate sequence.
+
+    Raises:
+        PayCalendarError: The tuple is empty; an era's cadence is refused by
+            :func:`~._eras.validate_cadence`; or two consecutive eras are out of order
+            by ``effective_from`` or by first payday.
+    """
+    if not eras:
+        raise PayCalendarError(
+            "a pay calendar needs at least one era: an owner holding a "
+            "budget.pay_schedule row and no budget.pay_eras row has stated "
+            "no rhythm, so nothing says how often they are paid or where "
+            "their grid lies.  pay_calendar._loader.calendar_for refuses "
+            "them; reaching here means a caller built the sequence by hand."
+        )
+    for era in eras:
+        validate_cadence(era.rhythm.cadence_days)
+    for earlier, later in zip(eras, eras[1:]):
+        if later.effective_from <= earlier.effective_from:
+            raise PayCalendarError(
+                f"pay eras must take effect in strictly ascending order, got "
+                f"{earlier.effective_from.isoformat()} followed by "
+                f"{later.effective_from.isoformat()}.  "
+                f"uq_pay_eras_user_effective_from and the loader's ORDER BY "
+                f"hold that for a stored sequence, so this one was assembled "
+                f"by hand."
+            )
+        if first_payday_of(later) <= first_payday_of(earlier):
+            raise PayCalendarError(
+                f"pay era {later.effective_from.isoformat()}'s first payday "
+                f"({first_payday_of(later).isoformat()}) does not fall after "
+                f"the previous era's ({first_payday_of(earlier).isoformat()}"
+                f", from {earlier.effective_from.isoformat()}).  An era pays "
+                f"from its first payday to the next era's, so one of these "
+                f"would pay nothing; pay_period_write's floor keeps a minted "
+                f"era's first payday past the previous era's next one."
+            )
 
 
 def _validated(

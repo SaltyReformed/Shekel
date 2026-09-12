@@ -86,8 +86,8 @@ part of it:
 **One more value landed here at the recurrence arc's plan step R7a-2a**, and it
 is in this package because the fact it derives from is:
 :class:`~._cadence.PayCadence` answers "how many paychecks does this owner
-receive in a year", which is ``budget.pay_schedule.cadence_days`` and nothing
-else.  It replaced ``app.utils.money.PAY_PERIODS_PER_YEAR``, a hardcoded
+receive in a year", which is the latest era's ``budget.pay_eras.cadence_days``
+and nothing else.  It replaced ``app.utils.money.PAY_PERIODS_PER_YEAR``, a hardcoded
 ``Decimal("26")`` read by nine files while the cadence it stood for is
 user-selectable 1..365 -- so every monthly-equivalent figure on
 ``/obligations``, ``/savings`` and the Recurring surface was wrong for an owner
@@ -105,6 +105,9 @@ from ._eras import (
     MAX_CADENCE_DAYS,
     MIN_CADENCE_DAYS,
     PayCalendarError,
+    era_index_at,
+    first_payday_of,
+    payday_after,
     projected_payday,
 )
 from ._grid import cadence_steps_to, nominal_payday
@@ -149,13 +152,16 @@ __all__ = [
     "containing_period",
     "derive_periods",
     "earliest_started_period",
+    "era_index_at",
     "final_covered_day",
+    "first_payday_of",
     "latest_started_period",
     "nominal_payday",
     "nominal_payday_after",
     "opening_payday",
     "paychecks_from",
     "paydays_in_month_through",
+    "payday_after",
     "paydays_in_year_before",
     "period_by_id",
     "projected_payday",

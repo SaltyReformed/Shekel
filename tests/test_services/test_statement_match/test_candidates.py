@@ -672,7 +672,7 @@ class TestTheCalendarIsTheOwnershipSCOPE:
                     for period in whole.periods
                     if period.period_id != later.id
                 ],
-                whole.rhythm,
+                whole.eras,
                 seed_user["user"].id,
                 history_opens_on=None,
             )

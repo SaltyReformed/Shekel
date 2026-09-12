@@ -9,6 +9,10 @@ the money-moving leaf ``C17-b-2`` about to edit both.  The remedy is a SPLIT
 and not a trim, on the terms that row records: the derivation of the RECORD
 stays in ``_derive``, and the projection PAST it lives here.  Nothing in
 either function changed in the move; the docstrings carry their history.
+**Plan step ``C17-b-2`` then made the projection PIECEWISE** (rulings
+**R-PC66**, **R-PC72**): it anchors on the phase of the era covering the day
+it is asked about rather than on the last recorded payday, and an era's
+projected paydays stop where the next era's begin.
 
 Placed between :mod:`._derive` and :mod:`._searches` in the package's one-way
 chain: it imports the derivation's values and producer and nothing above it,
@@ -20,10 +24,17 @@ the package's standing terms: no session, no Flask, no clock.
 from collections.abc import Iterable
 from datetime import date, timedelta
 
-from app.services.pay_rhythm import Rhythm
+from app.services.pay_rhythm import Era
 
 from ._derive import DerivedPeriod
-from ._eras import PayCalendarError, projected_payday
+from ._eras import (
+    PayCalendarError,
+    era_index_at,
+    following_planned,
+    horizon_step,
+    last_step_of,
+    projected_payday,
+)
 from ._grid import cadence_steps_to
 
 
@@ -72,10 +83,11 @@ def covering_projection(
     answering with a period that does not contain the day it was asked about.
 
     Args:
-        candidates: The projections to choose between, NON-EMPTY.  The one
-            caller always offers three, so an empty set has no producer and
-            gets no message of its own -- an arm no caller can reach is one a
-            test could only grade against an impossible state.
+        candidates: The projections to choose between: the estimate and the
+            neighbours that fall inside the era's own window, one to three
+            above the collision floor.  Below it -- **N-493**'s reported
+            hole, a pairing no door admits -- the window can empty, and the
+            refusal below says so rather than listing nothing.
         day: The calendar day to place.
 
     Returns:
@@ -92,7 +104,7 @@ def covering_projection(
     spans = ", ".join(
         f"[{c.start_date.isoformat()}..{c.end_date.isoformat()}]"
         for c in tried
-    )
+    ) or "none inside the era's window"
     raise PayCalendarError(
         f"no projected pay period covers {day.isoformat()}: the candidates "
         f"were {spans}.  A projection is the nominal rhythm displaced onto a "
@@ -109,7 +121,7 @@ def covering_projection(
 
 
 def project_period_after(
-    periods: "tuple[DerivedPeriod, ...]", rhythm: Rhythm, day: date,
+    periods: "tuple[DerivedPeriod, ...]", eras: "tuple[Era, ...]", day: date,
 ) -> DerivedPeriod:
     """Return the projected period covering *day*, past the last saved payday.
 
@@ -117,20 +129,40 @@ def project_period_after(
     beside which it lived until ``C17-b-1`` moved it here -- and it IS that
     rule: a projected period runs from its own payday to the day before the
     next, exactly as a saved one does, and both paydays come from
-    :func:`~._derive.projected_payday`.  Two consumers ask --
+    :func:`~._eras.projected_payday`.  Two consumers ask --
     :meth:`~._calendar.PayCalendar.span_containing`, which must answer for any
     day, and :func:`~._views.axis_window`, which walks the projection to a
     horizon -- and a second implementation of "where does the next paycheck
     land" is the class ledger row **P6** counted seven of.
 
+    **It anchors on the ERA covering *day*, not on the last recorded payday**
+    (plan step ``C17-b-2``, rulings **R-PC66** and **R-PC72**; ledger row
+    **N-495** closed).  The era's ``effective_from`` is a day its grid passes
+    through by definition; the last recorded payday is what the BANK did,
+    which **R-PC47** says may fall off the cadence, and anchoring on it
+    projected an owner whose last payday payroll moved a rhythm off by that
+    displacement -- worked: a last recorded 2030-11-27, the nominal 11-28
+    Thanksgiving under ``prior``, projected a next payday of 12-11 where the
+    grid says 12-12, one paycheck and every boundary after it a day early.
+    And the projection is PIECEWISE: an era's paydays run from its first
+    (:func:`~._eras.first_payday_of`) to the day before the next era's, so a
+    day past the record but before a later era's first payday is projected on
+    the era that covers it, and that era's last projected period closes on
+    the seam.  The owner's eras are read in CASH days there
+    (:func:`~._eras.era_index_at`, :func:`~._eras.last_step_of`), because
+    where two conventions meet a nominal seam can pay one day twice.
+
     Projection is ARITHMETIC rather than a walk: the period covering *day* is
-    about the ``n``-th after the last saved payday, ``n`` being the whole
-    cadences between them (:func:`~._grid.cadence_steps_to`, since
-    ``balance:X-bh-2``), so cost does not grow with how far ahead a caller
-    asks.  That property was priced when :func:`~._views.projected_paychecks`
-    stepped to its answer instead of jumping -- **32 ms against 0.1 ms** for
-    one render, ``balance:X-bh-1``, measured 2026-08-30 -- and a walk here
-    would reintroduce it one layer down.
+    about the ``n``-th of its era, ``n`` being the whole cadences from the
+    era's phase (:func:`~._grid.cadence_steps_to`, since ``balance:X-bh-2``),
+    so cost does not grow with how far ahead a caller asks.  That property
+    was priced when :func:`~._views.projected_paychecks` stepped to its answer
+    instead of jumping -- **32 ms against 0.1 ms** for one render,
+    ``balance:X-bh-1``, measured 2026-08-30 -- and a walk here would
+    reintroduce it one layer down.  The ORDINAL is arithmetic too: a
+    period's ``period_index`` continues the saved sequence by the number of
+    projected paydays between the horizon and it, counted across the eras
+    between (:func:`_ordinal`).
 
     **"About" is plan step C14-c's word, and the PROBE is why the jump survives
     a payday that moves** (**R-PC57**: the containment probe tolerates a moved
@@ -147,43 +179,24 @@ def project_period_after(
     ``pay_schedule_service.reject_shift_on_short_cadence`` holds a displacing
     convention to (**R-PC59**).  So no payday moves a whole cadence, which puts
     the true index within one of the estimate; a candidate two out would need a
-    displacement of a full cadence or more.  Swept in
-    ``tests/test_services/test_pay_calendar_derivation.py`` over both
+    displacement of a full cadence or more.  **Its second premise -- that the
+    count and the candidates are measured from the SAME anchor -- is what
+    ``C17-b-2`` restored** (ledger row **N-495**): both read the era's phase
+    now, where anchoring only the candidates on it while the estimate counted
+    from the record would have added the displacement to the window.  Swept
+    in ``tests/test_services/test_pay_calendar_derivation.py`` over both
     conventions, four anchors, every cadence from the floor to a year, and
-    steps either side of the anchor -- driving THIS function, not a second copy
-    of its arithmetic.
+    steps either side of the anchor -- driving THIS function, not a second
+    copy of its arithmetic -- and, for the seam, in
+    ``tests/test_services/test_pay_calendar_eras.py`` against a brute-force
+    walk over randomised era sequences.
 
-    **The theorem has a SECOND premise, and naming it is an adversarial
-    review's finding.**  It is not enough that no payday moves a whole cadence:
-    the count below and the candidates beside it must be measured from the SAME
-    anchor, which they are, both reading ``last.start_date``.  Break that and
-    the window is too narrow -- and the natural repair for ledger row **N-495**
-    is what breaks it.  Anchoring the projection on a NOMINAL payday while the
-    estimate still counts from the recorded one adds an offset the size of the
-    displacement, making the premise
-    ``cadence >= longest_closed_run + |anchor offset| + 1``.  Measured at the
-    floor: recorded anchor 2030-01-01, cadence 4, ``prior``, projected from the
-    nominal 2029-12-29, puts 2030-01-04's true index TWO above the estimate --
-    and the consequence is :func:`covering_projection` REFUSING an ordinary
-    day.  ``C14-e-3`` did NOT re-anchor, for the reason
-    :func:`~._derive.projected_payday` gives, and no step may without widening this
-    window.
-
-    **The literal ``1`` was left as ``C14-e``'s design question, and
-    ``C14-e-3`` answers it: it STAYS, and what holds it up is the WRITE DOOR --
-    which is** :func:`covering_projection`'s **reported hole below, stated once
-    there and not restated here.**  An adversarial review of ``C14-c`` read the
-    ``1`` and the collision floor as one value with two homes, the general form
-    being ``(longest_closed_run - 1) // cadence_days + 1``, and named the
-    obstacle to deriving it as the import set of ``_derive``, where this
-    function then lived -- an obstacle ``C14-e-3`` removed there by importing
-    :mod:`app.utils.business_days` for the displacement; this module takes no
-    such import, and deriving it would still buy nothing a caller can reach.
-    *A first draft attributed the guarantee to* :func:`~._derive.derive_periods` *and an
-    adversarial review measured that false: it refuses a repeated RECORDED
-    payday, which* ``uq_pay_periods_user_start`` *already makes impossible, and
-    never weighs a cadence against the closed run.  A sub-floor pairing passes
-    it and derives a REVERSED period -- ledger row **PC-505**.*
+    **A neighbour outside the era's window is not offered.**  Below its first
+    step a non-earliest era has no payday -- the previous era's last period
+    reaches to the seam -- and above :func:`~._eras.last_step_of` the next era
+    pays; the candidates that remain are one to three, and one of them covers
+    *day* because the era's first payday is at or below it and its last
+    period closes the day before the next era's first.
 
     **The precondition below is NOT structural, and a first cut of this step
     filtered on the belief that it was.**  Candidates at step ``0`` and below
@@ -191,12 +204,11 @@ def project_period_after(
     nothing earlier could win -- and the suite refused it:
     :meth:`~._calendar.PayCalendar.span_containing` reaches here for a day
     INSIDE an unsaved interior candidate, whose materialisation filter leaves
-    the total answer here.  *day* is then below the anchor, the count is
-    NEGATIVE, and the rhythm is read backwards -- exactly what shipped before
-    this step, and left as it was.  That answer assumes the recorded paydays
-    between are ON cadence, which **R-PC47** says they need not be; reported
-    rather than repaired, since repairing it moves an answer and this step
-    moves none.
+    the total answer here.  *day* is then below the record, the ordinal below
+    is negative, and the rhythm is read backwards -- which is ledger row
+    **N-496**, carried: the answer is the era's grid where the record is
+    authoritative, and a ``period_index`` that does not match the saved
+    sequence.
 
     Every projected period reports ``end_is_projected`` ``True`` -- the end
     comes from the projection rather than a recorded payday -- and carries
@@ -205,13 +217,9 @@ def project_period_after(
 
     Args:
         periods: The owner's SAVED periods, ``start_date`` ascending and
-            non-empty.  Only the last one is read.
-        rhythm: The owner's cadence and payday convention
-            (:class:`~app.services.pay_rhythm.Rhythm`).  The cadence is an ``int`` rather than
-            ``int | None``: a calendar holding a period cannot have been
-            constructed without a cadence (:func:`~._derive.derive_periods` refuses that
-            pair), and every caller reaches here only after establishing that
-            *periods* is non-empty.
+            non-empty.  Only the last one is read, for the ordinal.
+        eras: The owner's eras, ``effective_from`` ascending and validated
+            (:class:`~app.services.pay_rhythm.Era`; :func:`~._derive.validate_eras`).
         day: The calendar day to place.  NORMALLY past the last saved period's
             ``end_date``, which is what both callers test for -- but that is
             not a guarantee, and this entry said it was until an adversarial
@@ -230,25 +238,81 @@ def project_period_after(
             reported hole.
     """
     last = periods[-1]
-    estimate = cadence_steps_to(last.start_date, rhythm.cadence_days, day)
+    index = era_index_at(eras, day)
+    era = eras[index]
+    top = last_step_of(eras, index)
+    estimate = cadence_steps_to(era.effective_from, era.rhythm.cadence_days, day)
+    horizon = horizon_step(eras, last.start_date)
     return covering_projection(
         (
-            DerivedPeriod(
-                period_id=None,
-                period_index=last.period_index + steps,
-                start_date=projected_payday(
-                    last.start_date, rhythm, steps,
-                ),
-                end_date=projected_payday(
-                    last.start_date, rhythm, steps + 1,
-                ) - timedelta(days=1),
-                end_is_projected=True,
+            _candidate(
+                eras, index, steps,
+                last.period_index + 1
+                + _ordinal(eras, index, steps) - _ordinal(eras, *horizon),
             )
             # The estimate FIRST: it is the answer whenever no payday between
             # the horizon and *day* was displaced across a boundary, and the
             # generator is consumed lazily, so the common call builds one
             # candidate as it always did.
             for steps in (estimate, estimate - 1, estimate + 1)
+            if (index == 0 or steps >= 0) and (top is None or steps <= top)
         ),
         day,
     )
+
+
+def _candidate(
+    eras: "tuple[Era, ...]", index: int, steps: int, period_index: int,
+) -> DerivedPeriod:
+    """Return era *index*'s projected period at grid step *steps*.
+
+    The end is the day before the planned payday that FOLLOWS this one
+    (:func:`~._eras.following_planned`): the era's next step, or at the
+    era's last step the following era's first payday, which is the seam the
+    piecewise projection closes on.
+
+    Args:
+        eras: The owner's eras, validated.
+        index: The era the period belongs to.
+        steps: The grid step from that era's phase.
+        period_index: The ordinal the period carries, continuing the saved
+            sequence.
+
+    Returns:
+        The projected :class:`~._derive.DerivedPeriod`.
+    """
+    era = eras[index]
+    next_index, next_steps = following_planned(eras, index, steps)
+    following = eras[next_index]
+    return DerivedPeriod(
+        period_id=None,
+        period_index=period_index,
+        start_date=projected_payday(era.effective_from, era.rhythm, steps),
+        end_date=projected_payday(
+            following.effective_from, following.rhythm, next_steps,
+        ) - timedelta(days=1),
+        end_is_projected=True,
+    )
+
+
+def _ordinal(eras: "tuple[Era, ...]", index: int, steps: int) -> int:
+    """Return the position of era *index*'s step *steps* in the piecewise grid.
+
+    Counted from the EARLIEST era's phase: every era before *index*
+    contributes the paydays it pays (steps ``0`` through
+    :func:`~._eras.last_step_of`), and the step itself is added.  Two
+    positions differ by the number of paydays between them whichever eras
+    they fall in, which is what lets a projected ``period_index`` continue
+    the saved sequence across a seam by one subtraction.  The earliest era's
+    steps may be negative -- it runs backward below the record -- and the
+    arithmetic reads the same there.
+
+    Args:
+        eras: The owner's eras, validated.
+        index: The era.
+        steps: The grid step within it.
+
+    Returns:
+        The position, an integer without further meaning.
+    """
+    return sum(last_step_of(eras, j) + 1 for j in range(index)) + steps

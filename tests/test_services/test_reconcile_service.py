@@ -1568,7 +1568,7 @@ class TestTheScopeIsTheCALENDARsNotTheTables:
                 for period in whole.periods
                 if period.period_id != drop_period_id
             ],
-            whole.rhythm,
+            whole.eras,
             seed_user["user"].id,
             history_opens_on=None,
         )

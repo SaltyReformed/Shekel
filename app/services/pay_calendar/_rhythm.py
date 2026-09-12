@@ -90,12 +90,15 @@ the rhythm answers it; an owner who states nothing keeps that reading.
 
 **The backward bound is a FLOOR and never an anchor**, which is what keeps the
 two halves one rhythm rather than two.  The days below the record are stepped
-back from the FIRST RECORDED payday at the owner's cadence and dropped once
-they fall under the floor; the stored day is not itself treated as a payday.
-Anchoring on it instead would put a short gap at the seam whenever the day the
-owner remembers does not land on the recorded rhythm -- which it need not, and
-for the production owner does not.  A short gap inflates that month's payday
-count by one, which is exactly the ordinal the deduction cadence reads.
+back from the EARLIEST ERA's phase at that era's cadence (**R-PC66**: the
+earliest era alone runs backward below the record; plan step ``C17-b-2``,
+which moved the anchor off the first RECORDED payday -- ledger row
+**PC-502**) and dropped once they fall under the floor; the stored day is not
+itself treated as a payday.  Anchoring on it instead would put a short gap at
+the seam whenever the day the owner remembers does not land on the grid --
+which it need not, and for the production owner does not.  A short gap
+inflates that month's payday count by one, which is exactly the ordinal the
+deduction cadence reads.
 
 *What the floor GIVES UP, said because an adversarial review of plan step
 balance:X-bh-2 found only the other half written down.*  An anchor would place
@@ -123,7 +126,7 @@ from datetime import date, timedelta
 from itertools import takewhile
 
 from ._calendar import PayCalendar
-from ._eras import projected_payday
+from ._eras import era_index_at, matched_step, projected_payday
 from ._grid import cadence_steps_to
 from ._searches import paydays_between
 from ._views import projected_paychecks
@@ -331,7 +334,7 @@ def _paydays_between(
             period.start_date
             for period in takewhile(
                 lambda paycheck: paycheck.start_date <= last_day,
-                projected_paychecks(periods, calendar.rhythm, first_day),
+                projected_paychecks(periods, calendar.eras, first_day),
             )
             if period.start_date >= first_day
         )
@@ -374,6 +377,17 @@ def _backdated_paydays(
     inflate every ordinal and every year-to-date.  The floor is the OWNER's
     stated day, inclusive -- a day ON the rhythm is kept, which is the natural
     answer to the question both forms ask.
+
+    **The grid is the EARLIEST ERA's, anchored on its phase** (plan step
+    ``C17-b-2``, ruling **R-PC66**; ledger row **PC-502** closed).  Until then
+    it was stepped from the first RECORDED payday, which ``C14-e-3``'s writer
+    records DISPLACED -- so an owner whose record opens on a closed day had
+    every backdated payday off by that displacement, in the half that feeds
+    the FICA wage base and every ``annual_cap``: **22** of the 684 rhythm days
+    below production's record displace under either convention.  The era is
+    asked for by day (:func:`~._eras.era_index_at`), and below the record that
+    is the earliest era by the rule an era's span is derived by: a day before
+    every era's first payday is the earliest era's.
 
     **A floor at or after the opening payday yields nothing, and that is a real
     answer rather than a degenerate one.**  It is what an owner whose first
@@ -435,9 +449,11 @@ def _backdated_paydays(
     same floor forbids the collision that would flatten two grid days onto one.
 
     **The two halves are partitioned by GRID INDEX and not by DAY, and an
-    adversarial review of ``C14-e-3`` is why.**  The saved half owns step
-    ``0`` -- the recorded opening payday itself -- so this one stops at step
-    ``-1``, and the ``min`` below is that bound rather than a guard.  A first
+    adversarial review of ``C14-e-3`` is why.**  The saved half owns the step
+    the recorded opening payday STANDS FOR (:func:`~._eras.matched_step` --
+    step ``0`` wherever the opening is the era's own first payday, which is
+    every owner a door has written) so this one stops at the step below it,
+    and the ``min`` below is that bound rather than a guard.  A first
     cut bounded only by the DAY ``opening - 1`` and argued that step ``0``
     could never reach it, because ``opening`` is a day money moved and so is
     its own displacement.  **That is false of every payday recorded BEFORE the
@@ -452,10 +468,10 @@ def _backdated_paydays(
     paycheck reaches the FICA wage base and every ``annual_cap`` early, which
     understates tax and OVERSTATES net.
 
-    Below step ``-1`` nothing can reach the record either: a grid day a whole
-    cadence under the opening cannot be pushed up to it, by the sub-cadence
-    bound above.  So the index bound and the day filter together select
-    exactly the days the saved half does not hold.
+    Below the opening's step nothing can reach the record either: a grid day
+    a whole cadence under the opening cannot be pushed up to it, by the
+    sub-cadence bound above.  So the index bound and the day filter together
+    select exactly the days the saved half does not hold.
 
     Args:
         calendar: The owner's schedule.  Non-empty, and *first_day* is already
@@ -479,22 +495,27 @@ def _backdated_paydays(
     upper = min(last_day, opening - timedelta(days=1))
     if upper < lower:
         return ()
-    cadence = calendar.rhythm.cadence_days
-    # The GRID indices whose PAYDAY can fall in ``[lower, upper]``.  Both
-    # counts are negative, ``upper`` being strictly below the anchor.  ONE
-    # extra step above and none below: a displacement is shorter than a
-    # cadence, so only the first grid day past ``upper`` can be paid back
-    # inside the span, and no day below the last one at or before ``lower``
-    # can be pushed up into it.  The docstring above carries the theorem.
-    first_step = cadence_steps_to(opening, cadence, lower)
-    # Never step ``0``: that index IS the recorded opening payday, which the
-    # SAVED half answers.  Under ``prior`` its displacement falls below
-    # ``upper`` and would stand beside it as a phantom paycheck.
-    last_step = min(cadence_steps_to(opening, cadence, upper) + 1, -1)
+    era = calendar.eras[era_index_at(calendar.eras, upper)]
+    anchor, rhythm = era.effective_from, era.rhythm
+    cadence = rhythm.cadence_days
+    # The GRID indices whose PAYDAY can fall in ``[lower, upper]``, counted
+    # from the era's phase.  ONE extra step above and none below: a
+    # displacement is shorter than a cadence, so only the first grid day past
+    # ``upper`` can be paid back inside the span, and no day below the last
+    # one at or before ``lower`` can be pushed up into it.  The docstring
+    # above carries the theorem.
+    first_step = cadence_steps_to(anchor, cadence, lower)
+    # Never the opening's own step: that index IS the recorded opening payday,
+    # which the SAVED half answers.  Under ``prior`` its displacement falls
+    # below ``upper`` and would stand beside it as a phantom paycheck.
+    last_step = min(
+        cadence_steps_to(anchor, cadence, upper) + 1,
+        matched_step(anchor, rhythm, opening) - 1,
+    )
     return tuple(
         payday
         for payday in (
-            projected_payday(opening, calendar.rhythm, steps)
+            projected_payday(anchor, rhythm, steps)
             for steps in range(first_step, last_step + 1)
         )
         if lower <= payday <= upper

@@ -87,7 +87,10 @@ from app.services.recurrence import (
 from app.services.recurrence import _months, _occurrence, _resolution
 from app.services.recurrence import EndBound, EndsAfterOccurrences
 
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import (
+    era_of,
+    eras_of,
+)
 from tests.oracles import recurrence_baseline
 from tests.test_services.test_recurrence_resolution import build_calendar
 #: The committed R1 snapshot the parallel run is measured against.
@@ -400,7 +403,7 @@ def _empty_calendar() -> PayCalendar:
         The empty :class:`~app.services.pay_calendar.PayCalendar`.
     """
     return PayCalendar.from_paydays(
-        paydays=(), rhythm=rhythm_of(14), user_id=_USER_ID,
+        paydays=(), eras=eras_of((), 14), user_id=_USER_ID,
         history_opens_on=None,
     )
 
@@ -1432,7 +1435,7 @@ class TestTheClosingBounds:
         """
         calendar = PayCalendar.from_paydays(
             paydays=[(1, date(2026, 1, 1)), (2, date(2026, 1, 15))],
-            rhythm=rhythm_of(14),
+            eras=(era_of(date(2026, 1, 1), 14),),
             user_id=_USER_ID,
             history_opens_on=None,
         )
@@ -1867,7 +1870,7 @@ class TestTheScheduleSearches:
                 (2, date(2026, 1, 22)),
                 (3, date(2026, 2, 12)),
             ],
-            rhythm=rhythm_of(14),
+            eras=(era_of(date(2026, 1, 1), 14),),
             user_id=_USER_ID,
             history_opens_on=None,
         )
