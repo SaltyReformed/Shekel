@@ -1,7 +1,11 @@
 # Shekel Budget App -- Continuous Integration
 #
 # Runs linting (pylint) and the full test suite (pytest) on every push
-# to main and on pull requests.  Uses a PostgreSQL 18 service container
+# to main and on pull requests -- except that a pull request touching
+# ONLY the planning registries and the plan gate runs the plan gate
+# alone (step 2b, ``tools/plan_gate/ci_scope.py``; the PostgreSQL
+# service still starts, because a job-level service cannot be
+# conditioned on a step).  Uses a PostgreSQL 18 service container
 # to match the production database version (upgraded from PG 16 to
 # PG 18 in Phase 2 of docs/audits/test_improvements/
 # test-performance-implementation-plan.md to enable Phase 3's reflink-
@@ -138,6 +142,57 @@ jobs:
         with:
           python-version: "3.14"
 
+      # ── 2b. Classify the change set ──────────────────────────────
+      # A registry pass -- the docs/plans commit that ticks a step, files
+      # its findings and records its rulings -- is a pull request whose
+      # only grader is the plan gate, and the registry lane is serialized
+      # (one such PR at a time, each computed on the tree the last one
+      # left), so the ~40 minutes the suite takes on it sit on the queue's
+      # critical path and grade nothing.  ``tools/plan_gate/ci_scope.py``
+      # answers ``registry-only`` when EVERY changed path is under
+      # docs/plans, the balance arc document's directory or the gate
+      # package (derived from ``_registry``, not spelled here) and ``full``
+      # for anything else, including an empty change set: it fails CLOSED.
+      # What makes the skip sound is the census that module keeps -- no
+      # module in a skipped suite reads under those prefixes -- not that
+      # every file there is graded; the polyglot-lint job still lints the
+      # Markdown.  Every code-grading step below is guarded
+      # ``!= 'registry-only'``, so a missing output runs everything rather
+      # than nothing; the plan gate (step 4b) is unguarded.  Approved by the
+      # developer 2026-09-11 as its own PR; ``test_ci_scope.py`` holds this
+      # wiring, and that PR's body cites the runs that proved each scope.
+      #
+      # Only a pull_request event has a change set: a push to main is a
+      # release and runs everything.  The three-dot diff is the branch's own
+      # changes since it forked from its base, so a ``git merge origin/dev``
+      # on the branch does not drag dev's files into the set; --no-renames
+      # shows a rename as its old AND new path, so a file renamed out of
+      # docs/plans is seen leaving.  Both SHAs are in the fetch-depth-0
+      # history; a diff that fails for any reason is reported and answered
+      # ``full`` rather than trusted.
+      - name: Classify the change set
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" != "pull_request" ]; then
+              echo "scope=full" >> "${GITHUB_OUTPUT}"
+              echo "scope: full (a ${EVENT_NAME} event has no pull-request change set)"
+              exit 0
+          fi
+          if ! changed="$(git diff --name-only --no-renames "${BASE_SHA}...${HEAD_SHA}")"; then
+              echo "scope=full" >> "${GITHUB_OUTPUT}"
+              echo "scope: full (git diff ${BASE_SHA}...${HEAD_SHA} failed; not trusting an unreadable change set)"
+              exit 0
+          fi
+          printf 'changed files:\n%s\n' "${changed}"
+          scope="$(printf '%s\n' "${changed}" | python tools/plan_gate/ci_scope.py)"
+          echo "scope=${scope}" >> "${GITHUB_OUTPUT}"
+          echo "scope: ${scope}"
+
       # ── 3. Cache pip dependencies ────────────────────────────────
       # Speeds up subsequent runs by caching downloaded packages.
       - name: Cache pip packages
@@ -153,6 +208,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
+
+      # ── 4b. The plan gate, in EVERY scope ────────────────────────
+      # ``pytest tools/plan_gate`` used to ride inside step 5b beside the
+      # checker tests; it is the one grader a registry-only pull request
+      # has, so it stands alone and unguarded, first so a registry defect
+      # fails a full run before the suite spends thirty minutes.  The
+      # package's 10.00/10 pylint floor was enforced by pre-commit alone
+      # until 2026-09-11 (its hook comment says so); a registry-only run
+      # that edits the gate would otherwise merge unlinted, so the floor
+      # is held here too, in both scopes.  ``yaml`` (PyYAML, pinned in
+      # requirements-dev.txt) is what ``test_ci_scope.py`` reads THIS file
+      # with, which is why the step follows the install.
+      - name: Plan gate (every scope)
+        run: |
+          pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
+          pytest tools/plan_gate -c /dev/null -q
 
       # ── 5. Run pylint ────────────────────────────────────────────
       # Layered pylint gate:
@@ -178,6 +249,7 @@ jobs:
       #     that drops the score fails the build.  Enforced locally by the Stop
       #     hook via the scripts/hooks/ENFORCE_PYLINT_FLOOR sentinel.
       - name: Lint with pylint
+        if: steps.scope.outputs.scope != 'registry-only'
         run: pylint app/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export,shekel-private-module-import --output-format=colorized
 
       # ── 5a. Lint scripts/ ────────────────────────────────────────
@@ -190,6 +262,7 @@ jobs:
       # gate cross-tree duplicate-code is a separate open decision in
       # docs/audits/pylint-cleanup/deep-quality-hunt.md.
       - name: Lint scripts with pylint
+        if: steps.scope.outputs.scope != 'registry-only'
         run: pylint scripts/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export,shekel-private-module-import --output-format=colorized
 
       # ── 5a2. Lint the pylint checker package ─────────────────────
@@ -201,6 +274,7 @@ jobs:
       # package only -- the tests/ subtree is out of general pylint scope
       # (ratified decision #1) and is covered by the pytest run in step 5b.
       - name: Lint checker package with pylint
+        if: steps.scope.outputs.scope != 'registry-only'
         run: pylint tools/pylint/shekel_checkers/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export,shekel-private-module-import --output-format=colorized
 
       # ── 5a3. Lint the manual verification harnesses (E/F only) ───
@@ -225,6 +299,7 @@ jobs:
       # A both-sides harness that must name a HEAD-only API carries a scoped
       # disable with a `Pylint:` rationale (verify_retirement_render.py).
       - name: Lint verification harnesses with pylint
+        if: steps.scope.outputs.scope != 'registry-only'
         run: pylint tests/manual/ --fail-on=E,F --disable=all --enable=E,F --output-format=colorized
 
       # ── 5b. Custom-checker unit tests + tests/ Decimal scan ──────
@@ -236,9 +311,9 @@ jobs:
       # meta-messages) so the test files' "disable=X -- explanation" inline
       # comments do not derail this targeted scan.
       - name: Test and apply custom pylint checkers
+        if: steps.scope.outputs.scope != 'registry-only'
         run: |
           pytest tools/pylint/tests -c /dev/null -q
-          pytest tools/plan_gate -c /dev/null -q
           pylint tests/ --disable=all --enable=shekel-decimal-from-float --disable=unknown-option-value,bad-option-value --output-format=colorized
 
       # ── 5c. Cross-tree duplicate-code (app/ + scripts/ combined) ─
@@ -251,6 +326,7 @@ jobs:
       # (the pre-consolidation commit fails this exact invocation) and
       # to pass on the consolidated tree.
       - name: Cross-tree duplicate-code (pylint app/ + scripts/)
+        if: steps.scope.outputs.scope != 'registry-only'
         run: pylint app/ scripts/ --disable=all --enable=duplicate-code --disable=unknown-option-value,bad-option-value --output-format=colorized
 
       # ── 5d. Record the runner's capacity ─────────────────────────
@@ -297,6 +373,7 @@ jobs:
       # any cluster whose contents must survive -- the same warning
       # docker-compose.dev.yml carries for the ``db`` service.
       - name: Configure the test cluster as throwaway
+        if: steps.scope.outputs.scope != 'registry-only'
         run: |
           python - <<'PY'
           import os
@@ -382,6 +459,7 @@ jobs:
       # cluster that is already non-durable -- the Alembic chain is
       # the single heaviest write in the job.
       - name: Build test template database
+        if: steps.scope.outputs.scope != 'registry-only'
         run: python scripts/build_test_template.py
 
       # ── 7. Run pytest ────────────────────────────────────────────
@@ -400,6 +478,7 @@ jobs:
       # slowest tests are printed on every run, pass or fail, so the
       # margin is readable before it is gone.
       - name: Run tests
+        if: steps.scope.outputs.scope != 'registry-only'
         run: pytest --tb=short -q --durations=25
 
       # ── 7b. Audit-trigger benchmarks, SERIALLY ───────────────────
@@ -428,6 +507,7 @@ jobs:
       # ``-n 0`` then runs them in-process, the only condition under
       # which the numbers mean anything.  Five tests, ~8 s.
       - name: Run audit-trigger benchmarks (serial)
+        if: steps.scope.outputs.scope != 'registry-only'
         run: pytest tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
 
   # ── Polyglot linters ──────────────────────────────────────────────
