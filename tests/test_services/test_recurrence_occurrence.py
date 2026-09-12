@@ -1608,7 +1608,7 @@ class TestProjectedPlacement:
                     # ...and it is the FIRST such paycheck: the one before it
                     # opened earlier.
                     assert (
-                        item.period.start_date - timedelta(days=calendar.rhythm.cadence_days)
+                        item.period.start_date - timedelta(days=calendar.cadence.cadence_days)
                         < item.occurrence
                     ), item
 

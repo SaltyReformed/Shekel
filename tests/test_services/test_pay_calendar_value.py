@@ -1361,7 +1361,7 @@ class TestSpanStartingOnOrAfterProjectsPastTheHorizon:
 
     def test_an_owner_with_no_payday_is_answered_none(self):
         """An empty calendar has no payday to continue from."""
-        empty = PayCalendar.from_paydays([], rhythm_of(14), 7, history_opens_on=None)
+        empty = PayCalendar.from_paydays([], eras_of([], 14), 7, history_opens_on=None)
 
         assert span_starting_on_or_after(empty, date(2026, 1, 1)) is None
 

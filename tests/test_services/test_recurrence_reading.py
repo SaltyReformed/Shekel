@@ -313,7 +313,7 @@ class TestItSwallowsNothingElse:
         """
         with app.app_context():
             empty = PayCalendar.from_paydays(
-                paydays=(), rhythm=rhythm_of(14), user_id=_USER_ID,
+                paydays=(), eras=eras_of((), 14), user_id=_USER_ID,
                 history_opens_on=None,
             )
             highest = max(

@@ -132,7 +132,7 @@ def span_starting_on_or_after(
     companion, the pairing :meth:`~._calendar.PayCalendar.span_containing`
     already makes against :meth:`~._calendar.PayCalendar.period_containing`:
     the saved search answers where the schedule reaches, and this one keeps
-    answering past it at the owner's own cadence.  Plan step **R16-b-2** added
+    answering past it on the era covering each day.  Plan step **R16-b-2** added
     it because the balance seam's ESTIMATED loan tier places every occurrence
     a definition names on the paycheck its row WOULD live in, saved or not
     (ruling **R-R69**), and a ``Monthly First`` definition places on "the NEXT
@@ -171,13 +171,13 @@ def span_starting_on_or_after(
     # step one period forward when the covering span opened before *day* (a
     # *day* inside a projected span, or inside the last saved one).
     covering = project_period_after(
-        calendar.periods, calendar.rhythm,
+        calendar.periods, calendar.eras,
         max(day, horizon + timedelta(days=1)),
     )
     if covering.start_date >= day:
         return covering
     return project_period_after(
-        calendar.periods, calendar.rhythm,
+        calendar.periods, calendar.eras,
         covering.end_date + timedelta(days=1),
     )
 
