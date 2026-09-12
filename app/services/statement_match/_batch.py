@@ -192,8 +192,8 @@ class ReviewedBatch:
             **Its own list beside the three above, because it reaches a door
             that writes a different TABLE and no money**:
             ``budget.statement_line_skips`` holds no figure, so a skip records
-            a decision rather than a movement.  It is the only act class here
-            whose door takes no argument at all.
+            a decision rather than a movement.  Its submission is one id and
+            nothing else, as :class:`~._creations.IncomeCreation` is.
         consent: Who agreed to these acts (:class:`Consent`, ruling **R-GH**).
             **Required, with no default**, for the reason
             :func:`~._accept.record_match` gives its own keyword-only flag: the

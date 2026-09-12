@@ -132,9 +132,7 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     panel rendering *"Nothing moved."* over a rewritten figure (2026-08-22),
     and dropping a count to satisfy a limit is how that sentence came to be
     false.  ``residual_count`` and ``residual_total`` are the residual pair,
-    which names money this pass RECORDED that the app did not hold at all -- the one effect here
-    that no
-    other field can be read as covering.
+    which names money this pass RECORDED that the app did not hold at all.
     :class:`~._accept.AcceptedMatch` carries the same disable for the same
     reason.  *(This paragraph called ``repriced_count`` "the eighth" until
     2026-08-23; it is declared in the field block below, where an ordinal can
