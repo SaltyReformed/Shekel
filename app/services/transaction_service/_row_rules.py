@@ -74,7 +74,7 @@ def repays_card_spend(txn: Transaction) -> bool:
     full-edit popover and the inline quick-edit each decide whether to render
     an Estimated box, and the PATCH handler behind both refuses a figure
     submitted for one anyway.  (A first census said two and missed the
-    quick-edit route, which is live under ``@login_required`` even though
+    quick-edit route, which is live behind the login gate even though
     nothing links to it any more.)
 
     A payback repays the card spend of the row it names, so its figure is a

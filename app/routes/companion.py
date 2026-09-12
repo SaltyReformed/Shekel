@@ -40,7 +40,7 @@ Rendering pipeline (mobile-first v3 plan Commit 13):
 import logging
 
 from flask import Blueprint, redirect, render_template, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app import ref_cache
 from app.enums import RoleEnum
@@ -203,7 +203,6 @@ def _build_partial_context(
 
 
 @companion_bp.route("/")
-@login_required
 def index():
     """Companion landing page: current period's visible transactions.
 
@@ -240,7 +239,6 @@ def index():
 
 
 @companion_bp.route("/period/<int:period_id>")
-@login_required
 def period_view(period_id):
     """Navigate to a specific pay period's visible transactions.
 

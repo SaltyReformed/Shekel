@@ -208,10 +208,12 @@ Paycheck Calculator (salary + raises - taxes - deductions). Status workflow:
 `projected -> done|received|credit|cancelled`, and every one of those back to `projected` (revert).
 No status is terminal.
 
-**Established patterns -- use these, do not reinvent:** Ownership helpers in
-`app/utils/auth_helpers.py`. Security response rule: 404 for both "not found" and "not yours."
-Structured logging via `log_event()`. Dependencies pinned in `requirements.txt` -- no new packages
-without approval.
+**Established patterns -- use these, do not reinvent:** Authentication is the login gate
+(`app/login_gate.py`, ruling `bank_import:R-BI4`): every route is gated by existing, NO view carries
+`@login_required` (gate: `tests/test_arch/test_the_login_gate_has_one_home.py`), and a route that
+must be public is named in `PUBLIC_ENDPOINTS`. Ownership helpers in `app/utils/auth_helpers.py`.
+Security response rule: 404 for both "not found" and "not yours." Structured logging via
+`log_event()`. Dependencies pinned in `requirements.txt` -- no new packages without approval.
 
 **Reference tables: IDs for logic, strings for display only.** Enums in `app/enums.py`, cached in
 `app/ref_cache/`. NEVER compare against string `name` columns in Python or Jinja (gate:

@@ -21,7 +21,7 @@ import json
 from dataclasses import dataclass
 
 from flask import Blueprint, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.db_transaction import write_transaction
 from app.routes._period_population import populate_new_periods
@@ -182,7 +182,6 @@ def _serialize_pulse(pulse: dict | None) -> dict | None:
 
 @dashboard_bp.route("/")
 @dashboard_bp.route("/dashboard")
-@login_required
 @require_owner
 def page():
     """Render the Terminal Road dashboard: pulse region plus position tracks.
@@ -258,7 +257,6 @@ def page():
 
 
 @dashboard_bp.route("/dashboard/pulse")
-@login_required
 @require_owner
 def pulse_section():
     """HTMX partial: re-render the pulse region on ``balanceChanged``.
@@ -296,7 +294,6 @@ def pulse_section():
 
 
 @dashboard_bp.route("/dashboard/balance")
-@login_required
 @require_owner
 def balance_section():
     """HTMX partial: re-render the hero balance (the anchor-edit revert target).

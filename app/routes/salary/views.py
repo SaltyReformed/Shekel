@@ -12,7 +12,7 @@ stubs so existing bookmarks and in-app links keep resolving.
 from datetime import date
 
 from flask import abort, redirect, render_template, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.models.salary_profile import SalaryProfile
@@ -24,7 +24,6 @@ from app.routes.salary._helpers import _get_owned_profile_and_period
 
 
 @salary_bp.route("/salary/<int:profile_id>/breakdown/<int:period_id>")
-@login_required
 @require_owner
 def breakdown(profile_id, period_id):
     """Redirect the retired per-period breakdown page to the cockpit.
@@ -44,7 +43,6 @@ def breakdown(profile_id, period_id):
 
 
 @salary_bp.route("/salary/<int:profile_id>/breakdown")
-@login_required
 @require_owner
 def breakdown_current(profile_id):
     """Redirect the retired current-period breakdown to the cockpit.
@@ -71,7 +69,6 @@ def breakdown_current(profile_id):
 
 
 @salary_bp.route("/salary/<int:profile_id>/projection")
-@login_required
 @require_owner
 def projection(profile_id):
     """Show salary projection table for all periods."""

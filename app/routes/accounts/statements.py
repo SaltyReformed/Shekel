@@ -56,7 +56,7 @@ import logging
 from dataclasses import dataclass
 
 from flask import flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.enums import StatementBalanceEvidenceEnum, StatementSourceEnum
 from app.exceptions import (
@@ -113,7 +113,6 @@ _delete_schema = StatementImportDeleteSchema()
 
 
 @accounts_bp.route("/accounts/<int:account_id>/statements")
-@login_required
 @require_owner
 def statements(account_id):
     """Render what the bank has said about this account, and the upload form.
@@ -506,7 +505,6 @@ def _filing_sentence(filing) -> str:
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements", methods=["POST"],
 )
-@login_required
 @require_owner
 def import_statement(account_id):
     """Record an uploaded statement, and file what standing rules answer for.
@@ -829,7 +827,6 @@ def _removal_flash(account_id: int, removal) -> tuple:
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/delete", methods=["POST"],
 )
-@login_required
 @require_owner
 def delete_statement_import(account_id):
     """Undo one recorded import, so a refusal stops being terminal.
@@ -886,7 +883,6 @@ def delete_statement_import(account_id):
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/release", methods=["POST"],
 )
-@login_required
 @require_owner
 def release_filed_match(account_id):
     """Undo one match from this page's receipt, and come back to it.

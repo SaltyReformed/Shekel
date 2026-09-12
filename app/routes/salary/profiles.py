@@ -9,7 +9,7 @@ import logging
 from datetime import date
 
 from flask import abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from markupsafe import Markup
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -101,7 +101,6 @@ def _paychecks_per_year() -> "int | None":
 
 
 @salary_bp.route("/salary/new")
-@login_required
 @require_owner
 def new_profile():
     """Display the salary profile creation form."""
@@ -222,7 +221,6 @@ def _paycheck_template(
 
 
 @salary_bp.route("/salary", methods=["POST"])
-@login_required
 @require_owner
 def create_profile():
     """Create a new salary profile with auto-linked template."""
@@ -364,7 +362,6 @@ def create_profile():
 
 
 @salary_bp.route("/salary/<int:profile_id>/edit")
-@login_required
 @require_owner
 def edit_profile(profile_id):
     """Display the salary profile edit form with raises and deductions."""
@@ -403,7 +400,6 @@ def edit_profile(profile_id):
 
 
 @salary_bp.route("/salary/<int:profile_id>", methods=["POST"])
-@login_required
 @require_owner
 def update_profile(profile_id):
     """Update a salary profile and recalculate linked transactions.
@@ -498,7 +494,6 @@ def update_profile(profile_id):
 
 
 @salary_bp.route("/salary/<int:profile_id>/delete", methods=["POST"])
-@login_required
 @require_owner
 def delete_profile(profile_id):
     """Soft-delete a salary profile and deactivate its template.
@@ -565,7 +560,6 @@ def delete_profile(profile_id):
 
 
 @salary_bp.route("/salary/<int:profile_id>/reactivate", methods=["POST"])
-@login_required
 @require_owner
 def reactivate_profile(profile_id):
     """Reactivate a soft-deleted salary profile (inverse of delete_profile).
