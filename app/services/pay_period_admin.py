@@ -14,9 +14,11 @@ module adds or removes goes through
 changes ``budget.pay_periods``.  That single home is why plan step
 ``pay_calendar:C4-c`` could drop ``end_date`` and ``period_index`` in one
 place: while they were stored, the rule that they equalled the derivation
-over the owner's paydays lived there and nowhere else.  What stays here are
-the two gates and the orchestration: which periods may go (the lock classifier
-and the discard count) and which reconciles a wipe owes.
+over the owner's paydays lived there and nowhere else.  What stays here is
+the orchestration -- the four doors, and which reconciles a wipe owes; the two
+gates they consult (which periods may go: the lock classifier and the discard
+count) moved to :mod:`app.services.pay_period_gates` at plan step
+``pay_calendar:C14-f``.
 
 **Nothing here REPOPULATES any more, and that is ruling R-R38** (plan step
 R7d-c-1).  Each door recorded its paydays and then, in the SAME call,

@@ -7,7 +7,8 @@ shortens an owner's schedule -- generate, extend, the rolling top-up,
 regenerate, reset, truncate -- reaches the table through
 :func:`record_paydays` or :func:`retire_paydays` and through nothing else.
 ``pay_period_service`` keeps only its readers; ``pay_period_admin`` keeps only
-its orchestration and its two gates.
+its four doors, and the gates they consult live in ``pay_period_gates`` since
+plan step ``pay_calendar:C14-f``.
 
 That split is C3-a's, one level up.  C3-a moved the read-only lock classifier
 into :mod:`app.services.pay_period_locks` because a read-predicate and four
@@ -373,7 +374,8 @@ def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
     **The one door that removes from ``budget.pay_periods``.**  Truncate,
     regenerate's rebuild step and reset's whole-schedule wipe all reach the
     table here; the LOCK and DISCARD gates that decide WHICH periods may go
-    stay with ``pay_period_admin``, because deciding is a different concern
+    live in ``pay_period_gates`` (split out of ``pay_period_admin`` at plan
+    step ``pay_calendar:C14-f``), because deciding is a different concern
     from doing (``pay_period_locks``' own split, one level up).
 
     **The survivors are untouched, and since plan step C4-c that is a property
