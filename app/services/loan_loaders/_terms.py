@@ -35,7 +35,7 @@ from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
 from app.services.amortization_engine import RateChangeRecord
-from app.services.rate_period_engine import monthly_due_date
+from app.services.rate_period_engine import due_after_anchor, monthly_due_date
 from app.utils.dates import anchor_chronology_key
 
 from ._shadows import settled_income_shadows
@@ -519,6 +519,39 @@ def installment_for(
     return monthly_due_date(period_start, payment_day)
 
 
+def precedes_origination(params: LoanParams, installment: date) -> bool:
+    """Return whether *installment* falls at or before the loan's origination.
+
+    **Ruling R-C's boundary** (plan step C9b, moved here at R16-b-2).  A loan
+    cannot receive a payment before it exists: such a payment is ERASED by
+    the fold -- it splits against a running balance of zero and the
+    origination anchor resets over it -- while the cash side still debits the
+    funding account.  The write door refuses it
+    (``transfer_service._loan_posting._reject_payment_before_origination``).
+
+    **It is the post-anchor boundary applied to the loan's FIRST assertion,
+    and is spelled through it** (ruling **R-R72**,
+    :func:`~app.services.rate_period_engine.due_after_anchor`): the
+    origination is a balance assertion like any true-up, and an installment
+    due at or before an assertion is inside it.  A payment due exactly ON the
+    origination date is subsumed by that anchor's reset, so the boundary is
+    ``<=`` -- swept and measured at C9b: due 02-01, 02-28 and 03-01 against a
+    03-01 origination all book ``$0.00`` principal; 03-02 pays down
+    ``$366.67``.  The forward plan honours the same refusal without calling
+    this: it drops every payment at or before the loan's LATEST assertion,
+    of which the origination is the earliest (``balance_at._plan.loan_plan``).
+
+    Args:
+        params: The loan's :class:`~app.models.loan_params.LoanParams`.
+        installment: The installment a payment satisfies, or would satisfy
+            (:func:`installment_for`).
+
+    Returns:
+        ``True`` when the fold would erase a payment on *installment*.
+    """
+    return not due_after_anchor(params.origination_date, installment)
+
+
 def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     """Return the monthly installment a loan payment shadow satisfies.
 
@@ -553,7 +586,7 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     PRECONDITION on the stored value, and plan step R7c-c re-words it without
     changing it (plan ledger row **D27**): the payment's recurrence rule must
     fire ON A DAY OF THE MONTH, so
-    :func:`app.services.recurrence_engine.compute_due_date` stamps each instance
+    :func:`app.services.recurrence.compute_due_date` stamps each instance
     with the installment date rather than falling back to ``period.start_date``
     (its no-day behaviour, and the origin of the legacy rows migration
     ``c4e91a7b2d38`` backfills).

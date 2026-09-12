@@ -266,7 +266,7 @@ class DerivedPeriod:
         "\\.covers(" app/`` with the definition struck out.  Three at C4-a-3 --
         the purchase-date warning
         (``entry_service._sums.entry_list_view``), the recurrence engine's
-        base-month scan (``recurrence_engine._plan.compute_due_date``) and
+        base-month scan (``recurrence.compute_due_date``) and
         this package's own :func:`~._searches.containing_index` -- and a
         FOURTH is already ranked: ``balance:X-x1`` names this method in its
         own sentence, so a closed list here would go stale the day that step

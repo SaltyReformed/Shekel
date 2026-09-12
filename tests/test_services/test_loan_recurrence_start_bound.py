@@ -198,7 +198,7 @@ class TestStartBoundIsSynced:
         guarded against: ``starts_on`` is the first occurrence, so its own day
         IS the cycle's day, and ``day_of_month`` is a storage encoding derived
         from it in the write door.  This test still asserts BOTH, because the
-        encoded column is what ``recurrence_engine.compute_due_date`` dates
+        encoded column is what ``recurrence.compute_due_date`` dates
         every generated row from until plan step R5 deletes it -- so a write
         door that stopped deriving it would reproduce the same empty list.
 

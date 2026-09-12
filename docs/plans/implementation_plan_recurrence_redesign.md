@@ -13,7 +13,9 @@ built the resolver, R7d-c-1 got the read pass to generation; what is left moves 
 resolver and R7d-g stops the WRITE. **A tie-break is a sign the SEARCH is the wrong question**
 (R-R35): only ONE tier of three asks "which transfer into a loan is its payment", and **R16**
 deletes the rest -- DECOMPOSED into four leaves 2026-08-26 (**R-R36**) once the fold turned out to
-charge a month of interest per payment RECORD.
+charge a month of interest per payment RECORD; its summing leaf `R16-b-2` SHIPPED 2026-09-11
+(`7e2e6413`), so the ESTIMATED tier is the outlier no longer, and `R20` (the setup door records the
+stated balance as the assertion it is, **R-R72**) is ranked next.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** One ruling is owed and
 section 0 states its two options. Section 4 is the steps; the findings, the index, the rules and
@@ -275,7 +277,7 @@ loan payment shadow's stored value moves to `due_on` (it is the installment the 
 `loan_posting_service.backfill_all_loan_postings()`, the caveat `c4e91a7b2d38` already carries. Own
 PR. It also deletes a false claim: `compute_due_date`'s docstring names a "due-date backfill script"
 that no longer exists anywhere in `scripts/`. Scope, re-measured 2026-08-08 rather than inherited:
-**The Python files NAMING `due_date` in code** (census 51 code files `due_date` in `app/**/*.py`) --
+**The Python files NAMING `due_date` in code** (census 54 code files `due_date` in `app/**/*.py`) --
 a SUPERSET of those touching the column, since the identifier is also a local and a kwarg, and the
 narrower AST census this once stated as 20 is not reproducible by a pattern -- more naming it only
 in prose, and templates render it (two carrying `<input name="due_date">`, so the wire format moves
@@ -407,14 +409,22 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R7d-c-2 -- GENERATION takes the resolver.** Both engines' `resolve_generation_plan` applies
-      `loan_payment_window`'s answer over the rule's own bound. **MOVES MONEY**: today it creates
-      the Van's `$531.94` installment due `2029-02-22` the stale column drops. Carries **D46**.
+      `loan_payment_window`'s answer over the rule's own bound. **MOVES MONEY**: `$0.00` today
+      (production and dev both store `2029-02-22` on rule 48, equal to the derivation, measured
+      2026-09-11), and the `$531.94` installment the stale column once dropped is the MECHANISM.
+      **D46** closed at `R16-b-2` (**R-R64**).
 
-**A first build is HELD at `9aff7ab9`** (`feat/r7d-c-2-loan-bound-at-generation`, no PR), recorded
-because nothing else in `docs/` references it. Its `_plan.py` half is superseded by `R7d-d`'s
-`Closing`; its 868 lines of test and harness are not, nor is the measurement `balance:X-au-f` rests
-on -- Van Loan, 24 projected rows, stamped clone 2026-08-31: unedited `2029-02-22`, rows raised to
-`$900.00` `2028-02-22`, halved to `$265.97` `2030-04-22`. The rows bound the generator.
+**A second build is HELD at `de8d1a56`** (`feat/r7d-c-2`, pushed, no PR), superseding `9aff7ab9`:
+`resolve_generation_plan` reads `recurring_definition.read_definition` over the pass the schedule
+carries, with the harness `tests/manual/verify_loan_bound_at_generation.py` (five doors on a stamped
+production clone). It ships AFTER R16-b-2 (**R-R65**): alone it regressed the reset door, the
+mechanism ruled at **R-R64**. **RE-CUT on R16-b-2's tree at `e5404ac1`** (merge of `8c654712`, the
+re-cut `a01839aa`, merge of the memo `7e2e6413`): the `$50` second-definition fixture, three
+controls (the reset door in its hole, D46; two full definitions, D47; the `$3,000` cent, REC-517),
+and the harness re-measured with R16-b-2's tree as the base -- live doors byte-identical, and the
+planted second definition 35/65 -> 32/32 rows to `2028-11-22`: the sum reaches the ROWS only through
+generation taking the door. Full suite 13335, exit 0. The 2026-08-31 measurement `balance:X-au-f`
+rests on (rows raised to `$900.00` -> `2028-02-22`, halved -> `2030-04-22`) stands.
 
 - [x] **R7d-h** `83dd4b8a` -- a loan gets ONE closing date, past AND future: `loan_closing_date`
       answers the forward crossing while the loan owes and the day it LAST became closed once it
@@ -723,51 +733,59 @@ package's core; that package is now where it is filed.
 - [ ] **R16 -- the DECOMPOSED parent of the ESTIMATED tier's summing.** Split into FOUR leaves
       2026-08-26 (**R-R36**) when a trace found the forward fold charging one month of interest per
       payment RECORD: while the accrual rode on the payment, no cadence could be honoured and no
-      second definition summed. Carries **D47**, **D48**.
+      second definition summed. **D47** and **D48** closed at `R16-b-2`.
 
 - [x] **R16-a** `e8baa3c0` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R16-b -- the DECOMPOSED parent of the summing.** Split into TWO leaves 2026-08-27
-      (**R-R37**); the sum waits on `end_date` holding one fact. Carries **D47**, **D48**, **D53**.
+- [x] **R16-b -- the DECOMPOSED parent of the summing.** `7e2e6413` -- ticked with R16-b-2, its last
+      leaf; split into TWO leaves 2026-08-27 (**R-R37**).
 
 - [x] **R16-b-1** `1b818135` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R16-b-2 -- the ESTIMATED tier SUMS every definition, on each one's OWN cadence** (findings
-      **D47**, **D48**, **D53**).
+- [x] **R16-b-2 -- the ESTIMATED tier SUMS every definition on its own cadence.** `7e2e6413` -- as
+      built: rulings **R-R64** to **R-R73**; harness `tests/manual/verify_loan_plan_sum.py`
+      (baseline byte-identical over both loans; a planted `$500` sweep into the Mortgage `None` ->
+      `2034-10-01`; the reset hole `2029-03-22` -> `2029-02-22`; August charged once, 91 -> 90).
+      Closed **D46**, **D47**, **D48**, **D53**, **D54**; opened **REC-517** (R16-f), **REC-518**
+      (R5), **REC-519** (R20), **balance:BAL-483** (X-i1). The code supersedes its specification.
 
-**One tier of three asks a question the other two do not.** The SETTLED fold
-(`loan_loaders.query_shadow_income`) and the PLANNED tier (via `projected_income_shadows`) take
-every transfer into the loan ACCOUNT with no template filter, and `split_payment_cash` routes
-anything above interest + escrow to principal. Only `standing_installment_cash` prices from ONE,
-picked by `active_recurring_transfer_template`'s `.order_by(id).first()`.
-**Re-measured 2026-08-27 on `feat/r16-b`, fresh clone, `as_of` 2026-08-27**: re-pointing the real
-`$500.00` every-paycheck sweep at the Mortgage (id 1, no forcing) prices every uncovered installment
-at `$500.00` against a `$616.99` escrow -- the payoff reads `None` and the balance GROWS to
-`$1,059,869.99` by 2053-12-01, where summing each definition's occurrences on the contract's charge
-calendar answers `2034-10-01`, which a closed-form amortization of the same stream independently
-lands in the same month as. **The `2036-04-01` recorded 2026-08-26 does not reproduce** under that
-prototype.
+- [ ] **R20** -- The setup door records the stated balance as the assertion it is.
 
-**After R16-a the cadence is not a special case** -- each definition emits its occurrences into the
-payment stream -- **but the CHARGE CALENDAR must move with it, and that is this step's real work**
-(its own adversarial review, 2026-08-26, refuted the sentence that said the charges do not move).
-`_charges_for` derives one charge per month the PAYMENTS occupy, which is exact only while the
-ESTIMATED tier fills every month; this step deletes that fill, so a definition SPARSER than monthly
-collapses the charge set with the payment set -- a quarterly loan payment, authorable today through
-`POST /transfers`, folds 40 charges where the contract owes 120 and reports `$367.98` of interest
-against `$1,096.34`. The charge calendar therefore comes off the payments and onto the loan's own
-contractual installment sequence here, and **D53 is ruled here rather than at R16-c** for the same
-reason. The `PERIOD` unit needed a walk that reaches past the saved horizon, which is what
-**R16-b-1 shipped** -- until it, `occurrences()` truncated there in silence and a naive walk to
-payoff under-generated by seven years. A second escrow-INCLUSIVE definition also has to be told from
-an extra-principal payment, since only the first clears the period's escrow. It takes the tie-break
-off the PRICING path -- `standing_payment` and `StandingPayment`'s singular shape -- and does
-**not** delete the query: three loan-side readers legitimately need ONE row (the dashboard's
-extra-principal prefill and the two routes that MUTATE a settings row), and the investment
-dashboard's "has a recurring contribution" is a different question again. Which row those three
-write is **D49**.
+**Root cause (REC-519):** the setup form requires "Current Principal", `create_params` stores it in
+`LoanParams.current_principal`, and nothing reads it; a loan configured mid-life has only its
+synthesized origination assertion, and under R-R71 its unrecorded months read as unpaid.
+**Design (R-R72 part 3):** the field becomes "Balance today" with an "as of" date defaulting to the
+setup date and bounded `[origination_date, today]`; `create_params` appends a `tracking_start`
+`LoanAnchorEvent` (`anchor_service.record_loan_tracking_start`) in the same transaction as the
+params whenever `origination_date < as_of` -- a loan originating today or later asserts nothing, its
+origination IS the assertion; a migration drops `current_principal` and
+`ck_loan_params_curr_principal` after appending a `tracking_start` at `loan_params.created_at`
+carrying `current_principal` for every loan with `origination_date < created_at` and NO stored
+assertion of any source (measure the count on the clone first; both live loans carry one, so
+production backfills nothing, and the downgrade restores the column NULL); the tracking-start
+route's "STRICTLY BEFORE the earliest recorded payment" refusal is deleted -- an assertion after
+payments is what a true-up already is, and the two sources differ in label alone
+(`anchor_service._append_loan_anchor_and_sync`); `tests/_test_helpers.create_loan_account` writes
+what the door writes, and the fixtures R16-b-2 corrected to assert their balance at the read date
+(`test_loan._TRACKED_FROM`, the `liability_owed_at_dates` and dashboard mortgages, the matured
+balloon) take that shape. **What R-R72's row no longer carries (rule 4, moved here 2026-09-12 when
+the row was trimmed under the 2,000-character cap):** the seventeen fixtures that failed under R-R71
+were every one a loan whose only assertion was years old; the worked example over the app's own
+producers (`worked_door.py` in the handoff directory): `$250,000` at 6.5% over 360 months from
+2023-06-01 -- a paying borrower owes `$240,215.10`; under R-R71 with today's door it reads
+`$302,586.63` after its first plan payment (40 months standing, `$54,166.80`) and never clears; with
+the tracking-start it accrues `$1,301.17` and pays off 2053-07-01. REFUSED together at R-R72, as
+dancing around the root cause: bounding the calendar at the later of the assertion and the
+schedule's opening (a pay calendar is evidence of nothing about a loan); the assertion bound with
+the door left as it is; and a door that REQUIRES a second balance entry. Clone evidence (REC-519):
+the Van Loan was set up 2026-03-27 with `current_principal` `$17,020.47`, carries no
+`tracking_start`, and its first assertion after the 2023 origination is a `user_trueup` of
+2026-05-22 for exactly `$17,020.47` -- the owner typed the fact twice. **Verification:** the setup
+route's tests (a past origination writes ONE `tracking_start` at the stated date; a future one
+writes none; the stray-field case), the migration up and down on a clone, and
+`tests/manual/verify_loan_plan_sum.py`'s baseline byte-identical.
 
 - [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**
 
@@ -801,9 +819,14 @@ Measured on a forced due-month collision: interest `$1,014.06` -> `$0.00`, escro
 forward period (**R-R37**), repealing "an overdue slot with no record ... holds flat" (B-9) for the
 FUTURE half, which ruled what an unpaid installment PAYS and never what an unpaid month CHARGES.
 What this step owes is the same rule for the PAST. **MOVES POSTED MONEY, OWN PR.** It also owes
-**D54** (a month the SEED already charged is charged again by the plan) and **D55** (the accrual
-period is the CALENDAR month where the contract's is the installment month -- `$1,629.94` on which
-side of a boundary an extra payment falls).
+**D55** (the accrual period is the CALENDAR month where the contract's is the installment month --
+`$1,629.94` on which side of a boundary an extra payment falls); **D54** closed at `R16-b-2`, whose
+contract calendar never charges a slot the seed charged.
+**It applies R-R72 parts (1) and (2) to the settled walk**: the walk charges only the months it saw
+paid (`loan_ledger._charges.charges_for_due_dates`, D53's past half), so a read AT `as_of` holds the
+seed flat where the read after it carries the skipped months' interest; the one stream charges every
+contractual installment after the loan's latest assertion, and an assertion clears the charges
+standing before it (the ruling `_replay.py` says it owes).
 
 - [ ] **R16-d -- the accrual CONVENTION becomes a value on the loan** (finding **D52**).
 
@@ -834,4 +857,5 @@ backfill does not guess.
       shipped at `balance:X-au-g-2c-3b-2`) run with CONTRACTUAL cash plugged in, so a contractual
       projection, a planned projection and the settled history are one fold with three cash sources
       and cannot disagree with each other. **MOVES MONEY** on any surface where the two walks
-      parted; own PR, with the pre/post oracle over both live loans.
+      parted; own PR, with the pre/post oracle over both live loans. Carries **REC-517**: the derive
+      arm's final-installment residual (re-owned here 2026-09-11).
