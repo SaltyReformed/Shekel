@@ -5460,7 +5460,7 @@ class TestARowRecordsItsOccurrence:
         second write is an unhandled ``IntegrityError`` that rolls the whole
         regeneration back.
 
-        The live door is the salary one: ``routes/salary/_helpers`` regenerates
+        The live door is the salary one: ``salary_regeneration`` regenerates
         with ``effective_from=date.today()`` on every profile save, so an owner
         who moved a paycheck row back one period reaches this by saving a
         salary profile.

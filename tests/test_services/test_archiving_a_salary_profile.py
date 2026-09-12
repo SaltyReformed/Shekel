@@ -405,8 +405,9 @@ class TestReactivationNeedsNoCounterpart:
     """The regeneration that already runs puts the FUTURE rows back on it.
 
     **And it reaches only the future, which is a boundary rather than a
-    caveat.**  ``routes/salary/_helpers._regenerate_salary_transactions``
-    regenerates with ``effective_from=date.today()``, so a frozen row in a PAST
+    caveat.**  ``salary_regeneration.regenerate_salary_transactions``
+    (a route helper until plan step salary:S3-f-3) regenerates with
+    ``effective_from=date.today()``, so a frozen row in a PAST
     period is outside the maintain window and stays frozen.  That is the right
     answer for it -- the paycheck it plans has already happened, and its last
     derived figure is what it was worth -- but it is stated here because an

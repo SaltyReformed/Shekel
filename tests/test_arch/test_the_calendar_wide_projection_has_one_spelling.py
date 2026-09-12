@@ -331,7 +331,10 @@ _PER_PERIOD = "calculate_paycheck"
 #: :class:`~app.services.income_service.ProfilePaychecks` reads
 #: (``_configs_from_series``), so the calibration is the only axis on which a
 #: pricer route can differ from these -- and it is not one axis for all five
-#: (read 2026-09-12): ``_helpers._regenerate_salary_transactions`` and
+#: (read 2026-09-12): ``salary_regeneration.regenerate_salary_transactions``
+#: (``_helpers._regenerate_salary_transactions`` until plan step
+#: salary:S3-f-3 moved the walk below the route layer, ruling **R-SAL24**;
+#: the call is the same and the census moved with it) and
 #: ``cockpit.anatomy`` already pass ``calibration=profile.calibration``;
 #: ``_helpers._compute_total_pre_tax`` reads a pre-tax deductions total and
 #: ``profiles.create_profile`` prices a profile created in the same request,
@@ -352,13 +355,14 @@ _PER_PERIOD = "calculate_paycheck"
 #: ``_metrics.py`` still prices the same shape and is C12's.
 #:
 #: The census is by ENUMERATION and not by subtraction: every entry here was
-#: read and counted (five calls across four files since S3-f-2a), so a new
+#: read and counted (five calls across five files since S3-f-3), so a new
 #: site fails this test and C12 deleting one fails it too.  Both directions
 #: are the point.
 _DIRECT_ENGINE_CALLERS = {
-    "app/routes/salary/_helpers.py": 2,
+    "app/routes/salary/_helpers.py": 1,
     "app/routes/salary/cockpit.py": 1,
     "app/routes/salary/profiles.py": 1,
+    "app/services/salary_regeneration.py": 1,
     "app/services/savings_dashboard_service/_metrics.py": 1,
 }
 
