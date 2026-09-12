@@ -355,8 +355,17 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({
 #: :meth:`TestNoIdFieldWasMissed
 #: ::test_the_reviewed_difference_field_is_strict_about_the_ids_it_carries`
 #: asserts the strictness on both counters inside the member directly.
+#: **``Dict`` is here on ``Nested``'s terms, and its KEYS on
+#: ``PurchaseDestination``'s** (plan step ``salary:S3-f-2b``): the readiness
+#: query's ``raise_probes`` is ``fields.Dict(keys=RowId(), values=
+#: fields.Nested(RaiseProbeSchema))`` -- the values are a schema this sweep
+#: reads on its own account, and the keys are raise ids the sweep cannot see
+#: inside the container call, so their strictness is asserted DIRECTLY by
+#: ``tests/test_schemas/test_validation.py::TestReadinessQueryGathersTheRaiseProbes
+#: ::test_a_raise_id_is_read_as_every_row_id_is`` (``007``, ``""``, ``-5`` and
+#: ``1.9`` refused) rather than granted by this listing.
 _NON_INTEGER_FIELD_SPELLINGS = frozenset({
-    "Boolean", "Date", "Decimal", "Nested", "RuleAnswerField",
+    "Boolean", "Date", "Decimal", "Dict", "Nested", "RuleAnswerField",
     "PurchaseDestination", "ReviewedDifferenceField", "ReviewedRowField",
     "String",
 })
@@ -463,6 +472,12 @@ _NON_ROW_ID_INTEGERS = frozenset({
     # effective year, and refused again by that pair plus
     # ``ck_salary_raises_terminal_year_not_before_effective``.
     "terminal_year",
+    # ``year`` is the SAME calendar year under the ``/retirement`` rail's
+    # shorter name (plan step salary:S3-f-2b): ``RaiseProbeSchema``'s half of
+    # a recurring raise's end-year probe, graded by the same 2000-2100 window
+    # and then by ``salary_raises.end_year_of`` against the row.  The raise it
+    # belongs to is named by the ``RowId`` KEY of the ``Dict`` it nests in.
+    "year",
 })
 
 

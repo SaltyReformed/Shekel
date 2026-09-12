@@ -39,8 +39,9 @@ from app.services.investment_projection import (
     build_contribution_timeline,
 )
 from app.services.projection_inputs import (
+    PayrollWiring,
     build_investment_projection_inputs,
-    load_payroll_feeds,
+    load_payroll,
     load_shadow_income_contributions_for_accounts,
 )
 from app.services.balance_at import BalanceContext
@@ -130,15 +131,28 @@ class ProjectionBatch:
     :attr:`seed_memo` below).
 
     Attributes:
+        payroll: The :class:`~app.services.projection_inputs.PayrollWiring`
+            -- WHICH payroll funds WHICH account, every query of it issued
+            once (plan step salary:S3-f-2b).  Point-independent like every
+            field here, and the reason :attr:`feeds` below is not the whole
+            story: the ``/retirement`` picture prices this wiring PER PLAN
+            POINT under the raise set the point believes
+            (:func:`~app.services.projection_inputs.price_payroll_feeds`:
+            no query at the stored set, one tax-series load per profile the
+            first time a probed set names it) and replaces the feeds on a
+            copy of this batch.
         feeds: ``{account_id: AccountPayrollFeed}`` -- what each account's
             payroll puts in per payday and what gross funds its employer
             contribution, both priced by the PAYCHECK ENGINE (plan step
-            **salary:R14-b**, ruling **R-SAL2**).  It replaced
+            **salary:R14-b**, ruling **R-SAL2**) under the profiles' STORED
+            raises.  It replaced
             ``deductions_by_account``, whose rows the consumer re-priced
             RAISE-BLIND (finding **D45**), and one ``salary_gross_biweekly``
             scalar sizing every match at today's paycheck.  Date-independent
             like every field here: keyed by PAYDAY, so one feed answers every
-            candidate horizon a retire-later probe asks.
+            candidate horizon a retire-later probe asks.  The ``/savings``
+            horizon band reads this build; the retirement picture reads its
+            own per-point build over :attr:`payroll` and never this one.
         contributions: The priced shadow-income contributions across all
             projected accounts (filtered per account in the loop).
         params_by_account: :class:`InvestmentParams` keyed by account ID
@@ -176,6 +190,7 @@ class ProjectionBatch:
     :func:`project_accounts_with_batch` now resolves it once per axis instead.
     """
 
+    payroll: PayrollWiring
     feeds: dict[int, AccountPayrollFeed]
     contributions: ShadowContributions
     params_by_account: dict[int, InvestmentParams]
@@ -498,7 +513,11 @@ def load_projection_batch(
     # render makes, so a payday is priced once per profile rather than once
     # per reader.  The P2b retire-later probes reuse this batch across
     # candidate horizons, so it is read many times per render.
-    feeds = load_payroll_feeds(
+    # The WIRING is kept beside the feeds it prices (plan step salary:S3-f-2b)
+    # so the retirement picture can price the same accounts under another
+    # raise set without re-issuing a query -- through the composed door's own
+    # body, so the owner is read off the pricer's calendar here as there.
+    payroll, feeds = load_payroll(
         ctx.balance_ctx.paychecks(), account_ids, params_by_account,
     )
 
@@ -510,6 +529,7 @@ def load_projection_batch(
     # baseline scenario.
     balance_map = _resolve_displayed_balances(ctx)
     return ProjectionBatch(
+        payroll=payroll,
         feeds=feeds,
         contributions=contributions,
         params_by_account=params_by_account,

@@ -3535,6 +3535,49 @@ def make_salary_profile(
     return profile
 
 
+def make_recurring_raise(
+    profile_id, db_session, *, effective_year, effective_month=1,
+    percentage=None, terminal_year=None,
+):
+    """Build and add ONE recurring percentage raise on a profile (uncommitted).
+
+    The shared raise builder for the cases that grade a recurring raise's END
+    YEAR reaching a figure (plan step salary:S3-f-2b): the plan point, the
+    ``/retirement`` rail's probe and the pricer-count gate each seed the same
+    row, and three inline ``SalaryRaise(...)`` blocks were an adversarial
+    review's finding.  The caller commits.
+
+    Args:
+        profile_id: The :class:`~app.models.salary_profile.SalaryProfile` id.
+        db_session: The test ``db.session``.
+        effective_year: The year the raise first applies.
+        effective_month: The month within that year (default January).
+        percentage: The fractional raise (Decimal); defaults to
+            ``Decimal("0.0500")``, a 5% merit raise.
+        terminal_year: The last year it is believed, ``None`` for no end.
+
+    Returns:
+        The added :class:`~app.models.salary_raise.SalaryRaise`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app import ref_cache
+    from app.enums import RaiseTypeEnum
+    from app.models.salary_raise import SalaryRaise
+
+    row = SalaryRaise(
+        salary_profile_id=profile_id,
+        raise_type_id=ref_cache.raise_type_id(RaiseTypeEnum.MERIT),
+        effective_month=effective_month,
+        effective_year=effective_year,
+        percentage=Decimal("0.0500") if percentage is None else percentage,
+        is_recurring=True,
+        terminal_year=terminal_year,
+    )
+    db_session.add(row)
+    return row
+
+
 def create_envelope_txn(seed_user, db_session, period, name, estimated):
     """Create an entry-tracked (is_envelope) projected expense (flushed).
 

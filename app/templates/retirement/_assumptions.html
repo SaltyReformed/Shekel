@@ -15,7 +15,9 @@
    ``swr`` input (the GET parameter name differs from the POST field
    name).  The merit-horizon input carried both jobs directly until plan
    step salary:S3-c deleted that setting; the recurring-raise rows that
-   replaced it are read-only, so no row below it is a what-if today. #}
+   replaced it carry the what-if directly since plan step salary:S3-f-2b
+   (their GET parameter names are their own, so nothing mirrors), and
+   their Save is plan step S3-f-3's. #}
 {% set fd = form_data|default(none) %}
 <div id="assumptions-panel">
   {# Acceptance r2 item 2 (developer ruling): the date row is ALWAYS
@@ -61,28 +63,44 @@
     {% endif %}
   </form>
 
-  {# How long each recurring raise is believed -- READ-ONLY here, and the
-     row it replaces was the global "Merit raises continue (years)" setting
-     (plan step salary:S3-c, ruling R-SAL11: the horizon a recurring raise
-     decays over is a fact ON THE RAISE).  The projection reads
-     ``salary.salary_raises.terminal_year`` off each row, so the rail states
-     the end year the owner has RECORDED for each recurring raise -- not, in
-     the multi-profile case, exactly the set the page projects -- and the
-     salary page owns the edit.  Probing
-     one without saving is plan step salary:S3-f's; until it lands there is
-     nothing here that can disagree with the data, which is why these rows
-     carry no ``whatif-param``. #}
+  {# How long each recurring raise is believed -- the row that replaced the
+     global "Merit raises continue (years)" setting (plan step salary:S3-c,
+     ruling R-SAL11: the horizon a recurring raise decays over is a fact ON
+     THE RAISE).  Each row is the salary form's own end-year PAIR (plan step
+     salary:S3-f-2b, ruling R-SAL13: a mode, authoritative, beside a year)
+     pre-filled from ``salary.salary_raises.terminal_year``, and both
+     controls are what-if inputs: the readiness GET carries every row's pair
+     on every refresh (``hx-include`` in dashboard.html), the point resolves a
+     pair equal to the stored year to the stored plan, and a changed one
+     recomputes the verdict, the chart, the income target and both levers
+     under that belief -- nothing is saved.  The parameter names carry the
+     raise id because a flat query string has no other way to pair a mode
+     with its raise; the readiness schema gathers them by prefix.  The year
+     input states the row's effective year as its floor, which is the rule
+     the service applies against the row.  The rail states the end year the
+     owner has RECORDED for each recurring raise on every active profile --
+     not, in the multi-profile case, exactly the set the page projects -- and
+     the salary page owns the edit until S3-f-3 gives these rows a Save. #}
   {% for ra in raise_assumptions|default([]) %}
   <div class="retire-assump-row" data-assumption="raise_terminal_year"
        data-raise-id="{{ ra.raise_id }}">
-    <span class="retire-assump-label">
-      {{ ra.raise_type|title if ra.raise_type else 'Raise' }}
+    <label class="form-label" for="assump-raise-end-mode-{{ ra.raise_id }}">
+      {{ ra.raise_type|title }}
       {% if ra.percentage %}{{ "%.2f"|format(ra.percentage|to_percent) }}%{% else %}{{ money(ra.flat_amount) }}{% endif %}
       from {{ ra.effective_month|month_name(abbr=true) }} {{ ra.effective_year }}
-    </span>
-    <span class="retire-assump-value">
-      {% if ra.terminal_year %}ends after {{ ra.terminal_year }}{% else %}no end year{% endif %}
-    </span>
+    </label>
+    <select id="assump-raise-end-mode-{{ ra.raise_id }}"
+            name="raise_end_mode_{{ ra.raise_id }}"
+            class="form-select form-select-sm retire-assump-input retire-assump-input--mode whatif-param js-whatif-input">
+      <option value="none"{% if ra.terminal_year is none %} selected{% endif %}>no end year</option>
+      <option value="year"{% if ra.terminal_year is not none %} selected{% endif %}>ends after</option>
+    </select>
+    <input type="number" step="1" min="{{ ra.effective_year }}" max="2100"
+           id="assump-raise-end-year-{{ ra.raise_id }}"
+           name="raise_end_year_{{ ra.raise_id }}" placeholder="year"
+           class="form-control form-control-sm retire-assump-input retire-assump-input--year whatif-param js-whatif-input"
+           value="{{ ra.terminal_year if ra.terminal_year is not none else '' }}"
+           aria-label="Last year this raise is believed">
     <span class="retire-assump-caption w-100">
       <a href="{{ url_for('salary.edit_profile', profile_id=ra.profile_id) }}">edit on {{ ra.profile_name }}</a>
     </span>
