@@ -436,7 +436,7 @@ def reject_unconfirmed_gap(
 
     Plan step **pay_calendar:C14-f**, developer ruling 2026-09-07 on ledger row
     **P80**.  The floor's mirror at the other end:
-    :func:`~app.services.pay_period_write._reject_backward_payday` refuses a
+    :func:`~app.services.pay_period_batch.reject_backward_payday` refuses a
     payday landing INSIDE a paycheck the owner already has, this asks about one
     that leaves a whole paycheck missing.
     :class:`~app.exceptions.PayPeriodGapRequired` carries why it asks rather

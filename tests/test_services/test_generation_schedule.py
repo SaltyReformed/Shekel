@@ -944,7 +944,7 @@ class TestAWindowMustBelongToTheOwner:
             narrowed_ctx._calendars[seed_user["user"].id] = (
                 PayCalendar.from_paydays(
                     paydays=[(target.id, target.start_date)],
-                    rhythm=calendar.rhythm,
+                    eras=calendar.eras,
                     user_id=seed_user["user"].id,
                     history_opens_on=None,
                 )

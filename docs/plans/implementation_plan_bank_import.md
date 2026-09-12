@@ -96,6 +96,8 @@ nothing and says so on its own first line. The code as committed is what those s
 
 **The release is cut after `X-gj-4b` merges and before `X-gi`** (`bank_import:R-JK`, 2026-09-03).
 
+**The shipped `X-gi` leaves and `X-gm` are condensed below and their as-built records archived**
+under rule 5 to `historical/bank_import_x_gi_leaves_as_built_2026-09-12.md`, on `X-gi-4`'s tick.
 **The X-ga..X-gj leaves are the standing-consent REDESIGN the developer approved 2026-08-24**
 (**R-GH**..**R-GL**; argument: `docs/audits/bank_import_redesign/README.md`), and
 **the shipped X-gb..X-gf-3b-2 span is ARCHIVED under rule 5** to the five
@@ -120,66 +122,64 @@ what it leaves a LATER step is on that step's own entry.
 - [x] **X-gf-3b-2** `ff744d79` -- one list by the decision (**R-HB**, **R-HD**). **N-380** shut,
       **N-381** open.
 - [x] **X-gk** `8569e5ec` -- the MERCHANTS surface (**R-IC**); opened **N-402** and **N-403**.
-- [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the DECOMPOSED
-      parent of the exception queue's retirement, split 2026-09-05 at its own census into five
-      leaves. **The census may delete nothing it has not shown orphaned**, because a route that
+- [x] **X-gi** `cd78499a` `refactor(import): the queue's replaced model leaves orphans` -- the
+      DECOMPOSED parent of the exception queue's retirement, split 2026-09-05 at its own census into
+      five leaves. **The census may delete nothing it has not shown orphaned**, because a route that
       reads dead is not one no door reaches (**N-112**'s shape). Its link and page counts are
       SPENT -- `X-gi-1` repointed and `X-gi-2` deleted -- and its headline was VOIDED by **R-KC**,
       so what survives is the rule, not the numbers; `X-gi-3`..`X-gi-5` carry their own.
-  - [x] **X-gi-1** `8543c80f` -- the four remaining links point at Reconcile and the MATCH pane
-        works unscripted behind `?open=<line_id>` (**R-KA**, **R-BI1**), offering EVERY unexplained
-        row because that render has no search. Both obligations it left `X-gi-2` are DISCHARGED:
-        that step pruned the macro and left the file, and re-owned **BI-478** to `X-gi-2a`.
-  - [x] **X-gi-2** `b462af07` -- **R-HU**'s deletion. Closed **N-404**; PRUNED `match_by_hand` per
-        `X-gi-1`'s obligation; moved the `not_shown_alone` render coverage onto the Reconcile pane;
-        filed **BI-479** and **BI-480**, both owned by `X-gi-3`.
-  - [x] **X-go** `20f96d90` -- `_MAX_MATCH_MEMBERS` deleted (**R-BI2**). Two bounds already held its
-        stated reason: `resolve_rows` and `load_lines` refuse anything the pass did not offer, and
-        `MAX_FORM_MEMORY_SIZE` (500,000, Flask's default, unset here) refuses the body first.
-        **It could never bind in aggregate** -- 500 items x 100 members is 50,000 ticks against a
-        body carrying 22,727 -- so the door's worst case is IDENTICAL before and after, and the cap
-        had begun to contradict a pane offering every unexplained row as a tickbox (**R-HW**).
-  - [x] **X-gq** `86f8620d` + `be59238e` -- the LANDING out of `_variance.py` (999 -> 690 lines)
-        into `_landing.py`, on the seam that module's own first line names, for the headroom the
-        consent gate's rewrite needs. **A LATER SPLIT MUST OBEY**: a byte-pure move cannot keep a
-        REFERENCE true across a module boundary -- nine broke here, seven unqualified Sphinx roles
-        and two direction words -- and pylint, the suite and byte-identity are all blind to it. The
-        docstring was NOT divided; six of eleven paragraphs span both halves (**BI-484**).
-  - [x] **X-gp** `40354328` -- ONE control whose options ARE the acts (**R-BI2**, superseding
-        **R-IV**): `ReviewedDifference` carries the figure AND the member under one `consent-<line>`
-        field, the door compares it whole, the preview reads no consent. Closes **BI-481**: both
-        docstrings that named `X-gn` as the step re-arming R-IV's bound were rewritten with the
-        bound. **A LATER STEP MUST OBEY**: a pre-X-gp page FAILS CLOSED, since `residual-` and
-        `difference_on-` are not read, so a stale tab refuses rather than mints.
-  - [x] **X-gi-2a** `8fa4d0bc` -- the `?open=` pane is priced from the SUBMITTED form (`OpenedAsk`;
-        `read_match` is ONE reading for the fragment and Apply), so a refused press comes back with
-        the rows ticked and the acts offered; closes **BI-478**. **R-BI3**: every still-offered
-        control is echoed, the consent on whole-value equality. `asked_to_open` reads through
-        `parse_row_id`. Moves no money. **A LATER STEP MUST OBEY**: the SCRIPTED page without
-        `?open=` still loses a refused press's ticks (placeholder re-fetch), unfiled.
-  - [x] **X-gi-3** `43ce313b` -- `_queue.py`, `_register.py`, THREE `ReviewSet` members (the census
-        said four; `unmatched` is LIVE via `card_subject`), plus `answered_merchants` and
-        `MerchantRegister`, which the enumeration missed and whose reach survives in
-        `merchant_directory`. **A LATER STEP MUST OBEY**: BI-479's remedy text was wrong --
-        re-pointing the two schema classes beat deleting them, or live coverage went with the dead
-        readers. Closes **BI-479**, **BI-480**; filed **BI-482**..**BI-485**.
-  - [ ] **X-gi-4** `fix(import): three findings the deletion does not close` -- **N-470**'s two
-        unrendered receipt figures, **N-405**'s CSP-dead inline style, **N-402**'s 12 uncovered
-        route decorators. **N-405's ledger diagnosis was WRONG**: djlint H021 runs in pre-commit and
-        CI and refuses an inline style UNLESS a Jinja expression sits between `style=` and the tag's
-        `>`; that one blind spot passed all 159 templates. `SHK01` closes it. No X-gm dependency.
-  - [ ] **X-gi-5** `fix(import): one ordered read takes every lock a pass needs` -- **N-471**.
-        `apply_reviewed` locks in submission order across THREE loops, so two presses naming the
-        same lines in opposite order deadlock. **MOVES MONEY, OWN PR.** No X-gm dependency.
-- [x] **X-gm** `1b722d52` -- the badge and the inbox are ONE producer (**R-KB**, **R-KD**):
-      `inbox_partition` is one Python walk that BOTH read, and it owns BOTH halves, moving the
-      badge's LINK to Reconcile too. **27 against 18 -> 18 against 18.** Closed **N-476**; deleted
-      `impossible_day_count` and two SQL restatements. **A LATER STEP OBEYS TWO**: the walk decides
-      what the PROPOSER is given, so removing a line reprices another's row (**R-GD(a)**), and
-      `to_explain` counts CARDS where the badge counts LINES -- `X-gn` keeps those equal.
+  - [x] **X-gi-1** `8543c80f` -- four links repointed; the MATCH pane unscripted behind `?open=`
+        (**R-KA**, **R-BI1**). Both obligations it left `X-gi-2` are discharged.
+  - [x] **X-gi-2** `b462af07` -- **R-HU**'s deletion. Closed **N-404**; filed **BI-479**,
+        **BI-480**.
+  - [x] **X-go** `20f96d90` -- `_MAX_MATCH_MEMBERS` deleted (**R-BI2**); two bounds already held it.
+  - [x] **X-gq** `86f8620d` + `be59238e` -- the LANDING moved out of `_variance.py`.
+        **A LATER SPLIT OBEYS**: a byte-pure move breaks REFERENCES across the boundary, and no gate
+        sees it (**BI-484**).
+  - [x] **X-gp** `40354328` -- ONE control whose options ARE the acts (**R-BI2**). Closes
+        **BI-481**. **A LATER STEP OBEYS**: a pre-X-gp page FAILS CLOSED (`residual-` and
+        `difference_on-` are unread).
+  - [x] **X-gi-2a** `8fa4d0bc` -- the `?open=` pane priced from the SUBMITTED form (**R-BI3**);
+        closes **BI-478**. The SCRIPTED page without `?open=` still loses a refused press's ticks,
+        unfiled.
+  - [x] **X-gi-3** `43ce313b` -- the queue, the register and the dead readers deleted; closes
+        **BI-479**, **BI-480**; filed **BI-482**..**BI-485**.
+  - [x] **X-gi-4** `ba5ae344` -- **N-470** rendered and logged; **N-405** at `af6f8a3f`; **N-402**
+        by **R-BI4**, ONE default-deny login gate. **A LATER LANE OBEYS**: write no decorator; a
+        public route is named in `PUBLIC_ENDPOINTS`. Filed **BI-486**..**BI-490** (`X-gr`, `X-gs`).
+  - [x] **X-gi-5** `cd78499a` -- every line lock FIRST, in one read ordered by `id` (**R-BI5**: the
+        mode is `FOR NO KEY UPDATE`, one helper). Closed **N-471**, REPRODUCED first by a forced
+        interleave. **A LATER STEP OBEYS**: `balance:X-bn`'s advisory lock goes ABOVE `lock_lines`;
+        what remains is the transactions-plus-advisory cycle, X-bn's.
+- [x] **X-gm** `1b722d52` -- the badge and the inbox are ONE producer (**R-KB**, **R-KD**); closed
+      **N-476**. **A LATER STEP OBEYS TWO**: removing a line reprices another's row (**R-GD(a)**),
+      and `to_explain` counts CARDS where the badge counts LINES -- `X-gn` keeps those equal.
 - [ ] **X-gn** `feat(import): a match may name a second bank line` -- **R-KC**, which carries the
       argument and the three facts keeping the AXIS. `X-gi-2` deleted the workbench, the only door
       to a multi-line group, and the developer accepted that gap: this restores it card-side.
+- [ ] **X-gr** `fix(import): the import doors say what they do` -- **BI-487**, **BI-488**,
+      **BI-489**, **BI-490**, all surfaced by `X-gi-4`'s reviews once `aa31bedf` put the released
+      placements on the delete receipt: the import receipt discards the same count, the delete
+      CONFIRMATION previews neither figure (developer ruling 2026-09-11: it previews both, from the
+      one read the act counts with), the delete door's prose and event still say "moves NO money"
+      (false since **R-GG**), and the "not placed" badge blames the file for a release the app
+      performed -- that wording is a design question for the developer.
+- [ ] **X-gs** `fix(auth): require_owner fails closed` -- **BI-486**. The helper's
+      `getattr(current_user, "role_id", owner_id)` is a fixture accommodation that treats an
+      anonymous principal as an owner wherever the login gate (**R-BI4**) is off. Read the attribute
+      outright; fixtures that lack a role set one. Minted by the developer 2026-09-11 from
+      `X-gi-4`'s review findings, beside `X-gr`.
+- [ ] **X-gt** `refactor(import): the receipt value leaves _batch.py` -- **BI-491**. `_batch.py`
+      sits at 998 of pylint's 1000 lines after `X-gi-5`; `BatchOutcome` and `_Tally` move to
+      `_outcome.py` as a PURE move in its own commit, the cut ruled first (**R-PC71**'s shape),
+      before `balance:X-bn` touches the file; **N-474**'s wording fix is its second commit (the X-gi
+      container owned that row and shipped). Minted by the developer 2026-09-12.
+- [ ] **X-gu** `fix(import): the delete door locks its lines in the shared order` -- **BI-492**.
+      `lock_lines` over the import's lines before `delete_import` deletes the row, so the cascade
+      cannot cross a press; the cross-resource half is `balance:X-bn`'s. Minted 2026-09-12.
+- [ ] **X-gv** `fix(import): a locked read re-hydrates what it locks` -- **BI-493**. The locked
+      reads take `populate_existing()`; a line hydrated before the lock is otherwise returned stale.
+      Minted 2026-09-12 from `X-gi-5`'s design review.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.

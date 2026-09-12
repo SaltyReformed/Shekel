@@ -36,8 +36,9 @@ from operator import attrgetter
 
 from app.services.pay_rhythm import Rhythm
 
-from ._derive import DerivedPeriod, PayCalendarError, projected_payday
-from ._grid import cadence_steps_to, nominal_payday
+from ._derive import DerivedPeriod
+from ._eras import step_after
+from ._grid import nominal_payday
 
 #: The bisect key for every search here: a period's opening payday.  Module
 #: level so no two searches can key on different fields -- which is one of the
@@ -666,14 +667,14 @@ def nominal_payday_after(anchor: date, rhythm: Rhythm, day: date) -> date:
     **Its caller passes the HORIZON, not the last recorded payday, and that is
     what makes the pairing total WITH RESPECT TO THE PHASE** (adversarial
     review of ``C14-e-2``).  The two differ by a whole cadence, and
-    ``_reject_backward_payday`` bounds a batch at the day AFTER the last
-    paycheck ends -- so answering against the payday would let a stored phase
-    that does not place that payday on its own grid produce a day the floor
-    then refuses.  A phase like that is ordinary for a PIECEWISE owner (ledger
-    row **N-492**: one stored cadence cannot describe a schedule whose cadence
-    changed), and the refusal would arrive on a read path with no handler.
-    Asked against the horizon the answer is a grid day the floor admits
-    whatever the phase's PROVENANCE.
+    ``pay_period_batch.reject_backward_payday`` bounds a batch at the day
+    AFTER the last paycheck ends -- so answering against the payday would let
+    a stored phase that does not place that payday on its own grid produce a
+    day the floor then refuses.  A phase like that is ordinary for a PIECEWISE
+    owner (ledger row **N-492**: one stored cadence cannot describe a schedule
+    whose cadence changed), and the refusal would arrive on a read path with
+    no handler.  Asked against the horizon the answer is a grid day the floor
+    admits whatever the phase's PROVENANCE.
 
     **It is NOT total with respect to the CONVENTION, and a second adversarial
     review struck a sentence that read as though it were.**  This returns the
@@ -683,20 +684,16 @@ def nominal_payday_after(anchor: date, rhythm: Rhythm, day: date) -> date:
     BELOW it: anchor 2030-11-14, cadence 14, ``next`` gives 2030-11-28 against
     a floor of 2030-11-29.  That was ledger row **PC-497** fault 1, and
     ``C14-e-3`` CLOSED it at the writer rather than here:
-    ``pay_period_write._requested_paydays`` records each element displaced, so
+    ``pay_period_batch.requested_paydays`` records each element displaced, so
     the day this hands over and the floor that judges it are one value again.
     Nothing here discharges it, and nothing here needs to.
 
-    **Three candidates are enough, and it is a theorem rather than a margin.**
-    The estimate satisfies ``nominal(estimate) <= day < nominal(estimate + 1)``
-    by :func:`~._grid.cadence_steps_to`'s floor division, and a displacement is
-    strictly shorter than a cadence --
-    :func:`~app.utils.business_days.shortest_collision_free_cadence` is the
-    longest run of closed days PLUS ONE and
-    ``pay_schedule_service.reject_shift_on_short_cadence`` holds a displacing
-    convention above it -- so ``nominal(estimate + 2)``'s payday clears *day*
-    under either convention.  The same theorem
-    :func:`~._projection.project_period_after` probes on.
+    **The search is :func:`~._eras.step_after`'s**, stated once there since
+    plan step ``C17-b-2`` gave it a second caller (the seam between two eras
+    is found by the same question); this answers the step's NOMINAL day.
+    Three candidates are enough, and it is a theorem rather than a margin --
+    that function's docstring carries it, and
+    :func:`~._projection.project_period_after` probes on the same one.
 
     Args:
         anchor: A day the owner's NOMINAL grid passes through -- the
@@ -717,16 +714,6 @@ def nominal_payday_after(anchor: date, rhythm: Rhythm, day: date) -> date:
             refusal cannot see a stored row a later holiday-set change made
             illegal.
     """
-    estimate = cadence_steps_to(anchor, rhythm.cadence_days, day)
-    for steps in range(estimate, estimate + 3):
-        if projected_payday(anchor, rhythm, steps) > day:
-            return nominal_payday(anchor, rhythm.cadence_days, steps)
-    raise PayCalendarError(
-        f"no payday on the grid anchored {anchor.isoformat()} at a "
-        f"{rhythm.cadence_days}-day cadence falls after {day.isoformat()} "
-        f"within two cadences.  That needs a displacement at least a cadence "
-        f"long, which pay_schedule_service.reject_shift_on_short_cadence "
-        f"refuses at the write door -- ledger row N-493 is that a write-time "
-        f"refusal cannot see a stored row a later holiday-set change made "
-        f"illegal."
+    return nominal_payday(
+        anchor, rhythm.cadence_days, step_after(anchor, rhythm, day),
     )

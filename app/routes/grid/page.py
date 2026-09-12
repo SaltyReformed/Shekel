@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import NamedTuple
 
 from flask import redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.db_transaction import write_transaction
 from app.extensions import db
@@ -673,7 +673,6 @@ def _bank_control(account, calendar) -> "_BankControl | None":
 
 
 @grid_bp.route("/grid")
-@login_required
 @require_owner
 def index():
     """Render the full budget grid page.
@@ -881,7 +880,6 @@ def index():
 
 
 @grid_bp.route("/create-baseline", methods=["POST"])
-@login_required
 @require_owner
 def create_baseline():
     """Create a missing baseline scenario, idempotently.

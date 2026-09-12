@@ -33,6 +33,7 @@ applied to the third and last input that was still arriving raw.
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, subqueryload
@@ -429,12 +430,52 @@ def load_shadow_income_contributions_for_account(
     )
 
 
+@dataclass(frozen=True)
+class PayrollWiring:
+    """WHICH payroll funds WHICH account, loaded once and priced by nobody.
+
+    The point-independent half of a payroll feed (plan step salary:S3-f-1,
+    ruling **R-SAL20**): the active deductions targeting each account and the
+    profiles they and the accounts' params name.  It is every query
+    :func:`load_payroll_feeds` issues, held apart from the resolvers built
+    over it so that a consumer pricing the SAME accounts under ANOTHER raise
+    set -- the ``/retirement`` rail's per-raise probe, plan step
+    **salary:S3-f** -- rebuilds the resolvers through
+    :func:`build_payroll_feeds` and re-issues nothing.  A frozen value
+    carrying dicts: it is not a memo key and is never hashed.
+
+    Attributes:
+        account_ids: The accounts a feed is built for, in the order asked.
+        deductions_by_account: ``{account_id: [PaycheckDeduction]}`` -- each
+            account's active deductions, from
+            :func:`load_active_deductions_for_accounts`; an account with none
+            is absent.
+        profiles: ``{profile_id: SalaryProfile}`` -- every profile that funds
+            any of these accounts from either side, active and this owner's,
+            from :func:`_load_funding_profiles`.
+        params_by_account: ``{account_id: InvestmentParams}``, read for the
+            ``salary_profile_id`` that funds each employer contribution.
+    """
+
+    account_ids: "tuple[int, ...]"
+    deductions_by_account: "dict[int, list[PaycheckDeduction]]"
+    profiles: "dict[int, SalaryProfile]"
+    params_by_account: "dict[int, InvestmentParams]"
+
+
 def load_payroll_feeds(
     paychecks: "PaycheckPricing",
     account_ids: "list[int]",
     params_by_account: "dict[int, InvestmentParams]",
 ) -> "dict[int, AccountPayrollFeed]":
     """Build each account's payroll feed over the PAYCHECK ENGINE's pricer.
+
+    **Two halves since plan step salary:S3-f-1**, composed here for the
+    callers that price the stored plan: :func:`load_payroll_wiring` issues
+    every query and :func:`build_payroll_feeds` builds the resolvers over the
+    pass's pricers, one per funding profile under its rows.  A consumer that
+    needs the same accounts priced under another raise set calls the two
+    halves itself with pricers of its own.
 
     **The producer plan step salary:R14-b puts in place of the feed's own
     arithmetic** (ruling **R-SAL2**).  What a payroll deduction takes from a
@@ -541,13 +582,49 @@ def load_payroll_feeds(
 
     # The owner off the CALENDAR the prices were derived against, so the rows
     # this scopes and the paychecks that price them cannot name two owners.
-    user_id = paychecks.calendar.user_id
+    wiring = load_payroll_wiring(
+        paychecks.calendar.user_id, account_ids, params_by_account,
+    )
+    # The PRICERS, built here rather than inside a resolver: ``for_profile``
+    # loads the profile's tax series on first construction, and that query
+    # belongs to this loader, not to the pure module the resolver will fire
+    # in.  A pricer prices nothing until asked, so an account whose feed no
+    # consumer reads costs the series and no paycheck.
+    return build_payroll_feeds(wiring, {
+        profile_id: paychecks.for_profile(profile)
+        for profile_id, profile in wiring.profiles.items()
+    })
+
+
+def load_payroll_wiring(
+    user_id: int,
+    account_ids: "list[int]",
+    params_by_account: "dict[int, InvestmentParams]",
+) -> PayrollWiring:
+    """Load which payroll funds which of *account_ids*, issuing every query.
+
+    The query half of :func:`load_payroll_feeds`, which documents what the
+    two halves answer together.  Every profile that funds any of these
+    accounts is loaded from BOTH sides -- the profile each active deduction
+    belongs to, and the one each account's params name -- NAMED rather than
+    searched, and scoped to *user_id* so a column naming a stranger's
+    profile resolves to nothing.
+
+    Args:
+        user_id: The owner.  Off the pass's calendar at the composed door, so
+            the rows this scopes and the paychecks that price them cannot
+            name two owners.
+        account_ids: The accounts to wire.  An empty list wires nothing and
+            issues no query, the same as the composed door.
+        params_by_account: ``{account_id: InvestmentParams}`` from
+            :func:`load_investment_params_for_accounts`.
+
+    Returns:
+        The :class:`PayrollWiring`.
+    """
     deductions_by_account = load_active_deductions_for_accounts(
         user_id, account_ids,
     )
-    # Every profile that funds any of these accounts, from BOTH sides: the
-    # profile each active deduction belongs to, and the one each account's
-    # params name.  Named rather than searched -- see the docstring.
     wanted = {
         ded.salary_profile_id
         for rows in deductions_by_account.values() for ded in rows
@@ -558,26 +635,66 @@ def load_payroll_feeds(
         if (params := params_by_account.get(account_id)) is not None
         and params.salary_profile_id is not None
     )
-    profiles = _load_funding_profiles(user_id, wanted)
+    return PayrollWiring(
+        account_ids=tuple(account_ids),
+        deductions_by_account=deductions_by_account,
+        profiles=_load_funding_profiles(user_id, wanted),
+        params_by_account=params_by_account,
+    )
 
-    # The PRICERS, built here rather than inside a resolver: ``for_profile``
-    # loads the profile's tax series on first construction, and that query
-    # belongs to this loader, not to the pure module the resolver will fire
-    # in.  A pricer prices nothing until asked, so an account whose feed no
-    # consumer reads costs the series and no paycheck.
-    pricers = {
-        profile_id: paychecks.for_profile(profile)
-        for profile_id, profile in profiles.items()
-    }
+
+def build_payroll_feeds(
+    wiring: PayrollWiring, pricers: "dict[int, ProfilePaychecks]",
+) -> "dict[int, AccountPayrollFeed]":
+    """Build each wired account's feed over *pricers*, issuing no query.
+
+    The pure half of :func:`load_payroll_feeds`.  It reads the wiring for
+    WHICH profile prices each half of each account and *pricers* for the
+    paychecks, so the same wiring priced under two raise sets is two calls
+    here over two pricer maps and one :func:`load_payroll_wiring`.
+
+    Args:
+        wiring: The :class:`PayrollWiring`.
+        pricers: ``{profile_id: ProfilePaychecks}`` covering every id in
+            ``wiring.profiles`` -- the composed door builds them off the
+            pass's pricer under the rows; a what-if builds them under its
+            terms.
+
+    Returns:
+        ``{account_id: AccountPayrollFeed}``, TOTAL over the wiring's
+        ``account_ids`` -- see :func:`load_payroll_feeds`.
+
+    Raises:
+        ValueError: *pricers* lacks a profile the wiring names.  **A
+            precondition of a public door, not a guard for an impossible
+            state**: the resolvers below answer a missing pricer two
+            different ways -- the employer half reads ``pricers.get`` and
+            would report the account as funding NO employer money (the
+            answer reserved for an absent, archived or foreign profile, which
+            the wiring has already filtered out), while the employee half
+            would ``KeyError`` on the first period asked -- so a caller that
+            built its map off the wrong set is refused here, once, by name.
+    """
+    missing = set(wiring.profiles) - set(pricers)
+    if missing:
+        raise ValueError(
+            f"build_payroll_feeds was handed no pricer for salary profile(s) "
+            f"{sorted(missing)}, which the wiring names as funding one of "
+            f"accounts {list(wiring.account_ids)}; every profile in "
+            f"wiring.profiles must be priced, or the employer half would "
+            f"silently read as unfunded."
+        )
     return {
         account_id: AccountPayrollFeed(
             employee=_employee_resolver(
-                account_id, deductions_by_account.get(account_id, []),
+                account_id, wiring.deductions_by_account.get(account_id, []),
                 pricers,
             ),
-            gross=_gross_resolver(params_by_account.get(account_id), pricers),
+            gross=_gross_resolver(
+                wiring.params_by_account.get(account_id), pricers,
+            ),
         )
-        for account_id in account_ids
+        for account_id in wiring.account_ids
     }
 
 
@@ -794,11 +911,14 @@ __all__ = [
     "AccountPayrollFeed",
     "InvestmentInputs",
     "InvestmentParams",
+    "PayrollWiring",
     "build_investment_projection_inputs",
+    "build_payroll_feeds",
     "load_active_deductions_for_account",
     "load_active_deductions_for_accounts",
     "load_investment_params_for_accounts",
     "load_payroll_feeds",
+    "load_payroll_wiring",
     "load_shadow_income_contributions_for_account",
     "load_shadow_income_contributions_for_accounts",
 ]

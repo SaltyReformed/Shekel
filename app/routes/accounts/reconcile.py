@@ -50,7 +50,7 @@ delegates every read and write to :mod:`app.services.reconcile_service` and
 from decimal import Decimal
 
 from flask import render_template, request
-from flask_login import current_user, login_required
+from flask_login import current_user
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.exceptions import ValidationError
@@ -424,7 +424,6 @@ def prompt_fragment(account: Account) -> str:
 @accounts_bp.route(
     "/accounts/<int:account_id>/reconcile", methods=["GET"],
 )
-@login_required
 @require_owner
 def reconcile_panel(account_id):
     """HTMX partial: re-render the account's outstanding-purchase list.
@@ -461,7 +460,6 @@ def reconcile_panel(account_id):
 @accounts_bp.route(
     "/accounts/<int:account_id>/reconcile", methods=["POST"],
 )
-@login_required
 @require_owner
 def record_reconciliation(account_id):
     """Record that the ticked rows had reached the bank.

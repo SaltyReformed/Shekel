@@ -37,8 +37,10 @@ def installment_slot(due: date) -> tuple[int, int]:
     """Return the ``(year, month)`` installment a due date belongs to.
 
     The project's identity for "which contractual installment is this?", called
-    by the charge calendar below and by the forward plan's PLANNED-vs-ESTIMATED
-    de-dup (``balance_at._plan._month_slot``).
+    by the charge calendar below and by the forward plan -- its seed-slot
+    exclusion, its contract-only estimate's de-dup and its calendar's reach
+    (``balance_at._plan``; that module's ``_month_slot`` alias was deleted at
+    plan step R16-b-2, so it now calls this directly).
 
     **TWO further sites spell the same key inline rather than calling this, and
     naming them as sharers here was false until plan step X-au-g-2c-3b-2**: the

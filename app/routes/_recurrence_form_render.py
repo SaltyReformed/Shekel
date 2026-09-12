@@ -26,7 +26,7 @@ three questions the two template forms render a control for:
 
 **Each bound's row carries its own lock, since plan step R7d-f.**  Both rows
 lock on ONE identity -- the definition is the standing payment of the loan it
-pays into (:func:`~app.services.loan_recurrence_sync.is_standing_loan_payment`)
+pays into (:func:`~app.services.balance_at.is_standing_loan_payment`)
 -- but what the lock MEANS differs per bound, and a single ``bounds_are_derived``
 flag said "the app writes both", a premise ruling **R-R29** made false.  The
 opening bound IS written: ``starts_on`` is the loan's first contractual
@@ -70,8 +70,7 @@ from typing import Any
 from flask import flash
 
 from app.schemas.validation import EFFECTIVE_DATE_MAX, EFFECTIVE_DATE_MIN
-from app.services.balance_at import BalanceContext
-from app.services.loan_recurrence_sync import is_standing_loan_payment
+from app.services.balance_at import BalanceContext, is_standing_loan_payment
 from app.services.recurrence import (
     NEVER_ENDS,
     UNREADABLE_CADENCE_MESSAGE,

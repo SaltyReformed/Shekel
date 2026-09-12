@@ -74,17 +74,21 @@ class AccountPayrollFeed:
     **Asking is the only cost, and it is paid where the asking is.**  The
     loader built this over pricers whose own database work is done at
     construction, and every ORM relationship the engine reads is loaded
-    before the first walk -- ``raises`` and ``deductions`` by
+    before the first walk -- ``deductions`` by
     :func:`~app.services.projection_inputs._load_funding_profiles`'s
-    ``subqueryload``, and ``calibration`` and each raise's ``raise_type``
-    (read by ``get_raise_event`` on a raise's own month) by their own
-    ``lazy="joined"``; a deduction's method and timing are read as the
-    ``calc_method_id`` / ``deduction_timing_id`` columns -- so a resolver
-    fired mid-walk in a pure module issues no query.  Counted at the cursor
-    rather than assumed, by ``test_projection_inputs.TestLoadPayrollFeeds
-    .test_a_resolver_fired_past_the_loader_issues_NO_query`` over a profile
-    WITH a recurring raise inside the walked window, which fails on two lazy
-    ``SELECT`` statements the moment the loader's eager-load is removed.
+    ``subqueryload`` and ``calibration`` by its own ``lazy="joined"``; the
+    raises are converted to :class:`~app.services.salary_raises.RaiseTerms`
+    values at :meth:`~app.services.income_service.PaycheckPricing
+    .for_profile`, inside the loader, with each type's name resolved from
+    its FK through the ref cache (plan step salary:S3-f-1), so the walk reads
+    no raise relationship at all; a deduction's method and timing are read
+    as the ``calc_method_id`` / ``deduction_timing_id`` columns -- so a
+    resolver fired mid-walk in a pure module issues no query.  Counted at the
+    cursor rather than assumed, by ``test_projection_inputs
+    .TestLoadPayrollFeeds.test_a_resolver_fired_past_the_loader_issues_NO_query``
+    over a profile WITH a recurring raise inside the walked window, which
+    fails on the deductions' lazy ``SELECT`` the moment the loader's
+    eager-load is removed.
     The module's *no database access* contract is kept by the loader
     supplying the callables, which is the shape ruling **R-SAL15** took.
 

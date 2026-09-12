@@ -77,6 +77,7 @@ from app.services.recurrence import (
     occurrence_placements,
     occurrences,
     place,
+    projected_occurrence_placements,
     resolve,
 )
 # Imported as a MODULE so the firing controls below can patch the functions the
@@ -87,7 +88,10 @@ from app.services.recurrence import (
 from app.services.recurrence import _months, _occurrence, _resolution
 from app.services.recurrence import EndBound, EndsAfterOccurrences
 
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import (
+    era_of,
+    eras_of,
+)
 from tests.oracles import recurrence_baseline
 from tests.test_services.test_recurrence_resolution import build_calendar
 #: The committed R1 snapshot the parallel run is measured against.
@@ -400,7 +404,7 @@ def _empty_calendar() -> PayCalendar:
         The empty :class:`~app.services.pay_calendar.PayCalendar`.
     """
     return PayCalendar.from_paydays(
-        paydays=(), rhythm=rhythm_of(14), user_id=_USER_ID,
+        paydays=(), eras=eras_of((), 14), user_id=_USER_ID,
         history_opens_on=None,
     )
 
@@ -1432,7 +1436,7 @@ class TestTheClosingBounds:
         """
         calendar = PayCalendar.from_paydays(
             paydays=[(1, date(2026, 1, 1)), (2, date(2026, 1, 15))],
-            rhythm=rhythm_of(14),
+            eras=(era_of(date(2026, 1, 1), 14),),
             user_id=_USER_ID,
             history_opens_on=None,
         )
@@ -1539,6 +1543,124 @@ class TestPlacement:
             date(2028, 7, 14), calendar,
             PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
         ) is None
+
+
+@pytest.mark.usefixtures("app")
+class TestProjectedPlacement:
+    """:func:`~app.services.recurrence.projected_occurrence_placements`, plan step **R16-b-2**.
+
+    The balance seam's ESTIMATED loan tier needs to know where a row WOULD
+    live, saved or not, so it can date an occurrence no row answers yet
+    exactly as generation would date the row (ruling **R-R69**).  These pin
+    that the projecting composition agrees with the saved one wherever the
+    saved one answers, keeps answering past the horizon where it does not, and
+    refuses before the opening bound under ``CONTAINING_DATE`` -- the boundary
+    ruling **R-R64** carries.
+    """
+
+    def test_it_agrees_with_the_saved_composition_inside_the_schedule(self):
+        """Every occurrence the saved search places, this places identically."""
+        calendar = build_calendar()
+        for placement in PeriodPlacementEnum:
+            value = resolved_value(
+                unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 20),
+                placement=placement,
+            )
+            saved = occurrence_placements(value, calendar)
+            projected = projected_occurrence_placements(
+                value, calendar, through=calendar.horizon(),
+            )
+            assert [item.occurrence for item in projected] == [
+                item.occurrence for item in saved
+            ], placement
+            for saved_item, projected_item in zip(saved, projected):
+                if saved_item.period is not None:
+                    assert projected_item.period == saved_item.period, (
+                        placement, saved_item.occurrence,
+                    )
+
+    def test_past_the_horizon_it_places_on_a_projected_paycheck(self):
+        """Where the saved search says ``None``, this names the projected paycheck.
+
+        Every occurrence past the horizon lands on a period with no id whose
+        span holds the occurrence (``CONTAINING_DATE``) or opens on or after
+        it (``PERIOD_STARTING_ON_OR_AFTER``) -- the same two rules, continued.
+        """
+        calendar = build_calendar()
+        horizon = calendar.horizon()
+        for placement in PeriodPlacementEnum:
+            value = resolved_value(
+                unit=RecurrenceUnitEnum.MONTH, starts_on=date(2028, 5, 20),
+                placement=placement,
+            )
+            items = projected_occurrence_placements(
+                value, calendar, through=date(2029, 5, 20),
+            )
+            beyond = [item for item in items if item.occurrence > horizon]
+            assert len(beyond) >= 10, placement
+            for item in beyond:
+                assert item.period is not None, (placement, item.occurrence)
+                assert item.period.period_id is None, (placement, item.occurrence)
+                if placement is PeriodPlacementEnum.CONTAINING_DATE:
+                    assert item.period.covers(item.occurrence), item
+                else:
+                    assert item.period.start_date >= item.occurrence, item
+                    # ...and it is the FIRST such paycheck: the one before it
+                    # opened earlier.
+                    assert (
+                        item.period.start_date - timedelta(days=calendar.cadence.cadence_days)
+                        < item.occurrence
+                    ), item
+
+    def test_before_the_opening_bound_only_containing_date_is_unplaced(self):
+        """Nothing is projected backwards, and the two placements differ there.
+
+        ``CONTAINING_DATE`` answers ``None`` for an occurrence before the
+        owner's first payday -- the R-R64 boundary: neither generated nor
+        estimated.  ``PERIOD_STARTING_ON_OR_AFTER`` places it on the FIRST
+        paycheck, which is exactly what generation does with it too.
+        """
+        calendar = build_calendar()
+        opening = calendar.opening_bound()
+        early = opening - timedelta(days=400)
+        containing = projected_occurrence_placements(
+            resolved_value(
+                unit=RecurrenceUnitEnum.MONTH, starts_on=early,
+                placement=PeriodPlacementEnum.CONTAINING_DATE,
+            ),
+            calendar, through=opening + timedelta(days=60),
+        )
+        pre_opening = [item for item in containing if item.occurrence < opening]
+        assert len(pre_opening) >= 12
+        assert all(item.period is None for item in pre_opening)
+        assert any(item.period is not None for item in containing)
+
+        on_or_after = projected_occurrence_placements(
+            resolved_value(
+                unit=RecurrenceUnitEnum.MONTH, starts_on=early,
+                placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            ),
+            calendar, through=opening + timedelta(days=60),
+        )
+        first = calendar.period_containing(opening)
+        assert all(
+            item.period == first for item in on_or_after
+            if item.occurrence < opening
+        )
+
+    def test_both_searches_are_total_over_the_placement_enum(self):
+        """A member with a saved rule and no projecting one fails HERE, not silently.
+
+        Both tables refuse an unknown member rather than defaulting; a member
+        of the enum must have a rule in each, or the composition would answer
+        ``None`` for an occurrence the owner's schedule can host.
+        """
+        calendar = build_calendar()
+        for placement in PeriodPlacementEnum:
+            _occurrence._placement_search(calendar, placement)
+            _occurrence._span_search(calendar, placement)
+        with pytest.raises(RecurrenceGenerationError):
+            _occurrence._span_search(calendar, "not a placement")
 
 
 @pytest.mark.usefixtures("app")
@@ -1867,7 +1989,7 @@ class TestTheScheduleSearches:
                 (2, date(2026, 1, 22)),
                 (3, date(2026, 2, 12)),
             ],
-            rhythm=rhythm_of(14),
+            eras=(era_of(date(2026, 1, 1), 14),),
             user_id=_USER_ID,
             history_opens_on=None,
         )

@@ -20,7 +20,7 @@ from app.models.transaction import Transaction
 from app.services import posting_service, transfer_service
 from app.services.amount_ownership import state_own_amount
 from app.services.cash_ledger import resolve_transaction_amount
-from app.services.recurrence_engine import compute_due_date
+from app.services.recurrence import compute_due_date
 from app.services.row_valuation import purchases_total
 from app.utils.balance_predicates import is_projected_clause
 from app.utils.log_events import BUSINESS, EVT_CARRY_FORWARD, log_event
@@ -519,7 +519,7 @@ def _leftover_due_date(template, target_period) -> date:
     ruling 2026-09-06, from the option space this leaf put to them; the balance
     arc's ruling id for it is reserved and NOT YET MINTED, so this cites the
     ruling by date rather than by an id that does not resolve).  It goes
-    through :func:`~app.services.recurrence_engine.compute_due_date`, the one
+    through :func:`~app.services.recurrence.compute_due_date`, the one
     producer of "what date does a row of this definition in this period carry"
     -- shared with the transaction engine (``_amounts._derive_row_fields``)
     and the transfer engine (``transfer_recurrence``), the two that outlive

@@ -41,7 +41,10 @@ from app.services.payroll_basis import PayrollBasis
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_report_service import compute_tax_report
 
-from tests._test_helpers import rhythm_of, strip_owner_schedule
+from tests._test_helpers import (
+    era_of,
+    strip_owner_schedule,
+)
 
 
 def _strip_every_payday(db, user_id):
@@ -168,7 +171,7 @@ def _calendar(cadence_days, count, user_id=1, first=date(2026, 1, 1)):
             (i + 1, first + timedelta(days=cadence_days * i))
             for i in range(count)
         ],
-        rhythm=rhythm_of(cadence_days),
+        eras=(era_of(first, cadence_days),),
         user_id=user_id,
         history_opens_on=None,
     )

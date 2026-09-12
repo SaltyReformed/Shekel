@@ -12,7 +12,7 @@ from typing import Any
 
 from flask import Blueprint, render_template, request
 from flask.typing import ResponseReturnValue
-from flask_login import current_user, login_required
+from flask_login import current_user
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -413,7 +413,6 @@ def _accessible_txn_and_entry(
 
 
 @entries_bp.route("/transactions/<int:txn_id>/entries", methods=["GET"])
-@login_required
 def list_entries(txn_id):
     """HTMX partial: return the entry list for a transaction.
 
@@ -430,7 +429,6 @@ def list_entries(txn_id):
 
 
 @entries_bp.route("/transactions/<int:txn_id>/entries", methods=["POST"])
-@login_required
 def create_entry(txn_id):
     """Create a new entry and return the updated entry list.
 
@@ -520,7 +518,6 @@ def _execute_entry_update(
     "/transactions/<int:txn_id>/entries/<int:entry_id>",
     methods=["PATCH"],
 )
-@login_required
 def update_entry(txn_id, entry_id):
     """Update an entry and return the updated entry list.
 
@@ -677,7 +674,6 @@ def _pair_the_posting_day(
     "/transactions/<int:txn_id>/entries/<int:entry_id>",
     methods=["DELETE"],
 )
-@login_required
 def delete_entry(txn_id, entry_id):
     """Delete an entry and return the updated entry list.
 

@@ -53,7 +53,7 @@ from app.enums import (
 )
 from app.models.pay_era import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
-from app.services.pay_period_write import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
+from app.services.pay_period_batch import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
 
 # Every ID-derived Jinja global, grouped by the ``ref_cache`` accessor
 # that resolves it.  Each group pairs one accessor with the

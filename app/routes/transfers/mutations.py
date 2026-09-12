@@ -14,7 +14,7 @@ verbatim from the pre-split ``app/routes/transfers.py``.
 import logging
 
 from flask import jsonify, request
-from flask_login import current_user, login_required
+from flask_login import current_user
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -179,7 +179,6 @@ def _reject_finalised_transfer_edit(xfer, data):
 
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>", methods=["PATCH"])
-@login_required
 @require_owner
 def update_transfer(xfer_id):
     """Update a transfer and its shadow transactions (inline edit save).
@@ -357,7 +356,6 @@ def update_transfer(xfer_id):
 
 
 @transfers_bp.route("/transfers/ad-hoc", methods=["POST"])
-@login_required
 @require_owner
 def create_ad_hoc():
     """Create an ad-hoc (one-time) transfer with shadow transactions.
@@ -471,7 +469,6 @@ def create_ad_hoc():
 
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>", methods=["DELETE"])
-@login_required
 @require_owner
 def delete_transfer(xfer_id):
     """Soft-delete a template transfer or hard-delete an ad-hoc transfer.
@@ -503,7 +500,6 @@ def delete_transfer(xfer_id):
 
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>/mark-done", methods=["POST"])
-@login_required
 @require_owner
 def mark_done(xfer_id):
     """Mark a transfer and its shadows as 'done' (settled).
@@ -569,7 +565,6 @@ def mark_done(xfer_id):
 
 
 @transfers_bp.route("/transfers/instance/<int:xfer_id>/cancel", methods=["POST"])
-@login_required
 @require_owner
 def cancel_transfer(xfer_id):
     """Mark a transfer and its shadows as 'cancelled'.

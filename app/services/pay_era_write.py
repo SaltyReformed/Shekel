@@ -40,6 +40,7 @@ from app.enums import PayCadenceKindEnum
 from app.extensions import db
 from app.models.pay_era import PayEra
 from app.services import pay_schedule_service
+from app.services.pay_calendar import first_payday_of
 from app.services.pay_rhythm import Era, Rhythm, era_covering
 
 
@@ -80,9 +81,17 @@ def mint_era(user_id: int, era: Era) -> PayEra:
         user_id: The owning user's id.
         era: The :class:`~app.services.pay_rhythm.Era` to persist.  Its
             ``effective_from`` must not equal an existing era's
-            (``uq_pay_eras_user_effective_from``); the writer retires every
-            era taking effect on or after it before calling here, so the key
-            is the guard rather than the door.
+            (``uq_pay_eras_user_effective_from``).  The writer holds that
+            two ways before calling here: it retires every era whose first
+            payday falls after the last surviving payday, and it bounds a
+            minting batch at its era's first payday (``pay_period_batch``'s
+            floor, since plan step ``C17-b-2``) -- so an era restated from a
+            day the record already holds is REFUSED at the door rather than
+            colliding on the key.  *Until then this sentence claimed the
+            writer retired every era "taking effect on or after" the mint's
+            day, which it never did; a rebuild from an existing era's day
+            with a changed convention and every lower payday held reached
+            the key as an IntegrityError.*
 
     Returns:
         The new :class:`~app.models.pay_era.PayEra` row, flushed.
@@ -120,11 +129,25 @@ def eras_describing(
     """Return the eras a batch leaves standing: those with a surviving payday.
 
     The era rule's first half, beside its second (:func:`era_to_mint`).  An
-    era takes effect on its own day, so one taking effect after the last
-    surviving payday describes nothing the batch keeps; the batch's new
-    paydays all fall past that day (``pay_period_write``'s floor) and take
-    their era from the mint decision.  ``retire_eras`` is asked the same
-    boundary, so what is judged against and what survives are one set.
+    era pays from its FIRST PAYDAY
+    (:func:`~app.services.pay_calendar.first_payday_of`, its
+    ``effective_from`` displaced under its own convention), so one whose
+    first payday falls after the last surviving payday describes nothing the
+    batch keeps; the batch's new paydays all fall past that day
+    (``pay_period_batch``'s floor) and take their era from the mint decision.
+    ``retire_eras`` is handed this set, so what is judged against and what
+    survives are one set.
+
+    **The bound is the era's first PAYDAY and not its nominal
+    ``effective_from``, since plan step ``C17-b-2``** (ledger row
+    **PC-510**).  An era minted on a nominal closed day under ``prior`` pays
+    its first paycheck BEFORE its own ``effective_from``, so compared on the
+    nominal day it described no surviving payday the moment that paycheck
+    was its only one, and the next batch retired it and re-minted it a
+    cadence late; under ``next`` the mirror kept an era whose only paycheck
+    a truncate had removed, beside a new era paying the same day.  The
+    readers place a payday in cash days (:func:`~app.services.pay_calendar.era_index_at`),
+    and the writer now agrees with them.
 
     Args:
         stored: The owner's schedule facts before the batch, or ``None``.
@@ -137,7 +160,7 @@ def eras_describing(
     if stored is None or not surviving_paydays:
         return ()
     latest = max(surviving_paydays)
-    return tuple(e for e in stored.eras if e.effective_from <= latest)
+    return tuple(e for e in stored.eras if first_payday_of(e) <= latest)
 
 
 def era_to_mint(
@@ -207,16 +230,18 @@ def era_to_mint(
     )
 
 
-def retire_eras(user_id: int, effective_after: "date | None") -> int:
-    """Delete the owner's eras taking effect after a day, or all of them.
+def retire_eras(user_id: int, standing: "tuple[date, ...]") -> int:
+    """Delete every era of the owner's but those *standing* names.
 
     **The ONE door that removes from ``budget.pay_eras``**, and its caller is
     ``pay_period_write._apply`` alone.  A recording batch SUPERSEDES every
-    era taking effect after the last payday it leaves standing -- none of
-    them describes a payday that stands, and every payday the batch records
-    falls past that day -- and a batch that leaves NO payday standing
-    (``reset``) leaves no era either, since an era is *how I have been paid
-    since* and nobody is.
+    era whose first payday falls after the last payday it leaves standing
+    (:func:`eras_describing` -- none of them describes a payday that stands,
+    and every payday the batch records falls past that day) and a batch that
+    leaves NO payday standing (``reset``) leaves no era either, since an era
+    is *how I have been paid since* and nobody is.  It takes the STANDING
+    set rather than a boundary day, so the decision is made once, in cash
+    days, by the function that judges the mint against it.
 
     An era is never retired by a batch that records nothing: truncating a
     schedule's tail shortens the record and leaves the owner's declared
@@ -226,13 +251,13 @@ def retire_eras(user_id: int, effective_after: "date | None") -> int:
 
     Args:
         user_id: The owning user's id.
-        effective_after: Retire every era whose ``effective_from`` is strictly
-            after this day; ``None`` retires every era the owner holds.
+        standing: The ``effective_from`` of every era to KEEP; empty retires
+            every era the owner holds.
 
     Returns:
         How many rows were deleted.
     """
     query = db.session.query(PayEra).filter(PayEra.user_id == user_id)
-    if effective_after is not None:
-        query = query.filter(PayEra.effective_from > effective_after)
+    if standing:
+        query = query.filter(PayEra.effective_from.notin_(standing))
     return query.delete(synchronize_session=False)

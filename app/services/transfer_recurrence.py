@@ -60,10 +60,10 @@ from app.services._recurrence_common import (
     PlacedRow,
     log_resource_access_denied,
 )
+from app.services.recurrence import compute_due_date
 from app.services.recurrence_engine import (
     MaintainActs,
     PassReporting,
-    compute_due_date,
     create_for_unclaimed_occurrences,
     regenerate_definition,
     resolve_generation_plan,
@@ -171,7 +171,7 @@ class DerivedTransferFields(NamedTuple):
             the stale cache this arc deletes, and the transaction twin lost the
             same field at plan step X-au-e.
         due_date: Derived from the rule and the period by
-            :func:`~app.services.recurrence_engine.compute_due_date`.
+            :func:`~app.services.recurrence.compute_due_date`.
     """
 
     from_account_id: int
@@ -365,7 +365,7 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
         is, where it sits, that it is the rule's own row, and that it is not
         yet an actual event.
 
-        The due date inside comes from ``recurrence_engine.compute_due_date``,
+        The due date inside comes from ``recurrence.compute_due_date``,
         the same shared helper the transaction engine uses: a rule with a
         day_of_month (monthly, quarterly, and -- via
         routes/loan/payment_transfer.py -- the mortgage payment, whose rule
