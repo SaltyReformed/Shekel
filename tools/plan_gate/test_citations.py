@@ -11,8 +11,11 @@ docstring says it exists to grade exactly the commit that scope describes.  A
 test that grades the registries belongs in the package that grades the
 registries, which runs in both scopes; keeping it where it was would have
 meant either skipping it on the commit it was written for, or building the
-test database to run one file read.  The docstring below is the original,
-kept whole because its history is the argument for the arm's shape.
+test database to run one file read.  The docstring below is the original
+with its first paragraph re-pointed (the "three cases above" are now in
+another file, and "runs only when a planning document is edited" stopped
+being true when this package joined every CI run); the rest is kept whole
+because its history is the argument for the arm's shape.
 """
 from __future__ import annotations
 

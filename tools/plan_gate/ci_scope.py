@@ -46,13 +46,18 @@ this package as ``test_citations.py``, where it runs in both scopes.
 ``test_ci_scope.py`` holds the census at zero.  The census is ``ast``-based
 and LEXICAL: a docstring that DISCUSSES ``docs/plans`` is prose and is
 skipped; a string a statement evaluates is a read, in the spellings a read
-usually takes -- a joined literal, a ``/``-chain of ``Path`` pieces, a
-``.joinpath(...)`` or ``os.path.join(...)``, an f-string's literal part,
-each with ``..`` normalised.  What it CANNOT see, and what a reviewer of a
-new test must: a path assembled by ``str.format``, ``%`` or ``+``; a chain
-whose middle piece is a variable (``REPO / "docs" / PLANS``); and a walk
-from a parent directory (``(REPO / "docs").rglob("*.md")``).  None of those
-exists under the censused roots today (grepped when this landed).
+usually takes -- a joined literal, a ``/``-chain whose links are string
+pieces, ``Path(...)`` / ``PurePath(...)`` calls and ``.joinpath(...)`` /
+``os.path.join(...)`` calls (nested inside one another or inside a chain),
+an f-string's literal part, each with leading ``..`` segments dropped.  What
+it CANNOT see, and what a reviewer of a new test must: a path assembled by
+``str.format``, ``%`` or ``+``; a chain or call with a VARIABLE piece in the
+middle (``REPO / "docs" / PLANS / "x.md"``, ``Path("docs", plans)``); a
+walk from a parent directory (``(REPO / "docs").rglob("*.md")``); and a
+subprocess running a script that reads the registries itself (the
+session-start hook, whose test is the one exemption).  None of those
+reaches a registry under the censused roots today (grepped when this
+landed).
 
 Usage from ``ci.yml``::
 
@@ -84,11 +89,17 @@ SKIPPED_TEST_ROOTS = ("tests", "tools/pylint/tests")
 #: EVERY ``.py`` under those roots is censused, not only what pytest collects:
 #: a read in ``tests/_test_helpers.py`` or ``tests/oracles/`` is a read by
 #: every test that imports it.  The one directory left out is ``tests/manual``:
-#: its ``verify_*.py`` proof harnesses read the registries BY DESIGN, pytest
-#: never collects them (``pytest.ini`` pins ``python_files = test_*.py``),
-#: nothing imports them (``test_ci_scope.py`` holds that), and the only CI
-#: step that touches them compiles rather than runs them (step 5a3).
+#: its hand-run proof instruments (``verify_*``, ``measure_*``, ``rehearse_*``
+#: and the like) read the registries BY DESIGN, pytest never collects them
+#: (``pytest.ini`` pins ``python_files = test_*.py`` and the directory holds
+#: no ``test_*.py`` or ``conftest.py`` -- ``test_ci_scope.py`` holds both
+#: halves), nothing imports them (held too), and the only CI step that
+#: touches them compiles rather than runs them (step 5a3).
 NOT_CENSUSED = ("tests/manual",)
+
+#: What pytest WOULD collect if it appeared under :data:`NOT_CENSUSED`: the
+#: patterns the premise above depends on.
+COLLECTED_BY_PYTEST = ("test_*.py", "conftest.py")
 
 #: Reads the census finds that are NOT reads of this repository's documents,
 #: keyed ``"<file>: <path>"`` (the hit without its line number, so an edit
@@ -175,74 +186,92 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
     return found
 
 
-def _div_chain(node: ast.BinOp) -> list[str] | None:
-    """Flatten ``a / "docs" / "plans"`` into its string pieces, left to right.
-
-    Returns ``None`` when the chain holds no string constant at all; a
-    non-string piece (a name, a call) is skipped rather than refused, because
-    ``REPO / "docs" / "plans"`` starts with a name and is the common spelling.
-    """
-    pieces: list[str] = []
-    stack: list[ast.expr] = [node]
-    while stack:
-        current = stack.pop()
-        if isinstance(current, ast.BinOp) and isinstance(current.op, ast.Div):
-            stack.append(current.right)
-            stack.append(current.left)
-        elif isinstance(current, ast.Constant) and isinstance(current.value, str):
-            pieces.append(current.value)
-    return pieces or None
+#: The call spellings that assemble a path from their positional arguments:
+#: ``Path("docs", "plans")`` and its pure cousins, and ``x.joinpath(...)`` /
+#: ``os.path.join(...)`` where ``x`` may itself be a chain or call.
+_PATH_CONSTRUCTORS = ("Path", "PurePath", "PurePosixPath", "PosixPath")
+_PATH_JOINERS = ("join", "joinpath")
 
 
-def _join_call(node: ast.Call) -> list[str] | None:
-    """Flatten ``os.path.join(root, "docs", "plans")`` or ``x.joinpath("docs", "plans")``.
+def _path_call_pieces(node: ast.Call) -> list[str] | None:
+    """Return the string pieces a path-building call assembles, left to right.
 
-    Returns the call's string arguments in order; ``None`` when the call is
-    neither spelling or passes no string.  ``", ".join(parts)`` is a
-    ``.join`` with no string positional argument and yields nothing.
+    ``Path("docs", "plans", "x.md")`` gives its arguments; ``x.joinpath(...)``
+    and ``os.path.join(x, ...)`` give the pieces of ``x`` (a chain, a call or
+    a constant, recursively) followed by their string arguments.  ``None``
+    when the call is neither shape or holds no string at all.  A variable
+    piece is SKIPPED, not refused: ``Path(root, "docs", "plans")`` is the
+    common spelling, and the docstring above names what that costs.
     """
     func = node.func
-    if not (isinstance(func, ast.Attribute) and func.attr in ("join", "joinpath")):
+    if isinstance(func, ast.Name) and func.id in _PATH_CONSTRUCTORS:
+        head: list[str] = []
+    elif isinstance(func, ast.Attribute) and func.attr in _PATH_JOINERS:
+        head = _pieces_of(func.value) or []
+    else:
         return None
-    pieces = [arg.value for arg in node.args
-              if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
+    pieces = head + [arg.value for arg in node.args
+                     if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
     return pieces or None
 
 
-def _inner_links(tree: ast.AST) -> set[int]:
-    """Return the ids of every ``/`` node that is the LEFT operand of another.
+def _pieces_of(node: ast.expr) -> list[str] | None:
+    """Return the string pieces one expression contributes to a path, or ``None``.
+
+    A ``/`` chain contributes its links in order, a path-building call its
+    pieces, a string constant itself; anything else (a name, a subscript, an
+    f-string with no literal part) contributes nothing.  Recursive, so
+    ``(root / "docs").joinpath("plans")`` and ``Path("docs") / "plans"`` both
+    flatten whole.
+    """
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        left = _pieces_of(node.left) or []
+        right = _pieces_of(node.right) or []
+        return (left + right) or None
+    if isinstance(node, ast.Call):
+        return _path_call_pieces(node)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    return None
+
+
+def _inner_nodes(tree: ast.AST) -> set[int]:
+    """Return the ids of every path expression nested inside a larger one.
 
     ``a / "docs" / "plans" / "x.md"`` parses left-nested, so ``ast.walk``
     visits three ``Div`` nodes; only the outermost holds the whole path, and
-    the inner two would report its prefixes as further reads.
+    the inner two would report its prefixes as further reads.  The same
+    holds for a call inside a chain and a chain inside a ``.joinpath``.
     """
-    return {
-        id(node.left) for node in ast.walk(tree)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)
-        and isinstance(node.left, ast.BinOp) and isinstance(node.left.op, ast.Div)
-    }
+    inner: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            inner.update(id(child) for child in (node.left, node.right)
+                         if isinstance(child, (ast.BinOp, ast.Call)))
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _PATH_JOINERS):
+            if isinstance(node.func.value, (ast.BinOp, ast.Call)):
+                inner.add(id(node.func.value))
+    return inner
 
 
 def _spellings(tree: ast.AST) -> Iterator[tuple[int, str]]:
     """Yield ``(line, path text)`` for every string a statement evaluates as a path.
 
-    Three spellings, each yielded joined: a string constant on its own, the
-    pieces of an outermost ``/`` chain, and the pieces of a ``.join(...)``
-    call.  A docstring is not a statement's operand and is skipped; an
-    f-string's literal parts are constants and are seen.
+    A string constant on its own, and the joined pieces of every OUTERMOST
+    path expression: a ``/`` chain, a ``Path(...)`` call, a ``.joinpath`` /
+    ``os.path.join`` call, nested however.  A docstring is not a statement's
+    operand and is skipped; an f-string's literal parts are constants and
+    are seen.
     """
     docstrings = _docstring_nodes(tree)
-    inner = _inner_links(tree)
+    inner = _inner_nodes(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if id(node) not in docstrings:
                 yield node.lineno, node.value
-        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-            pieces = None if id(node) in inner else _div_chain(node)
-            if pieces:
-                yield node.lineno, "/".join(pieces)
-        elif isinstance(node, ast.Call):
-            pieces = _join_call(node)
+        elif isinstance(node, (ast.BinOp, ast.Call)) and id(node) not in inner:
+            pieces = _pieces_of(node)
             if pieces:
                 yield node.lineno, "/".join(pieces)
 
@@ -252,18 +281,23 @@ def _names_a_registry_path(text: str, prefixes: tuple[PurePosixPath, ...]) -> bo
 
     A leading ``/`` is dropped first so the literal part of
     ``f"{ROOT}/docs/plans/steps.md"`` is graded as the relative path it
-    completes, and ``..`` segments are normalised so
-    ``"../../docs/plans/steps.md"`` reads as the path it reaches.  A prefix
-    appearing MID-string (an assertion message that says "see
-    docs/plans/steps.md") is prose, not a read, and does not count.
+    completes; then ``posixpath.normpath`` folds interior ``..`` and ``.``
+    (so ``"docs/../app/x.py"`` is ``app/x.py``) and every LEADING ``..``
+    segment is dropped, so ``"../../docs/plans/steps.md"`` reads as the path
+    it reaches from wherever it starts.  Segments only: ``"..docs"`` and
+    ``".docs"`` are names, not climbs.  A prefix appearing MID-string (an
+    assertion message that says "see docs/plans/steps.md") is prose, not a
+    read, and does not count.
     """
     stripped = text.lstrip("/")
     if not stripped:
         return False
-    normalised = posixpath.normpath(stripped).lstrip("/")
-    if normalised.startswith(".."):
-        normalised = normalised.lstrip("./")
-    return _under_a_prefix(PurePosixPath(normalised), prefixes, strictly=False)
+    parts = PurePosixPath(posixpath.normpath(stripped)).parts
+    while parts and parts[0] == "..":
+        parts = parts[1:]
+    if not parts or parts[0] == "/":
+        return False
+    return _under_a_prefix(PurePosixPath(*parts), prefixes, strictly=False)
 
 
 def _censused(root: Path, base: Path) -> Iterator[Path]:
@@ -283,26 +317,48 @@ def imports_of_the_uncensused(roots: Iterable[Path] = (), *,
     """
     base = repo or registry.REPO
     roots = tuple(roots) or tuple(base / r for r in SKIPPED_TEST_ROOTS)
-    names = tuple(d.replace("/", ".") for d in NOT_CENSUSED)
-    heads = tuple(d.rsplit("/", 1)[-1] for d in NOT_CENSUSED)
     hits: list[str] = []
     for root in roots:
         for path in _censused(root, base):
+            rel = path.relative_to(base).as_posix()
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
-            except SyntaxError:
+            except SyntaxError as exc:
+                hits.append(f"{rel}:{exc.lineno or 0}: SyntaxError")
                 continue
             for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom):
-                    module = node.module or ""
-                elif isinstance(node, ast.Import):
-                    module = ",".join(alias.name for alias in node.names)
-                else:
-                    continue
-                if any(n in module for n in names) or any(
-                        module == h or module.startswith(f"{h}.") for h in heads):
-                    hits.append(f"{path.relative_to(base).as_posix()}:{node.lineno}")
+                if _imports_uncensused(node):
+                    hits.append(f"{rel}:{node.lineno}")
     return hits
+
+
+def _imports_uncensused(node: ast.AST) -> bool:
+    """Return whether one import statement names a :data:`NOT_CENSUSED` directory.
+
+    Every dotted name the statement binds is tested on its own: ``import
+    os, manual.x`` names ``manual.x``; ``from tests import manual`` names
+    ``tests.manual``; ``from tests.manual.x import y`` names
+    ``tests.manual.x``.  A name matches when it IS the directory (as
+    ``tests.manual`` or its last segment ``manual``) or starts under it; a
+    look-alike (``manual_helpers``, ``mytests.manual``) does not.
+    """
+    if isinstance(node, ast.Import):
+        dotted = [alias.name for alias in node.names]
+    elif isinstance(node, ast.ImportFrom):
+        module = node.module or ""
+        dotted = [f"{module}.{alias.name}" if module else alias.name
+                  for alias in node.names]
+        dotted.append(module)
+    else:
+        return False
+    targets = set()
+    for directory in NOT_CENSUSED:
+        targets.add(directory.replace("/", "."))
+        targets.add(directory.rsplit("/", 1)[-1])
+    return any(
+        name == target or name.startswith(f"{target}.")
+        for name in dotted if name for target in targets
+    )
 
 
 def registry_readers(roots: Iterable[Path] = (), *, repo: Path | None = None) -> list[str]:
@@ -310,27 +366,29 @@ def registry_readers(roots: Iterable[Path] = (), *, repo: Path | None = None) ->
 
     ``roots`` defaults to :data:`SKIPPED_TEST_ROOTS` under ``repo`` (the
     repository by default; a control passes a scratch tree).  Paths are
-    reported relative to ``repo``.  Every ``(file, line, path)`` is reported
-    once, though a ``/`` chain yields it from each of its links.  A file that
+    reported relative to ``repo``, in file order then line order.  Every
+    ``(file, line, path)`` is reported once.  A file that
     will not parse is reported as a reader (``SyntaxError``), because a census
     that skips what it cannot read passes on nothing.
     """
     prefixes = registry_only_prefixes()
     base = repo or registry.REPO
     roots = tuple(roots) or tuple(base / r for r in SKIPPED_TEST_ROOTS)
-    hits: dict[str, None] = {}
+    hits: list[str] = []
     for root in roots:
         for path in _censused(root, base):
             rel = path.relative_to(base).as_posix()
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
             except SyntaxError as exc:
-                hits[f"{rel}:{exc.lineno or 0}: SyntaxError"] = None
+                hits.append(f"{rel}:{exc.lineno or 0}: SyntaxError")
                 continue
-            for line, text in _spellings(tree):
-                if _names_a_registry_path(text, prefixes):
-                    hits[f"{rel}:{line}: {text}"] = None
-    return list(hits)
+            found = {
+                (line, text) for line, text in _spellings(tree)
+                if _names_a_registry_path(text, prefixes)
+            }
+            hits.extend(f"{rel}:{line}: {text}" for line, text in sorted(found))
+    return hits
 
 
 def unexempted_readers(roots: Iterable[Path] = (), *, repo: Path | None = None) -> list[str]:
@@ -349,10 +407,17 @@ def unexempted_readers(roots: Iterable[Path] = (), *, repo: Path | None = None) 
 
 
 def exemption_key(hit: str) -> str:
-    """``"<file>:<line>: <path>"`` -> ``"<file>: <path>"``; a SyntaxError hit keys as itself."""
+    """``"<file>:<line>: <path>"`` -> ``"<file>: <path>"``.
+
+    A ``SyntaxError`` hit keys as the whole hit, line included, so an
+    unparseable file cannot be excused by a line-free entry: it is not a
+    read to excuse but a file the census could not grade.
+    """
     file, _, rest = hit.partition(":")
     _, sep, path = rest.partition(": ")
-    return f"{file}: {path}" if sep else hit
+    if not sep or path == "SyntaxError":
+        return hit
+    return f"{file}: {path}"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -8,9 +8,9 @@ Four claims, each graded in the direction it can fail:
    absolute path, a ``..``, an empty set).
 2. The prefixes are DERIVED from ``_registry``: a seventh arc document widens
    them with no edit to ``ci_scope``.
-3. The census finds a registry read in each spelling a read takes and ignores
-   prose about one; on this repository it finds nothing unexempted, and an
-   exemption that excuses nothing is itself reported.
+3. The census finds a registry read in each spelling it claims to see and
+   ignores prose about one; on this repository it finds nothing unexempted,
+   and an exemption that excuses nothing is itself reported.
 4. ``ci.yml`` is wired to the answer: every code-grading step is guarded by
    it, the plan gate is not, and the guard names this classifier.
 """
@@ -114,8 +114,8 @@ def _readers(repo: Path) -> list[str]:
     return ci_scope.registry_readers([repo / "tests"], repo=repo)
 
 
-class TestTheCensusFindsEverySpellingOfARead:
-    """Claim 3, the positive direction: one case per spelling."""
+class TestTheCensusFindsEachSpellingItClaims:
+    """Claim 3, the positive direction: one case per spelling the docstring names."""
 
     def test_a_joined_literal(self, tmp_path):
         """``Path("docs/plans/rulings.md")``."""
@@ -171,6 +171,53 @@ class TestTheCensusFindsEverySpellingOfARead:
                 assert (Path(__file__).parent / "../../docs/plans/steps.md").read_text()
         ''')
         assert _readers(repo) == ["tests/test_k.py:4: ../../docs/plans/steps.md"]
+
+    @pytest.mark.parametrize("text,expected", [
+        ("../../docs/plans/steps.md", True),
+        ("docs/../app/x.py", False),
+        ("docs/plans/../../app/x.py", False),
+        ("../../../etc/passwd", False),
+        ("..", False),
+        ("../.docs/plans/x.md", False),
+        ("..docs/plans/x.md", False),
+        (".../docs/plans/x.md", False),
+        ("/docs/plans/x.md", True),
+        ("docs/./plans/x.md", True),
+    ])
+    def test_leading_climbs_are_segments_not_characters(self, text, expected):
+        """``..`` is dropped as a SEGMENT; ``..docs`` and ``.docs`` are names."""
+        prefixes = ci_scope.registry_only_prefixes()
+        # Pylint: protected-access -- the control grades the normalisation
+        # step on its own, below the public census that calls it.
+        assert ci_scope._names_a_registry_path(text, prefixes) is expected  # pylint: disable=protected-access
+
+    def test_a_path_constructor_with_positional_pieces(self, tmp_path):
+        """``Path("docs", "plans", "steps.md")`` and ``Path("docs") / "plans"``."""
+        repo = _scratch(tmp_path, "test_m.py", '''
+            from pathlib import Path, PurePosixPath
+            def test_x(root):
+                assert Path("docs", "plans", "steps.md").read_text()
+                assert (Path("docs") / "plans" / "ledger.md").read_text()
+                assert PurePosixPath(root, "docs", "plans")
+        ''')
+        assert _readers(repo) == [
+            "tests/test_m.py:4: docs/plans/steps.md",
+            "tests/test_m.py:5: docs/plans/ledger.md",
+            "tests/test_m.py:6: docs/plans",
+        ]
+
+    def test_nested_joinpaths_and_a_chain_inside_one(self, tmp_path):
+        """``(root / "docs").joinpath("plans", "x")`` and ``.joinpath().joinpath()``."""
+        repo = _scratch(tmp_path, "test_n.py", '''
+            from pathlib import Path
+            def test_x(root):
+                assert (root / "docs").joinpath("plans", "steps.md").read_text()
+                assert Path("docs").joinpath("plans").joinpath("ledger.md").read_text()
+        ''')
+        assert _readers(repo) == [
+            "tests/test_n.py:4: docs/plans/steps.md",
+            "tests/test_n.py:5: docs/plans/ledger.md",
+        ]
 
     def test_a_helper_module_the_suite_imports_is_censused(self, tmp_path):
         """A read in ``tests/_test_helpers.py`` is a read by every test importing it."""
@@ -288,15 +335,30 @@ class TestTheCensusIgnoresProse:
         assert not _readers(repo)
 
     def test_a_censused_module_importing_the_manual_harnesses_is_reported(self, tmp_path):
-        """The directory is left out because nothing imports it; this is that control."""
+        """The directory is left out because nothing imports it; every spelling counts."""
         repo = _scratch(tmp_path, "test_q.py", '''
             from manual.verify_registry import LEDGER
             import tests.manual.verify_registry
+            from tests import manual
+            import os, manual.verify_registry
+            from tests.manual import verify_registry
+            import manual
+            from manual_helpers import x
+            from mytests.manual import y
+            import app.tests.manual_thing
             def test_x():
                 assert LEDGER
         ''')
         assert ci_scope.imports_of_the_uncensused([repo / "tests"], repo=repo) == [
-            "tests/test_q.py:2", "tests/test_q.py:3",
+            "tests/test_q.py:2", "tests/test_q.py:3", "tests/test_q.py:4",
+            "tests/test_q.py:5", "tests/test_q.py:6", "tests/test_q.py:7",
+        ]
+
+    def test_an_unparseable_module_is_reported_by_the_import_control_too(self, tmp_path):
+        """A file the import control cannot read is a finding, not a pass."""
+        repo = _scratch(tmp_path, "test_u.py", "def test_x(:\n    pass\n")
+        assert ci_scope.imports_of_the_uncensused([repo / "tests"], repo=repo) == [
+            "tests/test_u.py:1: SyntaxError",
         ]
 
 
@@ -315,6 +377,27 @@ class TestThisRepositoryHasNoUnexemptedReader:
     def test_nothing_censused_imports_the_manual_harnesses(self):
         """``tests/manual`` is uncensused because nothing runs it AND nothing imports it."""
         assert not ci_scope.imports_of_the_uncensused()
+
+    def test_pytest_would_collect_nothing_under_the_uncensused_directories(self):
+        """The other half of the premise: no ``test_*.py`` or ``conftest.py`` lives there."""
+        for directory in ci_scope.NOT_CENSUSED:
+            root = registry.REPO / directory
+            collected = [p for pat in ci_scope.COLLECTED_BY_PYTEST for p in root.rglob(pat)]
+            assert not collected, (
+                f"{directory} holds {[p.name for p in collected]}: pytest would collect "
+                f"them and the census would not see them; move them or census the directory"
+            )
+        assert (registry.REPO / "pytest.ini").read_text().count("python_files = test_*.py") == 1
+
+    def test_an_unparseable_file_cannot_be_excused(self, monkeypatch, tmp_path):
+        """A ``SyntaxError`` hit keys as itself, line and all, so no entry can match it."""
+        repo = _scratch(tmp_path, "test_g.py", "def test_x(:\n    pass\n")
+        monkeypatch.setattr(ci_scope, "EXEMPT_READERS", {"tests/test_g.py: SyntaxError": "no"})
+        assert ci_scope.unexempted_readers([repo / "tests"], repo=repo) == [
+            "tests/test_g.py:1: SyntaxError",
+            "tests/test_g.py: SyntaxError: exempted but the census finds no such read; "
+            "delete the entry",
+        ]
 
     def test_every_exemption_still_excuses_a_real_hit(self):
         """The raw census must find each exempted ``<file>: <path>`` read."""
@@ -416,8 +499,10 @@ class TestTheWorkflowIsWiredToTheAnswer:
         assert "if" not in steps["scope"]
 
     def test_the_guard_fails_closed_on_a_missing_output(self):
-        """The guard is ``!= 'registry-only'``: an empty or misspelled output runs everything."""
-        assert "!= 'registry-only'" in GUARD
+        """Every guard in the live file is ``!= 'registry-only'``: no output runs everything."""
+        guards = [s["if"] for s in _lint_and_test_steps() if "if" in s]
+        assert guards, "no guarded step at all"
+        assert set(guards) == {GUARD}
         assert "== 'full'" not in GUARD
 
     def test_the_plan_gate_runs_in_both_scopes_and_the_code_graders_only_in_full(self):
@@ -442,11 +527,14 @@ class TestTheWorkflowIsWiredToTheAnswer:
         for name in guarded:
             assert by_name[name].get("if") == GUARD, f"{name!r} is not guarded by {GUARD}"
 
-    def test_no_test_running_step_escapes_the_guard(self):
-        """A new step that runs pytest must be guarded or be the plan gate."""
+    def test_no_code_running_step_escapes_the_guard(self):
+        """A new step that runs pytest, pylint or a script must be guarded or be the plan gate."""
+        allowed = {"Plan gate (every scope)", "Classify the change set", "Install dependencies"}
         for step in _lint_and_test_steps():
             run = step.get("run", "")
-            if "pytest" in run and step["name"] != "Plan gate (every scope)":
+            if step["name"] in allowed:
+                continue
+            if any(tool in run for tool in ("pytest", "pylint", "python ")):
                 assert step.get("if") == GUARD, step["name"]
 
     def test_the_plan_gate_no_longer_hides_inside_the_checker_step(self):
