@@ -358,7 +358,7 @@ def has_row_date_coordinate(unit: RecurrenceUnitEnum) -> bool:
 
     **The offer set's first rule, and the one that keeps the ``WEEK`` unit out
     of it** (plan step R8-a).  A generated row's date is
-    ``recurrence_engine.compute_due_date(rule, period)``, which has exactly two
+    :func:`~app.services.recurrence.compute_due_date`, which has exactly two
     sources: the rule's scheduling DAY OF THE MONTH, or -- when it has none --
     the funding paycheck's own ``start_date``.  A unit whose occurrences are
     neither is a unit whose rows cannot carry the date the cadence names:
@@ -451,7 +451,7 @@ def require_row_date_coordinate(unit: RecurrenceUnitEnum, where: str) -> None:
     raise RecurrenceResolutionError(
         f"a {unit!r} recurrence names no date a generated row can carry, for "
         f"{where}.  Its occurrences are neither paydays nor days of the month, "
-        f"and recurrence_engine.compute_due_date dates a row from nothing "
+        f"and recurrence.compute_due_date dates a row from nothing "
         f"else -- so answering 'no day of the month' would date every row on "
         f"the funding payday instead and discard the authored coordinate.  "
         f"authorable_cadences withholds the unit for this reason, so a stored "
@@ -487,7 +487,7 @@ def fires_on_day_of_month(
     Returns:
         ``True`` when the cadence has a day-of-month coordinate AND the row is
         funded by the paycheck containing the occurrence, which is the one
-        reading ``recurrence_engine.compute_due_date`` dates from that day.
+        reading ``recurrence.compute_due_date`` dates from that day.
     """
     return (
         has_day_of_month_coordinate(unit)
@@ -577,7 +577,7 @@ def authorable_cadences() -> tuple[AuthorableCadence, ...]:
     * the cadence's occurrences must be DATABLE onto a generated row
       (:func:`has_row_date_coordinate`).  ``WEEK`` is the one unit that is
       neither a payday nor a day of the month, so
-      ``recurrence_engine.compute_due_date`` has nothing to date its rows
+      ``recurrence.compute_due_date`` has nothing to date its rows
       from; plan step **R5** deletes that function and the rule with it;
     * the placement must be able to CHANGE the answer
       (:func:`emits_period_starts`).  A pay-period cadence's occurrences are
@@ -703,7 +703,7 @@ def require_authorable_cadence(
         f"a recurrence of every {interval_n} {unit!r} funded {placement!r} is "
         f"not one this application can author, for {where}.  Either the unit's "
         f"occurrences cannot be DATED onto a generated row -- the WEEK unit "
-        f"names a weekday, which recurrence_engine.compute_due_date cannot "
+        f"names a weekday, which recurrence.compute_due_date cannot "
         f"express, and plan step R5 is what gives a row its own occurs_on -- "
         f"or the placement is inert for the unit and offering it would store a "
         f"choice the edit form cannot preselect.  The offer set is "

@@ -57,7 +57,9 @@ Transfer invariants (critical -- violating any one is a critical bug):
   income); shadows are never orphaned and never created without their sibling;
   shadow amounts, statuses, and periods equal the parent's; no code path mutates
   a shadow directly (all mutations go through the transfer service); the balance
-  calculator queries ONLY budget.transactions, never budget.transfers.
+  calculator queries ONLY budget.transactions for money, never budget.transfers
+  for a figure (the forward loan plan reads transfers for occurrence identity
+  alone, R-R66).
 
 Design (DRY / SOLID / pythonic):
 - Duplicated logic should be extracted, not copy-pasted. `duplicate-code`

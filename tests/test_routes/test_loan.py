@@ -56,6 +56,7 @@ from tests._test_helpers import (
     make_loan_payment_template,
     posted_loan_balance_at,
     select_option_values,
+    state_template_price,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.models.amount_ownership import AmountOwnership
@@ -77,6 +78,11 @@ def _freeze_today_inside_seed_range(monkeypatch):
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
+# The day before the seeded calendar's first payday (``seed_periods`` rebuilds
+# the owner's schedule from 2026-01-02): the date every loan built through
+# ``_create_loan_account`` asserts its balance on.  See that helper.
+_TRACKED_FROM = date(2026, 1, 1)
+
 
 def _create_loan_account(seed_user, db_session, account_type, name, principal,
                          rate, term, orig_date, payment_day, is_arm=False):
@@ -93,13 +99,26 @@ def _create_loan_account(seed_user, db_session, account_type, name, principal,
     To preserve the test contract without rewriting every caller,
     this helper builds the loan with an ``original_principal`` of
     ``principal + 5000`` (simulating "$5,000 already paid down before
-    the test starts") and then appends a USER_TRUEUP event one day
-    after origination at the lower ``principal`` value (represents
-    "the user marked the loan's true current balance as $X today").
-    The origination anchor is SYNTHESIZED from the params (no stored
-    ``LoanAnchorEvent`` -- matching production's ``create_params`` since
-    the read switch retired that write), so the loan carries exactly ONE
-    stored anchor event: the true-up.
+    the test starts") and then appends a USER_TRUEUP event at the lower
+    ``principal`` value, dated :data:`_TRACKED_FROM` -- the day before the
+    seeded calendar's first payday, i.e. "the balance when the owner began
+    tracking this loan".  The origination anchor is SYNTHESIZED from the
+    params (no stored ``LoanAnchorEvent`` -- matching production's
+    ``create_params`` since the read switch retired that write), so the
+    loan carries exactly ONE stored anchor event: the true-up.
+
+    **The assertion is dated when tracking began, not the day after
+    origination** (plan step R16-b-2, rulings R-R71 / R-R72).  A loan's
+    balance replays from its LATEST assertion over the CONTRACT's calendar,
+    so every contractual month after the assertion that no payment record
+    covers is charged.  Dated ``orig_date + 1 day``, as it was until
+    R16-b-2, a 2023 mortgage read as unpaid for three years and never
+    cleared -- which is what those records said, and not what any test here
+    means.  Dated the day before the seeded calendar opens, every payment a
+    test records (``seed_periods`` runs from 2026-01-02, so its earliest due
+    date is 2026-02-01) falls AFTER the assertion, and only the months a
+    test leaves unrecorded between it and the frozen 2026-03-20 today are
+    charged.
 
     When ``principal == 0`` the gap is the full $5,000, so the
     trueup at $0 produces a paid-off loan state -- what
@@ -132,8 +151,6 @@ def _create_loan_account(seed_user, db_session, account_type, name, principal,
     Returns:
         The created loan :class:`~app.models.account.Account`.
     """
-    from datetime import timedelta  # pylint: disable=import-outside-toplevel
-
     account = create_loan_account(
         seed_user, db_session, name=name,
         principal=principal + Decimal("5000.00"), rate=rate, term=term,
@@ -144,7 +161,7 @@ def _create_loan_account(seed_user, db_session, account_type, name, principal,
     # Set BEFORE the trueup's ledger re-sync so the postings are reconciled
     # against the loan's final terms.
     params.is_arm = is_arm
-    insert_trueup_event(params, principal, orig_date + timedelta(days=1))
+    insert_trueup_event(params, principal, _TRACKED_FROM)
     db_session.commit()
     return account
 
@@ -2662,12 +2679,12 @@ class TestPayoffChartShape:
         assert band["current_index"] == 0
         assert len(band["balance"]) == len(band["labels"]) == len(overlay) > 0
         assert overlay[0] is not None
-        # First label is the month after origination (2023-07).
-        # _create_mortgage's user-trueup is dated one day after origination at
-        # $250k, but for fixed-rate loans replay runs from original_principal
-        # ($255k); with no confirmed payments the first row is the contractual
-        # projection from the very next month.
-        assert band["labels"][0] == "Jul 2023"
+        # First label is the month after the loan's LATEST assertion:
+        # _create_mortgage's user-trueup is dated ``_TRACKED_FROM`` (2026-01-01)
+        # at $250k, and with no confirmed payments the first row is the
+        # contractual projection from the first installment after it.  (It read
+        # "Jul 2023" while the true-up was dated the day after origination.)
+        assert band["labels"][0] == "Feb 2026"
 
     def test_target_date_mode_unchanged(
         self, auth_client, seed_user, db, seed_periods,
@@ -3420,6 +3437,11 @@ class TestTransferPrompt:
         )
         db.session.add(tpl)
         db.session.commit()
+        # Priced, as every real definition is (the loan page's plan sums this
+        # definition's occurrences since plan step R16-b-2 and refuses a
+        # series nobody stated).
+        state_template_price(tpl)
+        db.session.commit()
         # The definition first, then the cadence onto it (plan step R-F6).
         rule = make_cadence_rule(
             tpl, MONTHLY,
@@ -3862,6 +3884,10 @@ class TestPaymentDrift:
         loan_payment_settings feature): an active monthly TransferTemplate with a
         recurrence rule and a stored ``default_amount``, and no 1:1 settings row --
         which every reader treats as manual mode (derive_from_loan False, no extra).
+        Its price is STATED, as both production definitions' are (the
+        template-amount backfill gave every existing template a version):
+        the loan page's plan sums this definition's occurrences since plan
+        step R16-b-2 and refuses a series nobody stated.
         """
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
@@ -3875,6 +3901,8 @@ class TestPaymentDrift:
             is_active=True,
         )
         db_session.add(tpl)
+        db_session.commit()
+        state_template_price(tpl)
         db_session.commit()
         # The definition first, then the cadence onto it (plan step R-F6),
         # then COMMITTED (plan step X-i3) -- every caller of this helper goes

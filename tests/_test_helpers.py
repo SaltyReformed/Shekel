@@ -6005,13 +6005,23 @@ def make_loan_payment_template(
         derive_from_loan: The settings row's mode.
         extra_principal: The settings row's standing monthly overpayment.
         cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
-            to author.  ``None`` -- the default -- authors the every-paycheck
-            rule :func:`make_transfer_template` authors, which is what the
-            fixtures this replaced carried.  A loan payment created through
-            ``routes/loan/payment_transfer.py`` is MONTH-unit, so a test about
-            that door states ``MONTHLY`` here.
+            to author.  ``None`` -- the default -- authors what the loan door
+            (``routes/loan/payment_transfer.py``) authors: a MONTHLY rule on
+            the loan's own ``payment_day``, its start bound to the first
+            contractual installment through ``bind_rule_to_loan``.  **It was
+            the every-paycheck rule :func:`make_transfer_template` authors
+            until plan step R16-b-2**, inherited from the fixtures this
+            replaced, and the difference was invisible while the forward plan
+            synthesized one contractual slot a month whatever the definition's
+            cadence said (finding **D48**).  The plan sums each definition on
+            its OWN cadence now, so an every-paycheck DERIVE-mode payment pays
+            a full P&I twenty-six times a year and retires a 24-month loan in
+            sixteen -- which is what that definition says, and not what 46
+            fixtures meaning "the loan's own payment" said.  A test about an
+            every-paycheck payment states ``EVERY_PERIOD`` here.
         fires_on_day: The day of the month a calendar *cadence* first fires on,
-            forwarded to :func:`make_cadence_rule`.
+            forwarded to :func:`make_cadence_rule`.  Unread for the default,
+            whose start the loan door's sync writes.
 
     Returns:
         The flushed ``TransferTemplate``, its ``recurrence_rule`` set.
@@ -6045,9 +6055,25 @@ def make_loan_payment_template(
         extra_principal=Decimal(extra_principal),
     )
     db_session.flush()
-    # The definition first, then the cadence onto it (plan step R-F6).
+    # The definition first, then the cadence onto it (plan step R-F6), then
+    # -- for the door's own shape -- the loan's start onto the cadence
+    # (``bind_rule_to_loan``, plan step C9a), the order ``track_payment``
+    # takes.
     if cadence is None:
-        make_every_period_rule(db_session, template)
+        from app.services.loan_recurrence_sync import bind_rule_to_loan
+        from app.services.loan_loaders import load_loan_params
+        from tests.oracles.recurrence_baseline import MONTHLY
+
+        # An amortizing account with NO params is not a loan the door can
+        # bind to (``bind_rule_to_loan`` is a no-op for it); the rule is
+        # monthly on the 1st and starts where the schedule's first 1st is.
+        params = load_loan_params(loan_account.id)
+        rule = make_cadence_rule(
+            template, MONTHLY,
+            fires_on_day=1 if params is None else params.payment_day,
+        )
+        bind_rule_to_loan(rule, loan_account.id)
+        db_session.flush()
     else:
         make_cadence_rule(template, cadence, fires_on_day=fires_on_day)
     return template

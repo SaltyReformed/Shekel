@@ -165,7 +165,7 @@ def cadence_day_of_month(
     R7c-c**, and it became a function because a second caller appeared that
     holds the pair without holding a resolved value: ``_reading``'s
     ``scheduling_day_of_month``, which answers what the dropped ``day_of_month``
-    column held for ``recurrence_engine.compute_due_date``.  Resolving a rule
+    column held for ``recurrence.compute_due_date``.  Resolving a rule
     there would have required a calendar the pure ``compute_due_date`` does not
     take; open-coding the join is what this function exists to prevent.  The
     property remains, delegating here, so no consumer has to change.

@@ -34,6 +34,7 @@ anchored in the past (period 2) or at the current period (period 4).
 """
 
 from collections import OrderedDict
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -71,6 +72,11 @@ from app.services.account_projection import (
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.income_service import paycheck_pricing
 from app.services.pay_calendar import DerivedPeriod, calendar_for
+from app.services.recurrence import (
+    build_transient_rule,
+    reauthor_rule,
+    recurrence_spec,
+)
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.balance_at._assertions import assertion_corrections
 from app.services.investment_projection import AccountPayrollFeed
@@ -110,6 +116,7 @@ from tests._test_helpers import (
     loan_params_for,
     make_appreciating_account,
     make_every_period_rule,
+    make_expense_template,
     make_investment_account,
     make_salary_profile,
     posted_loan_balance_at,
@@ -1596,6 +1603,13 @@ class TestBalanceAt:
         no longer reduces a future balance.  Pinned by the divergence -- the seam
         owes STRICTLY MORE than the contractual walk that over-credited -- so a
         regression back to the schedule walk would fire here.
+
+        Since plan step R16-b-2 (ruling R-R71) the seam also owes MORE than the
+        seed: every skipped month since the loan's latest assertion (its
+        origination, 2024-01-01) is CHARGED, and the first plan payment
+        capitalizes the shortfall (see
+        ``TestLiabilityOwedAtDates.test_forward_owed_credits_only_future_installments_not_overdue_ones``).
+        This asserted ``seam <= projection_seed`` until then.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1627,9 +1641,10 @@ class TestBalanceAt:
             assert overdue, "fixture must carry overdue unconfirmed installments"
 
             # The seam credits none of the overdue installments, so it owes MORE
-            # than the contractual walk, and still amortizes below its seed.
+            # than the contractual walk -- and, charging every one of the skipped
+            # months (R-R71), more than its seed.
             assert seam > contractual_walk
-            assert seam <= schedule.projection_seed
+            assert seam > schedule.projection_seed
 
     def test_investment_is_date_precise_and_meets_the_map_at_period_ends(
         self, app, db, seed_user, seed_periods_today,
@@ -3869,16 +3884,30 @@ class TestLiabilityOwedAtDates:
     def test_amortizing_loan_amortizes_across_future_dates(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A mortgage's owed balance strictly declines across future sample dates."""
+        """A mortgage's owed balance strictly declines across future sample dates.
+
+        A mortgage originated a year ago whose $200,000 balance is asserted
+        TODAY -- the mid-life-import shape.  The assertion is what makes it
+        amortize: since plan step R16-b-2 (ruling R-R71) the plan charges every
+        contractual installment after the loan's LATEST assertion, so with only
+        its origination anchor the year of unrecorded installments would stand
+        as arrears and the balance would GROW (the shape
+        :meth:`test_forward_owed_credits_only_future_installments_not_overdue_ones`
+        pins).
+        """
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
-            acct, _params = _make_mortgage(
+            acct, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
             )
+            insert_trueup_event(
+                params, Decimal("200000.00"), anchor_date=date.today(),
+            )
+            db.session.commit()
             today = date.today()
             samples = [
                 today,
@@ -4086,16 +4115,22 @@ class TestLiabilityOwedAtDates:
         The batch shape the sole caller actually passes.  The amortizing account
         must amortize while the non-amortizing one holds flat, in the same result
         dict -- the case where the splice and the flat carry have to coexist.
+        The mortgage's $200,000 is asserted today so that it amortizes (see
+        :meth:`test_amortizing_loan_amortizes_across_future_dates`).
         """
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
-            acct, _params = _make_mortgage(
+            acct, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
             )
+            insert_trueup_event(
+                params, Decimal("200000.00"), anchor_date=date.today(),
+            )
+            db.session.commit()
             card = create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",
                 anchor_balance=Decimal("-500.00"),
@@ -4125,8 +4160,20 @@ class TestLiabilityOwedAtDates:
         (finding B-9); the band now folds the forward PLAN, which synthesizes only
         installments due AFTER today, so an overdue-unpaid one no longer shrinks a
         future point.  Pinned by the divergence from the contractual walk (the band
-        owes STRICTLY MORE, by the overdue principal the walk over-credited) and by
-        the amortization the FUTURE installments still produce.
+        owes STRICTLY MORE, by the overdue principal the walk over-credited).
+
+        **And the skipped year is CHARGED** (plan step R16-b-2, ruling R-R71,
+        finding D53): the plan charges every contractual installment after the
+        loan's latest assertion -- here its origination -- whether or not a
+        payment lands in it, so the twelve unpaid months' interest stands when
+        the first plan payment arrives, that payment clears interest before
+        principal, and the shortfall capitalizes.  The forward point therefore
+        owes MORE than today's balance, not less: on the frozen 2026-03-20
+        clock a $200,000 mortgage at 6.5% (P&I $1,264.14) reads $210,473.33 at
+        the next year's end.  Until R16-b-2 this asserted the opposite ("still
+        amortizes below today's balance"), which was B-9's "an overdue slot
+        with no record holds flat" -- a rule about what an unpaid installment
+        PAYS that had been read as a rule about what an unpaid month CHARGES.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -4164,8 +4211,10 @@ class TestLiabilityOwedAtDates:
             # The band credits NONE of the overdue installments, so its forward
             # point owes strictly more than the contractual walk that credited them.
             assert owed[acct.id][1] > contractual_walk
-            # It still amortizes the FUTURE installments below today's balance.
-            assert owed[acct.id][1] < owed[acct.id][0]
+            # And it CHARGES every one of the skipped months (R-R71), so the
+            # arrears capitalize at the first plan payment and the forward point
+            # owes more than today's balance.
+            assert owed[acct.id][1] > owed[acct.id][0]
 
     def test_today_point_ignores_overdue_rows_that_would_understate_the_debt(
         self, app, db, seed_user, seed_periods_today,
@@ -5969,6 +6018,97 @@ class TestTheReadPassOwnsTheReportingDomain:
             assert balance_at.grid_balance_view(
                 seed_user["account"], ctx,
             ).columns == {}
+
+
+class TestTheReadPassResolvesARuleByWhatItSays:
+    """Plan step **R16-b-2**: the rule-resolution memo is keyed by the SPEC.
+
+    ``resolved_recurrence_of`` collapses a pass's N resolutions of one rule to
+    one.  A first cut keyed the memo by ``rule.id``, and the merge of plan
+    step R7d-c-2 -- which has GENERATION read a rule through this memo --
+    measured what that proxy costs: ``reauthor_rule`` rewrites a rule's
+    columns IN PLACE, so a rule edited and regenerated on one pass was
+    regenerated on its pre-edit cadence.  The key is now the derivation's
+    actual input, the rule's spec, so a stale entry is unrepresentable.
+
+    Both controls read the memo's IDENTITY (``is``): a hit hands back the
+    stored object and a miss builds a new one, so identity is what tells the
+    two apart without patching the resolver.
+    """
+
+    def test_a_rule_re_authored_on_one_pass_is_resolved_afresh(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The write door moves the first occurrence; the same pass sees it.
+
+        With the id key the second read returned the first read's object and
+        ``after.starts_on`` still named the opening payday -- verified by
+        restoring that key and watching this fail.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id)
+            rule = template.recurrence_rule
+            before = ctx.resolved_recurrence_of(rule)
+            assert before.starts_on == seed_periods[0].start_date, (
+                "precondition: the every-period rule opens on the first payday"
+            )
+            reauthor_rule(
+                rule,
+                replace(
+                    recurrence_spec(rule),
+                    starts_on=seed_periods[1].start_date,
+                ),
+                ctx.calendar(),
+            )
+            db.session.flush()
+
+            after = ctx.resolved_recurrence_of(rule)
+            assert after is not before
+            assert after.starts_on == seed_periods[1].start_date
+
+            # Re-authored BACK to the first spec, the first entry is served:
+            # the key is the value, not "anything but the id" -- a memo
+            # bypassed entirely would pass the two assertions above and fail
+            # this one.
+            reauthor_rule(
+                rule,
+                replace(
+                    recurrence_spec(rule),
+                    starts_on=seed_periods[0].start_date,
+                ),
+                ctx.calendar(),
+            )
+            db.session.flush()
+            assert ctx.resolved_recurrence_of(rule) is before
+
+    def test_rules_stating_one_spec_share_one_resolution(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Two stored rules and a transient one, one spec, one entry.
+
+        The resolver cannot tell two rules with the same spec apart, so
+        neither does the memo; and a transient rule (``id`` ``None``) needs
+        no special case, because its spec is the key like any other's.
+        """
+        with app.app_context():
+            first = make_expense_template(db.session, seed_user, name="Rent")
+            second = make_expense_template(
+                db.session, seed_user, name="Groceries", category_key="Groceries",
+            )
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id)
+            first_spec = recurrence_spec(first.recurrence_rule)
+            assert first_spec == recurrence_spec(second.recurrence_rule), (
+                "precondition: the two definitions author one spec"
+            )
+            transient = build_transient_rule(first_spec, ctx.calendar())
+            assert transient.id is None, "precondition: unsaved"
+
+            resolved = ctx.resolved_recurrence_of(first.recurrence_rule)
+            assert ctx.resolved_recurrence_of(second.recurrence_rule) is resolved
+            assert ctx.resolved_recurrence_of(transient) is resolved
 
 
 class TestTheReadPassProjectsOverOneCalendar:

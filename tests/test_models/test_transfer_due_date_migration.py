@@ -6,7 +6,7 @@ is the SECOND backfill step's arithmetic, which plan step **R7c-c** had to
 freeze into the migration.
 
 **Why this file exists at all.**  The recompute called the live
-``recurrence_engine.compute_due_date`` through ``SimpleNamespace`` stand-ins.
+``recurrence.compute_due_date`` through ``SimpleNamespace`` stand-ins.
 R7c-c dropped ``budget.recurrence_rules.day_of_month`` and pointed that function
 at a derivation over ``unit_id`` / ``placement_id`` / ``starts_on`` /
 ``nominal_day`` -- attributes the namespaces do not carry and columns that do

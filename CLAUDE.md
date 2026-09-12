@@ -249,7 +249,10 @@ A task is NOT complete until ALL of these are true:
 2. Shadow transactions are never orphaned and never created without their sibling.
 3. Shadow amounts, statuses, and periods always equal the parent transfer's.
 4. No code path directly mutates a shadow. All mutations go through the transfer service.
-5. Balance calculator queries ONLY budget.transactions. NEVER also query budget.transfers.
+5. Balance calculator queries ONLY budget.transactions for money. NEVER also query budget.transfers
+   for a figure. Since `recurrence:R16-b-2` (**R-R66**) the forward loan plan reads budget.transfers
+   for OCCURRENCE IDENTITY alone -- which occurrences a definition's rows already answer, in any
+   state -- and no amount off any of them.
 
 **Invariant 3 is rule 14's known instance**: one value kept in two homes by a maintenance contract,
 and invariant 5 is why the mirror exists at all. Which clauses are already structural and which

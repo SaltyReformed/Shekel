@@ -372,7 +372,7 @@ class TestNothingOfferedIsUnauthorable:
         yes to everything.  The ``WEEK`` unit is the reading the offer set
         withholds from plan step **R8-a**: a weekly occurrence is neither a
         payday nor a day of the month, so
-        ``recurrence_engine.compute_due_date`` has nothing to date its rows
+        ``recurrence.compute_due_date`` has nothing to date its rows
         from and every one would carry the funding payday instead.  Plan step
         **R5** gives a row its own ``occurs_on`` and the unit becomes
         authorable with that deletion.
@@ -1038,7 +1038,7 @@ class TestTheWriteDoorsRefuseAnUnstorableCadence:
 
     ``(1, WEEK, ...)`` is the case since plan step **R8-a**: a weekly
     occurrence is neither a payday nor a day of the month, so
-    ``recurrence_engine.compute_due_date`` has nothing to date its generated
+    ``recurrence.compute_due_date`` has nothing to date its generated
     rows from and :func:`~app.services.recurrence._frequency
     .has_row_date_coordinate` keeps the unit out of the offer set.  The picker
     never renders the WEEK unit, so no click produces it.
