@@ -241,7 +241,7 @@ def loan_payment_window(
             seam entry this reaches states.  A pairing of one owner's
             definition with another's read pass is refused by the pass itself
             when the loan is memoized (``ForeignAccountError`` from
-            ``BalanceContext._memoize_once``, plan step X-i4); the composed
+            ``balance_at._memoize._memoize_once``, plan step X-i4); the composed
             door reaches the rule's own refusal first, before any account is
             loaded.
         resolved: What *template*'s rule MEANS against the owner's schedule

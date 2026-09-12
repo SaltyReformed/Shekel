@@ -178,7 +178,7 @@ def resolved_definition(
             :func:`~app.services.recurrence.resolve`, which will not resolve a
             rule against another owner's calendar, and that refusal is reached
             FIRST here: the read pass refuses a foreign loan too
-            (``ForeignAccountError`` from ``BalanceContext._memoize_once``,
+            (``ForeignAccountError`` from ``balance_at._memoize._memoize_once``,
             plan step X-i4), but only after loading the account, so resolving
             first is the cheaper refusal and the one whose exception names the
             rule.

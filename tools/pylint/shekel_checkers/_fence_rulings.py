@@ -833,9 +833,6 @@ _FENCED_MODULE_RULINGS = {
         # the confirmed view).  Its docstring names both.  Same classification
         # and the same reason as ``scenario_id``: an id, not a balance.
         "scenario_id_or_none",
-        # The fail-loud no-baseline guard.  It raises or returns None; it
-        # answers nothing about an account.
-        "require_scenario",
         # The read pass's ONE remaining memo handle, un-FENCED at D3 and ruled
         # a NON-producer: ``loan_walk`` hands the leaf's public FACTS
         # (``walk_loan_ledger``'s own ruling), and the fold that would turn
