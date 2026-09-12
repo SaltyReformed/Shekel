@@ -17,7 +17,7 @@ migration head are MEASUREMENTS, named by their command rather than copied.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-f3c-3 -- the app says what it cannot explain.** An account's OUTSTANDING DIFFERENCE: its latest asserted balance less its opening equity plus the postings through that day, which is ONE figure and not the per-assertion plug ruling **R-FN** refuses to book (the plugs telescope, so their net is a function of the LAST assertion alone). `_outstanding._books_balance_at` IS X-f3c-5's own balance function, evaluated early, so THE FLIP becomes a re-pointing rather than a rewrite. Beside it, whether an imported statement's LINES account for the span the figure accumulated over -- **R-GY**'s offer gate, reported and never enforced here. Checking reads `$2,370.02` on the dev clone at 2026-09-01, confirmed against the posted ledger's own `account_trueup` net on that account's linked ledger, a producer sharing no code with the seam. **The card says the evidence is NOT there**: 146 days, all imported and all compared, **40 disagreeing**. Two adversarial reviews found a required field breaking six shipped tests, a page about to publish two different money figures under one vocabulary, an unbounded day list off a user-supplied date, and a page assertion that measured nothing | Section 5, X-f3c-3 |
+| **just landed** | **X-cf-3 -- the service suites take a definition's row from the ENGINE** (`641801a3`), the third leaf of `X-cf` (**R-BAL17**): a fixture that hand-builds `Transaction(template_id=...)` builds a shape no producer writes, so the suite has ONE builder, `generate_row_of`, that CALLS `recurrence_engine.generate_for_template` into one paycheck. Nine app mutations each went red against the converted fixtures. Its review found the same class of defect in the CONTROLS: two series-versus-scalar controls that passed under the mutation they name (`set_amount` re-syncs `default_amount` onto the newest version, so a "distinct scalar" is only real as a later-dated version), and a converted pair that had lost the undated index's atomicity teeth because a DATED pair is storable whatever the flag says. Read the remaining sites from **BAL-480**'s census command, not from a number | Section 5, X-cf |
 | **in flight** | **X-f3c-2b-2c** (the account-10 repair), RE-RULED 2026-09-05 by **R-BAL3**: act 4b is DELETED rather than answered, both accounts open 2026-03-25 at their banks own closes, and the step waits on `pay_calendar:C18`. **X-f3c-2b-3** was MINTED by X-f3c-3 and sequenced behind THE FLIP: nothing bounds an assertion at its account's `opened_on` (**N-400**), and after X-f3c-5 an assertion stops resetting a PLAIN account, so what the bound should refuse is decided against what an assertion then IS. It legalises nothing -- zero rows sit below their books on either database. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 / X-f3c-2b-3 |
 | **what changed the plan** | **The acceptance act's evidence is weaker than it reads, and X-f3c-3 measured why.** Ruling **R-GY** gates X-f3c-4 on "a span an imported statement reconciles", and the app cannot say which days a statement READ: `statement_imports.period_start` / `period_end` are written as `min`/`max` of the FILE'S LINE DAYS, and no adapter records the period a file declares (**N-434**). So the count is CONSERVATIVE -- it refuses spans the bank has in fact accounted for, never the reverse, which is the safe direction for a money-moving gate -- and every surface says "the LINES of every statement" rather than "every statement". Standing since 2026-08-28: **R-HJ**, a data repair goes through the app's own DOORS and never through a migration writing money rows | Section 4, balance:R-GY / R-HJ |
 | **blocked on you** | **One OPERATOR act gates the money-moving leaves: import the account's own statement history.** Production holds 0 statement imports, 0 bank lines and 0 matches, while the SECU exports the shipped adapter reads sit on disk covering 2026-01-02 to 2026-07-19 -- and X-f3c's correctness is measurable only against them (**N-368**). Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md, N-368 |
@@ -603,33 +603,15 @@ in SILENCE where a refused DELETE is loud.
   which makes **N-440**'s disagreement state unrepresentable rather than guarded. A migration; moves
   no money. **Gated on `credit_card:CC4d`**, which gives the one derived row that carries no link
   today its own. Closes **N-440**.
-* [x] **X-au-f** `cb4239a2` -- the DECOMPOSED parent of the PARENT-transfer cutover, ticked with
-  its last leaf. Split into three leaves 2026-09-09 (**R-BAL10**) and RE-CUT into two on
-  2026-09-10 (**R-BAL14**), which ABSORBED `X-au-f-3` into `X-au-f-2` rather than withdrawing it:
-  the parent's producer and the migration that empties its column are two halves of ONE act, and
-  any boundary between them ships a commit where every reader asks the parent while the parent
-  still stores its stale snapshot. The two records below carry the measurement.
-  * [x] **X-au-f-1** `ce8bf485` -- every parent-transfer render site takes the amount model's answer rather than the column; byte-identical BY CONSTRUCTION. Closed **N-452**; opened **BAL-476**. Record: `archive/x_au_f_1_as_built_2026-09-09.md`.
-  * [x] **X-au-f-2** `cb4239a2` -- THE CUTOVER, in one act: the parent's producer answers the
-    whole cash on the installment's own due date, amount rule 4 moves onto the TRANSFER
-    dispatch (**R-BAL10**), every writer states an `AmountOwnership` (**R-BAL11**), the settle
-    freeze event is deleted (**R-BAL12**), and `b7e4c1f38a20` empties `transfers.amount` for
-    the 169 non-override generated rows. Closed **N-263**, **N-451**, **BAL-476**, **N-449**
-    and **N-352**; opened **BAL-477**. **NOT N-450**, against this commit's own message: what emptied was the INSTANCE column and that row names the TEMPLATE's, so it goes to `X-bp`. Record: `archive/x_au_f_2_as_built_2026-09-10.md`.
+* [x] **X-au-f** `cb4239a2` -- the DECOMPOSED parent of the PARENT-transfer cutover, ticked with its last leaf; split into three 2026-09-09 (**R-BAL10**) and RE-CUT into two 2026-09-10 (**R-BAL14**), `X-au-f-3` ABSORBED into `X-au-f-2`. Family record: `archive/x_au_f_family_2026-09-11.md`.
+  * [x] **X-au-f-1** `ce8bf485` -- every parent-transfer render site takes the amount model's answer; byte-identical BY CONSTRUCTION. Closed **N-452**; opened **BAL-476**. Record: `archive/x_au_f_1_as_built_2026-09-09.md`.
+  * [x] **X-au-f-2** `cb4239a2` -- THE CUTOVER in one act (**R-BAL10**, **R-BAL11**, **R-BAL12**; `b7e4c1f38a20` empties `transfers.amount`). Closed **N-263**, **N-451**, **BAL-476**, **N-449**, **N-352**; opened **BAL-477**; **NOT N-450**, which is `X-bp`'s. Record: `archive/x_au_f_2_as_built_2026-09-10.md`.
 
 * [x] **X-bl-1** `e0e257a7` -- a cutover's control can FAIL: seven instance-distinct perturbations of the sources a row's rule names, eight mutations firing it. Closed **N-445**. Record: `archive/x_bl_1_as_built_2026-09-09.md`.
-* [x] **X-bl-2a** `ee4fc2d7` -- the payment feed has ONE date producer and ONE
-  settled-history derivation (**R-BAL7**), and the amount model's eager load is the CALLER's
-  statement (**R-BAL8**); `loan_loaders` became a package at 1,054 lines. Byte-identical on both
-  live loans and 4,000 collision trials; the DISPLAYED loan balance **25 statements -> 21**.
-  **A LATER step must obey:** the load is stated by whoever traverses it, graded by a
-  statement-COUNTING pair -- a presence check passed a mutant that deleted the options. Carries **N-432**.
-* [x] **X-bl-2b** `0e93ec9f` -- a loan payment's three dates are ONE value both records COMPOSE,
-  and the replay takes it (**R-BAL9**, superseding R-BAL7's deferral). `ConfirmedPayment` deleted;
-  the oracle's reference and five other suite copies went **101 modules -> 46**; byte-identical,
-  13,217 passed. **A LATER step must obey:** a feed reaching the replay carries its schedule SLOT,
-  and `slotted_dates` is the one application. Closed **N-432**; opened **BAL-472**, **BAL-473**,
-  **BAL-474**. Record: `archive/x_bl_2b_as_built_2026-09-09.md`.
+* [x] **X-bl-2a** `ee4fc2d7` -- ONE date producer and ONE settled-history derivation for the payment feed (**R-BAL7**), the eager load the CALLER's statement (**R-BAL8**); byte-identical, **25 statements -> 21**. Record: `archive/x_bl_2a_as_built_2026-09-11.md`.
+  **A LATER step must obey:** the load is stated by whoever traverses it, graded by a statement-COUNTING pair -- a presence check passed a mutant that deleted the options.
+* [x] **X-bl-2b** `0e93ec9f` -- a loan payment's three dates are ONE value both records COMPOSE and the replay takes (**R-BAL9**); `ConfirmedPayment` deleted, **101 modules -> 46**, byte-identical. Closed **N-432**; opened **BAL-472**, **BAL-473**, **BAL-474**. Record: `archive/x_bl_2b_as_built_2026-09-09.md`.
+  **A LATER step must obey:** a feed reaching the replay carries its schedule SLOT, and `slotted_dates` is the one application.
 * [ ] **X-cb** `refactor(loans): the slot has one door and the predicate takes the value` -- closes
   **BAL-472**, **BAL-473**, **BAL-474**, all three found by `X-bl-2b`'s two neutral reviews and
   reported rather than taken there (rule 6). `schedule_dates` stays exported with **zero production
@@ -1050,9 +1032,29 @@ section 4, under their unchanged ids.*
 * [x] **X-bu** `142f64cb` -- closed **BAL-462**: `row_valuation.owned_amount` deleted and folded into `_amount_source._own_answer`, growing one reader under **R-BAL4**. Its obligation on `X-bx` was DISCHARGED there (`f7b9e094`) by deleting the copy rather than routing it.
 * [x] **X-bv** `66ff070b` -- closed the STRAND at its producer: a leftover carries `compute_due_date`'s answer, so `declare_derived` cannot leave a row amount rule 3 must price on a due date it has not got. **Its written remedy aimed at the wrong tier**; the CHECK is `X-bv-2`'s.
 * [ ] **X-bv-2** `fix(models): the CHECK the producer fix makes unreachable` -- owns **BAL-463**.
-  `template_id IS NULL OR due_date IS NOT NULL`, replacing `b4d9e1c7a052`'s three-term predicate,
-  which admitted the undated leftover and refused only the TRANSITION, turning the declare into a
-  500. The two-term form needs NO guard: nothing can reach the state.
+  `template_id IS NULL OR due_date IS NOT NULL` on BOTH row tables, replacing `b4d9e1c7a052`'s
+  three-term predicate, which admitted the undated leftover and refused only the TRANSITION. The
+  two-term form needs NO guard: nothing can reach the state. **RE-SPECIFIED 2026-09-11 (R-BAL17)**
+  and sequenced behind `X-cf`: it binds only once the suite's rows of a definition are the engine's.
+  Deletes `_stated_amount`'s `on_date is None` arm with its test and the two tests grading frozen
+  migrations' `due_date IS NULL` arms; tightens `DerivedRowFields.due_date` to `date`. The transaction
+  half is PARKED at `0341a568`; its `down_revision` is re-pointed at dev's head (`flask db heads`).
+* [ ] **X-cf** -- the DECOMPOSED parent of the suite's ONE builder for a row of a definition
+  (**R-BAL17**), split 2026-09-11 into five leaves; carries **BAL-480**, whose row holds the census.
+* [x] **X-cf-1** `8fac9e6f` -- built `generate_row_of(template, period)`, which CALLS the engine into one paycheck, and moved the shared fixtures onto it.
+* [x] **X-cf-2** `b3e51806` -- the model, script and util suites; its review found a 60-day paycheck holding THREE monthly firings two months a year, pinned by `definition_firing_twice_in_a_paycheck`.
+* [x] **X-cf-3** `641801a3` -- the service suites (23 census sites, 8 hand-dated); two series-versus-scalar controls made real, the override-sibling pair kept UNDATED so the one-statement flip stays graded.
+* [ ] **X-cf-3b** `test(fixtures): the plan-figure builders take the engine's row` -- carries **BAL-480**.
+  `test_carry_forward_service._create_envelope_txn`, `test_transaction_service._make_projected_txn`
+  and `test_amount_source._template_row`: callers state a figure the definition does not, or stage
+  two rows of one every-paycheck definition in one paycheck. A figure is stated on the definition or
+  laid on as the owner's re-price; a pair takes the pinned calendar; `X-bv-2`'s deleted no-due-date case rides with it.
+* [ ] **X-cf-4** `test(fixtures): the route suites take a definition's row from the engine` -- closes
+  **BAL-480**. 28 census sites, five `txn.template_id = template.id` assignments and five hand-dated
+  sites; a route test posts what the popover RENDERS (`budgets[txn.id]`), never a stored column.
+* [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
+  The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
+  `is_override` term; the undated arm keeps the term because its index does. Script and test only.
 * [x] **X-bz** `8e5c3ea5` -- retired the one-time `occurs_on` backfill, its `entrypoint.sh` block and tests; `occurs_on IS NULL` meant two things and the filter fenced that conflation.
   **The sentinel is LEFT, and that is OPERATIONAL rather than historical**: a rollback restores the old image and the sentinel alone then stops the script.
 * [x] **X-ca** `e1cc26b6` -- moved `__table_args__` out to `_transaction_table_args.py`, 997 lines to 667, off the 1000 ceiling for `X-bv-2`'s constraint. **A COUNTING ORACLE IS NOT AN EQUIVALENCE ORACLE**: purity rests on an AST comparison run out of git, not on a census.
@@ -1066,12 +1068,8 @@ section 4, under their unchanged ids.*
   genuine rollback is the automatic pre-deploy dump. What the broken arm actually breaks is
   `CLAUDE.md` item 7, *migrations tested in both upgrade and downgrade directions*, which passes
   over a round trip that loses data.
-* [x] **X-bx** `f7b9e094` -- closed **BAL-465**: deleted the fall-through by which
-  `owned_contribution` read `estimated_amount` by hand, renamed it `settled_contribution`, and moved
-  `own_figure` into `_amount_source` as the private `_own_figure`. **Ruling R-BAL5 superseded this
-  entry's own remedy** -- the fall-through is DELETED, not routed to the resolver, because these
-  readers ask what a row's money DID. **A LATER STEP MUST OBEY**: `_amount_source.py` is at 971 of
-  pylint's 1000-line cap, and three modules sit exactly ON it with two more at 999.
+* [x] **X-bx** `f7b9e094` -- closed **BAL-465**: the fall-through by which `owned_contribution` read `estimated_amount` by hand is DELETED, not routed (**R-BAL5**), and it is `settled_contribution` now. Record: `archive/x_bx_as_built_2026-09-11.md`.
+  **A LATER STEP MUST OBEY**: `_amount_source.py` sits close under pylint's 1000-line cap (`wc -l app/services/cash_ledger/_amount_source.py`).
 * [ ] **X-bs** `fix(test): a failure must fail, and the last two ports go` -- owns **N-460** and
   **N-459**, two defects in the same files that HIDE EACH OTHER. Seven `pytest.skip` calls in
   `test_proxy_trust_and_headers.py` fire on something that RAN AND FAILED rather than on something

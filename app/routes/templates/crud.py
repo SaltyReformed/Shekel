@@ -16,7 +16,7 @@ import logging
 from datetime import date
 
 from flask import Response, abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
@@ -149,7 +149,6 @@ def _apply_fields_and_propagate_rename(template, data):
 
 
 @templates_bp.route("/templates/new", methods=["GET"])
-@login_required
 @require_owner
 def new_template():
     """Display the template creation form.
@@ -189,7 +188,6 @@ def new_template():
 
 
 @templates_bp.route("/templates", methods=["POST"])
-@login_required
 @require_owner
 def create_template():
     """Create a new transaction template with optional recurrence rule."""
@@ -278,7 +276,6 @@ def create_template():
 
 
 @templates_bp.route("/templates/<int:template_id>/edit", methods=["GET"])
-@login_required
 @require_owner
 def edit_template(template_id):
     """Display the template edit form."""
@@ -343,7 +340,6 @@ _TXN_TEMPLATE_KIND = RecurrenceConflictKind(
 
 
 @templates_bp.route("/templates/<int:template_id>", methods=["POST"])
-@login_required
 @require_owner
 def update_template(template_id):
     """Update a template and regenerate future transactions.
@@ -545,7 +541,6 @@ def update_template(template_id):
     "/templates/<int:template_id>/amount-versions/<int:version_id>/delete",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def delete_amount_version(template_id, version_id):
     """Withdraw one entry from a template's amount history.
@@ -603,7 +598,6 @@ def _rows_holding_purchase_postings(*scope):
 
 
 @templates_bp.route("/templates/<int:template_id>/archive", methods=["POST"])
-@login_required
 @require_owner
 def archive_template(template_id):
     """Archive a template (stops future generation, keeps history).
@@ -660,7 +654,6 @@ def archive_template(template_id):
 
 
 @templates_bp.route("/templates/<int:template_id>/unarchive", methods=["POST"])
-@login_required
 @require_owner
 def unarchive_template(template_id):
     """Unarchive a template and restore projected transactions.
@@ -724,7 +717,6 @@ def unarchive_template(template_id):
 
 
 @templates_bp.route("/templates/<int:template_id>/hard-delete", methods=["POST"])
-@login_required
 @require_owner
 def hard_delete_template(template_id):
     """Permanently delete a transaction template if it has no settled history.
@@ -872,7 +864,6 @@ def hard_delete_template(template_id):
 
 
 @templates_bp.route("/templates/preview-recurrence", methods=["GET"])
-@login_required
 @require_owner
 def preview_recurrence():
     """HTMX partial: show the next 5 occurrences for a recurrence pattern.

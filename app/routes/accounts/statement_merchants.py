@@ -67,7 +67,7 @@ import logging
 from dataclasses import replace
 
 from flask import abort, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
@@ -488,7 +488,6 @@ def _page_url(account_id: int, asked: DirectoryAsk) -> str:
 
 
 @accounts_bp.route("/accounts/<int:account_id>/statements/merchants")
-@login_required
 @require_owner
 def statement_merchants(account_id):
     """Render every merchant this account has seen, and what was said.
@@ -522,7 +521,6 @@ def statement_merchants(account_id):
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/merchants", methods=["POST"],
 )
-@login_required
 @require_owner
 def answer_for_merchant(account_id):
     """Record where ONE merchant's spending goes.

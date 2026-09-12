@@ -28,8 +28,6 @@ import re
 
 import pytest
 
-from app import create_app
-
 
 # Routes accessible to an authenticated user with no extra setup.
 # /dashboard is the canonical post-login landing page; /grid/no_setup
@@ -333,15 +331,39 @@ def test_security_headers_on_unauthenticated_route(client):
     assert resp.headers.get("X-Frame-Options") == "DENY"
 
 
-def test_security_headers_on_404(client):
+def test_security_headers_on_404(auth_client):
     """404 responses carry the same security headers.  Error pages
     are rendered through the Flask error-handler stack, which still
     runs after_request hooks; this test catches a misconfiguration
-    that would skip the hook for non-2xx responses."""
-    resp = client.get("/this-path-does-not-exist-anywhere")
+    that would skip the hook for non-2xx responses.
+
+    The 404 is asked for WITH a session since plan step
+    ``bank_import:X-gi-4`` (ruling **R-BI4**): an anonymous request for
+    a path that matches no route is bounced to the login page by the
+    login gate, so an anonymous client can no longer reach the error
+    page this case is about.  The bounce has the case below.
+    """
+    resp = auth_client.get("/this-path-does-not-exist-anywhere")
     assert resp.status_code == 404
     assert "Strict-Transport-Security" in resp.headers
     assert "Content-Security-Policy" in resp.headers
+
+
+def test_security_headers_on_an_anonymous_bounce(client):
+    """A request the login gate ends early carries the headers too.
+
+    The gate answers from a ``before_request`` hook, which returns a
+    response before any view runs; a hook skipped for that short-circuit
+    would be the misconfiguration the 404 case catches, by another door.
+    Its own test rather than a second arm of that one: Flask-Login caches
+    the loaded user on ``g`` and the ``db`` fixture holds one app context
+    open across a test's requests, so a test that logged in cannot also
+    make an anonymous request.
+    """
+    bounced = client.get("/this-path-does-not-exist-anywhere")
+    assert bounced.status_code == 302
+    assert "Strict-Transport-Security" in bounced.headers
+    assert "Content-Security-Policy" in bounced.headers
 
 
 def _csp_directive(csp_header: str, directive: str) -> str | None:
