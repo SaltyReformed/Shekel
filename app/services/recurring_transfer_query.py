@@ -27,59 +27,113 @@ periods and its escrow history, which is the AMOUNT MODEL's work -- rule 4 --
 and not a read of a definition.  *That rule's producer lived in
 ``loan_payment_service`` until plan step X-au-g-2a moved it into
 ``cash_ledger``; this sentence said "the loan seam's work" and now names the
-tier that actually owns it.*  :func:`standing_installment_cash` is the definition's half of that
-one rule and takes the loan's contribution -- the contractual P&I and the
-installment's escrow -- as arguments.
+tier that actually owns it.*  **The definition's half of that rule lived here
+too, as ``standing_installment_cash``, until plan step R16-b-2 deleted it**
+(ruling **R-R67**): it was a copy of the amount model's own arms, measured a
+cent apart from them on a loan's last installment (finding **REC-517**), and
+an estimate is priced through those arms now
+(:func:`app.services.cash_ledger.definition_cash`).
 """
 
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.orm import joinedload
 
 from app.extensions import db
 from app.models.account import Account
+from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.services.template_amount_service import amount_as_of, owns_its_amount
-from app.utils.money import round_money
 
 
-def active_recurring_transfer_template(
+def destination_account(
+    template: TransferTemplate | TransactionTemplate,
+) -> Account | None:
+    """Return the account *template* pays into, or ``None`` when it pays into none.
+
+    **The COLUMN, then a lookup -- never ``template.to_account``**, and an
+    adversarial review of plan step R7d-b measured why.  That relationship is
+    ``lazy="joined"``, which loads it with the template and then does NOT
+    refresh it when the FK column is written: measured on SQLAlchemy 2.0.49,
+    a ``setattr(template, "to_account_id", other)`` leaves ``to_account``
+    pointing at the OLD account through the following ``flush()`` and only
+    re-loads at ``commit()``.  ``routes/transfers/templates.py`` writes
+    exactly that -- ``to_account_id`` is in ``_TEMPLATE_UPDATE_FIELDS`` and
+    is assigned by ``setattr`` -- and then REGENERATES before committing, so
+    a resolver reading the relationship would bound the new destination's
+    rows by the OLD loan's payoff.  A pending template is the second state:
+    its ``to_account_id`` is set and its ``to_account`` is still ``None``.
+    ``db.session.get`` costs nothing when the row is already in the identity
+    map, which is the case the joined load creates anyway.
+
+    ONE spelling, shared by
+    :func:`app.services.loan_recurrence_sync.loan_payment_window` and
+    :func:`app.services.balance_at.is_standing_loan_payment` (plan step R7d-f;
+    the first cut carried the read twice in one module and an adversarial
+    review named it).  **It lived in ``loan_recurrence_sync`` as a private
+    until plan step R16-b-2** moved the identity it serves into the balance
+    seam (ruling **R-R70**): that module imports the seam, so the seam could
+    not reach the read there, and a definition's destination is a fact about
+    the DEFINITION -- this module's subject -- rather than about a loan's
+    window.
+
+    Args:
+        template: A ``TransferTemplate``, or a ``TransactionTemplate``, which
+            carries no ``to_account_id`` at all -- ``getattr`` on the FK
+            column is what keeps both readers kind-agnostic.
+
+    Returns:
+        The destination :class:`~app.models.account.Account`, or ``None`` when
+        the template pays into no account or names one not yet flushed.  The
+        second is unreachable for a persisted definition -- ``to_account_id``
+        is NOT NULL under an ``ON DELETE RESTRICT`` foreign key -- and a
+        pending one generates nothing either way.
+    """
+    account_id = getattr(template, "to_account_id", None)
+    if account_id is None:
+        return None
+    return db.session.get(Account, account_id)
+
+
+def active_recurring_transfer_templates(
     account_id: int, user_id: int,
-) -> TransferTemplate | None:
-    """Return the active recurring transfer template paying INTO *account_id*.
+) -> list[TransferTemplate]:
+    """Return EVERY active recurring transfer template paying INTO *account_id*.
 
-    An active (``is_active``) :class:`TransferTemplate` owned by *user_id* whose
-    destination is *account_id* and which carries a recurrence rule (a
-    ``budget.recurrence_rules`` row names it).  The OLDEST is returned, and the
-    ordering is load-bearing rather than tidy -- see the comment on it.  More
-    than one recurring transfer into a single account is a user
-    misconfiguration this query does not model, and ``routes/loan/
-    payment_transfer.py`` handles the case rather than refusing it, so the set
-    is not guaranteed to hold one row.  ``None`` when the account has no
-    recurring funding transfer.
-    The 1:1 ``settings`` row is eager-loaded, since the loan callers read its
-    ``extra_principal`` right after (the prompt prefill and
-    :func:`loan_standing_extra`).
+    The active (``is_active``) :class:`TransferTemplate` rows owned by
+    *user_id* whose destination is *account_id* and which carry a recurrence
+    rule (a ``budget.recurrence_rules`` row names each), oldest first.  **The
+    set, not one of it** (plan step **R16-b-2**, ruling **R-R35**): every
+    recurring transfer into a loan is a payment against it, and the balance
+    seam's ESTIMATED tier sums each one's occurrences on its own cadence --
+    so the question this answers is "which definitions pay in here", where
+    :func:`active_recurring_transfer_template` below answers the narrower
+    "which ONE is the standing payment" for the three readers that still
+    need a single row.  That function is this one's first element, so the
+    filter is stated once.
+
+    The 1:1 ``settings`` row and the price SERIES are eager-loaded on every
+    row -- see the comments on the options for why.
 
     Args:
         account_id: The destination account (a loan or investment account).
-        user_id: The owning user (scopes the query -- ownership is established by
-            the caller's chokepoint).
+        user_id: The owning user (scopes the query -- ownership is established
+            by the caller's chokepoint).
 
     Returns:
-        The active recurring :class:`TransferTemplate`, or ``None``.
+        The active recurring :class:`TransferTemplate` rows, ascending by id;
+        ``[]`` when the account has no recurring funding transfer.
     """
     return (
         db.session.query(TransferTemplate)
         .options(
             joinedload(TransferTemplate.settings),
             # The price SERIES, because a caller that resolves it per
-            # installment (:func:`standing_installment_cash`, ~300 times for a
-            # 30-year loan) would otherwise take a lazy load mid-fold.  One
-            # collection per template, and the settings row beside it is loaded
-            # the same way for the same reason.
+            # occurrence (the balance seam's ESTIMATED tier through
+            # ``cash_ledger.definition_cash``, ~300 times for a 30-year loan)
+            # would otherwise take a lazy load mid-fold.  One collection per
+            # template, and the settings row beside it is loaded the same way
+            # for the same reason.
             joinedload(TransferTemplate.amount_versions),
         )
         .filter(
@@ -101,17 +155,51 @@ def active_recurring_transfer_template(
             # review measured otherwise.
             TransferTemplate.recurrence_rule.has(),
         )
-        # **ORDERED, because ``.first()`` over an unordered query is whichever
-        # row the planner hands back** -- and since plan step R7d-a this answer
-        # decides how the loan's whole forward plan is PRICED, not just whether
-        # a dashboard shows a prompt.  Two renders in one session could
-        # otherwise disagree about a loan's payoff.  The oldest definition wins,
-        # which is stable under later edits; WHICH of several recurring
-        # transfers into one loan is its PAYMENT is a rule nothing states, and
-        # that is finding **D47** rather than something this ORDER BY decides.
+        # **ORDERED, because the first row of an unordered query is whichever
+        # row the planner hands back** -- and from plan step R7d-a to R16-b-2
+        # that answer decided how the loan's whole forward plan was PRICED.
+        # It prices nothing now (the tier sums every row here, finding
+        # **D47**), but it still decides the loan-payment identity the form
+        # locks on and the opening-bound sync writes for, and two renders in
+        # one session must not disagree about it.  The oldest definition wins,
+        # which is stable under later edits.
         .order_by(TransferTemplate.id)
-        .first()
+        .all()
     )
+
+
+def active_recurring_transfer_template(
+    account_id: int, user_id: int,
+) -> TransferTemplate | None:
+    """Return the active recurring transfer template paying INTO *account_id*.
+
+    The OLDEST of :func:`active_recurring_transfer_templates`, and the
+    ordering is load-bearing rather than tidy -- see the comment on it there.
+    More than one recurring transfer into a single account is a state
+    ``routes/loan/payment_transfer.py`` handles rather than refusing, so the
+    set is not guaranteed to hold one row.  ``None`` when the account has no
+    recurring funding transfer.
+
+    **Since plan step R16-b-2 this row PRICES nothing** -- the ESTIMATED tier
+    sums every definition (:func:`active_recurring_transfer_templates`) --
+    and what it still decides is the loan-payment IDENTITY the form locks on
+    and the opening-bound sync writes for
+    (:func:`app.services.balance_at.is_standing_loan_payment`, plan ledger
+    row **D50**), plus the three loan-side readers that need ONE row: the
+    dashboard's extra-principal prefill and the two routes that MUTATE a
+    settings row (**D49**).  Ruling **R-R35** wants that search deleted
+    rather than answered; those readers are what keep it.
+
+    Args:
+        account_id: The destination account (a loan or investment account).
+        user_id: The owning user (scopes the query -- ownership is established
+            by the caller's chokepoint).
+
+    Returns:
+        The oldest active recurring :class:`TransferTemplate`, or ``None``.
+    """
+    templates = active_recurring_transfer_templates(account_id, user_id)
+    return templates[0] if templates else None
 
 
 def loan_standing_extra(account_id: int, user_id: int) -> Decimal:
@@ -217,8 +305,11 @@ class StandingPayment:
     which is a loop: the payoff bounds the recurrence, the recurrence writes the
     rows, and the rows move the payoff.
 
-    The three shapes a loan can be in are the three arms of
-    :func:`standing_installment_cash`, and this value is what tells them apart.
+    **It PRICES nothing since plan step R16-b-2** (ruling **R-R67**): the
+    forward plan sums every definition into the loan and prices each
+    occurrence through the amount model's own arm.  What it still carries is
+    the extra the resolver's committed schedule threads and the identity the
+    recurrence form locks on (:func:`app.services.balance_at.is_standing_loan_payment`).
 
     **It carries the TEMPLATE and not a price, and that is the correction an
     adversarial review of this step forced.**  The first cut carried
@@ -283,99 +374,3 @@ def standing_payment(
         return None
     _derive, extra = loan_payment_config(template)
     return StandingPayment(template=template, extra_principal=extra)
-
-
-def standing_installment_cash(
-    standing: "StandingPayment | None",
-    contractual_pi: Decimal,
-    monthly_escrow: Decimal,
-    due: date,
-) -> Decimal:
-    """Return what one installment costs, from the loan's own definition.
-
-    **The ONE rule for "what will this loan be paid on this date", asked about
-    an installment no row covers** (plan step **R7d-a**).  A materialised row is
-    priced by
-    amount rule 4 (:func:`app.services.cash_ledger.resolve_transaction_amount`);
-    this is
-    the same question for a month whose row has not been written, and the arms
-    are deliberately the same cases so the two cannot come to disagree:
-
-    * **No standing payment** -- the CONTRACT's P&I plus that installment's
-      escrow.  Nothing else is known about how the loan will be paid.
-    * **A definition that does not STATE its price**
-      (:func:`~app.services.template_amount_service.owns_its_amount` is False --
-      a DERIVE-mode loan payment, whose stored figure is a snapshot of the
-      contract rather than a statement) -- the contract's P&I, that
-      installment's escrow, and the standing extra.  That is what the mode
-      MEANS, so reading the contract is the row's own rule and not a guess
-      about it.
-    * **A STATED price** -- what the definition's series says on the
-      installment's OWN due date
-      (:func:`~app.services.template_amount_service.amount_as_of`), plus the
-      standing extra.  The owner has said what leaves checking that month, and
-      a projection substituting the servicer's figure would model a loan the
-      owner is not paying.
-
-    **The DERIVE arm's residue is now ONE difference from what
-    amount rule 4 prices the
-    same installment at, and it is named rather than absorbed.**  It was TWO
-    until plan step ``balance:X-au-g-2b``: that producer pinned its P&I at the
-    READ PASS's ``as_of`` while this read the contract's P&I for the
-    installment's OWN date, which differ for an ARM (finding **N-40**).  This
-    tier's per-installment figure was the correct one, which is why it kept it
-    rather than adopting the pin; ruling **R-IJ** made that the rule for every
-    tier, so the two producers now key on the same date and the difference is
-    gone.  What remains: the LAST contractual installment is a residual
-    rather than the level payment
-    (``amortization_engine`` forces the final month to absorb the remainder), so
-    the two differ there for a reason that is not a rate effect at all; the fold
-    caps that installment against the balance either way.
-
-    **Resolved AS OF the installment, never off ``default_amount``, and an
-    adversarial review of this step is why.**  That scalar is the NEWEST price
-    the series states rather than the price on a date, so reading it here made
-    an amount stated as effective in 2028 reach every installment from 2026
-    forward: measured, a `$700.00` Van payment effective 2028-01-01 moved the
-    derived payoff six installments EARLY once the future rows were absent --
-    the under-generating direction R7d exists to close.  Ruling **R-FI**'s rule,
-    applied to the tier that had been exempt from it.
-
-    **An EMPTY series answers like a loan with no definition at all**, which is
-    the one place this is softer than
-    :func:`~app.services.cash_ledger._amount_source._stated_amount`'s refusal.
-    A template owning its amount whose creator never went through
-    ``set_amount`` states no price, and the honest estimate for a month nobody
-    priced is the same one a loan with no recurring payment gets.  Refusing here
-    would take a balance page down for a state the contract can answer.
-
-    Args:
-        standing: The loan's :func:`standing_payment`, or ``None`` when it has
-            no recurring payment.
-        contractual_pi: The contractual P&I governing this installment, from
-            the loan's own amortization schedule.  Escrow-free by construction.
-        monthly_escrow: The escrow in force for this installment
-            (:func:`~app.services.escrow_calculator.escrow_monthly_as_of` on its
-            due date), ``0.00`` when the loan escrows nothing.
-        due: The installment's own due date -- what the stated price resolves
-            AS OF.  Contract time, the same date the escrow above is resolved
-            on (ruling D5).
-
-    Returns:
-        The installment's cash, escrow-INCLUSIVE where the definition states
-        one -- the pairing the loan replay takes, where the escrow stands as its
-        accrual period's CHARGE (``loan_ledger.AccrualCharge``) and is backed out
-        of principal by the ONE allocation.
-    """
-    if standing is None:
-        return round_money(contractual_pi + monthly_escrow)
-    stated = (
-        amount_as_of(standing.template, due)
-        if owns_its_amount(standing.template)
-        else None
-    )
-    if stated is None:
-        return round_money(
-            contractual_pi + monthly_escrow + standing.extra_principal,
-        )
-    return round_money(stated + standing.extra_principal)

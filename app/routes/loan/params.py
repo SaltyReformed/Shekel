@@ -12,7 +12,7 @@ import logging
 from decimal import Decimal
 
 from flask import abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.extensions import db
 from app.models.account import Account
@@ -47,7 +47,6 @@ logger = logging.getLogger(__name__)
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/setup", methods=["POST"])
-@login_required
 @require_owner
 def create_params(account_id):
     """Create initial loan parameters."""
@@ -138,7 +137,6 @@ def create_params(account_id):
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/params", methods=["POST"])
-@login_required
 @require_owner
 def update_params(account_id):
     """Update loan parameters."""
@@ -229,7 +227,6 @@ def _upsert_origination_rate(params, rate):
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/trueup", methods=["POST"])
-@login_required
 @require_owner
 def true_up_balance(account_id):
     """Append a dated balance true-up :class:`LoanAnchorEvent` (E-18 D-C / Commit 16).
@@ -343,7 +340,6 @@ def true_up_balance(account_id):
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/tracking-start", methods=["POST"])
-@login_required
 @require_owner
 def record_tracking_start(account_id):
     """Record a mid-life-import tracking-start opening (a ``tracking_start`` event).
@@ -461,7 +457,6 @@ def record_tracking_start(account_id):
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/collateral", methods=["POST"])
-@login_required
 @require_owner
 def update_collateral(account_id):
     """Set or clear the asset that secures this loan (home-equity link).

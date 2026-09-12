@@ -19,7 +19,7 @@ import logging
 from decimal import Decimal
 
 from flask import abort, flash, redirect, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.utils.auth_helpers import (
@@ -66,7 +66,6 @@ logger = logging.getLogger(__name__)
 
 
 @salary_bp.route("/salary/<int:profile_id>/raises", methods=["POST"])
-@login_required
 @require_owner
 def add_raise(profile_id):
     """Add a raise to a salary profile."""
@@ -147,7 +146,6 @@ def add_raise(profile_id):
 
 
 @salary_bp.route("/salary/raises/<int:raise_id>/delete", methods=["POST"])
-@login_required
 @require_owner
 def delete_raise(raise_id):
     """Remove a raise from a salary profile.
@@ -203,7 +201,6 @@ def delete_raise(raise_id):
 
 
 @salary_bp.route("/salary/raises/<int:raise_id>/edit", methods=["POST"])
-@login_required
 @require_owner
 def update_raise(raise_id):
     """Update an existing raise on a salary profile.
@@ -313,7 +310,6 @@ def update_raise(raise_id):
 
 
 @salary_bp.route("/salary/<int:profile_id>/deductions", methods=["POST"])
-@login_required
 @require_owner
 def add_deduction(profile_id):
     """Add a deduction to a salary profile."""
@@ -405,7 +401,6 @@ def add_deduction(profile_id):
 
 
 @salary_bp.route("/salary/deductions/<int:ded_id>/delete", methods=["POST"])
-@login_required
 @require_owner
 def delete_deduction(ded_id):
     """Remove a deduction from a salary profile.
@@ -461,7 +456,6 @@ def delete_deduction(ded_id):
 
 
 @salary_bp.route("/salary/deductions/<int:ded_id>/edit", methods=["POST"])
-@login_required
 @require_owner
 def update_deduction(ded_id):
     """Update an existing deduction on a salary profile.

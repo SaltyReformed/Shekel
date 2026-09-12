@@ -12,7 +12,7 @@ from datetime import date
 from decimal import Decimal
 
 from flask import Response, flash, redirect, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.enums import RecurrenceUnitEnum
 from app.exceptions import (
@@ -130,7 +130,6 @@ def _created_transfer_flash(source_name, dest_name, base_amount, extra_principal
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/create-transfer", methods=["POST"])
-@login_required
 @require_owner
 def create_payment_transfer(account_id):
     """Create a recurring monthly transfer to a debt account.
@@ -297,7 +296,6 @@ def create_payment_transfer(account_id):
 @loan_bp.route(
     "/accounts/<int:account_id>/loan/payment-settings", methods=["POST"],
 )
-@login_required
 @require_owner
 def update_payment_settings(account_id):
     """Update a loan's recurring-payment standing extra principal.
@@ -358,7 +356,6 @@ def update_payment_settings(account_id):
 @loan_bp.route(
     "/accounts/<int:account_id>/loan/track-payment", methods=["POST"],
 )
-@login_required
 @require_owner
 def track_payment(account_id):
     """Switch a loan's recurring payment to auto-track the contractual amount (D3 / C7).

@@ -10,7 +10,7 @@ shared :func:`_resolve_carry_forward_context`.
 import logging
 
 from flask import render_template
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.extensions import db
 from app.services import carry_forward_service
@@ -96,7 +96,6 @@ def _resolve_carry_forward_context(period_id):
 @transactions_bp.route(
     "/pay-periods/<int:period_id>/carry-forward-preview", methods=["GET"],
 )
-@login_required
 @require_owner
 def carry_forward_preview(period_id: int):
     """HTMX partial: return the carry-forward preview modal.
@@ -142,7 +141,6 @@ def carry_forward_preview(period_id: int):
 
 
 @transactions_bp.route("/pay-periods/<int:period_id>/carry-forward", methods=["POST"])
-@login_required
 @require_owner
 def carry_forward(period_id):
     """Carry forward all unpaid items from a period to the current period."""

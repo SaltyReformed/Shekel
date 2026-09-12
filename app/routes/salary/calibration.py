@@ -12,7 +12,7 @@ import logging
 from decimal import Decimal
 
 from flask import abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 
 
 @salary_bp.route("/salary/<int:profile_id>/calibrate")
-@login_required
 @require_owner
 def calibrate_form(profile_id):
     """Display the pay stub calibration form."""
@@ -54,7 +53,6 @@ def calibrate_form(profile_id):
 
 
 @salary_bp.route("/salary/<int:profile_id>/calibrate", methods=["POST"])
-@login_required
 @require_owner
 def calibrate_preview(profile_id):
     """Validate pay stub data and show derived rates for confirmation."""
@@ -107,7 +105,6 @@ def calibrate_preview(profile_id):
 
 
 @salary_bp.route("/salary/<int:profile_id>/calibrate/confirm", methods=["POST"])
-@login_required
 @require_owner
 def calibrate_confirm(profile_id):
     """Save the calibration override and regenerate transactions.
@@ -259,7 +256,6 @@ def calibrate_confirm(profile_id):
 
 
 @salary_bp.route("/salary/<int:profile_id>/calibrate/delete", methods=["POST"])
-@login_required
 @require_owner
 def calibrate_delete(profile_id):
     """Remove calibration override and revert to bracket-based taxes."""

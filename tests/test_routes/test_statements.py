@@ -16,12 +16,14 @@ one of them being right proves nothing about the other.
 
 from datetime import date, timedelta
 from decimal import Decimal
+import logging
 import re
 from io import BytesIO
 
 import pytest
 
 from app.models.account import Account
+from app.models.merchant import Merchant
 from app.models.ref import AccountType
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.statement_match import StatementMatch as statement_match_model
@@ -30,6 +32,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from app.services import auth_service, entry_service, statement_match
 from app.services.statement_match import NEW_ENVELOPE, Verb
+from app.utils.log_events import EVT_STATEMENT_IMPORT_DELETED
 from tests._test_helpers import create_settled_cash_transaction
 from tests.test_services.test_statement_import import _csv_builder as build
 from tests.test_services.test_statement_match._builders import (
@@ -1237,10 +1240,12 @@ class TestTheDeletePost:
         A skip goes with its line rather than refusing the delete, so what the
         owner loses is answers they already gave -- and re-importing the same
         span asks about those lines again.  **The service counting it is not
-        enough**: ``ImportRemoval.anchors_released`` is computed, tested at the
-        service tier and rendered by NO surface, while its own docstring says
-        it is "reported rather than silent" -- measured on this tree, and
-        exactly the state this case exists to keep the skip count out of.
+        enough**: ``ImportRemoval.anchors_released`` was computed, tested at
+        the service tier and rendered by NO surface from 2026-08-23 until plan
+        step ``bank_import:X-gi-4`` (finding **N-470**), while its own
+        docstring said it was "reported rather than silent" -- exactly the
+        state this case exists to keep the skip count out of, and the four
+        cases below it now keep the other two figures out of as well.
         """
         _upload(auth_client, seed_user["account"].id, _payload())
         recorded = db.session.query(StatementImport).one()
@@ -1289,6 +1294,167 @@ class TestTheDeletePost:
         toasts = _flash_toasts(response.get_data(as_text=True))
         assert toasts, "the delete should still have flashed its receipt"
         assert not any("you had skipped" in message for _, message in toasts)
+
+    def test_the_flash_says_how_many_PLACEMENTS_it_released(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step ``bank_import:X-gi-4``, finding **N-470**.
+
+        A later import placed its stated balance on a day whose evidence
+        included the lines this delete removes, so that placement is released
+        with them (``release_anchors_from``) and the account holds no checked
+        balance from it.  ``ImportRemoval.anchors_released`` said of itself
+        that it was "reported rather than silent" while no surface read it;
+        this case is the surface.  The count is of OTHER imports: the deleted
+        import's own placement goes with its row and is not among them, which
+        is why one import alone (the case below) says nothing.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        first = db.session.query(StatementImport).one()
+        _upload(
+            auth_client, seed_user["account"].id,
+            build.build(build.chained("1575.00", [
+                (date(2026, 3, 5), "-10.00", "POINT OF SALE DEBIT L340 X"),
+            ])),
+            filename="later.csv",
+        )
+        later = db.session.query(StatementImport).filter(
+            StatementImport.id != first.id,
+        ).one()
+        assert later.balance_effective_on == date(2026, 3, 5)
+
+        response = self._delete(
+            auth_client, seed_user["account"].id, first.id,
+        )
+
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert any(
+            "1 other import(s) had placed a stated balance on these lines"
+            in message
+            for _, message in toasts
+        )
+        assert [category for category, _ in toasts] == ["info"]
+        db.session.expire_all()
+        assert later.balance_effective_on is None
+
+    def test_the_flash_says_NOTHING_about_placements_when_none_went(
+        self, auth_client, db, seed_user,
+    ):
+        """The clause is conditional: one import's delete releases no other.
+
+        Paired with the case above for the reason the skip pair is: rendered
+        unconditionally the receipt would read "0 other import(s) had placed"
+        on every delete.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        recorded = db.session.query(StatementImport).one()
+
+        response = self._delete(
+            auth_client, seed_user["account"].id, recorded.id,
+        )
+
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert toasts, "the delete should still have flashed its receipt"
+        assert not any(
+            "had placed a stated balance" in message for _, message in toasts
+        )
+
+    def test_the_flash_says_how_many_MERCHANTS_it_forgot(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step ``bank_import:X-gi-4``, finding **N-470**.
+
+        A merchant no surviving line names and no standing rule answers for
+        is swept with the import (plan step ``bank_import:X-gd-1``), and the
+        receipt says how many.  **One of the two is ANSWERED here**, so the
+        sentence's figure is the sweep's own and not a count of the merchants
+        the file named: a receipt reading the latter would say 2.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload([
+            (date(2026, 3, 2), "-25.00",
+             "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)"),
+            (date(2026, 3, 4), "-40.81",
+             "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)"),
+        ]))
+        recorded = db.session.query(StatementImport).one()
+        assert db.session.query(Merchant).count() == 2
+        a_rule(seed_user, "Food Lion")
+        db.session.commit()
+
+        response = self._delete(
+            auth_client, seed_user["account"].id, recorded.id,
+        )
+
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert any(
+            "1 merchant(s) were forgotten: nothing else named them and you "
+            "had stated no rule for them" in message
+            for _, message in toasts
+        )
+        assert [category for category, _ in toasts] == ["info"]
+        assert [row.name for row in db.session.query(Merchant).all()] == [
+            "Food Lion",
+        ]
+
+    def test_the_flash_says_NOTHING_about_merchants_when_none_went(
+        self, auth_client, db, seed_user,
+    ):
+        """The clause is conditional: a file naming no merchant forgets none.
+
+        ``_payload``'s default lines carry no parenthesised merchant, which is
+        how SECU names one, so the import records no merchant row and the
+        delete has none to sweep -- asserted rather than assumed, because a
+        fixture that quietly did name one would make this case pass for the
+        wrong reason.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        recorded = db.session.query(StatementImport).one()
+        assert db.session.query(Merchant).count() == 0
+
+        response = self._delete(
+            auth_client, seed_user["account"].id, recorded.id,
+        )
+
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert toasts, "the delete should still have flashed its receipt"
+        assert not any(
+            "were forgotten" in message for _, message in toasts
+        )
+
+    def test_the_EVENT_carries_the_two_figures_the_receipt_gained(
+        self, auth_client, db, seed_user, caplog,
+    ):
+        """The forensic record names both, and with the act's own values.
+
+        **N-470** measured ``anchors_released`` and ``merchants_forgotten``
+        absent from the door's ``log_event`` kwargs as well as from the flash,
+        and the event is the record of the one act in this package that
+        DESTROYS.  The world is the two-import one above -- one placement
+        released, no merchant named -- so both values are graded, and a zero
+        is graded as a zero rather than as an absence.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        first = db.session.query(StatementImport).one()
+        _upload(
+            auth_client, seed_user["account"].id,
+            build.build(build.chained("1575.00", [
+                (date(2026, 3, 5), "-10.00", "POINT OF SALE DEBIT L340 X"),
+            ])),
+            filename="later.csv",
+        )
+
+        with caplog.at_level(
+            logging.INFO, logger="app.routes.accounts.statements",
+        ):
+            self._delete(auth_client, seed_user["account"].id, first.id)
+
+        deleted = [
+            record for record in caplog.records
+            if getattr(record, "event", None) == EVT_STATEMENT_IMPORT_DELETED
+        ]
+        assert len(deleted) == 1
+        assert deleted[0].anchors_released == 1
+        assert deleted[0].merchants_forgotten == 0
 
     def test_the_page_offers_the_control_with_what_it_would_remove(
         self, auth_client, db, seed_user,

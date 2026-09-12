@@ -16,10 +16,11 @@ Two flavours of test:
   the live test DB.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import event
 
 from app import ref_cache
@@ -42,12 +43,15 @@ from app.services.investment_projection import (
 )
 from app.services.income_service import paycheck_pricing
 from app.services.pay_calendar import calendar_for
+from app.services.salary_raises import RaiseTerms
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
+    build_payroll_feeds,
     load_active_deductions_for_account,
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
     load_payroll_feeds,
+    load_payroll_wiring,
     load_shadow_income_contributions_for_account,
 )
 from tests._test_helpers import (
@@ -650,11 +654,16 @@ class TestLoadPayrollFeeds:
 
         **The profile carries a RECURRING RAISE whose month the walk crosses
         every year**, because an adversarial review of this step found the
-        fixture blind to the one relationship the engine reads only on a
-        raise's own month: ``get_raise_event`` reads ``raise_obj.raise_type``
+        fixture blind to the one relationship the engine read only on a
+        raise's own month: ``get_raise_event`` read ``raise_obj.raise_type``
         (``lazy="joined"`` on ``SalaryRaise``), and a raise-free profile
-        never reaches that line.  Asserted non-vacuously below: at least one
-        walked period prices a paycheck labelled with the raise.
+        never reached that line.  *Since plan step salary:S3-f-1 the engine
+        prices ``RaiseTerms`` values and the type's name is resolved from the
+        FK through the ref cache at ``for_profile`` -- inside the loader,
+        before the count opens -- so no relationship is read on the walk at
+        all; the fixture is kept so this case still walks a raise month and
+        would see a read that returned there.*  Asserted non-vacuously below:
+        at least one walked period prices a paycheck labelled with the raise.
         """
         with app.app_context():
             ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
@@ -696,8 +705,8 @@ class TestLoadPayrollFeeds:
                 event.remove(db.engine, "before_cursor_execute", _count)
             assert statements == []
             # Non-vacuity for the raise path: the pricer the feed read priced
-            # at least one walked July with the raise's own label, so
-            # ``get_raise_event``'s ``raise_type`` read was on the path.
+            # at least one walked July with the raise's own label, so the
+            # raise-month branch of ``get_raise_event`` was on the path.
             assert any(
                 pricing.for_profile(profile).at(period).period.raise_event
                 for period in projected
@@ -1374,3 +1383,169 @@ class TestShadowContributionBoundary:
             assert loaded.records == []
             # ... but something is LINKED.
             assert account.id in loaded.linked_account_ids
+
+
+# ── salary:S3-f-1: the feed is WIRING loaded once, priced per raise set ──
+
+
+class TestTheFeedIsBuiltOverTheWiring:
+    """``load_payroll_feeds`` is two halves, and the pure half re-prices.
+
+    Plan step **salary:S3-f-1** (ruling **R-SAL20**).  The loader issued its
+    queries and built its resolvers in one body, so pricing the same accounts
+    under another raise set -- the ``/retirement`` rail's per-raise probe,
+    plan step salary:S3-f -- meant either re-issuing every query per probe or
+    reaching into the pass's memo for paychecks priced under the rows.
+    :func:`load_payroll_wiring` is the queries; :func:`build_payroll_feeds`
+    is the resolvers over whatever pricers it is handed.
+    """
+
+    @staticmethod
+    def _wired(app, db, seed_user, seed_second_user):
+        """Acct A funded by the Active profile, which carries a forever raise.
+
+        A recurring 5% July raise from 2026 with no end year, so a 2028 payday
+        prices ``$100,000 x 1.05^3 / 26 = $4,452.40`` under the rows and
+        ``$100,000 x 1.05 / 26 = $4,038.46`` under terms believed through
+        2026.
+        """
+        ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
+        profile = (
+            db.session.query(SalaryProfile)
+            .filter_by(user_id=ids["user_id"], name="Active")
+            .one()
+        )
+        params = TestLoadPayrollFeeds._params_for(ids["acct_a_id"], profile.id)
+        row = SalaryRaise(
+            salary_profile_id=profile.id,
+            raise_type_id=ref_cache.raise_type_id(RaiseTypeEnum.MERIT),
+            effective_month=7, effective_year=2026,
+            percentage=Decimal("0.0500"), is_recurring=True,
+            terminal_year=None,
+        )
+        db.session.add(row)
+        db.session.commit()
+        db.session.refresh(profile)
+        terms = (replace(RaiseTerms.of(row), terminal_year=2026),)
+        return ids, profile, {ids["acct_a_id"]: params}, terms
+
+    @staticmethod
+    def _payday_in(calendar, year):
+        """A projected payday in *year* on or after September."""
+        axis = calendar.axis(calendar.opening_bound(), date(year, 12, 31))
+        return next(p for p in axis if p.start_date.year == year
+                    and p.start_date.month >= 9)
+
+    def test_the_composed_door_is_the_two_halves(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """What the callers still call answers what the halves answer."""
+        with app.app_context():
+            ids, profile, params_by_account, _ = self._wired(
+                app, db, seed_user, seed_second_user,
+            )
+            calendar = calendar_for(ids["user_id"])
+            pricing = paycheck_pricing(calendar)
+            account_ids = [ids["acct_a_id"], ids["acct_b_id"]]
+
+            composed = load_payroll_feeds(
+                pricing, account_ids, params_by_account,
+            )
+            wiring = load_payroll_wiring(
+                ids["user_id"], account_ids, params_by_account,
+            )
+            halves = build_payroll_feeds(wiring, {
+                pid: pricing.for_profile(p) for pid, p in wiring.profiles.items()
+            })
+
+            assert wiring.account_ids == tuple(account_ids)
+            assert set(wiring.profiles) == {profile.id}
+            assert set(composed) == set(halves) == set(account_ids)
+            first = calendar.saved()[0]
+            for account_id in account_ids:
+                assert (
+                    composed[account_id].employee_at(first)
+                    == halves[account_id].employee_at(first)
+                )
+                assert (
+                    composed[account_id].gross_at(first)
+                    == halves[account_id].gross_at(first)
+                )
+            # And a figure of its own, so the equality above is not two
+            # sides of one producer: Acct A's $500 flat deduction, and its
+            # employer half off a $100,000 salary in 2026, before the raise.
+            assert halves[ids["acct_a_id"]].employee_at(first) == Decimal("500")
+            assert halves[ids["acct_a_id"]].gross_at(first) == Decimal("3846.15")
+
+    def test_one_wiring_is_priced_under_two_raise_sets_with_no_query(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """The purpose of the split: rebuild the resolvers, re-issue nothing.
+
+        The wiring is loaded once; two builds over it -- the pass's pricer
+        under the rows and a pricer under terms believed through 2026 --
+        issue zero statements between them, and the two feeds answer the
+        September 2028 employer gross as ``$4,452.40`` and ``$4,038.46``.
+        """
+        with app.app_context():
+            ids, profile, params_by_account, terms = self._wired(
+                app, db, seed_user, seed_second_user,
+            )
+            calendar = calendar_for(ids["user_id"])
+            pricing = paycheck_pricing(calendar)
+            wiring = load_payroll_wiring(
+                ids["user_id"], [ids["acct_a_id"]], params_by_account,
+            )
+            # The pricers' own construction loads a tax series, so both are
+            # built BEFORE the count opens: the claim is about the builds.
+            stored_pricers = {profile.id: pricing.for_profile(profile)}
+            believed_pricers = {
+                profile.id: pricing.for_profile(profile, terms),
+            }
+            statements = []
+
+            def _count(*args):  # pylint: disable=unused-argument
+                statements.append(args[2])
+
+            event.listen(db.engine, "before_cursor_execute", _count)
+            try:
+                stored = build_payroll_feeds(wiring, stored_pricers)
+                believed = build_payroll_feeds(wiring, believed_pricers)
+            finally:
+                event.remove(db.engine, "before_cursor_execute", _count)
+            assert statements == [], (
+                "build_payroll_feeds issued a query; the queries belong to "
+                "load_payroll_wiring alone"
+            )
+
+            payday = self._payday_in(calendar, 2028)
+            acct = ids["acct_a_id"]
+            assert stored[acct].gross_at(payday) == Decimal("4452.40")
+            assert believed[acct].gross_at(payday) == Decimal("4038.46"), (
+                "a feed built over pricers keyed on the terms answered the "
+                "rows' gross"
+            )
+
+    def test_a_pricer_map_missing_a_wired_profile_is_REFUSED(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """A public door's precondition, refused once by name.
+
+        Without it the two resolvers answer the same mistake two ways: the
+        employer half reads ``pricers.get`` and reports the account as funding
+        no employer money -- the answer reserved for an absent, archived or
+        foreign profile, which the wiring has already filtered out -- while
+        the employee half ``KeyError``s on the first period asked.
+        """
+        with app.app_context():
+            ids, profile, params_by_account, _ = self._wired(
+                app, db, seed_user, seed_second_user,
+            )
+            wiring = load_payroll_wiring(
+                ids["user_id"], [ids["acct_a_id"]], params_by_account,
+            )
+            assert profile.id in wiring.profiles
+
+            with pytest.raises(ValueError, match=f"{profile.id}"):
+                build_payroll_feeds(wiring, {})
+

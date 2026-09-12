@@ -26,84 +26,72 @@ from app.models.ref import AccountType, TransactionType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services import companion_service
 from app.services.auth_service import hash_password
 from app.services.pay_calendar import PayCalendarError, calendar_for
-from tests._test_helpers import open_owner_calendar
+from tests._test_helpers import (
+    generate_row_of,
+    make_expense_template,
+    open_owner_calendar,
+    resolved_amount,
+)
 from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _make_template(seed_user, *, companion_visible, track=False, name="Item"):
-    """Create a transaction template for the seed_user owner.
+def _make_template(
+    seed_user, *, companion_visible, track=False, name="Item", amount="500.00",
+):
+    """Create a priced, every-paycheck expense definition for the owner.
+
+    A thin adapter over :func:`make_expense_template` keeping this file's
+    vocabulary (``track`` is ``is_envelope``); what it returns is a definition
+    the engine can write rows from (plan step balance:X-cf).
 
     Args:
         seed_user: The seed_user fixture dict.
         companion_visible: Whether the template is companion-visible.
         track: Whether to enable is_envelope.
         name: Template name.
+        amount: The definition's stated price, which is what its rows are
+            worth.
 
     Returns:
         The created TransactionTemplate object (flushed, ID available).
     """
-    expense_type = (
-        db.session.query(TransactionType)
-        .filter_by(name="Expense").one()
+    return make_expense_template(
+        db.session, seed_user, amount=amount, name=name,
+        is_envelope=track, companion_visible=companion_visible,
     )
-    category = list(seed_user["categories"].values())[0]
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        name=name,
-        default_amount=Decimal("500.00"),
-        transaction_type_id=expense_type.id,
-        account_id=seed_user["account"].id,
-        category_id=category.id,
-        companion_visible=companion_visible,
-        is_envelope=track,
-    )
-    db.session.add(template)
-    db.session.flush()
-    return template
 
 
-def _make_txn(seed_user, period, template, *, name=None, amount=None):
-    """Create a transaction from a template in a specific period.
+def _make_txn(period, template, *, name=None):
+    """Create the definition's row in a specific period.
+
+    The ENGINE's row (:func:`generate_row_of`, plan step balance:X-cf):
+    derived, so its figure is the definition's price and its
+    ``estimated_amount`` column is empty -- a test that wants the figure asks
+    :func:`resolved_amount`.  A *name* is then laid on bare, the way the
+    edit door renames a row (``_apply_field_updates`` writes the column and
+    flags nothing), for the cases that tell two rows of one definition apart
+    by name.  It took a ``seed_user`` until X-cf-3; the engine resolves the
+    owner from the definition, so the argument was unread and went.
 
     Args:
-        seed_user: The seed_user fixture dict.
-        period: The PayPeriod to assign.
+        period: The PayPeriod to generate into.
         template: The TransactionTemplate.
         name: Override the name (defaults to template.name).
-        amount: Override the estimated_amount (defaults to template.default_amount).
 
     Returns:
         The created Transaction object (flushed, ID available).
     """
-    expense_type = (
-        db.session.query(TransactionType)
-        .filter_by(name="Expense").one()
-    )
-    category = list(seed_user["categories"].values())[0]
-
-    txn = Transaction(
-        name=name or template.name,
-        amount_ownership=AmountOwnership.own(amount or template.default_amount),
-        transaction_type_id=expense_type.id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        account_id=seed_user["account"].id,
-        category_id=category.id,
-        scenario_id=seed_user["scenario"].id,
-        template_id=template.id,
-    )
-    db.session.add(txn)
-    db.session.flush()
+    txn = generate_row_of(template, period)
+    if name is not None and name != template.name:
+        txn.name = name
+        db.session.flush()
     return txn
 
 
@@ -125,9 +113,9 @@ class TestVisibilityFiltering:
         t_vis2 = _make_template(seed_user, companion_visible=True, name="Gas")
         t_hidden = _make_template(seed_user, companion_visible=False, name="Mortgage")
 
-        _make_txn(seed_user, seed_periods_today[0], t_vis1, name="Groceries")
-        _make_txn(seed_user, seed_periods_today[0], t_vis2, name="Gas")
-        _make_txn(seed_user, seed_periods_today[0], t_hidden, name="Mortgage")
+        _make_txn(seed_periods_today[0], t_vis1, name="Groceries")
+        _make_txn(seed_periods_today[0], t_vis2, name="Gas")
+        _make_txn(seed_periods_today[0], t_hidden, name="Mortgage")
         db.session.commit()
 
         companion = seed_companion["user"]
@@ -150,8 +138,8 @@ class TestVisibilityFiltering:
         """
         t1 = _make_template(seed_user, companion_visible=False, name="Rent")
         t2 = _make_template(seed_user, companion_visible=False, name="Electric")
-        _make_txn(seed_user, seed_periods_today[0], t1, name="Rent")
-        _make_txn(seed_user, seed_periods_today[0], t2, name="Electric")
+        _make_txn(seed_periods_today[0], t1, name="Rent")
+        _make_txn(seed_periods_today[0], t2, name="Electric")
         db.session.commit()
 
         companion = seed_companion["user"]
@@ -176,8 +164,8 @@ class TestVisibilityFiltering:
         t_simple = _make_template(
             seed_user, companion_visible=True, track=False, name="Gas",
         )
-        _make_txn(seed_user, seed_periods_today[0], t_tracked, name="Groceries")
-        _make_txn(seed_user, seed_periods_today[0], t_simple, name="Gas")
+        _make_txn(seed_periods_today[0], t_tracked, name="Groceries")
+        _make_txn(seed_periods_today[0], t_simple, name="Gas")
         db.session.commit()
 
         companion = seed_companion["user"]
@@ -213,7 +201,7 @@ class TestVisibilityFiltering:
         appearing in the companion view.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = _make_txn(seed_periods_today[0], template, name="Groceries")
         txn.is_deleted = True
         db.session.commit()
 
@@ -262,8 +250,8 @@ class TestVisibilityFiltering:
         """Visible transactions are returned in alphabetical order by name."""
         t_z = _make_template(seed_user, companion_visible=True, name="Zucchini Fund")
         t_a = _make_template(seed_user, companion_visible=True, name="Apples Budget")
-        _make_txn(seed_user, seed_periods_today[0], t_z, name="Zucchini Fund")
-        _make_txn(seed_user, seed_periods_today[0], t_a, name="Apples Budget")
+        _make_txn(seed_periods_today[0], t_z, name="Zucchini Fund")
+        _make_txn(seed_periods_today[0], t_a, name="Apples Budget")
         db.session.commit()
 
         companion = seed_companion["user"]
@@ -291,38 +279,23 @@ class TestVisibilityFiltering:
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        rule_generated = _make_txn(
-            seed_user, seed_periods_today[0], template, name="Groceries",
-        )
+        target = seed_periods_today[1]
+        rule_generated = _make_txn(target, template, name="Groceries")
 
-        # Build the carried row with is_override=True from the start --
-        # the relaxed unique index excludes is_override=TRUE rows from
-        # its predicate, so two non-override rows for the same
-        # (template, period, scenario) would still collide.  This is
-        # exactly the constraint that lets carry-forward succeed.
-        expense_type = (
-            db.session.query(TransactionType).filter_by(name="Expense").one()
-        )
-        category = list(seed_user["categories"].values())[0]
-        carried = Transaction(
-            name="Groceries",
-            amount_ownership=AmountOwnership.own(template.default_amount),
-            transaction_type_id=expense_type.id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
-            account_id=seed_user["account"].id,
-            category_id=category.id,
-            scenario_id=seed_user["scenario"].id,
-            template_id=template.id,
-            is_override=True,
-        )
-        db.session.add(carried)
+        # The carried row is the PREVIOUS paycheck's own row brought forward
+        # by the move door's two acts: carry-forward moves an unpaid row into
+        # the target period and flags it ``is_override``.  Two engine rows,
+        # one moved -- the shape itself, not a hand-built copy of it.  (Each
+        # answers its own occurrence, which is what lets the pair be stored;
+        # the flag is what keeps the maintain pass off the carried row.)
+        carried = _make_txn(seed_periods_today[0], template)
+        carried.pay_period_id = target.id
+        carried.is_override = True
         db.session.commit()
 
         companion = seed_companion["user"]
         txns = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods_today[0].id,
+            companion.id, period_id=target.id,
         ).transactions
 
         # Both rows are returned -- the override sibling stays visible.
@@ -350,8 +323,8 @@ class TestPeriodIsolation:
         verifies only period 0's transaction appears.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries P0")
-        _make_txn(seed_user, seed_periods_today[1], template, name="Groceries P1")
+        _make_txn(seed_periods_today[0], template, name="Groceries P0")
+        _make_txn(seed_periods_today[1], template, name="Groceries P1")
         db.session.commit()
 
         companion = seed_companion["user"]
@@ -413,7 +386,7 @@ class TestPeriodIsolation:
         Either way, a valid ``CompanionPageRead`` is returned.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        _make_txn(seed_periods_today[0], template, name="Groceries")
         db.session.commit()
 
         companion = seed_companion["user"]
@@ -486,7 +459,7 @@ class TestUserValidation:
     ):
         """Properly configured companion user passes all validation."""
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        _make_txn(seed_periods_today[0], template, name="Groceries")
         db.session.commit()
 
         companion = seed_companion["user"]
@@ -516,10 +489,7 @@ class TestEntryEagerLoading:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(
-            seed_user, seed_periods_today[0], template,
-            name="Groceries", amount=Decimal("500.00"),
-        )
+        txn = _make_txn(seed_periods_today[0], template)
         entry = TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
@@ -561,11 +531,9 @@ class TestEntryDataComputation:
         """
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
+            amount="500.00",
         )
-        txn = _make_txn(
-            seed_user, seed_periods_today[0], template,
-            name="Groceries", amount=Decimal("500.00"),
-        )
+        txn = _make_txn(seed_periods_today[0], template)
         db.session.add(TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("100.00"), description="Kroger",
@@ -589,7 +557,9 @@ class TestEntryDataComputation:
         from app.services.entry_service import compute_entry_sums, compute_remaining
         sum_debit, sum_credit = compute_entry_sums(txns[0].entries)
         total = sum_debit + sum_credit
-        remaining = compute_remaining(txns[0].estimated_amount, txns[0].entries)
+        # The row is DERIVED: its budget is what the amount model says, which
+        # is what the companion route hands ``build_entry_sums_dict``.
+        remaining = compute_remaining(resolved_amount(txns[0]), txns[0].entries)
 
         assert total == Decimal("150.00")
         assert remaining == Decimal("350.00")
@@ -604,11 +574,9 @@ class TestEntryDataComputation:
         """
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Gas",
+            amount="100.00",
         )
-        txn = _make_txn(
-            seed_user, seed_periods_today[0], template,
-            name="Gas", amount=Decimal("100.00"),
-        )
+        txn = _make_txn(seed_periods_today[0], template)
         db.session.add(TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("70.00"), description="Shell",
@@ -626,7 +594,7 @@ class TestEntryDataComputation:
             companion.id, period_id=seed_periods_today[0].id,
         ).transactions
         from app.services.entry_service import compute_remaining
-        remaining = compute_remaining(txns[0].estimated_amount, txns[0].entries)
+        remaining = compute_remaining(resolved_amount(txns[0]), txns[0].entries)
         assert remaining == Decimal("-20.00")
 
 

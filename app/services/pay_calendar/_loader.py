@@ -109,8 +109,8 @@ def schedule_for(user_id: int) -> pay_schedule_service.ScheduleFacts:
     made** (2026-09-02).  A first draft of this paragraph said "every route
     that builds a calendar carries ``@require_owner``, which 404s a companion
     before this is reached".  An AST census of all 224 route functions measured
-    that FALSE: three companion-reachable route groups build a calendar under
-    ``@login_required`` alone -- ``routes/companion`` (``index``,
+    that FALSE: three companion-reachable route groups build a calendar with
+    no ownership decorator at all -- ``routes/companion`` (``index``,
     ``period_view``), ``routes/entries``' four entry-list doors, and
     ``transactions.mark_done``.  The conclusion survives, for a different and
     better reason: each of those resolves the owner from DATA

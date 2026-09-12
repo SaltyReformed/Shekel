@@ -52,7 +52,6 @@ from decimal import Decimal
 
 from flask import flash, redirect, request, url_for
 from flask.typing import ResponseReturnValue
-from flask_login import login_required
 
 from app.enums import AccountOpeningSourceEnum
 from app.exceptions import ValidationError
@@ -338,7 +337,6 @@ def _restatement_failure(account_id: int, message: str) -> ResponseReturnValue:
 
 
 @accounts_bp.route("/accounts/<int:account_id>/opening", methods=["POST"])
-@login_required
 @require_owner
 def restate_opening(account_id):
     """Restate what an account's books opened with.

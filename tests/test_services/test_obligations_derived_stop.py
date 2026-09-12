@@ -37,8 +37,7 @@ from app.services import (
     obligations_aggregator,
     savings_dashboard_service,
 )
-from app.services.balance_at import BalanceContext
-from app.services.loan_recurrence_sync import is_standing_loan_payment
+from app.services.balance_at import BalanceContext, is_standing_loan_payment
 from app.services.recurrence import EndsOnDate, reauthor_rule, recurrence_spec
 from tests._test_helpers import (
     create_loan_account,

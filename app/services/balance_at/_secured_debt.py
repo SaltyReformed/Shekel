@@ -248,12 +248,18 @@ def _debt_span_upper(
     payments = memoized_plan(loan, ctx).payments
     if not payments:
         # Reachable, and not a degenerate: a loan whose whole TERM has already
-        # matured while it still owes (a balloon, or a long-delinquent loan).
-        # Every contractual installment is in the past, and so is the ESTIMATED
-        # tail's extension, so the plan synthesizes nothing -- the model has no
-        # future payment to draw.  (``original_principal > 0`` and
-        # ``term_months > 0`` are DB check constraints, so an EMPTY contractual
-        # schedule is not the case being handled here.)
+        # matured while it still owes (a balloon, or a long-delinquent loan)
+        # and has no definition paying into it.  Every contractual installment
+        # is in the past, and so is the contract-only estimate's extension, so
+        # the plan holds no payment -- the model has no future payment to draw.
+        # Since plan step R16-b-2 a matured loan WITH a live definition is not
+        # this case: the plan walks the definition past the read (its window
+        # is the later of the contract's extension and the same span past
+        # ``as_of``), so ``payments`` holds its occurrences and the branch
+        # below answers.
+        # (``original_principal > 0`` and ``term_months > 0`` are DB check
+        # constraints, so an EMPTY contractual schedule is not the case being
+        # handled here.)
         return ctx.as_of
     return max(max(payment.due_date for payment in payments), ctx.as_of)
 

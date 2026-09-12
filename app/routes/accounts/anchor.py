@@ -41,7 +41,7 @@ from decimal import Decimal
 
 from flask import render_template, request, url_for
 from flask.typing import ResponseReturnValue
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.exceptions import ValidationError
 from app.extensions import db
@@ -575,7 +575,6 @@ def _true_up_request_gates(
 
 
 @accounts_bp.route("/accounts/<int:account_id>/true-up", methods=["PATCH"])
-@login_required
 @require_owner
 def true_up(account_id):
     """Update the anchor balance for an account (inline edit from grid).
@@ -749,7 +748,6 @@ def _anchor_revert_url(account_id, revert_context):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/anchor-form", methods=["GET"])
-@login_required
 @require_owner
 def anchor_form(account_id):
     """HTMX partial: return the inline edit form for the anchor balance.
@@ -812,7 +810,6 @@ def anchor_form(account_id):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/anchor-display", methods=["GET"])
-@login_required
 @require_owner
 def anchor_display(account_id):
     """HTMX partial: return the anchor balance display (non-editing)."""

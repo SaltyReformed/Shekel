@@ -12,7 +12,6 @@ from the card.
 """
 
 from flask import render_template
-from flask_login import login_required
 
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
@@ -24,7 +23,6 @@ from app.utils.auth_helpers import require_owner
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/schedule")
-@login_required
 @require_owner
 def schedule(account_id):
     """Standalone month-by-month amortization schedule for a loan.

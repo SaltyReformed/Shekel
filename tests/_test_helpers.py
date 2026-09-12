@@ -5790,7 +5790,7 @@ def make_cadence_rule(owner, cadence, **kwargs):
 def make_expense_template(
     db_session, seed_user, amount="1200.00", is_active=True, *,
     name="Rent", category_key="Rent", is_envelope=False,
-    companion_visible=False,
+    companion_visible=False, account=None,
 ):
     """Create and flush an every-period expense template on the seed account.
 
@@ -5819,6 +5819,12 @@ def make_expense_template(
             definition (``Transaction.visible_to_companion``), widened here
             for the same reason as ``is_envelope`` and defaulting to the
             column's own default.
+        account: The :class:`~app.models.account.Account` the definition
+            moves money through; the seed user's checking account when
+            omitted.  Widened at plan step balance:X-cf-3 for the fixtures
+            whose row lives on an HYSA or a 401(k): the engine puts a row on
+            its DEFINITION's account (``DerivedRowFields.account_id``), so
+            that is the only place a fixture can say where the row goes.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5832,14 +5838,14 @@ def make_expense_template(
     return _priced_repeating_template(
         db_session, seed_user, TxnTypeEnum.EXPENSE, amount, is_active,
         name=name, category_key=category_key, is_envelope=is_envelope,
-        companion_visible=companion_visible,
+        companion_visible=companion_visible, account=account,
     )
 
 
 def make_income_template(
     db_session, seed_user, amount="2000.00", is_active=True, *,
     name="Paycheck", category_key="Salary", is_envelope=False,
-    companion_visible=False,
+    companion_visible=False, account=None,
 ):
     """Create and flush an every-period INCOME template on the seed account.
 
@@ -5858,6 +5864,8 @@ def make_income_template(
         category_key: A key into ``seed_user["categories"]``.
         is_envelope: Whether the definition's rows track purchases.
         companion_visible: Whether a companion of the owner may see its rows.
+        account: The account the definition pays into; the seed user's
+            checking account when omitted.  See :func:`make_expense_template`.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5871,13 +5879,13 @@ def make_income_template(
     return _priced_repeating_template(
         db_session, seed_user, TxnTypeEnum.INCOME, amount, is_active,
         name=name, category_key=category_key, is_envelope=is_envelope,
-        companion_visible=companion_visible,
+        companion_visible=companion_visible, account=account,
     )
 
 
 def _priced_repeating_template(
     db_session, seed_user, txn_type, amount, is_active, *,
-    name, category_key, is_envelope, companion_visible,
+    name, category_key, is_envelope, companion_visible, account,
 ):
     """The one body behind :func:`make_expense_template` and its income twin.
 
@@ -5892,6 +5900,8 @@ def _priced_repeating_template(
         category_key: A key into ``seed_user["categories"]``.
         is_envelope: Whether the definition's rows track purchases.
         companion_visible: Whether a companion of the owner may see its rows.
+        account: The account the definition is on, or ``None`` for
+            ``seed_user["account"]``.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5905,7 +5915,7 @@ def _priced_repeating_template(
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
+        account_id=(seed_user["account"] if account is None else account).id,
         category_id=seed_user["categories"][category_key].id,
         transaction_type_id=ref_cache.txn_type_id(txn_type),
         name=name,
@@ -6034,13 +6044,23 @@ def make_loan_payment_template(
         derive_from_loan: The settings row's mode.
         extra_principal: The settings row's standing monthly overpayment.
         cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
-            to author.  ``None`` -- the default -- authors the every-paycheck
-            rule :func:`make_transfer_template` authors, which is what the
-            fixtures this replaced carried.  A loan payment created through
-            ``routes/loan/payment_transfer.py`` is MONTH-unit, so a test about
-            that door states ``MONTHLY`` here.
+            to author.  ``None`` -- the default -- authors what the loan door
+            (``routes/loan/payment_transfer.py``) authors: a MONTHLY rule on
+            the loan's own ``payment_day``, its start bound to the first
+            contractual installment through ``bind_rule_to_loan``.  **It was
+            the every-paycheck rule :func:`make_transfer_template` authors
+            until plan step R16-b-2**, inherited from the fixtures this
+            replaced, and the difference was invisible while the forward plan
+            synthesized one contractual slot a month whatever the definition's
+            cadence said (finding **D48**).  The plan sums each definition on
+            its OWN cadence now, so an every-paycheck DERIVE-mode payment pays
+            a full P&I twenty-six times a year and retires a 24-month loan in
+            sixteen -- which is what that definition says, and not what 46
+            fixtures meaning "the loan's own payment" said.  A test about an
+            every-paycheck payment states ``EVERY_PERIOD`` here.
         fires_on_day: The day of the month a calendar *cadence* first fires on,
-            forwarded to :func:`make_cadence_rule`.
+            forwarded to :func:`make_cadence_rule`.  Unread for the default,
+            whose start the loan door's sync writes.
 
     Returns:
         The flushed ``TransferTemplate``, its ``recurrence_rule`` set.
@@ -6074,9 +6094,25 @@ def make_loan_payment_template(
         extra_principal=Decimal(extra_principal),
     )
     db_session.flush()
-    # The definition first, then the cadence onto it (plan step R-F6).
+    # The definition first, then the cadence onto it (plan step R-F6), then
+    # -- for the door's own shape -- the loan's start onto the cadence
+    # (``bind_rule_to_loan``, plan step C9a), the order ``track_payment``
+    # takes.
     if cadence is None:
-        make_every_period_rule(db_session, template)
+        from app.services.loan_recurrence_sync import bind_rule_to_loan
+        from app.services.loan_loaders import load_loan_params
+        from tests.oracles.recurrence_baseline import MONTHLY
+
+        # An amortizing account with NO params is not a loan the door can
+        # bind to (``bind_rule_to_loan`` is a no-op for it); the rule is
+        # monthly on the 1st and starts where the schedule's first 1st is.
+        params = load_loan_params(loan_account.id)
+        rule = make_cadence_rule(
+            template, MONTHLY,
+            fires_on_day=1 if params is None else params.payment_day,
+        )
+        bind_rule_to_loan(rule, loan_account.id)
+        db_session.flush()
     else:
         make_cadence_rule(template, cadence, fires_on_day=fires_on_day)
     return template

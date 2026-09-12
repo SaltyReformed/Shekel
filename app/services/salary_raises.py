@@ -13,18 +13,114 @@ engine's own file.
 
 Pure: plain inputs, plain outputs, no Flask, no ORM, no clock, no database.
 
-**Every caller passes real ``SalaryRaise`` rows as of plan step salary:S3-c.**
-The ``raises`` argument was duck-typed so the pension projector could
-extrapolate over FABRICATED values (deep-hunt #83) -- it built a
-``TerminatedRaise`` per row to carry a terminal year invented from
+**Every caller passes real ``SalaryRaise`` rows as of plan step salary:S3-c,
+and the ENGINE passes :class:`RaiseTerms` values as of salary:S3-f-1.**  The
+``raises`` argument was duck-typed so the pension projector could extrapolate
+over FABRICATED values (deep-hunt #83) -- it built a ``TerminatedRaise`` per
+row to carry a terminal year invented from
 ``auth.user_settings.merit_raise_horizon_years``.  Ruling **R-SAL11** made
 that year a stored column on the row, so the fabrication, the value class it
 produced and the setting it read are all deleted; the reads below are plain
-attribute access on a row rather than defended lookups.
+attribute access rather than defended lookups.  The duck typing itself is
+KEPT, and ruling **R-SAL20** is why: :attr:`~app.services.payroll_basis
+.PayrollBasis.raises` is the profile's rows' terms unless a caller supplies
+other terms, and a what-if over one raise's end year (plan step
+**salary:S3-f**) arrives as :class:`RaiseTerms` carrying a row's terms with
+that one changed.  That is an INPUT the owner typed for one request, with the
+row still the one home of the stored fact -- not a second home computed from a
+global on every render, which is what S3-c deleted.
 """
+from dataclasses import dataclass
 from decimal import Decimal
 
 from app.utils.money import round_money
+
+
+@dataclass(frozen=True)
+class RaiseTerms:
+    """The terms of ONE raise, exactly as the two walks below read them.
+
+    **A VALUE, and the CONTRACT** (plan step salary:S3-f-1, ruling
+    **R-SAL20**).  The paycheck engine prices every paycheck from a tuple of
+    these -- :attr:`~app.services.payroll_basis.PayrollBasis.raises` converts
+    the profile's rows through :meth:`of` -- so a walk that starts reading an
+    attribute this class does not carry fails on the first paycheck it prices
+    rather than pricing rows correctly and values wrongly.  That is what makes
+    the field list here the ONE statement of what a raise contributes to a
+    paycheck, and what lets :meth:`~app.services.income_service
+    .PaycheckPricing.for_profile` key its memo on the tuple ITSELF: two raise
+    sets that would price every payday identically are equal here, whatever
+    objects a caller spelled them with, so one pricer serves both.  A memo key
+    must be canonical for the reason
+    :class:`~app.services.retirement_plan.PlanPoint` records -- two spellings
+    of one plan are two derivations of one figure -- and an adversarial review
+    of this step measured that a key over the caller's objects admitted three
+    spellings of the stored set.
+
+    Frozen and hashable by value.  ``percentage`` and ``flat_amount`` are
+    carried as the ``Decimal`` the column holds (``Decimal("0.0500")`` and
+    ``Decimal("0.05")`` are equal and hash alike); ``raise_type_name`` is the
+    type's display name, which :func:`get_raise_event` composes a label from
+    and which is the only thing the engine reads of a raise's type.
+
+    Attributes:
+        effective_year: The year the raise first applies.
+        effective_month: The month within that year.
+        is_recurring: Whether it applies every year from then on.
+        percentage: The fractional raise, or ``None`` for a flat one.
+        flat_amount: The annual dollar raise, or ``None`` for a percentage.
+        terminal_year: The last year it is believed, ``None`` for no end.
+        raise_type_name: The display name of its type (``"merit"``, ...).
+    """
+
+    effective_year: int
+    effective_month: int
+    is_recurring: bool
+    percentage: "Decimal | None"
+    flat_amount: "Decimal | None"
+    terminal_year: "int | None"
+    raise_type_name: str
+
+    @classmethod
+    def of(cls, raise_obj) -> "RaiseTerms":
+        """The terms of *raise_obj* -- a row, a value, or any raise-shaped object.
+
+        Args:
+            raise_obj: Anything exposing the seven attributes above.  A
+                :class:`~app.models.salary_raise.SalaryRaise` row does (its
+                ``raise_type_name`` is a property over the joined type); so
+                does another :class:`RaiseTerms`, which converts to an equal
+                value.
+
+        Returns:
+            The :class:`RaiseTerms`.
+        """
+        return cls(
+            effective_year=raise_obj.effective_year,
+            effective_month=raise_obj.effective_month,
+            is_recurring=bool(raise_obj.is_recurring),
+            percentage=raise_obj.percentage,
+            flat_amount=raise_obj.flat_amount,
+            terminal_year=raise_obj.terminal_year,
+            raise_type_name=raise_obj.raise_type_name,
+        )
+
+
+def terms_of(raises) -> "tuple[RaiseTerms, ...]":
+    """Every raise in *raises* as :class:`RaiseTerms`, in the order given.
+
+    **The one canonical spelling of a raise set.**  Order is kept rather than
+    sorted because it is part of the answer: :func:`get_raise_event` joins
+    labels in iteration order, and :func:`apply_raises` keeps input order
+    between two applications on one date by one method.
+
+    Args:
+        raises: An iterable of raise-shaped objects (see :meth:`RaiseTerms.of`).
+
+    Returns:
+        The tuple of values; empty for an empty or falsy *raises*.
+    """
+    return tuple(RaiseTerms.of(raise_obj) for raise_obj in (raises or ()))
 
 
 def apply_raises(base_salary, raises, as_of):
@@ -203,7 +299,7 @@ def _apply_single_raise(salary, raise_obj):
     return salary
 
 
-def get_raise_event(profile, period):
+def get_raise_event(raises, period):
     """Return a description of any raise event occurring in this period.
 
     Public because two consumers now need a period's raise event: the paycheck
@@ -211,8 +307,27 @@ def get_raise_event(profile, period):
     it builds each ``PeriodInfo``) and the salary cockpit route, which compares
     the focused period's event against its
     predecessor's to collapse the raise banner to one paycheck per run
-    (P-SA1) without projecting every period.  Pure over ``profile.raises``
-    and ``period.start_date`` -- no breakdown, no DB, no ``float``.
+    (P-SA1) without projecting every period.  Pure over *raises* and
+    ``period.start_date`` -- no breakdown, no DB, no ``float``.
+
+    **It takes the RAISE SET rather than the profile since plan step
+    salary:S3-f-1** (ruling **R-SAL20**), for the same reason
+    :func:`apply_raises` always did: the engine badges the event of the set it
+    PRICED, which is its basis's and not necessarily the profile's rows, and a
+    banner announcing a raise the paycheck beside it was not priced under is
+    the two-walks-disagreeing defect the paragraph below records.  The cockpit
+    passes ``profile.raises``, the rows, because that is the set it renders.
+
+    Args:
+        raises: The raise set -- each exposing what :func:`apply_raises`
+            documents PLUS ``raise_type_name``, which is what
+            :class:`RaiseTerms` carries and what a
+            :class:`~app.models.salary_raise.SalaryRaise` row exposes as a
+            property; a falsy/empty set badges nothing.
+        period: The pay period, read for ``start_date`` alone.
+
+    Returns:
+        The comma-joined event labels for *period*, or ``""``.
 
     **It honours ``terminal_year`` as of plan step salary:S3-c**, which is an
     obligation that step INHERITED rather than created: plan step salary:S3-a
@@ -225,14 +340,14 @@ def get_raise_event(profile, period):
     and an adversarial review of this step took that admission as the finding
     it was.
     """
-    if not profile.raises:
+    if not raises:
         return ""
 
     period_year = period.start_date.year
     period_month = period.start_date.month
     events = []
 
-    for raise_obj in profile.raises:
+    for raise_obj in raises:
         eff_month = raise_obj.effective_month
         eff_year = raise_obj.effective_year
 
@@ -256,7 +371,13 @@ def get_raise_event(profile, period):
             is_match = True
 
         if is_match:
-            raise_type = raise_obj.raise_type.name if raise_obj.raise_type else "raise"
+            # The type's display name, ONE attribute on rows and values alike.
+            # A ``raise_type is None`` arm stood here; a row's property now
+            # resolves the name from ``raise_type_id`` through the ref cache,
+            # which answers a never-flushed row too (the relationship does
+            # not), so the fallback label "raise" that arm produced for such a
+            # row is gone with it.
+            raise_type = raise_obj.raise_type_name
             if raise_obj.percentage:
                 pct = Decimal(str(raise_obj.percentage)) * 100
                 events.append(f"{raise_type.upper()} +{pct}%")
@@ -265,4 +386,4 @@ def get_raise_event(profile, period):
 
     return ", ".join(events)
 
-__all__ = ["apply_raises", "get_raise_event"]
+__all__ = ["RaiseTerms", "apply_raises", "get_raise_event", "terms_of"]
