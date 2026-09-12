@@ -40,9 +40,9 @@ from app.services.investment_projection import (
 from app.utils.money import round_money
 from tests._test_helpers import (
     current_pay_period,
+    era_of,
     last_covered_day,
     reassert_balance_on,
-    rhythm_of,
     settle_day_columns,
     settle_instant_on,
 )
@@ -734,7 +734,7 @@ class TestTheChartMarkersAskTheWindowWhereTheDateFALLS:
                 (index + 1, date(2026, 1, 2) + timedelta(days=14 * index))
                 for index in range(10)
             ],
-            rhythm_of(14), user_id=1,
+            (era_of(date(2026, 1, 2), 14),), user_id=1,
             history_opens_on=None,
         )
         return calendar.window(first_index=first_index, count=count)

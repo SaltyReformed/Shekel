@@ -264,3 +264,9 @@ rationale, where a reader meets it at the moment it fires.
   whose reads had never been committed or rolled back. End a fixture's read transaction when its
   reads are done (`tests/conftest.py`, the rollback after `ref_cache.init`); a test that reads a
   fixture object's attribute after a commit re-opens that transaction too.
+- **The literal arithmetic of a specification can name a PHANTOM PAYCHECK.**
+  `pay_calendar:C17-b-2`'s spec said the record continues at "the first grid payday after the last
+  recorded one"; on the catalogue's own thirteen-day shape (01-02, 01-15 at cadence 14) that rule
+  ends the 01-15 paycheck on 01-15 and projects a 01-16 paycheck the owner was already paid early.
+  The rule was MATCHING (**R-PC72**: a record stands for its nearest planned payday). Walk a worked
+  example through the OFF-grid case before building the on-grid arithmetic.
