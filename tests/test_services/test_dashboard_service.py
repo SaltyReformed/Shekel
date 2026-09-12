@@ -21,24 +21,20 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
+from app.enums import SettlementBasisEnum
 from app.exceptions import BaselineMissingError
-from app.enums import StatusEnum, TxnTypeEnum
 from app.models.account import Account
 from app.models.scenario import Scenario
-from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger, dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     add_txn as _add_txn,
     dashboard_section,
-    default_settle_day,
-    make_every_period_rule,
+    generate_row_of,
+    make_expense_template,
     make_investment_account,
     set_default_grid_account,
-    settle_day_columns,
-    settlement_columns,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Entry-tracked bill row, single declared base (E-21 / MED-03) ────
@@ -58,56 +54,39 @@ class TestBillRowSingleBase:
     """
 
     def _make_entry_tracked_txn(
-        self, db, seed_user, period, estimated, actual=None,
-        status_enum=StatusEnum.PROJECTED,
+        self, db, seed_user, period, estimated, retained_actual=None,
     ):
         """Construct an entry-tracked (is_envelope=True) Transaction.
 
-        Returns the flushed Transaction.  The seed_entry_template
-        fixture is not used because these tests need explicit control
-        over estimated_amount / actual_amount / status.
+        Returns the flushed Transaction: the engine's own row of a priced,
+        every-paycheck envelope definition stating *estimated*
+        (:func:`generate_row_of`, plan step balance:X-cf).  The
+        seed_entry_template fixture is not used because these tests need
+        explicit control over the figure.
+
+        *retained_actual* lays the RETAINED settlement record on the row: a
+        figure a human typed at a settle (``corrected``) that a revert kept
+        while releasing the settle day.  That is the one way a Projected row
+        carries an actual since plan step X-au-c3, and
+        ``ck_transactions_settle_day_needs_a_record`` admits it in exactly
+        that direction (a day needs a record; a record needs no day).  It
+        was a bare ``actual`` until X-cf-3, resolved through
+        ``settlement_columns`` -- which answers ``None`` for a row with no
+        settle day, so the figure two callers passed had written nothing
+        (measured); the two cases that name it grade the record now.
+        ``status_enum`` went with it: no caller moved the status.
         """
-        # pylint: disable=import-outside-toplevel
-        from app.models.recurrence_rule import RecurrenceRule
-        from app.models.transaction_template import TransactionTemplate
-        template = TransactionTemplate(
-            user_id=seed_user["user"].id,
-            account_id=seed_user["account"].id,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            name="Envelope bill",
-            default_amount=Decimal(str(estimated)),
-            is_envelope=True,
+        template = make_expense_template(
+            db.session, seed_user, amount=str(estimated),
+            name="Envelope bill", category_key="Groceries", is_envelope=True,
         )
-        db.session.add(template)
-        db.session.flush()
-        # The definition first, then the cadence onto it (plan step R-F6).
-        rule = make_every_period_rule(db.session, template)
-        _settle_day = default_settle_day(
-            period, ref_cache.status_id(status_enum),
-        )
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            status_id=ref_cache.status_id(status_enum),
-            name="Envelope bill",
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            amount_ownership=AmountOwnership.own(Decimal(str(estimated))),
-            template_id=template.id,
-            due_date=date(2026, 1, 5),
-            # The settlement record -- day, figure and basis together, through
-            # the one door a bare-built fixture uses (plan step X-au-c3).
-            **settle_day_columns(_settle_day),
-            **settlement_columns(
-                _settle_day, Decimal(str(estimated)),
-                submitted=Decimal(str(actual)) if actual is not None else None,
-            ),
-        )
-        db.session.add(txn)
-        db.session.flush()
+        txn = generate_row_of(template, period)
+        if retained_actual is not None:
+            txn.settled_amount = Decimal(str(retained_actual))
+            txn.settled_basis_id = ref_cache.settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
+            db.session.flush()
         return txn
 
     @staticmethod
@@ -152,10 +131,13 @@ class TestBillRowSingleBase:
     def test_row_single_base_actual_lt_estimated(
         self, app, db, seed_user, seed_periods,
     ):
-        """C30-1: actual=$100, estimated=$120, entries sum $80.
+        """C30-1: retained actual=$100, estimated=$120, entries sum $80.
 
         Pre-fix (F-028): amount=$100 (effective=actual) while
-        remaining=$120-$80=$40 -- one row, two undisclosed bases.
+        remaining=$120-$80=$40 -- one row, two undisclosed bases.  The
+        ``$100`` is a RETAINED record on a still-Projected row (a revert
+        keeps what a settle recorded), which is the shape that could tempt
+        a producer onto the actual.
 
         E-21: amount must equal $120 (estimated) so all three figures
         share the declared base.
@@ -168,7 +150,7 @@ class TestBillRowSingleBase:
         with app.app_context():
             txn = self._make_entry_tracked_txn(
                 db, seed_user, seed_periods[0],
-                estimated="120.00", actual="100.00",
+                estimated="120.00", retained_actual="100.00",
             )
             self._add_entries(db, seed_user, txn, "50.00", "30.00")
             db.session.commit()
@@ -274,24 +256,27 @@ class TestBillRowSingleBase:
     ):
         """E-21 (MED-03): the base is estimated unconditionally.
 
-        Even when ``actual_amount`` is populated on a still-Projected
-        entry-tracked txn, the amount cell stays on ``estimated_amount``
-        so it agrees with the entry-derived remaining/over-budget.
+        Even when a RETAINED record sits on a still-Projected entry-tracked
+        txn -- a ``$77`` a human typed at a settle that a revert kept -- the
+        amount cell stays on the row's plan so it agrees with the
+        entry-derived remaining/over-budget.
 
-        actual=$77, estimated=$120, no entries:
-            amount = $120.00 (estimated, NOT $77 actual)
+        retained actual=$77, estimated=$120, no entries:
+            amount = $120.00 (the plan, NOT the $77 record)
             entry_remaining = None (no entries -> progress fields off)
         """
         with app.app_context():
             txn = self._make_entry_tracked_txn(
                 db, seed_user, seed_periods[0],
-                estimated="120.00", actual="77.00",
+                estimated="120.00", retained_actual="77.00",
             )
+            assert txn.settled_amount == Decimal("77.00"), "fixture: recorded"
             db.session.commit()
 
             bill = self._bill(seed_user, txn, date(2026, 1, 1))
 
             assert bill["amount"] == Decimal("120.00")
+            assert bill["amount"] != Decimal("77.00")
             assert bill["amount_base"] == "budget"
             # Without entries the progress fields are off; the amount
             # cell's base is still disclosed so the template can render

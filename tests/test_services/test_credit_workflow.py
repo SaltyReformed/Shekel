@@ -20,6 +20,8 @@ from app.services.balance_at import BalanceContext
 from app.services import carry_forward_service, credit_workflow, pay_period_write
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
+    generate_row_of,
+    make_expense_template,
     rhythm_of,
     settle_day_columns,
     settlement_columns,
@@ -474,37 +476,14 @@ class TestCarryForward:
     ):
         """Template-linked items are flagged is_override when carried forward."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-
-            # Create a template (without full recurrence for simplicity).
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Car Payment"].id,
-                transaction_type_id=expense_type.id,
-                name="Car Payment",
-                default_amount=Decimal("300.00"),
+            # The definition's own row, written by the engine (plan step
+            # balance:X-cf): the rule's row, not the owner's.
+            template = make_expense_template(
+                db.session, seed_user, amount="300.00",
+                name="Car Payment", category_key="Car Payment",
             )
-            db.session.add(template)
-            db.session.flush()
-
-            # Create a template-linked transaction.
-            txn = Transaction(
-                template_id=template.id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Car Payment",
-                category_id=seed_user["categories"]["Car Payment"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("300.00")),
-                is_override=False,
-            )
-            db.session.add(txn)
-            db.session.flush()
+            txn = generate_row_of(template, seed_periods[0])
+            assert txn.is_override is False
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
@@ -789,7 +768,6 @@ class TestCarryForward:
 
 
 # Import at the bottom to avoid circular issues in the test helpers.
-from app.models.transaction_template import TransactionTemplate
 from app.services import account_service
 from app.models.amount_ownership import AmountOwnership
 
@@ -972,32 +950,12 @@ class TestNegativePaths:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            # Create a template for a template-linked transaction.
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                name="Template Expense",
-                default_amount=Decimal("50.00"),
+            # The rule's own row (is_override=False), written by the engine.
+            template = make_expense_template(
+                db.session, seed_user, amount="50.00",
+                name="Template Expense", category_key="Groceries",
             )
-            db.session.add(template)
-            db.session.flush()
-
-            # Create a template-linked transaction (is_override=False).
-            txn_with_template = Transaction(
-                template_id=template.id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Template Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
-                is_override=False,
-            )
+            txn_with_template = generate_row_of(template, seed_periods[0])
             # Create an ad-hoc transaction (no template).
             txn_adhoc = Transaction(
                 user_id=seed_periods[0].user_id,
@@ -1010,7 +968,7 @@ class TestNegativePaths:
                 transaction_type_id=expense_type.id,
                 amount_ownership=AmountOwnership.own(Decimal("30.00")),
             )
-            db.session.add_all([txn_with_template, txn_adhoc])
+            db.session.add(txn_adhoc)
             db.session.flush()
 
             # Carry forward with source == target -- early return.

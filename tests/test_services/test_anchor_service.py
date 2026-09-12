@@ -35,10 +35,8 @@ from app.models.account import Account, AccountAnchorHistory
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
-from app.models.ref import AccountType, Status, TransactionType
-from app.models.transaction import Transaction
+from app.models.ref import AccountType
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 from app.services import (
     account_service,
     anchor_service,
@@ -57,11 +55,12 @@ from tests._test_helpers import (
     create_settled_cash_transaction,
     current_pay_period,
     freeze_today,
+    generate_row_of,
     insert_origination_rate,
+    make_expense_template,
     settle_day_columns,
 )
 from app.services import cash_ledger
-from app.models.amount_ownership import AmountOwnership
 
 
 def _make_checking_account(seed_user, anchor_balance="1000.00", observed_on=None):
@@ -119,38 +118,16 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
     ``settled_on`` starts NULL -- the bank has not been seen to take it -- and
     it must still be NULL afterwards.  Returns the
     :class:`TransactionEntry` so the caller can re-read that column.
+
+    The envelope is the engine's own row of a priced, repeating definition
+    (:func:`generate_row_of`, plan step balance:X-cf) rather than a copy built
+    by hand; the purchase is then recorded against it.
     """
-    projected = db.session.query(Status).filter_by(name="Projected").one()
-    expense_type = db.session.query(TransactionType).filter_by(
-        name="Expense",
-    ).one()
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        name="Groceries",
-        default_amount=Decimal("500.00"),
-        is_envelope=True,
+    template = make_expense_template(
+        db.session, seed_user, amount="500.00",
+        name="Groceries", category_key="Groceries", is_envelope=True,
     )
-    db.session.add(template)
-    db.session.flush()
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
-        name="Groceries",
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("500.00")),
-    )
-    db.session.add(txn)
-    db.session.flush()
+    txn = generate_row_of(template, period)
 
     entry = TransactionEntry(
         transaction_id=txn.id, account_id=txn.account_id,
