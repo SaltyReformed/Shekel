@@ -590,7 +590,8 @@ def _leftover_due_date(template, target_period) -> date:
         template: The envelope's
             :class:`~app.models.transaction_template.TransactionTemplate`.
             Never ``None`` -- ``_build_carry_forward_context`` routes a row
-            into ``envelope_txns`` only when ``txn.template.is_envelope``.
+            into ``envelope_txns`` only when it has a template and
+            ``tracks_purchases``.
         target_period: The destination
             :class:`~app.services.pay_calendar.DerivedPeriod`.
 
