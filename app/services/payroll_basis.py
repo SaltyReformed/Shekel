@@ -14,9 +14,13 @@ Pure: no Flask, no ORM import, no clock, no database.  The profile is typed
 loosely on purpose (see the class).
 """
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
+from functools import cached_property
+from typing import Any
 
 from app.services.pay_calendar import PayCalendar
+from app.services.salary_raises import RaiseTerms, apply_raises, terms_of
 from app.utils.money import round_money
 
 
@@ -65,11 +69,26 @@ class PayrollBasis:
     what ``routes.salary.profiles._paycheck_template`` authors), so there was
     never a per-profile count for the dropped column to hold.
 
+    **It NAMES the raise set it prices from since plan step salary:S3-f-1**
+    (ruling **R-SAL20**), the way it names its calendar.  The engine read
+    ``basis.profile.raises`` -- the ORM relationship -- at three sites, so the
+    only raise set a paycheck could ever be priced under was the one stored,
+    and a what-if over a raise's end year (the ``/retirement`` rail's per-raise
+    probe, plan step **salary:S3-f**) had no input to arrive through.  The
+    set is an INPUT of this value now: the profile's own rows' terms unless a
+    caller supplies :attr:`raise_terms`, and every engine read goes through
+    :attr:`raises`, which is always a tuple of
+    :class:`~app.services.salary_raises.RaiseTerms` -- the VALUE whose fields
+    are the engine's whole contract with a raise.  The stored plan is
+    unchanged by construction: a basis built without terms prices exactly the
+    figures its rows carry, read through the same walk.
+
     Attributes:
         profile: The ``SalaryProfile`` -- read for the annual salary, the
-            raises, the deductions and the W-4 inputs.  Typed loosely because
-            every consumer reads attributes rather than the ORM class, and
-            because this module must not import a model (the engine below it is
+            deductions and the W-4 inputs, and for the raises when no
+            :attr:`raise_terms` are supplied.  Typed loosely because every
+            consumer reads attributes rather than the ORM class, and because
+            this module must not import a model (the engine below it is
             pure).  The test suite prices duck-typed profiles through the same
             door for that reason.
         calendar: The owner's whole
@@ -79,10 +98,72 @@ class PayrollBasis:
             they are one fact: the cadence is a field of the calendar, so a
             paycheck cannot be priced at one rhythm and placed in a month
             counted at another.
+        raise_terms: The raise set to price from INSTEAD of the profile's
+            rows, as a tuple of :class:`~app.services.salary_raises.RaiseTerms`,
+            or ``None`` for the rows' own terms -- the default, and what every
+            direct constructor passes; the read pass's pricer
+            (:meth:`~app.services.income_service.PaycheckPricing.for_profile`)
+            passes the canonical tuple for every set, the stored one included.
+            A ``None`` here does NOT stand for a stored number the way the
+            plan point's rule forbids: it stands for the rows, which are the
+            one home of the stored fact, and this value is an input rather
+            than a memo key -- the pricer's memo is keyed on the tuple itself.
     """
 
-    profile: object
+    profile: Any
     calendar: PayCalendar
+    raise_terms: "tuple[RaiseTerms, ...] | None" = None
+
+    @cached_property
+    def raises(self) -> "tuple[RaiseTerms, ...]":
+        """The raise set the engine prices this basis from, as values.
+
+        **The one read the engine makes of a raise set.**  Resolved on READ
+        rather than at construction for the reason :attr:`periods_per_year`
+        is: ``SalaryProfile.raises`` is ``lazy="select"``, so touching it here
+        would move a caller's SELECT from the first paycheck priced to the
+        moment a basis is built, and a basis is built at nine sites that did
+        not ask for that.  Cached because the engine asks it once per prior
+        payday when it replays a year's cumulatives, and converting the rows
+        each time would be work for the same answer; a frozen dataclass
+        admits ``cached_property`` because it writes the instance dict
+        directly rather than through the refused ``__setattr__``.
+
+        **Both arms go through** :func:`~app.services.salary_raises.terms_of`,
+        so "always a tuple of ``RaiseTerms``" is a property of this value and
+        not of its callers' care: a supplied set spelled with rows or other
+        raise-shaped objects is converted too, and the engine below never
+        prices anything but the value.  A second adversarial review of this
+        step found the first draft converting only the default arm.
+
+        Returns:
+            :attr:`raise_terms` canonicalised when a caller supplied one, else
+            the profile's rows converted.
+        """
+        return terms_of(
+            self.profile.raises if self.raise_terms is None else self.raise_terms
+        )
+
+    def annual_salary_on(self, payday: date) -> Decimal:
+        """Return the annual salary in effect on *payday*, raises applied.
+
+        **The one spelling of that question for the engine.**  It was spelled
+        three times in :mod:`app.services.paycheck_calculator` --
+        ``apply_raises(profile.annual_salary, profile.raises, payday)`` for the
+        paycheck itself, for the FICA wage-base cumulative and for a capped
+        deduction's year-to-date -- and each read the relationship for itself,
+        which is how the raise set came to have no seam.  One method reading
+        :attr:`raises` is what lets a supplied set reach all three.
+
+        Args:
+            payday: The day the paycheck arrives; only its year and month are
+                consulted, as :func:`~app.services.salary_raises.apply_raises`
+                documents.
+
+        Returns:
+            The post-raise annual salary, as ``apply_raises`` returns it.
+        """
+        return apply_raises(self.profile.annual_salary, self.raises, payday)
 
     @property
     def periods_per_year(self) -> Decimal:
