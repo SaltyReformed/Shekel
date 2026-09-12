@@ -40,7 +40,8 @@ from collections.abc import Iterator
 from datetime import date, timedelta
 
 from ._calendar import PayCalendar
-from ._derive import DerivedPeriod, project_period_after
+from ._derive import DerivedPeriod
+from ._projection import project_period_after
 from ._views import current_and_future_window, projected_paychecks
 
 
