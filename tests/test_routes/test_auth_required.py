@@ -1,274 +1,152 @@
+"""Every route the application serves refuses an anonymous request, or is named.
+
+**The sweep's subject is the route table, not a list.**  Until plan step
+``bank_import:X-gi-4`` this file was a hand-typed ``PROTECTED_ENDPOINTS`` of
+124 ``(method, path)`` pairs whose docstring said a new route "must be added"
+to it, and finding **N-402** measured what that sentence is worth: the
+application served 222 pairs, 213 of them behind ``@login_required``, and the
+list had drifted by 89 with every check green -- a gate whose coverage is a
+list somebody remembers to update reports clean over exactly what it cannot
+see.  The remedy the developer chose (ruling **bank_import:R-BI4**) removed
+the thing being counted: ``app/login_gate.py`` refuses every request that is
+not authenticated and not declared public, in ONE ``before_request`` hook,
+and no view carries a decorator any more.  So this file grades the gate,
+and its cases are ENUMERATED from ``url_map`` the way
+``test_no_baseline_policy`` enumerates its own: a route added a year from now
+is a case here without its author knowing this file exists.
+
+What is graded, and how each arm is kept honest:
+
+* **every ``(method, rule)`` outside :data:`~app.login_gate.PUBLIC_ENDPOINTS`
+  bounces an anonymous request to the login page**, with ``next`` carrying
+  the path.  One test per pair, so a failure names the route.
+* **every public pair is NOT decided by the gate** -- asserted on the gate's
+  DECISION rather than on the response shape, because ``/mfa/verify`` with no
+  pending second factor redirects to the login page on its own, and a
+  "not a login redirect" arm would read the view's redirect as the gate's.
+  The decision is observed by counting calls to the one function the gate
+  can end a request with, :meth:`~flask_login.LoginManager.unauthorized`.
+  The allowlist is therefore a CLAIM with its own firing arm, not a skip.
+* **the allowlist's exact contents are pinned**, so opening a route is a
+  visible diff in two files; and every name in it resolves in the route
+  table, so a renamed view cannot leave a stale entry exempting nothing.
+* **the table the cases were derived from is the table the fixture app
+  serves**, pair for pair, so the enumeration cannot silently shrink.
+* **an unmatched URL is bounced too** (the one place the gate is stricter
+  than the decorator it replaced, chosen by the developer 2026-09-11), and an
+  authenticated user still gets Flask's 404 or 405 there.
+* **the two exemptions the decorator had are the gate's** -- ``OPTIONS`` and
+  ``LOGIN_DISABLED`` -- each with the arm that proves the switch is a switch.
+* **the hook's place in the request** is pinned: after CSRF and the rate
+  limiter, before the session-activity stamp.
 """
-Shekel Budget App -- Unauthenticated Access Tests
 
-Verifies that every protected endpoint in the application redirects
-unauthenticated requests to /login. This is the centralized auth gate
-test that replaces the need for individual auth tests in each route
-test file.
-
-Generated from a complete audit of all @login_required endpoints across
-all 16 route blueprints. If a new route is added to the application,
-it must be added to PROTECTED_ENDPOINTS in this file.
-
-Addresses: Test Audit Report Cross-Cutting Issue 3.
-"""
+import re
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from app import create_app
+from app.config import TestConfig
+from app.extensions import db as _db, limiter, login_manager
+from app.login_gate import PUBLIC_ENDPOINTS
+from tests.test_integration.test_rate_limiter import _disable_limiter
+from tests.test_routes.test_no_baseline_policy import _route_table_app
 
-PROTECTED_ENDPOINTS = [
-    # -- auth blueprint --
-    ("POST", "/logout"),  # auth.logout
-    ("POST", "/change-password"),  # auth.change_password
-    ("POST", "/invalidate-sessions"),  # auth.invalidate_sessions
-    ("GET", "/mfa/setup"),  # auth.mfa_setup
-    ("POST", "/mfa/confirm"),  # auth.mfa_confirm
-    # auth.regenerate_backup_codes
-    ("POST", "/mfa/regenerate-backup-codes"),
-    ("GET", "/mfa/disable"),  # auth.mfa_disable
-    ("POST", "/mfa/disable"),  # auth.mfa_disable_confirm
+#: The seven views an anonymous visitor may reach, plus Flask's own static
+#: route -- the front door and what it needs.  **A second spelling on
+#: purpose**: ``PUBLIC_ENDPOINTS`` is the policy the gate enforces, and this is
+#: the pin that makes adding a name to it a diff in two files rather than a
+#: quiet one.  A test that read the policy back from the module would grade
+#: nothing.
+_THE_FRONT_DOOR = frozenset({
+    "auth.login",
+    "auth.register_form",
+    "auth.register",
+    "auth.mfa_verify",
+    "health.health_check",
+    "static",
+    "static_pass.web_manifest",
+    "static_pass.service_worker",
+})
 
-    # -- dashboard blueprint --
-    ("GET", "/"),  # dashboard.page
-    # -- grid blueprint --
-    ("GET", "/grid/balance-row"),  # grid.balance_row
-    # grid.subtotal_rows
-    ("GET", "/grid/subtotal-rows"),
+#: What each converter kind is filled with to make a concrete URL.  The gate
+#: decides before any view runs, so the id need not exist -- but it must ROUTE,
+#: and ``RowIdConverter`` refuses ``0``.  A converter kind absent here is a
+#: collection ERROR rather than a skipped rule (:func:`_concrete`).
+_CONVERTER_FILL = {"int": "99999", "path": "x"}
 
-    # -- transactions blueprint --
-    # transactions.get_cell
-    ("GET", "/transactions/99999/cell"),
-    # transactions.get_quick_edit
-    ("GET", "/transactions/99999/quick-edit"),
-    # transactions.get_full_edit
-    ("GET", "/transactions/99999/full-edit"),
-    # transactions.update_transaction
-    ("PATCH", "/transactions/99999"),
-    # transactions.mark_done
-    ("POST", "/transactions/99999/mark-done"),
-    # transactions.mark_credit
-    ("POST", "/transactions/99999/mark-credit"),
-    # transactions.unmark_credit
-    ("DELETE", "/transactions/99999/unmark-credit"),
-    # transactions.cancel_transaction
-    ("POST", "/transactions/99999/cancel"),
-    # transactions.get_quick_create
-    ("GET", "/transactions/new/quick"),
-    # transactions.get_full_create
-    ("GET", "/transactions/new/full"),
-    # transactions.get_empty_cell
-    ("GET", "/transactions/empty-cell"),
-    ("POST", "/transactions/inline"),  # transactions.create_inline
-    ("POST", "/transactions"),  # transactions.create_transaction
-    # transactions.delete_transaction
-    ("DELETE", "/transactions/99999"),
-    # transactions.carry_forward
-    ("POST", "/pay-periods/99999/carry-forward"),
+_CONVERTER = re.compile(r"<(?:(?P<kind>[^:<>]+):)?(?P<name>[^<>]+)>")
 
-    # -- templates blueprint --
-    ("GET", "/templates"),  # templates.list_templates
-    ("GET", "/templates/new"),  # templates.new_template
-    ("POST", "/templates"),  # templates.create_template
-    # templates.edit_template
-    ("GET", "/templates/99999/edit"),
-    # templates.update_template
-    ("POST", "/templates/99999"),
-    # templates.archive_template
-    ("POST", "/templates/99999/archive"),
-    # templates.unarchive_template
-    ("POST", "/templates/99999/unarchive"),
-    # templates.preview_recurrence
-    ("GET", "/templates/preview-recurrence"),
+#: The request methods a rule can be asked with, less the two Werkzeug adds
+#: to every rule on its own (``HEAD`` and ``OPTIONS``).  ``OPTIONS`` has its
+#: own case: it is exempt, and the exemption is graded rather than swept.
+_IMPLICIT_METHODS = frozenset({"HEAD", "OPTIONS"})
 
-    # -- pay_periods blueprint --
-    # pay_periods.generate_form
-    ("GET", "/pay-periods/generate"),
-    ("POST", "/pay-periods/generate"),  # pay_periods.generate
 
-    # -- accounts blueprint --
-    ("GET", "/accounts"),  # accounts.list_accounts
-    ("GET", "/accounts/new"),  # accounts.new_account
-    ("POST", "/accounts"),  # accounts.create_account
-    # accounts.edit_account
-    ("GET", "/accounts/99999/edit"),
-    # accounts.update_account
-    ("POST", "/accounts/99999"),
-    # accounts.archive_account
-    ("POST", "/accounts/99999/archive"),
-    # accounts.unarchive_account
-    ("POST", "/accounts/99999/unarchive"),
-    # accounts.create_account_type
-    ("POST", "/accounts/types"),
-    # accounts.update_account_type
-    ("POST", "/accounts/types/99999"),
-    # accounts.delete_account_type
-    ("POST", "/accounts/types/99999/delete"),
-    # accounts.true_up
-    ("PATCH", "/accounts/99999/true-up"),
-    # accounts.statement_merchants (plan step bank_import:X-gk)
-    ("GET", "/accounts/99999/statements/merchants"),
-    # accounts.answer_for_merchant
-    ("POST", "/accounts/99999/statements/merchants"),
-    # accounts.anchor_form
-    ("GET", "/accounts/99999/anchor-form"),
-    # accounts.anchor_display
-    ("GET", "/accounts/99999/anchor-display"),
-    # accounts.cash_detail -- the merged cash-account detail page
-    ("GET", "/accounts/99999/details"),
-    # accounts.cash_band
-    ("GET", "/accounts/99999/details/band"),
-    # accounts.cash_balance_hero
-    ("GET", "/accounts/99999/details/balance-hero"),
-    # accounts.checking_detail -- redirect stub to cash_detail
-    ("GET", "/accounts/99999/checking"),
-    # accounts.interest_detail -- redirect stub to cash_detail
-    ("GET", "/accounts/99999/interest"),
-    # accounts.update_interest_params
-    ("POST", "/accounts/99999/interest/params"),
+def _concrete(rule):
+    """Return a URL that routes to *rule*, every converter filled.
 
-    # -- categories blueprint --
-    ("GET", "/categories"),  # categories.list_categories
-    ("POST", "/categories"),  # categories.create_category
-    # categories.delete_category
-    ("POST", "/categories/99999/delete"),
+    Args:
+        rule: A :class:`werkzeug.routing.Rule`.
 
-    # -- settings blueprint --
-    ("GET", "/settings"),  # settings.show
-    ("POST", "/settings"),  # settings.update
+    Returns:
+        The path with each ``<kind:name>`` replaced from
+        :data:`_CONVERTER_FILL`.
 
-    # -- salary blueprint --
-    ("GET", "/salary"),  # salary.cockpit
-    ("GET", "/salary/new"),  # salary.new_profile
-    ("POST", "/salary"),  # salary.create_profile
-    # salary.edit_profile
-    ("GET", "/salary/99999/edit"),
-    ("POST", "/salary/99999"),  # salary.update_profile
-    # salary.delete_profile
-    ("POST", "/salary/99999/delete"),
-    # salary.reactivate_profile
-    ("POST", "/salary/99999/reactivate"),
-    # salary.anatomy
-    ("GET", "/salary/99999/anatomy/99999"),
-    # salary.add_raise
-    ("POST", "/salary/99999/raises"),
-    # salary.delete_raise
-    ("POST", "/salary/raises/99999/delete"),
-    # salary.add_deduction
-    ("POST", "/salary/99999/deductions"),
-    # salary.delete_deduction
-    ("POST", "/salary/deductions/99999/delete"),
-    # salary.breakdown
-    ("GET", "/salary/99999/breakdown/99999"),
-    # salary.breakdown_current
-    ("GET", "/salary/99999/breakdown"),
-    # salary.projection
-    ("GET", "/salary/99999/projection"),
-    ("GET", "/salary/tax-config"),  # salary.tax_config
-    # salary.update_tax_config
-    ("POST", "/salary/tax-config"),
-    # salary.update_fica_config
-    ("POST", "/salary/fica-config"),
+    Raises:
+        KeyError: For a converter kind this file does not know how to fill.
+            Raised rather than skipped, because a rule that cannot be requested
+            is a rule this sweep is not grading, and the previous version of
+            this file was silent about 89 of them.
+    """
+    def fill(match):
+        kind = match.group("kind") or "int"
+        if kind not in _CONVERTER_FILL:
+            raise KeyError(
+                f"{rule.rule} carries a <{kind}:> converter this sweep cannot "
+                f"fill; add it to _CONVERTER_FILL rather than skipping the rule"
+            )
+        return _CONVERTER_FILL[kind]
+    return _CONVERTER.sub(fill, rule.rule)
 
-    # -- transfers blueprint --
-    # transfers.list_transfer_templates
-    ("GET", "/transfers"),
-    # transfers.new_transfer_template
-    ("GET", "/transfers/new"),
-    # transfers.create_transfer_template
-    ("POST", "/transfers"),
-    # transfers.edit_transfer_template
-    ("GET", "/transfers/99999/edit"),
-    # transfers.update_transfer_template
-    ("POST", "/transfers/99999"),
-    # transfers.archive_transfer_template
-    ("POST", "/transfers/99999/archive"),
-    # transfers.unarchive_transfer_template
-    ("POST", "/transfers/99999/unarchive"),
-    # transfers.get_cell
-    ("GET", "/transfers/cell/99999"),
-    # transfers.get_quick_edit
-    ("GET", "/transfers/quick-edit/99999"),
-    # transfers.get_full_edit
-    ("GET", "/transfers/99999/full-edit"),
-    # transfers.update_transfer
-    ("PATCH", "/transfers/instance/99999"),
-    # transfers.create_ad_hoc
-    ("POST", "/transfers/ad-hoc"),
-    # transfers.delete_transfer
-    ("DELETE", "/transfers/instance/99999"),
-    # transfers.mark_done
-    ("POST", "/transfers/instance/99999/mark-done"),
-    # transfers.cancel_transfer
-    ("POST", "/transfers/instance/99999/cancel"),
 
-    # -- savings blueprint --
-    ("GET", "/savings"),  # savings.dashboard
-    ("GET", "/savings/goals/new"),  # savings.new_goal
-    ("POST", "/savings/goals"),  # savings.create_goal
-    # savings.edit_goal
-    ("GET", "/savings/goals/99999/edit"),
-    # savings.update_goal
-    ("POST", "/savings/goals/99999"),
-    # savings.delete_goal
-    ("POST", "/savings/goals/99999/delete"),
-    # savings.cockpit_section
-    ("GET", "/savings/cockpit"),
-    # savings.cockpit_balance
-    ("GET", "/savings/cockpit/99999/balance"),
+def _every_pair(app):
+    """Every ``(method, path, endpoint)`` the application serves, in rule order.
 
-    # -- loan blueprint --
-    # loan.dashboard
-    ("GET", "/accounts/99999/loan"),
-    # loan.create_params
-    ("POST", "/accounts/99999/loan/setup"),
-    # loan.update_params
-    ("POST", "/accounts/99999/loan/params"),
-    # loan.add_rate_change
-    ("POST", "/accounts/99999/loan/rate"),
-    # loan.add_escrow
-    ("POST", "/accounts/99999/loan/escrow"),
-    # loan.delete_escrow
-    ("POST", "/accounts/99999/loan/escrow/99999/delete"),
-    # loan.payoff_calculate
-    ("POST", "/accounts/99999/loan/payoff"),
-    # loan.balance_hero
-    ("GET", "/accounts/99999/loan/balance-hero"),
-    # loan.anchor_form
-    ("GET", "/accounts/99999/loan/anchor-form"),
+    Args:
+        app: Any application whose ``url_map`` is the one to grade.
 
-    # -- investment blueprint --
-    # investment.dashboard
-    ("GET", "/accounts/99999/investment"),
-    # investment.growth_chart
-    ("GET", "/accounts/99999/investment/growth-chart"),
-    # investment.update_params
-    ("POST", "/accounts/99999/investment/params"),
+    Returns:
+        One triple per explicit method per rule, the path already concrete.
+    """
+    with app.app_context():
+        rules = sorted(app.url_map.iter_rules(), key=lambda r: r.rule)
+    return [
+        (method, _concrete(rule), rule.endpoint)
+        for rule in rules
+        for method in sorted(rule.methods - _IMPLICIT_METHODS)
+    ]
 
-    # -- retirement blueprint --
-    ("GET", "/retirement"),  # retirement.dashboard
-    # retirement.pension_list
-    ("GET", "/retirement/pension"),
-    # retirement.create_pension
-    ("POST", "/retirement/pension"),
-    # retirement.edit_pension
-    ("GET", "/retirement/pension/99999/edit"),
-    # retirement.update_pension
-    ("POST", "/retirement/pension/99999"),
-    # retirement.delete_pension
-    ("POST", "/retirement/pension/99999/delete"),
-    # retirement.readiness_fragment
-    ("GET", "/retirement/readiness"),
-    # retirement.update_settings
-    ("POST", "/retirement/settings"),
 
-    # -- charts blueprint (fragment endpoints removed in Section 8) --
-    ("GET", "/charts"),  # charts.dashboard (301 redirect to /analytics)
+_PAIRS = _every_pair(_route_table_app())
+_PROTECTED = [
+    (m, p, e) for m, p, e in _PAIRS if e not in PUBLIC_ENDPOINTS
 ]
+_PUBLIC = [(m, p, e) for m, p, e in _PAIRS if e in PUBLIC_ENDPOINTS]
 
 
-@pytest.mark.parametrize("method,path", PROTECTED_ENDPOINTS)
-def test_unauthenticated_redirects_to_login(client, method, path):
-    """Every protected endpoint must redirect unauthenticated users."""
+def _request(client, method, path):
+    """Send *method* to *path* as the form would, with an empty body.
+
+    Args:
+        client: The anonymous test client.
+        method: ``GET``, ``POST``, ``PUT``, ``PATCH`` or ``DELETE``.
+        path: The concrete URL.
+
+    Returns:
+        The response.
+    """
     dispatch = {
         "GET": client.get,
         "POST": lambda p: client.post(p, data={}),
@@ -276,15 +154,313 @@ def test_unauthenticated_redirects_to_login(client, method, path):
         "PATCH": lambda p: client.patch(p, data={}),
         "DELETE": client.delete,
     }
-    resp = dispatch[method](path)
+    return dispatch[method](path)
 
-    assert resp.status_code in (302, 303), (
-        f"{method} {path} returned {resp.status_code}, "
-        f"expected redirect"
+
+@pytest.fixture()
+def gate_decisions(monkeypatch):
+    """Count how often the gate ends a request, without changing what it does.
+
+    :meth:`~flask_login.LoginManager.unauthorized` is the ONE function the
+    gate returns to end a request, and nothing else in ``app/`` calls it
+    (censused 2026-09-11: ``login_required`` is gone, and the views redirect
+    with ``url_for`` of their own).  Wrapping it observes the gate's DECISION
+    directly, which is what lets the public arm below assert "the gate let
+    this through" on a view that then redirects to the login page itself.
+
+    **It records the ENDPOINT beside the path**, because under the
+    unmatched-URL rule a refused route and a URL that matched nothing are
+    bounced identically: a concrete URL :func:`_concrete` filled that failed
+    to route would satisfy the redirect assertion and a path-only record
+    alike, reporting green for a route the sweep never reached.  The
+    endpoint is ``None`` exactly when nothing matched, so the protected arm
+    asserts the pair and the unmatched arms assert the ``None``.
+
+    Yields:
+        A list the wrapper appends ``(path, endpoint)`` to on every refusal.
+    """
+    refused = []
+    original = login_manager.unauthorized
+
+    def counting():
+        """Record the refusal, then answer exactly as the original does."""
+        # Pylint: ``import-outside-toplevel`` -- ``request`` is read inside
+        # the wrapper because the path is only known during a request.
+        from flask import request  # pylint: disable=import-outside-toplevel
+        refused.append((request.path, request.endpoint))
+        return original()
+
+    monkeypatch.setattr(login_manager, "unauthorized", counting)
+    yield refused
+
+
+def _assert_bounced_to_login(response, path):
+    """The gate's answer: a redirect to the login page naming *path* as next.
+
+    Args:
+        response: What the anonymous request got back.
+        path: The path that was requested.
+    """
+    assert response.status_code in (302, 303), (
+        f"{path} answered {response.status_code} to an anonymous request; "
+        f"expected the login redirect"
     )
-
-    location = resp.headers.get("Location", "")
-    assert "/login" in location, (
-        f"{method} {path} redirected to {location}, "
+    location = urlsplit(response.headers.get("Location", ""))
+    assert location.path == "/login", (
+        f"{path} redirected an anonymous request to {location.geturl()}, "
         f"expected /login"
     )
+    assert parse_qs(location.query).get("next") == [path], (
+        f"{path}'s login redirect carries next={location.query!r}; the "
+        f"login flow sends the visitor back there afterwards, so it must "
+        f"name the path they asked for"
+    )
+
+
+class TestEveryRouteIsGated:
+    """The sweep proper: one case per served pair, protected or public."""
+
+    @pytest.mark.parametrize(
+        "method,path,endpoint", _PROTECTED,
+        ids=[f"{m}-{p}" for m, p, _ in _PROTECTED],
+    )
+    def test_an_anonymous_request_is_bounced_to_login(
+        self, client, gate_decisions, method, path, endpoint,
+    ):
+        """Every pair not declared public redirects anonymous callers.
+
+        Both halves are asserted: the observable answer (the redirect, with
+        ``next``), and that it was the GATE that answered -- a view that
+        redirected to the login page on its own would satisfy the first and
+        not the second.
+        """
+        response = _request(client, method, path)
+
+        _assert_bounced_to_login(response, path)
+        assert gate_decisions == [(path, endpoint)], (
+            f"{endpoint} was not refused by the gate itself at {path}; a "
+            f"None endpoint means the filled URL matched no route at all"
+        )
+
+    @pytest.mark.parametrize(
+        "method,path,endpoint", _PUBLIC,
+        ids=[f"{m}-{p}" for m, p, _ in _PUBLIC],
+    )
+    def test_a_public_endpoint_is_not_decided_by_the_gate(
+        self, client, gate_decisions, method, path, endpoint,
+    ):
+        """Every declared public pair reaches its view anonymously.
+
+        The allowlist's own firing arm: drop a name from
+        ``PUBLIC_ENDPOINTS`` and this case fails for it, so the list is a
+        claim graded in both directions rather than a skip.  What the view
+        then answers is its own business -- ``/mfa/verify`` redirects to the
+        login page when no second factor is pending, ``/static/x`` is a 404
+        -- and is not asserted here.
+        """
+        response = _request(client, method, path)
+
+        assert gate_decisions == [], (
+            f"{endpoint} is declared public and the gate refused it anyway"
+        )
+        # A floor, not a shape: the view may redirect or 404, but a public
+        # door that crashes for an anonymous visitor is not "reached".
+        assert response.status_code < 500, (
+            f"{endpoint} answered {response.status_code} anonymously"
+        )
+
+
+class TestTheAllowlistIsExactlyTheFrontDoor:
+    """The policy's contents and its referential integrity."""
+
+    def test_the_public_set_is_pinned(self):
+        """Adding a name to ``PUBLIC_ENDPOINTS`` is a two-file diff.
+
+        The sweep above would happily assert a newly-listed ``grid.index``
+        answers anonymously; this is the only arm that refuses the listing.
+        """
+        assert PUBLIC_ENDPOINTS == _THE_FRONT_DOOR
+
+    def test_every_public_name_resolves_in_the_route_table(self, app):
+        """A stale name exempts nothing, and is refused rather than ignored.
+
+        Renaming ``auth.mfa_verify`` would gate the second factor's page
+        (fail-closed) while the list still read as complete; this arm makes
+        the stale entry itself the failure.
+        """
+        served = {rule.endpoint for rule in app.url_map.iter_rules()}
+        assert PUBLIC_ENDPOINTS <= served, (
+            f"declared public but served by no route: "
+            f"{sorted(PUBLIC_ENDPOINTS - served)}"
+        )
+
+
+class TestTheEnumerationIsTheServedTable:
+    """The cases were derived from one table; the fixture app serves another."""
+
+    def test_the_swept_pairs_are_the_fixture_apps_pairs(self, app):
+        """Pair for pair, so the sweep cannot shrink without this failing.
+
+        ``_route_table_app`` registers the blueprints and nothing else;
+        ``create_app`` could add a rule of its own or register a blueprint
+        the table app does not.  Asserted as set equality in both directions.
+        """
+        assert set(_every_pair(app)) == set(_PAIRS)
+
+    def test_the_sweep_is_not_empty_in_either_arm(self):
+        """Both parametrized lists hold cases -- a vacuous sweep is green.
+
+        The public arm's floor is the pinned set's size, because every
+        public endpoint serves at least one pair; an exact pair count would
+        be a third spelling of the policy, rotting on a method change.
+        """
+        assert len(_PROTECTED) > 200, len(_PROTECTED)
+        assert len(_PUBLIC) >= len(_THE_FRONT_DOOR), [p for _, p, _ in _PUBLIC]
+
+
+class TestAnUnmatchedUrlIsBouncedToo:
+    """The one deliberate difference from the decorator this gate replaced."""
+
+    def test_an_anonymous_request_for_no_route_is_bounced(
+        self, client, gate_decisions,
+    ):
+        """A typo path answers the login redirect, not Flask's 404."""
+        response = client.get("/this-page-does-not-exist")
+
+        _assert_bounced_to_login(response, "/this-page-does-not-exist")
+        assert gate_decisions == [("/this-page-does-not-exist", None)]
+
+    def test_an_anonymous_GET_of_a_POST_only_door_is_bounced(
+        self, client, gate_decisions,
+    ):
+        """A method Werkzeug would refuse with 405 is refused by the gate first."""
+        response = client.get("/logout")
+
+        _assert_bounced_to_login(response, "/logout")
+        assert gate_decisions == [("/logout", None)]
+
+    def test_an_authenticated_user_still_gets_404_and_405(
+        self, auth_client, gate_decisions,
+    ):
+        """The strictness is for anonymous callers; a session sees Flask's own."""
+        assert auth_client.get("/this-page-does-not-exist").status_code == 404
+        assert auth_client.get("/logout").status_code == 405
+        assert gate_decisions == []
+
+
+class TestTheDecoratorsExemptionsAreTheGates:
+    """``login_required`` exempted two things; the gate exempts the same two."""
+
+    def test_HEAD_is_not_exempt(self, client, gate_decisions):
+        """``HEAD`` is bounced like ``GET``, as it was by the decorator.
+
+        Werkzeug adds ``HEAD`` to every ``GET`` rule, so the sweep above
+        leaves it out of its enumeration; this is the one case that asks
+        with it, because ``EXEMPT_METHODS`` names ``OPTIONS`` alone and an
+        exemption that quietly grew would open every page's headers.
+        """
+        response = client.head("/grid")
+
+        assert response.status_code in (302, 303)
+        assert urlsplit(response.headers["Location"]).path == "/login"
+        assert gate_decisions == [("/grid", "grid.index")]
+
+    def test_OPTIONS_is_exempt(self, client, gate_decisions):
+        """A preflight is answered by Flask's automatic OPTIONS, not bounced.
+
+        ``flask_login.config.EXEMPT_METHODS`` is read by the gate rather than
+        re-spelled, so this case grades that the read is there at all.
+        """
+        response = client.options("/grid")
+
+        assert response.status_code == 200
+        assert "GET" in response.headers.get("Allow", "")
+        assert gate_decisions == []
+
+    def test_an_undeclared_route_on_a_fresh_app_is_gated(self):
+        """A route registered by nobody's blueprint is gated all the same.
+
+        The whole point of a gate over a decorator: this ad-hoc view has no
+        decorator and is in no list, and an anonymous request is bounced.
+        Paired with the ``LOGIN_DISABLED`` case below on an identical app, so
+        the two differ in the switch alone.
+        """
+        probe_app = create_app("testing")
+
+        @probe_app.route("/probe")
+        def probe():
+            """A view with no gate of its own."""
+            return "reached"
+
+        try:
+            response = probe_app.test_client().get("/probe")
+            assert response.status_code in (302, 303)
+            assert urlsplit(response.headers["Location"]).path == "/login"
+        finally:
+            with probe_app.app_context():
+                _db.engine.dispose()
+
+    def test_LOGIN_DISABLED_switches_the_gate_off(self):
+        """Flask-Login's own switch turns the gate off, as it did the decorator.
+
+        No shipped configuration sets it; a throwaway app whose subject is an
+        error page or a rate ceiling does, which is why the parity matters.
+        """
+        probe_app = create_app("testing")
+        probe_app.config["LOGIN_DISABLED"] = True
+
+        @probe_app.route("/probe")
+        def probe():
+            """A view with no gate of its own."""
+            return "reached"
+
+        try:
+            response = probe_app.test_client().get("/probe")
+            assert response.status_code == 200
+            assert response.data == b"reached"
+        finally:
+            with probe_app.app_context():
+                _db.engine.dispose()
+
+
+class TestWhereTheGateSitsInTheRequest:
+    """After CSRF and the limiter, before the activity stamp -- pinned."""
+
+    def test_the_hook_order_is_the_decorators_order(self, monkeypatch):
+        """The request runs through the same checks in the same order.
+
+        When the check lived on the view it ran after every app-level hook:
+        the request id, CSRF, the rate limiter, the activity stamp.  What
+        carries behaviour is the gate following CSRF and the limiter --
+        registered ahead of them it would answer an anonymous POST before
+        CSRF could and let an anonymous flood skip the rate ceiling.  Its
+        place before the stamp is behaviourally immaterial (the stamp writes
+        only for an authenticated session) and is pinned so the order is one
+        thing rather than two.
+
+        **Built with the limiter ENABLED at construction**, because Flask-
+        Limiter registers its hook only then and ``TestConfig`` switches it
+        off -- so the fixture app carries no limiter hook to order against,
+        and a test over it would pin three of the four positions while
+        reading as if it pinned all four.  Enabling it on the config class
+        before ``create_app`` is what production does; enabling it afterwards
+        with a second ``init_app`` (the rate-limiter tests' pattern) appends
+        the hook AFTER the gate and would pin the wrong order.  Torn down the
+        way those tests tear down, so the module-level limiter is off again
+        for the next test in this worker.
+        """
+        monkeypatch.setattr(TestConfig, "RATELIMIT_ENABLED", True)
+        ordered_app = create_app("testing")
+        try:
+            names = [
+                hook.__name__ for hook in ordered_app.before_request_funcs[None]
+            ]
+            assert names == [
+                "_attach_request_id",
+                "csrf_protect",
+                "_check_request_limit",
+                "_require_login",
+                "_refresh_last_activity",
+            ], names
+        finally:
+            _disable_limiter(limiter, ordered_app)

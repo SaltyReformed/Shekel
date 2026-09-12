@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from flask import flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from marshmallow import ValidationError as MarshmallowValidationError
 
@@ -54,7 +54,6 @@ logger = logging.getLogger(__name__)
 
 
 @auth_bp.route("/change-password", methods=["POST"])
-@login_required
 def change_password():
     """Process a password change request from the Security settings section."""
     # Schema-level validation enforces shape (current_password
@@ -109,7 +108,6 @@ def change_password():
 
 
 @auth_bp.route("/invalidate-sessions", methods=["POST"])
-@login_required
 def invalidate_sessions():
     """Invalidate all sessions for the current user except the current one.
 
@@ -134,7 +132,6 @@ def invalidate_sessions():
 
 
 @auth_bp.route("/reauth", methods=["GET", "POST"])
-@login_required
 @limiter.limit("5 per 15 minutes", methods=["POST"])
 def reauth():
     """Step-up re-authentication for high-value operations.
@@ -237,7 +234,6 @@ def reauth():
 
 
 @auth_bp.route("/security-event/dismiss", methods=["POST"])
-@login_required
 def dismiss_security_event():
     """Acknowledge the in-app security-event banner for ``current_user``.
 

@@ -12,7 +12,7 @@ import logging
 from datetime import date
 
 from flask import flash, render_template, request
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.extensions import db
 from app.models.escrow_line import EscrowComponentVersion, EscrowLine
@@ -88,7 +88,6 @@ def _render_rate_history(account, params, band_chart=None):
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/rate", methods=["POST"])
-@login_required
 @require_owner
 def add_rate_change(account_id):
     """Record a variable-rate change (HTMX)."""
@@ -385,7 +384,6 @@ def _commit_escrow_change(account):
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/escrow", methods=["POST"])
-@login_required
 @require_owner
 def add_escrow(account_id):
     """Add an escrow line (HTMX): a new line plus its opening dated version."""
@@ -438,7 +436,6 @@ def add_escrow(account_id):
     "/accounts/<int:account_id>/loan/escrow/<int:line_id>/delete",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def delete_escrow(account_id, line_id):
     """Remove an escrow line (HTMX): append a removal tombstone as of today.
@@ -499,7 +496,6 @@ def _owned_version(account, version_id):
     "/accounts/<int:account_id>/loan/escrow/<int:line_id>/version",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def add_escrow_version(account_id, line_id):
     """Schedule a change to an existing escrow line (HTMX): add a dated version.
@@ -588,7 +584,6 @@ def _reject_version_edit(version, params, boundary, new_date):
     "/accounts/<int:account_id>/loan/escrow/version/<int:version_id>/edit",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def edit_escrow_version(account_id, version_id):
     """Edit a not-yet-settled escrow version (HTMX): amount / effective date / inflation.
@@ -631,7 +626,6 @@ def edit_escrow_version(account_id, version_id):
     "/accounts/<int:account_id>/loan/escrow/version/<int:version_id>/delete",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def delete_escrow_version(account_id, version_id):
     """Delete a SCHEDULED escrow version (HTMX): undo a queued future change.
@@ -691,7 +685,6 @@ def delete_escrow_version(account_id, version_id):
     "/accounts/<int:account_id>/loan/escrow/<int:line_id>/rename",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def rename_escrow_line(account_id, line_id):
     """Rename an escrow line's display label in place (HTMX).
@@ -758,7 +751,6 @@ def _resolve_merge_source(account, target):
     "/accounts/<int:account_id>/loan/escrow/<int:line_id>/merge",
     methods=["POST"],
 )
-@login_required
 @require_owner
 def merge_escrow_line(account_id, line_id):
     """Merge another escrow line's history INTO this one (HTMX).

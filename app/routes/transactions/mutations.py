@@ -21,7 +21,7 @@ one file.
 import logging
 
 from flask import request
-from flask_login import current_user, login_required
+from flask_login import current_user
 from marshmallow import ValidationError as MarshmallowValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
@@ -541,7 +541,6 @@ def _apply_regular_update(txn, txn_id, data):
 
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["PATCH"])
-@login_required
 @require_owner
 def update_transaction(txn_id):
     """Update a transaction's fields (inline edit save).
@@ -638,7 +637,6 @@ def update_transaction(txn_id):
 
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["DELETE"])
-@login_required
 @require_owner
 def delete_transaction(txn_id):
     """Remove a transaction from the books, soft or hard.
@@ -783,7 +781,6 @@ def _mark_done_regular(txn, txn_id, submitted, target):
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-done", methods=["POST"])
-@login_required
 def mark_done(txn_id):
     """Set a transaction's status to 'done' (expenses) or 'received' (income).
 
@@ -864,7 +861,6 @@ def mark_done(txn_id):
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-credit", methods=["POST"])
-@login_required
 @require_owner
 def mark_credit(txn_id):
     """Mark a transaction as 'credit' and auto-generate a payback expense.
@@ -907,7 +903,6 @@ def mark_credit(txn_id):
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/unmark-credit", methods=["DELETE"])
-@login_required
 @require_owner
 def unmark_credit(txn_id):
     """Revert credit status and delete the auto-generated payback.
@@ -944,7 +939,6 @@ def unmark_credit(txn_id):
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/cancel", methods=["POST"])
-@login_required
 @require_owner
 def cancel_transaction(txn_id):
     """Set a transaction's status to 'cancelled'.

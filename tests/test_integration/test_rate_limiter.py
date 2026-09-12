@@ -139,6 +139,11 @@ class TestDefaultLimitCeiling:
         # pylint: disable=unused-argument
         rate_app = create_app("testing")
         rate_app.config["RATELIMIT_ENABLED"] = True
+        # The login gate (plan step bank_import:X-gi-4) would bounce the
+        # anonymous hits below before the limiter counted them past the
+        # redirect; Flask-Login's own switch turns it off, and the subject
+        # here is the ceiling.
+        rate_app.config["LOGIN_DISABLED"] = True
 
         # Register an undecorated route BEFORE init_app fires.
         @rate_app.route("/test-undecorated-route")
@@ -185,6 +190,11 @@ class TestDefaultLimitCeiling:
         # pylint: disable=unused-argument
         rate_app = create_app("testing")
         rate_app.config["RATELIMIT_ENABLED"] = True
+        # The login gate (plan step bank_import:X-gi-4) would bounce the
+        # anonymous hits below before the limiter counted them past the
+        # redirect; Flask-Login's own switch turns it off, and the subject
+        # here is the ceiling.
+        rate_app.config["LOGIN_DISABLED"] = True
 
         @rate_app.route("/test-retry-after-route")
         def retry_after():

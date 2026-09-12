@@ -20,7 +20,7 @@ import json
 from datetime import date
 
 from flask import abort, render_template, request
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.utils.auth_helpers import get_or_404, require_owner, log_refused_lookup
 from app.extensions import db
@@ -248,7 +248,6 @@ def _salary_path_jsonable(path):
 
 
 @salary_bp.route("/salary")
-@login_required
 @require_owner
 def cockpit():
     """Render the salary cockpit for the primary (or selected) active profile.
@@ -339,7 +338,6 @@ def cockpit():
 
 
 @salary_bp.route("/salary/<int:profile_id>/anatomy/<int:period_id>")
-@login_required
 @require_owner
 def anatomy(profile_id, period_id):
     """Return the paycheck-anatomy fragment for a period (HTMX stepping).

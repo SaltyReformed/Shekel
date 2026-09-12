@@ -9,7 +9,7 @@ the shared :func:`_resolve_owned_fks` IDOR probe before inserting.
 import logging
 
 from flask import request, jsonify
-from flask_login import current_user, login_required
+from flask_login import current_user
 from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
@@ -77,7 +77,6 @@ def _reject_transaction_on_loan(account: Account) -> tuple[str, int] | None:
 
 
 @transactions_bp.route("/transactions/inline", methods=["POST"])
-@login_required
 @require_owner
 def create_inline():
     """Create a transaction from inline grid interaction.
@@ -192,7 +191,6 @@ def create_inline():
 
 
 @transactions_bp.route("/transactions", methods=["POST"])
-@login_required
 @require_owner
 def create_transaction():
     """Create an ad-hoc transaction (not from a template)."""

@@ -13,7 +13,7 @@ from datetime import date
 from decimal import Decimal, ROUND_CEILING
 
 from flask import render_template, request
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
@@ -230,7 +230,6 @@ def _payoff_target_date_result(params, ctx, data):
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/payoff", methods=["POST"])
-@login_required
 @require_owner
 def payoff_calculate(account_id):
     """Calculate payoff scenario (HTMX)."""
@@ -453,7 +452,6 @@ def _build_refinance_comparison(current_balance, ctx, scenarios, data, params):
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/refinance", methods=["POST"])
-@login_required
 @require_owner
 def refinance_calculate(account_id):
     """Compute refinance what-if comparison scenario (HTMX).

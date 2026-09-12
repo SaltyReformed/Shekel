@@ -10,7 +10,7 @@ from flask import (
     Blueprint, Response, abort, flash, jsonify, redirect, render_template,
     request, url_for,
 )
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.utils.auth_helpers import get_or_404, require_owner
 
@@ -28,7 +28,6 @@ _edit_schema = CategoryEditSchema()
 
 
 @categories_bp.route("/categories")
-@login_required
 @require_owner
 def list_categories():
     """Redirect to settings dashboard categories section."""
@@ -52,7 +51,6 @@ def _create_form_error_response(
 
 
 @categories_bp.route("/categories", methods=["POST"])
-@login_required
 @require_owner
 def create_category():
     """Create a new category."""
@@ -118,7 +116,6 @@ def create_category():
 
 
 @categories_bp.route("/categories/<int:category_id>/edit", methods=["POST"])
-@login_required
 @require_owner
 def edit_category(category_id):
     """Edit a category item name and/or group assignment (re-parenting)."""
@@ -167,7 +164,6 @@ def edit_category(category_id):
 
 
 @categories_bp.route("/categories/<int:category_id>/archive", methods=["POST"])
-@login_required
 @require_owner
 def archive_category(category_id):
     """Archive a category (hide from active views, preserve data)."""
@@ -182,7 +178,6 @@ def archive_category(category_id):
 
 
 @categories_bp.route("/categories/<int:category_id>/unarchive", methods=["POST"])
-@login_required
 @require_owner
 def unarchive_category(category_id):
     """Unarchive a category (return to active views)."""
@@ -197,7 +192,6 @@ def unarchive_category(category_id):
 
 
 @categories_bp.route("/categories/<int:category_id>/delete", methods=["POST"])
-@login_required
 @require_owner
 def delete_category(category_id):
     """Permanently delete a category, or archive if in use.

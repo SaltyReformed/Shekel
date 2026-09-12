@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from datetime import date
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 from sqlalchemy.exc import IntegrityError
 
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -371,7 +371,6 @@ def _cockpit_context(user_id: int) -> dict:
 
 
 @savings_bp.route("/savings")
-@login_required
 @require_owner
 def dashboard():
     """Savings dashboard: the Net Worth Cockpit, goals, and emergency fund.
@@ -390,7 +389,6 @@ def dashboard():
 
 
 @savings_bp.route("/savings/cockpit")
-@login_required
 @require_owner
 def cockpit_section():
     """HTMX partial: re-render the Net Worth Cockpit region on balanceChanged.
@@ -415,7 +413,6 @@ def cockpit_section():
 
 
 @savings_bp.route("/savings/cockpit/<int:account_id>/balance")
-@login_required
 @require_owner
 def cockpit_balance(account_id):
     """HTMX partial: re-render one account's cockpit balance cell.
@@ -454,7 +451,6 @@ def cockpit_balance(account_id):
 
 
 @savings_bp.route("/savings/goals/new", methods=["GET"])
-@login_required
 @require_owner
 def new_goal():
     """Display the savings goal creation form."""
@@ -462,7 +458,6 @@ def new_goal():
 
 
 @savings_bp.route("/savings/goals", methods=["POST"])
-@login_required
 @require_owner
 def create_goal():
     """Create a new savings goal."""
@@ -500,7 +495,6 @@ def create_goal():
 
 
 @savings_bp.route("/savings/goals/<int:goal_id>/edit", methods=["GET"])
-@login_required
 @require_owner
 def edit_goal(goal_id):
     """Display the savings goal edit form."""
@@ -514,7 +508,6 @@ def edit_goal(goal_id):
 
 
 @savings_bp.route("/savings/goals/<int:goal_id>", methods=["POST"])
-@login_required
 @require_owner
 def update_goal(goal_id):
     """Update a savings goal.
@@ -587,7 +580,6 @@ def update_goal(goal_id):
 
 
 @savings_bp.route("/savings/goals/<int:goal_id>/delete", methods=["POST"])
-@login_required
 @require_owner
 def delete_goal(goal_id):
     """Deactivate a savings goal.
