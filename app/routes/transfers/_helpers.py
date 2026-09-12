@@ -13,6 +13,8 @@ from flask import request
 from flask_login import current_user
 
 from app.extensions import db
+from app.models.account import Account
+from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.schemas.validation import (
@@ -85,6 +87,43 @@ def _user_owns(model, pk):
     if record is None:
         return False
     return record.user_id == current_user.id
+
+
+def _first_unowned_template_fk(data):
+    """Return the label of the first submitted FK the user does not own, else None.
+
+    Route-boundary FK ownership for the transfer-template update payload
+    (commit C-27 / F-043), the :func:`_user_owns` loop
+    ``transfers.templates.update_transfer_template`` runs.  **It lived in that
+    route module until plan step R7d-f-4**, which needed the module's last
+    lines for the step itself; a loop over :func:`_user_owns` belongs beside
+    it in any case.  Each user-scoped FK is verified only when present
+    in the partial-update ``data`` (the loaded dict carries only keys the user
+    submitted -- BaseSchema's EXCLUDE meta drops stray form fields).
+    ``category_id`` accepts ``None`` per the schema; ``None`` clears the
+    category and skips the probe.
+
+    Args:
+        data: The loaded TransferTemplateUpdateSchema output (partial update).
+
+    Returns:
+        The human-readable label ("source account", "destination account" or
+        "category") of the first FK that is present, non-``None``, and not
+        owned by ``current_user``; ``None`` when every present FK is owned.
+    """
+    for field, model, label in (
+        ("from_account_id", Account, "source account"),
+        ("to_account_id", Account, "destination account"),
+        ("category_id", Category, "category"),
+    ):
+        if field not in data:
+            continue
+        value = data[field]
+        if value is None:
+            continue
+        if not _user_owns(model, value):
+            return label
+    return None
 
 
 def _get_owned_transfer(xfer_id):

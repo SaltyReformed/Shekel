@@ -84,6 +84,7 @@ from app.routes.transfers._instances import (
 )
 from app.routes.transfers._helpers import (
     _create_schema,
+    _first_unowned_template_fk,
     _update_schema,
     _user_owns,
 )
@@ -865,39 +866,6 @@ def hard_delete_transfer_template(template_id):
 
 
 
-
-
-def _first_unowned_template_fk(data):
-    """Return the label of the first submitted FK the user does not own, else None.
-
-    Route-boundary FK ownership for the transfer-template update payload
-    (commit C-27 / F-043).  Each user-scoped FK is verified only when present
-    in the partial-update ``data`` (the loaded dict carries only keys the user
-    submitted -- BaseSchema's EXCLUDE meta drops stray form fields).
-    ``category_id`` accepts ``None`` per the schema; ``None`` clears the
-    category and skips the probe.
-
-    Args:
-        data: The loaded TransferTemplateUpdateSchema output (partial update).
-
-    Returns:
-        The human-readable label ("source account", "destination account" or
-        "category") of the first FK that is present, non-``None``, and not
-        owned by ``current_user``; ``None`` when every present FK is owned.
-    """
-    for field, model, label in (
-        ("from_account_id", Account, "source account"),
-        ("to_account_id", Account, "destination account"),
-        ("category_id", Category, "category"),
-    ):
-        if field not in data:
-            continue
-        value = data[field]
-        if value is None:
-            continue
-        if not _user_owns(model, value):
-            return label
-    return None
 
 
 def _regenerate_and_commit_template(
