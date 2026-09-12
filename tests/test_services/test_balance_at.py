@@ -42,7 +42,6 @@ import pytest
 from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
-    AmountSourceEnum,
     CalcMethodEnum,
     DeductionTimingEnum,
     StatusEnum,
@@ -107,8 +106,10 @@ from tests._test_helpers import (
     derived_span,
     insert_trueup_event,
     last_covered_day,
+    generate_row_of,
     loan_params_for,
     make_appreciating_account,
+    make_every_period_rule,
     make_investment_account,
     make_salary_profile,
     posted_loan_balance_at,
@@ -134,11 +135,12 @@ def _no_baseline(user_id):
 #: What a template's ``default_amount`` says when the graded figure is its
 #: price SERIES.  Distinct from every amount the cases below state, so a
 #: producer reading the scalar instead of the series answers a number no
-#: assertion expects (see :func:`_derived_income_row`).
+#: assertion expects (see :func:`_derived_income_row` for how the scalar is
+#: made to hold it).
 _NOT_THE_SERIES = Decimal("7.77")
 
 
-def _derived_income_row(db, seed_user, account, period, scenario, amount):
+def _derived_income_row(db, seed_user, account, period, amount):
     """A projected income row DECLARED derived, priced by a definition's series.
 
     **What replaced a monkeypatched read-time repair at plan step X-au-d.**  A
@@ -148,8 +150,12 @@ def _derived_income_row(db, seed_user, account, period, scenario, amount):
     patched producer.
 
     The definition is priced through ``template_amount_service.set_amount``,
-    the ONE write door for a price series, and the row's due date is the
-    period's own start so ``amount_as_of`` resolves on it.
+    the ONE write door for a price series, effective on the period's own
+    start -- which is the due date the engine derives for an every-paycheck
+    definition (``compute_due_date``), so ``amount_as_of`` resolves on it.
+    The row itself is the engine's (:func:`generate_row_of`, plan step
+    balance:X-cf), written into the owner's baseline scenario, which is
+    what both callers price against.
 
     **``default_amount`` is deliberately NOT the graded figure.**  An
     adversarial review of plan step X-au-d found a first version setting both
@@ -159,17 +165,27 @@ def _derived_income_row(db, seed_user, account, period, scenario, amount):
     message forbids, survives every case built on this helper.  A distinct
     scalar is what makes the series load-bearing.
 
+    **Passing ``_NOT_THE_SERIES`` to the constructor did not achieve that, and
+    plan step balance:X-cf-3 measured it.**  ``set_amount`` re-syncs
+    ``default_amount`` onto the NEWEST version it states
+    (``template_amount_service._resync_scalar``), so the constructor's
+    ``7.77`` was overwritten with *amount* on the next line and the resolver
+    mutated to read the scalar passed both cases.  The scalar holds
+    ``_NOT_THE_SERIES`` the only way it can: as a SECOND version, effective
+    the day after this row's due date, which the re-sync copies into the
+    column while ``amount_as_of`` on the row's own day still answers
+    *amount*.  Red with the mutation, green without.
+
     Args:
         db: The test session fixture.
         seed_user: The seeded owner bundle.
         account: The account the row's money moves through.
         period: The pay period the row is funded in.
-        scenario: The scenario the row belongs to.
         amount: What the definition states, and therefore what the row is
             worth.
 
     Returns:
-        The staged :class:`~app.models.transaction.Transaction`.
+        The flushed :class:`~app.models.transaction.Transaction`.
     """
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -184,27 +200,14 @@ def _derived_income_row(db, seed_user, account, period, scenario, amount):
     template_amount_service.set_amount(
         template, amount, effective_on=period.start_date,
     )
-    txn = Transaction(
-        account_id=account.id,
-        template_id=template.id,
-        # The owner, off the period this row is funded in (plan step
-        # ``pay_calendar:C13-a``).  This helper arrived from
-        # ``balance:X-au-d``, which was written against a schema with no
-        # ``user_id``; without this the constructor meets a NOT NULL.
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=scenario.id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        name="Priced income",
-        due_date=period.start_date,
-        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-        amount_ownership=AmountOwnership.derived(
-            ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-        ),
+    template_amount_service.set_amount(
+        template, _NOT_THE_SERIES,
+        effective_on=period.start_date + timedelta(days=1),
     )
-    db.session.add(txn)
-    db.session.flush()
-    return txn
+    assert template.default_amount == _NOT_THE_SERIES
+    # The definition first, then the cadence onto it (plan step R-F6).
+    make_every_period_rule(db.session, template)
+    return generate_row_of(template, period)
 
 
 def _make_hysa(db, seed_user, anchor_period, balance):
@@ -1040,15 +1043,15 @@ class TestAFeedIsTheSameWhoeverItIsLoadedBeside:
             alone = _contribution_inputs_for_account(checking, ctx)
             batched = _contribution_inputs_for_accounts([checking, roth], ctx)
 
-            # Non-vacuity: the batch really did price a feed to hand out.
-            # Stated on the priced MAP since plan step salary:S3-e-1 deleted
-            # ``models_employee``.  It is the SAME claim that property made --
-            # it was ``any(amount > 0)`` over exactly this map -- and a
-            # stronger one than the surviving ``is_payroll_linked`` would
-            # make, which is why the map and not the flag is asserted here.
+            # Non-vacuity: the batch really did hand out a feed that prices.
+            # Asked of the feed over the pass's saved periods since plan step
+            # salary:S3-e-2 (it was ``any(amount > 0)`` over a priced MAP,
+            # which S3-e-1 put here when it deleted ``models_employee``).  A
+            # stronger claim than the surviving ``is_payroll_linked`` would
+            # make, which is why the prices and not the flag are asserted.
             assert any(
-                amount > 0
-                for amount in batched[roth.id].feed.employee_by_payday.values()
+                batched[roth.id].feed.employee_at(period) > 0
+                for period in ctx.reported_periods()
             )
             # The arm: the account that cannot consume one carries none, in
             # BOTH shapes -- so the two reads are the same object's worth of
@@ -1740,9 +1743,7 @@ class TestTheSeamOwnsTheIncomeBasis:
             profile = _create_profile(user_id, scenario.id)
             template = _make_salary_template(seed_user, profile)
             db.session.commit()
-            txn = _make_txn(
-                seed_user, periods[5], template=template, derived=True,
-            )
+            txn = _make_txn(seed_user, periods[5], template=template)
             db.session.commit()
 
             assert txn.estimated_amount is None
@@ -1767,6 +1768,7 @@ class TestTheSeamOwnsTheIncomeBasis:
         from tests.test_services.test_income_service import (
             _create_profile,
             _make_salary_template,
+            _make_txn,
         )
 
         with app.app_context():
@@ -1776,21 +1778,13 @@ class TestTheSeamOwnsTheIncomeBasis:
             periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             profile = _create_profile(user_id, scenario.id)
-            template = _make_salary_template(seed_user, profile)
+            # The paycheck lands on the HYSA because its DEFINITION does: the
+            # engine puts a row on its template's account.
+            template = _make_salary_template(
+                seed_user, profile, name="HYSA paycheck", account=hysa,
+            )
             db.session.commit()
-            db.session.add(Transaction(
-                account_id=hysa.id,
-                template_id=template.id,
-                user_id=periods[5].user_id,
-                pay_period_id=periods[5].id,
-                scenario_id=scenario.id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="HYSA paycheck",
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.derived(
-                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-                ),
-            ))
+            _make_txn(seed_user, periods[5], template=template)
             db.session.commit()
 
             kind_correct = balance_at.balance_map(hysa, bctx)
@@ -1969,12 +1963,13 @@ class TestInvestmentContributions:
                 ),
             )
             assert with_ded == expected
-            # Non-vacuity: the feed really did price the deduction.  On the
-            # priced MAP since plan step salary:S3-e-1 deleted
-            # ``models_employee``; the property was this predicate.
+            # Non-vacuity: the feed really does price the deduction.  Asked
+            # over the pass's saved periods since plan step salary:S3-e-2 (it
+            # was ``any(amount > 0)`` over a priced MAP, put here at S3-e-1
+            # when ``models_employee`` went; the property was this predicate).
             assert any(
-                amount > 0
-                for amount in feeds_for_inv.employee_by_payday.values()
+                feeds_for_inv.employee_at(period) > 0
+                for period in after_ctx.reported_periods()
             )
 
             # Scope: a non-investment account in the same batch is untouched.
@@ -3254,12 +3249,11 @@ class TestGridBalanceView:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             income_txn = _derived_income_row(
-                db, seed_user, hysa, periods[6], scenario, Decimal("1500.00"),
+                db, seed_user, hysa, periods[6], Decimal("1500.00"),
             )
             db.session.commit()
             assert income_txn.estimated_amount is None
@@ -3691,13 +3685,11 @@ class TestTheViewIsBuiltOnOneAmountModel:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
             account = seed_user["account"]
             income_txn = _derived_income_row(
-                db, seed_user, account, periods[1], scenario,
-                Decimal("1500.00"),
+                db, seed_user, account, periods[1], Decimal("1500.00"),
             )
             db.session.commit()
 

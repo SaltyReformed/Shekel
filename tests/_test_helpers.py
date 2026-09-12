@@ -23,7 +23,7 @@ from datetime import (
 from decimal import Decimal
 from app.enums import BusinessDayShiftEnum
 from app.models.amount_ownership import AmountOwnership
-from app.services import pay_calendar, pay_era_write, pay_rhythm, pay_schedule_service
+from app.services import pay_era_write, pay_rhythm, pay_schedule_service
 
 
 # The synthetic split-loan fixture shared verbatim by the three parallel
@@ -4268,6 +4268,56 @@ def generate_row_of(template, period):
     return created[0]
 
 
+def definition_firing_twice_in_a_paycheck(db_session, seed_user, *, name):
+    """Pin a 60-day calendar and author a MONTHLY definition that names TWO
+    occurrences in its second paycheck; return ``(template, that period)``.
+
+    The one fixture for "a paycheck holding two rows of one definition" -- the
+    state plan step R17 made storable -- so the cases that need it (the
+    builder's 2+ refusal in ``test_fixture_validation``, the R17 downgrade
+    guard, DC-06's acceptance of the pair) state it once and the calendar
+    arithmetic is argued once.  :func:`generate_row_of` REFUSES this
+    definition in this paycheck by design; the cases that want the pair
+    written take it from :func:`populate_in_a_fresh_pass`.
+
+    **The calendar is pinned to a stated date rather than derived from today,
+    and the reason was measured, not argued.**  A 60-day paycheck that opens
+    in January or February of a non-leap year spans THREE firsts of the month
+    (Jan+Feb and Feb+Mar are 59 days each), and ``seed_schedule_at_cadence(60)``
+    opens its second paycheck 180-186 days before today -- so the same cases
+    read three rows for about two months of every non-leap year, from late
+    June into early September (2026-06-29..08-30, 2027-07-05..08-29,
+    2029-07-02..09-02, 2030-07-01..09-01; none in 2028).  Found by
+    adversarial review 2026-09-11 under ``SHEKEL_FAKE_TODAY=2026-07-15``,
+    which is the way to see it.  The second paycheck here opens 2026-05-01
+    and closes 2026-06-29:
+    May and June are 61 days, so it holds the 1st of May and the 1st of June
+    and no third, on every clock.
+
+    Args:
+        db_session: The test session.
+        seed_user: The seed user fixture dict; its calendar is REBUILT.
+        name: The definition's name.
+
+    Returns:
+        ``(template, period)``: the flushed
+        :class:`~app.models.transaction_template.TransactionTemplate` carrying
+        the monthly rule, and the :class:`~app.models.pay_period.PayPeriod`
+        it fires twice in.
+    """
+    # Pylint: ``import-outside-toplevel`` -- a tests-package import kept
+    # local so this module's import graph stays as it was.
+    # pylint: disable=import-outside-toplevel
+    from tests.oracles.recurrence_baseline import MONTHLY
+
+    periods = rebuild_calendar(
+        seed_user["user"].id, _real_date(2026, 3, 2), 6, 60,
+    )
+    template = bare_expense_template(db_session, seed_user, name=name)
+    make_cadence_rule(template, MONTHLY, starts_on=periods[1].start_date)
+    return template, periods[1]
+
+
 def require_assertion_instant(at):
     """Return *at*, refusing a plain ``date`` where an INSTANT is required.
 
@@ -5701,6 +5751,7 @@ def make_cadence_rule(owner, cadence, **kwargs):
 def make_expense_template(
     db_session, seed_user, amount="1200.00", is_active=True, *,
     name="Rent", category_key="Rent", is_envelope=False,
+    companion_visible=False, account=None,
 ):
     """Create and flush an every-period expense template on the seed account.
 
@@ -5711,6 +5762,8 @@ def make_expense_template(
     generate from -- the shape every real one has (:func:`state_template_price`
     says why a bare template is not) -- and :func:`generate_row_of` is the
     next line for a fixture that wants the definition's row.
+    :func:`make_income_template` is the same builder for an income
+    definition; the two share one body.
 
     Args:
         db_session: The test session.
@@ -5722,6 +5775,17 @@ def make_expense_template(
             fixtures (plan step balance:X-cf) changed no caller.
         category_key: A key into ``seed_user["categories"]``.
         is_envelope: Whether the definition's rows track purchases.
+        companion_visible: Whether a companion of the owner may see its rows.
+            The second of the two flags a generated row RESOLVES through its
+            definition (``Transaction.visible_to_companion``), widened here
+            for the same reason as ``is_envelope`` and defaulting to the
+            column's own default.
+        account: The :class:`~app.models.account.Account` the definition
+            moves money through; the seed user's checking account when
+            omitted.  Widened at plan step balance:X-cf-3 for the fixtures
+            whose row lives on an HYSA or a 401(k): the engine puts a row on
+            its DEFINITION's account (``DerivedRowFields.account_id``), so
+            that is the only place a fixture can say where the row goes.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5730,21 +5794,96 @@ def make_expense_template(
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
-    from app.models.ref import TransactionType
+    from app.enums import TxnTypeEnum
+
+    return _priced_repeating_template(
+        db_session, seed_user, TxnTypeEnum.EXPENSE, amount, is_active,
+        name=name, category_key=category_key, is_envelope=is_envelope,
+        companion_visible=companion_visible, account=account,
+    )
+
+
+def make_income_template(
+    db_session, seed_user, amount="2000.00", is_active=True, *,
+    name="Paycheck", category_key="Salary", is_envelope=False,
+    companion_visible=False, account=None,
+):
+    """Create and flush an every-period INCOME template on the seed account.
+
+    :func:`make_expense_template`'s twin for a definition that pays the owner
+    rather than bills them, sharing that helper's body so a fixture wanting an
+    income definition's row (plan step balance:X-cf) does not restate the
+    template stanza with one column changed.  Same contract: priced, carrying
+    an every-paycheck rule, and :func:`generate_row_of` is the next line.
+
+    Args:
+        db_session: The test session.
+        seed_user: The seed user fixture dict (or the second user's).
+        amount: The stated price, as a string.
+        is_active: Whether the definition is live.
+        name: The definition's name.
+        category_key: A key into ``seed_user["categories"]``.
+        is_envelope: Whether the definition's rows track purchases.
+        companion_visible: Whether a companion of the owner may see its rows.
+        account: The account the definition pays into; the seed user's
+            checking account when omitted.  See :func:`make_expense_template`.
+
+    Returns:
+        The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
+        priced and carrying an every-paycheck rule.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.enums import TxnTypeEnum
+
+    return _priced_repeating_template(
+        db_session, seed_user, TxnTypeEnum.INCOME, amount, is_active,
+        name=name, category_key=category_key, is_envelope=is_envelope,
+        companion_visible=companion_visible, account=account,
+    )
+
+
+def _priced_repeating_template(
+    db_session, seed_user, txn_type, amount, is_active, *,
+    name, category_key, is_envelope, companion_visible, account,
+):
+    """The one body behind :func:`make_expense_template` and its income twin.
+
+    Args:
+        db_session: The test session.
+        seed_user: The seed user fixture dict (or the second user's).
+        txn_type: The :class:`~app.enums.TxnTypeEnum` member the definition
+            is of.
+        amount: The stated price, as a string.
+        is_active: Whether the definition is live.
+        name: The definition's name.
+        category_key: A key into ``seed_user["categories"]``.
+        is_envelope: Whether the definition's rows track purchases.
+        companion_visible: Whether a companion of the owner may see its rows.
+        account: The account the definition is on, or ``None`` for
+            ``seed_user["account"]``.
+
+    Returns:
+        The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
+        priced and carrying an every-paycheck rule.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
     from app.models.transaction_template import TransactionTemplate
 
-    expense_type = (
-        db_session.query(TransactionType).filter_by(name="Expense").one()
-    )
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
+        account_id=(seed_user["account"] if account is None else account).id,
         category_id=seed_user["categories"][category_key].id,
-        transaction_type_id=expense_type.id,
+        transaction_type_id=ref_cache.txn_type_id(txn_type),
         name=name,
         default_amount=Decimal(amount),
         is_active=is_active,
         is_envelope=is_envelope,
+        companion_visible=companion_visible,
     )
     db_session.add(template)
     db_session.flush()

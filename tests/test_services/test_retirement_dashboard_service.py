@@ -19,17 +19,13 @@ from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
     EmployerContributionTypeEnum,
-    StatusEnum,
-    TxnTypeEnum,
 )
 from app.extensions import db
 from app.models.investment_params import InvestmentParams
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCadence, calendar_for
@@ -49,12 +45,13 @@ from tests._test_helpers import (
     all_periods,
     current_pay_period,
     derived_span,
+    generate_row_of,
     last_covered_day,
+    make_expense_template,
     make_investment_account,
     mark_purchase_settled,
     open_books_before_the_first_assertion,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 def _picture(user_id, as_of=None):
@@ -324,15 +321,18 @@ class TestComputeGapNetBiweekly:
 class TestTheRenderDayOpensTheSalaryPath:
     """Every salary path on ``/retirement`` starts at the READ PASS's year.
 
-    The three producers that open one -- :func:`compute_pension_summary`,
-    :func:`compute_gap_net_biweekly` and
-    :func:`~app.services.retirement_projection.build_employer_salary_basis` --
-    each called ``date.today().year`` for themselves until pay-calendar plan
-    step **C2-f2e**, which is ledger row **P55**.  They run once per PLAN POINT
+    The producers that open one -- :func:`compute_pension_summary`,
+    :func:`compute_gap_net_biweekly`, and ``build_employer_salary_basis``
+    until plan step salary:S3-e-2 deleted it (the payroll feed prices every
+    period's gross through the paycheck engine now, so that page has no
+    salary path of its own for the employer base) -- each called
+    ``date.today().year`` for themselves until pay-calendar plan step
+    **C2-f2e**, which is ledger row **P55**.  They run once per PLAN POINT
     and the retire-later lever probes about ten, so one render read the clock
     about thirteen times; because the reads are ``.year`` they diverge only
     across a NEW YEAR, and then the verdict card projects its path from year N
-    while the lever card beside it projects from N+1.
+    while the lever card beside it projects from N+1.  The two cases that
+    graded the deleted producer went with it.
 
     Each case asserts the path MOVES with the supplied day rather than sitting
     where the frozen fixture clock is.  Asserting "it starts this year" would
@@ -450,58 +450,6 @@ class TestTheRenderDayOpensTheSalaryPath:
         assert retirement_dashboard_service.compute_gap_net_biweekly(
             gap, date(2030, 6, 30), None, date(2027, 3, 20),
         ) == Decimal("1538.46")
-
-    def test_the_employer_basis_opens_at_the_pass_year(self):
-        """``build_employer_salary_basis`` projects from the pass's year.
-
-        A pass pinned past the horizon leaves no year to project, so the
-        resolver is ``None`` and ``growth_engine`` falls back to the constant
-        employer gross -- the documented no-horizon behavior.  Pinned before
-        it, the resolver exists.
-        """
-        profile = self._profile()
-
-        cadence = PayCadence(cadence_days=14)
-
-        assert retirement_projection.build_employer_salary_basis(
-            [profile], date(2030, 6, 30), date(2027, 3, 20), cadence,
-        ) is not None
-        assert retirement_projection.build_employer_salary_basis(
-            [profile], date(2030, 6, 30), date(2032, 3, 20), cadence,
-        ) is None
-
-    def test_the_employer_basis_divides_by_the_OWNERS_paychecks(self):
-        """THE CADENCE AXIS for the employer-contribution base.
-
-        Input: the same raise-free $100,000 profile, resolved at 14 days and
-        again at 7.
-        Expected: $3,846.15 and $1,923.08 -- the same salary over 26 and over
-        52 paychecks.
-        Why: the resolver feeds ``growth_engine``'s percentage-of-gross
-        employer match for the WHOLE projection horizon, so a count that is
-        not the owner's compounds. It read a ``pay_periods_per_year`` column
-        until plan step R-F16 and its only test was biweekly, where that
-        column and the derived count agree.
-        """
-        profile = self._profile()
-
-        class _Period:  # the one attribute the resolver reads
-            start_date = date(2027, 3, 20)
-
-        period = _Period()
-
-        biweekly = retirement_projection.build_employer_salary_basis(
-            [profile], date(2030, 6, 30), date(2027, 3, 20),
-            PayCadence(cadence_days=14),
-        )
-        weekly = retirement_projection.build_employer_salary_basis(
-            [profile], date(2030, 6, 30), date(2027, 3, 20),
-            PayCadence(cadence_days=7),
-        )
-
-        assert biweekly(period) == Decimal("3846.15")
-        assert weekly(period) == Decimal("1923.08")
-
 
     def test_the_RENDER_threads_its_own_day_into_the_salary_path(
         self, app, db, seed_user, seed_periods,
@@ -665,13 +613,17 @@ class TestTheDisplayedRates:
 
 
 def _add_envelope_expense_with_settled_entries_ret(
-    db_session, *, user_id, account, scenario_id, period, category_id,
+    db_session, *, seed_user, account, period, category_key,
     estimated, settled_amounts,
 ):
     """Create a Projected envelope expense with already-posted debit entries.
 
     Same shape as the helper used in the C8 year-end / investment
-    tests; copied here so this file stays standalone.
+    tests; copied here so this file stays standalone.  The envelope is the
+    engine's own row of a priced, every-paycheck definition on *account*
+    (:func:`generate_row_of`, plan step balance:X-cf) -- the engine puts a
+    row on its definition's account, which is why the definition is built
+    there -- and the purchases are then recorded against it.
 
     **Each purchase is dated on the account's own latest asserted day and
     routed through ``mark_purchase_settled``** (plan step S1-c, ruling
@@ -683,41 +635,18 @@ def _add_envelope_expense_with_settled_entries_ret(
     holds whatever day the suite runs on, which is the ``.claude/rules/testing``
     property N-131 and N-132 are both about.
     """
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
-    template = TransactionTemplate(
-        user_id=user_id,
-        account_id=account.id,
-        category_id=category_id,
-        transaction_type_id=expense_type_id,
-        name="Retirement-side expense",
-        default_amount=estimated,
-        is_envelope=True,
+    template = make_expense_template(
+        db_session, seed_user, amount=estimated,
+        name="Retirement-side expense", category_key=category_key,
+        is_envelope=True, account=account,
     )
-    db_session.add(template)
-    db_session.flush()
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=scenario_id,
-        account_id=account.id,
-        status_id=projected_id,
-        name="Retirement-side expense",
-        category_id=category_id,
-        transaction_type_id=expense_type_id,
-        amount_ownership=AmountOwnership.own(estimated),
-    )
-    db_session.add(txn)
-    db_session.flush()
+    txn = generate_row_of(template, period)
 
     observed_on = cash_ledger.reconciled_through(account.id).observed_day
     for amt in settled_amounts:
         entry = TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id,
-            user_id=user_id,
+            user_id=seed_user["user"].id,
             amount=amt,
             description="Confirmed purchase",
             purchased_on=observed_on,
@@ -844,11 +773,10 @@ class TestRetirementProjectionEntryAware:
 
             _add_envelope_expense_with_settled_entries_ret(
                 db.session,
-                user_id=user.id,
+                seed_user=seed_user,
                 account=acct,
-                scenario_id=scenario.id,
                 period=current_period,
-                category_id=seed_user["categories"]["Groceries"].id,
+                category_key="Groceries",
                 estimated=Decimal("500.00"),
                 settled_amounts=(
                     Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
@@ -1525,7 +1453,7 @@ class TestTheProjectionAxisIsTheOwnersOwnCalendar:
         # The pass carries the owner's calendar, so the two period arguments
         # this took went with pay-calendar plan step C2-f2d-3.
         ctx = retirement_projection.build_projection_context(
-            BalanceContext.build(user_id), horizon, None, None,
+            BalanceContext.build(user_id), horizon, None,
         )
         return retirement_projection.resolve_projection_axis(ctx)
 

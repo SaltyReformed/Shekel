@@ -73,7 +73,9 @@ from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from tests._test_helpers import (
+    generate_row_of,
     load_migration_module,
+    make_every_period_rule,
     settle_day_columns,
     settlement_columns,
 )
@@ -85,7 +87,6 @@ from app.services.cash_ledger import (
 from app.utils.balance_predicates import is_balance_contributing
 from app.services.row_valuation import settled_contribution
 from app.models.loan_payment_settings import LoanPaymentSettings
-from app.services import template_amount_service
 from app.services.amount_ownership import state_own_amount
 from app.models.transfer_template import TransferTemplate
 
@@ -111,7 +112,9 @@ def _salary_template(seed_user):
     record is in the thousands, so the two restore arms of migration
     ``d7b2e6c1a483`` can never answer the same number by accident -- which is
     what lets a reversed statement order fail on the FIGURE rather than on a
-    count.
+    count.  It carries a cadence and NO price series: its rows are the
+    engine's (:func:`_make_transaction`), and the migrations driven here read
+    the scalar, never the series.
 
     Args:
         seed_user: The ``seed_user`` fixture payload.
@@ -130,6 +133,7 @@ def _salary_template(seed_user):
     )
     db.session.add(template)
     db.session.flush()
+    make_every_period_rule(db.session, template)
     db.session.add(SalaryProfile(
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,
@@ -145,11 +149,25 @@ def _salary_template(seed_user):
 
 
 def _make_transaction(seed_user, seed_periods, **overrides):
-    """Return an unflushed Projected expense row, with *overrides* applied.
+    """Return a Projected row, with *overrides* applied.
+
+    Two arms, decided by whether *overrides* names a definition:
+
+    * **A row of a DEFINITION** (``template_id`` set) is the ENGINE's row of
+      that template in the named paycheck (:func:`generate_row_of`, plan step
+      balance:X-cf), flushed, with every OTHER override then laid onto it
+      bare.  The row arrives derived, dated and answering an occurrence; a
+      case that means the OWNER's re-priced row states ``amount_ownership``
+      and ``is_override`` and gets exactly the two acts the re-price door
+      performs.  ``pay_period_id`` picks the paycheck the engine writes into
+      and is not restated afterwards.
+    * **An AD-HOC row** (no ``template_id``, or ``None``) is constructed bare
+      and returned UNFLUSHED, as before.
 
     Args:
         seed_user: The ``seed_user`` fixture payload.
-        seed_periods: The ``seed_periods`` fixture list.
+        seed_periods: The ``seed_periods`` fixture list.  A ``pay_period_id``
+            override must name one of them.
         **overrides: Column values to set or replace.  The amount-ownership
             pair is one of them -- ``amount_ownership`` -- and since plan step
             X-au-k it is the ONLY way an ORM caller can state it; the two
@@ -157,8 +175,12 @@ def _make_transaction(seed_user, seed_periods, **overrides):
             :func:`_insert_transaction_row` instead.
 
     Returns:
-        The unflushed :class:`~app.models.transaction.Transaction`.
+        The :class:`~app.models.transaction.Transaction`: flushed on the
+        definition arm, unflushed on the ad-hoc one.
     """
+    template_id = overrides.pop("template_id", None)
+    if template_id is not None:
+        return _row_of_definition(seed_periods, template_id, overrides)
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
@@ -174,16 +196,50 @@ def _make_transaction(seed_user, seed_periods, **overrides):
         "amount_ownership": AmountOwnership.own(Decimal("300.00")),
     }
     fields.update(overrides)
-    # **The settle DAY carries its basis unless the caller states one** (plan
-    # step **X-az**).  These builders write bare columns on purpose -- a control
-    # routed through a door would grade the door -- but a row is only bare on
-    # the axis its test is ABOUT: a day with no basis violates
-    # ``ck_*_settle_day_basis_pairing`` before it can reach the constraint the
-    # test is grading, so the pair is completed here and a test that means to
-    # break it says ``settled_day_basis_id`` outright.
-    if "settled_day_basis_id" not in overrides:
-        fields.update(settle_day_columns(fields.get("settled_on")))
+    fields.update(_settle_day_pair(overrides))
     return Transaction(**fields)
+
+
+def _row_of_definition(seed_periods, template_id, overrides):
+    """The definition arm of :func:`_make_transaction`: the engine's row.
+
+    Args:
+        seed_periods: The ``seed_periods`` fixture list.
+        template_id: The definition whose row is wanted.
+        overrides: The caller's remaining column values, laid onto the
+            generated row bare after ``pay_period_id`` has chosen the paycheck.
+
+    Returns:
+        The flushed :class:`~app.models.transaction.Transaction`.
+    """
+    period_id = overrides.pop("pay_period_id", seed_periods[0].id)
+    period = next(p for p in seed_periods if p.id == period_id)
+    txn = generate_row_of(db.session.get(TransactionTemplate, template_id), period)
+    for column, value in {**overrides, **_settle_day_pair(overrides)}.items():
+        setattr(txn, column, value)
+    return txn
+
+
+def _settle_day_pair(overrides):
+    """Complete the settle DAY with its basis unless the caller stated one.
+
+    (Plan step **X-az**.)  These builders write bare columns on purpose -- a
+    control routed through a door would grade the door -- but a row is only
+    bare on the axis its test is ABOUT: a day with no basis violates
+    ``ck_*_settle_day_basis_pairing`` before it can reach the constraint the
+    test is grading, so the pair is completed here and a test that means to
+    break it says ``settled_day_basis_id`` outright.
+
+    Args:
+        overrides: The caller's column values.
+
+    Returns:
+        The two settle-day columns to lay on, or nothing when the caller
+        stated the basis.
+    """
+    if "settled_day_basis_id" in overrides:
+        return {}
+    return settle_day_columns(overrides.get("settled_on"))
 
 
 def _insert_transaction_row(seed_user, seed_periods, *, figure, source_id,
@@ -534,21 +590,19 @@ class TestOnePricingLink:
             db.session.add(xfer)
             db.session.flush()
 
-            # Period 1, not 0, is a precaution that has outlived its cause and
-            # is kept because it costs nothing: while the fixture's period-0
-            # row was hand-built and undated, this undated row in the same
-            # paycheck met ``idx_transactions_template_scenario_undated`` first
-            # and the control fired for the wrong reason.  The fixture's row is
-            # the engine's now (plan step balance:X-cf) and answers an
-            # occurrence, so it sits in the other index and the two could not
-            # collide in any period.
+            # Period 1, not 0, and it is REQUIRED rather than a precaution:
+            # the fixture's row is the engine's (plan step balance:X-cf) and
+            # already answers period 0's occurrence, so ``generate_row_of``
+            # refuses to write a second one there ("wrote 0 rows") before the
+            # constraint under test is ever reached.  It began as a precaution
+            # against the undated index firing first, while the fixture's row
+            # was hand-built; that cause is gone and this one replaced it.
             txn = _make_transaction(
                 data, data["periods"],
                 pay_period_id=data["periods"][1].id,
                 template_id=data["template"].id,
                 transfer_id=xfer.id,
             )
-            db.session.add(txn)
             with pytest.raises(
                 sqlalchemy.exc.IntegrityError,
                 match="ck_transactions_one_pricing_link",
@@ -579,7 +633,6 @@ class TestOnePricingLink:
                 credit_payback_for_id=source_row.id,
                 template_id=data["template"].id,
             )
-            db.session.add(payback)
             with pytest.raises(
                 sqlalchemy.exc.IntegrityError,
                 match="ck_transactions_one_pricing_link",
@@ -598,7 +651,6 @@ class TestOnePricingLink:
                 pay_period_id=data["periods"][1].id,
                 template_id=data["template"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             assert txn.template_id == data["template"].id
@@ -1124,20 +1176,15 @@ class TestTheSalaryCutoverKnowsWhatItCannotRestore:
 
     @staticmethod
     def _declared_salary_row(seed_user, seed_periods, template, **overrides):
-        """Return a flushed INCOME row of *template*, DECLARED derived."""
-        income = (
-            db.session.query(TransactionType).filter_by(name="Income").one()
-        )
+        """Return a flushed INCOME row of *template*, DECLARED derived.
+
+        The engine's row of a salary definition is exactly that -- income by
+        its template, derived by construction -- so nothing here restates
+        either; *overrides* are the settlement the case lays on.
+        """
         txn = _make_transaction(
-            seed_user, seed_periods,
-            template_id=template.id,
-            transaction_type_id=income.id,
-            amount_ownership=AmountOwnership.derived(
-                ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-            ),
-            **overrides,
+            seed_user, seed_periods, template_id=template.id, **overrides,
         )
-        db.session.add(txn)
         db.session.flush()
         return txn
 
@@ -1201,13 +1248,9 @@ class TestTheSalaryCutoverKnowsWhatItCannotRestore:
         """
         with app.app_context():
             salary_template = _salary_template(seed_user)
-            income = (
-                db.session.query(TransactionType).filter_by(name="Income").one()
-            )
             txn = _make_transaction(
                 seed_user, seed_periods,
                 template_id=salary_template.id,
-                transaction_type_id=income.id,
                 is_override=True,
                 amount_ownership=AmountOwnership.own(Decimal("2562.67")),
                 status_id=ref_cache.status_id(StatusEnum.RECEIVED),
@@ -1217,7 +1260,6 @@ class TestTheSalaryCutoverKnowsWhatItCannotRestore:
                     submitted=Decimal("2524.62"),
                 ),
             )
-            db.session.add(txn)
             db.session.flush()
 
             assert _SALARY_CUTOVER.settled_rows_whose_plan_is_not_recoverable(
@@ -1285,17 +1327,12 @@ class TestTheSalaryCutoverRestoresEachRowFromTheRightPlace:
         """
         with app.app_context():
             salary_template = _salary_template(seed_user)
-            income = (
-                db.session.query(TransactionType).filter_by(name="Income").one()
-            )
             owned = _make_transaction(
                 seed_user, seed_periods,
                 template_id=salary_template.id,
-                transaction_type_id=income.id,
                 is_override=True,
                 amount_ownership=AmountOwnership.own(Decimal("1234.56")),
             )
-            db.session.add(owned)
             db.session.commit()
 
             _SALARY_CUTOVER.downgrade_rows(db.session.connection())
@@ -1311,7 +1348,9 @@ def _plain_template(seed_user):
     record is in the hundreds, so migration ``c8f3a5d2e714``'s two restore arms
     can never answer the same number by accident -- which is what lets a
     reversed statement order fail on the FIGURE rather than on a count.  The
-    same device ``_salary_template`` uses, and for the same reason.
+    same device ``_salary_template`` uses, and for the same reason -- and,
+    like it, a cadence and no price series: the cases that need a series
+    state one themselves.
 
     Args:
         seed_user: The ``seed_user`` fixture payload.
@@ -1332,6 +1371,7 @@ def _plain_template(seed_user):
     )
     db.session.add(template)
     db.session.flush()
+    make_every_period_rule(db.session, template)
     return template
 
 
@@ -1354,16 +1394,14 @@ class TestTheTemplateCutoverKnowsWhatItCannotRestore:
 
     @staticmethod
     def _declared_row(seed_user, seed_periods, template, **overrides):
-        """Return a flushed EXPENSE row of *template*, DECLARED derived."""
+        """Return a flushed EXPENSE row of *template*, DECLARED derived.
+
+        The engine's row, which is derived by construction; *overrides* are
+        the settlement the case lays on.
+        """
         txn = _make_transaction(
-            seed_user, seed_periods,
-            template_id=template.id,
-            amount_ownership=AmountOwnership.derived(
-                ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-            ),
-            **overrides,
+            seed_user, seed_periods, template_id=template.id, **overrides,
         )
-        db.session.add(txn)
         db.session.flush()
         return txn
 
@@ -1478,7 +1516,6 @@ class TestTheTemplateCutoverRefusesRatherThanStrandingARow:
                 due_date=date(2026, 3, 1),
                 amount_ownership=AmountOwnership.own(Decimal("7.77")),
             )
-            db.session.add(txn)
             db.session.commit()
 
             assert _TEMPLATE_CUTOVER.rows_the_declare_would_strand(
@@ -1507,7 +1544,6 @@ class TestTheTemplateCutoverRefusesRatherThanStrandingARow:
                 due_date=None,
                 amount_ownership=AmountOwnership.own(Decimal("7.77")),
             )
-            db.session.add(txn)
             db.session.commit()
 
             stranded = _TEMPLATE_CUTOVER.rows_the_declare_would_strand(
@@ -1537,7 +1573,6 @@ class TestTheTemplateCutoverRefusesRatherThanStrandingARow:
                 due_date=date(2026, 3, 1),
                 amount_ownership=AmountOwnership.own(Decimal("999.00")),
             )
-            db.session.add(txn)
             db.session.commit()
 
             stranded = _TEMPLATE_CUTOVER.rows_the_declare_would_strand(
@@ -1612,7 +1647,6 @@ class TestTheTemplateCutoverRestoresEachRowFromTheRightPlace:
                 is_override=True,
                 amount_ownership=AmountOwnership.own(Decimal("321.00")),
             )
-            db.session.add(owned)
             db.session.commit()
 
             _TEMPLATE_CUTOVER.downgrade_rows(db.session.connection())

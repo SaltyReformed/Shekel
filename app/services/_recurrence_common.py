@@ -560,21 +560,57 @@ def classify_maintain_work(
     roll-forward with a car payment nine paychecks away.  That backfill script
     was RETIRED 2026-09-06, so the ruling is the citation that still resolves.
 
-    **A NULL ``occurs_on`` row answers no occurrence, so it is never named**,
-    and a mutable one therefore RETIRES here -- which is the correct answer for
-    a row no rule claims, and a HARD DELETE at ``_maintain``.
+    **A NULL ``occurs_on`` row answers no occurrence, so it is never named --
+    and this pass therefore RETAINS it as a conflict** (finding **REC-516**,
+    developer ruling 2026-09-08).  A record-free one used to RETIRE, which is
+    a HARD DELETE at ``_maintain`` and at ``transfer_recurrence``, on the
+    reading that a row no rule claims is a row the rule dropped; one that
+    carried the owner's records was already retained.  Those are different
+    facts: *answers no occurrence* is a property of the ROW, *the rule stopped
+    naming this occurrence* is a property of the RULE, and only the second
+    licenses a deletion.
 
-    *How many such rows exist is a property of the DATABASE, not of this code,
-    and the two the developer runs disagree.*  Re-measured 2026-09-06, where an
-    earlier undated version of this paragraph said "every such row is immutable
-    (four ``Paid``, one ``Credit``)" and was quoted as the reason none reaches
-    this branch: PRODUCTION holds six, all immutable (four ``Paid``, one
-    ``Credit``, one ``Cancelled`` that is also ``is_override``), so the
-    conclusion holds there but the count was one short.  The DEV database is a
-    pre-backfill restore and holds 622 of 624, **503 of them mutable and
-    reachable by this branch**.  A count measured on one database is not a
-    property of the predicate; what is safe to rely on is the branch's own
-    rule, not the population it happens to find.
+    **Retaining rather than skipping silently is the developer's ruling, and
+    the figure is why.**  The definition has moved past such a row and cannot
+    be applied to it: measured on a template repriced ``$100.00 -> $250.00``
+    and renamed, the undated row keeps ``$100.00`` and its old name for good
+    while its dated sibling moves, and no reader ever learns.  So the owner is
+    told, through the word this pass already had for it.
+
+    **The delete was silent and no count could see it**, which is why it stood.
+    Reproduced 2026-09-08 on a planted row: the pass deleted it and the create
+    arm immediately answered the freed occurrence, so the engine reported
+    ``deleted_count: 1, created_count: 1`` with every conflict count at zero
+    and the table the same size before and after.
+
+    *How many rows this reaches is a property of the DATABASE, not of this
+    code, and the two the developer runs disagree.*  Measured 2026-09-08:
+    PRODUCTION holds six undated transactions, all immutable, and 54 undated
+    transfers of which three are immutable and 51 soft-deleted -- so none was
+    reachable, though restoring any of those 51 would have armed one.  The DEV
+    database was cloned from a pre-R17 production and holds 622 undated
+    transactions and 175 undated transfers, **598 of them mutable, carrying no
+    owner records, and reachable by this branch before it became a skip**.
+    A count measured on one database is not a property of the predicate; what
+    is safe to rely on is the branch's own rule, not the population it happens
+    to find.
+
+    **A retained undated row also SUPPRESSES the occurrence its paycheck
+    holds**, and that is the cost of the claim above rather than a second
+    defect: the row holds its whole pay period, so an occurrence the rule
+    NAMES there is blocked and no row is written for it -- measured at one
+    unanswered occurrence on a single moved row.  Retiring the row used to
+    free the paycheck and let the create arm answer it.  This pass now agrees
+    with the GENERATE path, which has held a paycheck this way since **R17**,
+    so the two stopped disagreeing about what an undated row claims.
+
+    **This branch is scaffolding and says so.**  The root cause is that a
+    template-linked, non-override row can exist without recording the
+    occurrence it answers -- ``carry_forward_service`` already avoids it by
+    flagging its rows ``is_override``, and the one-time transfer branch
+    (``routes/transfers/_instances._materialize_one_time_transfer``) does not.
+    When every such row records an occurrence this branch stops being
+    reachable and is deleted rather than kept quiet.
 
     **The claims that decide CREATE come from *claimants*, NOT from *existing*,
     and that distinction is ledger row D57 on this path.**  *existing* is a
@@ -590,14 +626,19 @@ def classify_maintain_work(
     has cleared that flag.  :func:`rows_claiming` is period-unscoped for
     exactly this reason, and the generate path has consumed it from the start.
 
-    **The retired rows are removed from the claimants first.**  A retired row
-    stops holding anything, and a NULL-occurrence row holds its whole paycheck
-    (:class:`OccurrenceClaims`) -- so reading the claims before the
-    classification would let one row both block a write and be deleted in the
-    same pass, leaving a period the rule names with no row at all.  Dated rows
-    cannot produce that pairing (a retired row is one the rule stopped naming,
-    so it never blocked a named occurrence), which is why the ordering only
-    started mattering when NULL rows gained a claim.
+    **The retired rows are removed from the claimants first, and since finding
+    REC-516 that subtraction can remove nothing.**  It was load-bearing while
+    an undated row could retire: such a row holds its whole paycheck
+    (:class:`OccurrenceClaims`), so classifying after the claims read let one
+    row both block a write and be deleted in the same pass, leaving a period
+    the rule names with no row at all.  Now that an undated row is retained,
+    the two sets are DISJOINT by construction -- every row in ``work.retire``
+    has an ``occurs_on`` that is not ``None`` and not in ``named``, while
+    :func:`rows_claiming` returns only rows whose ``occurs_on`` is in ``named``
+    or is ``None``, both derived from the same ``placements``.  **It is kept as
+    a FORWARD GUARD, not because its old reason still holds**: it costs one set
+    build and it is what stops a future arm that routes an undated row back to
+    ``retire`` from silently re-creating the pairing.
 
     **Shared by both engines since plan step R10-b, over two ID SETS rather
     than a model.**  Every question this asks about a row is one both a
@@ -616,7 +657,8 @@ def classify_maintain_work(
             or after its bound.  The window half is the load-bearing one:
             it is what keeps this domain a superset of the plan's, and so
             what makes the RETIRE branch reachable.  It decides CLASSIFICATION
-            -- update, retire, retain -- and deliberately not creation.
+            -- update, retire, retain, and retain-as-undated -- and
+            deliberately not creation.
         placements: The occurrences the rule names now -- this pass's
             ``recurrence_engine.PlannedOccurrence`` values, duck-typed on
             ``.occurrence`` and ``.period.period_id`` as everything else in
@@ -645,7 +687,28 @@ def classify_maintain_work(
         if hold == BLOCK_DELETED:
             work.deleted_ids.append(row.id)
             continue
-        if row.occurs_on is None or row.occurs_on not in named:
+        # An UNDATED row is RETAINED, never retired (finding **REC-516**,
+        # developer ruling 2026-09-08).  It answers no occurrence, so it is
+        # not the rule's row to rewrite; but "answers no occurrence" is not
+        # "the rule dropped this occurrence", and only the second is a reason
+        # to delete.  It still claims its PAY PERIOD through
+        # :class:`OccurrenceClaims`, so leaving it here cannot let the create
+        # arm answer that paycheck twice.
+        #
+        # It is RETAINED rather than skipped silently because the definition
+        # has moved past it and cannot be applied to it: a template repriced
+        # $100.00 -> $250.00 leaves this row at $100.00 for good, and it
+        # suppresses the correctly-priced row its paycheck would otherwise
+        # receive.  ``retained_ids`` is this pass's existing word for exactly
+        # that -- *the definition moved and I refused to apply it* -- and the
+        # pre-REC-516 code already raised it for the undated rows that carried
+        # the owner's records, so this restores that prompt rather than
+        # inventing one.  It reports without blocking: ``_pass`` writes the
+        # creates and updates, then raises.
+        if row.occurs_on is None:
+            work.retained_ids.append(row.id)
+            continue
+        if row.occurs_on not in named:
             if row.id in with_records:
                 work.retained_ids.append(row.id)
             else:
@@ -703,10 +766,14 @@ def rows_claiming(selector, placements) -> list:
     Returns:
         Every row that claims one of these occurrences -- to be read through
         :meth:`OccurrenceClaims.over`, which is the one statement of what a
-        claim IS.  Rows rather than the claims themselves, because the maintain
-        pass must first REMOVE the rows it is about to retire: a retired row
-        stops claiming, and subtracting a claim is not well defined where two
-        rows could make the same one.
+        claim IS.  **Rows rather than the claims themselves**, because the
+        maintain pass subtracts what it is about to retire before reading them,
+        and subtracting a claim is not well defined where two rows could make
+        the same one.  Since finding **REC-516** that subtraction removes
+        nothing -- an undated row is retained rather than retired, so the two
+        sets are disjoint -- and the return type is now shaped by the forward
+        guard rather than by a live need; :func:`classify_maintain_work` states
+        why the guard is kept.
     """
     occurrences = {placement.occurrence for placement in placements}
     period_ids = {placement.period.period_id for placement in placements}

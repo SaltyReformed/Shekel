@@ -39,14 +39,14 @@ from app.enums import (
 from app.extensions import db
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.models.amount_ownership import AmountOwnership
 from tests._test_helpers import (
     capture_sql_statements,
+    generate_row_of,
     make_every_period_rule,
 )
 from app.services import salary_profile_service, template_amount_service
+from app.services.amount_ownership import state_own_amount
 from app.services.cash_ledger import (
     amount_basis,
     amounts_by_id,
@@ -105,11 +105,14 @@ def _salary_profile(seed_user):
     return profile, template
 
 
-def _declared_row(seed_user, template, period, *, status=StatusEnum.PROJECTED):
-    """Return a row of *template* DECLARED derived, storing no figure.
+def _declared_row(template, period, *, status=StatusEnum.PROJECTED):
+    """Return the engine's row of *template* in *period*: derived, no figure.
+
+    (:func:`generate_row_of`, plan step balance:X-cf.)  The engine writes
+    Projected; any other *status* is laid on bare, which is the one axis the
+    settled case below is about.
 
     Args:
-        seed_user: The seeded owner bundle.
         template: The salary-linked definition.
         period: The pay period the row is funded in.
         status: Which status to give it.
@@ -117,24 +120,10 @@ def _declared_row(seed_user, template, period, *, status=StatusEnum.PROJECTED):
     Returns:
         The flushed :class:`~app.models.transaction.Transaction`.
     """
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        template_id=template.id,
-        # The owner, off the period the row is funded in (plan step
-        # ``pay_calendar:C13-a``).
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=ref_cache.status_id(status),
-        name="Paycheck",
-        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-        due_date=period.start_date,
-        amount_ownership=AmountOwnership.derived(
-            ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-        ),
-    )
-    db.session.add(txn)
-    db.session.flush()
+    txn = generate_row_of(template, period)
+    if status is not StatusEnum.PROJECTED:
+        txn.status_id = ref_cache.status_id(status)
+        db.session.flush()
     return txn
 
 
@@ -193,7 +182,7 @@ class TestArchivingFreezesWhatItWasPricing:
         with app.app_context():
             profile, template = _salary_profile(seed_user)
             rows = [
-                _declared_row(seed_user, template, period)
+                _declared_row(template, period)
                 for period in seed_periods[:4]
             ]
             db.session.commit()
@@ -246,8 +235,8 @@ class TestArchivingFreezesWhatItWasPricing:
         """
         with app.app_context():
             profile, template = _salary_profile(seed_user)
-            row = _declared_row(seed_user, template, seed_periods[0])
-            between = _declared_row(seed_user, template, seed_periods[1])
+            row = _declared_row(template, seed_periods[0])
+            between = _declared_row(template, seed_periods[1])
             db.session.flush()
 
             profile.is_active = False
@@ -288,8 +277,7 @@ class TestArchivingFreezesWhatItWasPricing:
         with app.app_context():
             profile, template = _salary_profile(seed_user)
             settled = _declared_row(
-                seed_user, template, seed_periods[0],
-                status=StatusEnum.RECEIVED,
+                template, seed_periods[0], status=StatusEnum.RECEIVED,
             )
             settled.settled_on = date(2026, 1, 5)
             settled.settled_amount = Decimal("4000.00")
@@ -359,20 +347,11 @@ class TestArchivingFreezesWhatItWasPricing:
         """
         with app.app_context():
             profile, template = _salary_profile(seed_user)
-            owned = Transaction(
-                account_id=seed_user["account"].id,
-                template_id=template.id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="Hand-priced paycheck",
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                due_date=seed_periods[0].start_date,
-                is_override=True,
-                amount_ownership=AmountOwnership.own(Decimal("1234.56")),
-            )
-            db.session.add(owned)
+            # The engine's row, re-priced by its owner: the re-price door's
+            # two acts on the definition's own row.
+            owned = generate_row_of(template, seed_periods[0])
+            state_own_amount(owned, Decimal("1234.56"))
+            owned.is_override = True
             db.session.flush()
 
             assert salary_profile_service.archive_profile(profile) == 0
@@ -404,7 +383,7 @@ class TestTheFreezeResolvesOneBasisPerScenario:
         with app.app_context():
             profile, template = _salary_profile(seed_user)
             for period in seed_periods[:6]:
-                _declared_row(seed_user, template, period)
+                _declared_row(template, period)
             db.session.commit()
 
             frozen, statements = capture_sql_statements(
@@ -450,8 +429,11 @@ class TestReactivationNeedsNoCounterpart:
         with app.app_context():
             profile, template = _salary_profile(seed_user)
             future = seed_periods_today[8]
-            row = _declared_row(seed_user, template, future)
-            row.occurs_on = future.start_date
+            row = _declared_row(template, future)
+            assert row.occurs_on == future.start_date, (
+                "the maintain pass reaches a row by the occurrence the engine "
+                "wrote on it; a PERIOD-unit rule's occurrence is the payday"
+            )
             db.session.commit()
 
             auth_client.post(
@@ -482,8 +464,8 @@ class TestReactivationNeedsNoCounterpart:
         with app.app_context():
             profile, template = _salary_profile(seed_user)
             past = seed_periods_today[0]
-            row = _declared_row(seed_user, template, past)
-            row.occurs_on = past.start_date
+            row = _declared_row(template, past)
+            assert row.occurs_on == past.start_date
             db.session.commit()
 
             auth_client.post(
@@ -520,7 +502,7 @@ class TestTheArchiveRouteFreezes:
         with app.app_context():
             profile, template = _salary_profile(seed_user)
             rows = [
-                _declared_row(seed_user, template, period)
+                _declared_row(template, period)
                 for period in seed_periods[:3]
             ]
             db.session.commit()

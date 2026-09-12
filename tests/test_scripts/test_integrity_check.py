@@ -4,8 +4,6 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.pay_period import PayPeriod
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import Status, TransactionType
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
@@ -18,14 +16,15 @@ from app.services import account_service
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     account_never_asserted,
+    add_txn,
+    definition_firing_twice_in_a_paycheck,
+    generate_row_of,
+    make_expense_template,
+    open_books_before_the_first_assertion,
     open_owner_calendar,
+    populate_in_a_fresh_pass,
     settle_day_columns,
     settlement_columns,
-)
-from tests._test_helpers import (
-    add_txn,
-    make_every_period_rule,
-    open_books_before_the_first_assertion,
 )
 from scripts.integrity_check import (
     CheckResult,
@@ -686,73 +685,49 @@ class TestDataConsistency:
         assert dc05.detail_count == 1  # 1 active template on inactive account
 
     def _template_with_generated_row(self, seed_user, seed_periods):
-        """Create a template plus its rule-generated (non-override) row.
+        """Create a template plus the ENGINE's row of it in the first paycheck.
+
+        The row is the definition's own (:func:`generate_row_of`, plan step
+        balance:X-cf), so it answers an occurrence and is derived, exactly as
+        the rows DC-06 sweeps on production are.
 
         Returns:
             tuple: (template, generated Transaction).
         """
-        txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-        status_projected = db.session.query(Status).filter_by(name="Projected").one()
-        category = list(seed_user["categories"].values())[0]
-
-        template = TransactionTemplate(
-            user_id=seed_user["user"].id,
-            account_id=seed_user["account"].id,
-            category_id=category.id,
-            transaction_type_id=txn_type.id,
-            name="DC06 Template",
-            default_amount=Decimal("100.00"),
-            is_active=True,
+        template = make_expense_template(
+            db.session, seed_user, amount="100.00", name="DC06 Template",
         )
-        db.session.add(template)
-        db.session.flush()
-
-        generated = Transaction(
-            template_id=template.id,
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=status_projected.id,
-            name="DC06 Template",
-            category_id=category.id,
-            transaction_type_id=txn_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("100.00")),
-            is_override=False,
-        )
-        db.session.add(generated)
-        db.session.flush()
-        return template, generated
+        return template, generate_row_of(template, seed_periods[0])
 
     def test_dc06_allows_override_sibling(self, app, db, seed_user, seed_periods):
         """An override sibling next to the generated row is NOT a duplicate.
 
-        Mirrors the schema's own uniqueness contract: both partial unique
-        generation indexes apply only
-        WHERE ``is_override = FALSE``, precisely so a carried-forward
-        unpaid item (flagged ``is_override = TRUE``) can legally coexist
-        with the rule-generated row for its target period.  Before the
-        2026-06-11 recalibration DC-06 ignored the override predicate
-        and flagged this legal pair as critical.
+        Mirrors the schema's own uniqueness contract: the UNDATED generation
+        index applies only WHERE ``is_override = FALSE``, precisely so a
+        carried-forward unpaid item (flagged ``is_override = TRUE``) can
+        legally coexist with the rule-generated row for its target period.
+        Before the 2026-06-11 recalibration DC-06 ignored the override
+        predicate and flagged this legal pair as critical.
+
+        **Both rows are UNDATED, and that is what makes the override term
+        load-bearing.**  A pair answering two different occurrences is legal
+        with or without the term (the case two below), so a sibling that kept
+        its own ``occurs_on`` would let a DC-06 with the term deleted pass
+        here -- measured by adversarial review 2026-09-11.  The shape is the
+        one carry-forward actually writes on production: an override with no
+        occurrence (``_execute._create_target_override_row``) beside a
+        canonical in the legacy undated shape.  Both are the engine's rows,
+        in REC-516's undated idiom, the sibling moved in by the move door's
+        two acts.
         """
         template, generated = self._template_with_generated_row(
             seed_user, seed_periods,
         )
-
-        override_sibling = Transaction(
-            template_id=template.id,
-            user_id=generated.user_id,
-            pay_period_id=generated.pay_period_id,
-            scenario_id=generated.scenario_id,
-            account_id=generated.account_id,
-            status_id=generated.status_id,
-            name="DC06 Template (carried forward)",
-            category_id=generated.category_id,
-            transaction_type_id=generated.transaction_type_id,
-            amount_ownership=AmountOwnership.own(Decimal("100.00")),
-            is_override=True,
-        )
-        db.session.add(override_sibling)
+        generated.occurs_on = None
+        override_sibling = generate_row_of(template, seed_periods[1])
+        override_sibling.occurs_on = None
+        override_sibling.pay_period_id = generated.pay_period_id
+        override_sibling.is_override = True
         db.session.flush()
 
         results = check_data_consistency(db.session)
@@ -762,44 +737,35 @@ class TestDataConsistency:
     def test_dc06_detects_true_duplicate(self, app, db, seed_user, seed_periods):
         """Two undated NON-override rows in one paycheck are flagged.
 
-        The fixture's rows carry no ``occurs_on``, so the contract that holds
-        them is the UNDATED half of plan step R17's split: a row answering no
-        occurrence still holds its paycheck alone
+        The rows carry no ``occurs_on``, so the contract that holds them is the
+        UNDATED half of plan step R17's split: a row answering no occurrence
+        still holds its paycheck alone
         (``idx_transactions_template_scenario_undated``).  The partial unique
         index blocks this at the DB tier, so (like the DC-02 test) the index is
         dropped to stage the corruption the check exists to catch -- a partial
-        restore or manual SQL is the real-world source.  The staged rows are
-        removed before the index is recreated (CREATE UNIQUE INDEX validates
+        restore or manual SQL is the real-world source.  The staged duplicate
+        is removed before the index is recreated (CREATE UNIQUE INDEX validates
         existing rows).
+
+        Both rows are the engine's, in the legacy undated shape the way
+        REC-516's cases model it (generate, then clear the occurrence): the
+        rule's own row, and its row of the next paycheck filed back into the
+        first one WITHOUT the override flag a move would have set -- which is
+        what makes it the duplicate rather than a legal sibling.
         """
         template, generated = self._template_with_generated_row(
             seed_user, seed_periods,
         )
+        generated.occurs_on = None
+        duplicate = generate_row_of(template, seed_periods[1])
+        db.session.flush()
 
         db.session.execute(db.text(
             "DROP INDEX budget.idx_transactions_template_scenario_undated"
         ))
         try:
-            db.session.execute(db.text("""
-                INSERT INTO budget.transactions
-                    (template_id, pay_period_id, user_id, scenario_id,
-                     account_id, status_id, name, category_id,
-                     transaction_type_id, estimated_amount, is_override,
-                     is_deleted)
-                VALUES (:tid, :pid, :uid, :sid, :aid, :stid, 'DC06 True Dup',
-                        :cid, :ttid, 100.00, FALSE, FALSE)
-            """), {
-                "tid": template.id,
-                "pid": generated.pay_period_id,
-                # The duplicate is the generated row in every column that is
-                # not the index being tested, its owner included.
-                "uid": generated.user_id,
-                "sid": generated.scenario_id,
-                "aid": generated.account_id,
-                "stid": generated.status_id,
-                "cid": generated.category_id,
-                "ttid": generated.transaction_type_id,
-            })
+            duplicate.occurs_on = None
+            duplicate.pay_period_id = generated.pay_period_id
             db.session.flush()
 
             results = check_data_consistency(db.session)
@@ -810,11 +776,12 @@ class TestDataConsistency:
         finally:
             # Remove the staged duplicate first -- recreating the
             # unique index validates existing rows.
-            db.session.execute(db.text(
-                "DELETE FROM budget.transactions WHERE name = 'DC06 True Dup'"
-            ))
+            db.session.execute(
+                db.text("DELETE FROM budget.transactions WHERE id = :id"),
+                {"id": duplicate.id},
+            )
             # **Drain the deferred constraint triggers before the DDL** (plan
-            # step X-f3c-2b).  The raw INSERT above queues an event for
+            # step X-f3c-2b).  The engine's INSERTs above queued an event for
             # ``ck_movement_after_books_open``, and PostgreSQL refuses
             # ``CREATE INDEX`` on a table that has pending trigger events
             # ("cannot CREATE INDEX ... because it has pending trigger
@@ -832,7 +799,7 @@ class TestDataConsistency:
             """))
 
     def test_dc06_allows_two_rows_answering_different_occurrences(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user,
     ):
         """One paycheck, two occurrences, two rows -- and that is CORRECT.
 
@@ -843,27 +810,21 @@ class TestDataConsistency:
         by ``(template, pay_period, scenario)`` -- reports this as a critical
         duplicate, which is exactly the second-fence failure the re-key exists
         to remove.
+
+        The pair is the ENGINE's own output (plan step balance:X-cf): a
+        monthly cadence inside a 60-day paycheck names two occurrences there
+        (:func:`definition_firing_twice_in_a_paycheck`) and the generate pass
+        writes both.
         """
-        template, generated = self._template_with_generated_row(
-            seed_user, seed_periods,
+        template, period = definition_firing_twice_in_a_paycheck(
+            db.session, seed_user, name="DC06 Template",
         )
-        generated.occurs_on = date(2026, 1, 15)
-        second = Transaction(
+        populate_in_a_fresh_pass(seed_user["user"].id, [period.id])
+        pair = db.session.query(Transaction).filter_by(
             template_id=template.id,
-            user_id=generated.user_id,
-            pay_period_id=generated.pay_period_id,
-            scenario_id=generated.scenario_id,
-            account_id=generated.account_id,
-            status_id=generated.status_id,
-            name="DC06 Template (second occurrence)",
-            category_id=generated.category_id,
-            transaction_type_id=generated.transaction_type_id,
-            amount_ownership=AmountOwnership.own(Decimal("100.00")),
-            occurs_on=date(2026, 2, 15),
-            is_override=False,
-        )
-        db.session.add(second)
-        db.session.flush()
+        ).all()
+        assert len(pair) == 2, "the cadence names two occurrences here"
+        assert pair[0].pay_period_id == pair[1].pay_period_id
 
         results = check_data_consistency(db.session)
         dc06 = next(r for r in results if r.check_id == "DC-06")
@@ -883,39 +844,22 @@ class TestDataConsistency:
         so staging two rows with the SAME ``occurs_on`` must be flagged
         critical.  Without this, dropping the group key to "anything goes in a
         paycheck" would pass every DC-06 test in the file.
+
+        The second row is the engine's row of the next paycheck -- a real one
+        of the SAME owner's, so the row is legal on every axis but the
+        occurrence key under test -- rewritten to answer the first row's
+        occurrence once the index that forbids it is dropped.
         """
         template, generated = self._template_with_generated_row(
             seed_user, seed_periods,
         )
-        generated.occurs_on = date(2026, 1, 15)
-        db.session.flush()
+        duplicate = generate_row_of(template, seed_periods[1])
 
         db.session.execute(db.text(
             "DROP INDEX budget.idx_transactions_template_scenario_occurrence"
         ))
         try:
-            db.session.execute(db.text("""
-                INSERT INTO budget.transactions
-                    (template_id, pay_period_id, user_id, scenario_id,
-                     account_id, status_id, name, category_id,
-                     transaction_type_id, estimated_amount, occurs_on,
-                     is_override, is_deleted)
-                VALUES (:tid, :pid, :uid, :sid, :aid, :stid,
-                        'DC06 Same Occurrence',
-                        :cid, :ttid, 100.00, :occ, FALSE, FALSE)
-            """), {
-                "tid": template.id,
-                "pid": seed_periods[1].id,
-                # The period is a real one of the SAME owner's, so the row is
-                # legal on every axis but the occurrence key under test.
-                "uid": seed_periods[1].user_id,
-                "sid": generated.scenario_id,
-                "aid": generated.account_id,
-                "stid": generated.status_id,
-                "cid": generated.category_id,
-                "ttid": generated.transaction_type_id,
-                "occ": date(2026, 1, 15),
-            })
+            duplicate.occurs_on = generated.occurs_on
             db.session.flush()
 
             results = check_data_consistency(db.session)
@@ -924,26 +868,30 @@ class TestDataConsistency:
             assert dc06.detail_count == 1
             assert dc06.details[0]["cnt"] == 2
         finally:
-            db.session.execute(db.text(
-                "DELETE FROM budget.transactions "
-                "WHERE name = 'DC06 Same Occurrence'"
-            ))
+            db.session.execute(
+                db.text("DELETE FROM budget.transactions WHERE id = :id"),
+                {"id": duplicate.id},
+            )
             # **Drain the deferred constraint triggers before the DDL** (plan
             # step X-f3c-2b), the same two lines the sibling case above needs
-            # and for the same reason.  The raw INSERT queues an event for
-            # ``ck_movement_after_books_open`` whatever that trigger would
+            # and for the same reason.  The engine's INSERTs queued an event
+            # for ``ck_movement_after_books_open`` whatever that trigger would
             # DECIDE -- the event is queued at statement time and the function
             # only runs at COMMIT -- and PostgreSQL refuses ``CREATE INDEX`` on
             # a table carrying pending trigger events.  Making them immediate
             # runs the check now, inside this transaction.
             db.session.execute(db.text("SET CONSTRAINTS ALL IMMEDIATE"))
+            # The index as migration ``e7c3a1f9b482`` (plan step X-au-h)
+            # ships it: NO ``is_override`` term.  It was recreated here in its
+            # pre-X-au-h shape until 2026-09-11, a second spelling of the
+            # schema that no test could see because each case clones its own
+            # database.
             db.session.execute(db.text("""
                 CREATE UNIQUE INDEX idx_transactions_template_scenario_occurrence
                 ON budget.transactions (template_id, scenario_id, occurs_on)
                 WHERE template_id IS NOT NULL
                   AND occurs_on IS NOT NULL
                   AND is_deleted = FALSE
-                  AND is_override = FALSE
             """))
 
     def test_dc07_detects_user_without_settings(self, app, db):

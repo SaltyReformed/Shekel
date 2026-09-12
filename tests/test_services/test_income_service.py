@@ -30,8 +30,6 @@ from decimal import Decimal
 
 import pytest
 
-from app import ref_cache
-from app.enums import AmountSourceEnum
 from app.extensions import db
 from app.models.ref import FilingStatus, RaiseType, Status, TaxType, TransactionType
 from app.models.salary_profile import SalaryProfile
@@ -46,17 +44,19 @@ from app.services import (
     balance_at,
     income_service,
     paycheck_calculator,
-    savings_dashboard_service,
 )
 from app.services.tax_config_service import (
     load_tax_configs,
     load_tax_configs_for_year,
 )
+from app.services.amount_ownership import state_own_amount
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     all_periods,
     counting_calls,
     freeze_today,
+    generate_row_of,
+    make_every_period_rule,
     make_investment_account,
     payroll_basis,
 )
@@ -112,12 +112,34 @@ def _add_one_time_raise(
     return salary_raise
 
 
-def _make_salary_template(seed_user, profile, *, name="Paycheck"):
+def _make_salary_template(seed_user, profile, *, name="Paycheck", account=None):
     """Create an Income template and link ``profile`` to it.
 
     The producer treats a transaction as salary-linked iff its
     ``template_id`` maps to an active SalaryProfile for the scenario, so
     the test must set ``profile.template_id`` to the created template.
+
+    **It carries a cadence and states NO price**, and the second is not a
+    choice this fixture gets to make.  The cadence is what lets the engine
+    write the definition's rows (:func:`generate_row_of`, plan step
+    balance:X-cf).  A salary-linked definition's amount is DERIVED rather
+    than stated (``template_amount_service.owns_its_amount`` is False once
+    the profile names it), so ``set_amount`` on it would set the scalar and
+    open no series, and amount rule 3 refuses such a row at that arm before
+    any series is read (``_stated_amount``) -- which is what keeps a
+    dispatch that fell through to rule 3 from answering the scalar's
+    ``$4,000.00``, the profile's own no-raise net.  Measured under review
+    2026-09-11: ``_rule_within_definition`` mutated to answer TEMPLATE fails
+    here with that refusal, not with an empty-series one.
+
+    Args:
+        seed_user: The seeded owner bundle.
+        profile: The :class:`~app.models.salary_profile.SalaryProfile` that
+            prices this definition's rows; its ``template_id`` is set here.
+        name: The definition's name.
+        account: The account the paycheck lands on; the seed user's checking
+            account when omitted.  The engine puts a row on its definition's
+            account, so a case wanting the paycheck on an HYSA says so here.
     """
     income_type = (
         db.session.query(TransactionType).filter_by(name="Income").one()
@@ -125,7 +147,7 @@ def _make_salary_template(seed_user, profile, *, name="Paycheck"):
     category = next(iter(seed_user["categories"].values()))
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
+        account_id=(seed_user["account"] if account is None else account).id,
         category_id=category.id,
         transaction_type_id=income_type.id,
         name=name,
@@ -133,6 +155,8 @@ def _make_salary_template(seed_user, profile, *, name="Paycheck"):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    make_every_period_rule(db.session, template)
     profile.template_id = template.id
     db.session.flush()
     return template
@@ -140,28 +164,60 @@ def _make_salary_template(seed_user, profile, *, name="Paycheck"):
 
 def _make_txn(
     seed_user, period, *, template=None, type_name="Income",
-    status_name="Projected", is_override=False, estimated_amount="1.00",
-    derived=False,
+    status_name="Projected", owned_amount=None,
 ):
     """Create a single Transaction in ``period`` for the producer tests.
 
-    ``derived=True`` builds the row plan step **X-au-d** puts every
-    non-overridden salary row in: it DECLARES its definition
-    (:attr:`~app.enums.AmountSourceEnum.TEMPLATE`) and stores no figure at all,
-    so amount rule 2 prices it from the profile.  The default is the OWN shape
-    -- an ad-hoc row, or one a human re-priced -- where *estimated_amount* IS
-    the answer.  The two are one attribute on the model
-    (``ck_transactions_amount_ownership`` pairs them), which is why this is a
-    switch rather than two independent arguments.
+    Two arms, decided by whether a definition is named (plan step
+    balance:X-cf):
+
+    * **A row of a DEFINITION** (*template* given) is the ENGINE's row of it
+      in *period* (:func:`generate_row_of`): derived, dated, answering an
+      occurrence, Projected.  *type_name* is not read -- the row's type is
+      its definition's.  *status_name* other than Projected is then laid on
+      bare, and *owned_amount* makes it the OWNER's re-priced row through the
+      re-price door's two acts (``state_own_amount`` and ``is_override``).
+    * **An AD-HOC row** (no *template*) is constructed bare and OWNS
+      *owned_amount*, which it must state.
+
+    ``derived`` was a switch here until X-cf-3: with the engine writing the
+    row there is no other shape a non-overridden salary row can have, so the
+    flag named the only state and went.
+
+    Args:
+        seed_user: The seeded owner bundle.
+        period: The pay period the row is funded in.
+        template: The definition whose row is wanted, or ``None``.
+        type_name: The ad-hoc row's transaction type.
+        status_name: The status to give the row.
+        owned_amount: The figure the row OWNS, as a string.  On a definition's
+            row it means a human re-priced it; on an ad-hoc row it is the
+            row's own figure and is required.
+
+    Returns:
+        The flushed :class:`~app.models.transaction.Transaction`.
+
+    Raises:
+        ValueError: An ad-hoc row with no *owned_amount*: such a row states a
+            figure or it is not a row the schema admits.
     """
+    status = db.session.query(Status).filter_by(name=status_name).one()
+    if template is not None:
+        txn = generate_row_of(template, period)
+        if owned_amount is not None:
+            state_own_amount(txn, Decimal(owned_amount))
+            txn.is_override = True
+        txn.status_id = status.id
+        db.session.flush()
+        return txn
+    if owned_amount is None:
+        raise ValueError("an ad-hoc row owns its figure; pass owned_amount")
     txn_type = (
         db.session.query(TransactionType).filter_by(name=type_name).one()
     )
-    status = db.session.query(Status).filter_by(name=status_name).one()
     category = next(iter(seed_user["categories"].values()))
     txn = Transaction(
         account_id=seed_user["account"].id,
-        template_id=template.id if template is not None else None,
         user_id=period.user_id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
@@ -169,13 +225,7 @@ def _make_txn(
         name="producer-test txn",
         category_id=category.id,
         transaction_type_id=txn_type.id,
-        amount_ownership=(
-            AmountOwnership.derived(
-                ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-            )
-            if derived else AmountOwnership.own(Decimal(estimated_amount))
-        ),
-        is_override=is_override,
+        amount_ownership=AmountOwnership.own(Decimal(owned_amount)),
     )
     db.session.add(txn)
     db.session.flush()
@@ -230,10 +280,11 @@ class TestSalaryNetFor:
     ):
         """A salary-linked income row maps to what its PROFILE pays.
 
-        The row is built OWNING a deliberately wrong ``$1.00`` so the two
-        answers stay distinguishable at this tier: a producer reading the
-        column would answer ``$1.00`` and the profile answers ``$4,000.00``.
-        The DECLARED shape -- where the column is empty and the distinction is
+        The row is the engine's, RE-PRICED by its owner to a deliberately
+        wrong ``$1.00`` (the re-price door's two acts) so the two answers
+        stay distinguishable at this tier: a producer reading the column
+        would answer ``$1.00`` and the profile answers ``$4,000.00``.  The
+        DECLARED shape -- where the column is empty and the distinction is
         structural rather than measured -- is graded one tier up, by
         ``test_amount_source`` over the rule this producer is the body of.
         """
@@ -246,8 +297,7 @@ class TestSalaryNetFor:
 
             period = all_periods(user_id)[5]
             txn = _make_txn(
-                seed_user, period, template=template,
-                estimated_amount="1.00",
+                seed_user, period, template=template, owned_amount="1.00",
             )
             db.session.commit()
 
@@ -338,24 +388,30 @@ class TestSalaryNetFor:
                 default_amount=Decimal("50.00"),
             )
             db.session.add(other_template)
+            db.session.flush()
+            # The cadence the engine needs to write its row; no price, because
+            # nothing here prices this row and an empty series is what refuses
+            # a producer that tried.
+            make_every_period_rule(db.session, other_template)
             db.session.commit()
 
             periods = all_periods(user_id)
-            # Distinct periods avoid the (template, period, scenario)
-            # non-override unique index.
+            # Distinct periods: an every-paycheck definition names ONE
+            # occurrence per paycheck, and the engine writes each once.
             wanted = _make_txn(seed_user, periods[5], template=template)
             received = _make_txn(
                 seed_user, periods[6], template=template,
                 status_name="Received",
             )
             overridden = _make_txn(
-                seed_user, periods[7], template=template, is_override=True,
+                seed_user, periods[7], template=template, owned_amount="1.00",
             )
             non_salary = _make_txn(
                 seed_user, periods[5], template=other_template,
             )
             expense = _make_txn(
                 seed_user, periods[5], template=None, type_name="Expense",
+                owned_amount="1.00",
             )
             db.session.commit()
 
@@ -399,6 +455,8 @@ class TestSalaryNetFor:
                 default_amount=Decimal("100.00"),
             )
             db.session.add(unlinked)
+            db.session.flush()
+            make_every_period_rule(db.session, unlinked)
             db.session.commit()
             txn = _make_txn(
                 seed_user, all_periods(user_id)[3],
@@ -460,9 +518,7 @@ class TestLiveIncomeThroughBalanceResolver:
 
             periods = all_periods(user_id)
             period = periods[5]
-            row = _make_txn(
-                seed_user, period, template=template, derived=True,
-            )
+            row = _make_txn(seed_user, period, template=template)
             db.session.commit()
             assert row.estimated_amount is None
 
@@ -531,8 +587,7 @@ class TestLiveIncomeThroughBalanceResolver:
 
             period = all_periods(user_id)[5]
             _make_txn(
-                seed_user, period, template=template, is_override=True,
-                estimated_amount="1234.56",
+                seed_user, period, template=template, owned_amount="1234.56",
             )
             db.session.commit()
 
@@ -603,8 +658,8 @@ class TestThePerPeriodGrossIsTheENGINES:
             before = calendar.period_containing(_AS_OF_BEFORE_RAISE)
             after = calendar.period_containing(_AS_OF_AFTER_RAISE)
 
-            assert feed.gross_at(before.start_date) == _NO_RAISE_GROSS
-            assert feed.gross_at(after.start_date) == _RAISE_APPLIED_GROSS
+            assert feed.gross_at(before) == _NO_RAISE_GROSS
+            assert feed.gross_at(after) == _RAISE_APPLIED_GROSS
 
     def test_no_raise_yields_the_byte_identical_pre_fix_value(
         self, app, db, seed_user, seed_periods,
@@ -627,7 +682,7 @@ class TestThePerPeriodGrossIsTheENGINES:
             feed = self._feed_for(user_id, profile, account.id)
             calendar = calendar_for(user_id)
             after = calendar.period_containing(_AS_OF_AFTER_RAISE)
-            assert feed.gross_at(after.start_date) == _NO_RAISE_GROSS
+            assert feed.gross_at(after) == _NO_RAISE_GROSS
 
     def test_no_funding_job_REFUSES_rather_than_answering_zero(
         self, app, db, seed_user, seed_periods,
@@ -663,7 +718,7 @@ class TestThePerPeriodGrossIsTheENGINES:
             )[account.id]
 
             assert feed.funds_employer is False
-            assert feed.gross_at(seed_periods[0].start_date) is None
+            assert feed.gross_at(calendar_for(user_id).saved()[0]) is None
 
     # **``test_scenario_id_filter_scopes_lookup`` has no successor, and that
     # is the point rather than a gap.**  It pinned the deleted helper's
@@ -734,10 +789,10 @@ class TestConsumerIntegration:
                     calendar,
                 ).for_profile(profile).over(calendar.saved())
             }
-            payday = calendar.period_containing(bctx.as_of).start_date
+            current = calendar.period_containing(bctx.as_of)
 
-            assert engine[payday] == _RAISE_APPLIED_GROSS
-            assert seam_feed.gross_at(payday) == engine[payday]
+            assert engine[current.start_date] == _RAISE_APPLIED_GROSS
+            assert seam_feed.gross_at(current) == engine[current.start_date]
 
             # The scoping control: a non-investment account in the same user's
             # set gets NO feed, so the assertion above pins the
@@ -804,10 +859,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
                 (p for p in periods if p.start_date.year == 2027), None,
             )
             assert period_2027 is not None, "seed_periods_52 must reach 2027"
-            txn = _make_txn(
-                seed_user, period_2027, template=template,
-                estimated_amount="1.00",
-            )
+            txn = _make_txn(seed_user, period_2027, template=template)
             db.session.commit()
 
             # Engine-faithful expectations that isolate WHICH year's rate
@@ -909,10 +961,7 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
                 (p for p in periods if p.start_date.year == 2027), None,
             )
             assert period_2027 is not None, "seed_periods_52 must reach 2027"
-            txn = _make_txn(
-                seed_user, period_2027, template=template,
-                estimated_amount="1.00",
-            )
+            txn = _make_txn(seed_user, period_2027, template=template)
             db.session.commit()
 
             freeze_today(monkeypatch, date(2026, 6, 1))

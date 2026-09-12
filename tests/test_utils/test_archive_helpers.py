@@ -21,9 +21,7 @@ ID enumeration in the production source.
 from decimal import Decimal
 from pathlib import Path
 
-from app.models.ref import AccountType, Status, TransactionType
-from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
+from app.models.ref import AccountType, Status
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
@@ -32,84 +30,53 @@ from app.utils.archive_helpers import (
     transfer_template_has_paid_history,
 )
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import (
+    generate_row_of,
+    make_expense_template,
+    make_income_template,
+)
 
 
 def _make_template_with_status_txn(app, db_, seed_user, period, status_name):
-    """Create an expense template plus one transaction with the given status.
+    """Create an expense template plus its engine-generated row at a status.
 
     Returns the (template, transaction) pair.  All boilerplate lives
     here so each test pins exactly one status and asserts the
     predicate's boolean output without restating account/category/
-    scenario plumbing.  Resolves Status and TransactionType by name
+    scenario plumbing.  The row is the definition's own, written by the
+    engine (:func:`generate_row_of`, plan step balance:X-cf) -- which only
+    ever writes Projected -- and the status under test is then laid on it
+    bare, the way the row's readers here meet it.  Resolves Status by name
     (test scaffolding only -- production code uses cached IDs per
     CLAUDE.md rule 4 / E-15).
     """
-    expense_type = db_.session.query(TransactionType).filter_by(name="Expense").one()
     status = db_.session.query(Status).filter_by(name=status_name).one()
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Rent"].id,
-        transaction_type_id=expense_type.id,
+    template = make_expense_template(
+        db_.session, seed_user, amount="500.00",
         name=f"Template-{status_name}",
-        default_amount=Decimal("500.00"),
     )
-    db_.session.add(template)
-    db_.session.flush()
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Rent"].id,
-        transaction_type_id=expense_type.id,
-        name=f"Txn-{status_name}",
-        amount_ownership=AmountOwnership.own(Decimal("500.00")),
-        status_id=status.id,
-    )
-    db_.session.add(txn)
+    txn = generate_row_of(template, period)
+    txn.status_id = status.id
     db_.session.commit()
     return template, txn
 
 
 def _make_income_template_with_status_txn(app, db_, seed_user, period, status_name):
-    """Create an income template plus one transaction with the given status.
+    """Create an income template plus its engine-generated row at a status.
 
     Income templates are the specific case CRIT-05 documents: mark-done
     on an income transaction assigns ``RECEIVED``, the pre-fix
     predicate omitted RECEIVED, and the guard fell through to the
-    unconditional bulk delete.
+    unconditional bulk delete.  Built as the expense pair above is, through
+    :func:`make_income_template` and the engine.
     """
-    income_type = db_.session.query(TransactionType).filter_by(name="Income").one()
     status = db_.session.query(Status).filter_by(name=status_name).one()
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Salary"].id,
-        transaction_type_id=income_type.id,
+    template = make_income_template(
+        db_.session, seed_user, amount="2000.00",
         name=f"IncomeTemplate-{status_name}",
-        default_amount=Decimal("2000.00"),
     )
-    db_.session.add(template)
-    db_.session.flush()
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Salary"].id,
-        transaction_type_id=income_type.id,
-        name=f"Paycheck-{status_name}",
-        amount_ownership=AmountOwnership.own(Decimal("2000.00")),
-        status_id=status.id,
-    )
-    db_.session.add(txn)
+    txn = generate_row_of(template, period)
+    txn.status_id = status.id
     db_.session.commit()
     return template, txn
 

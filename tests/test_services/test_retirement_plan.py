@@ -405,7 +405,6 @@ class TestTheBatchIsHorizonIndependent:
             far_ctx = replace(
                 inputs.base_ctx,
                 planned_retirement_date=add_months(inputs.base_date, 120),
-                employer_salary_basis=None,
             )
             axis = retirement_projection.resolve_projection_axis(far_ctx)
 

@@ -2980,3 +2980,79 @@ class TestATransferRecordsItsOccurrence:
                 "the control needs both shadows of every transfer"
             )
             assert all(shadow.occurs_on is None for shadow in shadows)
+
+    def test_a_maintain_pass_retains_an_undated_transfer_and_deletes_nothing(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Finding **REC-516**, the TRANSFER half -- the destructive one.
+
+        The shared classifier
+        (``_recurrence_common.classify_maintain_work``, both engines since
+        plan step R10-b) read *answers no occurrence* as *the rule dropped
+        this occurrence* and routed an undated row to ``work.retire``.  Here
+        that arm is ``transfer_service.delete_transfer(..., soft=False)``,
+        which destroys the parent AND BOTH SHADOWS -- against a single row on
+        the transaction side.
+
+        **This engine is where the finding bites hardest.**  Production held
+        54 undated transfers against 6 undated transactions, the developer's
+        dev database 175 against 622, and the app's one live writer of undated
+        rows is a transfer one
+        (``routes/transfers/_instances._materialize_one_time_transfer``, which
+        passes no ``occurs_on``).  The defect was reproduced on this engine
+        directly: ``"event": "transfer_recurrence_regenerated",
+        "deleted_count": 1, "created_count": 1``.
+
+        The shadow-pair assertion is what makes this a Transfer Invariant 1
+        control rather than a copy of the transaction case.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = transfer_recurrence.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            assert len(created) >= 2
+
+            victim = created[0]
+            victim_id = victim.id
+            victim_period = victim.pay_period_id
+            victim.occurs_on = None
+            db.session.flush()
+            assert victim.is_override is False
+            assert victim.is_deleted is False
+            assert victim.status.is_immutable is False
+            assert victim.notes is None
+
+            with pytest.raises(RecurrenceConflict) as conflict:
+                transfer_recurrence.regenerate_for_template(
+                    template, schedule, seed_user["scenario"].id,
+                )
+            db.session.flush()
+
+            assert victim_id in conflict.value.retained
+            assert db.session.query(Transfer).filter_by(
+                id=victim_id,
+            ).one_or_none() is not None, (
+                f"REC-516: the maintain pass HARD DELETED undated transfer "
+                f"{victim_id} through delete_transfer(soft=False)"
+            )
+            # Transfer Invariant 1: the pair goes with the parent, so a
+            # surviving parent with one shadow is its own critical bug.
+            assert db.session.query(Transaction).filter_by(
+                transfer_id=victim_id,
+            ).count() == 2, (
+                "the retained transfer lost a shadow -- Transfer Invariant 1"
+            )
+            # The retained transfer still HOLDS its paycheck, so nothing was
+            # written into that period a second time.
+            assert db.session.query(Transfer).filter_by(
+                transfer_template_id=template.id,
+            ).count() == len(created)
+            assert db.session.query(Transfer).filter_by(
+                transfer_template_id=template.id, pay_period_id=victim_period,
+            ).count() == 1

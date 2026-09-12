@@ -301,6 +301,7 @@ from ._panel import AddAct, AddTab, MatchCandidates, VerbPanel
 from ._opened import (
     MatchAsk,
     MatchReach,
+    OpenedAsk,
     OpenedMatch,
     opened_match,
     proposed_submission,
@@ -386,6 +387,7 @@ __all__ = [
     "MatchCandidates",
     "MatchAsk",
     "MatchReach",
+    "OpenedAsk",
     "OpenedMatch",
     "VerbPanel",
     "Verb",

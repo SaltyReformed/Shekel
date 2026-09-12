@@ -615,8 +615,9 @@ def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-a
     genuinely distinct projection inputs that callers vary independently
     -- the what-if overlay overrides ``periodic_contribution`` and nulls
     ``contributions``; the year-end full-year path forces
-    ``ytd_contributions_start`` to zero; only the retirement projection
-    supplies ``salary_basis`` -- so bundling them into one object would be
+    ``ytd_contributions_start`` to zero; the retirement and investment
+    projections supply ``salary_basis`` and the year-end path does not -- so
+    bundling them into one object would be
     stamp coupling, not a cohesive concept.  Every call site passes these
     by keyword, so the positional count is moot in practice.
     """
