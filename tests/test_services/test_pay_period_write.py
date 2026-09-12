@@ -443,7 +443,7 @@ _FLOOR_PER_CONVENTION = [
 class TestTheFloorFollowsTheProducer:
     """Plan step **C14-d**: the floor is where the last paycheck ENDS.
 
-    ``_reject_backward_payday`` open-coded ``latest_payday + cadence_days`` and
+    ``reject_backward_payday`` open-coded ``latest_payday + cadence_days`` and
     a sentence in its own docstring held that equal to the last saved period's
     derived end -- rule 14's tell, one value with two homes and a maintenance
     contract.  It calls
@@ -483,7 +483,7 @@ class TestTheFloorFollowsTheProducer:
         The two recorded days ARE the same under all three conventions, and
         since ``C14-e-3`` that is a fact about these two DAYS rather than about
         the writer: 2025-12-04 and 2025-12-18 are ordinary Thursdays, so each
-        is its own displacement.  ``_requested_paydays`` records the DISPLACED
+        is its own displacement.  ``requested_paydays`` records the DISPLACED
         day now (ledger row **PC-497** fault 1), and a fixture built on a
         closed day would record something else.
         """
@@ -700,7 +700,7 @@ class TestTheFloorFollowsTheProducer:
 class TestTheFloorReadsTheSTOREDConventionAndNotTheBatchS:
     """The obligation ``C14-d`` wrote down, ``C14-e-1`` moved, and this step GRADES.
 
-    ``_reject_backward_payday`` asks how far the owner's EXISTING calendar
+    ``reject_backward_payday`` asks how far the owner's EXISTING calendar
     already reaches, so it must read the convention ``budget.pay_schedule``
     holds and not the one the incoming batch carries.  A batch that CHANGES the
     convention would otherwise compute its floor under the new one while
@@ -806,7 +806,7 @@ class TestTheFloorReadsTheSTOREDConventionAndNotTheBatchS:
 class TestTheFloorAnchorsOnTheEra:
     """Plan step **C17-b-2** (rulings R-PC66, R-PC72): the floor is on the ERA's grid.
 
-    ``_reject_backward_payday`` stepped one cadence from the last RECORDED
+    ``reject_backward_payday`` stepped one cadence from the last RECORDED
     payday, which **R-PC47** says may fall off the cadence -- so an owner paid
     a day early was bounded a day early, and a batch on the grid's own next
     payday was admitted a day before the paycheck it stood for had run its
