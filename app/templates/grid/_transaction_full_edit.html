@@ -465,7 +465,7 @@
       <div class="form-check mb-2">
         <input type="checkbox" class="form-check-input" id="companion_visible"
                name="companion_visible" value="true"
-               {{ 'checked' if txn.companion_visible else '' }}>
+               {{ 'checked' if txn.visible_to_companion else '' }}>
         <input type="hidden" name="companion_visible" value="false">
         <label class="form-check-label small" for="companion_visible">
           Visible to companion

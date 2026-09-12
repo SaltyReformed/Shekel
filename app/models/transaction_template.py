@@ -9,7 +9,6 @@ pay periods.
 
 from app.extensions import db
 from app.models.mixins import (
-    CompanionVisibilityMixin,
     IsActiveMixin,
     OptimisticLockMixin,
     SortOrderMixin,
@@ -20,7 +19,7 @@ from app.models.mixins import (
 
 class TransactionTemplate(
     UserScopedMixin, IsActiveMixin, SortOrderMixin, OptimisticLockMixin,
-    CompanionVisibilityMixin, TimestampMixin, db.Model,
+    TimestampMixin, db.Model,
 ):
     """Blueprint for a recurring income or expense line item.
 
@@ -96,9 +95,20 @@ class TransactionTemplate(
     is_envelope = db.Column(
         db.Boolean, nullable=False, default=False, server_default="false",
     )
+    # WHETHER A COMPANION OF THE OWNER MAY SEE the rows this definition
+    # generates -- the definition's own setting, read for every one of them
+    # by ``Transaction.visible_to_companion`` and never that row's own cell.
+    # Declared inline since plan step ``balance:X-bi-1b`` for the reason
+    # ``is_envelope`` is, one step earlier: the twin cell on ``Transaction``
+    # took the same seal, so the two tables stopped treating the column alike
+    # and the mixin they shared (``CompanionVisibilityMixin``, once
+    # ``TrackingVisibilityMixin``) had one consumer left and dissolved.  The
+    # declaration is identical to the mixin's; only its position in
+    # ``CREATE TABLE`` moves, load-bearing nowhere here.
+    companion_visible = db.Column(
+        db.Boolean, nullable=False, default=False, server_default="false",
+    )
     # is_active + sort_order: from IsActiveMixin / SortOrderMixin.
-    # companion_visible: from CompanionVisibilityMixin (shared with
-    # Transaction).
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
