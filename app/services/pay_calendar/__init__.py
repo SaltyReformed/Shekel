@@ -51,23 +51,26 @@ Boundary discipline (``CLAUDE.md``), stated PER MODULE because plan step C2-b1
 made one of them impure and a claim about "the package" would then be false of
 part of it:
 
-* :mod:`._grid`, :mod:`._derive`, :mod:`._projection`, :mod:`._searches`,
-  :mod:`._window`, :mod:`._views`, :mod:`._calendar`, :mod:`._walks`,
-  :mod:`._rhythm` and :mod:`._cadence` -- no Flask symbol, no database
-  session, no clock.  Every answer is a pure function of values a caller
-  supplies, and that is load-bearing rather than tidy: it is what lets C1's
-  harness drive the derivation over production's real 63 paydays and over a
-  generated sweep with no database, so the two runs exercise the same code.
-  The pure half is a one-way chain -- ``_grid`` -> ``_derive`` ->
-  ``_projection`` -> ``_searches`` -> ``_window`` -> ``_views`` ->
-  ``_calendar`` -> (``_walks``, ``_rhythm``) -- split at plan step C2-c and
-  again at C2-f3b, each time when the calendar module reached pylint's
-  1,000-line ceiling, so a search, a producer of a view, a view over a calendar and the
-  calendar itself cannot answer one question differently.  **``_projection``
-  is ``C17-b-1``'s** (ruling **R-PC69**, developer 2026-09-11): the forward
-  continuation past the record left ``_derive`` when that module reached the
-  same ceiling (ledger row **PC-498**), a split rather than a trim.  **The ``_grid``
-  head of that chain is C14-d's** (ruling **R-PC60**, developer 2026-09-05)
+* :mod:`._grid`, :mod:`._eras`, :mod:`._derive`, :mod:`._projection`,
+  :mod:`._searches`, :mod:`._window`, :mod:`._views`, :mod:`._calendar`,
+  :mod:`._walks`, :mod:`._rhythm` and :mod:`._cadence` -- no Flask symbol, no
+  database session, no clock.  Every answer is a pure function of values a
+  caller supplies, and that is load-bearing rather than tidy: it is what lets
+  C1's harness drive the derivation over production's real 63 paydays and
+  over a generated sweep with no database, so the two runs exercise the same
+  code.  The pure half is a one-way chain -- ``_grid`` -> ``_eras`` ->
+  ``_derive`` -> ``_projection`` -> ``_searches`` -> ``_window`` ->
+  ``_views`` -> ``_calendar`` -> (``_walks``, ``_rhythm``) -- split at plan
+  step C2-c and again at C2-f3b, each time when the calendar module reached
+  pylint's 1,000-line ceiling, so a search, a producer of a view, a view over
+  a calendar and the calendar itself cannot answer one question differently.
+  **``_projection`` is ``C17-b-1``'s** (ruling **R-PC69**, developer
+  2026-09-11): the forward continuation past the record left ``_derive`` when
+  that module reached the same ceiling (ledger row **PC-498**), a split rather
+  than a trim; **``_eras`` is ``C17-b-2``'s** (ruling **R-PC73**, the same
+  day): the displacement producer, the package's refusal and the cadence bound
+  moved below the derivation so the era producers could land beside them.
+  **The ``_grid`` head of that chain is C14-d's** (ruling **R-PC60**, developer 2026-09-05)
   and is the
   one split made for a DISTINCTION rather than for the ceiling: the nominal
   rhythm and the rhythm displaced onto business days stopped being the same
@@ -97,12 +100,11 @@ second answer.
 
 from ._cadence import DAYS_PER_YEAR, PayCadence
 from ._calendar import PayCalendar
-from ._derive import (
+from ._derive import DerivedPeriod, derive_periods
+from ._eras import (
     MAX_CADENCE_DAYS,
     MIN_CADENCE_DAYS,
-    DerivedPeriod,
     PayCalendarError,
-    derive_periods,
     projected_payday,
 )
 from ._grid import cadence_steps_to, nominal_payday

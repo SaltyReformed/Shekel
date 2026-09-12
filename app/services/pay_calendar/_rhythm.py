@@ -123,7 +123,7 @@ from datetime import date, timedelta
 from itertools import takewhile
 
 from ._calendar import PayCalendar
-from ._derive import projected_payday
+from ._eras import projected_payday
 from ._grid import cadence_steps_to
 from ._searches import paydays_between
 from ._views import projected_paychecks

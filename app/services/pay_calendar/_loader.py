@@ -61,7 +61,7 @@ from app.services import pay_schedule_service
 
 from ._cadence import PayCadence
 from ._calendar import PayCalendar
-from ._derive import PayCalendarError
+from ._eras import PayCalendarError
 
 
 def schedule_for(user_id: int) -> pay_schedule_service.ScheduleFacts:

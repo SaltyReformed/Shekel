@@ -36,7 +36,8 @@ from operator import attrgetter
 
 from app.services.pay_rhythm import Rhythm
 
-from ._derive import DerivedPeriod, PayCalendarError, projected_payday
+from ._derive import DerivedPeriod
+from ._eras import PayCalendarError, projected_payday
 from ._grid import cadence_steps_to, nominal_payday
 
 #: The bisect key for every search here: a period's opening payday.  Module

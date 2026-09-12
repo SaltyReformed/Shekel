@@ -146,11 +146,8 @@ from types import MappingProxyType
 from app.services.pay_rhythm import Rhythm
 
 from ._cadence import PayCadence
-from ._derive import (
-    DerivedPeriod,
-    PayCalendarError,
-    derive_periods,
-)
+from ._derive import DerivedPeriod, derive_periods
+from ._eras import PayCalendarError
 from ._projection import project_period_after
 from ._searches import (
     FiledRow,

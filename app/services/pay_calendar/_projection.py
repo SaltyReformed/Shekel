@@ -22,7 +22,8 @@ from datetime import date, timedelta
 
 from app.services.pay_rhythm import Rhythm
 
-from ._derive import DerivedPeriod, PayCalendarError, projected_payday
+from ._derive import DerivedPeriod
+from ._eras import PayCalendarError, projected_payday
 from ._grid import cadence_steps_to
 
 

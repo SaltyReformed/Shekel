@@ -64,7 +64,8 @@ from datetime import date, timedelta
 from app.services.pay_rhythm import Rhythm
 from app.utils.dates import CALENDAR_DATE_MAX
 
-from ._derive import DerivedPeriod, PayCalendarError
+from ._derive import DerivedPeriod
+from ._eras import PayCalendarError
 from ._projection import project_period_after
 from ._searches import final_covered_day, materialised_periods, opening_payday
 from ._window import PeriodWindow
