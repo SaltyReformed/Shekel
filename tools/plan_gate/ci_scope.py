@@ -63,7 +63,7 @@ Usage from ``ci.yml``::
 
     git diff --name-only --no-renames "${BASE}...${HEAD}" | python tools/plan_gate/ci_scope.py
 
-prints ``registry-only`` or ``full`` and exits 0 either way: this is a
+prints ``registry-only`` or ``full`` and exits 0 in either case: this is a
 classifier, and the gate it feeds is the workflow's ``if:``.
 """
 from __future__ import annotations

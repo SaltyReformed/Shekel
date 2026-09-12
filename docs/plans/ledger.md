@@ -12,7 +12,7 @@ was carried by the balance README until 2026-08-26 (rule 16): a finding is not a
 `F-10`, `P3` / `N-123` and `P6` / `F-12` were each ONE defect recorded in two ledgers and kept in
 step by hand, and one of those pairs went unnoticed for months.
 
-**The ledger stands at 302 rows.** By arc: balance 183, pay_calendar 41, recurrence 35, salary 24,
+**The ledger stands at 301 rows.** By arc: balance 183, pay_calendar 41, recurrence 35, salary 24,
 bank_import 13, credit_card 5. **173 of its rows crowd the 2000-character row cap** (at or over 1000
 characters) -- rule 4's corpus signal, REPORTED rather than gated, because no statistic is both
 monotone under rule 5's archiving and relative to the corpus (`_row_width.crowded_ledger_rows`).
