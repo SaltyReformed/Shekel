@@ -2,12 +2,12 @@
 
 ## Where this stands
 
-**JUST LANDED: `C17-b-2` (`3369b2ab` + `06fc0d33`)**, the leaf that MOVED MONEY (`$0.00` on
+**JUST LANDED: `C17-c-1` (`7d26ec2c`)**, the pure move that took the batch shape out of
+`pay_period_write.py` (998 of pylint's 1,000 lines after `C17-b-2`) into `pay_period_batch.py` under
+**R-PC74**, `$0.00`; before it `C17-b-2` (`3369b2ab` + `06fc0d33`) MOVED MONEY (`$0.00` on
 production): every reader anchors on the phase of the era covering its own day, the projection is
-PIECEWISE with seams in cash days, a recorded payday stands for its nearest planned one
-(**R-PC72**), and `_eras.py` holds the grid layer below the derivation (**R-PC73**).
-**NEXT: `C17-c-1`**, the pure-move split of `pay_period_write.py`, whose CUT is a fork the session
-presents and the developer rules before it lands (**R-PC71**); `steps.md` carries the order.
+PIECEWISE with seams in cash days (**R-PC72**), and `_eras.py` holds the grid layer (**R-PC73**).
+**NEXT: `C17-c-2`, the doors** (**R-PC64**, **R-PC67**, **R-PC70**); `steps.md` carries the order.
 
 **BUILT AND TICKED**: `C1`; `C2` whole, which is one step under three names (`balance:X-l`,
 `recurrence:R-F12`), ticked at `C2-f3e`; `C3`; `C4` whole; `C10` and `C11`, which came out of
@@ -316,11 +316,12 @@ their only live specimen from them, which both `_staging` docstrings predict and
 - [ ] **C17-c -- the doors ask for the ERA.** The DECOMPOSED parent, split 2026-09-11 (**R-PC71**)
       into the pure-move split of `pay_period_write.py` and the door rewrite it makes room for; it
       ticks with `C17-c-2`.
-- [ ] **C17-c-1 -- `pay_period_write.py` leaves the ceiling.** A PURE move of part of the writer
-      (1,000 of pylint's 1,000 lines after `C17-a`, **PC-507**) into a sibling module, its own
-      commit and PR, `$0.00`. The CUT is a fork this leaf's session presents and the developer rules
-      before it lands (**R-PC60**, **R-PC69** precedents); PC-507's row names the candidate seam
-      (the batch shape against the doors) without deciding it. Closes **PC-507**.
+- [x] **C17-c-1 -- `pay_period_write.py` leaves the ceiling.** `7d26ec2c`. A pure move of the batch
+      shape -- `PERIOD_BATCH_*`, `reject_out_of_range_batch_size`, `reject_undatable_payday`,
+      `requested_paydays`, `reject_backward_payday` and the record of R-PC1's two refusals -- into a
+      new `pay_period_batch.py` (**R-PC74**: the whole shape, not the refusals or the floor alone);
+      the writer 998 -> 663 lines, `$0.00`. `ddbbe87b` rides with it: the writer and admin
+      docstrings stop placing the gates in `pay_period_admin`. Closed **PC-507**.
 - [ ] **C17-c-2 -- the doors** (**R-PC64**, **R-PC67**, **R-PC70**). Registration and first-time
       generate take the NOMINAL first payday with the cadence and convention; `regenerate` is the
       era-mint door, its rebuilt tail the new era's grid, REFUSING a first payday that skips a whole
