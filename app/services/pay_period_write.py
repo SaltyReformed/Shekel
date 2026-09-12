@@ -119,9 +119,10 @@ batch writes nothing, so the rolling top-up no longer re-judges a stored pair
 on every ``/grid`` render (ledger row **N-494**, closed), and a cadence
 changed going forward no longer re-describes every past payday (**N-492**).
 
-A recording batch retires every era taking effect AFTER the last payday it
-leaves standing -- none of them describes a payday that stands -- and a batch
-that leaves no payday standing retires every era.  A batch that records
+A recording batch retires every era whose FIRST PAYDAY falls after the last
+payday it leaves standing -- none of them describes a payday that stands
+(``pay_era_write.eras_describing``, in cash days since ``C17-b-2``) -- and a
+batch that leaves no payday standing retires every era.  A batch that records
 nothing retires none: truncating a tail leaves the declared rhythm as it was.
 
 **Ledger row P28 -- "the horizon the app projects" disagreeing with "the end
@@ -372,57 +373,56 @@ def record_paydays(
 
     current = _owner_paydays(user_id)
     replacing = replacing or SpanReplacement()
-    doomed = replacing.retiring_ids or frozenset()
-    retiring = [period_id for period_id, _payday in current if period_id in doomed]
+    retiring = [i for i, _payday in current if i in replacing.retiring_ids]
     surviving_paydays = {
-        payday for period_id, payday in current if period_id not in doomed
+        payday for i, payday in current if i not in replacing.retiring_ids
     }
     retired_paydays = {
-        payday for period_id, payday in current if period_id in doomed
+        payday for i, payday in current if i in replacing.retiring_ids
     }
 
-    new_paydays = [
-        payday
-        for payday in _requested_paydays(first_payday, num_periods, rhythm)
-        if payday not in surviving_paydays
-    ]
-    # The floor reads the RHYTHM the owner's LAST SURVIVING PAYCHECK currently
-    # runs at, which is the one stored BEFORE this batch -- the question it asks
-    # is how far that paycheck already reaches, not how far the next one will.
-    # An owner moving from fortnightly to weekly is therefore bounded at a
-    # fortnight and then continues at a week, which is what "correct my cadence
-    # going forward" means and what it cannot mean retroactively.
-    #
-    # **Both halves are the STORED ones, and the convention half is plan step
-    # C14-e-1 discharging an obligation C14-d wrote down.**  ``rhythm`` is what
-    # this operation LEAVES BEHIND; a batch that CHANGES the convention would
-    # compute its floor under the new one while ``derive_periods`` still closes
-    # the existing calendar under the old, which is the disagreement between
-    # fence and boundary C14-d exists to end, re-entering through the argument
-    # list.
+    requested = _requested_paydays(first_payday, num_periods, rhythm)
+    new_paydays = [p for p in requested if p not in surviving_paydays]
     stored = pay_schedule_service.resolve_schedule(user_id)
-    stored_rhythm = None if stored is None else stored.rhythm
-    _reject_backward_payday(surviving_paydays, new_paydays, stored_rhythm)
+    # The ERA rule (module docstring): a recording batch supersedes every era
+    # past the last surviving payday and is judged against the ones that
+    # stand -- keyed on the RECORD, not the mint's day, so a batch continuing
+    # an earlier era still retires a later one it left with no payday.
+    standing = pay_era_write.eras_describing(stored, surviving_paydays)
+    era = None
+    if new_paydays:
+        era = pay_era_write.era_to_mint(standing, first_payday, rhythm)
+    # The floor reads the ERAS stored BEFORE this batch -- the question it asks
+    # is how far the owner's last surviving paycheck already reaches on the
+    # grid that paid it, not how far the next one will.  An owner moving from
+    # fortnightly to weekly is therefore bounded at a fortnight and then
+    # continues at a week, which is what "correct my cadence going forward"
+    # means and what it cannot mean retroactively.  **A MINTING batch is
+    # bounded at the era's FIRST PAYDAY too** (``requested[0]``, a day the
+    # record may hold): an era's identity is its first payday, and one below
+    # the floor starts paying inside a paycheck the owner already has -- the
+    # inverted seam ``validate_eras`` refuses (ruling 2026-09-11, C17-b-2).
+    # **The STORED eras and not the batch's rhythm** (C14-e-1 discharging an
+    # obligation C14-d wrote down): ``rhythm`` is what this operation LEAVES
+    # BEHIND, and a batch that CHANGES the convention would compute its floor
+    # under the new one while ``derive_periods`` still closes the existing
+    # calendar under the old -- the disagreement between fence and boundary
+    # C14-d exists to end, re-entering through the argument list.
+    _reject_backward_payday(
+        surviving_paydays,
+        new_paydays if era is None else [requested[0], *new_paydays],
+        None if stored is None else stored.eras,
+    )
     # The floor's MIRROR at the other end, and it lives in the gates module
     # while being called from HERE (plan step C14-f): it is an overridable,
     # owner-answerable predicate, which is that module's subject -- and calling
     # it from the one writer is what makes every door inherit it, which is the
     # half P80 shows you cannot leave to the doors.
     pay_period_gates.reject_unconfirmed_gap(
-        surviving_paydays, retired_paydays, new_paydays, stored_rhythm,
-        replacing.gap_confirmed,
+        surviving_paydays, retired_paydays, new_paydays,
+        None if stored is None else stored.rhythm, replacing.gap_confirmed,
     )
 
-    # The ERA rule (module docstring): a recording batch supersedes every era
-    # past the last surviving payday and is judged against the ones that
-    # stand -- keyed on the RECORD, not the mint's day, so a batch continuing
-    # an earlier era still retires a later one it left with no payday.
-    era = None
-    if new_paydays:
-        era = pay_era_write.era_to_mint(
-            pay_era_write.eras_describing(stored, surviving_paydays),
-            first_payday, rhythm,
-        )
     # The pairing is judged only where a rhythm is STATED (plan step C17-a,
     # closing ledger row N-494): a continuing batch hands back its era's own
     # pair, and re-judging it was the top-up's read-path 500 from /grid.
@@ -434,9 +434,7 @@ def record_paydays(
             retiring=retiring,
             recording=new_paydays,
             era=era,
-            eras_after=(
-                max(surviving_paydays) if surviving_paydays else None
-            ),
+            eras_standing=tuple(e.effective_from for e in standing),
         ),
     )
     log_event(
@@ -540,7 +538,7 @@ def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
             retiring=retiring,
             recording=[],
             era=None,
-            eras_after=None,
+            eras_standing=(),
         ),
     )
     return len(retiring)
@@ -581,18 +579,20 @@ class _PaydayChange:
             through a state neither means.  Its ``effective_from`` is the
             batch's own ``first_payday``, a point on the grid the batch is
             written on whether the door STATED it or COMPUTED it.
-        eras_after: The last payday the batch leaves standing, or ``None``
-            when it leaves none (``reset``'s shape): every era taking effect
-            AFTER it is retired before the mint, all of them for ``None``.
-            Derived by :func:`record_paydays` from the payday sets it
-            computed, so no door can claim a wipe it did not perform.
+        eras_standing: The ``effective_from`` of every era the batch leaves
+            standing -- those with a surviving payday
+            (:func:`~app.services.pay_era_write.eras_describing`); every
+            other era is retired before the mint, all of them for an empty
+            tuple (``reset``'s shape).  Derived by :func:`record_paydays`
+            from the payday sets it computed, so no door can claim a wipe it
+            did not perform.
     """
 
     user_id: int
     retiring: "list[int]"
     recording: "list[date]"
     era: "pay_rhythm.Era | None"
-    eras_after: "date | None"
+    eras_standing: "tuple[date, ...]"
 
 
 def _apply(change: _PaydayChange) -> "list[PayPeriod]":
@@ -614,10 +614,10 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
        ``uq_pay_periods_user_start``.
     2. Make sure the owner's ``budget.pay_schedule`` row exists, when the
        batch records anything: both era and payday keys target it.
-    3. RETIRE every era taking effect after the last surviving payday (the
-       era rule) BEFORE the mint, so ``uq_pay_eras_user_effective_from``
-       cannot collide on a day being restated; then MINT the era, when the
-       batch states one.
+    3. RETIRE every era the batch does not leave standing (the era rule)
+       BEFORE the mint, so ``uq_pay_eras_user_effective_from`` cannot
+       collide on a day being restated; then MINT the era, when the batch
+       states one.
     4. INSERT one row per recorded payday.
 
     ``expire_all`` runs LAST, when a row was deleted or an era minted: the
@@ -646,7 +646,7 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
     if change.recording:
         pay_schedule_service.ensure_schedule_row(change.user_id)
         retired_eras = pay_era_write.retire_eras(
-            change.user_id, change.eras_after,
+            change.user_id, change.eras_standing,
         )
         if change.era is not None:
             pay_era_write.mint_era(change.user_id, change.era)
@@ -813,7 +813,7 @@ def _requested_paydays(
 def _reject_backward_payday(
     surviving_paydays: "set[date]",
     new_paydays: "list[date]",
-    stored_rhythm: "pay_rhythm.Rhythm | None",
+    stored_eras: "tuple[pay_rhythm.Era, ...] | None",
 ) -> None:
     """Refuse a batch whose earliest new payday would land inside a paycheck.
 
@@ -836,11 +836,13 @@ def _reject_backward_payday(
 
     **The floor is WHERE THE LAST PAYCHECK ENDS, and since plan step C14-d it
     asks the derivation rather than restating it.**  It is
-    ``projected_payday(latest_payday, cadence_days, 1)`` -- the same call
+    ``payday_after(stored_eras, latest_payday)`` -- the same call
     :func:`~app.services.pay_calendar.derive_periods` makes to close the last
     saved period, whose ``end_date`` is that day minus one.  So the first day
     NOT inside a paycheck the owner already has is the floor by construction,
-    and the two cannot come apart.
+    and the two cannot come apart.  Since plan step ``C17-b-2`` that day is
+    the next payday of the ERA grid after the one the latest record stands
+    for, anchored on the era's phase rather than stepped from the record.
 
     *That was a maintained agreement until C14-d, and the docstring said so:
     "on any schedule this app can write those two spellings select the same
@@ -873,9 +875,9 @@ def _reject_backward_payday(
     floor on the nominal day and refuses the real one -- and the producer call
     refuses **0**.
 
-    **The floor reads the STORED rhythm, an obligation written down by an
+    **The floor reads the STORED eras, an obligation written down by an
     adversarial review of ``C14-d``, MOVED by ``C14-e-1`` without being
-    gradable, and GRADED at ``C14-e-3``.**  The floor reads the stored rhythm
+    gradable, and GRADED at ``C14-e-3``.**  The floor reads the stored eras
     and not the batch's own
     :attr:`Rhythm.shift <app.services.pay_rhythm.Rhythm.shift>`.  The
     argument's rhythm is what the operation LEAVES BEHIND, and a batch that
@@ -883,9 +885,6 @@ def _reject_backward_payday(
     while :func:`~app.services.pay_calendar.derive_periods` still closes the
     existing calendar under the old -- the disagreement between fence and
     boundary ``C14-d`` exists to end, reintroduced through the argument list.
-    The stored CADENCE was already read this way and the paragraph above says
-    why; the convention now arrives from the same read rather than from a
-    second one.
 
     **Nothing could grade that until ``C14-e-3``, which is why it stayed an
     obligation for two steps.**  While
@@ -901,16 +900,12 @@ def _reject_backward_payday(
     paid), and stored ``next`` with an incoming ``prior`` must REFUSE it
     (reading the batch's half splits a paycheck they already hold).
 
-    **Under ``next`` it still refuses those 58, and that is ledger row N-495
-    rather than a half-fix.**  Those refusals are the ones whose ANCHOR was
-    itself displaced: ``projected_payday`` steps from the last RECORDED payday,
-    so a payday payroll moved forward carries its whole projection forward with
-    it, and the floor inherits exactly the error the derived end has.  That is
-    the point of asking the producer -- the fence can no longer be wrong in a
-    way the calendar is not -- and the one home left to repair is the anchor,
-    which **N-495** owns and no step may fix without widening ``C14-c``'s
-    probe window -- ``C14-e-3`` deliberately did not, and
-    :func:`~app.services.pay_calendar.projected_payday` carries why.
+    **Under ``next`` it still refused those 58 until ``C17-b-2``**, ledger
+    row **N-495**: the ANCHOR was the last RECORDED payday, so a payday
+    payroll moved forward carried its whole projection forward with it, and
+    the floor inherited exactly the error the derived end had -- the point of
+    asking the producer being that the fence cannot be wrong in a way the
+    calendar is not.  The anchor is the era's phase now, at both.
 
     **Why it is not two days, and an adversarial review of C3-b is why.**  That
     step's first cut bounded at ``latest_payday +
@@ -929,17 +924,18 @@ def _reject_backward_payday(
             retirements are applied, empty for a first-time schedule.
         new_paydays: The paydays this batch would create -- already filtered of
             any that exist, so a re-run naming existing days is bounded on what
-            it would actually add.
-        stored_rhythm: The owner's STORED cadence and payday convention
-            (:class:`~app.services.pay_rhythm.Rhythm`), which together set
-            how far the last paycheck reaches.  **Stored rather than the
-            batch's own**, which is the whole of the paragraph above: the
-            question is how far the existing calendar already reaches.
-            ``None`` only beside an empty payday set -- an owner with no
-            era, and so no rhythm (every batch that records a payday mints
-            one when none covers it) -- where there is no floor to apply.  The
-            early return below is what makes that safe, and it has to be,
-            because the producer takes a rhythm.
+            it would actually add -- with the minted era's first payday in
+            front when the batch mints one, whether or not the record holds
+            that day: the seam it opens is bounded like the paydays it adds.
+        stored_eras: The owner's STORED eras
+            (:class:`~app.services.pay_rhythm.Era`), which set how far the
+            last paycheck reaches.  **Stored rather than the batch's own**,
+            which is the whole of the paragraph above: the question is how far
+            the existing calendar already reaches.  ``None`` only beside an
+            empty payday set -- an owner with no era (every batch that records
+            a payday mints one when none covers it) -- where there is no floor
+            to apply.  The early return below is what makes that safe, and it
+            has to be, because the producer takes the eras.
 
     Raises:
         ValidationError: The earliest new payday falls before the floor.
@@ -947,14 +943,16 @@ def _reject_backward_payday(
     if not surviving_paydays or not new_paydays:
         return
     latest_payday = max(surviving_paydays)
-    floor = pay_calendar.projected_payday(latest_payday, stored_rhythm, 1)
+    floor = pay_calendar.payday_after(stored_eras, latest_payday)
     earliest_new = min(new_paydays)
     if earliest_new < floor:
+        era = stored_eras[pay_calendar.era_index_at(stored_eras, floor)]
         raise ValidationError(
-            f"A new payday must fall on or after {floor.isoformat()} -- the "
+            f"A new payday, or the first payday of a new pay rhythm, must "
+            f"fall on or after {floor.isoformat()} -- the "
             f"day the next paycheck opens after your latest recorded payday "
             f"({latest_payday.isoformat()}, at a "
-            f"{stored_rhythm.cadence_days}-day cycle); "
+            f"{era.rhythm.cadence_days}-day cycle); "
             f"got {earliest_new.isoformat()}.  An earlier date lands inside a "
             f"paycheck you already have and would split it in half, which this "
             f"app cannot yet do safely.  Choose a later date, or rebuild the "

@@ -2881,6 +2881,43 @@ def era_of(effective_from, cadence_days, shift=BusinessDayShiftEnum.NONE):
     )
 
 
+#: The phase :func:`eras_of` gives an EMPTY payday set's era.  An empty
+#: calendar reads no phase -- there is no last period to close and nothing to
+#: project past -- so the day is arbitrary, and it is named rather than drawn
+#: from a clock so the value is the same on every run.
+EMPTY_CALENDAR_PHASE = _real_date(2026, 1, 2)
+
+
+def eras_of(paydays, cadence_days, shift=BusinessDayShiftEnum.NONE):
+    """Return ONE era phased on the earliest of *paydays*, as a sequence.
+
+    The pure calendar's era argument since plan step ``pay_calendar:C17-b-2``
+    (:meth:`PayCalendar.from_paydays` takes the owner's eras where it took a
+    :class:`~app.services.pay_rhythm.Rhythm`).  A test that states paydays and
+    a cadence means "this owner has been paid every *cadence_days* since
+    their first payday", which is exactly the era the migration backfilled
+    for every existing owner -- so phasing the era on the earliest payday
+    keeps every regular fixture's derivation what it was, and moves exactly
+    the last end of a fixture whose last payday is OFF that grid, which is
+    what that step does to a real owner.  A test ABOUT eras states them
+    outright with :func:`era_of`.
+
+    Args:
+        paydays: The ``(period_id, payday)`` pairs the calendar is built
+            from, in any order; may be empty, in which case the era's phase
+            is :data:`EMPTY_CALENDAR_PHASE`.
+        cadence_days: Days between the paydays.
+        shift: The convention, defaulting to
+            :attr:`~app.enums.BusinessDayShiftEnum.NONE` for
+            :func:`rhythm_of`'s reason.
+
+    Returns:
+        A one-element tuple holding the era.
+    """
+    days = [payday for _period_id, payday in paydays]
+    return (era_of(min(days) if days else EMPTY_CALENDAR_PHASE, cadence_days, shift),)
+
+
 def mint_fixture_era(user_id, effective_from, cadence_days,
                      shift=BusinessDayShiftEnum.NONE):
     """Give *user_id* a schedule row and ONE era, without recording a payday.
@@ -2897,9 +2934,11 @@ def mint_fixture_era(user_id, effective_from, cadence_days,
     and it takes the era's day because an era has one.  The extend door steps
     from that day and the era rule tests a batch's first payday against its
     grid, so a fixture that later EXTENDS or RECORDS through the writer must
-    state a day on the grid it means; the derivation itself still anchors on
-    the recorded paydays at this leaf, so a hand-built schedule that is only
-    read never notices the day.
+    state a day on the grid it means -- and since plan step ``C17-b-2`` so
+    must a fixture that is only READ: the derivation closes the last period
+    and projects past it on the era's grid, so a hand-built schedule whose
+    paydays are off the day stated here derives a last end on the grid, not
+    one cadence past its last row.
 
     Args:
         user_id: The owner.
@@ -2937,7 +2976,7 @@ def restate_fixture_era(user_id, effective_from, cadence_days,
         The minted :class:`~app.models.pay_era.PayEra` row, flushed.
     """
     pay_schedule_service.ensure_schedule_row(user_id)
-    pay_era_write.retire_eras(user_id, None)
+    pay_era_write.retire_eras(user_id, ())
     return pay_era_write.mint_era(
         user_id, era_of(effective_from, cadence_days, shift),
     )
@@ -7081,9 +7120,10 @@ def derived_calendar(
         PayCalendar,
     )
 
+    pairs = [(index + 1, payday) for index, payday in enumerate(sorted(paydays))]
     return PayCalendar.from_paydays(
-        [(index + 1, payday) for index, payday in enumerate(sorted(paydays))],
-        rhythm_of(cadence_days),
+        pairs,
+        eras_of(pairs, cadence_days),
         user_id=user_id,
         history_opens_on=history_opens_on,
     )
@@ -7101,7 +7141,8 @@ def derived_window(paydays, cadence_days):
     **It derives; it does not assemble.**  The window comes out of a real
     :class:`~app.services.pay_calendar.PayCalendar`, so its ends are the ones
     the derivation computes (each period ends the day before the next payday,
-    and the last ends ``payday + cadence_days - 1``), its ordinals run in
+    and the last the day before the next payday of a grid phased on the
+    FIRST payday at *cadence_days* -- :func:`eras_of`), its ordinals run in
     payday order, and its periods TILE.  A test therefore cannot hand the
     growth engine a shape production could not produce -- a gap between two
     periods, an ordinal out of date order, an end below its own start -- which
@@ -7112,7 +7153,8 @@ def derived_window(paydays, cadence_days):
             wants a plain biweekly run passes ``[d, d + 14, d + 28, ...]``.
         cadence_days: Days between paydays, 1..365.  It sets the LAST period's
             end and nothing else, so a run of evenly spaced paydays should
-            pass its own spacing.
+            pass its own spacing; off it, the last end lands on the grid
+            rather than one cadence past the last payday.
 
     Returns:
         The :class:`~app.services.pay_calendar.PeriodWindow` over every derived
@@ -7128,12 +7170,12 @@ def derived_window(paydays, cadence_days):
         PeriodWindow,
     )
 
+    pairs = [
+        (index + 1, payday) for index, payday in enumerate(sorted(paydays))
+    ]
     calendar = PayCalendar.from_paydays(
-        [
-            (index + 1, payday)
-            for index, payday in enumerate(sorted(paydays))
-        ],
-        rhythm_of(cadence_days),
+        pairs,
+        eras_of(pairs, cadence_days),
         user_id=1,
         history_opens_on=None,
     )
@@ -7399,12 +7441,12 @@ def read_pass_over_paydays(
         PayCalendar,
     )
 
+    pairs = [
+        (index + 1, payday) for index, payday in enumerate(sorted(paydays))
+    ]
     calendar = PayCalendar.from_paydays(
-        [
-            (index + 1, payday)
-            for index, payday in enumerate(sorted(paydays))
-        ],
-        rhythm_of(cadence_days),
+        pairs,
+        eras_of(pairs, cadence_days),
         user_id=user_id,
         history_opens_on=history_opens_on,
     )

@@ -39,7 +39,10 @@ from app.services.pay_calendar import (
 )
 
 
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import (
+    era_of,
+    eras_of,
+)
 #: A biweekly rhythm anchored on a Friday, three paydays in January 2026
 #: (the 2nd, 16th and 30th) and two in every other month it reaches.
 _JANUARY_OPENING = date(2026, 1, 2)
@@ -63,7 +66,7 @@ def _calendar(
     return PayCalendar.from_paydays(
         [(index + 1, opening + timedelta(days=cadence * index))
          for index in range(count)],
-        rhythm_of(cadence, shift),
+        (era_of(opening, cadence, shift),),
         user_id=user_id,
         history_opens_on=history_opens_on,
     )
@@ -157,8 +160,7 @@ class TestPaydaysInMonthThrough:
         now.  An EMPTY calendar is still ordinary, and it is this one: a
         schedule row and zero paydays.*
         """
-        empty = PayCalendar.from_paydays(
-            [], rhythm_of(14), user_id=1, history_opens_on=None,
+        empty = PayCalendar.from_paydays([], eras_of([], 14), user_id=1, history_opens_on=None,
         )
         assert paydays_in_month_through(empty, date(2026, 1, 31)) == ()
 
@@ -515,7 +517,8 @@ class TestTheBackwardRhythmAndItsFloor:
         calendar = PayCalendar.from_paydays(
             [(1, date(2026, 3, 10)), (2, date(2026, 3, 20)),
              (3, date(2026, 4, 30))],
-            rhythm_of(_CADENCE), user_id=1, history_opens_on=date(2025, 1, 1),
+            (era_of(date(2026, 3, 10), _CADENCE),),
+            user_id=1, history_opens_on=date(2025, 1, 1),
         )
 
         # Anchored on 03-10: 02-24, 02-10 ... not on 04-30 (which would give
@@ -548,8 +551,7 @@ class TestTheBackwardRhythmAndItsFloor:
 
     def test_an_empty_calendar_has_no_rhythm_to_run_backward(self):
         """No payday means no anchor, so there is nothing to step back from."""
-        empty = PayCalendar.from_paydays(
-            [], rhythm_of(14), user_id=1, history_opens_on=date(2020, 1, 1),
+        empty = PayCalendar.from_paydays([], eras_of([], 14), user_id=1, history_opens_on=date(2020, 1, 1),
         )
 
         assert paydays_in_month_through(empty, date(2026, 1, 31)) == ()
@@ -637,7 +639,7 @@ class TestSavedPaydaysInMonthThrough:
         # defect as a control that cannot fire.
         calendar = PayCalendar.from_paydays(
             [(30, date(2025, 1, 9)), (31, date(2026, 1, 23))],
-            rhythm_of(14), user_id=1, history_opens_on=None,
+            (era_of(date(2025, 1, 9), 14),), user_id=1, history_opens_on=None,
         )
 
         assert saved_paydays_in_month_through(
@@ -649,8 +651,7 @@ class TestSavedPaydaysInMonthThrough:
 
     def test_an_empty_calendar_records_no_paydays(self):
         """No saved payday means nothing recorded, which is a real answer."""
-        empty = PayCalendar.from_paydays(
-            [], rhythm_of(14), user_id=1, history_opens_on=None,
+        empty = PayCalendar.from_paydays([], eras_of([], 14), user_id=1, history_opens_on=None,
         )
 
         assert saved_paydays_in_month_through(empty, date(2026, 1, 31)) == ()
@@ -689,6 +690,57 @@ class TestTheEngineRefusesAPaydayItsCalendarCannotPlace:
         )
 
         assert _month_ordinal(_calendar(26), date(2026, 1, 30)) == 3
+
+
+class TestTheBackwardRhythmAnchorsOnTheErasPhase:
+    """Plan step **C17-b-2** (ruling **R-PC66**): the earliest era runs backward from its PHASE.
+
+    ``_backdated_paydays`` stepped its grid from the first RECORDED payday,
+    which ``C14-e-3``'s writer records DISPLACED -- so an owner whose record
+    opens on a closed day had every backdated payday off by the displacement,
+    in the half that feeds the FICA wage base and every ``annual_cap``
+    (ledger row **PC-502**, N-495's mirror at the other end).  The era's
+    ``effective_from`` is the nominal opening payroll INTENDED; the record is
+    what the bank did.
+    """
+
+    #: Thanksgiving 2026 as the era's first nominal payday; ``prior`` pays it
+    #: on Wednesday 11-25, and that is the day the record opens on.
+    _PHASE = date(2026, 11, 26)
+    _OPENING = date(2026, 11, 25)
+
+    def _holiday_opened(self):
+        """An owner whose first paycheck was Thanksgiving's, paid the day before."""
+        return PayCalendar.from_paydays(
+            [(1, self._OPENING), (2, date(2026, 12, 10)), (3, date(2026, 12, 24))],
+            (era_of(self._PHASE, _CADENCE, BusinessDayShiftEnum.PRIOR),),
+            user_id=1, history_opens_on=date(2026, 1, 1),
+        )
+
+    def test_the_grid_below_the_record_is_the_eras_not_the_records(self):
+        """Hand-computed: the phase's grid is 11-12, 10-29, 10-15 ...; the record's would be 11-11, 10-28.
+
+        Every Thursday here is open, so the backdated days are the nominal
+        grid itself, and the one-day offset of the recorded opening is what
+        the old anchor propagated down the whole rhythm.
+        """
+        calendar = self._holiday_opened()
+        assert is_business_day(date(2026, 11, 12))
+
+        assert paydays_in_month_through(calendar, date(2026, 11, 30)) == (
+            date(2026, 11, 12), self._OPENING,
+        )
+        assert paydays_in_month_through(calendar, date(2026, 10, 31)) == (
+            date(2026, 10, 1), date(2026, 10, 15), date(2026, 10, 29),
+        )
+
+    def test_the_recorded_opening_is_not_counted_twice(self):
+        """The era's own first payday IS the recorded opening; the saved half owns it."""
+        calendar = self._holiday_opened()
+        year = paydays_in_year_before(calendar, date(2026, 12, 31))
+        assert year.count(self._OPENING) == 1
+        assert self._PHASE not in year
+        assert len(year) == len(set(year))
 
 
 class TestTheBackwardRhythmDISPLACES:
