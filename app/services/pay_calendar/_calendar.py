@@ -134,7 +134,7 @@ so a search, a view producer, a view and the calendar itself cannot answer one
 question differently.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no database session, no
-clock.  Every answer is a pure function of the paydays and the cadence the
+clock.  Every answer is a pure function of the paydays and the eras the
 caller supplies.
 """
 
@@ -143,14 +143,11 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from types import MappingProxyType
 
-from app.services.pay_rhythm import Rhythm
+from app.services.pay_rhythm import Era
 
 from ._cadence import PayCadence
-from ._derive import (
-    DerivedPeriod,
-    PayCalendarError,
-    derive_periods,
-)
+from ._derive import DerivedPeriod, derive_periods
+from ._eras import PayCalendarError
 from ._projection import project_period_after
 from ._searches import (
     FiledRow,
@@ -209,35 +206,42 @@ class PayCalendar:
             than an error.
         paydays: The owner's COMPLETE payday set as ``(period_id, payday)``
             pairs.  The only fact here; everything else is derived from it and
-            :attr:`rhythm`.
-        rhythm: How often this owner is paid and what payroll does when a
-            payday lands on a closed day, from ``budget.pay_schedule``
-            (:class:`~app.services.pay_rhythm.Rhythm`).  Read for the last saved period's end
-            and for every projected period past it; its cadence is validated by
-            :func:`~._derive.derive_periods`.
-            **It was a bare ``cadence_days`` until plan step ``C14-e-1``**,
-            which is the step that gave the derivation a reader for the
-            convention: from ``C14-e-3`` a projected payday is the nominal grid
-            day displaced under it, so the two are one owner's one rhythm and a
-            calendar that carried only half of it could be paired with another
-            owner's other half.
-            **The cadence is not optional, since plan step C4-d** (ruling
-            **R-PC45**).  It was
+            :attr:`eras`.
+        eras: The owner's pay eras, ``effective_from`` ascending and
+            non-empty, from ``budget.pay_eras``
+            (:class:`~app.services.pay_rhythm.Era`): one row per *how I have
+            been paid since*, each carrying the day its rhythm took effect --
+            the grid's PHASE -- with the cadence and the payday convention.
+            Read for the last saved period's end, for every projected period
+            past it and for the rhythm below the record, each reader asking
+            the era covering its own day and anchoring on that era's phase
+            (plan step ``C17-b-2``, rulings **R-PC66** and **R-PC72**);
+            validated by :func:`~._derive.derive_periods`.
+            **It was one :class:`~app.services.pay_rhythm.Rhythm` until
+            ``C17-b-2``** -- the schedule row's pair, then the LATEST era's at
+            ``C17-a`` -- and a bare ``cadence_days`` until ``C14-e-1``, the
+            step that gave the derivation a reader for the convention: from
+            ``C14-e-3`` a projected payday is the nominal grid day displaced
+            under it, so the pair is one owner's one rhythm and a calendar
+            that carried half of it could be paired with another owner's
+            other half.  The sequence travels whole for the same reason.
+            **It is not optional, since plan step C4-d** (ruling
+            **R-PC45**).  The cadence was
             ``int | None`` with ``None`` legal ONLY beside an empty
             :attr:`paydays`, a pairing enforced at construction and restated as
             a precondition by every producer it travelled to.  A calendar now
-            HAS a cadence: the owner it stood for -- no ``budget.pay_schedule``
+            HAS a rhythm: the owner it stood for -- no ``budget.pay_schedule``
             row, which since plan step C4-b-2 is also no pay periods
             (``fk_pay_periods_schedule``) -- has no calendar at all, because
             :func:`~._loader.calendar_for` refuses them.  **An EMPTY calendar is
-            still ordinary and now carries a real cadence**: an owner holding a
+            still ordinary and carries a real era**: an owner holding a
             schedule row and zero paydays, which
             ``pay_period_admin.reset_pay_periods`` passes through.
         history_opens_on: How far back this owner's PAYCHECKS reach, from
             ``budget.pay_schedule``, or ``None`` for NOT STATED -- in which
             case the backward rhythm answers nothing and only the RECORD is
             counted (ruling **balance:R-IA**, amended 2026-08-31).  Carried
-            HERE for the reason :attr:`rhythm` is: the paydays and the
+            HERE for the reason :attr:`eras` is: the paydays and the
             bound on them are one owner's one rhythm, and a bound arriving
             separately can be paired with another owner's schedule.
             :mod:`._rhythm` is its only reader, and the column's comment
@@ -255,7 +259,7 @@ class PayCalendar:
 
     user_id: int
     paydays: "tuple[tuple[int | None, date], ...]"
-    rhythm: Rhythm
+    eras: "tuple[Era, ...]"
     history_opens_on: "date | None"
     periods: "tuple[DerivedPeriod, ...]" = field(
         init=False, repr=False, compare=False,
@@ -287,10 +291,11 @@ class PayCalendar:
 
         Raises:
             PayCalendarError: Anything :func:`~._derive.derive_periods` refuses
-                -- a bad cadence, a payday that is not a plain ``date``, an id
-                that is neither ``int`` nor ``None``, or a repeated payday.
+                -- a bad era sequence, a payday that is not a plain ``date``,
+                an id that is neither ``int`` nor ``None``, or a repeated
+                payday.
         """
-        periods = derive_periods(self.paydays, self.rhythm)
+        periods = derive_periods(self.paydays, self.eras)
         object.__setattr__(self, "periods", periods)
         object.__setattr__(
             self,
@@ -302,7 +307,7 @@ class PayCalendar:
     def from_paydays(
         cls,
         paydays: "Iterable[tuple[int | None, date]]",
-        rhythm: Rhythm,
+        eras: "tuple[Era, ...]",
         user_id: int,
         history_opens_on: "date | None",
     ) -> "PayCalendar":
@@ -314,12 +319,12 @@ class PayCalendar:
                 ``budget.pay_periods.id`` the payday was read from; ``None``
                 marks a period no foreign key can point at.  **The whole set,
                 never a window** -- see the class docstring.
-            rhythm: How often this owner is paid and what payroll does
-                when a payday lands on a closed day, from
-                ``budget.pay_schedule`` (:class:`~app.services.pay_rhythm.Rhythm`).
-                **Required and non-optional since plan step C4-d**: an owner
-                with no row there has no calendar rather than a cadence-less
-                one, so there is no absence for this parameter to carry.
+            eras: The owner's pay eras, ``effective_from`` ascending, from
+                ``budget.pay_eras`` (:class:`~app.services.pay_rhythm.Era`).
+                **Required and non-empty since plan step C4-d**'s principle:
+                an owner with no era has no calendar rather than a
+                rhythm-less one, so there is no absence for this parameter
+                to carry.
             user_id: The owner these paydays belong to.
             history_opens_on: How far back the owner's paychecks reach, or
                 ``None`` -- see the class docstring.  **Required rather than
@@ -337,7 +342,7 @@ class PayCalendar:
         return cls(
             user_id=user_id,
             paydays=tuple(paydays),
-            rhythm=rhythm,
+            eras=eras,
             history_opens_on=history_opens_on,
         )
 
@@ -353,9 +358,11 @@ class PayCalendar:
         that rest on it; this is the door for the consumers that have a whole
         calendar in hand -- the Recurring surface, the recurrence write paths --
         while :func:`~._loader.cadence_for` serves the ones that need the
-        cadence and nothing else.  Both answer from the stored
-        ``cadence_days`` -- this one through :attr:`rhythm` -- so there is one
-        fact and one derivation however it is reached.
+        cadence and nothing else.  Both answer from the LATEST era's stored
+        ``cadence_days`` -- this one through :attr:`eras` -- so there is one
+        fact and one derivation however it is reached.  The latest era's,
+        because the question is how often the owner IS paid: a year holds the
+        paychecks of the rhythm that continues past the record.
 
         **TOTAL since plan step C4-d** (ruling **R-PC45**), and the refusal it
         lost is the point of that step rather than a relaxation.  It raised
@@ -376,7 +383,7 @@ class PayCalendar:
         Returns:
             The owner's :class:`~._cadence.PayCadence`.
         """
-        return PayCadence(cadence_days=self.rhythm.cadence_days)
+        return PayCadence(cadence_days=self.eras[-1].rhythm.cadence_days)
 
     # ---- the schedule's own bounds -----------------------------------
 
@@ -490,7 +497,7 @@ class PayCalendar:
         # projection answers.
         if saved is not None:
             return saved
-        return project_period_after(self.periods, self.rhythm, day)
+        return project_period_after(self.periods, self.eras, day)
 
     def filing_period(self, day: date) -> DerivedPeriod:
         """Return the SAVED period a record dated *day* files under.
@@ -942,7 +949,7 @@ class PayCalendar:
                 precedes :meth:`opening_bound`.
         """
         return axis_window(
-            self.periods, self.rhythm, self.user_id, first_day, last_day,
+            self.periods, self.eras, self.user_id, first_day, last_day,
         )
 
     def projection_axis(self, first_day: date, last_day: date) -> PeriodWindow:
@@ -970,5 +977,5 @@ class PayCalendar:
                 one is answered, and telling them apart is the point.
         """
         return projection_axis_window(
-            self.periods, self.rhythm, self.user_id, first_day, last_day,
+            self.periods, self.eras, self.user_id, first_day, last_day,
         )

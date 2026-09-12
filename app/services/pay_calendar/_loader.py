@@ -61,7 +61,7 @@ from app.services import pay_schedule_service
 
 from ._cadence import PayCadence
 from ._calendar import PayCalendar
-from ._derive import PayCalendarError
+from ._eras import PayCalendarError
 
 
 def schedule_for(user_id: int) -> pay_schedule_service.ScheduleFacts:
@@ -282,8 +282,8 @@ def calendar_at_schedule(
         facts: The owner's ``budget.pay_schedule`` calendar facts, as the
             caller already resolved them.  **Their existence is the argument**
             since plan step C4-d: a caller holds these only by holding the row,
-            so ``rhythm.cadence_days`` is an ``int`` and there is no absent-cadence
-            pairing for this door to admit or for
+            so ``eras`` is non-empty with an ``int`` cadence each, and there
+            is no absent-rhythm pairing for this door to admit or for
             :func:`~._derive.derive_periods` to refuse.
             ``history_opens_on`` is ``None`` for the owner who has stated
             nothing, which is its ordinary value.
@@ -294,10 +294,10 @@ def calendar_at_schedule(
 
     Raises:
         PayCalendarError: The rows cannot define a calendar -- a duplicate
-            payday, which ``uq_pay_periods_user_start`` already prevents, or a
-            a *rhythm* cadence outside 1..365, which
-            ``ck_pay_schedule_cadence_range`` already prevents for a stored
-            one.  Both name a caller rather than a page.
+            payday, which ``uq_pay_periods_user_start`` already prevents, or
+            an era whose cadence falls outside 1..365, which
+            ``ck_pay_eras_cadence_range`` already prevents for a stored one.
+            Both name a caller rather than a page.
     """
     paydays = (
         db.session.query(PayPeriod.id, PayPeriod.start_date)
@@ -307,7 +307,7 @@ def calendar_at_schedule(
     )
     return PayCalendar.from_paydays(
         paydays=paydays,
-        rhythm=facts.rhythm,
+        eras=facts.eras,
         user_id=user_id,
         history_opens_on=facts.history_opens_on,
     )
