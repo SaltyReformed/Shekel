@@ -696,21 +696,25 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
 - [x] **R-F12** `4f134bf4` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R13 -- a DAY-OF-MONTH pay schedule** (ruling **R-R28**).
+- [ ] **R13 -- a DAY-OF-MONTH pay schedule** (rulings **R-R28**, **pay_calendar:R-PC68**). ONE
+      commit with `pay_calendar:C17-d`, whose specification (`implementation_plan_pay_calendar.md`,
+      section 4) is this step's; it ticks with that leaf and shares its rank.
 
-`budget.pay_schedule` holds one fact, `cadence_days`, and every payday is a fixed-length walk from
-the anchor. Semi-monthly pay is not: it is the 1st and the 15th (or the 15th and the last day), and
-`round(365.2425 / 15) = 24` gives an owner the right COUNT with paydays that drift through the
+Semi-monthly pay is the 1st and the 15th (or the 15th and the last day), and a fixed-length walk is
+not: `round(365.2425 / 15) = 24` gives an owner the right COUNT with paydays that drift through the
 month -- Jan 1, Jan 16, Jan 31, Feb 15. **Monthly already carries the identical limitation** (a
 30-day walk is not "the 1st"), and pay-calendar finding **F-4** records that `pay_periods` stores
 NOMINAL paydays generally, so this is one shape rather than a semi-monthly special case.
 
-The step gives the schedule a cadence KIND -- fixed-days, or one/two days of the month -- and
-branches THREE producers on it: `pay_period_write.record_paydays` (which spaces a batch),
-`pay_calendar._derive.derive_periods` (whose last period's end is cadence-projected), and
-`PayCadence.periods_per_year` (which must answer 24 without dividing). It is ranked last in this arc
-deliberately: it edits the pay-calendar package's core, which `pay_calendar:C2`'s remaining leaves
-are still moving, and nothing in either arc depends on it.
+Since `pay_calendar:C17-a` (`6caf56bc`) the schedule is a SEQUENCE OF ERAS and every era already
+carries a `kind_id` into `ref.pay_cadence_kinds`, holding its one member `fixed_days`. What this
+step adds is the `monthly` and `semi_monthly` members and the branch on the era's kind in the ONE
+arithmetic body `pay_calendar:C14-d` made of the grid -- `_grid.nominal_payday` and
+`cadence_steps_to` -- plus `PayCadence.periods_per_year` answering 24 and 12 without dividing. The
+batch writer and the derivation are not branched separately: both reach the grid. Re-derived cost of
+not having it (R-PC68): a semi-monthly owner on a 15-day walk is modelled `24.35` paychecks a year
+against a true 24. It was ranked last in this arc until 2026-09-11 because it edits the pay-calendar
+package's core; that package is now where it is filed.
 
 *`R14`, `R15` and `R18` -- the earnings-lines chain -- moved to the `salary` arc on 2026-09-03
 (**R-SAL1**, ruled with **R-SAL2** and **R-SAL3**); their specifications are
