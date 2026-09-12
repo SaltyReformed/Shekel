@@ -392,7 +392,7 @@ def _backdated_paydays(
     before 1 January of their earliest priced year is equivalent.
 
     ARITHMETIC rather than a walk from the anchor, for
-    :func:`~._derive.project_period_after`'s reason: the highest rhythm day in
+    :func:`~._projection.project_period_after`'s reason: the highest rhythm day in
     the span is one division away, so the loop below runs once per payday
     RETURNED rather than once per payday between the span and the record.  At
     the one-day cadence ``budget.pay_schedule`` admits, a January question

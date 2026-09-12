@@ -10371,12 +10371,11 @@ class TestTheGridRefusesBeforeItReadsACadence:
         so this case still cannot pass vacuously: it fails if the loader ever
         stops refusing, rather than reporting a repair page it did not earn.
         """
-        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
-        from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
         from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
             PayCalendarError,
             calendar_for,
         )
+        from tests._test_helpers import strip_owner_schedule  # pylint: disable=import-outside-toplevel
         with app.app_context():
             user_id = seed_user["user"].id
             # **The owner must hold no stored cadence, and since plan step
@@ -10390,8 +10389,7 @@ class TestTheGridRefusesBeforeItReadsACadence:
             # has never generated a schedule holds neither row -- and the
             # periods go FIRST, which is the order the foreign key plan step
             # ``pay_calendar:C4-b-2`` adds makes the only non-cascading one.
-            db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
-            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
+            strip_owner_schedule(db.session, user_id)
             db.session.commit()
 
             with pytest.raises(PayCalendarError):

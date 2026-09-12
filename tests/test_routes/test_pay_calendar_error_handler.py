@@ -24,9 +24,8 @@ from __future__ import annotations
 import pytest
 
 from app.error_handlers import _recovery_response
-from app.models.pay_period import PayPeriod
-from app.models.pay_schedule import PaySchedule
 from app.services.pay_calendar import PayCalendarError, cadence_for
+from tests._test_helpers import strip_owner_schedule
 
 
 @pytest.fixture
@@ -48,12 +47,7 @@ def owner_without_a_pay_calendar(app, db, seed_user):
     """
     with app.app_context():
         user_id = seed_user["user"].id
-        db.session.query(PayPeriod).filter_by(
-            user_id=user_id,
-        ).delete(synchronize_session=False)
-        db.session.query(PaySchedule).filter_by(
-            user_id=user_id,
-        ).delete(synchronize_session=False)
+        strip_owner_schedule(db.session, user_id)
         db.session.commit()
 
         # The premise, asserted rather than assumed: this owner's cadence

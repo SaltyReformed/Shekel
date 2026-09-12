@@ -160,13 +160,18 @@ def extend_pay_periods(user_id, num_periods):
     final drift at a batch of ONE, the rolling top-up's steady state, against
     **0 of 301** anchored on the stored phase.  *A batch of 26 happens to
     record none wrong on this schedule, which is where the holidays fall
-    rather than a property; it is not reassurance.*  The remedy is
-    ``budget.pay_schedule.nominal_anchor``, which **R-PC54** refused and
-    **R-PC61** directs after that ruling's premise -- "one bounded gap" -- was
-    measured false: the gap compounds, and only a stored phase makes the
-    sentence true again.  What remains open is **N-495**, the PROJECTION
-    inheriting a displaced anchor, which this door does not reach and
-    ``C14-c``'s probe window forbids re-anchoring without widening.
+    rather than a property; it is not reassurance.*  The remedy was a stored
+    phase, which **R-PC54** refused and **R-PC61** directed after that
+    ruling's premise -- "one bounded gap" -- was measured false: the gap
+    compounds, and only a stored phase makes the sentence true again.
+    **Since plan step ``C17-a`` that phase is the LATEST ERA's
+    ``effective_from``** (ruling **R-PC58**): the era's first nominal payday is
+    a day its grid passes through by construction, so the ``nominal_anchor``
+    column that used to be rewritten by every batch is gone and this door
+    steps from a day no batch rewrites.  What remains open is **N-495**, the
+    PROJECTION inheriting a displaced anchor, which this door does not reach
+    and ``C14-c``'s probe window forbids re-anchoring without widening --
+    ``C17-b``'s.
 
     Args:
         user_id: The owning user's id.
@@ -203,15 +208,13 @@ def extend_pay_periods(user_id, num_periods):
     # ONE read answers all three questions this door asks -- where the
     # schedule ends, how the owner is paid, and what PHASE their nominal grid
     # runs on.  ``schedule_for`` makes the refusal for an owner with no
-    # ``budget.pay_schedule`` row (plan step C4-d), and ``calendar_at_schedule``
-    # derives from the facts it just answered rather than resolving them again.
+    # ``budget.pay_schedule`` row or no era (plan step C4-d, widened at
+    # C17-a), and ``calendar_at_schedule`` derives from the facts it just
+    # answered rather than resolving them again.
     facts = schedule_for(user_id)
     calendar = calendar_at_schedule(user_id, facts)
     saved = calendar.saved()
-    # A NULL phase and an empty schedule are ONE owner and get one refusal: the
-    # migration backfilled every owner holding a payday and ``record_paydays``
-    # writes it on every batch, so a NULL phase means no paydays at all.
-    if not saved or facts.nominal_anchor is None:
+    if not saved:
         raise ValidationError(
             "Generate your first pay-period schedule before extending it."
         )
@@ -234,8 +237,9 @@ def extend_pay_periods(user_id, num_periods):
     # reason the paragraph above gives (ledger row N-496).
     horizon = final_covered_day(saved.periods)
 
-    # **The grid is stepped from the STORED PHASE, not from this owner's last
-    # recorded payday** (plan step C14-e-2, R-PC61).  That payday is what the
+    # **The grid is stepped from the LATEST ERA's PHASE, not from this
+    # owner's last recorded payday** (plan step C14-e-2, R-PC61; the phase
+    # became the era's ``effective_from`` at C17-a).  That payday is what the
     # BANK did; from C14-e-3 it is a nominal day displaced onto a business day,
     # so anchoring on it re-phases the rhythm by that displacement -- and
     # permanently, since the next extend reads THIS batch's last cash day.  The
@@ -248,8 +252,15 @@ def extend_pay_periods(user_id, num_periods):
     # -- an adversarial review of C14-e-2 found that a stored phase which
     # does not place that payday on its own grid (a PIECEWISE owner, ledger
     # row N-492) is otherwise offered a day the floor then refuses,
-    # permanently, on a read path with no handler.
-    next_payday = nominal_payday_after(facts.nominal_anchor, rhythm, horizon)
+    # permanently, on a read path with no handler.  Since C17-a the era whose
+    # grid the batch is on is exactly the era that phase belongs to, so the
+    # writer's era rule sees a CONTINUATION and mints nothing -- unless a
+    # truncate cut below that era's own day, in which case the era describes
+    # no surviving payday, the batch retires it and restates its rhythm from
+    # the day it continues (``pay_era_write.era_to_mint`` carries the case).
+    next_payday = nominal_payday_after(
+        facts.latest_era.effective_from, rhythm, horizon,
+    )
     return pay_period_write.record_paydays(
         user_id, next_payday, num_periods, rhythm,
     )
@@ -381,8 +392,9 @@ def regenerate_pay_periods(
     are historical, hold settled money or posted ledger entries, or anchor a
     recurrence rule are KEPT; if any such locked period sits inside the rebuildable tail the
     truncate step refuses (history cannot be rewritten under a settled
-    paycheck).  The new cadence is persisted so later extends continue at
-    it.
+    paycheck).  A new rhythm becomes a new ERA from the corrected start
+    (plan step ``pay_calendar:C17-a``) so later extends continue at it, and
+    the kept paydays keep the era they ran on.
 
     The whole operation is one transaction the route commits: if the writer
     rejects ``new_start_date`` after the truncate has run, the route's rollback
@@ -393,12 +405,13 @@ def regenerate_pay_periods(
     rule), and a service that rolled back would be deciding for a caller that
     may have staged work of its own.
 
-    **The cadence is persisted by the writer, not here** (plan step C3-b).
-    This function used to call ``upsert_schedule`` itself, unconditionally,
+    **The rhythm is persisted by the writer, not here** (plan step C3-b).
+    This function used to upsert the schedule row itself, unconditionally,
     which is one half of finding **P12**: a batch that created nothing still
     rewrote the forecast cadence.  ``record_paydays`` now applies the one rule
-    -- a batch that RECORDED a payday sets the cadence -- so the three doors
-    that had a copy of this line have none.
+    -- a batch that RECORDED a payday on a rhythm the covering era does not
+    hold mints an era -- so the three doors that had a copy of this line have
+    none.
 
     Args:
         user_id: The owning user's id.
@@ -414,9 +427,10 @@ def regenerate_pay_periods(
         rhythm: How often the rebuilt tail is paid and what payroll does
             when one of its paydays lands on a closed day
             (:class:`~app.services.pay_rhythm.Rhythm`); also
-            persisted as the user's forecast rhythm, by the writer.  A PAIR
-            rather than a bare cadence since plan step **C14-b**, because the
-            two carry a joint rule the writer judges together.
+            persisted as a new era from *new_start_date* by the writer, when
+            it differs from the era covering that day.  A PAIR rather than a
+            bare cadence since plan step **C14-b**, because the two carry a
+            joint rule the writer judges together.
         confirms: Which overridable gates the owner has already cleared
             (:class:`~app.services.pay_period_gates.Confirmations`); ``None``
             means none of them.  ``discard`` is forwarded to the truncate step
@@ -529,8 +543,10 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
          pass: transactions and transfers (+ both shadows, preserving the
          transfer invariant) go; audit triggers still fire.  Anchor history is
          NOT in that cascade any more (ruling R-EO), and neither are the
-         recurrence rules (plan step R7b-4).
-      4. Generate the fresh schedule from ``new_start_date``.
+         recurrence rules (plan step R7b-4).  Every era goes too, by the
+         writer's own rule rather than a cascade (plan step C17-a).
+      4. Generate the fresh schedule from ``new_start_date``, minting its
+         one era there.
       5. Re-sync each of the user's loans' genesis postings onto the
          rebuilt schedule (:func:`loan_posting_service.resync_user_loan_postings`).
          A loan's opening / true-up ledger entries carry a ``pay_period_id``
@@ -576,10 +592,13 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     invisible now.  From R7d-c-2 the pass folds the loan to bound a
     payment, and then generating before the re-sync would fold a ledger the
     wipe had emptied.  The new order is the one that survives that step.
-    The new cadence is persisted by step 4's writer rather than by a line of
+    The new rhythm is persisted by step 4's writer rather than by a line of
     this function's own (plan step C3-b): ``record_paydays`` applies the one
-    rule -- a batch that RECORDED a payday sets the forecast cadence -- so the
-    three doors that each held a copy of that call now hold none.
+    rule -- a batch that RECORDED a payday on a rhythm no era covers mints an
+    era -- so the three doors that each held a copy of that call now hold
+    none.  **Every era goes with the periods** (plan step ``C17-a``): the
+    writer retires them all when no payday survives, so the rebuilt schedule
+    holds exactly one era, minted from *new_start_date*.
 
     **A capture-and-re-point step LEFT this list at plan step R7b-4**, and it
     left because its subject stopped existing.  The wipe used to SET NULL
@@ -600,7 +619,7 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
         rhythm: How often the new schedule is paid and what payroll does
             when one of its paydays lands on a closed day
             (:class:`~app.services.pay_rhythm.Rhythm`); also
-            persisted as the user's rhythm, by the writer.  See
+            persisted as the schedule's one era, by the writer.  See
             :func:`regenerate_pay_periods` for why it is a pair.
 
     Returns:

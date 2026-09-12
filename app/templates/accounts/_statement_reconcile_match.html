@@ -53,9 +53,21 @@
    THE SERVER COMPUTES THE DIFFERENCE.  `preview_hand_build` runs the accept
    door's own reads and refusals without the writes, so the figure on screen
    and the figure the door checks are one derivation.  With JavaScript off
-   this never re-renders: the consent box stays disabled and submits nothing,
-   which leaves the door refusing an unbalanced group and naming both sums --
-   the same degradation the retired workbench's own panel documented.
+   nothing re-renders as the owner ticks: the consent box stays disabled and
+   submits nothing, so the door refuses an unbalanced group and names both
+   sums -- and since plan step bank_import:X-gi-2a that refusal re-draws THIS
+   pane from the submitted form (finding BI-478), rows ticked, totals priced,
+   the difference's acts offered, so the second press carries the consent.
+   Until then the page re-drew it from the tier's proposal and every tick was
+   gone.
+
+   THE RE-DRAWN PANE ECHOES WHAT WAS SUBMITTED, FOR EVERY CONTROL WHOSE VALUE
+   IS STILL ON OFFER (ruling R-BI3, developer 2026-09-11): a row renders
+   ticked where `opened.ticked` holds it, and a consent option renders picked
+   where its whole value equals `opened.consent` -- the figure and the member
+   row token together, so equal value is equal act.  Both surfaces render
+   this one template, so the scripted pane keeps a pick across a search
+   keystroke and clears it on a row tick that moves the difference.
 
    Context: account (the owned account), opened (an OpenedMatch: the line, the
    proposal a tier offered, the candidate rows, the (kind, row_id) set that is
@@ -83,10 +95,12 @@
      re-render too when the search changes.
 
      A change from the search box or any row checkbox bubbles to this element
-     and fires; a change from the consent box below bubbles to .rec-match,
-     which listens for nothing.  So ticking a row RESETS the consent (the
-     figure it agreed to no longer exists) and ticking the consent leaves it
-     alone -- which is what those two acts mean. #}
+     and fires; a change from the consent control below bubbles to .rec-match,
+     which listens for nothing.  So ticking the consent re-renders nothing,
+     and ticking a row re-renders the control -- which comes back PICKED only
+     where the act it consented to is still one on offer (R-BI3): a row tick
+     that moves the difference leaves no option carrying the old value, and
+     the pick clears because the figure it agreed to no longer exists. #}
   <div class="rec-match-picks"
        hx-post="{{ url_for('accounts.statement_reconcile_match', account_id=account.id, line_id=opened.line.line_id) }}"
        hx-trigger="change, keyup changed delay:400ms"
@@ -278,6 +292,10 @@
      group and no justification, and no later step supplies one (X-gj-3b
      withdrawn, R-JJ; salary:R18 dissolves the question).  R-FN's ordinary
      row is the FIRST option, which is what every group did before X-gj-3a.
+     AN OPTION THE OWNER SUBMITTED IS ECHOED (R-BI3), and that is not a
+     pre-selection: the app picks nothing, the owner's own tick comes back
+     where the whole value they consented to is still offered, exactly as a
+     submitted row comes back ticked.
 
      AN OPTION THE DOOR WOULD REFUSE IS DISABLED AND SAYS WHY, in the door's
      own sentence -- R-HW's shape one control down.  It is the service's
@@ -302,6 +320,7 @@
              id="consent-{{ opened.line.line_id }}-{{ loop.index }}"
              name="consent-{{ opened.line.line_id }}"
              value="{{ option.value }}"
+             {% if option.accepts == opened.consent %}checked{% endif %}
              {% if option.refusal %}disabled{% endif %}>
       <label class="form-check-label small"
              for="consent-{{ opened.line.line_id }}-{{ loop.index }}">
@@ -374,8 +393,9 @@
       Tick the rows this line paid for. Nothing re-prices as you tick without
       JavaScript: press Apply and the two sides are compared then. If they
       come to the <strong>same total</strong>, the match is recorded; if they
-      <strong>disagree</strong>, nothing is written and you are told both
-      totals.
+      <strong>disagree</strong>, nothing is written, and this card comes back
+      with your rows still ticked, both totals, and what would happen to the
+      difference, for you to agree to.
       {% endif %}
     </label>
   </div>

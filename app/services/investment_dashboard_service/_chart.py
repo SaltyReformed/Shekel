@@ -70,12 +70,12 @@ def _run_growth_projection(
 
     **The employer contribution is sized per period too**, through the engine's
     own ``salary_basis`` hook: the gross of the paycheck the account's funding
-    profile was paid on each payday
-    (:meth:`~app.services.investment_projection.AccountPayrollFeed.salary_basis`),
-    where ``employer_params`` used to carry ONE gross for the whole run.  That
-    hook existed already and only ``/retirement`` supplied it, which is why
-    this chart's employer line and that page's disagreed about the same
-    account.
+    profile was paid on each period
+    (:meth:`~app.services.investment_projection.AccountPayrollFeed.gross_at`,
+    which IS that hook's shape since plan step salary:S3-e-2), where
+    ``employer_params`` used to carry ONE gross for the whole run.  That hook
+    existed already and only ``/retirement`` supplied it, which is why this
+    chart's employer line and that page's disagreed about the same account.
     """
     return growth_engine.project_balance(
         current_balance=ctx.projection_seed,
@@ -90,11 +90,8 @@ def _run_growth_projection(
             contribution_transactions=ctx.shadow_contributions,
             periods=periods,
             as_of=ctx.balance_ctx.as_of,
-            # The pass's own calendar, so the boundary this axis runs past is
-            # the same one the seam reports over (plan step salary:S3-e-1).
-            saved_through=ctx.balance_ctx.calendar().horizon(),
         ),
-        salary_basis=ctx.feed.salary_basis(),
+        salary_basis=ctx.feed.gross_at,
     )
 
 
@@ -391,7 +388,7 @@ def _compute_what_if_overlay(
         # step salary:R14-b): the what-if varies what the OWNER puts in, not
         # what the employer pays them, so freezing the basis here would make
         # the overlay and the committed line disagree about the same paycheck.
-        salary_basis=ctx.feed.salary_basis(),
+        salary_basis=ctx.feed.gross_at,
     )
 
     what_if_balances = [

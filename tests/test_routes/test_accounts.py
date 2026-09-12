@@ -28,6 +28,7 @@ from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
     rhythm_of,
+    strip_owner_schedule,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -45,7 +46,6 @@ from tests._test_helpers import (
 )
 from app.models.interest_params import InterestParams
 from app.models.pay_period import PayPeriod
-from app.models.pay_schedule import PaySchedule
 from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
 from app.models.ref import AccountType, Status, TransactionType
@@ -6439,11 +6439,10 @@ class TestCashDetailContext:
         """
         with app.app_context():
             uid = seed_user["user"].id
-            # Periods FIRST: ``fk_pay_periods_schedule`` is ON DELETE RESTRICT
-            # since plan step ``pay_calendar:C4-b-2``, so the parent cannot go
-            # under live children.
-            db.session.query(PayPeriod).filter_by(user_id=uid).delete()
-            db.session.query(PaySchedule).filter_by(user_id=uid).delete()
+            # Children FIRST: ``fk_pay_periods_schedule`` and
+            # ``fk_pay_eras_schedule`` are ON DELETE RESTRICT, so the parent
+            # cannot go under live children; the helper states the order once.
+            strip_owner_schedule(db.session, uid)
             db.session.commit()
 
         # The SAME url ``_capture_cash_detail_context`` drives, because this

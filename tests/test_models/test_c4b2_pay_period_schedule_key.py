@@ -44,12 +44,13 @@ from sqlalchemy.exc import IntegrityError, InternalError
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
 from app.models.user import User, UserSettings
-from app.services import pay_schedule_service
+from app.services import pay_era_write, pay_schedule_service
 from app.services.auth_service import hash_password
 from tests._test_helpers import (
     open_owner_calendar,
     relax_pay_schedule_shift_not_null,
     restore_pay_period_derived_columns,
+    rewind_pay_schedule_rhythm,
 )
 
 _MIGRATIONS_DIR = (
@@ -140,6 +141,22 @@ def _owner_with_paydays(db, email, cadence_days=14, num_periods=3):
     )
     db.session.commit()
     return user
+
+
+def _stored_cadence(session, user_id):
+    """Read ``budget.pay_schedule.cadence_days`` back by SQL, or ``None``.
+
+    For a case whose subject is an older revision's statement, replayed
+    against the schema :func:`~tests._test_helpers.restore_pay_period_derived_columns`
+    rewinds to.  That rewind puts the cadence back on the schedule row (plan
+    step ``pay_calendar:C17-a`` moved it to the era), and the head mapper
+    does not select the column, so SQL reads the answer.  ``None`` for an
+    owner with no row.
+    """
+    return session.execute(
+        text("SELECT cadence_days FROM budget.pay_schedule WHERE user_id = :uid"),
+        {"uid": user_id},
+    ).scalar()
 
 
 class TestTheKeyIsShapedTheWayTheRulingSays:
@@ -263,6 +280,11 @@ class TestTheForbiddenOwnerIsUnstorable:
         user = _owner_with_paydays(db, "restrict@shekel.local")
 
         with app.app_context():
+            # The era key (``fk_pay_eras_schedule``, plan step C17-a) would
+            # refuse the same delete for its own reason; the eras go first so
+            # the refusal graded here is THIS key's.
+            pay_era_write.retire_eras(user.id, None)
+            db.session.commit()
             with pytest.raises(IntegrityError) as excinfo:
                 db.session.query(PaySchedule).filter_by(
                     user_id=user.id,
@@ -295,6 +317,11 @@ class TestTheForbiddenOwnerIsUnstorable:
         user = _owner_with_paydays(db, "bothgo@shekel.local")
 
         with app.app_context():
+            # The era is a SECOND child of the row since plan step C17-a
+            # (``fk_pay_eras_schedule``); it goes first so both halves below
+            # are decided by the key under test and not by that one.
+            pay_era_write.retire_eras(user.id, None)
+            db.session.commit()
             # Parent first: refused, and nothing moves.
             with pytest.raises(IntegrityError) as excinfo:
                 db.session.query(PaySchedule).filter_by(
@@ -316,7 +343,7 @@ class TestTheForbiddenOwnerIsUnstorable:
             ).delete(synchronize_session=False)
             db.session.commit()
 
-            assert pay_schedule_service.resolve_cadence(user.id) is None
+            assert pay_schedule_service.get_schedule(user.id) is None
 
     def test_a_schedule_row_without_paydays_stays_legal(self, app, db):
         """The key binds one direction only, and this is the other one.
@@ -488,6 +515,10 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
                      "WHERE id = :id"),
                 {"end": last.start_date + timedelta(days=28), "id": last.id},
             )
+            # The era goes before the parent row it hangs off (plan step
+            # C17-a, ``fk_pay_eras_schedule``), as the paydays' key already
+            # required of them.
+            pay_era_write.retire_eras(user.id, None)
             db.session.query(PaySchedule).filter_by(
                 user_id=user.id,
             ).delete(synchronize_session=False)
@@ -501,13 +532,11 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
                 {"id": last.id},
             ).scalar()
             assert (stored_end - last.start_date).days + 1 == 29
-            assert pay_schedule_service.get_schedule(user.id) is None
+            assert _stored_cadence(db.session, user.id) is None
 
             _run(_M_C4B2.upgrade, db.session)
 
-            assert pay_schedule_service.get_schedule(
-                user.id,
-            ).cadence_days == 9
+            assert _stored_cadence(db.session, user.id) == 9
 
     def test_a_single_payday_owner_falls_back_to_the_stored_span(
         self, app, db,
@@ -528,6 +557,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
             restore_pay_period_derived_columns(db.session)
             relax_pay_schedule_shift_not_null(db.session)
             _run(_M_C4B2.downgrade, db.session)
+            pay_era_write.retire_eras(user.id, None)
             db.session.query(PaySchedule).filter_by(
                 user_id=user.id,
             ).delete(synchronize_session=False)
@@ -538,9 +568,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
 
             _run(_M_C4B2.upgrade, db.session)
 
-            assert pay_schedule_service.get_schedule(
-                user.id,
-            ).cadence_days == 9
+            assert _stored_cadence(db.session, user.id) == 9
 
     def test_an_uninferable_cadence_ABORTS_rather_than_inventing_one(
         self, app, db,
@@ -558,6 +586,10 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
         no schedule row, and the upgrade must refuse.
         """
         with app.app_context():
+            # The CHECK this case expects to fire lives on the era since plan
+            # step C17-a; the whole rewind puts it back on the row, as the
+            # chain does before this revision's ``upgrade()`` could run.
+            rewind_pay_schedule_rhythm(db.session)
             restore_pay_period_derived_columns(db.session)
             relax_pay_schedule_shift_not_null(db.session)
             _run(_M_C4B2.downgrade, db.session)
@@ -610,6 +642,12 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
         _owner_with_paydays(db, "droptable@shekel.local")
 
         with app.app_context():
+            # ``fk_pay_eras_schedule`` (plan step C17-a) is a second
+            # dependent of the table, and the chain clears it first --
+            # C17-a is newer than both revisions here -- so its own
+            # ``downgrade()`` runs first and the refusal graded below is the
+            # payday key's, which is this case's subject.
+            rewind_pay_schedule_rhythm(db.session)
             restore_pay_period_derived_columns(db.session)
             # Half one: with the key in place, the drop is refused, and the
             # message names this constraint rather than some other dependency.

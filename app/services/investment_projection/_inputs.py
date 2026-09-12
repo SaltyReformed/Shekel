@@ -340,12 +340,13 @@ def calculate_investment_inputs(
         all_contributions:     List of :class:`PricedContribution` records
                                for this account -- shadow-income rows already
                                valued, screened and dated at the boundary.
-        current_period:        The current period object -- anything carrying a
-                               ``start_date``, which both
-                               :class:`~app.models.pay_period.PayPeriod` and
-                               :class:`~app.services.pay_calendar.DerivedPeriod`
-                               do -- or None.  It is the payday the per-period
-                               figures above are read at; ``None`` leaves them
+        current_period:        The current
+                               :class:`~app.services.pay_calendar.DerivedPeriod`,
+                               or None.  It is the paycheck the per-period
+                               figures above are read off -- the feed hands
+                               it to the engine, since plan step
+                               salary:S3-e-2 (ruling **R-SAL19**), so an ORM
+                               row no longer serves here; ``None`` leaves them
                                at ``$0.00``, the same state the two YTD windows
                                already answer zero for.
 
@@ -353,7 +354,7 @@ def calculate_investment_inputs(
         InvestmentInputs dataclass.
     """
     periodic_contribution = (
-        feed.employee_at(current_period.start_date)
+        feed.employee_at(current_period)
         if current_period is not None else ZERO
     )
     periodic_contribution += _average_transfer_contribution(all_contributions)
@@ -385,7 +386,6 @@ def build_contribution_timeline(
     contribution_transactions,
     periods,
     as_of,
-    saved_through,
 ):
     """Build ContributionRecords from the payroll feed and shadow transfers.
 
@@ -393,16 +393,17 @@ def build_contribution_timeline(
     for the growth engine:
 
     Path 1 -- Paycheck deductions: what the paycheck engine says this
-    account's deductions took from each payday
+    account's deductions took from each period's paycheck
     (:meth:`AccountPayrollFeed.employee_at`) -- raise-aware,
     inflation-escalated, cadence-placed and clamped to each line's own
-    calendar-year ``annual_cap`` for every payday the owner's calendar
-    REACHES.  Past it the figure is the feed's HOLD, a complete year's
-    average, which is none of those four things and is stated as such on
-    :attr:`AccountPayrollFeed.employee_by_payday`; on a 40-year chart that is
-    most of the periods.  Confirmation is date-based (past period =
-    confirmed) because there is no per-period transaction record for
-    deductions.
+    calendar-year ``annual_cap`` -- for EVERY period of the domain, saved or
+    projected.  **Past the owner's saved schedule it used to be the feed's
+    HOLD**, a complete year's average that was none of those four things
+    and, on a 40-year chart, most of the periods; plan step
+    **salary:S3-e-2** deleted the hold and the feed prices a projected
+    payday through the engine like any other (ruling **R-SAL15**).
+    Confirmation is date-based (past period = confirmed) because there is
+    no per-period transaction record for deductions.
 
     Path 2 -- Transfer-based contributions: Per-record amounts from the priced
     shadow contributions.  Confirmation is status-based
@@ -438,66 +439,39 @@ def build_contribution_timeline(
     engine fall back to ``periodic_contribution``: it is the difference
     between *this paycheck contributed nothing* and *nobody said*.
 
-    **It reads no clock and needs no period IDENTITY since plan step C2-f2c.**
-    The confirmation split took ``date.today()``, so a render that straddled
-    midnight could date this timeline one day and the pass around it another;
-    it takes the read pass's own ``as_of`` now, which is what every other
-    producer on that render already runs on.  And path 2 resolved each
-    contribution's date through an id-keyed map of *periods*, which forced this
-    function to know how the caller's period type spells its primary key --
-    ``id`` on an ORM row, ``period_id`` on a
-    :class:`~app.services.pay_calendar.DerivedPeriod`.  A contribution carries
-    its own payday now, so the only thing read off a period here is its
-    ``start_date`` and both types serve.
+    **It reads no clock since plan step C2-f2c**, and no period IDENTITY
+    since the same step: the confirmation split took ``date.today()``, so a
+    render that straddled midnight could date this timeline one day and the
+    pass around it another; it takes the read pass's own ``as_of`` now.  And
+    path 2 resolved each contribution's date through an id-keyed map of
+    *periods*, which forced this function to know how the caller's period
+    type spells its primary key -- ``id`` on an ORM row, ``period_id`` on a
+    :class:`~app.services.pay_calendar.DerivedPeriod`.  A contribution
+    carries its own payday now, and the one boundary this function still
+    needs is asked of the period by NAME
+    (:attr:`~app.services.pay_calendar.DerivedPeriod.is_projected`), so it
+    still does not know that spelling.  *The period is a*
+    :class:`~app.services.pay_calendar.DerivedPeriod` *all the same*: the
+    feed hands it to the paycheck engine since plan step salary:S3-e-2
+    (ruling **R-SAL19**), and an ORM row cannot reach the engine, so the
+    "both types serve" clause of **R-SAL18** is revised by that ruling.
 
     Args:
         feed:                       The account's :class:`AccountPayrollFeed`
-                                    -- what its payroll puts in per payday.
+                                    -- what its payroll puts in per period.
         contribution_transactions:  List of :class:`PricedContribution`
                                     records -- shadow-income rows already
                                     valued, screened and dated at the boundary.
-        periods:                    The timeline's DOMAIN: period objects with
-                                    a ``start_date``, one record emitted per
-                                    period for the deduction path and any
-                                    contribution outside them dropped.  It may
-                                    run PAST the owner's saved schedule -- the
-                                    40-year chart's axis does -- which is what
-                                    the feed's hold rule answers.
+        periods:                    The timeline's DOMAIN:
+                                    :class:`~app.services.pay_calendar
+                                    .DerivedPeriod` values, one record
+                                    emitted per period for the deduction path
+                                    and any contribution outside them dropped.
+                                    It may run PAST the owner's saved schedule
+                                    -- the 40-year chart's axis does -- and
+                                    each such period says so itself.
         as_of:                      The read pass's clock; a period opening
                                     strictly before it is confirmed.
-        saved_through:              The last day the owner's SAVED schedule
-                                    covers
-                                    (:meth:`~app.services.pay_calendar
-                                    .PayCalendar.horizon`).  The boundary the
-                                    transfer average is added PAST and not
-                                    inside -- see path 1 for why the CALLER
-                                    states it.
-                                    **PRECONDITION: not ``None``, and it is
-                                    the horizon of the calendar *periods*
-                                    came from.**  ``horizon()`` is ``None``
-                                    only for a calendar with no saved period,
-                                    and every axis producer answers an EMPTY
-                                    window there -- ``_chart`` returns the
-                                    empty chart, ``resolve_projection_axis``
-                                    an empty window, ``build_horizon``
-                                    ``None`` -- so a non-empty *periods*
-                                    implies a real horizon and an arm for
-                                    ``None`` would be one that cannot fire
-                                    (``CLAUDE.md`` rule 1).  A ``None`` here
-                                    raises on the compare, which is the
-                                    failure this would rather have than
-                                    silently paying the average everywhere.
-                                    **The test is ONE-SIDED and the question
-                                    it implements is the FORWARD half alone.**
-                                    ``prices()`` also answered *below* the
-                                    calendar's first payday, where it added
-                                    the average; nothing can ask that here,
-                                    because ``projection_axis`` RAISES
-                                    *first_day* to
-                                    :meth:`~app.services.pay_calendar
-                                    .PayCalendar.opening_bound` and ``axis``
-                                    refuses below it, so no axis holds a
-                                    period that predates the schedule.
 
     Returns:
         list[ContributionRecord] sorted by contribution_date.  Empty
@@ -506,64 +480,55 @@ def build_contribution_timeline(
     """
     records = []
 
-    # Path 1: Paycheck deductions -- the engine's own figure for each payday,
-    # PLUS the transfer average on a payday the calendar does not reach.
+    # Path 1: Paycheck deductions -- the engine's own figure for each period,
+    # PLUS the transfer average on a period the schedule does not reach.
     #
     # **That second term is a RESTORE, and leaving it out was a measured
-    # regression this step's own adversarial review caught.**  The growth
+    # regression salary:R14-b's own adversarial review caught.**  The growth
     # engine's rule is that a dated record REPLACES the periodic fallback, and
     # ``periodic_contribution`` WAS the only carrier of
-    # :func:`_average_transfer_contribution` before this step -- the line
-    # below is the second, which is the whole of the restore.  Before plan step salary:R14-b
-    # this timeline's domain was the owner's SAVED window, so every period
-    # past it had no record and fell back to *deduction + average*; widening
-    # the domain to the projection axis without carrying the average would
-    # have dropped an account's whole recurring-transfer stream out of the
-    # forward walk, for the entire horizon, for every account funded by BOTH
-    # a deduction and transfers.  ``/retirement`` passed no dated records at
-    # all, so there it was every period.
+    # :func:`_average_transfer_contribution` before that step -- the term
+    # below is the second, which is the whole of the restore.  Before it this
+    # timeline's domain was the owner's SAVED window, so every period past it
+    # had no record and fell back to *deduction + average*; widening the
+    # domain to the projection axis without carrying the average would have
+    # dropped an account's whole recurring-transfer stream out of the forward
+    # walk, for the entire horizon, for every account funded by BOTH a
+    # deduction and transfers.
     #
     # **The asymmetry is inherited, not chosen**: the average applies only
     # PAST the saved window and not inside it, where a period without a
     # recorded transfer contributes the deduction alone.  Nobody designed
     # that -- it falls out of the fallback rule meeting the old domain -- and
     # a step ruled about what a DEDUCTION is priced from may not quietly
-    # re-rule what a TRANSFER projects to.  It is filed as its own finding.
+    # re-rule what a TRANSFER projects to.  *This comment said "it is filed
+    # as its own finding" from R14-b to S3-e-2, and it never was*: the ids
+    # that commit message named for it (N-536, N-537) appear in no registry.
+    # S3-e-2's registry pass files it; until that row exists, this sentence
+    # is the only record.
     #
-    # **Reproduced EXACTLY for /investment, and NEWLY INTRODUCED for
-    # /retirement**, which an adversarial review of this fix separated and a
-    # first draft of this comment ran together.  ``/investment``'s old
-    # timeline domain was ``reported_periods()``, which IS
-    # ``calendar.saved()``: old and new coincide on both sides of the
-    # boundary.  ``/retirement`` passed NO
-    # dated records at all, so every period there -- in-window included --
-    # took the fallback, and in-window periods now get the deduction alone
-    # plus whatever dated transfers exist.  That is a real change to the
-    # readiness verdict, its levers and the /savings Horizon band, and it is
-    # NOT covered by that step's ``grid_balance_view`` measurement, which
-    # reads the balance seam only.
-    #
-    # **The boundary is the CALENDAR's, and plan step salary:S3-e-1 made the
-    # caller say so.**  It was ``feed.prices(payday)`` -- *did the engine
-    # price this payday* -- which answered the same days only because the
-    # feed was built over ``calendar.saved()`` and nothing else.  Plan step
-    # **salary:S3-e-2** lets a feed answer any payday it is asked, at which
-    # point that method would read ``True`` everywhere and this term would
-    # never be added again: an account funded by BOTH a deduction and
-    # transfers would silently lose its whole recurring-transfer stream from
-    # the forward walk, for the entire horizon.  The question was never about
-    # pricing.  It is *has the owner's schedule reached this day*, because
-    # that is what decides whether a dated transfer record could exist for
-    # it, so it is asked of the schedule.  The test is the FORWARD half only;
-    # the Args entry says why no axis can hold a period below the schedule.
+    # **The boundary is the PERIOD's own** (ruling **R-SAL18**, plan step
+    # salary:S3-e-2).  The question was never about pricing: it is *has the
+    # owner's schedule reached this day*, because that decides whether a
+    # dated transfer record could exist for it.  It was ``feed.prices()``
+    # until S3-e-1, which answered the same days only while the feed was
+    # built over ``calendar.saved()``; then a ``saved_through`` date the
+    # CALLER read off a calendar that had to be the one the axis came from,
+    # a pairing an AST census fenced.  A period past the schedule already
+    # carries the fact -- it is a projection with no row -- so asking it
+    # deletes the parameter, the wiring and the census, and a mismatched
+    # pair is not a state anyone can express.  The question is one-sided by
+    # construction: ``projection_axis`` RAISES its opening day to
+    # ``opening_bound`` and ``axis`` refuses below it, so no axis holds a
+    # period that predates the schedule.
     if feed.is_payroll_linked:
         beyond = _average_transfer_contribution(contribution_transactions)
         records.extend(
             ContributionRecord(
                 contribution_date=period.start_date,
                 amount=(
-                    feed.employee_at(period.start_date)
-                    + (beyond if period.start_date > saved_through else ZERO)
+                    feed.employee_at(period)
+                    + (beyond if period.is_projected else ZERO)
                 ),
                 # Past periods are confirmed (the deduction was taken from the
                 # paycheck); future periods are projected.

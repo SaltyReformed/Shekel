@@ -316,6 +316,29 @@ class BusinessDayShift(db.Model):
         return f"<BusinessDayShift {self.name}>"
 
 
+class PayCadenceKind(db.Model):
+    """What KIND of rhythm a pay era runs on (plan step ``pay_calendar:C17``).
+
+    One row per member of :class:`~app.enums.PayCadenceKindEnum`; the migration
+    that creates ``budget.pay_eras`` inline-seeds ``fixed_days`` so a freshly
+    upgraded database resolves the enum before the idempotent reseed runs.
+    The day-of-month kinds ``recurrence:R13`` needs join this table as rows
+    rather than as a migration over a cadence column (ruling **R-PC58**).
+
+    Application code resolves these via ``ref_cache.pay_cadence_kind_id``
+    and compares against the integer ID -- never the string ``name``.
+    """
+
+    __tablename__ = "pay_cadence_kinds"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<PayCadenceKind {self.name}>"
+
+
 class FilingStatus(db.Model):
     """Tax filing status reference (Phase 2, but schema created now)."""
 

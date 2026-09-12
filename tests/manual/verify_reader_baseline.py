@@ -326,10 +326,14 @@ def _retirement(user_id):
     a ``TypeError`` in the dump where the retirement figures belong, and a diff
     of two such runs reads as "nothing moved". `pylint tests/manual/` sees this
     class (``E1121``) and nothing runs it; ledger row **P66** carries that.
+    *The gate then caught the same class a second time, at plan step
+    salary:S3-e-2, which dropped the ``employer_salary_basis`` parameter:
+    this call was passing four arguments to a three-argument function
+    before the commit, and the pre-commit run of that gate is what said so.*
     """
     def _project():
         ctx = retirement_projection.build_projection_context(
-            BalanceContext.build(user_id), None, None, None,
+            BalanceContext.build(user_id), None, None,
         )
         return retirement_projection.project_accounts_with_batch(
             ctx,

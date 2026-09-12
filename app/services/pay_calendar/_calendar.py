@@ -121,7 +121,7 @@ draft of this paragraph claimed otherwise (ledger row **P24**).
 1,000-line ceiling has twice measured.  At plan step **C2-c** the shared
 SEARCHES moved to :mod:`._searches` and the view type to :mod:`._window`; at
 plan step **C2-f3b** the five VIEW PRODUCERS moved to :mod:`._views` and the
-forward projection to :func:`~._derive.project_period_after` (ledger row
+forward projection to :func:`~._projection.project_period_after` (ledger row
 **P64**; the 1002 that row records was a transient inside C2-f3a's build,
 resolved before that commit, and an earlier draft of this sentence read it as a
 committed state).  **No line count is quoted here, and that is the correction
@@ -150,8 +150,8 @@ from ._derive import (
     DerivedPeriod,
     PayCalendarError,
     derive_periods,
-    project_period_after,
 )
+from ._projection import project_period_after
 from ._searches import (
     FiledRow,
     containing_period,

@@ -23,7 +23,7 @@ rather than tidy:
 
 * the PROJECTION is what a calendar shows and what money is filed against, so
   :func:`~._derive.derive_periods` and
-  :func:`~._derive.project_period_after` take it;
+  :func:`~._projection.project_period_after` take it;
 * the GRID is what a WRITER continues.  ``pay_period_admin.extend_pay_periods``
   appends paydays past the owner's last recorded one, and
   ``pay_period_write.record_paydays`` spaces the batch it is handed by flat
@@ -105,7 +105,7 @@ def cadence_steps_to(anchor: date, cadence_days: int, day: date) -> int:
 
     :func:`nominal_payday`'s INVERSE, and it is a function for the same reason:
     the progression is read from both ends.
-    :func:`~._derive.project_period_after` steps it forward from the last saved
+    :func:`~._projection.project_period_after` steps it forward from the last saved
     payday; :mod:`._rhythm` steps it backward from the first, below which the
     app used to count nothing at all (ledger row **N-390**, plan step
     **balance:X-bh-2**).  Two copies of ``(day - anchor).days //
@@ -123,7 +123,7 @@ def cadence_steps_to(anchor: date, cadence_days: int, day: date) -> int:
 
     **It is the NOMINAL grid's inverse and not the projection's**, which is
     what puts it here rather than beside
-    :func:`~._derive.project_period_after` -- one of its two callers, the other
+    :func:`~._projection.project_period_after` -- one of its two callers, the other
     being :mod:`._rhythm` above.  Since ``C14-e-3``
     displaces a payday the round trip stops being exact, and that is precisely
     why that function probes its answer's NEIGHBOURS instead of trusting the

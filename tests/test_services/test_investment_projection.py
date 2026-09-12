@@ -74,27 +74,33 @@ def _periods(*paydays, cadence=14):
     ).saved()
 
 
-def _saved_through(window):
-    """Return *window*'s own :meth:`~app.services.pay_calendar.PayCalendar.horizon`.
+def _axis(*paydays, cadence=14, projected=0):
+    """Return REAL periods: the saved ones on *paydays*, then *projected* more.
 
-    The last day the schedule covers, which is what production hands
-    :func:`build_contribution_timeline` (plan step **salary:S3-e-1**).  Spelled
-    off the window rather than off the feed ON PURPOSE: the whole point of the
-    parameter is that the boundary is the CALENDAR's and not the feed's, so a
-    case that derived it from the feed would grade the identity this step
-    exists to break.
-
-    Raises:
-        IndexError: *window* is empty.  Deliberate, and it mirrors the
-            producer's own precondition: ``horizon()`` answers ``None`` only
-            for a calendar with no saved period, and every axis producer
-            returns an EMPTY window there, so the callee never sees one.
+    The saved half is what :func:`_periods` builds; the projected half comes
+    off :meth:`~app.services.pay_calendar.PayCalendar.projection_axis`, the
+    producer every projecting surface uses, so each projected period carries
+    ``period_id = None`` and answers
+    :attr:`~app.services.pay_calendar.DerivedPeriod.is_projected` ``True``
+    the way production's do.  That accessor is the timeline's boundary since
+    plan step **salary:S3-e-2** (ruling **R-SAL18**), so a case grading the
+    boundary needs periods on both sides of it that the app itself can
+    produce -- a fake with the flag set by hand would grade the flag's
+    spelling and not the derivation.
     """
-    return window[-1].end_date
+    calendar = PayCalendar.from_paydays(
+        [(index, payday) for index, payday in enumerate(paydays, start=1)],
+        rhythm_of(cadence), user_id=1,
+        history_opens_on=None,
+    )
+    last = calendar.horizon() + timedelta(days=cadence * projected)
+    window = calendar.projection_axis(calendar.opening_bound(), last)
+    assert sum(1 for period in window if period.is_projected) == projected
+    return window
 
 
-def _feed(periods=(), *, employee=None, gross=None, linked=None):
-    """Build an :class:`AccountPayrollFeed` over *periods*' paydays.
+def _feed(periods=(), *, employee=None, gross=None):
+    """Build an :class:`AccountPayrollFeed` answering over *periods*' paydays.
 
     **The input type since plan step salary:R14-b** (ruling **R-SAL2**), in
     place of the ``FakeDeduction`` this file built for every case.  That fake
@@ -102,47 +108,41 @@ def _feed(periods=(), *, employee=None, gross=None, linked=None):
     annual_cap)`` -- the five fields ``adapt_deductions`` flattened a real
     deduction into -- and every case then asserted what THIS module derived
     from them.  It derives nothing now: the paycheck engine prices a
-    deduction when it prices the paycheck, and the feed is the fold of its
-    per-payday answer.  So the fake and the arithmetic it fed both went, and
-    the cases that graded that arithmetic went with them (see the class
-    docstrings for where each rule is graded now).
+    deduction when it prices the paycheck, and the feed asks the engine's
+    pricer per period through a resolver the loader built (plan step
+    **salary:S3-e-2**, ruling **R-SAL15**).  So each resolver here is a
+    TABLE keyed by the period's ``start_date`` -- the same figures the real
+    one would read off the engine, without the engine -- and a figure given
+    as a scalar answers every payday of *periods*.  The loader's real
+    resolvers are graded against real rows in ``test_projection_inputs.py``.
 
     Args:
-        periods: The periods whose paydays the maps are keyed by.
+        periods: The periods whose paydays the tables cover.
         employee: What payroll puts in per payday -- one figure for every
-            payday, or a ``{payday: amount}`` map.  ``None`` means the account
-            has no employee feed at all, which is the EMPTY map and not a map
-            of zeros, and the two behave differently: an empty map holds
-            ``$0.00`` and defaults *linked* to ``False``, where a map of zeros
-            prices ``$0.00`` on a payday the owner really is paid.
+            payday, or a ``{payday: amount}`` map.  ``None`` means NO
+            employee resolver, which is what
+            :attr:`AccountPayrollFeed.is_payroll_linked` reads ``False``
+            for; a table of zeros is a LINKED deduction pricing ``$0.00``,
+            and the two behave differently in the timeline.
         gross: The funding profile's gross per payday, same two forms.
             ``None`` means no funding profile is known, which is what
             :attr:`AccountPayrollFeed.funds_employer` reports ``False`` for.
-        linked: Whether a deduction NAMES this account, whatever it pays --
-            :attr:`AccountPayrollFeed.is_payroll_linked`, the PRESENCE fact
-            path 1 of the timeline gates on.  Defaults to "an employee series
-            was given", which is what every case here means; pass it
-            explicitly for the two states that come apart, a linked deduction
-            pricing ``$0.00`` and an unlinked account.
 
     Returns:
         The :class:`AccountPayrollFeed`.
     """
     paydays = [period.start_date for period in periods]
 
-    def _series(value):
+    def _resolver(value):
         if value is None:
-            return {}
+            return None
         if isinstance(value, dict):
-            return {day: Decimal(str(amount)) for day, amount in value.items()}
-        return {day: Decimal(str(value)) for day in paydays}
+            table = {day: Decimal(str(amount)) for day, amount in value.items()}
+        else:
+            table = {day: Decimal(str(value)) for day in paydays}
+        return lambda period: table[period.start_date]
 
-    return AccountPayrollFeed(
-        employee_by_payday=_series(employee),
-        gross_by_payday=_series(gross),
-        is_payroll_linked=(employee is not None) if linked is None else linked,
-    )
-
+    return AccountPayrollFeed(employee=_resolver(employee), gross=_resolver(gross))
 
 def _emp_type_id(member):
     """Resolve an EmployerContributionTypeEnum member to its ref-table id (#38)."""
@@ -167,18 +167,20 @@ class FakeInvestmentParams:
 
 
 class TestAccountPayrollFeed:
-    """The feed's own rules -- what it answers for a payday, and past one.
+    """The feed's own rules: two resolvers, and the two presence facts they carry.
 
-    Plan step **salary:R14-b**.  Everything here is about the SERIES: that a
-    payday's answer is its own, that a skipped payday is a zero rather than a
-    gap, and what the feed says about a payday the owner's calendar does not
-    reach.  What each figure IS -- the raise, the inflation escalation, the
-    cadence, the calendar-year cap -- is the paycheck engine's, graded in
-    ``test_paycheck_calculator.py``; the fold that produces these maps from its
-    breakdowns is graded in ``test_projection_inputs.py`` against real rows.
+    Plan steps **salary:R14-b** and **S3-e-2**.  What each figure IS -- the
+    raise, the inflation escalation, the cadence, the calendar-year cap -- is
+    the paycheck engine's, graded in ``test_paycheck_calculator.py``; the
+    resolvers the loader builds over the engine's pricer are graded in
+    ``test_projection_inputs.py`` against real rows, including the one thing
+    this step exists for, a period PAST the saved schedule priced rather
+    than held.  What is left for the value itself is small and stated here:
+    it hands a resolver the PERIOD, and it derives both presence facts from
+    the resolvers' presence.
     """
 
-    def test_each_payday_answers_with_its_OWN_figure(self):
+    def test_each_period_answers_with_its_OWN_figure(self):
         """The feed is a SERIES, which is finding D45's whole remedy.
 
         The feed it replaced was one scalar for every period, so an owner with
@@ -192,150 +194,50 @@ class TestAccountPayrollFeed:
             periods[0].start_date: Decimal("3525.96"),
             periods[1].start_date: Decimal("3631.74"),
         })
-        assert feed.gross_at(periods[0].start_date) == Decimal("3525.96")
-        assert feed.gross_at(periods[1].start_date) == Decimal("3631.74")
+        assert feed.gross_at(periods[0]) == Decimal("3525.96")
+        assert feed.gross_at(periods[1]) == Decimal("3631.74")
 
-    def test_a_skipped_payday_is_an_explicit_zero_not_a_gap(self):
-        """A cadence skip reads ``$0.00``, not the previous payday's amount.
+    def test_a_resolver_is_handed_the_PERIOD_itself(self):
+        """Both accessors pass the period through, not its payday (R-SAL19).
 
-        11 of the developer's 12 live deductions are 24-per-year, which the
-        engine does not take on its month's third payday.  The map is TOTAL
-        over the calendar's paydays for exactly this: were the skipped payday
-        merely ABSENT, :meth:`employee_at` could not tell it from a payday
-        past the calendar and would hold the previous amount over the skip.
+        The engine prices a :class:`~app.services.pay_calendar.DerivedPeriod`
+        and reads its ``period_id`` as well as its ``start_date``, so a feed
+        that peeled the date off and re-derived the period inside would be a
+        round trip plus a fence.  The resolvers receive the very object the
+        caller held; a projected one arrives with ``is_projected`` intact.
         """
-        periods = _periods(
-            date(2026, 1, 2), date(2026, 1, 16), date(2026, 1, 30),
+        seen = []
+        saved, projected = _axis(date(2026, 1, 2), projected=1)
+        feed = AccountPayrollFeed(
+            employee=lambda period: seen.append(period) or Decimal("1"),
+            gross=lambda period: seen.append(period) or Decimal("2"),
         )
-        feed = _feed(periods, employee={
-            periods[0].start_date: Decimal("211.56"),
-            periods[1].start_date: Decimal("211.56"),
-            periods[2].start_date: Decimal("0"),
-        })
-        assert feed.employee_at(periods[2].start_date) == Decimal("0")
+        assert feed.employee_at(saved) == Decimal("1")
+        assert feed.gross_at(projected) == Decimal("2")
+        assert seen[0] is saved
+        assert seen[1] is projected
+        assert seen[1].is_projected is True
 
-    def test_the_gross_HOLDS_past_the_owners_calendar(self):
-        """A payday the calendar does not reach reads the last real paycheck.
+    def test_presence_is_the_resolvers_presence(self):
+        """Linked and funded are DERIVED, one home each, never carried.
 
-        The interim rule the developer ruled on 2026-09-04: the app holds two
-        long-horizon salary models that disagree, so a projection past the
-        schedule states the last real paycheck until the step that unifies
-        them lands.
+        Plan step salary:S3-e-1 made ``is_payroll_linked`` a required carried
+        field because two dictionaries could disagree with it; S3-e-2 makes
+        it the employee resolver's presence, and ``funds_employer`` the gross
+        resolver's, so no constructor can hand the value a wrong answer.
+        A linked deduction pricing ``$0.00`` is a resolver that answers zero,
+        which is a different value from no resolver at all.
         """
-        periods = _periods(date(2028, 7, 13), date(2028, 8, 10))
-        feed = _feed(periods, gross={
-            periods[0].start_date: Decimal("4047.97"),
-            periods[1].start_date: Decimal("4047.97"),
-        })
-        assert feed.gross_at(date(2040, 1, 1)) == Decimal("4047.97")
-
-    def test_the_hold_has_a_DIRECTION(self):
-        """A payday BEFORE the calendar holds the earliest, not the latest.
-
-        Holding the latest paycheck backward would answer a pre-schedule
-        payday with a salary the owner had not yet been raised to -- here
-        ``$3,631.74`` for a day before they were earning ``$3,525.96``.  No
-        consumer asks the backward question today (every domain opens at or
-        after the calendar's first payday), which is exactly why the
-        direction lives in the value rather than in a caller's discipline: an
-        answer that is wrong only because nobody asks it is the shape this
-        module has shipped before.
-        """
-        periods = _periods(date(2026, 6, 4), date(2026, 7, 2))
-        feed = _feed(periods, gross={
-            periods[0].start_date: Decimal("3525.96"),
-            periods[1].start_date: Decimal("3631.74"),
-        })
-        assert feed.gross_at(date(2020, 1, 1)) == Decimal("3525.96")
-        assert feed.gross_at(date(2040, 1, 1)) == Decimal("3631.74")
-
-    def test_the_EMPLOYEE_direction_is_per_YEAR_not_per_payday(self):
-        """The employee series holds a year's average, so its ends are years.
-
-        The gross holds at a PAYDAY in each direction; the employee amount
-        holds at a COMPLETE calendar YEAR's average, because that is the span
-        ``annual_cap`` is defined over.  So the two directions of the employee
-        series come apart only across years, and a feed spanning one year
-        answers the same figure both ways -- which is correct and is why this
-        case builds two full years rather than two paydays.
-
-        2026 pays ``$200`` a payday and 2027 pays ``$220``, and each year's
-        average is its own figure because the deduction is flat.
-
-        **The window runs one payday into 2028 so that 2027 is COVERED.**  An
-        earlier fixture stopped at 2027-12-17 and this docstring claimed both
-        years held 26 paydays; 2027 holds 27 here (2027-01-01 through
-        2027-12-31), so that window saw 26 of 27 and the rule of the day
-        graded it complete on the count.  An adversarial pass measured what
-        that costs a front-loaded capped deduction -- 58% understated
-        against that year's own ``$1,000/27``, permanently -- so covering a
-        year now means reaching past both its edges, and this fixture does.
-        """
-        paydays = [date(2026, 1, 2) + timedelta(days=14 * i) for i in range(54)]
-        periods = _periods(*paydays)
-        priced = {
-            day: Decimal("200") if day.year == 2026 else Decimal("220")
-            for day in paydays
-        }
-        feed = _feed(periods, employee=priced)
-        assert feed.employee_at(date(2020, 1, 1)) == Decimal("200")
-        assert feed.employee_at(date(2040, 1, 1)) == Decimal("220")
-
-    def test_a_CAPPED_deductions_hold_respects_its_annual_cap(self):
-        """The hold is a YEAR's average, and the cap is why.
-
-        **An adversarial review of this step's own fix measured the
-        single-day rule wrong by 10.4x**, which is why this case exists.  A
-        deduction of ``$600`` a payday against a ``$1,000`` calendar-year cap
-        is priced by the engine as ``$600, $400, $0, $0 ...``: the clamp lands
-        the moment the year's total reaches the cap.  Holding "the last payday
-        that PAID something" picks the ``$400`` and applies it to every
-        projected period with no cap and no year reset -- ``$10,400`` a year
-        against a ``$1,000`` cap, compounded over the tail of a 40-year chart.
-
-        The year's average is ``$1,000 / 26 = $38.46``, which is exactly what
-        the deleted ``_annual_cap_averaged`` answered for this deduction, now
-        derived from the ENGINE's own priced figures instead of a second
-        formula.
-        """
-        paydays = [date(2026, 1, 2) + timedelta(days=14 * i) for i in range(26)]
-        periods = _periods(*paydays)
-        priced = dict.fromkeys(paydays, Decimal("0"))
-        priced[paydays[0]] = Decimal("600")
-        priced[paydays[1]] = Decimal("400")
-        feed = _feed(periods, employee=priced)
-        # $1,000 over the year's 26 paydays.
-        assert feed.employee_at(date(2040, 1, 1)) == Decimal("38.46")
-
-    def test_a_trailing_cadence_SKIP_does_not_delete_the_feed(self):
-        """A schedule ending on a skipped payday still holds the real rate.
-
-        A 24-per-year deduction is not taken on its month's third payday, so a
-        saved schedule that happens to END on one would hold ``$0.00`` for the
-        whole projection if the rule read the last payday alone -- a 1-in-13
-        chance of silently deleting the feed.  Averaging the year covers it:
-        the skips are inside the span being averaged, so the held figure is
-        the year's true per-payday rate rather than either extreme.
-
-        24 paydays of ``$211.56`` and 2 skipped, over a 26-payday year:
-        ``24 x 211.56 / 26 = $195.29``.
-        """
-        paydays = [date(2026, 1, 2) + timedelta(days=14 * i) for i in range(26)]
-        periods = _periods(*paydays)
-        priced = {day: Decimal("211.56") for day in paydays}
-        priced[paydays[24]] = Decimal("0")
-        priced[paydays[25]] = Decimal("0")
-        feed = _feed(periods, employee=priced)
-        assert feed.employee_at(date(2040, 1, 1)) == Decimal("195.29")
-
-    def test_an_account_that_never_received_anything_holds_zero(self):
-        """A feed of zeros holds ``$0.00`` -- the answer, not the artifact."""
-        periods = _periods(date(2026, 1, 2), date(2026, 1, 16))
-        feed = _feed(periods, employee=Decimal("0"))
-        assert feed.employee_at(date(2040, 1, 1)) == Decimal("0")
-        # The zeros are PRICED, not absent: every payday carries an explicit
-        # entry, which is what stops the hold reading a skip as a gap.
-        assert set(feed.employee_by_payday) == {p.start_date for p in periods}
+        periods = _periods(date(2026, 1, 2))
+        both = _feed(periods, employee=Decimal("0"), gross=Decimal("3846.15"))
+        assert both.is_payroll_linked is True
+        assert both.funds_employer is True
+        employee_only = _feed(periods, employee=Decimal("500"))
+        assert employee_only.is_payroll_linked is True
+        assert employee_only.funds_employer is False
+        employer_only = _feed(periods, gross=Decimal("3846.15"))
+        assert employer_only.is_payroll_linked is False
+        assert employer_only.funds_employer is True
 
     def test_no_funding_profile_refuses_a_gross_rather_than_answering_zero(self):
         """An unknown funding job answers ``None``, so no caller can spend it.
@@ -348,50 +250,23 @@ class TestAccountPayrollFeed:
         periods = _periods(date(2026, 1, 2))
         feed = _feed(periods, employee=Decimal("500"))
         assert feed.funds_employer is False
-        assert feed.gross_at(periods[0].start_date) is None
+        assert feed.gross_at(periods[0]) is None
+
+    def test_an_unlinked_account_answers_zero_without_a_resolver(self):
+        """No employee resolver prices ``$0.00``; it does not raise or hold."""
+        periods = _periods(date(2026, 1, 2))
+        feed = _feed(periods, gross=Decimal("3846.15"))
+        assert feed.employee_at(periods[0]) == Decimal("0")
 
     def test_absent_models_neither_half(self):
         """The explicit token for an account no payroll funds."""
+        period = _periods(date(2026, 1, 2))[0]
         feed = AccountPayrollFeed.absent()
         assert feed.is_payroll_linked is False
         assert feed.funds_employer is False
-        assert feed.employee_at(date(2026, 1, 2)) == Decimal("0")
-        assert feed.gross_at(date(2026, 1, 2)) is None
-
-    def test_salary_basis_resolves_in_window_then_holds(self):
-        """The growth engine's ``period -> gross`` hook, over both regimes."""
-        periods = _periods(date(2026, 1, 2), date(2026, 1, 16))
-        feed = _feed(periods, gross={
-            periods[0].start_date: Decimal("3525.96"),
-            periods[1].start_date: Decimal("3631.74"),
-        })
-        basis = feed.salary_basis()
-        assert basis(periods[0]) == Decimal("3525.96")
-        beyond = _periods(date(2040, 1, 6))[0]
-        assert basis(beyond) == Decimal("3631.74")
-
-    def test_an_outer_model_replaces_the_HOLD_and_never_the_window(self):
-        """``beyond`` answers only past the calendar, and only when funded.
-
-        ``/retirement`` supplies its merit-horizon salary path here so that
-        page keeps the long-horizon model it already had.  Inside the
-        calendar the engine's own paycheck wins -- an outer model must not
-        overwrite a real answer -- and where no funding profile is known the
-        refusal stands, because an outer model must not resurrect money the
-        2026-09-04 ruling withholds.
-        """
-        periods = _periods(date(2026, 1, 2))
-        beyond_period = _periods(date(2040, 1, 6))[0]
-        outer = lambda period: Decimal("9999.99")  # noqa: E731
-
-        funded = _feed(periods, gross=Decimal("3525.96"))
-        basis = funded.salary_basis(beyond=outer)
-        assert basis(periods[0]) == Decimal("3525.96")
-        assert basis(beyond_period) == Decimal("9999.99")
-
-        unfunded = _feed(periods, employee=Decimal("500"))
-        assert unfunded.salary_basis(beyond=outer)(beyond_period) is None
-
+        assert feed.employee_at(period) == Decimal("0")
+        assert feed.gross_at(period) is None
+        assert feed == AccountPayrollFeed(employee=None, gross=None)
 
 class TestCalculateInvestmentInputs:
     """What the two dashboards' per-period CARDS read.
@@ -671,7 +546,7 @@ class TestCalculateInvestmentInputs:
         )
         assert result.employer_params is not None
         assert result.periodic_contribution == Decimal("0")
-        assert feed.gross_at(current_period.start_date) == _GROSS_BIWEEKLY
+        assert feed.gross_at(current_period) == _GROSS_BIWEEKLY
 
     def test_no_employer_when_type_none(self):
         """Employer type 'none' produces employer_params=None."""
@@ -805,7 +680,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=_feed(periods, employee=Decimal("500.00")),
             contribution_transactions=[], periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert len(result) == 3
         for record in result:
@@ -831,303 +705,86 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=feed, contribution_transactions=[],
             periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert len(result) == 3
         assert result[2].amount == Decimal("0")
 
-    def test_a_window_with_no_COMPLETE_year_holds_the_last_priced_payday(self):
-        """Under a year of schedule there is no annual total to divide.
-
-        **The axis three tail rules were each measured wrong on**, and the
-        reason is that a sub-year window has thrown the cap away: a
-        ``$500``-a-payday deduction and a ``$1,000``-capped one price
-        IDENTICALLY for their first two paydays, and their true tails are
-        ``$500`` and ``$38.46``.  With no complete calendar year there is no
-        annual figure to derive, so the hold falls back to the last PRICED
-        payday -- which this fixture, a flat ``$500`` with no cap and no
-        cadence skip, is held at exactly.  That is the ONLY shape the
-        fallback is exact for: an uncapped deduction whose window ends on a
-        24-per-year skip holds ``$0.00`` instead, and a flat capped one whose
-        cap has not yet bound over-reads.  See
-        :meth:`~app.services.investment_projection._feed
-        .AccountPayrollFeed._year_averages`.  For a CAPPED one that
-        payday's clamped figure can read either way: the sibling case below
-        holds a trailing ``$0.00`` and understates, while a window ending on
-        the ``$400`` of a ``$600``/``$1,000`` pair annualises to ``$10,400``.
-
-        13 paydays of ``$500``, half a year: the tail holds ``$500``, the
-        rate every priced payday shows.
-        """
-        paydays = [date(2026, 1, 2) + timedelta(days=14 * i) for i in range(13)]
-        periods = _periods(*paydays)
-        feed = _feed(periods, employee=Decimal("500"))
-        assert feed.employee_at(paydays[0]) == Decimal("500")
-        assert feed.employee_at(date(2040, 1, 1)) == Decimal("500")
-
-    def test_a_COMPLETE_year_overrides_the_last_priced_payday(self):
-        """With a whole year present the annual total wins, cap and all.
-
-        The pair that makes the case above non-vacuous: the same
-        ``$1,000``-capped deduction, once over 13 paydays (no complete year,
-        so the tail reads the trailing clamped ``$0.00``) and once over 26
-        (a complete year, so the tail is ``$1,000 / 26``).  Without both, a
-        rule that ignored the complete-year branch entirely would pass.
-        """
-        short_days = [
-            date(2026, 1, 2) + timedelta(days=14 * i) for i in range(13)
-        ]
-        full_days = [
-            date(2026, 1, 2) + timedelta(days=14 * i) for i in range(26)
-        ]
-        capped = {d: Decimal("0") for d in full_days}
-        capped[full_days[0]] = Decimal("600")
-        capped[full_days[1]] = Decimal("400")
-
-        short = _feed(
-            _periods(*short_days),
-            employee={d: capped[d] for d in short_days},
-        )
-        full = _feed(_periods(*full_days), employee=capped)
-
-        assert short.employee_at(date(2040, 1, 1)) == Decimal("0")
-        assert full.employee_at(date(2040, 1, 1)) == Decimal("38.46")
-
-    def test_a_27_PAYDAY_year_is_divided_by_27(self):
-        """The divisor is the year's own payday count, not the cadence.
-
-        26 x 14 is 364 days, so a biweekly calendar throws a 27-payday
-        calendar year about one year in eleven, and an adversarial pass
-        measured 9.07% of default windows having one as their latest
-        complete year.  Dividing that year's total by the CADENCE overstates
-        every payday of the tail by 3.846% -- ``$519.23`` against a true
-        ``$500.00`` -- for the whole ~38-year remainder of a retirement
-        chart.  This case is the one the pair above cannot make: both its
-        fixtures hold 26.
-        """
-        paydays = [
-            date(2027, 1, 1) + timedelta(days=14 * i) for i in range(27)
-        ]
-        assert paydays[-1] == date(2027, 12, 31), "27 paydays inside 2027"
-        # Flanked on both sides.  The flanks are belt and braces rather than
-        # the thing under test: stepping one interval out from 2027-01-01
-        # and 2027-12-31 already lands in 2026 and 2028, so this window
-        # grades 2027 complete with or without them.
-        span = [date(2026, 12, 18)] + paydays + [date(2028, 1, 14)]
-        feed = _feed(_periods(*span), employee=Decimal("500"))
-
-        assert feed.employee_at(date(2040, 1, 1)) == Decimal("500.00")
-
-    def test_a_27_PAYDAY_year_seen_26_times_is_NOT_complete(self):
-        """A count test grades a year complete that the window truncated.
-
-        ``len(amounts) >= periods_per_year`` passes at ``26 >= 26`` for a
-        27-payday year the window opened one payday late.  The year's total
-        is then short by exactly the payday that was cut, and for a
-        front-loaded capped deduction that payday is where the money is: an
-        adversarial pass measured ``$15.38`` held here.
-
-        **The figure being modelled is the ``$1,000`` cap**, which per payday
-        is ``$38.46`` in a 26-payday year and ``$37.04`` in a 27-payday one.
-        This fixture's 2027 holds 27, so the count test's ``$15.38`` is 58%
-        low against that year -- but the hold is a FORWARD rate, and on this
-        fixture's own rhythm 40 of the next 43 years hold 26 paydays, so
-        ``$38.46`` is the better description of what it should model.  *An
-        earlier revision of this docstring called ``$37.04`` "the truth"; an
-        adversarial pass measured that it is this rule's own output on the
-        untruncated window, which grades a fix against its own producer.*
-
-        **And the refusal this asserts is further from truth still**, at
-        ``$0.00``.  That is the trade taken deliberately: the count test was
-        wrong about WHICH years it could average, and this rule is not.  It
-        is NOT the case that refusing only ever lowers the figure: extend
-        this window by one payday, to 2028-01-14, and the fallback reads that
-        payday and holds ``$600`` where the count test holds ``$15.38`` --
-        the figure named above, since the cut payday took ``$600`` of the cap
-        outside the window and left ``$400`` inside it.  An earlier revision
-        of this docstring claimed the opposite and used it as a warrant, and
-        a later one put ``$38.46`` here, which belongs to a different window
-        of the same DATES priced from its own first payday.  The salary-path
-        step removes the branch rather than bounding it.
-        """
-        full_year = [
-            date(2027, 1, 1) + timedelta(days=14 * i) for i in range(27)
-        ]
-        observed = full_year[1:]          # opened one payday late
-        # $600 then $400 against a $1,000 cap: the cut payday paid $600.
-        amounts = {day: Decimal("0") for day in observed}
-        amounts[observed[0]] = Decimal("400")
-        feed = _feed(_periods(*observed), employee=amounts)
-
-        assert full_year[-1] == date(2027, 12, 31), (
-            "the 27th payday must still be inside 2027 -- asserting "
-            "len(full_year) instead would be true by construction and would "
-            "pass for an anchor whose year holds 16"
-        )
-        assert feed._complete_years() == set()
-        # The fallback, not 400/26 == $15.38 dressed as a year's average.
-        assert feed.employee_at(date(2040, 1, 1)) == Decimal("0")
-
-    def test_a_WEEKLY_owner_covering_a_year_gets_that_year(self):
-        """Coverage, at a cadence whose count test fails differently.
-
-        A weekly year holds 52 paydays or 53, so ``>= periods_per_year`` is
-        wrong at cadence 7 the same way it is at 14 -- and this class had no
-        non-biweekly case at all, which let a rule that hardcoded 26 look
-        correct.  Both halves here are the weekly analogue of the biweekly
-        pair above.
-        """
-        # (a) A 52-payday 2026 fully covered: the exact $1,000 / 52.
-        paydays = [
-            date(2025, 12, 29) + timedelta(days=7 * i) for i in range(60)
-        ]
-        in_2026 = [day for day in paydays if day.year == 2026]
-        assert len(in_2026) == 52
-        amounts = {day: Decimal("0") for day in paydays}
-        for day in in_2026[:10]:
-            amounts[day] = Decimal("100")     # $1,000, cap reached early
-
-        feed = _feed(_periods(*paydays, cadence=7), employee=amounts)
-
-        assert 2026 in feed._complete_years()
-        assert feed.employee_at(date(2040, 1, 1)) == Decimal("19.23")
-
-        # (b) A 53-payday 2026 seen 52 times: a count test passes it at
-        # 52 >= 52 and averages a year it never saw the whole of.  This is
-        # the half the biweekly 27-seen-26 case cannot reach, and the half
-        # that fails if the completeness rule reverts to a count.
-        long_year = [
-            date(2026, 1, 1) + timedelta(days=7 * i) for i in range(53)
-        ]
-        assert len({day.year for day in long_year}) == 1
-        assert len(long_year) == 53, "2026 holds 53 weekly paydays"
-        # Price one payday, so the two rules differ by a DOLLAR and not just
-        # by a predicate: a count test grades 2026 complete at 52 >= 52 and
-        # averages $100 / 52 == $1.92, where refusing falls back to the last
-        # priced payday, which is $0.00.
-        truncated = long_year[1:]
-        amounts = {day: Decimal("0") for day in truncated}
-        amounts[truncated[0]] = Decimal("100")
-        short = _feed(_periods(*truncated, cadence=7), employee=amounts)
-
-        assert short._complete_years() == set()
-        assert short.employee_at(date(2040, 1, 1)) == Decimal("0")
-
-    def test_a_period_PAST_the_calendar_reads_the_held_figure(self):
+    def test_a_period_PAST_the_schedule_is_priced_by_the_feed(self):
         """The timeline's domain may run past the owner's saved schedule.
 
         The 40-year chart's axis does, which is why the timeline is assembled
         where the axis is known (plan step salary:R14-b).  Every projected
         period gets a record, so the raise-blind ``periodic_contribution``
-        fallback the step deleted has nothing left to answer.
+        fallback that step deleted has nothing left to answer -- and since
+        plan step **salary:S3-e-2** the record carries what the feed PRICES
+        for that period, not a figure held from the last saved one.
         """
-        # A COMPLETE calendar year priced, so the hold has a figure at all
-        # (see the sibling case that grades a window with no complete
-        # year), then
-        # one axis period past it.
-        paydays = [date(2020, 1, 3) + timedelta(days=14 * i) for i in range(26)]
-        priced = _periods(*paydays)
-        feed = _feed(priced, employee=Decimal("500.00"))
-        beyond = paydays[-1] + timedelta(days=14)
-        axis = _periods(*paydays, beyond)
+        axis = _axis(date(2020, 1, 3), date(2020, 1, 17), projected=1)
+        feed = _feed(axis, employee={
+            axis[0].start_date: Decimal("500.00"),
+            axis[1].start_date: Decimal("500.00"),
+            # The projected period prices its OWN figure -- a raise landed.
+            axis[2].start_date: Decimal("525.00"),
+        })
         result = build_contribution_timeline(
             feed=feed, contribution_transactions=[],
             periods=axis, as_of=_AS_OF,
-            saved_through=_saved_through(priced),
         )
-        assert len(result) == 27
-        assert result[26].contribution_date == beyond
-        # 26 x $500.00 over the year's 26 paydays.
-        assert result[26].amount == Decimal("500.00")
+        assert len(result) == 3
+        assert result[2].contribution_date == axis[2].start_date
+        assert result[2].amount == Decimal("525.00")
 
-    def test_the_transfer_average_boundary_is_the_CALENDAR_not_the_feed(self):
-        """A PRICED payday past the schedule still takes the transfer average.
+    def test_the_transfer_average_boundary_is_the_PERIODS_own(self):
+        """The average is added on a PROJECTED period and on no saved one.
 
-        **The control plan step salary:S3-e-1 exists to install**, and it is
-        the one thing a suite green on both sides of that step could not
-        otherwise see.  The term was gated on ``feed.prices(payday)`` -- *did
-        the engine price this day* -- which answered the same days as *has the
-        schedule reached this day* only because the feed was built over
-        ``calendar.saved()`` and over nothing else.  Plan step
-        **salary:S3-e-2** lets a feed answer any payday it is asked, at which
-        point the old gate reads ``True`` everywhere and this term is never
-        added again: an account funded by BOTH a deduction and transfers
-        loses its whole recurring-transfer stream from the forward walk, for
-        the entire horizon, with no test failing.
+        **Ruling R-SAL18, and the control plan step salary:S3-e-2 installs
+        in place of the one S3-e-1 did.**  The term was gated on
+        ``feed.prices(payday)`` -- *did the engine price this day* -- which
+        answered the same days as *has the schedule reached this day* only
+        while the feed was built over ``calendar.saved()``; S3-e-1 moved the
+        boundary to a date the CALLER read off a calendar, fenced by an AST
+        census over the two call sites.  Now the feed answers every period
+        of the axis and the period itself says which side of the schedule it
+        is on, so the case makes the feed and the schedule DISAGREE on
+        purpose -- every period is priced, two are projected -- and asserts
+        the period decides.
 
-        So this case makes the two disagree ON PURPOSE -- the feed prices
-        every payday of the axis, and the schedule stops at the second -- and
-        asserts the SCHEDULE decides.
-
-        **Graded against three mutations 2026-09-06, and the two directions
-        come apart under two of them.**  Restoring the old gate outright fails
-        BOTH this case and its sibling.  A gate that adds the average when
-        EITHER rule says to fails the sibling alone; one that adds it only
-        when BOTH do fails this case alone.  So neither case is carrying the
-        other, and neither passes by accident on the identity this step
-        breaks.
+        **Graded against two mutations 2026-09-11.**  Adding the average on
+        every period (the pre-S3-e-1 hazard, a feed that "prices" everything)
+        fails the two saved assertions; adding it on none fails the two
+        projected ones.  So the case sees both directions of the boundary.
         """
-        paydays = [date(2020, 1, 3) + timedelta(days=14 * i) for i in range(4)]
-        axis = _periods(*paydays)
-        # PRICED over the whole axis: ``feed.prices()`` is True on every one.
+        axis = _axis(date(2020, 1, 3), date(2020, 1, 17), projected=2)
+        assert [period.is_projected for period in axis] == [
+            False, False, True, True,
+        ]
+        # PRICED over the whole axis, projected periods included.
         feed = _feed(axis, employee=Decimal("500.00"))
         # $300 and $100 over two distinct paydays averages $200.
         txns = [
-            _priced(Decimal("300"), paydays[0], is_confirmed=True),
-            _priced(Decimal("100"), paydays[1], is_confirmed=True),
+            _priced(Decimal("300"), axis[0].start_date, is_confirmed=True),
+            _priced(Decimal("100"), axis[1].start_date, is_confirmed=True),
         ]
         result = build_contribution_timeline(
             feed=feed, contribution_transactions=txns,
             periods=axis, as_of=_AS_OF,
-            # The schedule ends at the SECOND payday, four of which are priced.
-            saved_through=_saved_through(_periods(*paydays[:2])),
         )
         payroll = {
             record.contribution_date: record.amount
             for record in result
             if record.amount in (Decimal("500.00"), Decimal("700.00"))
         }
-        assert payroll[paydays[0]] == Decimal("500.00"), "in-window: deduction alone"
-        assert payroll[paydays[1]] == Decimal("500.00"), "in-window: deduction alone"
-        assert payroll[paydays[2]] == Decimal("700.00"), (
-            "past the SCHEDULE the $200 transfer average is added, even "
-            "though the feed priced this payday"
+        assert payroll[axis[0].start_date] == Decimal("500.00"), (
+            "saved: deduction alone"
         )
-        assert payroll[paydays[3]] == Decimal("700.00")
-
-    def test_an_UNPRICED_payday_inside_the_schedule_takes_NO_average(self):
-        """The other direction: a gap in the feed is not a gap in the schedule.
-
-        The mirror of the case above, and it fails on the mutation that one
-        passes (both measured; see there): gating on ``feed.prices()`` would
-        add the average here, where the schedule plainly reaches this day.  A
-        held figure is a defect for plan step **salary:S3-e-2** to delete, not
-        a reason to pay a transfer the owner has no record of.
-        """
-        paydays = [date(2020, 1, 3) + timedelta(days=14 * i) for i in range(4)]
-        axis = _periods(*paydays)
-        # The feed prices the first TWO paydays; the schedule covers all four.
-        feed = _feed(_periods(*paydays[:2]), employee=Decimal("500.00"))
-        txns = [
-            _priced(Decimal("300"), paydays[0], is_confirmed=True),
-            _priced(Decimal("100"), paydays[1], is_confirmed=True),
-        ]
-        result = build_contribution_timeline(
-            feed=feed, contribution_transactions=txns,
-            periods=axis, as_of=_AS_OF,
-            saved_through=_saved_through(axis),
+        assert payroll[axis[1].start_date] == Decimal("500.00"), (
+            "saved: deduction alone"
         )
-        payroll = {
-            record.contribution_date: record.amount
-            for record in result
-            if record.amount in (Decimal("500.00"), Decimal("700.00"))
-        }
-        assert payroll[paydays[2]] == Decimal("500.00"), (
-            "inside the schedule, an unpriced payday takes the HELD figure "
-            "and no transfer average"
+        assert payroll[axis[2].start_date] == Decimal("700.00"), (
+            "projected: the $200 transfer average is added, even though the "
+            "feed priced this period"
         )
-        assert payroll[paydays[3]] == Decimal("500.00")
-
+        assert payroll[axis[3].start_date] == Decimal("700.00")
     def test_transfer_only(self):
         """Shadow income transactions with no payroll: one record per transaction."""
         periods = _periods(date(2020, 1, 2), date(2020, 1, 16))
@@ -1138,7 +795,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert len(result) == 2
         assert result[0].amount == Decimal("200")
@@ -1153,9 +809,8 @@ class TestBuildContributionTimeline:
         """
         periods = _periods(date(2020, 1, 2), date(2020, 1, 16))
         result = build_contribution_timeline(
-            feed=_feed(periods, employee=Decimal("0"), linked=False),
+            feed=_feed(periods),
             contribution_transactions=[], periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert result == []
 
@@ -1170,18 +825,15 @@ class TestBuildContributionTimeline:
         should contribute nothing.  The explicit zeros are what stop it.
         """
         periods = _periods(date(2020, 1, 2), date(2020, 1, 16))
-        feed = AccountPayrollFeed(
-            employee_by_payday={p.start_date: Decimal("0") for p in periods},
-            gross_by_payday={},
-            is_payroll_linked=True,
-        )
+        # A resolver that answers zero IS a linked deduction (plan step
+        # salary:S3-e-2 derives the flag from the resolver's presence).
+        feed = _feed(periods, employee=Decimal("0"))
         result = build_contribution_timeline(
             feed=feed,
             contribution_transactions=[
                 _priced(Decimal("300"), periods[0].start_date),
             ],
             periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         payroll = [r for r in result if r.amount == Decimal("0")]
         assert len(payroll) == 2, (
@@ -1199,7 +851,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=_feed(periods, employee=Decimal("500.00")),
             contribution_transactions=txns, periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         # One record from payroll, one from the transfer, same date.
         assert len(result) == 2
@@ -1213,7 +864,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=_feed(periods, employee=Decimal("500")),
             contribution_transactions=[], periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert result[0].is_confirmed is True
 
@@ -1224,7 +874,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=_feed(periods, employee=Decimal("500")),
             contribution_transactions=[], periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert result[0].is_confirmed is False
 
@@ -1235,7 +884,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert result[0].is_confirmed is True
 
@@ -1246,7 +894,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert result[0].is_confirmed is False
 
@@ -1263,7 +910,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=_feed(periods, employee=Decimal("500")),
             contribution_transactions=txns, periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert len(result) == 2
         confirmed_flags = {r.is_confirmed for r in result}
@@ -1276,7 +922,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=[],
             periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert result == []
 
@@ -1290,7 +935,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         dates = [r.contribution_date for r in result]
         assert dates == sorted(dates)
@@ -1309,7 +953,6 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert result[0].amount == Decimal("999.99")
 
@@ -1334,6 +977,5 @@ class TestBuildContributionTimeline:
         result = build_contribution_timeline(
             feed=AccountPayrollFeed.absent(), contribution_transactions=txns,
             periods=periods, as_of=_AS_OF,
-            saved_through=_saved_through(periods),
         )
         assert result == []

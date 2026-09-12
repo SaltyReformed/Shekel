@@ -251,13 +251,16 @@ def regenerate_definition(
     destroyed and rebuilt, which is what stops a rename taking an envelope's
     purchases with it (finding **N-292**).
 
-    Three outcomes, one per occurrence the pass considers:
+    Four outcomes, one per occurrence the pass considers:
 
       1. the rule names the occurrence and an auto-generated row answers it --
          the row is UPDATED in place from the definition's derived fields;
       2. the rule names it and nothing answers it -- a row is created;
       3. the rule NO LONGER names it -- the row is removed if it is empty, and
-         RETAINED as a conflict if the owner has records against it.
+         RETAINED as a conflict if the owner has records against it;
+      4. the row answers NO occurrence at all (``occurs_on`` is NULL) -- it is
+         left exactly as found and RETAINED as a conflict (finding
+         **REC-516**).
 
     Overridden and soft-deleted rows are conflicts wherever they sit; immutable
     rows are never touched

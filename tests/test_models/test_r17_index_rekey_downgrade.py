@@ -23,15 +23,15 @@ module-level constant for that reason -- the half that DECIDES is the half a
 suite can run, against real rows.
 """
 
-from datetime import date
-from decimal import Decimal
-
 from app.extensions import db
-from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
-from tests._test_helpers import load_migration_module
-from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import (
+    definition_firing_twice_in_a_paycheck,
+    generate_row_of,
+    load_migration_module,
+    make_expense_template,
+    populate_in_a_fresh_pass,
+)
 
 MIGRATION = "c8e5a2f31b47_a_row_answers_an_occurrence_not_a_paycheck.py"
 
@@ -61,52 +61,30 @@ class TestTheDowngradeRefusesAnUnrestorablePair:
             assert _count_colliding("transfers", "transfer_template_id") == 0
 
     def test_two_occurrences_in_one_paycheck_are_counted(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user,
     ):
         """The state the paycheck-keyed index cannot hold is REFUSED, not lost.
 
         Two rows, one paycheck, two occurrences -- exactly what plan step R17
         made storable and what the downgrade cannot store back.  Both carry
         money, so choosing one to delete is not the migration's call.
+
+        The pair is the ENGINE's own output (plan step balance:X-cf): a
+        monthly cadence inside a 60-day paycheck names two occurrences there
+        (:func:`definition_firing_twice_in_a_paycheck`) and the generate pass
+        writes both -- the "schedule that generated such a pair" the module
+        docstring describes, rather than a hand-built copy of it.
         """
         with app.app_context():
-            txn_type = db.session.query(TransactionType).filter_by(
-                name="Expense").one()
-            status = db.session.query(Status).filter_by(name="Projected").one()
-            category = list(seed_user["categories"].values())[0]
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=category.id,
-                transaction_type_id=txn_type.id,
-                name="R17 downgrade guard",
-                default_amount=Decimal("100.00"),
-                is_active=True,
+            template, period = definition_firing_twice_in_a_paycheck(
+                db.session, seed_user, name="R17 downgrade guard",
             )
-            db.session.add(template)
-            db.session.flush()
-
-            for occurrence, label in (
-                (date(2026, 1, 15), "first installment"),
-                (date(2026, 2, 15), "second installment"),
-            ):
-                row = Transaction(
-                    template_id=template.id,
-                    user_id=seed_periods[0].user_id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=status.id,
-                    name=label,
-                    category_id=category.id,
-                    transaction_type_id=txn_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                    occurs_on=occurrence,
-                    is_override=False,
-                    is_deleted=False,
-                )
-                db.session.add(row)
-            db.session.flush()
+            populate_in_a_fresh_pass(seed_user["user"].id, [period.id])
+            pair = db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).order_by(Transaction.occurs_on).all()
+            assert len(pair) == 2, "the cadence names two occurrences here"
+            assert pair[0].pay_period_id == pair[1].pay_period_id
 
             assert _count_colliding("transactions", "template_id") == 1, (
                 "the downgrade would have proceeded and then failed inside "
@@ -118,7 +96,7 @@ class TestTheDowngradeRefusesAnUnrestorablePair:
             # guard falls silent -- so it is counting THIS pair and not merely
             # counting.
             db.session.query(Transaction).filter_by(
-                template_id=template.id, occurs_on=date(2026, 2, 15),
+                id=pair[1].id,
             ).delete(synchronize_session=False)
             db.session.flush()
             assert _count_colliding("transactions", "template_id") == 0
@@ -128,48 +106,27 @@ class TestTheDowngradeRefusesAnUnrestorablePair:
     ):
         """The predicate is the restored index's exact complement.
 
-        Both generation indexes are partial over ``is_override = FALSE``, and
-        so is the one the downgrade restores -- so an override sibling beside a
-        canonical row is storable in BOTH directions and must not be refused.
+        The undated generation index is partial over ``is_override = FALSE``
+        (the dated one dropped that term at plan step X-au-h), and so is the
+        paycheck-keyed one the downgrade restores -- so an override sibling
+        beside a canonical row is storable in BOTH directions and must not be
+        refused.
         A guard that dropped the ``is_override`` clause would block every
         downgrade on any schedule that has ever used carry-forward.
+
+        The sibling is the engine's row of the next paycheck, moved in by the
+        two acts the move door performs (plan step balance:X-cf), which is one
+        of the two ways the application produces an override beside a
+        canonical row.
         """
         with app.app_context():
-            txn_type = db.session.query(TransactionType).filter_by(
-                name="Expense").one()
-            status = db.session.query(Status).filter_by(name="Projected").one()
-            category = list(seed_user["categories"].values())[0]
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=category.id,
-                transaction_type_id=txn_type.id,
-                name="R17 downgrade override",
-                default_amount=Decimal("100.00"),
-                is_active=True,
+            template = make_expense_template(
+                db.session, seed_user, name="R17 downgrade override",
             )
-            db.session.add(template)
-            db.session.flush()
-
-            for occurrence, override in (
-                (date(2026, 1, 15), False),
-                (date(2026, 1, 1), True),
-            ):
-                db.session.add(Transaction(
-                    template_id=template.id,
-                    user_id=seed_periods[0].user_id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=status.id,
-                    name=f"override={override}",
-                    category_id=category.id,
-                    transaction_type_id=txn_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                    occurs_on=occurrence,
-                    is_override=override,
-                    is_deleted=False,
-                ))
+            generate_row_of(template, seed_periods[0])
+            moved = generate_row_of(template, seed_periods[1])
+            moved.pay_period_id = seed_periods[0].id
+            moved.is_override = True
             db.session.flush()
 
             assert _count_colliding("transactions", "template_id") == 0

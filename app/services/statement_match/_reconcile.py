@@ -108,7 +108,7 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from app.services.bank_agreement import BankAgreement
 
     from ._last_import import LastImport
-    from ._opened import OpenedMatch
+    from ._opened import OpenedAsk, OpenedMatch
     from ._reads import ReviewSet
     from ._scope import ReviewScope
 
@@ -596,11 +596,15 @@ def _opened_pane(
     scope: "ReviewScope",
     review: "ReviewSet",
     sections: "tuple[CardSection, ...]",
-    opened_line: "int | None",
+    opened: "OpenedAsk | None",
 ) -> "OpenedMatch | None":
     """Return the MATCH pane of the one card ``?open=`` named, or ``None``.
 
-    Plan step ``bank_import:X-gi-1``, ruling **bank_import:R-KA**.
+    Plan step ``bank_import:X-gi-1``, ruling **bank_import:R-KA**.  **Priced
+    from what the request's form holds for the card** since plan step
+    ``bank_import:X-gi-2a`` (finding **BI-478**): it took the line id alone
+    and priced every render from the proposal, so a refused Apply came back
+    with the owner's ticks gone.
 
     **It reaches EVERY unexplained row and not the line's own pay period**
     (developer, 2026-09-05).  The period is what the live fragment opens on,
@@ -626,33 +630,38 @@ def _opened_pane(
         review: The pass, which resolves the line to its card.
         sections: The cards this render actually holds
             (:class:`~._cards.CardSection`).
-        opened_line: The bank line asked for, or ``None``.
+        opened: Which card was asked for and what the form holds for it
+            (:class:`~._opened.OpenedAsk`), or ``None``.
 
     Returns:
         The :class:`~._opened.OpenedMatch`, or ``None`` where nothing was
         asked for, or where this render holds no card for the line named --
         which is a stale ``?open=`` rather than an error.
     """
-    if opened_line is None:
+    if opened is None:
         return None
     if not any(
         getattr(card, "line", None) is not None
-        and card.line.line_id == opened_line
+        and card.line.line_id == opened.line_id
         for section in sections for card in section.cards
     ):
         return None
-    subject = review.card_subject(opened_line)
+    subject = review.card_subject(opened.line_id)
     if subject is None:
         return None
     return opened_match(
         scope, review,
         MatchAsk(
             subject=subject,
-            # **Priced against the proposal the card already offers**, which
-            # is what the unopened card's hidden fields carry: a pane that
-            # opened with `$0.00` over a proposal stating a correction would
-            # be reporting a different act from the one the card is offering.
-            submitted=proposed_submission(subject),
+            # **The form's own rows where the request carried a form, else
+            # the proposal the card already offers** -- which is what the
+            # unopened card's hidden fields carry: a first render priced at
+            # `$0.00` over a proposal stating a correction would report a
+            # different act from the one the card is offering.
+            submitted=(
+                proposed_submission(subject) if opened.submitted is None
+                else opened.submitted
+            ),
             query="",
             reach=MatchReach.EVERY_ROW,
         ),
@@ -664,7 +673,7 @@ def reconcile_page(
     agreement: "BankAgreement | None",
     tab: Tab,
     limit: "int | None" = REGISTER_LIMIT,
-    opened_line: "int | None" = None,
+    opened: "OpenedAsk | None" = None,
 ) -> ReconcilePage:
     """Return everything the Reconcile page renders, for ONE of its tabs.
 
@@ -713,15 +722,19 @@ def reconcile_page(
             the developer's own account it reaches 171 of his 221 acts, so
             dropping it would put them out of reach rather than merely
             unlisted.
-        opened_line: The bank line whose MATCH pane renders IN the document
-            rather than behind a fetch, or ``None``.  Ruling
+        opened: The bank line whose MATCH pane renders IN the document
+            rather than behind a fetch, with what the request's form holds
+            for it (:class:`~._opened.OpenedAsk`), or ``None``.  Ruling
             **bank_import:R-KA**, plan step ``bank_import:X-gi-1``: the pane is
             htmx's, so with scripting off it never arrives, and
             ``?open=<line_id>`` is the path that puts one card's rows on the
             page.  **ONE card, and only where this tab holds bank lines**:
             deriving it for a tab of settled acts would price a pane no card
             here could render, and deriving it for every card is the 1.2 MB
-            plan step ``bank_import:X-gj-1b`` measured out.
+            plan step ``bank_import:X-gj-1b`` measured out.  **It was the line
+            id alone until plan step ``bank_import:X-gi-2a``**, and the route
+            builds the ask now because only the route knows whether its form
+            carries the card.
 
             A line this pass renders no card for yields ``None`` rather than
             an error, because that is what a STALE ``?open=`` is: the owner
@@ -852,7 +865,7 @@ def reconcile_page(
         # deleted (**R-HU**), whose count is the union of two tabs.
         chips=_chips(review, transfers),
         books_bound=review.bounds.books,
-        opened=_opened_pane(scope, review, sections, opened_line),
+        opened=_opened_pane(scope, review, sections, opened),
         counts=(
             TabCount(tab=Tab.TO_EXPLAIN, count=to_explain),
             TabCount(tab=Tab.EXPLAINED, count=counts.by_hand),

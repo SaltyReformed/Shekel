@@ -6,6 +6,13 @@ in the previous leaf compared ``[] == []`` and reported it as proof that
 nothing moved.  So every test here builds its own rows, through the ORM rather
 than through the services the accept door calls, so a broken settle verb cannot
 also break the fixture that would have caught it.
+
+**A row of a DEFINITION is the one exception, and it is not an exception to
+that argument** (plan step balance:X-cf): the recurrence engine generates it
+(:func:`tests._test_helpers.generate_row_of`), because a hand-built
+``Transaction(template_id=...)`` was a row the application cannot produce --
+undated, owning a figure with ``is_override=False``.  The engine is not the
+code under test here; the settle still is, and it stays bare.
 """
 
 from datetime import date, timedelta
@@ -43,8 +50,11 @@ from app.services.statement_match import (
     as_reviewed,
 )
 from tests._test_helpers import (
+    generate_row_of,
     last_covered_day,
+    make_every_period_rule,
     settle_day_columns,
+    state_template_price,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -85,8 +95,12 @@ def a_transaction(
         is_envelope: Whether it tracks purchases.
         period: The pay period to file it under; the bootstrap one by default.
         category: The category it files under; Groceries by default.
-        template: Whether a recurring definition owns it.  ``False`` builds an
-            AD-HOC row (``template_id`` NULL), which is what
+        template: Whether a recurring definition owns it.  ``True`` states
+            the definition's price and cadence and lets the ENGINE write its
+            row in *period* (plan step balance:X-cf), so the row is derived
+            and *amount* is what its series answers; the status and settle
+            columns below are then laid onto that row bare.  ``False`` builds
+            an AD-HOC row (``template_id`` NULL), which is what
             ``_create._create_envelope`` produces and therefore the only shape
             a NEW-ENVELOPE merchant answer converges onto -- naming a template
             is a different answer with its own resolution.
@@ -117,7 +131,18 @@ def a_transaction(
     )
     account_id = (account or seed_user["account"]).id
     category_id = (category or seed_user["categories"]["Groceries"]).id
-    template_id = None
+    # The settlement, as three facts laid on bare (see the module docstring):
+    # the day and its kind, what moved, and which statement showed it.
+    settlement = dict(
+        status_id=ref_cache.status_id(status),
+        **settle_day_columns(settled_on, settle_day_basis),
+        settled_amount=Decimal(amount) if settled_on else None,
+        settled_basis_id=(
+            ref_cache.settlement_basis_id(SettlementBasisEnum.DERIVED)
+            if settled_on else None
+        ),
+        reconciled_by_id=reconciled_by.id if reconciled_by else None,
+    )
     if template:
         definition = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -130,28 +155,29 @@ def a_transaction(
         )
         db.session.add(definition)
         db.session.flush()
-        template_id = definition.id
-    txn = Transaction(
-        template_id=template_id,
-        user_id=seed_user["user"].id,
-        pay_period_id=(period or seed_user["bootstrap_period"]).id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=account_id,
-        status_id=ref_cache.status_id(status),
-        name=name,
-        category_id=category_id,
-        transaction_type_id=type_id,
-        amount_ownership=AmountOwnership.own(Decimal(amount)),
-        is_envelope=is_envelope,
-        **settle_day_columns(settled_on, settle_day_basis),
-        settled_amount=Decimal(amount) if settled_on else None,
-        settled_basis_id=(
-            ref_cache.settlement_basis_id(SettlementBasisEnum.DERIVED)
-            if settled_on else None
-        ),
-        reconciled_by_id=reconciled_by.id if reconciled_by else None,
-    )
-    db.session.add(txn)
+        state_template_price(definition)
+        # The definition first, then the cadence onto it (plan step R-F6).
+        make_every_period_rule(db.session, definition)
+        txn = generate_row_of(
+            definition, period or seed_user["bootstrap_period"],
+        )
+        for column, value in settlement.items():
+            setattr(txn, column, value)
+    else:
+        txn = Transaction(
+            template_id=None,
+            user_id=seed_user["user"].id,
+            pay_period_id=(period or seed_user["bootstrap_period"]).id,
+            scenario_id=seed_user["scenario"].id,
+            account_id=account_id,
+            name=name,
+            category_id=category_id,
+            transaction_type_id=type_id,
+            amount_ownership=AmountOwnership.own(Decimal(amount)),
+            is_envelope=is_envelope,
+            **settlement,
+        )
+        db.session.add(txn)
     db.session.flush()
     return txn
 

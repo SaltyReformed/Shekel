@@ -91,8 +91,8 @@ from app.services.pay_calendar import (
 # ends rather than restating the arithmetic.  It is imported publicly above,
 # and the entry is corrected rather than dropped because the sentence it used
 # to carry -- *no application caller* -- was a measurement that expired.
-from app.services.pay_calendar import _derive
-from app.services.pay_calendar._derive import covering_projection
+from app.services.pay_calendar import _projection
+from app.services.pay_calendar._projection import covering_projection
 from app.utils.business_days import (
     shift_to_business_day,
     shortest_collision_free_cadence,
@@ -1035,7 +1035,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
     ``none`` the arithmetic estimate is right on every call, so each
     displacement case STATES a displacing one on the rhythm it passes and then
     calls the shipped
-    :func:`~app.services.pay_calendar._derive.project_period_after` -- which
+    :func:`~app.services.pay_calendar._projection.project_period_after` -- which
     grades the candidate WINDOW and the end rule, not only the selector.
     """
 
@@ -1046,7 +1046,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         2028-09-07, a Thursday, so the estimate for 2028-09-10 is step 2 and
         step 2 is the answer, running to the day before 2028-09-21.
         """
-        found = _derive.project_period_after(
+        found = _projection.project_period_after(
             _saved(_HORIZON, 14), rhythm_of(14), date(2028, 9, 10),
         )
 
@@ -1069,7 +1069,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         """
         day = date(2030, 11, 27)
 
-        found = _derive.project_period_after(
+        found = _projection.project_period_after(
             _saved(_HORIZON, 14), rhythm_of(14, BusinessDayShiftEnum.PRIOR), day,
         )
 
@@ -1090,7 +1090,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         """
         day = _THANKSGIVING_NOMINAL
 
-        found = _derive.project_period_after(
+        found = _projection.project_period_after(
             _saved(_HORIZON, 14), rhythm_of(14, BusinessDayShiftEnum.NEXT), day,
         )
 
@@ -1115,7 +1115,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
             saved = _saved(_HORIZON, 14)
             walked, opens_at = [], saved[-1].end_date + timedelta(days=1)
             while len(walked) < 80:
-                period = _derive.project_period_after(saved, displacing, opens_at)
+                period = _projection.project_period_after(saved, displacing, opens_at)
                 walked.append(period)
                 opens_at = period.end_date + timedelta(days=1)
 
@@ -1158,10 +1158,10 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         """
         displacing = rhythm_of(14, shift)
         saved = _saved(_HORIZON, 14)
-        opening = _derive.project_period_after(
+        opening = _projection.project_period_after(
             saved, displacing, date(2030, 11, 14),
         )
-        following = _derive.project_period_after(
+        following = _projection.project_period_after(
             saved, displacing, date(2030, 11, 30),
         )
         old_rule_end = opening.start_date + timedelta(days=13)
@@ -1253,7 +1253,7 @@ class TestOneNeighbourEitherSideIsEnough:
         and the true index, so it graded the theorem and not the code, while
         its docstring claimed "every cadence from the floor up" over eight
         sampled ones.  An adversarial review of ``C14-c`` caught both.*  It now
-        calls :func:`~app.services.pay_calendar._derive.project_period_after`
+        calls :func:`~app.services.pay_calendar._projection.project_period_after`
         under the producer ``C14-e`` will ship, and asserts three things of the
         answer: it COVERS the day, its span is the two projected paydays either
         side, and the neighbour arms were actually exercised in both
@@ -1278,7 +1278,7 @@ class TestOneNeighbourEitherSideIsEnough:
                         closes = payday(anchor, cadence, steps + 1)
                         for day in (opens, opens + (closes - opens) // 2,
                                     closes - timedelta(days=1)):
-                            found = _derive.project_period_after(
+                            found = _projection.project_period_after(
                                 saved, rhythm_of(cadence, shift), day,
                             )
                             where = (shift, anchor, cadence, steps, day)

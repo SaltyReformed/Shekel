@@ -8,17 +8,21 @@ derived from the user's last period length).  See
 
 Coverage:
 
-  1. **Catalog shape.**  The table, its three named constraints
+  1. **Catalog shape.**  The table, its named constraints
      (``uq_pay_schedule_user`` UNIQUE, two CHECKs), and the
      ``audit_pay_schedule`` trigger exist in the per-worker template.
+     **The cadence CHECK is NOT among them since plan step
+     ``pay_calendar:C17-a``**: the cadence moved to ``budget.pay_eras`` with
+     its bound, graded in ``test_pay_era.py``.
   2. **Model contract.**  ``PaySchedule`` declares the same named
      constraints so ``create_all`` / autogenerate match the migration.
   3. **Constraint behaviour.**  The UNIQUE and CHECK constraints reject
-     a second row per user, an out-of-range cadence, and a
-     non-positive rolling target.
+     a second row per user and a non-positive rolling target.
   4. **Backfill.**  The migration's backfill SQL gives a user with
      periods a row whose ``cadence_days`` equals the last period's
-     length, gives a no-periods user no row, and is idempotent.
+     length, gives a no-periods user no row, and is idempotent -- driven
+     against the REWOUND schema, where that column still exists on the
+     row, and read back by SQL for that reason.
 """
 from __future__ import annotations
 
@@ -30,17 +34,13 @@ import pytest
 from sqlalchemy import CheckConstraint, UniqueConstraint, text
 from sqlalchemy.exc import IntegrityError
 
-from app.models.pay_schedule import (
-    CADENCE_DAYS_MAX,
-    CADENCE_DAYS_MIN,
-    PaySchedule,
-)
+from app.models.pay_era import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN, PayEra
+from app.models.pay_schedule import PaySchedule
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 from app.services import pay_calendar, pay_period_write
 from tests._test_helpers import (
     restore_pay_period_derived_columns,
     rhythm_of,
-    shift_id_of,
     relax_pay_schedule_shift_not_null,
 )
 
@@ -113,9 +113,12 @@ class TestPostUpgradeCatalogShape:
             assert _named_constraint_contype(
                 db.session, "uq_pay_schedule_user",
             ) == "u", "uq_pay_schedule_user is not a UNIQUE constraint"
+            # Plan step pay_calendar:C17-a moved the cadence and its CHECK
+            # to budget.pay_eras; the row carries neither.  If this fails the
+            # template predates migration ``6fc77e86d76f``; rebuild it.
             assert _named_constraint_contype(
-                db.session, "ck_pay_schedule_cadence_range",
-            ) == "c", "ck_pay_schedule_cadence_range is not a CHECK constraint"
+                db.session, _CK_CADENCE,
+            ) is None, "ck_pay_schedule_cadence_range survives on the row"
             assert _named_constraint_contype(
                 db.session, "ck_pay_schedule_positive_target",
             ) == "c", "ck_pay_schedule_positive_target is not a CHECK constraint"
@@ -164,7 +167,9 @@ class TestModelContract:
             c.name for c in PaySchedule.__table__.constraints
             if isinstance(c, CheckConstraint)
         }
-        assert "ck_pay_schedule_cadence_range" in check_names
+        assert _CK_CADENCE not in check_names, (
+            "the cadence bound is the era's since plan step C17-a"
+        )
         assert "ck_pay_schedule_positive_target" in check_names
         assert "ck_pay_schedule_history_opens_range" in check_names
 
@@ -175,8 +180,9 @@ class TestTheCadenceBoundHasOneValue:
     Plan step **X-ad-a** collapsed six hand-copied ``1``/``365`` literals -- the
     CHECK constraint's text, four Marshmallow fields, and a service refusal
     that did not exist yet -- onto
-    :data:`app.models.pay_schedule.CADENCE_DAYS_MIN` /
-    :data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`.  ONE copy survives, in
+    :data:`app.models.pay_era.CADENCE_DAYS_MIN` /
+    :data:`~app.models.pay_era.CADENCE_DAYS_MAX` (on the schedule model until
+    plan step ``pay_calendar:C17-a`` moved the column).  ONE copy survives, in
     ``app.services.pay_calendar._derive``, and it survives on purpose: that
     package is pure by design (no Flask symbol, no session, no clock) so the
     arc's harness can drive the derivation over production's paydays with no
@@ -196,16 +202,16 @@ class TestTheCadenceBoundHasOneValue:
         assert CADENCE_DAYS_MAX == pay_calendar.MAX_CADENCE_DAYS
 
     def test_the_check_constraint_carries_those_numbers(self):
-        """``ck_pay_schedule_cadence_range``'s SQL is built from the constants.
+        """``ck_pay_eras_cadence_range``'s SQL is built from the constants.
 
         The CHECK text is an f-string over the same names, so this proves the
         DDL cannot state a third bound -- which is the copy that would be
         hardest to notice, because it only disagrees at migration time.
         """
         check = next(
-            c for c in PaySchedule.__table__.constraints
+            c for c in PayEra.__table__.constraints
             if isinstance(c, CheckConstraint)
-            and c.name == "ck_pay_schedule_cadence_range"
+            and c.name == "ck_pay_eras_cadence_range"
         )
         assert str(check.sqltext) == (
             f"cadence_days BETWEEN {CADENCE_DAYS_MIN} AND {CADENCE_DAYS_MAX}"
@@ -290,51 +296,23 @@ class TestTheHistoryWindowIsTheApplicationsCalendar:
 
 
 class TestConstraintBehaviour:
-    """The DB rejects a duplicate row, a bad cadence, and a bad target."""
+    """The DB rejects a duplicate row and a bad target.
+
+    The cadence bound's two refusals moved to ``test_pay_era.py`` with the
+    column (plan step ``pay_calendar:C17-a``).
+    """
 
     def test_second_row_for_same_user_raises(self, app, db, bare_user):
         """uq_pay_schedule_user forbids two schedule rows for one user."""
         user_id = bare_user["user"].id
         with app.app_context():
-            db.session.add(PaySchedule(user_id=user_id, cadence_days=14, shift_id=shift_id_of()))
+            db.session.add(PaySchedule(user_id=user_id))
             db.session.flush()
             try:
                 with pytest.raises(
                     IntegrityError, match="uq_pay_schedule_user",
                 ):
-                    db.session.add(
-                        PaySchedule(user_id=user_id, cadence_days=7, shift_id=shift_id_of())
-                    )
-                    db.session.flush()
-            finally:
-                db.session.rollback()
-
-    def test_cadence_below_range_raises(self, app, db, bare_user):
-        """cadence_days = 0 violates ck_pay_schedule_cadence_range (1..365)."""
-        user_id = bare_user["user"].id
-        with app.app_context():
-            try:
-                with pytest.raises(
-                    IntegrityError, match="ck_pay_schedule_cadence_range",
-                ):
-                    db.session.add(
-                        PaySchedule(user_id=user_id, cadence_days=0, shift_id=shift_id_of())
-                    )
-                    db.session.flush()
-            finally:
-                db.session.rollback()
-
-    def test_cadence_above_range_raises(self, app, db, bare_user):
-        """cadence_days = 366 violates ck_pay_schedule_cadence_range (1..365)."""
-        user_id = bare_user["user"].id
-        with app.app_context():
-            try:
-                with pytest.raises(
-                    IntegrityError, match="ck_pay_schedule_cadence_range",
-                ):
-                    db.session.add(
-                        PaySchedule(user_id=user_id, cadence_days=366, shift_id=shift_id_of())
-                    )
+                    db.session.add(PaySchedule(user_id=user_id))
                     db.session.flush()
             finally:
                 db.session.rollback()
@@ -348,9 +326,7 @@ class TestConstraintBehaviour:
                     IntegrityError, match="ck_pay_schedule_positive_target",
                 ):
                     db.session.add(PaySchedule(
-                        user_id=user_id, cadence_days=14,
-                        shift_id=shift_id_of(),
-                        rolling_target_periods=0,
+                        user_id=user_id, rolling_target_periods=0,
                     ))
                     db.session.flush()
             finally:
@@ -373,7 +349,7 @@ class TestTheHistoryOpeningColumn:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            db.session.add(PaySchedule(user_id=user_id, cadence_days=14, shift_id=shift_id_of()))
+            db.session.add(PaySchedule(user_id=user_id))
             db.session.flush()
 
             assert db.session.query(PaySchedule).filter_by(
@@ -388,9 +364,7 @@ class TestTheHistoryOpeningColumn:
         user_id = bare_user["user"].id
         with app.app_context():
             db.session.add(PaySchedule(
-                user_id=user_id, cadence_days=14,
-                shift_id=shift_id_of(),
-                history_opens_on=date(2026, 1, 5),
+                user_id=user_id, history_opens_on=date(2026, 1, 5),
             ))
             db.session.flush()
 
@@ -413,9 +387,7 @@ class TestTheHistoryOpeningColumn:
                     match="ck_pay_schedule_history_opens_range",
                 ):
                     db.session.add(PaySchedule(
-                        user_id=user_id, cadence_days=14,
-                        shift_id=shift_id_of(),
-                        history_opens_on=day,
+                        user_id=user_id, history_opens_on=day,
                     ))
                     db.session.flush()
             finally:
@@ -465,6 +437,11 @@ class TestBackfill:
         their server-defaults (off / 52).
         """
         user_id = bare_user["user"].id
+        # Reading the fixture's id above refreshed it on the OUTER session,
+        # which now sits in a transaction holding a share lock on
+        # ``auth.users``; the rewind below drops a key onto that table from a
+        # nested context's connection, so the outer transaction must end first.
+        db.session.commit()
         with app.app_context():
             pay_period_write.record_paydays(
                 user_id=user_id,
@@ -484,7 +461,16 @@ class TestBackfill:
                 .filter_by(user_id=user_id)
                 .one()
             )
-            assert backfilled.cadence_days == 10
+            # By SQL: the rewind put ``cadence_days`` back on the row, and
+            # the head mapper does not select it (plan step C17-a).  The
+            # backfill inserted nothing here -- the batch above created the
+            # row -- so what this reads is the writer's cadence restored onto
+            # the row, and the inference itself is graded by
+            # ``test_c4b2_pay_period_schedule_key``'s owner-without-a-row cases.
+            assert db.session.execute(text(
+                "SELECT cadence_days FROM budget.pay_schedule "
+                "WHERE user_id = :uid"
+            ), {"uid": user_id}).scalar() == 10
             assert backfilled.rolling_enabled is False
             assert backfilled.rolling_target_periods == 52
 
@@ -498,6 +484,9 @@ class TestBackfill:
         """
         no_periods = bare_user["user"].id
         has_periods = seed_user["user"].id
+        # The outer session's transaction must end before the rewind; see the
+        # case above.
+        db.session.commit()
         with app.app_context():
             restore_pay_period_derived_columns(db.session)
             relax_pay_schedule_shift_not_null(db.session)
@@ -522,6 +511,9 @@ class TestBackfill:
         partial failure safe.
         """
         user_id = bare_user["user"].id
+        # The outer session's transaction must end before the rewind; see the
+        # first case of this class.
+        db.session.commit()
         with app.app_context():
             pay_period_write.record_paydays(
                 user_id=user_id,

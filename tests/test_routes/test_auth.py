@@ -19,7 +19,7 @@ from app.routes.auth._helpers import _is_safe_redirect
 from app.services import mfa_service, pay_schedule_service
 from app.services.mfa_service import TotpVerificationResult
 from app.config import BaseConfig
-from app.models.pay_schedule import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
+from app.models.pay_era import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 from app.schemas.validation.pay_periods import PERIOD_BATCH_MAX
 from app.services.auth_service import hash_password
