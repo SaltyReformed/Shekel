@@ -40,7 +40,7 @@ one service.  No money arithmetic happens here or in the template.
 """
 
 from flask import render_template
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
@@ -139,7 +139,6 @@ def outstanding_context(
 @accounts_bp.route(
     "/accounts/<int:account_id>/outstanding-difference", methods=["GET"],
 )
-@login_required
 @require_owner
 def outstanding_difference(account_id):
     """HTMX partial: re-render what the account's books cannot explain.

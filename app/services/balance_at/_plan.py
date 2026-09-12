@@ -18,29 +18,69 @@ other.
 The PAYMENTS come in two tiers:
 
 * **PLANNED** -- the loan's PROJECTED transfer shadows
-  (:func:`app.services.loan_loaders.projected_income_shadows`), each at its LIVE
-  D3 cash (:meth:`app.services.cash_ledger.LoanPricing.live_cash` =
-  P&I + current escrow + ``extra_principal``, the SAME cash the checking side
-  shows leaving).  A record is the evidence a payment will happen; where the
-  record's due date has already passed but it has not settled, it is clamped
-  forward to ``as_of + 1d`` -- "a plan cannot have already happened" (ruling D1).
-* **ESTIMATED** -- for every FUTURE contractual installment slot no projected
-  record covers (a loan with no recurring transfer, or the tail beyond the
-  materialized ~2-year pay-period window), what the loan's own STANDING PAYMENT
-  says that installment costs
-  (:func:`app.services.recurring_transfer_query.standing_installment_cash`), dated
-  and rated by the contractual schedule
-  (:func:`app.services.balance_at._resolution.contractual_schedule_from_origination`,
-  the producer already shared with the property-equity back-projection) -- its
-  installment DATE and P&I, never its ``remaining_balance``, which this re-folds.
+  (:func:`app.services.loan_loaders.projected_income_shadows`), each at what
+  the amount model resolves for it (:func:`app.services.cash_ledger.amounts_by_id`,
+  the SAME cash the checking side shows leaving).  A record is the evidence a
+  payment will happen; where the record's due date has already passed but it
+  has not settled, it is clamped forward to ``as_of + 1d`` -- "a plan cannot
+  have already happened" (ruling D1).
+* **ESTIMATED** -- **what a generate pass over the owner's whole schedule
+  would write, priced as those rows would be priced** (plan step **R16-b-2**).
+  EVERY active recurring transfer into the loan is walked on its OWN cadence
+  under its AUTHORED closing (:func:`._plan_definitions.estimated_from_definitions`); each
+  occurrence the schedule can place that NO ROW IN ANY STATE answers is dated
+  as generation would date its row and priced through the amount model's own
+  arm (:func:`app.services.cash_ledger.definition_cash`).  A loan with no
+  definition at all is priced by its CONTRACT, one installment per future
+  slot no record covers (:func:`_estimated_from_contract`), dated and rated by
+  the contractual schedule
+  (:func:`~app.services.balance_at._resolution.contractual_schedule_from_origination`)
+  -- its installment DATE and P&I, never its ``remaining_balance``, which this
+  re-folds.
+
+**Why every definition, and why on its own cadence** (rulings **R-R35**,
+**R-R36**, **R-R37**, **R-R65**; findings **D47**, **D48**).  Until R16-b-2
+this tier synthesized one slot per CONTRACTUAL month and priced every slot
+from ONE definition picked by lowest id, so it modelled the contract's rhythm
+carrying one definition's price: re-authoring the Van's payment to every
+paycheck left the estimate byte-identical at 12 installments a year against
+the rule's 26.07, and re-pointing a ``$500.00`` every-paycheck sweep at the
+Mortgage priced every uncovered installment at ``$500.00`` against a
+``$616.99`` escrow, read the payoff ``None`` and grew the balance to
+``$1,059,869.99`` by 2053 -- where summing each definition's occurrences
+answered ``2034-10-01``.  The other two tiers (the settled fold and the
+PLANNED tier) already summed every transfer into the loan with no template
+filter; this was the one outlier, and four tie-break remedies were refused
+to delete the question rather than answer it (R-R35).
+
+**Why the fold prices an occurrence NO ROW answers, past or future** (ruling
+**R-R64**, finding **D46**).  Generation has been exhaustive over the
+schedule since R17, so "no row at all" for an occurrence the schedule places
+means "not generated yet" -- and a cancelled or deleted row still ANSWERS
+its occurrence (the owner un-planned it).  Before R-R64 an occurrence dated
+before ``as_of`` that no row answered when a pass read the loan was priced by
+neither tier (B-9's "the past is the ACTUAL fold's"), so the payoff read one
+installment late and generation bounded by that payoff wrote one installment
+past the loan's life: ``$1,200`` at 3% over three months, ``as_of``
+2026-03-01, the 02-15 row wiped by the reset door -- 4 rows against 3.
+**Bounded by the SCHEDULE**, which the ruling's first statement did not say
+and which is what makes it correct on live data: an occurrence the owner's
+pay calendar cannot place (before its first payday under ``CONTAINING_DATE``)
+is neither generated nor estimated.  The Mortgage's rule starts 2019-01-01
+against a schedule opening 2026-03-26; priced literally, its 87 pre-schedule
+occurrences would pay ``$166,252.65`` the day after ``as_of``.
 
 **Why the DEFINITION and not the contract** (plan step **R7d-a**).  This tier
 priced every uncovered slot at the contract's P&I, whatever the loan's own
 recurring payment said it would pay, so "what will this loan be paid in month
 M" had two answers and which one the fold used depended on whether the row had
-been WRITTEN yet.  Two consequences, both measured on a production clone with a
-PLANTED underpayment -- the Van Loan's definition moved to ``$300.00`` against
-its ``$531.94`` contractual installment, rolled back after each probe:
+been WRITTEN yet.  R16-b-2 finished that argument: the estimate is now the
+row's own pricing function over the columns the row would carry, so the two
+answers are one by construction rather than by two arms agreeing.  Two
+consequences of the contract-priced tier, both measured on a production clone
+with a PLANTED underpayment -- the Van Loan's definition moved to ``$300.00``
+against its ``$531.94`` contractual installment, rolled back after each
+probe:
 
 * the plan SWITCHED figures at the materialized horizon, projecting a payoff of
   ``2030-02-22`` with rows to 2028-07 and ``2030-04-22`` with rows to 2029-01 --
@@ -65,8 +105,66 @@ would break that equality, and there is none to measure against.
 one contractual installment per month whether or not any payment was recorded, so
 an overdue installment nobody paid still paid the loan down.  Here an installment
 pays the loan down only where a payment RECORD stands behind it (PLANNED) or where
-the loan is genuinely predicted to keep paying (a FUTURE ESTIMATED slot); an
-overdue slot with no record is neither, so it holds flat -- honest delinquency.
+the owner's definitions say the loan will be paid (ESTIMATED); an occurrence the
+owner UN-PLANNED -- a cancelled or deleted row -- pays nothing, and since R16-b-2
+its month is CHARGED anyway (rulings **R-R37**, **R-R71**; finding **D53**), so
+a delinquent balance grows in the projection rather than holding flat.  What
+B-9 keeps is the narrower claim: the fold never invents a payment nothing
+stands behind -- and never one the write door would refuse: an occurrence at or
+before the loan's origination (ruling R-C, the door's
+:func:`~app.services.loan_loaders.precedes_origination`) is dropped with every
+other payment at or before the loan's latest assertion, of which the
+origination is the first (:func:`loan_plan`, ruling **R-R72**), because
+generation cannot write it and the fold would erase it if it could.
+
+**The CHARGE calendar is the contract's, not the payments'** (plan step
+**R16-b-2**, rulings **R-R68** and **R-R71**; findings **D53**, **D54**).
+One :class:`AccrualCharge` per CONTRACTUAL installment dated after the loan's
+LAST BALANCE ASSERTION visible at the read -- the origination anchor, or the
+latest true-up -- whose month the settled seed did not charge, past or future;
+the sequence runs through the post-contractual extension and as far as the
+last plan payment.  **The same assertion bounds the PAYMENTS**: a planned row
+or an estimated occurrence whose installment is due at or before it is not
+folded, because the settled walk will not fold it either once it settles --
+it walks the payment and then resets at the anchor
+(:func:`~app.services.loan_ledger.replay_loan_events`), so its cash never
+reaches the post-assertion balance.  An adversarial review of this step
+measured the plan folding three projected rows a true-up had already
+subsumed, `$5,955.13` that vanished the day they settled.  Charges and
+payments read the one boundary
+(:func:`~app.services.rate_period_engine.due_after_anchor`).
+Deriving the calendar from the payments was exact only while this tier filled
+every month; summing definitions on their own cadence deletes that fill, so a
+quarterly definition would have collapsed the charge set with the payment set
+(40 charges where the contract owes 120, ``$367.98`` of interest against
+``$1,096.34``).  Seed-aware because the settled walk has already charged the
+month of every settled payment, and a forward charge on the same month was
+finding D54's double charge (``$2,026.52`` for one September, ``$1,014.06``
+twice) -- unreachable now rather than guarded.  **Anchor-bounded rather than
+``as_of``-bounded, and an adversarial review of this step is why**: charging
+"every month at or after ``as_of``" made a month the owner CANCELLED accrue
+while it lay ahead of the read and accrue nowhere once the read passed it,
+so the same records answered two payoffs on two days (``$12,000`` at 6% over
+six months, May cancelled: ``2026-09-01`` read in April, ``2026-08-01`` read
+in May).  A skipped month owes its interest -- and its escrow, which the
+servicer advanced -- whichever side of today it is on, and a catch-up payment
+at the definition's level cash clears those arrears before it reaches
+principal, which is what the servicer's books say too; the assertion is the
+boundary because the owner's own statement of the balance supersedes every
+month before it.  **That boundary is the design of record** (ruling
+**R-R72**): a loan's balance is the replay from its LATEST assertion over the
+CONTRACT's calendar.  Two halves of it are later steps'.  ``R16-c`` applies
+this same predicate in the settled walk (D53's past half): until then the
+walk charges only the months it saw paid, so a read AT ``as_of`` holds the
+seed flat where the read after it carries the skipped months' interest.  And
+``R20`` records the balance the owner states at SETUP as the assertion it is
+(a ``tracking_start``), where today the setup door stores it in the params
+row's demoted current-principal column and nothing reads it (finding
+**REC-519**):
+a loan configured mid-life without a separate tracking-start therefore has
+only its origination assertion, and this calendar reads it as unpaid since
+origination -- which is what its records say, and not a bound this module
+guesses around.
 
 **Why in the seam, not the ``loan_ledger`` leaf.**  The plan composes the loan's
 projected records, its live D3 cash, and the resolver's contractual schedule --
@@ -83,7 +181,7 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 """
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
@@ -94,24 +192,22 @@ from app.services.loan_ledger import (
     installment_slot,
 )
 from app.services.cash_ledger import amounts_by_id
-from app.services.loan_ledger import confirmed_shadows_through
+from app.services.loan_ledger import anchor_visible_on, confirmed_shadows_through
 from app.services.loan_loaders import loan_payment_due_date
-from app.services.rate_period_engine import period_for_date
-from app.services.recurring_transfer_query import (
-    StandingPayment,
-    standing_installment_cash,
-)
+from app.services.rate_period_engine import due_after_anchor, period_for_date
 from app.utils.amount_relationships import pricing_load_options
 from app.utils.dates import add_months
+from app.utils.money import round_money
 
 from ._context import BalanceContext, _memoize_once, require_scenario
+from ._plan_definitions import estimated_from_definitions
+from ._plan_records import _ONE_DAY, LoanForwardPlan, PlannedPayment
 from ._resolution import (
     contractual_schedule_from_origination,
     resolved_loan,
 )
 
 _ZERO_MONEY = Decimal("0.00")
-_ONE_DAY = timedelta(days=1)
 
 # How far past the CONTRACTUAL payoff the ESTIMATED tier keeps synthesizing the
 # level monthly payment (finding N-16).  A loan paying below contract leaves a
@@ -126,86 +222,6 @@ _ONE_DAY = timedelta(days=1)
 # fold to no-ops (the allocator's closed-loan arm on a zero balance).
 _PAYOFF_EXTENSION_MONTHS = 60
 
-def _month_slot(due: date) -> tuple[int, int]:
-    """Return the ``(year, month)`` installment slot a due date occupies.
-
-    The de-dup key that keeps one calendar installment folded once: a contractual
-    ESTIMATED synthesis is skipped when a PLANNED record or a settled payment
-    already occupies its month (the same month-keyed slot the C6c interest merge
-    uses, :func:`app.services.balance_at._loan_interest._due_slot`).
-    """
-    return installment_slot(due)
-
-
-@dataclass(frozen=True)
-class PlannedPayment:
-    """One forward payment a loan is projected to make -- a RECORD, not a balance.
-
-    The CASH half of :func:`loan_plan`.  It carries the cash a payment will move
-    and the two dates the projection keys on -- but no rate, no escrow and no
-    balance.  What a period CHARGES is :class:`AccrualCharge`; the balance is the
-    FOLD of the two, computed by :func:`._plan_fold.fold_forward`, never stored on a record.
-
-    **It stopped carrying its own rate and escrow at plan step R16-a**, and the
-    reason is the defect that step exists to close.  While a payment carried the
-    charge it was to be split against, the fold charged one month of interest per
-    payment RECORD -- so the payment count was the clock, and a loan paid twice as
-    fast modelled the identical interest (measured on a production clone: 30
-    payments of ``$531.94`` fourteen days apart and 30 a month apart both charge
-    ``$1,096.34``, split for split).  A rate and an escrow belong to a period of
-    TIME; a cash figure and its dates belong to a payment; and the two are now
-    separate values.
-
-    Attributes:
-        due_date: The contractual installment this payment satisfies (contract
-            time).  Orders the split walk and keys the PLANNED-vs-ESTIMATED slot
-            de-dup, so a late or clamped settlement never re-splits an installment
-            (ruling R-A).
-        effective_date: When the paydown becomes VISIBLE to a balance read --
-            ``max(due_date, as_of + 1d)`` (ruling D1: a plan cannot have already
-            happened).  For a normal future installment this is its due date; for
-            an overdue-but-still-projected one it is tomorrow.
-        cash: The cash this payment moves -- the PLANNED tier's live D3 amount,
-            or what the ESTIMATED tier's standing-payment rule says this
-            installment costs
-            (:func:`~app.services.recurring_transfer_query.standing_installment_cash`).
-            Escrow-INCLUSIVE where the definition states a price, which is why
-            the charge it clears is backed out of principal rather than added to
-            it.
-        is_estimated: ``True`` for a synthesized contractual installment, ``False``
-            for a real projected-shadow record -- carried for display / debugging;
-            the fold treats both alike.
-    """
-
-    due_date: date
-    effective_date: date
-    cash: Decimal
-    is_estimated: bool
-
-
-@dataclass(frozen=True)
-class LoanForwardPlan:
-    """A loan's forward model: what it will be CHARGED and what it will PAY.
-
-    :func:`loan_plan`'s whole answer, and the shape plan step **R16-a** gave it.
-    The two lists are independent by construction -- charges come from the loan's
-    own note and the passage of time, payments from whatever the owner's
-    recurring definitions say -- and :func:`._plan_fold._split_plan` walks them merged in
-    contract order.  That independence is what makes a payment cadence a
-    non-question: a definition emits payments on its own dates and the charges do
-    not move.
-
-    Attributes:
-        payments: The forward payment records, PLANNED then ESTIMATED, ascending
-            by ``(effective_date, due_date)``.  Empty for an account that is not
-            a configured loan.
-        charges: One :class:`AccrualCharge` per accrual period those payments
-            occupy, ascending by ``on_date``.
-    """
-
-    payments: list[PlannedPayment]
-    charges: list[AccrualCharge]
-
 
 @dataclass(frozen=True)
 class _ForwardInputs:
@@ -213,27 +229,23 @@ class _ForwardInputs:
 
     Bundles the loan facts both tiers of :func:`loan_plan` read -- its rate
     periods (each installment's rate and P&I), its escrow lines, its contractual
-    due day, its standing extra, and the read pass's as-of clamp -- so the two
-    builders take one cohesive value instead of loose arguments, and the loan is
-    resolved once.
+    due day, and the read pass's as-of clamp -- so the builders take one
+    cohesive value instead of loose arguments, and the loan is resolved once.
+
+    **It carried the loan's STANDING payment until plan step R16-b-2**, the one
+    definition ``active_recurring_transfer_template`` picks by lowest id, which
+    priced every ESTIMATED installment.  The tier sums EVERY definition now
+    (:func:`._plan_definitions.estimated_from_definitions`) and prices each occurrence through
+    the amount model's own arm, so no definition rides here: the PLANNED tier
+    prices its rows through the amount model and the ESTIMATED tier prices its
+    occurrences through the same arms, and a standing extra lands in each
+    exactly once because both read it off the definition's settings row.
 
     Attributes:
         periods: The loan's rate periods
             (:func:`app.services.loan_resolver.resolve_periods`).
         escrow_lines: The loan's escrow lines with their full version history.
         payment_day: The loan's contractual due day (the due-date fallback).
-        standing: What the loan's own recurring payment says one installment
-            costs
-            (:attr:`~app.services.balance_at._resolution.ResolvedLoan.standing`),
-            which prices every ESTIMATED installment
-            (:func:`~app.services.recurring_transfer_query.standing_installment_cash`).
-            Its standing extra lands there too, so the fold folds the SAME extra
-            past the materialized-shadow horizon that the resolver's committed
-            schedule applies for the whole term (finding N-15).  The PLANNED
-            tier does NOT read this -- its live D3 cash already carries both the
-            base and the extra -- so each lands exactly once.  ``None`` when the
-            loan has no recurring payment, and the contract is then the only
-            estimate there is.
         as_of: The read pass's as-of; the clamp floor is ``as_of + 1d`` and the
             past/future boundary is ``as_of`` itself.
     """
@@ -241,7 +253,6 @@ class _ForwardInputs:
     periods: list
     escrow_lines: list
     payment_day: int
-    standing: StandingPayment | None
     as_of: date
 
 
@@ -394,15 +405,25 @@ def _estimated_from_contract(
     covered_slots: set[tuple[int, int]],
     fwd: _ForwardInputs,
 ) -> list[PlannedPayment]:
-    """Build the ESTIMATED tier: contractual installments no payment covers.
+    """Build the ESTIMATED tier for a loan with NO definition: the contract's own installments.
 
     Walks the pure contractual schedule
     (:func:`app.services.balance_at._resolution.contractual_schedule_from_origination`)
     and synthesizes a :class:`PlannedPayment` for every FUTURE installment
     (``payment_date >= as_of``) whose ``(year, month)`` slot no payment already
-    covers.  A strictly-PAST installment (``payment_date < as_of``) is NEVER
-    synthesized -- the past is the ACTUAL fold's, and an overdue installment with
-    no record pays nothing (the B-9 fix).
+    covers, at the contract's P&I plus that installment's escrow.  Nothing
+    else is known about how such a loan will be paid, so the contract is the
+    only estimate there is -- and it is the CONTRACT's figure, residual last
+    row included, rather than a definition's level payment.
+
+    **The one arm plan step R16-b-2 left here.**  Until that step this
+    function was the whole ESTIMATED tier, pricing every uncovered slot from
+    the loan's standing payment; a loan WITH definitions is estimated by
+    :func:`._plan_definitions.estimated_from_definitions` now, each definition on its own
+    cadence and by occurrence identity rather than by month slot.  A strictly-PAST
+    installment (``payment_date < as_of``) is never synthesized here: with no
+    definition there is nothing generation would write, so ruling **R-R64**
+    has no occurrence to price and B-9's rule stands for this arm.
 
     **Two kinds of already-covered slot are excluded, and BOTH matter.**  The
     contractual synthesis is a schedule-row estimate, so it can collide with a real
@@ -417,31 +438,12 @@ def _estimated_from_contract(
       an installment the seed already paid, and :func:`._plan_fold.fold_forward` would subtract
       its principal a SECOND time (understating the debt by one installment).
 
-    The contractual row supplies the installment DATE and its P&I (``row.payment``,
-    escrow-free by construction -- the schedule is fed no payments); what the
-    installment COSTS is then the loan's own standing payment's answer
-    (:func:`~app.services.recurring_transfer_query.standing_installment_cash`, plan
-    step **R7d-a**), which is the contract's P&I plus escrow plus the standing
-    extra for a DERIVE-mode payment or for a loan with none, and the definition's
-    stated base plus the extra where the owner has stated one.  The extra is the
-    SAME overpayment the resolver's committed schedule applies to every forward
-    month and the PLANNED tier folds into its live cash, so a loan paying extra
-    keeps paying it PAST the materialized-shadow horizon rather than reverting to
-    bare contractual here (finding N-15); the BASE now carries the same way, which
-    is what stops the plan switching figures at the horizon.  Each lands exactly
-    once -- the PLANNED tier owns the covered slots, this tier the rest.  The
-    balance is re-folded by :func:`._plan_fold.fold_forward`, never read off
-    ``row.remaining_balance``.
-
     **The escrow PRICES the installment here and is CHARGED by the period**, and
-    plan step R16-a is what separated the two.  A stated base is escrow-INCLUSIVE
-    (an owner types the whole mortgage payment), so this tier reads the escrow to
-    know what the definition costs; what the fold then backs out of principal is
-    the CHARGE :func:`_charges_for` states for the period, once, however many
-    payments fall in it.  Until R16-a both were a field on the record, which is
-    why a tier calling its escrow zero would have paid the loan down by the
-    escrow every month -- and why a second payment in a month would have paid it
-    twice.
+    plan step R16-a is what separated the two.  The contract's installment is
+    escrow-INCLUSIVE as the owner pays it, so this tier reads the escrow to
+    know what the installment costs; what the fold then backs out of principal
+    is the CHARGE :func:`_charges_for` states for the period, once, however
+    many payments fall in it.
 
     **Past the contractual last row it keeps synthesizing** the level monthly
     payment for up to :data:`_PAYOFF_EXTENSION_MONTHS` more months (finding N-16):
@@ -458,9 +460,8 @@ def _estimated_from_contract(
             seed-included settled payment already covers -- excluded here so a slot
             is folded exactly once.
         fwd: The resolved :class:`_ForwardInputs` (its rate periods govern each
-            installment's rate; its ``standing`` payment and its escrow lines
-            price every synthesized installment; its ``as_of`` is the
-            past/future boundary).
+            installment's rate; its escrow lines price every synthesized
+            installment; its ``as_of`` is the past/future boundary).
 
     Returns:
         One :class:`PlannedPayment` per uncovered future contractual installment
@@ -471,10 +472,10 @@ def _estimated_from_contract(
 
     def _synthesize(due: date, contractual_pi: Decimal) -> None:
         """Append one uncovered future ESTIMATED installment."""
-        if due < fwd.as_of or _month_slot(due) in covered_slots:
-            # The past is ACTUAL-only (an overdue installment with no record pays
-            # nothing, B-9 / D1); a covered slot the PLANNED tier or the seed
-            # already folds would double-count here.
+        if due < fwd.as_of or installment_slot(due) in covered_slots:
+            # The past is ACTUAL-only for a loan nothing generates into (B-9 /
+            # D1); a covered slot the PLANNED tier or the seed already folds
+            # would double-count here.
             return
         # The installment's OWN escrow, on its OWN due date -- ruling D5's
         # contract time, the same date and function the PLANNED tier and the
@@ -484,9 +485,7 @@ def _estimated_from_contract(
         estimated.append(PlannedPayment(
             due_date=due,
             effective_date=max(due, clamp_floor),
-            cash=standing_installment_cash(
-                fwd.standing, contractual_pi, escrow, due,
-            ),
+            cash=round_money(contractual_pi + escrow),
             is_estimated=True,
         ))
 
@@ -496,85 +495,228 @@ def _estimated_from_contract(
     # Extend past the contractual payoff so an underpaying loan clears a few months
     # late instead of reporting no payoff (N-16).  The contractual P&I past the
     # schedule is the last rate period's (period_for_date returns it for any date
-    # past the periods), and ``_synthesize`` applies the SAME standing-payment
-    # rule to it -- so a loan the owner underpays extends at what the owner
-    # actually pays, which is the whole point of the extension: extending at the
-    # contract's figure would clear the very loan the extension exists to model.
-    # The fold caps a healthy loan's extra installments to no-ops.
-    if contractual:
-        last_due = contractual[-1].payment_date
-        for months_out in range(1, _PAYOFF_EXTENSION_MONTHS + 1):
-            due = add_months(last_due, months_out)
-            _synthesize(due, period_for_date(fwd.periods, due).period_pi)
+    # past the periods).  The fold caps a healthy loan's extra installments to
+    # no-ops.
+    for due in _extension_dates(contractual):
+        _synthesize(due, period_for_date(fwd.periods, due).period_pi)
     return estimated
 
 
-def _charges_for(
-    payments: list[PlannedPayment], fwd: _ForwardInputs,
-) -> list[AccrualCharge]:
-    """Return one :class:`AccrualCharge` per accrual period *payments* occupy.
+def _charge_dates(contractual: list, through: date) -> list[date]:
+    """Return the contract's installment sequence from origination through *through*.
 
-    **The TIME half of the plan, derived independently of how many payments land
-    in a period** (plan step **R16-a**).  A loan charges a month's interest
-    because a month passed, and impounds a month's escrow because a month began;
-    while both rode on the payment record, N payments inside one month charged N
-    months and the payment count was the clock.
+    The one statement of the loan's CHARGE calendar's dates: every row of the
+    contractual schedule, then the level sequence continued one month at a
+    time -- past the contractual payoff by at least
+    :data:`_PAYOFF_EXTENSION_MONTHS` (finding N-16: an underpaying loan clears
+    late, and a payoff the sequence stops short of reads as no payoff), and as
+    far as *through* whenever a plan payment lies beyond that.  The
+    contract-only estimate walks the same sequence for its extension and the
+    definition walk takes its window from it, so the three cannot stop at
+    different months.  Empty for an empty schedule.
 
-    The period is the contractual MONTH -- the unit
-    :func:`~app.utils.money.accrue_monthly_interest` already divides the annual
-    rate by, and the unit :func:`~app.services.escrow_calculator.escrow_monthly_as_of`
-    already answers in -- keyed by :func:`_month_slot`, the same key the
-    PLANNED-vs-ESTIMATED de-dup uses.
-
-    **The charge is dated at the EARLIEST payment due in its period, and that is
-    what makes this byte-identical for a monthly loan.**  With one payment to a
-    month that date IS the payment's own due date, so the rate and the escrow
-    resolve exactly where the payment used to resolve them itself -- contract
-    time, ruling D5.  Deriving the date from the CONTRACTUAL schedule instead
-    would have been the more obvious rule and is not the safer one: a payment
-    whose stored due date is not on the contractual day would then have its
-    charge resolved on a different date from the one that priced it.
-
-    **A period with no payment at all gets no charge**, which is today's rule
-    kept deliberately rather than extended.  The ESTIMATED tier fills every
-    future slot no record covers, so for a healthy loan every period has a
-    payment and the question does not arise; where it does arise -- a delinquent
-    loan, whose overdue months the tier never synthesizes (finding B-9's "an
-    overdue installment with no record pays nothing") -- charging them would make
-    a delinquent balance GROW where the module docstring says it holds flat.
-    That is a ruling, not a refactor, and it is carried as its own ledger row.
+    *through* covers what an adversarial review of this step found: a loan
+    more than sixty months past its contractual last installment with a live
+    projected row (``_secured_debt`` names the matured-but-owing loan as
+    reachable) would have folded that row against NO charge, where the
+    calendar used to follow the payments.
 
     Args:
-        payments: The plan's forward payment records, in any order.
-        fwd: The resolved :class:`_ForwardInputs` -- its rate periods and escrow
-            lines are what each charge is resolved against.
+        contractual: The pure contractual schedule from origination to payoff.
+        through: The last day a plan payment falls on; the sequence runs to
+            the later of that day's MONTH and the extension's end.
 
     Returns:
-        One :class:`AccrualCharge` per occupied period, ascending by ``on_date``.
+        The installment dates, ascending, one month apart past the contract.
     """
-    return charges_for_due_dates(
-        [payment.due_date for payment in payments],
-        fwd.periods,
-        fwd.escrow_lines,
+    if not contractual:
+        return []
+    dates = [row.payment_date for row in contractual]
+    last_due = dates[-1]
+    months_out = 1
+    # By MONTH, not by day: a payment on the 10th of a month whose contract
+    # day is the 22nd still faces that month's charge, dated the 22nd.
+    while (
+        months_out <= _PAYOFF_EXTENSION_MONTHS
+        or installment_slot(add_months(last_due, months_out))
+        <= installment_slot(through)
+    ):
+        dates.append(add_months(last_due, months_out))
+        months_out += 1
+    return dates
+
+
+def _extension_dates(contractual: list) -> list[date]:
+    """Return the :data:`_PAYOFF_EXTENSION_MONTHS` installment dates past the contract's last.
+
+    The contract-only estimate's extension and the definition walk's window:
+    :func:`_charge_dates` beyond the contractual rows, cut at the extension.
+
+    Args:
+        contractual: The pure contractual schedule from origination to payoff.
+
+    Returns:
+        The extension dates, ascending, one month apart from the last
+        contractual installment; empty for an empty schedule.
+    """
+    if not contractual:
+        return []
+    return _charge_dates(contractual, contractual[-1].payment_date)[
+        len(contractual):
+    ]
+
+
+def _charges_for(
+    contractual: list,
+    payments: list[PlannedPayment],
+    seed_slots: set[tuple[int, int]],
+    last_anchor: date,
+    fwd: _ForwardInputs,
+) -> list[AccrualCharge]:
+    """Return one :class:`AccrualCharge` per CONTRACTUAL installment the plan owes.
+
+    **The TIME half of the plan, on the CONTRACT's calendar** (plan step
+    **R16-b-2**, rulings **R-R68** and **R-R71**).  A loan charges a month's
+    interest because a month passed and impounds a month's escrow because a
+    month began, on the contract's installment dates, whatever the owner's
+    payments do.  Until this step the calendar was derived from the PAYMENTS
+    -- one charge per month they occupied -- which was exact only while the
+    ESTIMATED tier filled every month; summing definitions on their own
+    cadence deletes that fill, and a definition sparser than monthly would
+    have collapsed the charge set with the payment set (finding **D48**'s
+    quarterly case: 40 charges where the contract owes 120).
+
+    Two rules decide which contractual installments are charged, and each
+    is a finding closed rather than a case handled:
+
+    * **every installment after the loan's LAST BALANCE ASSERTION** visible
+      at the read -- the origination anchor or the latest true-up -- whether
+      or not a payment lands in it, past or future (rulings **R-R37**,
+      **R-R71** and **R-R72**, finding **D53**), so an occurrence the owner
+      cancelled leaves its month charged and the balance grows.  The
+      assertion is the boundary because the owner's own statement of the
+      balance supersedes every installment at or before it -- charged OR
+      paid, which is why :func:`loan_plan` drops the payments on the same
+      predicate (:func:`~app.services.rate_period_engine.due_after_anchor`);
+      ``as_of`` is deliberately NOT the boundary, because a skipped month
+      owes its interest whichever side of today it is on, and bounding at
+      the read day made the same records answer two payoffs on two days;
+    * **never an installment whose month the SEED already charged** -- the
+      settled walk charged the month of every payment settled by ``as_of``,
+      and a forward charge on the same month was finding **D54**'s double
+      charge.  Unreachable now rather than guarded.
+
+    The dates come from the contractual schedule itself
+    (:func:`_charge_dates`), origination through the post-contractual
+    extension and as far as the last plan payment, so a charge is resolved --
+    its rate period, its escrow -- on the contract's own day (ruling D5's
+    contract time).  The charges are BUILT by
+    :func:`~app.services.loan_ledger.charges_for_due_dates`, the one producer
+    of an :class:`AccrualCharge` both walks share; handed one date per month
+    it collapses nothing and dates each at the contract's day.
+
+    A plan payment dated before the loan's first installment has no
+    contractual month to be charged against and pays what stands: ruling R-C
+    allows an ad-hoc extra after origination and before the first installment,
+    and that payment is pure principal, which is what an early extra IS.
+
+    Args:
+        contractual: The pure contractual schedule from origination to payoff.
+        payments: The plan's forward payment records, in any order -- every
+            one already after *last_anchor* (:func:`loan_plan` drops the
+            rest), so the calendar reaches the last of them.
+        seed_slots: The ``{(year, month)}`` months of every payment settled by
+            ``as_of`` -- what the seed already charged.
+        last_anchor: The date of the loan's latest balance assertion visible
+            at the read.
+        fwd: The resolved :class:`_ForwardInputs` -- its rate periods and
+            escrow lines are what each charge is resolved against.
+
+    Returns:
+        One :class:`AccrualCharge` per charged installment, ascending by
+        ``on_date``.
+    """
+    horizon = max(
+        (payment.due_date for payment in payments), default=fwd.as_of,
     )
+    charged = [
+        due
+        for due in _charge_dates(contractual, horizon)
+        if installment_slot(due) not in seed_slots
+        and due_after_anchor(last_anchor, due)
+    ]
+    return charges_for_due_dates(charged, fwd.periods, fwd.escrow_lines)
+
+
+def _seed_boundaries(
+    account: Account, resolved, ctx: BalanceContext,
+) -> tuple[set[tuple[int, int]], date]:
+    """Return what the seed already accounts for: its charged months and its last anchor.
+
+    Two facts about the confirmed present the forward plan folds from, read
+    once and handed to both tiers and the charge calendar:
+
+    * the ``(year, month)`` of every payment SETTLED by ``as_of`` (visible by
+      ``as_of``) -- what the settled walk already charged and paid.  The
+      charge calendar excludes them (a forward charge there is finding
+      **D54**'s double charge) and the contract-only estimate excludes them
+      too, with the PLANNED records' months, so a month is folded exactly
+      once;
+    * the date of the latest balance ASSERTION the seed applied -- the
+      origination anchor or the last true-up visible by ``as_of`` -- which is
+      the boundary the charge calendar starts after (ruling **R-R71**).  For
+      a loan not yet originated no anchor is visible, and the boundary is its
+      origination date: the origination anchor IS that date, so the two
+      spellings are one predicate.
+
+    Args:
+        account: The loan account.
+        resolved: The pass's :class:`~._resolution.ResolvedLoan`.
+        ctx: The read pass.
+
+    Returns:
+        ``(seed_slots, last_anchor)``.
+    """
+    seed_slots = {
+        installment_slot(
+            loan_payment_due_date(shadow, resolved.params.payment_day),
+        )
+        for shadow in confirmed_shadows_through(
+            account.id, ctx.scenario_id, ctx.as_of,
+        )
+    }
+    last_anchor = max(
+        (
+            fact.anchor_date
+            for fact in resolved.anchor_facts
+            if anchor_visible_on(fact.anchor_date) <= ctx.as_of
+        ),
+        default=resolved.params.origination_date,
+    )
+    return seed_slots, last_anchor
 
 
 def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
     """Return *account*'s forward model -- what it will be CHARGED and what it PAYS.
 
     The unified forward record stream a loan's projected balance folds (see the
-    module docstring): every projected transfer shadow at its live D3 cash, plus a
-    synthesized contractual installment for each future slot no record covers, out
-    to payoff -- and, beside them, one :class:`AccrualCharge` per accrual period
-    those payments occupy.  The value carries NO balance; a caller folds it with
+    module docstring): every projected transfer shadow at its resolved cash,
+    plus what every definition paying into the loan would generate that no row
+    answers yet -- or, for a loan with no definition, the contract's own
+    installments -- out to payoff and the post-contractual extension, LESS
+    every payment due at or before the loan's latest balance assertion (the
+    assertion subsumes it, ruling R-R72); and, beside them, one
+    :class:`AccrualCharge` per contractual installment the plan owes.  The
+    value carries NO balance; a caller folds it with
     :func:`._plan_fold.fold_forward` seeded from the loan's confirmed present.
 
     Args:
         account: The amortizing loan account (the caller owns the ownership
             check).
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            -- its scenario scopes the shadows and the resolution, and its
-            ``as_of`` is the clamp floor and the past/future boundary.
+            -- its scenario scopes the shadows and the resolution, its
+            calendar places the definitions' occurrences, and its ``as_of`` is
+            the clamp floor and the past/future boundary.
 
     Returns:
         The loan's :class:`LoanForwardPlan` -- its payments ascending by
@@ -586,6 +728,8 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
         BaselineMissingError: When ``ctx.scenario`` is None.  A ``ValueError``
             subclass; ONE application-level handler answers it (plan step
             X-v2, ruling R-BW), so no caller pre-checks.
+        AmountUnresolvable: When a definition states no price for an
+            occurrence it names (see :func:`._plan_definitions.estimated_from_definitions`).
     """
     require_scenario(ctx)
     resolved = resolved_loan(account, ctx)
@@ -597,7 +741,6 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
         periods=loan_resolver.resolve_periods(params, rate_changes),
         escrow_lines=loan_loaders.load_escrow_lines(account.id),
         payment_day=params.payment_day,
-        standing=resolved.standing,
         as_of=ctx.as_of,
     )
 
@@ -609,33 +752,54 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
     # basis that called it again, so one request resolved the same loan twice
     # (finding **N-268**'s shape).  Plan step X-au-c2b made the derivation a
     # read-pass value, so both readers ask the same one.
-    priced = amounts_by_id(projected_shadows, ctx.amounts())
-    planned = _planned_from_shadows(projected_shadows, priced, fwd)
+    planned = _planned_from_shadows(
+        projected_shadows,
+        amounts_by_id(projected_shadows, ctx.amounts()),
+        fwd,
+    )
 
-    # Slots the fold already accounts for and the ESTIMATED tier must NOT
-    # re-synthesize: the PLANNED records this pass folds forward, plus the settled
-    # payments ALREADY in the seed (visible by as_of) whose installment is due at
-    # or after as_of -- an early-settled payment the contractual synthesis would
-    # otherwise double-count.
-    settled_seed_slots = {
-        _month_slot(loan_payment_due_date(shadow, params.payment_day))
-        for shadow in confirmed_shadows_through(
-            account.id, ctx.scenario_id, ctx.as_of,
-        )
-    }
-    covered_slots = {
-        _month_slot(payment.due_date) for payment in planned
-    } | settled_seed_slots
-
+    seed_slots, last_anchor = _seed_boundaries(account, resolved, ctx)
     contractual = contractual_schedule_from_origination(params, rate_changes)
-    estimated = _estimated_from_contract(contractual, covered_slots, fwd)
+    if resolved.definitions and contractual:
+        # The walk's window: the extension past the contract, or the same
+        # span past the READ when the loan has outlived it -- a matured loan
+        # still owing, with a live definition, is paid by that definition's
+        # occurrences beyond the extension (an adversarial review of this
+        # step found the window ending in 2025 for a loan read in 2026, so
+        # the plan held only the saved horizon's rows and the payoff read
+        # ``None`` where the definition cleared it).
+        estimated = estimated_from_definitions(
+            account, resolved, ctx, fwd.as_of,
+            through=max(
+                _extension_dates(contractual)[-1],
+                add_months(fwd.as_of, _PAYOFF_EXTENSION_MONTHS),
+            ),
+        )
+    else:
+        # No definition at all: the contract is the only estimate there is.
+        covered_slots = {
+            installment_slot(payment.due_date) for payment in planned
+        } | seed_slots
+        estimated = _estimated_from_contract(contractual, covered_slots, fwd)
 
+    # An installment due at or before the loan's latest assertion is INSIDE
+    # that assertion, planned or estimated (ruling R-R72): the settled walk
+    # resets at the anchor after walking the day's payments, so a row due
+    # before it contributes nothing to the post-assertion balance once it
+    # settles -- and a plan that folded it would move by its whole cash the
+    # day it did.  The same predicate bounds the charges (``_charges_for``).
     payments = sorted(
-        planned + estimated,
+        (
+            payment for payment in planned + estimated
+            if due_after_anchor(last_anchor, payment.due_date)
+        ),
         key=lambda payment: (payment.effective_date, payment.due_date),
     )
     return LoanForwardPlan(
-        payments=payments, charges=_charges_for(payments, fwd),
+        payments=payments,
+        charges=_charges_for(
+            contractual, payments, seed_slots, last_anchor, fwd,
+        ),
     )
 
 

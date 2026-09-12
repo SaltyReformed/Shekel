@@ -1632,7 +1632,9 @@ class TestDebtSummary:
         A short-term loan (24 months) and a long-term mortgage (360
         months).  The debt-free date should match the mortgage's payoff.
         """
-        from tests._test_helpers import create_loan_account  # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            create_loan_account, insert_trueup_event, loan_params_for,
+        )
 
         with app.app_context():
             # Short-term loan
@@ -1640,8 +1642,11 @@ class TestDebtSummary:
                 seed_user, db.session, name="Short Loan", term=24,
             )
 
-            # Long-term mortgage
-            create_loan_account(
+            # Long-term mortgage, originated 2024 and owing its full $200,000
+            # TODAY (asserted; the mid-life-import shape).  Without the
+            # assertion the two unrecorded years since origination are charged
+            # (plan step R16-b-2, ruling R-R71) and the loan never clears.
+            mortgage = create_loan_account(
                 seed_user, db.session, name="Long Mortgage",
                 principal=Decimal("200000.00"),
                 rate=Decimal("0.06500"),  # DH-#56 origination rate
@@ -1651,6 +1656,11 @@ class TestDebtSummary:
                 account_type=AcctTypeEnum.MORTGAGE,
                 anchor_balance=Decimal("0"),
             )
+            insert_trueup_event(
+                loan_params_for(db.session, mortgage.id),
+                Decimal("200000.00"), anchor_date=date.today(),
+            )
+            db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
                 BalanceContext.build(seed_user["user"].id),
@@ -1660,8 +1670,9 @@ class TestDebtSummary:
             # Debt-free date should be the mortgage's later payoff.
             assert ds.payoff_outlook.all_clear_on is not None
             # The auto loan payoff is within ~21 months of origination
-            # (Jan 2026 + 21 months ~ Oct 2027).  The mortgage payoff is
-            # 360 months from Jan 2024 ~ Jan 2054.  Debt-free = mortgage.
+            # (Jan 2026 + 21 months ~ Oct 2027).  The mortgage owes its whole
+            # principal from today's assertion, so its payoff is 360 months
+            # out, ~2056.  Debt-free = mortgage.
             assert ds.payoff_outlook.all_clear_on.year > 2030
 
     def test_debt_summary_includes_escrow(
@@ -3067,10 +3078,14 @@ def _add_mortgage_account(seed_user, balance, origination_date=None):
     *origination_date* is overridable: since step C6b the forward liability is a
     FOLD of the loan's payment PLAN (not a schedule walk), so a loan originated in
     the past with NO payment records is delinquent -- its unpaid overdue
-    installments never pay it down (finding B-9), and only the FUTURE contractual
-    installments are synthesized, which cannot make up the gap.  A test that needs
-    a loan to amortize cleanly to ZERO must originate it with no overdue gap (pass
-    ``date.today()``), the realistic on-schedule case.
+    installments never pay it down (finding B-9), and since plan step R16-b-2
+    (ruling R-R71) every one of those skipped months is CHARGED too, so the
+    balance GROWS until the plan's payments have cleared the arrears.  A test that
+    needs a loan to amortize cleanly to ZERO must leave no unrecorded month
+    behind the loan's latest assertion: originate it today (pass
+    ``date.today()``, the on-schedule case) or assert its balance today with
+    ``insert_trueup_event(..., anchor_date=date.today())`` (the mid-life-import
+    case, the shape production's tracking-start door writes).
 
     Routed through the shared ``create_loan_account`` factory rather than
     re-rolling the account + ``LoanParams`` + rate block: the hand-rolled copy this
@@ -3441,15 +3456,32 @@ class TestNetWorthSeries:
         and $240,000 is the only true answer.  Both producers now read the confirmed
         ledger for a period that has begun, so both give it.
 
+        The $240,000 is ASSERTED today (the mid-life-import shape) so that the
+        future amortizes: since plan step R16-b-2 (ruling R-R71) the plan
+        charges every contractual month after the loan's latest assertion, and
+        with only its 2025 origination the fourteen unrecorded months would
+        stand as arrears and the trend would FALL (a delinquent balance grows).
+        The assertion moves nothing today -- the balance is $240,000 either way.
+
         Checking $1,000 and a $240,000 never-paid mortgage:
           hero net        = 1000.00 - 240000.00 = -239000.00
           series[current] = 1000.00 - 240000.00 = -239000.00  (agrees)
           series[future]  = 1000.00 - (amortized < 240000.00) > -239000.00
         """
+        # Pylint: ``import-outside-toplevel`` -- test-local helpers, matching
+        # this module's convention of importing them where used.
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            insert_trueup_event, loan_params_for,
+        )
         with app.app_context():
-            _add_mortgage_account(
+            mortgage = _add_mortgage_account(
                 seed_user, Decimal("240000.00"),
             )
+            insert_trueup_event(
+                loan_params_for(db.session, mortgage.id),
+                Decimal("240000.00"), anchor_date=date.today(),
+            )
+            db.session.commit()
 
             nw = savings_dashboard_service.compute_dashboard_data(
                 BalanceContext.build(seed_user["user"].id),
@@ -4574,7 +4606,13 @@ class TestNetWorthHorizon:
             _DEBT_FREE_MILESTONE_LABEL,
         )
         with app.app_context():
-            _add_mortgage_account(seed_user, Decimal("240000.00"))
+            # Originated today, so no month behind the loan's assertion is
+            # unrecorded and it amortizes to zero (see ``_add_mortgage_account``:
+            # since plan step R16-b-2 a skipped month is charged, and the
+            # helper's default 2025 origination never clears).
+            _add_mortgage_account(
+                seed_user, Decimal("240000.00"), origination_date=date.today(),
+            )
             uid = seed_user["user"].id
 
             data = savings_dashboard_service.compute_dashboard_data(
@@ -5899,8 +5937,14 @@ class TestARetiredLoanHasNoDebtLine:
     # .. 2028-01-01, but the fold pays nothing it has no settled record for,
     # and at the frozen 2026-03-20 as-of TWO installments (2026-02-01 and
     # 2026-03-01) are already due and unpaid -- so the plan's zero crossing
-    # lands two installments past the contractual date.
-    _CLEARING_PAYOFF = date(2028, 3, 1)
+    # lands two installments past the contractual date, and (plan step
+    # R16-b-2, ruling R-R71) those two months are CHARGED as well: $50.00
+    # each on the $12,000.00 stands at the first plan payment (2026-04-01),
+    # which clears $150.00 of interest and $376.46 of principal against the
+    # $526.46 P&I, and the $100.00 shortfall compounds into a $110.40 residue
+    # that takes one more installment.  It was 2028-03-01 while a skipped
+    # month charged nothing.
+    _CLEARING_PAYOFF = date(2028, 4, 1)
     # The domain end the resolver derives from it: the payoff year plus one,
     # at that year's end.
     _CLEARING_DOMAIN_END = date(2029, 12, 31)
@@ -6142,8 +6186,11 @@ class TestTheDebtFreeDateIsOneDerivation:
     # installments due 2026-02-01 .. 2028-01-01, but at the module's frozen
     # 2026-03-20 clock two are already due and unpaid, and the fold pays
     # nothing it has no settled record for -- so its zero crossing lands two
-    # installments past the contractual date.
-    _CAR_PAYOFF = date(2028, 3, 1)
+    # installments past the contractual date, plus one more for the two
+    # skipped months' interest, which the plan CHARGES since plan step R16-b-2
+    # (ruling R-R71; the arithmetic is beside
+    # ``TestARetiredLoanHasNoDebtLine._CLEARING_PAYOFF``, the same loan).
+    _CAR_PAYOFF = date(2028, 4, 1)
     # A 360-month mortgage originating 2026-06-01 (payment_day 1) has not been
     # borrowed at the frozen clock, so nothing is overdue and its plan folds
     # from its opening anchor to the contractual last installment.

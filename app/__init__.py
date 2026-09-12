@@ -17,6 +17,7 @@ from app.db_transaction import register_transaction_boundary
 from app.error_handlers import register_error_handlers
 from app.extensions import csrf, db, limiter, login_manager, migrate
 from app.jinja_filters import register_template_filters
+from app.login_gate import register_login_gate
 from app.routes.static_pass import static_file_version
 from app.url_converters import register_url_converters
 from app.utils.logging_config import setup_logging
@@ -143,6 +144,16 @@ def create_app(config_name=None, *, init_ref_cache=True):
     # error pages plus the no-baseline answer -- lives in its own module, the
     # same extraction the Jinja filters took above and for the same reason.
     register_error_handlers(app)
+
+    # --- Login gate (plan step bank_import:X-gi-4, ruling R-BI4) ---------
+    # Every request is refused unless authenticated or declared public, in
+    # ONE hook: no view carries ``@login_required``.  Registered here, after
+    # ``csrf`` and ``limiter`` bound their own hooks, so an anonymous request
+    # still meets the CSRF refusal and the rate ceiling before it is bounced,
+    # as it did when the check ran inside the view.  Its place before the
+    # activity stamp below is a pin, not a safeguard: the stamp writes only
+    # for an authenticated session.
+    register_login_gate(app)
 
     # --- Session activity refresh (commit C-10 / F-006) -------------------
     _register_session_activity_refresh(app)

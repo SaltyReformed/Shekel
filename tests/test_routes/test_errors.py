@@ -11,7 +11,18 @@ from app.utils.log_events import ACCESS, EVT_RATE_LIMIT_EXCEEDED
 
 
 class TestErrorPages:
-    """Tests for custom error page rendering and production config."""
+    """Tests for custom error page rendering and production config.
+
+    The trigger routes below are registered on a throwaway app and hit
+    anonymously, and since plan step ``bank_import:X-gi-4`` every route is
+    gated by the login gate unless declared public -- an undeclared
+    ``/test-400-trigger`` would answer the login redirect, never the 400.
+    So each throwaway app sets ``LOGIN_DISABLED``, Flask-Login's own switch
+    (the gate honours it exactly as ``login_required`` did): the subject here
+    is the error page, and switching the gate off is the honest way to reach
+    it without a session.  ``tests/test_routes/test_auth_required.py`` grades
+    the switch itself.
+    """
 
     def test_404_renders_custom_page(self, app, auth_client):
         """GET /nonexistent-path returns 404 with custom template."""
@@ -231,6 +242,7 @@ class TestErrorPages:
         """
         error_app = create_app("testing")
         error_app.config["PROPAGATE_EXCEPTIONS"] = False
+        error_app.config["LOGIN_DISABLED"] = True
 
         @error_app.route("/test-400-trigger")
         def trigger_400():
@@ -255,6 +267,7 @@ class TestErrorPages:
         """400 page contains a recovery link back to the dashboard."""
         error_app = create_app("testing")
         error_app.config["PROPAGATE_EXCEPTIONS"] = False
+        error_app.config["LOGIN_DISABLED"] = True
 
         @error_app.route("/test-400-trigger")
         def trigger_400():
@@ -282,6 +295,7 @@ class TestErrorPages:
         """
         error_app = create_app("testing")
         error_app.config["PROPAGATE_EXCEPTIONS"] = False
+        error_app.config["LOGIN_DISABLED"] = True
 
         @error_app.route("/test-400-trigger")
         def trigger_400():
@@ -310,6 +324,7 @@ class TestErrorPages:
         """
         error_app = create_app("testing")
         error_app.config["PROPAGATE_EXCEPTIONS"] = False
+        error_app.config["LOGIN_DISABLED"] = True
 
         @error_app.route("/test-403-trigger")
         def trigger_403():
@@ -333,6 +348,7 @@ class TestErrorPages:
         """403 page contains a recovery link back to the dashboard."""
         error_app = create_app("testing")
         error_app.config["PROPAGATE_EXCEPTIONS"] = False
+        error_app.config["LOGIN_DISABLED"] = True
 
         @error_app.route("/test-403-trigger")
         def trigger_403():
@@ -354,6 +370,7 @@ class TestErrorPages:
         """403 response body does not contain Werkzeug version or debug info."""
         error_app = create_app("testing")
         error_app.config["PROPAGATE_EXCEPTIONS"] = False
+        error_app.config["LOGIN_DISABLED"] = True
 
         @error_app.route("/test-403-trigger")
         def trigger_403():
@@ -379,6 +396,7 @@ class TestErrorPages:
         # requests are handled (Flask forbids late route registration).
         error_app = create_app("testing")
         error_app.config["PROPAGATE_EXCEPTIONS"] = False
+        error_app.config["LOGIN_DISABLED"] = True
 
         @error_app.route("/test-500-trigger")
         def trigger_500():

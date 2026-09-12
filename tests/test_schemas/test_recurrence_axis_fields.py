@@ -316,7 +316,7 @@ class TestTheTripleMustBeStorable:
 
         What is left is the ``WEEK`` unit, at EITHER placement: a weekly
         occurrence is neither a payday nor a day of the month, so
-        ``recurrence_engine.compute_due_date`` has nothing to date its
+        ``recurrence.compute_due_date`` has nothing to date its
         generated rows from.  Plan step **R5** closes it.  The refusal is
         attached to ``recurrence_unit`` because that is the control the user
         changes to get out of the state.
