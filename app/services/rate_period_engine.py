@@ -316,6 +316,23 @@ def monthly_due_date(period_start: date, payment_day: int) -> date:
     return _advance_one_month(period_start, payment_day)
 
 
+def due_after_anchor(anchor_date: date, due_date: date) -> bool:
+    """Return whether an installment due on *due_date* follows a balance assertion.
+
+    THE post-anchor boundary, stated once: an installment due ON the date the
+    balance was asserted is already inside that balance.  The resolver's
+    replay applies it through :func:`is_confirmed_payment_eligible`; the
+    forward loan plan applies it to every payment it would fold and every
+    charge it would raise (``balance_at._plan``, ruling **R-R72**); the
+    settled walk reproduces it STRUCTURALLY, resetting at each anchor after
+    the day's payments (:func:`app.services.loan_ledger.replay_loan_events`).
+
+    Returns:
+        ``True`` iff *due_date* is strictly after *anchor_date*.
+    """
+    return anchor_date < due_date
+
+
 def is_confirmed_payment_eligible(
     *,
     settled_on: date | None,
@@ -330,7 +347,8 @@ def is_confirmed_payment_eligible(
     clear, and each reads the date that is CORRECT for its job:
 
     * its ``due_date`` -- the installment it satisfies -- is strictly AFTER
-      ``anchor_date``: it came due after the anchor balance was verified, so it
+      ``anchor_date`` (:func:`due_after_anchor`, the one spelling of that
+      boundary): it came due after the anchor balance was verified, so it
       is not already baked into that balance; AND
     * it has HAPPENED by ``as_of``
       (:func:`app.utils.dates.has_settled_by`): its cash moved on
@@ -390,7 +408,9 @@ def is_confirmed_payment_eligible(
     Returns:
         ``True`` iff the payment is an eligible post-anchor historical payment.
     """
-    return anchor_date < due_date and has_settled_by(settled_on, as_of)
+    return due_after_anchor(anchor_date, due_date) and has_settled_by(
+        settled_on, as_of,
+    )
 
 
 def _rate_at_date(

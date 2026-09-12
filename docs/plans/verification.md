@@ -20,13 +20,13 @@ do you know the number is RIGHT.
    producers that share code proving each other. **Never a producer as its own oracle.** The fold is
    the reference.
 
-3. **Ask of every harness: can it SEE the code under test?** Eight exist because each is blind where
-   the next one looks, and a harness blind to a step reports byte-identical -- a free pass that
-   reads as proof. **Plan step X-f3d is that failure worked**: it re-points a balance assertion's
-   COUNTER leg, `verify_balance_baseline` came back byte-identical over 9 accounts and 5,978 daily
-   points, and the answer graded nothing -- `app/services/balance_at/` issues no query against the
-   posting tables at all, so it cannot move under ANY posting-ledger change. The harness that step
-   needed did not exist; it is the sixth row.
+3. **Ask of every harness: can it SEE the code under test?** Twelve exist because each is blind
+   where the next one looks, and a harness blind to a step reports byte-identical -- a free pass
+   that reads as proof. **Plan step X-f3d is that failure worked**: it re-points a balance
+   assertion's COUNTER leg, `verify_balance_baseline` came back byte-identical over 9 accounts and
+   5,978 daily points, and the answer graded nothing -- `app/services/balance_at/` issues no query
+   against the posting tables at all, so it cannot move under ANY posting-ledger change. The harness
+   that step needed did not exist; it is the sixth row.
 
    | harness | what it can see |
    |---|---|
@@ -40,6 +40,8 @@ do you know the number is RIGHT.
    | `tests/manual/verify_retirement_pass_cutover.py` | Every figure the `/retirement` PAGE and its what-if fragment publish (plan step C2-f2d-1) -- `compute_gap_data`, the readiness shaping, both levers and the what-if at an override -- plus `/savings` and the budget dashboard's TRACKS section, which is the one production caller that shares a read pass across two producers. Every harness above it calls `project_retirement_accounts` or the savings build; none of them calls the two producers the `/retirement` route actually runs, which is the whole subject of the step. It captures the figures TWICE -- once with a pass per producer and once with one shared -- because the first alone reproduces the topology the step replaced. It also reports the read-pass COUNT per render, which is expected to move, under its own key so a legitimate move is not read as a regression |
    | `tests/manual/verify_dashboard_cutover.py` | Every figure the BUDGET DASHBOARD publishes (plan step C2-f2e): the pulse region WHOLE, the position tracks and the anchor editor's revert fragment, for every user. `verify_period_window_cutover` dumps the pulse region and neither of the other two; `verify_anchor_surfaces` overlaps the hero's `last_updated_date` alone; `verify_render_surfaces` can tell that `/` still renders and nothing about what it says. It resolves the three producers by CAPABILITY (`hasattr(dashboard_service, "resolve_section")`) rather than by name, so one file runs on both sides of a step that moved all three |
    | `tests/manual/verify_generation_pass.py` | Every ROW a generate pass writes, through all three doors that reach one: the extend path (`pay_period_admin.extend_pay_periods` then `routes._period_population.populate_new_periods`, which is the composition ruling **R-R38** split -- the harness dispatches on whether the tree HAS that module, so one file runs both shapes), the whole-schedule generate the create / unarchive / salary / template-edit routes run, and the carry-forward PREDICTION. Every harness above it reads a PRODUCER or a RENDER, and generation is neither -- it is the WRITE whose output they all later read, so a change to which rows exist is invisible to all nine (plan step R7d-c-1). It names a period by its PAYDAY and a carry-forward plan by its row's name and figures, never by an id: a sequence is not rolled back, so an id-bearing dump reports moved lines between two runs of the SAME code -- measured at 28 |
+   | `tests/manual/verify_loan_bound_at_generation.py` | Every ROW a generate pass writes for a definition paying into a LOAN, which `verify_generation_pass.py` is blind to: its 20-period extend never reaches a payoff, so the bound cannot be observed. Five doors on a STAMPED production clone extended 80 periods past the nearer payoff (plan step R7d-c-2): extend past the payoff and then the FIXED POINT (a fresh read, the maintain pass, a second generate), regenerate from the first not-yet-started period, a planted true-up with the column left behind followed by the maintain pass, a planted second definition bound past the loan's life, and the loan's own payment with its column planted one installment early (D35's shape). Dev's snapshot is UNSTAMPED, so it duplicates every row; the clone must be production's Re-measured 2026-09-11 on R16-b-2's tree with generation round the door as the base: the live doors byte-identical, the planted second definition 35/65 -> 32/32 rows to `2028-11-22` -- the sum reaches the ROWS only through generation taking the door |
+   | `tests/manual/verify_loan_plan_sum.py` | Every figure the forward LOAN PLAN publishes -- the payoff, every payment and charge, a 36-month balance grid -- for both loans on a STAMPED production clone, plus FIVE PLANTED doors where the summed tier must differ from the one it replaced (plan step R16-b-2): a second definition into the Mortgage (D47), the reset door's hole (D46), an ad-hoc extra beside an unanswered installment, a soft-deleted future row (D53), and a projected extra in a seeded month (D54). The BASELINE is the `$0.00`-live claim and must be byte-identical; each door names the direction and the size of its move. Every door rolls back |
 
    **Use `git worktree` for the HEAD side, never `git checkout`.**
 

@@ -66,21 +66,22 @@ from app.services.spending_report_service._window import (
     _spent_total,
 )
 from tests._test_helpers import (
-    rhythm_of,
     add_entry,
     create_envelope_txn,
     create_savings_account,
     create_settled_transfer,
     create_transfer,
-    generate_row_of,
-    make_expense_template,
-    state_template_price,
     default_settle_day,
+    eras_of,
+    generate_row_of,
     last_covered_day,
+    make_expense_template,
     pay_periods_hydrated,
+    rhythm_of,
     settle_day_columns,
     settlement_columns,
     settlement_if_settling,
+    state_template_price,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -565,7 +566,7 @@ def _calendar_scope(paydays, cadence_days=14, user_id=1):
     """
     return _ScopeIds(
         user_id=user_id, account_id=1, scenario_id=1,
-        calendar=PayCalendar.from_paydays(paydays, rhythm_of(cadence_days), user_id, history_opens_on=None),
+        calendar=PayCalendar.from_paydays(paydays, eras_of(paydays, cadence_days), user_id, history_opens_on=None),
     )
 
 

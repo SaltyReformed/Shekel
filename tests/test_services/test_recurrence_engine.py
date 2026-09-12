@@ -44,6 +44,7 @@ from app.services.pay_calendar import (
 )
 from app.services.recurrence import (
     RecurrenceResolutionError,
+    compute_due_date,
     fires_on_day_of_month,
     reauthor_rule,
     recurrence_spec,
@@ -68,15 +69,16 @@ from tests.oracles.recurrence_baseline import (
     ANNUAL,
 )
 from tests._test_helpers import (
-    rhythm_of,
     all_periods,
     an_entered_day,
     derived_span,
+    eras_of,
     last_covered_day,
     make_cadence_rule,
     make_every_period_rule,
     rebuild_calendar_from_spans,
     resolved_amount,
+    rhythm_of,
     settlement_basis_id,
     settlement_if_settling,
     state_template_price,
@@ -525,9 +527,10 @@ def _calendar(periods, cadence_days=_CADENCE_DAYS):
         The :class:`~app.services.pay_calendar.PayCalendar` for
         :data:`_MATCH_USER_ID`.
     """
+    paydays = [(period.id, period.start_date) for period in periods]
     return PayCalendar.from_paydays(
-        paydays=[(period.id, period.start_date) for period in periods],
-        rhythm=rhythm_of(cadence_days),
+        paydays=paydays,
+        eras=eras_of(paydays, cadence_days),
         user_id=_MATCH_USER_ID,
         history_opens_on=None,
     )
@@ -4908,14 +4911,14 @@ class TestDueDateGeneration:
                 end_date=date(2026, 3, 26),
                 end_is_projected=False,
             )
-            result = recurrence_engine.compute_due_date(
+            result = compute_due_date(
                 rule_monthly, period,
             )
             assert result == date(2026, 3, 20)
 
             # Test with a cadence that names no day (every-period style).
             rule_every = build_rule(cadence=EVERY_PERIOD)
-            result = recurrence_engine.compute_due_date(
+            result = compute_due_date(
                 rule_every, period,
             )
             assert result == date(2026, 3, 13)
@@ -4964,7 +4967,7 @@ class TestDueDateGeneration:
             with pytest.raises(
                 RecurrenceResolutionError, match="generated row",
             ):
-                recurrence_engine.compute_due_date(weekly, period)
+                compute_due_date(weekly, period)
 
             # And what the refusal is standing in front of: the paycheck's own
             # start, which is not any date a weekly cadence from ``starts_on``

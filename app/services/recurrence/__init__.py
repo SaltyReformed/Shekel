@@ -27,7 +27,7 @@ its NAME, so a Quarterly rule read as monthly at face value -- and that same
 migration re-points it, so it now means "how many ``unit_id``\\ s pass between
 occurrences" for every unit and every reader takes it off the column.
 
-What survives that a later step still owes: ``recurrence_engine.compute_due_date``
+What survives that a later step still owes: ``recurrence.compute_due_date``
 dated every row from the dropped ``day_of_month`` and reads
 :func:`scheduling_day_of_month` instead (developer ruling 2026-08-16, plan
 ledger row **D37**), until plan step **R5** deletes that function by giving a
@@ -68,9 +68,10 @@ What this package offers
   An occurrence with no pay period means the SAVED schedule does not reach it,
   which since plan step C2-b2 is the only way to get one.
 * :func:`recurrence_spec` / :func:`read_rule` / :func:`resolved_recurrence` /
-  :func:`rule_occurrences` / :func:`placed_periods` -- the READ door,
-  symmetric with the write door: a rule's authored state back out, the one
-  resolve-then-place composition, each of its halves alone, and the projection
+  :func:`resolved_spec` / :func:`rule_occurrences` / :func:`placed_periods` --
+  the READ door, symmetric with the write door: a rule's authored state back
+  out, the one resolve-then-place composition, each of its halves alone (the
+  resolving half from a rule or from a spec already read), and the projection
   three surfaces take of the second.  Since plan step R4b-2 the generation
   seam, the Recurring surface, the form preview and the frozen baseline all
   answer from one call.
@@ -123,6 +124,11 @@ What lives where
   differ from the value generating the rows.  ``resolve`` normalises the date
   itself now, so ``starts_on`` IS that first element by construction and there
   are no longer two functions to keep in step.
+* ``_row_date`` -- the DATE a generated row carries, derived from its rule
+  and the pay period it lands in (:func:`compute_due_date`).  Moved here from
+  ``recurrence_engine._plan`` at plan step R16-b-2 (ruling **R-R69**) so the
+  balance seam can date an occurrence no row answers yet exactly as the row
+  would be dated; plan step R5 deletes it with the period-dated row.
 * ``_reading`` -- the READ door: a stored rule's authored state, its
   occurrences, and the projection onto periods.  Its own module rather than a
   line in ``_authoring`` because reading is not writing -- and because
@@ -207,6 +213,7 @@ from app.services.recurrence._occurrence import (
     occurrence_placements,
     occurrences,
     place,
+    projected_occurrence_placements,
 )
 from app.services.recurrence._reading import (
     RuleReading,
@@ -217,6 +224,7 @@ from app.services.recurrence._reading import (
     recurrence_spec,
     recurrence_spec_with_cadence,
     resolved_recurrence,
+    resolved_spec,
     rule_occurrences,
     scheduling_day_of_month,
     stored_cadence,
@@ -229,6 +237,7 @@ from app.services.recurrence._resolution import (
     offerable_nominal_days,
     resolve,
 )
+from app.services.recurrence._row_date import compute_due_date
 from app.services.recurrence._picker import (
     CadenceOption,
     EndBoundOption,
@@ -289,6 +298,7 @@ __all__ = [
     "cadence_of",
     "cadence_options",
     "canonical_cadence",
+    "compute_due_date",
     "describe",
     "emits_period_starts",
     "end_bound_from_columns",
@@ -307,12 +317,14 @@ __all__ = [
     "picker_model",
     "place",
     "placed_periods",
+    "projected_occurrence_placements",
     "read_rule",
     "reauthor_rule",
     "recurrence_spec",
     "recurrence_spec_with_cadence",
     "resolve",
     "resolved_recurrence",
+    "resolved_spec",
     "rule_occurrences",
     "scheduling_day_of_month",
     "selected_cadence",

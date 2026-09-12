@@ -54,10 +54,13 @@ from app.services.pay_calendar import (
     containing_period,
     latest_started_period,
     paychecks_from,
+    span_starting_on_or_after,
 )
 from app.utils.dates import CALENDAR_DATE_MAX
 
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import (
+    eras_of,
+)
 
 #: A contiguous biweekly schedule -- production's shape, four paydays of it.
 #: Ids are deliberately not 0-based so a test cannot pass by confusing an id
@@ -149,9 +152,9 @@ def calendar(paydays=None, cadence=14, user_id=1):
     Returns:
         The :class:`~app.services.pay_calendar.PayCalendar`.
     """
+    paydays = BIWEEKLY if paydays is None else paydays
     return PayCalendar.from_paydays(
-        BIWEEKLY if paydays is None else paydays, rhythm_of(cadence), user_id,
-        history_opens_on=None,
+        paydays, eras_of(paydays, cadence), user_id, history_opens_on=None,
     )
 
 
@@ -348,11 +351,18 @@ class TestTheThreeQuestionsAnswerDifferently:
             previous = span
 
     def test_the_span_projects_at_the_owners_cadence_not_a_fixed_fortnight(self):
-        """Ledger row P20: the axis this replaces was hardcoded to 14 days."""
+        """Ledger row P20: the axis this replaces was hardcoded to 14 days.
+
+        Hand-computed on the era's grid (plan step ``C17-b-2``): every 30
+        days from 2026-01-01 is 01-31, 03-02, 04-01, 05-01, so 04-15 falls in
+        the paycheck 04-01 .. 04-30.  *It read 04-02 .. 05-01 while the
+        projection stepped from the recorded 02-01, which is the 01-31
+        paycheck paid a day late.*
+        """
         cal = calendar([(1, date(2026, 1, 1)), (2, date(2026, 2, 1))], cadence=30)
         span = cal.span_containing(date(2026, 4, 15))
-        assert span.start_date == date(2026, 4, 2)
-        assert span.end_date == date(2026, 5, 1)
+        assert span.start_date == date(2026, 4, 1)
+        assert span.end_date == date(2026, 4, 30)
 
     def test_containment_SKIPS_an_unsaved_candidate(self):
         """The materialisation filter on the containment search itself.
@@ -378,7 +388,7 @@ class TestTheThreeQuestionsAnswerDifferently:
         being TOTAL is its whole contract -- so this pins the filter rather
         than the calendar's contents.
         """
-        cal = PayCalendar.from_paydays(WITH_INTERIOR_UNSAVED, rhythm_of(14), user_id=1, history_opens_on=None)
+        cal = PayCalendar.from_paydays(WITH_INTERIOR_UNSAVED, eras_of(WITH_INTERIOR_UNSAVED, 14), user_id=1, history_opens_on=None)
         candidate = cal.periods[1]
         assert candidate.period_id is None
         inside = candidate.start_date + timedelta(days=3)
@@ -524,7 +534,7 @@ class TestTheFilingRuleEqualsTheChainItDeletes:
 
     def test_filing_on_an_empty_calendar_raises_rather_than_guessing(self):
         """The companion role holds no paydays, and production has one."""
-        empty = PayCalendar.from_paydays([], rhythm_of(14), user_id=2, history_opens_on=None)
+        empty = PayCalendar.from_paydays([], eras_of([], 14), user_id=2, history_opens_on=None)
         with pytest.raises(PayCalendarError, match="no materialised pay period"):
             empty.filing_period(date(2026, 1, 1))
 
@@ -762,7 +772,7 @@ class TestPeriodStartingAfter:
         The INCLUSIVE pair is the control: it still answers the candidate, so
         this pins the filter rather than the calendar's contents.
         """
-        cal = PayCalendar.from_paydays(WITH_INTERIOR_UNSAVED, rhythm_of(14), user_id=1, history_opens_on=None)
+        cal = PayCalendar.from_paydays(WITH_INTERIOR_UNSAVED, eras_of(WITH_INTERIOR_UNSAVED, 14), user_id=1, history_opens_on=None)
         candidate = cal.periods[1]
         assert candidate.period_id is None
 
@@ -781,8 +791,7 @@ class TestPeriodStartingAfter:
 
     def test_no_materialised_period_at_all_answers_none(self):
         """Every payday an unsaved candidate leaves nothing to answer with."""
-        cal = PayCalendar.from_paydays(
-            [(None, date(2026, 1, 2)), (None, date(2026, 1, 16))], rhythm_of(14), user_id=1,
+        cal = PayCalendar.from_paydays([(None, date(2026, 1, 2)), (None, date(2026, 1, 16))], eras_of([(None, date(2026, 1, 2)), (None, date(2026, 1, 16))], 14), user_id=1,
             history_opens_on=None,
         )
         assert cal.period_starting_after(date(2026, 1, 2)) is None
@@ -806,7 +815,7 @@ class TestPeriodStartingAfter:
         schedule whose paydays are one cadence apart cannot distinguish "the
         period after this payday" from "the period one cadence later".
         """
-        cal = PayCalendar.from_paydays(OFF_CADENCE, rhythm_of(14), user_id=1, history_opens_on=None)
+        cal = PayCalendar.from_paydays(OFF_CADENCE, eras_of(OFF_CADENCE, 14), user_id=1, history_opens_on=None)
         mid = cal.periods[1].start_date + timedelta(days=3)
         assert cal.period_starting_after(mid) is cal.periods[2]
         assert cal.period_starting_before(mid) is cal.periods[1]
@@ -1057,8 +1066,7 @@ class TestCurrentAndFuture:
 
     def test_an_empty_calendar_answers_an_empty_window(self):
         """An owner with no payday has no paycheck left, which is not an error."""
-        assert len(PayCalendar.from_paydays(
-            [], rhythm_of(14), 7, history_opens_on=None,
+        assert len(PayCalendar.from_paydays([], eras_of([], 14), 7, history_opens_on=None,
         ).current_and_future(date(2026, 1, 2))) == 0
 
     @pytest.mark.parametrize("name,paydays,cadence", SHAPES + [
@@ -1216,7 +1224,7 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
         property is now that the walk is empty rather than that an absent value
         goes unread.*
         """
-        empty = PayCalendar.from_paydays([], rhythm_of(14), 7, history_opens_on=None)
+        empty = PayCalendar.from_paydays([], eras_of([], 14), 7, history_opens_on=None)
 
         assert list(paychecks_from(empty, date(2026, 1, 1))) == []
         assert len(empty.current_and_future(date(2026, 1, 1))) == 0
@@ -1258,6 +1266,104 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
                 assert later.period_index == earlier.period_index + 1, (
                     name, earlier, later,
                 )
+
+
+class TestSpanStartingOnOrAfterProjectsPastTheHorizon:
+    """:func:`~app.services.pay_calendar.span_starting_on_or_after`, plan step **R16-b-2**.
+
+    ``period_starting_on_or_after``'s TOTAL companion, the pairing
+    ``span_containing`` already makes against ``period_containing``.  The
+    balance seam's ESTIMATED loan tier places a ``Monthly First`` occurrence on
+    "the NEXT paycheck" whether or not the schedule has reached it (ruling
+    **R-R69**), so the search has to keep answering past the horizon at the
+    owner's cadence.  Graded here and not only through that consumer, for the
+    reason the sibling class above gives.
+
+    ``BIWEEKLY`` saves paydays 01-02, 01-16, 01-30 and 02-13 (ids 10-13); the
+    last saved period covers 02-13..02-26 and the projection opens 02-27.
+    """
+
+    def test_inside_the_saved_schedule_it_is_the_saved_search(self):
+        """Where the schedule reaches, the answer is the saved period, id and all."""
+        cal = calendar()
+        found = span_starting_on_or_after(cal, date(2026, 1, 17))
+
+        assert found == cal.period_starting_on_or_after(date(2026, 1, 17))
+        assert found.period_id == 12
+        assert found.start_date == date(2026, 1, 30)
+
+    def test_a_day_after_the_last_saved_payday_opens_the_first_projection(self):
+        """Inside the LAST saved period, past its payday, the next paycheck is projected.
+
+        02-20 sits in the saved 02-13..02-26 period, so no saved period opens
+        on or after it; the answer is the first projected paycheck, which opens
+        the day after the saved horizon.
+        """
+        cal = calendar()
+        found = span_starting_on_or_after(cal, date(2026, 2, 20))
+
+        assert found.period_id is None
+        assert found.end_is_projected
+        assert found.start_date == cal.horizon() + timedelta(days=1)
+        assert found.start_date == date(2026, 2, 27)
+        assert found.period_index == 4
+
+    def test_a_day_inside_a_projected_span_steps_to_the_next_projection(self):
+        """Past the horizon and past a projected payday, the NEXT projection answers.
+
+        03-01 falls inside the projected 02-27..03-12 paycheck, so the first
+        span opening on or after it is the one after: 03-13.
+        """
+        cal = calendar()
+        found = span_starting_on_or_after(cal, date(2026, 3, 1))
+
+        assert found.period_id is None
+        assert found.start_date == date(2026, 3, 13)
+        assert found.end_date == date(2026, 3, 26)
+        assert found.period_index == 5
+
+    def test_a_projected_payday_itself_is_admitted(self):
+        """"On or after" is inclusive past the horizon exactly as it is inside it."""
+        cal = calendar()
+        found = span_starting_on_or_after(cal, date(2026, 3, 13))
+
+        assert found.start_date == date(2026, 3, 13)
+        assert found.period_index == 5
+
+    def test_it_agrees_with_the_walk_on_every_shape(self):
+        """The answer is what :func:`paychecks_from` yields first with ``start_date >= day``.
+
+        Two producers of "the next paycheck" would be ledger row **P6**'s
+        shape; this pins that the arithmetic search and the walk name the same
+        paycheck on every shape, on the horizon, one day past it, and a year
+        past it.
+        """
+        for name, paydays, cadence in SHAPES:
+            cal = calendar(paydays, cadence)
+            horizon = cal.horizon()
+            for probe in (
+                horizon, horizon + timedelta(days=1), horizon + timedelta(days=365),
+            ):
+                found = span_starting_on_or_after(cal, probe)
+                walked = next(
+                    period for period in paychecks_from(cal, probe)
+                    if period.start_date >= probe
+                )
+                assert found == walked, (name, probe, found, walked)
+
+    def test_a_day_below_the_opening_bound_is_the_first_saved_period(self):
+        """Nothing is projected BACKWARDS: the first paycheck opens on or after any earlier day."""
+        cal = calendar()
+        found = span_starting_on_or_after(cal, date(2020, 1, 1))
+
+        assert found.period_id == 10
+        assert found.start_date == date(2026, 1, 2)
+
+    def test_an_owner_with_no_payday_is_answered_none(self):
+        """An empty calendar has no payday to continue from."""
+        empty = PayCalendar.from_paydays([], eras_of([], 14), 7, history_opens_on=None)
+
+        assert span_starting_on_or_after(empty, date(2026, 1, 1)) is None
 
 
 class TestTheWindowTypeEnforcesItsOwnTwoInvariants:
@@ -1429,8 +1535,7 @@ class TestTheSavedWindowIsTheBalanceSeamsDomain:
 
     def test_an_empty_calendar_answers_an_empty_window(self):
         """A brand-new owner has no columns, which is an answer not an error."""
-        assert len(PayCalendar.from_paydays(
-            [], rhythm_of(14), 1, history_opens_on=None,
+        assert len(PayCalendar.from_paydays([], eras_of([], 14), 1, history_opens_on=None,
         ).saved()) == 0
 
 
@@ -1479,7 +1584,7 @@ class TestTheAxisReplacesTheSyntheticProjection:
 
     def test_an_empty_calendar_yields_an_empty_axis(self):
         """Nothing to project FROM, so nothing is invented."""
-        empty = PayCalendar.from_paydays([], rhythm_of(14), user_id=2, history_opens_on=None)
+        empty = PayCalendar.from_paydays([], eras_of([], 14), user_id=2, history_opens_on=None)
         assert len(empty.axis(date(2026, 1, 1), date(2027, 1, 1))) == 0
 
 
@@ -1531,7 +1636,7 @@ class TestTheAxisRefusesARangeItCanOnlyHalfCover:
         :meth:`PayCalendar.saved` answers them too.  The refusal is about a
         range half-covered, not about a calendar that covers nothing.
         """
-        empty = PayCalendar.from_paydays([], rhythm_of(14), user_id=2, history_opens_on=None)
+        empty = PayCalendar.from_paydays([], eras_of([], 14), user_id=2, history_opens_on=None)
         assert len(empty.axis(date(2020, 1, 1), date(2027, 1, 1))) == 0
 
     def test_a_crossed_range_is_still_refused_first(self):
@@ -1648,7 +1753,7 @@ class TestTheClampedProjectionAxis:
 
     def test_an_empty_calendar_yields_an_empty_axis(self):
         """Nothing to project FROM, so nothing is invented -- and no refusal."""
-        empty = PayCalendar.from_paydays([], rhythm_of(14), user_id=2, history_opens_on=None)
+        empty = PayCalendar.from_paydays([], eras_of([], 14), user_id=2, history_opens_on=None)
         assert len(empty.projection_axis(
             date(2026, 1, 1), date(2027, 1, 1),
         )) == 0
@@ -1659,7 +1764,7 @@ class TestTheRemainingLookupsMovedIntact:
 
     def test_the_bounds_of_an_empty_calendar_are_none_not_an_error(self):
         """The companion role, which by design holds no paydays of its own."""
-        empty = PayCalendar.from_paydays([], rhythm_of(14), user_id=2, history_opens_on=None)
+        empty = PayCalendar.from_paydays([], eras_of([], 14), user_id=2, history_opens_on=None)
         assert empty.opening_bound() is None
         assert empty.horizon() is None
         assert empty.period_containing(date(2026, 1, 1)) is None
@@ -1928,8 +2033,7 @@ class TestTheHistoryBoundIsAFactOfTheCALENDAR:
         stated = date(2020, 6, 1)
 
         assert calendar().history_opens_on is None
-        assert PayCalendar.from_paydays(
-            BIWEEKLY, rhythm_of(14), user_id=1, history_opens_on=stated,
+        assert PayCalendar.from_paydays(BIWEEKLY, eras_of(BIWEEKLY, 14), user_id=1, history_opens_on=stated,
         ).history_opens_on == stated
 
     def test_two_calendars_differing_only_in_it_are_NOT_equal(self):
@@ -1940,11 +2044,9 @@ class TestTheHistoryBoundIsAFactOfTheCALENDAR:
         histories are answered differently by the engine.  Equality that
         ignored it would let a memo hand back the wrong one.
         """
-        unbounded = PayCalendar.from_paydays(
-            BIWEEKLY, rhythm_of(14), user_id=1, history_opens_on=None,
+        unbounded = PayCalendar.from_paydays(BIWEEKLY, eras_of(BIWEEKLY, 14), user_id=1, history_opens_on=None,
         )
-        bounded = PayCalendar.from_paydays(
-            BIWEEKLY, rhythm_of(14), user_id=1, history_opens_on=date(2026, 1, 2),
+        bounded = PayCalendar.from_paydays(BIWEEKLY, eras_of(BIWEEKLY, 14), user_id=1, history_opens_on=date(2026, 1, 2),
         )
 
         assert unbounded != bounded
@@ -1960,7 +2062,7 @@ class TestTheHistoryBoundIsAFactOfTheCALENDAR:
         possible.
         """
         with pytest.raises(TypeError):
-            PayCalendar.from_paydays(BIWEEKLY, rhythm_of(14), user_id=1)
+            PayCalendar.from_paydays(BIWEEKLY, eras_of(BIWEEKLY, 14), user_id=1)
 
 
 class TestTheDerivedPeriodContract:
@@ -1972,7 +2074,7 @@ class TestTheDerivedPeriodContract:
         assert [period.end_is_projected for period in cal.periods] == [
             False, False, False, True,
         ]
-        assert PayCalendar.from_paydays([], rhythm_of(14), 1, history_opens_on=None).periods == ()
+        assert PayCalendar.from_paydays([], eras_of([], 14), 1, history_opens_on=None).periods == ()
 
     def test_a_projected_span_is_a_derived_period_like_any_other(self):
         """One shape for saved and projected, discriminated only by ``period_id``."""
@@ -1987,7 +2089,7 @@ class TestTheContainmentRuleOnOnePeriod:
     Ruled at **R-PC31** and landed with plan step C4-a-3 for the three sites
     that open-coded ``start_date <= day <= end_date``: the purchase-date
     warning (``entry_service._sums.entry_list_view``), the recurrence engine's
-    base-month scan (``recurrence_engine._plan.compute_due_date``) and this
+    base-month scan (``recurrence.compute_due_date``) and this
     package's own ``_searches.containing_index``.
 
     **The five point cases below came from
@@ -2232,12 +2334,15 @@ class TestTheLabelIsTheDERIVEDSpan:
         this one.  *It read ``start + cadence - 1`` until plan step
         ``pay_calendar:C14-c`` made both ends one rule; the VALUE asserted
         below is unchanged, because a projected payday is displaced only once
-        ``C14-e`` turns the convention on.*
+        ``C14-e`` turns the convention on.*  Plan step ``C17-b-2`` then moved
+        it: the era's grid from 01-02 pays 01-16 and 01-30, the 01-20 record
+        is the 01-16 paycheck paid four days late, and the period runs to the
+        day before 01-30 rather than one cadence past 01-20.
         """
         cal = calendar(paydays=OFF_CADENCE)
 
         assert cal.periods[-1].end_is_projected is True
-        assert cal.periods[-1].label == "01/20 - 02/02"
+        assert cal.periods[-1].label == "01/20 - 01/29"
 
     def test_a_period_straddling_a_year_carries_the_year(self):
         """The shared rule reaches this type too, not just the format string."""
