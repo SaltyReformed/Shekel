@@ -40,11 +40,24 @@ from app.services import account_service, status_seam
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
+from app.routes._recurrence_preview import (
+    PREVIEW_OCCURRENCE_LIMIT,
+    render_preview_html,
+)
 from app.services.recurrence import (
     END_BOUND_KINDS,
+    ClosesOn,
     EndsAfterOccurrences,
     EndsOnDate,
     NeverEnds,
+    RecurrenceSpec,
+    placed_periods,
+    reauthor_rule,
+    recurrence_spec,
+)
+from app.services.recurring_definition import (
+    read_definition,
+    resolved_definition,
 )
 from app.utils.dates import display_today
 from tests._test_helpers import (
@@ -54,7 +67,9 @@ from tests._test_helpers import (
     create_loan_account,
     current_pay_period,
     end_bound_payload,
+    freeze_today,
     make_cadence_rule,
+    make_loan_payment_template,
     make_transfer_template,
     resolved_amount,
     settle_day_columns,
@@ -4332,6 +4347,257 @@ class TestThePreviewHonoursTheClosingBound:
 
             assert resp.status_code == 200
             assert b"No preview for this cadence" in resp.data
+
+
+class TestThePreviewIsBoundedByTheLoansPayoff:
+    """Plan ledger row REC-515 (plan step R7d-f-2): the preview takes the door.
+
+    A transfer into a loan stops when the loan does, and that stop is derived
+    (``loan_payment_window``), never stored.  The preview composed its walk
+    from ``request.args`` alone, so for the loan's own payment -- whose
+    locked "Ends" control posts nothing -- it walked ``NEVER_ENDS`` and listed
+    dates past the payoff whenever fewer than five remained, on the one
+    surface whose contract is "what saving would produce".  It now reads the
+    transfer form's ``to_account_id`` through the ownership gate and resolves
+    the submission through the composed door
+    (``recurring_definition.resolved_submission``).
+
+    Measured at one frozen day so the payoff is a literal: the 24-month
+    $12,000 loan at 5% originating 2026-07-01 that the door's own tests use,
+    whose derived payoff is 2028-07-01, on a schedule long enough to reach it
+    (70 biweekly periods -- the door's walk stops at the SAVED horizon, so a
+    schedule short of the payoff could not show the narrowing at all).
+    """
+
+    _TODAY = date(2026, 7, 1)
+    _PAYOFF = date(2028, 7, 1)
+
+    def _world(self, monkeypatch, seed_user, seed_schedule_at_cadence):
+        """Freeze the day, seed the long schedule, build the loan and its payment.
+
+        Returns:
+            ``(loan, payment, ctx)`` -- the loan account, its standing
+            recurring payment, and a read pass built at the frozen day.
+        """
+        freeze_today(monkeypatch, self._TODAY)
+        seed_schedule_at_cadence(14, num_periods=70)
+        loan = create_loan_account(
+            seed_user, db.session, name="Preview Loan",
+            principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+            term=24, origination_date=self._TODAY,
+        )
+        payment = make_loan_payment_template(db.session, seed_user, loan)
+        db.session.commit()
+        ctx = BalanceContext.build(seed_user["user"].id, self._TODAY)
+        assert resolved_definition(payment, ctx).closing.derived == ClosesOn(
+            on=self._PAYOFF,
+        ), "precondition: the door derives the payoff these cases are pinned to"
+        assert ctx.calendar().horizon() > self._PAYOFF, (
+            "precondition: the schedule reaches past the payoff, so the "
+            "narrowing is inside the walk's own window"
+        )
+        return loan, payment, ctx
+
+    def _preview(self, auth_client, starts_on, **extra):
+        """GET the preview for a MONTHLY cadence from *starts_on*.
+
+        Returns:
+            The response.
+        """
+        return auth_client.get("/templates/preview-recurrence", query_string={
+            **cadence_payload(
+                unit=RecurrenceUnitEnum.MONTH, starts_on=starts_on,
+            ),
+            **extra,
+        })
+
+    def test_the_edit_forms_request_previews_exactly_what_the_door_places(
+        self, app, auth_client, seed_user, seed_schedule_at_cadence,
+        monkeypatch,
+    ):
+        """The EDIT form's request for a stored transfer into the loan: door == preview.
+
+        The row's remedy as one equality: the dates the preview lists ARE the
+        dates the composed walk emits for the stored definition, rendered by
+        the fragment's own renderer -- so nothing here re-implements either
+        side.  The subject is a SECOND transfer into the loan, authored
+        monthly from three months before the payoff, because the loan's own
+        payment has its first five occurrences well inside the loan's life
+        and the equality would hold for it whether or not the preview
+        narrowed (an adversarial review of this step measured that draft
+        passing on the pre-step code).  For this definition the door places
+        FOUR and an un-narrowed walk five, so the equality fires: the
+        expected count is asserted below as the control that says so.  The
+        request is what the edit form's script sends -- the stored cadence
+        and first occurrence, no "Ends" controls (the owner stated none), and
+        the destination.
+        """
+        with app.app_context():
+            loan, _payment, ctx = self._world(
+                monkeypatch, seed_user, seed_schedule_at_cadence,
+            )
+            sweep = make_transfer_template(
+                db.session, seed_user, loan, amount="1.00",
+            )
+            sweep.name = "Sweep into the loan"
+            # Re-authored through the write door onto the every-paycheck rule
+            # the builder wrote: monthly from three months before the payoff,
+            # no stop of its owner's.
+            reauthor_rule(
+                sweep.recurrence_rule,
+                RecurrenceSpec(
+                    user_id=seed_user["user"].id,
+                    unit=RecurrenceUnitEnum.MONTH,
+                    starts_on=date(2028, 4, 1),
+                ),
+                ctx.calendar(),
+            )
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id, self._TODAY)
+            assert resolved_definition(sweep, ctx).closing.derived == ClosesOn(
+                on=self._PAYOFF,
+            ), "precondition: a dollar a month moves the payoff nowhere"
+            spec = recurrence_spec(sweep.recurrence_rule)
+            placed = placed_periods(
+                read_definition(sweep, ctx).placements,
+                ending_on_or_after=spec.starts_on,
+            )
+            assert len(placed) == 4 < PREVIEW_OCCURRENCE_LIMIT, (
+                "control: the door places fewer than the preview's limit, so "
+                "an un-narrowed preview cannot equal it"
+            )
+            expected = render_preview_html(placed[:PREVIEW_OCCURRENCE_LIMIT])
+
+            resp = auth_client.get(
+                "/templates/preview-recurrence",
+                query_string={
+                    **cadence_payload(
+                        unit=spec.unit, interval_n=spec.interval_n,
+                        placement=spec.placement, starts_on=spec.starts_on,
+                        nominal_day=spec.nominal_day,
+                    ),
+                    "to_account_id": str(loan.id),
+                },
+            )
+
+            assert resp.status_code == 200
+            assert resp.data.decode() == str(expected)
+
+    def test_a_destination_loan_narrows_the_preview_to_its_payoff(
+        self, app, auth_client, seed_user, seed_schedule_at_cadence,
+        monkeypatch,
+    ):
+        """Inside the loan's last five installments, fewer than five are listed.
+
+        Monthly from three months before the payoff names Apr 1, May 1, Jun 1
+        and Jul 1 2028 inside the loan's life and August onwards past it: FOUR
+        with the loan as destination, FIVE without one and FIVE into a savings
+        account -- the difference is the destination's derived stop and
+        nothing else, and "what saving would produce" is four rows and a
+        finished loan.
+        """
+        with app.app_context():
+            loan, _payment, _ctx = self._world(
+                monkeypatch, seed_user, seed_schedule_at_cadence,
+            )
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", name="Not A Loan",
+            )
+            db.session.commit()
+            starts_on = date(2028, 4, 1)
+
+            narrowed = self._preview(
+                auth_client, starts_on, to_account_id=str(loan.id),
+            )
+            unnarrowed = self._preview(auth_client, starts_on)
+            savings_bound = self._preview(
+                auth_client, starts_on, to_account_id=str(savings.id),
+            )
+
+            assert narrowed.status_code == 200
+            assert b"Next 4 occurrences" in narrowed.data, narrowed.data
+            assert b"Next 5 occurrences" in unnarrowed.data, (
+                "the control must differ, or this measures nothing"
+            )
+            assert b"Next 5 occurrences" in savings_bound.data, (
+                "a destination with no derived stop narrows nothing"
+            )
+
+    def test_a_loan_finished_before_the_first_occurrence_previews_nothing(
+        self, app, auth_client, seed_user, seed_schedule_at_cadence,
+        monkeypatch,
+    ):
+        """The EMPTY shape: a rule opening after the payoff names no occurrence."""
+        with app.app_context():
+            loan, _payment, _ctx = self._world(
+                monkeypatch, seed_user, seed_schedule_at_cadence,
+            )
+
+            resp = self._preview(
+                auth_client, self._PAYOFF + timedelta(days=1),
+                to_account_id=str(loan.id),
+            )
+
+            assert resp.status_code == 200
+            assert b"No matching periods found" in resp.data
+            assert b"occurrences" in self._preview(
+                auth_client, self._PAYOFF + timedelta(days=1),
+            ).data, "control: without the loan the same rule previews dates"
+
+    def test_another_owners_destination_is_404(
+        self, app, auth_client, seed_user, seed_periods_today,
+        seed_second_user,
+    ):
+        """An untrusted id becomes a row through the ownership gate: 404.
+
+        The house rule -- one answer for "not found" and "not yours" -- and
+        the pass would refuse the foreign loan a second time if the gate did
+        not (``ForeignAccountError`` from ``_memoize._memoize_once``), so the
+        preview never folds another owner's loan under this owner's budget.
+        """
+        with app.app_context():
+            resp = self._preview(
+                auth_client, display_today(),
+                to_account_id=str(seed_second_user["account"].id),
+            )
+
+            assert resp.status_code == 404
+
+    def test_a_destination_that_does_not_exist_is_404(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Missing takes the same answer as foreign, so neither is a probe."""
+        with app.app_context():
+            resp = self._preview(
+                auth_client, display_today(), to_account_id="999999",
+            )
+
+            assert resp.status_code == 404
+
+    def test_an_unparseable_destination_previews_the_unnarrowed_rule(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """``?to_account_id=garbage`` is ABSENT, on the two dates' own ground.
+
+        The ``<select>`` cannot post it, so it is a hand-crafted query, and
+        the honest preview of "no readable destination" is the rule alone --
+        the disposition ``_submitted_iso_date`` states for the two bounds.  A
+        parseable id that names no row of the owner's is a different question
+        and is refused (the two cases above).  A regression PIN rather than a
+        fix's own control: the pre-step preview ignored the argument and
+        answered the same, and this says the disposition must stay.
+        """
+        with app.app_context():
+            resp = self._preview(
+                auth_client, display_today(), to_account_id="garbage",
+            )
+            control = self._preview(auth_client, display_today())
+
+            assert resp.status_code == 200
+            assert b"occurrences" in control.data, (
+                "control: the same request without a destination lists dates"
+            )
+            assert resp.data == control.data
 
 
 class TestTheBoundsRefusalsReachTheUser:

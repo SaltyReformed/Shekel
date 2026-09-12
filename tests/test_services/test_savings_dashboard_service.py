@@ -835,6 +835,95 @@ class TestGoalTrajectoryDashboard:
             assert gd.trajectory.months_to_goal == 6
 
 
+class TestARenderWalksAGoalTransferOnce:
+    """Plan ledger row N-513, measured on its own surface (plan step R7d-f-2).
+
+    A transfer from checking into a goal account is in the emergency-fund
+    floor's set (``_metrics._committed_expense_floor``, by ``from_account_id``)
+    AND in that goal's contribution set (``_goals._load_goal_templates``, by
+    ``to_account_id``), so one render reads it through the composed door
+    twice.  Measured 2026-09-12 before this step: ``resolve`` once (R16-b-2's
+    memo), the occurrence WALK twice.  The walk is the pass's memo now, so the
+    second read is memo hits end to end and one render walks the definition
+    ONCE -- ``CLAUDE.md`` rule 14's ONE WALK, read literally.
+    """
+
+    def test_one_checking_to_goal_transfer_is_walked_once_per_render(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """Both sets read the definition; the pass walks it once.
+
+        Both consumers are shown to FIRE before the count is read: the goal's
+        monthly contribution is the transfer's own $200 x 26 / 12, and the
+        emergency-fund operand carries the same committed floor (no settled
+        expense exists on this fixture, so the floor IS the average).  A
+        count of one with either figure absent would be one consumer skipping
+        the read rather than the memo serving it.
+        """
+        # Pylint: ``import-outside-toplevel`` -- the walk-once control patches
+        # the name the PASS calls at call time (``_context``), a seam-private
+        # module this file otherwise has no business importing; kept local
+        # so the import states its one purpose beside its one use.
+        # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _context
+        from tests._test_helpers import make_transfer_template
+
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
+            )
+            savings = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Goal Account",
+                    anchor_balance=Decimal("5000.00"),
+                ),
+            )
+            db.session.add(savings)
+            db.session.flush()
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=savings.id,
+                name="Vacation",
+                target_amount=Decimal("10000.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            # $200 every paycheck, checking -> the goal account: the shape
+            # both sets select.
+            make_transfer_template(db.session, seed_user, savings)
+            db.session.commit()
+
+            calls = []
+            real = _context.occurrence_placements
+
+            def counting(resolved, calendar, **kwargs):
+                calls.append(resolved)
+                return real(resolved, calendar, **kwargs)
+
+            monkeypatch.setattr(_context, "occurrence_placements", counting)
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(seed_user["user"].id),
+            )
+
+            # 200 * 26 / 12 at full precision, rounded once at the boundary.
+            biweekly_as_monthly = (
+                Decimal("200.00") * 26 / 12
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            assert result["goal_data"][0].monthly_contribution == (
+                biweekly_as_monthly
+            ), "precondition: the goal's set read the transfer"
+            assert result["avg_monthly_expenses"] == biweekly_as_monthly, (
+                "precondition: the floor's set read the same transfer"
+            )
+            assert len(calls) == 1, (
+                f"one checking-to-goal transfer was walked {len(calls)} times "
+                f"in one render; the walk is the pass's memo (row N-513)"
+            )
+
+
 class TestEmergencyFundMetrics:
     """Tests for emergency fund coverage computation."""
 

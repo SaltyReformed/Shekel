@@ -25,6 +25,7 @@ from app.services.recurrence import (
     EMPTY,
     NEVER_ENDS,
     ClosesOn,
+    EndsAfterOccurrences,
     EndsOnDate,
     RecurrenceResolutionError,
     describe,
@@ -38,13 +39,17 @@ from app.services.recurrence import (
 # read door resolves at CALL time; patching this file's imported name would
 # leave the composition calling the real one.
 from app.services.recurrence import _reading
+# The same reason, one memo over: the pass walks a resolved recurrence through
+# the name ITS module imported (plan step R7d-f-2), so the walk-once control
+# patches ``_context.occurrence_placements``.
+from app.services.balance_at import _context
 from app.services.balance_at import is_standing_loan_payment
 from app.services.loan_recurrence_sync import bind_rule_to_loan
 from app.services.recurring_definition import (
     read_definition,
     resolved_definition,
 )
-from tests.oracles.recurrence_baseline import MONTHLY
+from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY
 from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
@@ -564,6 +569,177 @@ class TestTheDoorResolvesTheRuleOnce:
                 f"one loan payment resolved its rule {len(calls)} times on "
                 f"one pass"
             )
+
+
+class TestTheDoorWalksTheDefinitionOnce:
+    """One composed meaning, one walk per pass (plan step R7d-f-2, row N-513).
+
+    R16-b-2 made the second RESOLUTION of a definition on one pass a memo hit;
+    the second WALK still ran (measured 2026-09-12 before this step on a
+    ``/savings`` render: ``resolve`` once, ``occurrence_placements`` twice for
+    one checking-to-goal transfer).  The walk is the pass's memo now
+    (``BalanceContext.placements_of``), keyed by the composed resolved value
+    -- the walk's own input, the shape ruling **R-R73** chose for the
+    resolution.  Counted at the DEFINITION site the memo calls, and every
+    control is shown to fire before its count is read.
+    """
+
+    def _counting_walk(self, monkeypatch):
+        """Patch the pass's walk with a counter; return the list it fills."""
+        calls = []
+        real = _context.occurrence_placements
+
+        def counting(resolved, calendar, **kwargs):
+            calls.append(resolved)
+            return real(resolved, calendar, **kwargs)
+
+        monkeypatch.setattr(_context, "occurrence_placements", counting)
+        return calls
+
+    def test_reading_one_definition_twice_walks_it_once(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """The second ``read_definition`` on a pass is memo hits end to end."""
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", name="Goal",
+            )
+            tpl = make_transfer_template(db.session, seed_user, savings)
+            db.session.commit()
+            ctx = _ctx(seed_user)
+            calls = self._counting_walk(monkeypatch)
+
+            first = read_definition(tpl, ctx)
+            second = read_definition(tpl, ctx)
+
+            assert first.placements, "precondition: the walk placed something"
+            assert second.placements is first.placements, (
+                "the second read must hand back the memoised tuple itself"
+            )
+            assert len(calls) == 1, (
+                f"one definition read twice on one pass walked {len(calls)} "
+                f"times; the walk is the pass's memo"
+            )
+
+    def test_two_definitions_with_one_composed_meaning_share_one_walk(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """Keyed by the VALUE: what the walk cannot tell apart, the memo does not.
+
+        Two every-paycheck transfers into the same savings account resolve to
+        one composed value (same cadence, same first occurrence, no derived
+        stop), and the walk of that value is one walk however many rows state
+        it.
+        """
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", name="Goal",
+            )
+            one = make_transfer_template(db.session, seed_user, savings)
+            one.name = "First sweep"
+            two = make_transfer_template(
+                db.session, seed_user, savings, amount="50.00",
+            )
+            two.name = "Second sweep"
+            db.session.commit()
+            ctx = _ctx(seed_user)
+            assert resolved_definition(one, ctx) == resolved_definition(two, ctx), (
+                "precondition: the two rows state one composed meaning"
+            )
+            calls = self._counting_walk(monkeypatch)
+
+            assert read_definition(one, ctx).placements
+            read_definition(two, ctx)
+
+            assert len(calls) == 1
+
+    def test_two_definitions_with_different_stops_walk_twice(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """The composed CLOSING is part of the key, so a loan's stop misses.
+
+        A transfer into a savings account and the loan's own payment share a
+        cadence family but not a closing -- the loan's carries the derived
+        payoff -- so they are two values and two walks.  The control that
+        says the key is the COMPOSED value and not the spec alone.
+        """
+        with app.app_context():
+            loan = _loan(seed_user, db.session)
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", name="Goal",
+            )
+            payment = make_loan_payment_template(
+                db.session, seed_user, loan, cadence=EVERY_PERIOD,
+            )
+            sweep = make_transfer_template(db.session, seed_user, savings)
+            db.session.commit()
+            ctx = _ctx(seed_user)
+            paying = resolved_definition(payment, ctx)
+            sweeping = resolved_definition(sweep, ctx)
+            assert paying.closing.derived is not None, (
+                "precondition: the loan payment carries a derived stop"
+            )
+            assert replace(paying, closing=sweeping.closing) == sweeping, (
+                "precondition: the two differ in their closing and nothing else"
+            )
+            calls = self._counting_walk(monkeypatch)
+
+            read_definition(payment, ctx)
+            read_definition(sweep, ctx)
+
+            assert len(calls) == 2
+
+    def test_a_reauthored_rule_misses_the_memo_on_the_same_pass(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """Ruling R-R73's property, carried to the walk.
+
+        ``reauthor_rule`` rewrites a rule's columns in place; a memo keyed by
+        the ROW would hand the pre-edit walk to a pass that edited and re-read
+        (the id-keyed resolution memo did exactly that, measured at R7d-c-2's
+        merge).  Keyed by the value, the re-authored rule resolves to a
+        different value and the walk runs again -- and the placements it
+        answers are the NEW bound's.
+        """
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", name="Goal",
+            )
+            tpl = make_transfer_template(db.session, seed_user, savings)
+            db.session.commit()
+            ctx = _ctx(seed_user)
+            calls = self._counting_walk(monkeypatch)
+
+            before = read_definition(tpl, ctx)
+            assert len(before.placements) > 1, (
+                "precondition: more than one occurrence, so a count of one "
+                "is a visible change"
+            )
+            _restate_bound(
+                tpl.recurrence_rule, EndsAfterOccurrences(count=1), ctx,
+            )
+            after = read_definition(tpl, ctx)
+
+            assert len(after.placements) == 1
+            assert len(calls) == 2, (
+                f"a re-authored rule read on the same pass walked "
+                f"{len(calls)} times; the value key must miss"
+            )
+
+    def test_the_readings_horizon_is_the_passes_calendars(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Row N-514's half at this door: the reading carries how far it reached."""
+        with app.app_context():
+            loan = _loan(seed_user, db.session)
+            tpl = make_loan_payment_template(db.session, seed_user, loan)
+            db.session.commit()
+            ctx = _ctx(seed_user)
+
+            reading = read_definition(tpl, ctx)
+
+            assert reading.horizon == ctx.calendar().horizon()
+            assert reading.horizon is not None
 
 
 class TestTheDoorAgreesWithItsOwnParts:

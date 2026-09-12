@@ -66,7 +66,12 @@ from app.services.income_service import PaycheckPricing, paycheck_pricing
 from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
 from app.services.pay_calendar import PayCalendar, PeriodWindow, calendar_for
 from app.services.recurrence import (
-    RecurrenceSpec, ResolvedRecurrence, recurrence_spec, resolved_spec,
+    OccurrencePlacement,
+    RecurrenceSpec,
+    ResolvedRecurrence,
+    occurrence_placements,
+    recurrence_spec,
+    resolved_spec,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 
@@ -86,18 +91,19 @@ if TYPE_CHECKING:
 class BalanceContext:  # pylint: disable=too-many-instance-attributes
     """One read pass's pinned as-of, scenario, and memoized derivations.
 
-    Pylint: ``too-many-instance-attributes`` (12/7) -- suppressed because the
-    twelve ARE one read pass's state and there is no smaller cohesive object
-    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and nine
+    Pylint: ``too-many-instance-attributes`` (13/7) -- suppressed because the
+    thirteen ARE one read pass's state and there is no smaller cohesive object
+    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and ten
     MEMOS, each keyed by the thing it is a derivation of.  Bundling the memos
     behind a nested record would put an access level in front of state the
     seam fills from five different modules while creating a second object with
     no behaviour of its own.  It reached 8 at plan step C2-c, when the pay
     calendar became a pass-level derivation instead of an argument every caller
     passed by hand, 9 at X-au-c2b (the amount basis), 10 at **X-i4** (the
-    cash fold), 11 at balance:X-au-d (the paycheck pricing) and 12 at
-    recurrence:**R16-b-2** (a rule's resolution); plan step **X-i1** raises it
-    further, because that step's remaining inputs (the contribution feed, the
+    cash fold), 11 at balance:X-au-d (the paycheck pricing), 12 at
+    recurrence:**R16-b-2** (a rule's resolution) and 13 at
+    recurrence:**R7d-f-2** (a resolved recurrence's occurrence walk); plan step
+    **X-i1** raises it further, because that step's remaining inputs (the contribution feed, the
     standing extra, the contractual schedule) are memos of exactly this kind.
     The count is a property of what a read pass IS rather than a threshold
     this class is drifting past.  *The figure read ``(8/7)`` and "five MEMOS"
@@ -113,12 +119,13 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     contexts with the same pins are equal whether or not either has resolved a
     loan yet.
 
-    **FIVE derivations this module owns, three it stores in PUBLIC caches, and
+    **SIX derivations this module owns, three it stores in PUBLIC caches, and
     ONE in a PRIVATE one.**  The WALK (:meth:`loan_walk`), the CALENDAR
     (:meth:`calendar`), the AMOUNT BASIS (:meth:`amounts`), the PAYCHECK
-    PRICING (:meth:`paychecks`) and a rule's RESOLUTION
-    (:meth:`resolved_recurrence_of`) derive from leaves BELOW this module,
-    which it imports outright, so all five stay private, filled by this
+    PRICING (:meth:`paychecks`), a rule's RESOLUTION
+    (:meth:`resolved_recurrence_of`) and a resolved recurrence's OCCURRENCE
+    WALK (:meth:`placements_of`) derive from leaves BELOW this module,
+    which it imports outright, so all six stay private, filled by this
     module's own methods.  *The count read "two" and named only the first two
     until plan step X-i4, having missed ``amounts`` when X-au-c2b added it, and
     "three" until R16-b-2's review, having missed ``paychecks`` -- the same
@@ -266,6 +273,12 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             the derivation (it imports the pure resolver, a leaf below the
             seam), and a ``None`` value is a MEMOIZED "the owner has no pay
             periods", not an empty slot.
+        _placements: The pass's occurrence-walk memo, keyed by the COMPOSED
+            resolved recurrence the walk is a function of (see
+            :meth:`placements_of`).  Private for the reason ``_recurrences``
+            is; every stored value is a tuple, and an empty one is a
+            legitimate answer (a definition its destination closed before it
+            ever fires), so membership rather than truthiness is the test.
     """
 
     user_id: int
@@ -294,6 +307,9 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     )
     _recurrences: "dict[RecurrenceSpec, ResolvedRecurrence | None]" = field(
         default_factory=dict, repr=False, compare=False,
+    )
+    _placements: "dict[ResolvedRecurrence, tuple[OccurrencePlacement, ...]]" = (
+        field(default_factory=dict, repr=False, compare=False)
     )
     _paycheck_pricing: "dict[int, PaycheckPricing]" = field(
         default_factory=dict, repr=False, compare=False,
@@ -662,6 +678,67 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         if spec not in self._recurrences:
             self._recurrences[spec] = resolved_spec(spec, self.calendar())
         return self._recurrences[spec]
+
+    def placements_of(
+        self, resolved: ResolvedRecurrence,
+    ) -> tuple[OccurrencePlacement, ...]:
+        """Return every occurrence *resolved* names on this owner's calendar, walking once.
+
+        The memo that collapses a read pass's N walks of one resolved
+        recurrence to one, and the other half of what
+        :meth:`resolved_recurrence_of` began.  Plan step **R7d-f-2** put it
+        here (plan ledger row **N-513**): a ``/savings`` render reads a
+        transfer from checking into a goal account through the composed door
+        TWICE -- once in the emergency-fund floor's set, once in that goal's
+        contribution set -- and R16-b-2's memo had already made the second
+        RESOLUTION a hit while the second WALK still ran (measured on
+        2026-09-12 before this step: ``resolve`` once, the walk twice).
+        Rule 14's ONE WALK, read literally.
+
+        **Keyed by the walk's INPUT, the shape :meth:`resolved_recurrence_of`
+        chose** (ruling **R-R73**).  The placements are a pure function of the
+        resolved value -- its cadence, its first occurrence and its COMPOSED
+        closing, the destination's derived stop included -- and of this
+        pass's calendar, which is :meth:`calendar`'s one memo.  So the value
+        is the key: two definitions with one composed meaning share one walk
+        (the walk could not tell them apart either), a re-authored rule
+        resolves to a different value and misses, a definition whose loan
+        moved its payoff misses with it, and an unsaved definition needs no
+        special case.  A row-keyed memo would have served a pre-edit walk on
+        a pass that edited and re-read, which is the defect the id key
+        measured one memo over.
+
+        **Through the saved horizon and no further**: this is
+        :func:`~app.services.recurrence.occurrence_placements` with its
+        default window, the walk the display readers and generation take.
+        The seam's ESTIMATED loan tier walks PAST the horizon
+        (``projected_occurrence_placements``, ``through=``) and is a different
+        function of different inputs; it is not memoised here.
+
+        Args:
+            resolved: The recurrence's two-axis meaning, closing composed --
+                what :func:`app.services.recurring_definition
+                .resolved_definition` returns.  Must have been resolved
+                against THIS pass's calendar, which every producer of one
+                guarantees by reading :meth:`resolved_recurrence_of` or
+                ``resolved_spec(spec, ctx.calendar())``.
+
+        Returns:
+            One :class:`~app.services.recurrence.OccurrencePlacement` per
+            occurrence through the calendar's horizon, ascending; empty for a
+            definition its composed closing admits nothing of.
+
+        Raises:
+            RecurrenceGenerationError: See
+                :func:`~app.services.recurrence.occurrence_placements`; a
+                raising walk is not memoised, so the refusal fires on every
+                call rather than being swallowed after the first.
+        """
+        if resolved not in self._placements:
+            self._placements[resolved] = occurrence_placements(
+                resolved, self.calendar(),
+            )
+        return self._placements[resolved]
 
     def amounts(self) -> AmountBasis:
         """Return the pass's amount-model basis, building it once.

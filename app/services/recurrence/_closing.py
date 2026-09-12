@@ -49,8 +49,10 @@ this step corrected an earlier paragraph here for claiming it.**
 :func:`~app.services.recurrence.resolve` builds a :class:`Closing` with no
 derived half, because a spec names no destination and this package cannot fold
 a balance -- so ``resolved_recurrence``, ``read_rule`` and ``rule_occurrences``
-all still hand back a value nothing has narrowed, and every production reader
-takes one today.  The composed door is what narrows; a caller that goes round
+all still hand back a value nothing has narrowed, and generation
+(``recurrence_engine/_plan.py``, until plan step R7d-c-2 lands) still takes
+one -- the display readers took the door at R7d-d and R7d-e, and the form's
+preview at R7d-f-2.  The composed door is what narrows; a caller that goes round
 it gets the rule's own answer, which is correct for the definitions that have
 no derived stop and incomplete for the ones that do.  The encoding gets
 stronger as the remaining R7d leaves move their readers onto the door, and
