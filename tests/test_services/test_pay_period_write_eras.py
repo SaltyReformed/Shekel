@@ -26,8 +26,9 @@ from app.services import (
     pay_period_write,
     pay_schedule_service,
 )
+from app.services.pay_calendar import calendar_for
 from app.utils.business_days import shortest_collision_free_cadence
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import all_periods, rhythm_of
 
 
 def _eras(session, user_id):
@@ -230,9 +231,13 @@ class TestAContinuingBatchMintsNothing:
         holiday-set change would do to a pair the write door once accepted
         (ledger row **N-493**).  Before this step the extend handed that pair
         back through the schedule upsert and was refused, on a read path with
-        no handler; now the extend continues the era and records
-        2026-09-04, the nominal 2026-09-06 displaced onto the Friday before
-        the Labor Day weekend.
+        no handler; now the extend continues the era and records the grid's
+        next payday.  Hand-computed on the 3-day grid from 08-04 (plan step
+        ``C17-b-2``): the last record 09-01 stands for the grid's 08-31, paid
+        a day late, so the next planned payday is 09-03, an open Thursday,
+        and that is the day recorded.  *It was 09-04 -- the nominal 09-06
+        displaced onto the Friday before the Labor Day weekend -- while the
+        horizon stepped one cadence from the recorded 09-01.*
 
         **The control is the STATING batch below**: the same pair, stated by
         a batch that would mint, is still refused with the floor's message --
@@ -261,7 +266,7 @@ class TestAContinuingBatchMintsNothing:
             appended = pay_period_admin.extend_pay_periods(user_id, 1)
             db.session.commit()
 
-            assert [p.start_date for p in appended] == [date(2026, 9, 4)]
+            assert [p.start_date for p in appended] == [date(2026, 9, 3)]
             assert _eras(db.session, user_id) == [(date(2026, 8, 4), 3)]
 
             # 2026-09-10 is off the 3-day grid through 08-04 (37 days), and
@@ -428,3 +433,178 @@ class TestAMintRetiresWhatItSupersedes:
                 (date(2026, 1, 2), 14), (date(2026, 2, 20), 7),
             ]
             assert pay_schedule_service.resolve_cadence(user_id) == 7
+
+
+class TestTheEraRuleIsKeyedOnTheErasFirstPayday:
+    """Ledger row **PC-510**, closed at plan step ``C17-b-2``: the rule reads CASH days.
+
+    ``eras_describing`` and ``retire_eras`` compared an era's nominal
+    ``effective_from`` with the RECORD's cash paydays.  An era minted on a
+    nominal closed day under ``prior`` pays its first paycheck BEFORE its own
+    ``effective_from``, so the moment that paycheck was its only one the rule
+    said the era described nothing and the next batch retired and re-minted
+    it; under ``next`` the mirror kept an era whose only paycheck a truncate
+    had removed.  Both halves are measured through the doors here.
+    """
+
+    def test_an_era_minted_on_a_holiday_under_prior_survives_the_next_extend(
+        self, app, db, bare_user,
+    ):
+        """Thanksgiving 2030 under ``prior``: minted 11-28, paid 11-27, and KEPT.
+
+        Measured before the fix: eras ``[10-26 / 7 days, 11-28 / 14 days]``
+        with the record ending 11-27 became ``[10-26 / 7 days, 12-12 / 14
+        days]`` after one extend -- the right day recorded, the era retired
+        and re-minted a fortnight late, and the 11-27 paycheck described by
+        the weekly era thereafter.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2030, 10, 26),
+                num_periods=3, rhythm=rhythm_of(7),
+            )
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2030, 11, 28),
+                num_periods=1, rhythm=rhythm_of(14, BusinessDayShiftEnum.PRIOR),
+            )
+            db.session.commit()
+            assert _paydays(db.session, user_id)[-1] == date(2030, 11, 27)
+            assert _eras(db.session, user_id) == [
+                (date(2030, 10, 26), 7), (date(2030, 11, 28), 14),
+            ]
+
+            appended = pay_period_admin.extend_pay_periods(user_id, 1)
+            db.session.commit()
+
+            assert [p.start_date for p in appended] == [date(2030, 12, 12)]
+            assert _eras(db.session, user_id) == [
+                (date(2030, 10, 26), 7), (date(2030, 11, 28), 14),
+            ]
+
+    def test_a_rebuild_keeps_the_era_whose_only_paycheck_it_leaves_standing(
+        self, app, db, bare_user,
+    ):
+        """The reviewer's variant: a 28-day ``prior`` era whose one paycheck is its first.
+
+        Reset from Sunday 2026-02-08 at 28 days under ``prior`` records
+        Friday 02-06; a rebuild from 03-27 at 26 days under ``next`` (its
+        first payday 03-27 is a Friday) used to see ``max(surviving) = 02-06
+        < effective_from 02-08`` and delete the 28-day era, leaving the
+        02-06 paycheck described by the 26-day one -- its derived end and
+        the backward rhythm below it both moved.  The era stands now.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 2, 8),
+                num_periods=1, rhythm=rhythm_of(28, BusinessDayShiftEnum.PRIOR),
+            )
+            db.session.commit()
+            assert _paydays(db.session, user_id) == [date(2026, 2, 6)]
+
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 3, 27),
+                num_periods=1, rhythm=rhythm_of(26, BusinessDayShiftEnum.NEXT),
+            )
+            db.session.commit()
+
+            assert _eras(db.session, user_id) == [
+                (date(2026, 2, 8), 28), (date(2026, 3, 27), 26),
+            ]
+            calendar = calendar_for(user_id)
+            assert calendar.periods[0].end_date == date(2026, 3, 26)
+
+    def test_an_era_whose_only_paycheck_was_truncated_is_retired_by_the_next_batch(
+        self, app, db, bare_user,
+    ):
+        """The ``next`` mirror: nominal 01-17 paid 01-20, truncated away, then a rebuild at 01-20.
+
+        Compared on the nominal day the 01-17 era survived (01-17 is below
+        the surviving 01-18) beside a new era whose first payday is the same
+        01-20 -- two eras paying the same day, which the calendar refuses.
+        Compared on its first payday it describes nothing that stands and is
+        retired before the mint.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 14),
+                num_periods=3, rhythm=rhythm_of(2),
+            )
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 17),
+                num_periods=1, rhythm=rhythm_of(14, BusinessDayShiftEnum.NEXT),
+            )
+            db.session.commit()
+            assert _paydays(db.session, user_id)[-1] == date(2026, 1, 20)
+            pay_period_write.retire_paydays(user_id, {
+                p.id for p in all_periods(user_id)
+                if p.start_date == date(2026, 1, 20)
+            })
+            db.session.commit()
+            assert _eras(db.session, user_id) == [
+                (date(2026, 1, 14), 2), (date(2026, 1, 17), 14),
+            ]
+
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 20),
+                num_periods=2, rhythm=rhythm_of(7, BusinessDayShiftEnum.PRIOR),
+            )
+            db.session.commit()
+
+            assert _eras(db.session, user_id) == [
+                (date(2026, 1, 14), 2), (date(2026, 1, 20), 7),
+            ]
+            assert calendar_for(user_id).periods[-1].start_date == date(2026, 1, 27)
+
+    def test_restating_an_eras_convention_from_its_own_day_is_refused_not_collided(
+        self, app, db, bare_user,
+    ):
+        """A rebuild from an EXISTING era's day, every lower payday held, no longer 500s.
+
+        Before plan step ``C17-b-2`` this batch -- record 01-02, 01-16, 01-30
+        at 14 days under ``none``, then 4 periods from 01-02 at 14 days under
+        ``prior`` -- added only 02-13, passed the floor, minted an era on
+        01-02 while the 01-02 era stood, and collided on
+        ``uq_pay_eras_user_effective_from``: an IntegrityError on a form
+        post (found by the adversarial review of this step).  The floor
+        bounds a minting batch at its era's first payday now, so the batch
+        is refused with the floor's message: restating a rhythm from a day
+        the record already holds is the era-mint door's question
+        (``C17-c-2``, ruling R-PC64), and a rebuild that RETIRES the tail
+        from that day replaces the era cleanly.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 2),
+                num_periods=3, rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="on or after 2026-02-13"):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=date(2026, 1, 2),
+                    num_periods=4,
+                    rhythm=rhythm_of(14, BusinessDayShiftEnum.PRIOR),
+                )
+            db.session.rollback()
+            assert _eras(db.session, user_id) == [(date(2026, 1, 2), 14)]
+
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 2), num_periods=4,
+                rhythm=rhythm_of(14, BusinessDayShiftEnum.PRIOR),
+                replacing=pay_period_write.SpanReplacement(
+                    retiring_ids={p.id for p in all_periods(user_id)},
+                ),
+            )
+            db.session.commit()
+            assert _paydays(db.session, user_id) == [
+                date(2026, 1, 2), date(2026, 1, 16), date(2026, 1, 30),
+                date(2026, 2, 13),
+            ]
+            facts = pay_schedule_service.resolve_schedule(user_id)
+            assert [(e.effective_from, e.rhythm.shift) for e in facts.eras] == [
+                (date(2026, 1, 2), BusinessDayShiftEnum.PRIOR),
+            ]
