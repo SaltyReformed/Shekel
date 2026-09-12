@@ -5863,7 +5863,7 @@ def make_cadence_rule(owner, cadence, **kwargs):
 def make_expense_template(
     db_session, seed_user, amount="1200.00", is_active=True, *,
     name="Rent", category_key="Rent", is_envelope=False,
-    companion_visible=False, account=None,
+    companion_visible=False, account=None, category=None,
 ):
     """Create and flush an every-period expense template on the seed account.
 
@@ -5898,6 +5898,13 @@ def make_expense_template(
             whose row lives on an HYSA or a 401(k): the engine puts a row on
             its DEFINITION's account (``DerivedRowFields.account_id``), so
             that is the only place a fixture can say where the row goes.
+        category: The :class:`~app.models.category.Category` the definition
+            files under, when it is not one of the seed's -- a test that
+            authors its own category passes the row here and *category_key*
+            is not read.  Widened at plan step balance:X-cf-4 for the same
+            reason as *account*: the engine files a row under its
+            DEFINITION's category (``DerivedRowFields.category_id``), so the
+            definition is the only place a fixture can say so.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5912,13 +5919,14 @@ def make_expense_template(
         db_session, seed_user, TxnTypeEnum.EXPENSE, amount, is_active,
         name=name, category_key=category_key, is_envelope=is_envelope,
         companion_visible=companion_visible, account=account,
+        category=category,
     )
 
 
 def make_income_template(
     db_session, seed_user, amount="2000.00", is_active=True, *,
     name="Paycheck", category_key="Salary", is_envelope=False,
-    companion_visible=False, account=None,
+    companion_visible=False, account=None, category=None,
 ):
     """Create and flush an every-period INCOME template on the seed account.
 
@@ -5939,6 +5947,8 @@ def make_income_template(
         companion_visible: Whether a companion of the owner may see its rows.
         account: The account the definition pays into; the seed user's
             checking account when omitted.  See :func:`make_expense_template`.
+        category: The category the definition files under, when it is not
+            one of the seed's.  See :func:`make_expense_template`.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5953,12 +5963,13 @@ def make_income_template(
         db_session, seed_user, TxnTypeEnum.INCOME, amount, is_active,
         name=name, category_key=category_key, is_envelope=is_envelope,
         companion_visible=companion_visible, account=account,
+        category=category,
     )
 
 
 def _priced_repeating_template(
     db_session, seed_user, txn_type, amount, is_active, *,
-    name, category_key, is_envelope, companion_visible, account,
+    name, category_key, is_envelope, companion_visible, account, category,
 ):
     """The one body behind :func:`make_expense_template` and its income twin.
 
@@ -5975,6 +5986,8 @@ def _priced_repeating_template(
         companion_visible: Whether a companion of the owner may see its rows.
         account: The account the definition is on, or ``None`` for
             ``seed_user["account"]``.
+        category: The category the definition files under, or ``None`` for
+            ``seed_user["categories"][category_key]``.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5989,7 +6002,10 @@ def _priced_repeating_template(
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=(seed_user["account"] if account is None else account).id,
-        category_id=seed_user["categories"][category_key].id,
+        category_id=(
+            seed_user["categories"][category_key] if category is None
+            else category
+        ).id,
         transaction_type_id=ref_cache.txn_type_id(txn_type),
         name=name,
         default_amount=Decimal(amount),

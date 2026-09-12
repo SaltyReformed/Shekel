@@ -25,7 +25,6 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
 from app.models.loan_payment_settings import LoanPaymentSettings
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
     AccountType, Status, TransactionType,
 )
@@ -36,7 +35,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.routes._form_errors import GENERIC_VALIDATION_FLASH
 from app.services.auth_service import hash_password
-from app.services import account_service, status_seam
+from app.services import account_service, status_seam, transaction_service
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
@@ -54,11 +53,12 @@ from tests._test_helpers import (
     create_loan_account,
     current_pay_period,
     end_bound_payload,
+    generate_row_of,
     make_cadence_rule,
+    make_income_template,
     make_transfer_template,
+    repriced_by_the_owner,
     resolved_amount,
-    settle_day_columns,
-    settlement_columns,
     settlement_if_settling,
     state_template_price,
 )
@@ -68,7 +68,6 @@ from tests.oracles.recurrence_baseline import (
     MONTHLY,
 )
 from app.models.amount_ownership import AmountOwnership
-from app.services.amount_ownership import state_own_amount
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -146,8 +145,7 @@ def _future_override_txn(seed_user, template, amount="1500.00"):
         .order_by(Transaction.due_date.desc())
         .first()
     )
-    txn.is_override = True
-    state_own_amount(txn, Decimal(amount))
+    repriced_by_the_owner(txn, amount)
     db.session.commit()
     return txn
 
@@ -1060,7 +1058,9 @@ class TestTemplateUpdate:
             overridden = db.session.query(Transaction).filter_by(
                 template_id=template.id,
             ).first()
-            overridden.is_override = True
+            # The owner's row, the way the re-price door makes one: the flag
+            # alone was a shape no door writes (plan step balance:X-cf-4).
+            repriced_by_the_owner(overridden, "1500.00")
             db.session.commit()
             overridden_id = overridden.id
 
@@ -2469,40 +2469,17 @@ class TestTemplateHardDelete:
         "permanently deleted."
         """
         with app.app_context():
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             received_status = db.session.query(Status).filter_by(name="Received").one()
-            salary_cat = seed_user["categories"]["Salary"]
 
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=salary_cat.id,
-                transaction_type_id=income_type.id,
-                name="Biweekly Paycheck",
-                default_amount=Decimal("2000.00"),
+            # The definition's own row, settled the way Mark Paid settles an
+            # income row -- RECEIVED, its record at the plan (plan step
+            # balance:X-cf-4).
+            template = make_income_template(
+                db.session, seed_user, amount="2000.00",
+                name="Biweekly Paycheck", category_key="Salary",
             )
-            db.session.add(template)
-            db.session.flush()
-
-            paycheck = Transaction(
-                template_id=template.id,
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=salary_cat.id,
-                transaction_type_id=income_type.id,
-                name="Biweekly Paycheck",
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
-                status_id=received_status.id,
-                # A settled row carries the whole record, resolved through the
-                # one door a bare-built fixture uses (plan step X-au-c3).
-                **settle_day_columns(seed_periods_today[0].start_date),
-                **settlement_columns(
-                    seed_periods_today[0].start_date, Decimal("2000.00"),
-                ),
-            )
-            db.session.add(paycheck)
+            paycheck = generate_row_of(template, seed_periods_today[0])
+            transaction_service.settle_transaction(paycheck)
             db.session.commit()
 
             template_id = template.id
@@ -2565,54 +2542,18 @@ class TestTemplateHardDelete:
         history that CRIT-05 was destroying is preserved.
         """
         with app.app_context():
-            # Mix: one Projected + one RECEIVED on the same income template.
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+            # Mix: one RECEIVED + one Projected row of the same income
+            # definition -- the engine's rows in two paychecks, the first
+            # settled the way Mark Paid settles it (plan step balance:X-cf-4).
             received_status = db.session.query(Status).filter_by(name="Received").one()
-            projected_status = db.session.query(Status).filter_by(name="Projected").one()
-            salary_cat = seed_user["categories"]["Salary"]
 
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=salary_cat.id,
-                transaction_type_id=income_type.id,
-                name="Paycheck Bypass Scenario",
-                default_amount=Decimal("1500.00"),
+            template = make_income_template(
+                db.session, seed_user, amount="1500.00",
+                name="Paycheck Bypass Scenario", category_key="Salary",
             )
-            db.session.add(template)
-            db.session.flush()
-
-            received_paycheck = Transaction(
-                template_id=template.id,
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=salary_cat.id,
-                transaction_type_id=income_type.id,
-                name="Past Paycheck",
-                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
-                status_id=received_status.id,
-                # A settled row carries the whole record, resolved through the
-                # one door a bare-built fixture uses (plan step X-au-c3).
-                **settle_day_columns(seed_periods_today[0].start_date),
-                **settlement_columns(
-                    seed_periods_today[0].start_date, Decimal("1500.00"),
-                ),
-            )
-            projected_paycheck = Transaction(
-                template_id=template.id,
-                user_id=seed_periods_today[1].user_id,
-                pay_period_id=seed_periods_today[1].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=salary_cat.id,
-                transaction_type_id=income_type.id,
-                name="Future Paycheck",
-                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
-                status_id=projected_status.id,
-            )
-            db.session.add_all([received_paycheck, projected_paycheck])
+            received_paycheck = generate_row_of(template, seed_periods_today[0])
+            transaction_service.settle_transaction(received_paycheck)
+            projected_paycheck = generate_row_of(template, seed_periods_today[1])
             db.session.commit()
 
             template_id = template.id

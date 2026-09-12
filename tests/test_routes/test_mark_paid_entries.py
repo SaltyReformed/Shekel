@@ -18,8 +18,6 @@ from app.extensions import db
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
-from app.models.recurrence_rule import RecurrenceRule
 from app import ref_cache
 from app.enums import SettlementBasisEnum, StatusEnum
 from app.exceptions import ValidationError
@@ -28,7 +26,8 @@ from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
     an_entered_day,
     freeze_today,
-    make_every_period_rule,
+    generate_row_of,
+    make_expense_template,
     settlement_basis_id,
 )
 
@@ -78,41 +77,16 @@ def _make_entry(txn_id, user_id, amount="50.00", description="Kroger",
 def _create_tracked_txn(seed_user, seed_periods):
     """Create a tracked expense transaction with template.
 
-    Creates a minimal template with is_envelope=True
-    and a projected expense transaction linked to it.
+    A priced ``is_envelope=True`` definition at $500.00 and its
+    engine-generated row in the first paycheck (:func:`generate_row_of`,
+    plan step balance:X-cf-4): the row is DERIVED, so what it plans is the
+    definition's stated $500.00 and its own column is ``None``.
     """
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="Expense").one()
+    template = make_expense_template(
+        db.session, seed_user, amount="500.00", name="Tracked Groceries",
+        category_key="Groceries", is_envelope=True,
     )
-    projected = db.session.query(Status).filter_by(name="Projected").one()
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        name="Tracked Groceries",
-        default_amount=Decimal("500.00"),
-        is_envelope=True,
-    )
-    db.session.add(template)
-    db.session.flush()
-    # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_every_period_rule(db.session, template)
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=seed_periods[0].user_id,
-        pay_period_id=seed_periods[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
-        name="Tracked Groceries",
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("500.00")),
-    )
-    db.session.add(txn)
+    txn = generate_row_of(template, seed_periods[0])
     db.session.commit()
     return txn
 
@@ -241,14 +215,15 @@ class TestMarkPaidRecordsThePurchases:
         with app.app_context():
             txn = _create_tracked_txn(seed_user, seed_periods)
             txn_id = txn.id
-            planned = txn.estimated_amount
 
             resp = auth_client.post(f"/transactions/{txn_id}/mark-done")
             assert resp.status_code == 200
 
             txn = db.session.get(Transaction, txn_id)
             assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
-            assert settled_figure(txn) == planned
+            # The definition's stated $500.00, which is what the DERIVED row
+            # planned; its own column is None, so the plan is named here.
+            assert settled_figure(txn) == Decimal("500.00")
 
     def test_mark_done_entries_override_form_actual(
         self, app, auth_client, seed_user, seed_periods,

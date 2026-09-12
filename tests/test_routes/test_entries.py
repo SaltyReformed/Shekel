@@ -12,13 +12,10 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.account import Account
 from app.models.category import Category
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.user import User, UserSettings
 from app.services import pay_period_write
@@ -32,7 +29,8 @@ from tests._test_helpers import (
     an_entered_day,
     append_balance_assertion,
     freeze_today,
-    make_every_period_rule,
+    generate_row_of,
+    make_expense_template,
     settle_instant_on,
 )
 from app.services.settle_day import (
@@ -94,11 +92,12 @@ def _add_entry(txn, user, amount, description,
 
 
 def _create_visible_tracked_txn(seed_user, seed_periods):
-    """Create a tracked, companion-visible template and transaction.
+    """Create a tracked, companion-visible definition and its engine-generated row.
 
-    Unlike seed_entry_template, this sets companion_visible=True at
-    creation time to avoid session-expiry issues with in-place
-    modification.
+    ``seed_entry_template`` with ``companion_visible=True`` stated at
+    creation time, to avoid session-expiry issues with in-place
+    modification; the row is the definition's own (:func:`generate_row_of`,
+    plan step balance:X-cf-4), as that fixture's is.
 
     Args:
         seed_user: The seed_user fixture dict.
@@ -107,42 +106,12 @@ def _create_visible_tracked_txn(seed_user, seed_periods):
     Returns:
         dict with keys: template, transaction, category.
     """
-    expense_type = db.session.query(TransactionType).filter_by(
-        name="Expense",
-    ).one()
-    projected = db.session.query(Status).filter_by(
-        name="Projected",
-    ).one()
-
     category = seed_user["categories"]["Groceries"]
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=category.id,
-        transaction_type_id=expense_type.id,
-        name="Weekly Groceries",
-        default_amount=Decimal("500.00"),
-        is_envelope=True,
-        companion_visible=True,
+    template = make_expense_template(
+        db.session, seed_user, amount="500.00", name="Weekly Groceries",
+        category_key="Groceries", is_envelope=True, companion_visible=True,
     )
-    db.session.add(template)
-    db.session.flush()
-    # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_every_period_rule(db.session, template)
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=seed_periods[0].user_id,
-        pay_period_id=seed_periods[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
-        name="Weekly Groceries",
-        category_id=category.id,
-        transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("500.00")),
-    )
-    db.session.add(txn)
+    txn = generate_row_of(template, seed_periods[0])
     db.session.commit()
 
     return {"template": template, "transaction": txn, "category": category}
@@ -1869,33 +1838,14 @@ class TestEntryMutationSurfaces:
 class TestEntryTransactionMismatch:
     """Tests that entry_id must belong to the txn_id in the URL."""
 
-    def _create_second_tracked_txn(self, seed_user, seed_periods,
-                                   seed_entry_template):
-        """Create a second tracked transaction using the same template.
+    @staticmethod
+    def _create_second_tracked_txn(seed_periods, seed_entry_template):
+        """Generate the fixture's definition a second row, in the second paycheck.
 
         Returns:
             Transaction object in the second pay period.
         """
-        projected = db.session.query(Status).filter_by(
-            name="Projected",
-        ).one()
-        expense_type = db.session.query(TransactionType).filter_by(
-            name="Expense",
-        ).one()
-
-        txn2 = Transaction(
-            template_id=seed_entry_template["template"].id,
-            user_id=seed_periods[1].user_id,
-            pay_period_id=seed_periods[1].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=projected.id,
-            name="Weekly Groceries",
-            category_id=seed_entry_template["category"].id,
-            transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("500.00")),
-        )
-        db.session.add(txn2)
+        txn2 = generate_row_of(seed_entry_template["template"], seed_periods[1])
         db.session.commit()
         return txn2
 
@@ -1907,7 +1857,7 @@ class TestEntryTransactionMismatch:
         with app.app_context():
             txn1 = seed_entry_template["transaction"]
             txn2 = self._create_second_tracked_txn(
-                seed_user, seed_periods, seed_entry_template,
+                seed_periods, seed_entry_template,
             )
             # Entry belongs to txn2.
             entry = _add_entry(txn2, seed_user, "50.00", "Aldi")
@@ -1927,7 +1877,7 @@ class TestEntryTransactionMismatch:
         with app.app_context():
             txn1 = seed_entry_template["transaction"]
             txn2 = self._create_second_tracked_txn(
-                seed_user, seed_periods, seed_entry_template,
+                seed_periods, seed_entry_template,
             )
             entry = _add_entry(txn2, seed_user, "50.00", "Aldi")
 
@@ -1954,42 +1904,14 @@ class TestEntryTransactionMismatch:
 
             txn_visible = seed_entry_template["transaction"]
 
-            # Create a second template that is NOT companion-visible.
-            expense_type = db.session.query(
-                TransactionType,
-            ).filter_by(name="Expense").one()
-            projected = db.session.query(
-                Status,
-            ).filter_by(name="Projected").one()
-
-            template_hidden = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_entry_template["category"].id,
-                transaction_type_id=expense_type.id,
-                name="Secret Groceries",
-                default_amount=Decimal("300.00"),
-                is_envelope=True,
-                companion_visible=False,
+            # Create a second definition that is NOT companion-visible, and
+            # its own row beside the visible one's.
+            template_hidden = make_expense_template(
+                db.session, seed_user, amount="300.00",
+                name="Secret Groceries", category_key="Groceries",
+                is_envelope=True, companion_visible=False,
             )
-            db.session.add(template_hidden)
-            db.session.flush()
-            # The definition first, then the cadence onto it (plan step R-F6).
-            rule2 = make_every_period_rule(db.session, template_hidden)
-
-            txn_hidden = Transaction(
-                template_id=template_hidden.id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Secret Groceries",
-                category_id=seed_entry_template["category"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("300.00")),
-            )
-            db.session.add(txn_hidden)
+            txn_hidden = generate_row_of(template_hidden, seed_periods[0])
             db.session.commit()
 
             # Entry on the hidden transaction.

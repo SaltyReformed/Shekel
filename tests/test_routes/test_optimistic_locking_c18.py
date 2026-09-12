@@ -28,7 +28,6 @@ plan.
 
 # pylint: disable=too-many-lines
 
-from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -36,7 +35,6 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.extensions import db
-from app.models.account import Account
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
@@ -54,6 +52,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import state_own_amount
+from tests._test_helpers import generate_row_of, make_expense_template
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -138,40 +137,17 @@ def _make_transaction(seed_user, period):
 
 
 def _make_envelope_template_and_txn(seed_user, period):
-    """Insert a tracked (envelope) template + transaction and return both."""
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="Expense").one()
-    )
-    projected = (
-        db.session.query(Status).filter_by(name="Projected").one()
-    )
-    cat = seed_user["categories"]["Groceries"]
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=cat.id,
-        transaction_type_id=expense_type.id,
-        name="Tracked Groceries",
-        default_amount=Decimal("400.00"),
-        is_active=True,
-        is_envelope=True,
-    )
-    db.session.add(template)
-    db.session.flush()
+    """Insert a tracked (envelope) definition + its engine-generated row; return both.
 
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        template_id=template.id,
-        status_id=projected.id,
-        category_id=cat.id,
-        transaction_type_id=expense_type.id,
-        name="Tracked Groceries",
-        amount_ownership=AmountOwnership.own(Decimal("400.00")),
+    The row is the definition's own (:func:`generate_row_of`, plan step
+    balance:X-cf-4); the cases below read its ``version_id`` off the row
+    rather than assuming one.
+    """
+    template = make_expense_template(
+        db.session, seed_user, amount="400.00", name="Tracked Groceries",
+        category_key="Groceries", is_envelope=True,
     )
-    db.session.add(txn)
+    txn = generate_row_of(template, period)
     db.session.commit()
     return template, txn
 

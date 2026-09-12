@@ -12,18 +12,11 @@ import pytest
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
-from app.extensions import db
-from app.models.account import Account
-from app.models.category import Category
+from app.enums import StatusEnum
 from app.models.ref import TransactionType
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
-from app.models.user import User, UserSettings
-from app.services.auth_service import hash_password
-from app.services import account_service
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import generate_row_of, make_expense_template
 
 
 # ── Companion blocked from all guarded routes ────────────────────────
@@ -293,7 +286,11 @@ class TestDecoratorOrder:
 def _create_companion_test_transaction(
     db, seed_user, seed_periods_today, companion_visible, template_name="Test Item",
 ):
-    """Create a template + transaction for companion mark_done testing.
+    """Create a definition and its engine-generated row for companion mark_done testing.
+
+    The row is the definition's own (:func:`generate_row_of`, plan step
+    balance:X-cf-4); the visibility under test is stated on the definition,
+    which is where the guard reads it.
 
     Args:
         db: The database session fixture.
@@ -305,38 +302,12 @@ def _create_companion_test_transaction(
     Returns:
         The created Transaction object.
     """
-    expense_type = (
-        db.session.query(TransactionType)
-        .filter_by(name="Expense").one()
-    )
-    category = list(seed_user["categories"].values())[0]
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        name=template_name,
-        default_amount=Decimal("500.00"),
-        transaction_type_id=expense_type.id,
-        account_id=seed_user["account"].id,
-        category_id=category.id,
+    template = make_expense_template(
+        db.session, seed_user, amount="500.00", name=template_name,
+        category_key=next(iter(seed_user["categories"])),
         companion_visible=companion_visible,
-        is_envelope=False,
     )
-    db.session.add(template)
-    db.session.flush()
-
-    txn = Transaction(
-        name=template_name,
-        amount_ownership=AmountOwnership.own(Decimal("500.00")),
-        transaction_type_id=expense_type.id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        user_id=seed_periods_today[0].user_id,
-        pay_period_id=seed_periods_today[0].id,
-        account_id=seed_user["account"].id,
-        category_id=category.id,
-        scenario_id=seed_user["scenario"].id,
-        template_id=template.id,
-    )
-    db.session.add(txn)
+    txn = generate_row_of(template, seed_periods_today[0])
     db.session.commit()
     return txn
 
@@ -410,104 +381,21 @@ class TestMarkDoneCompanionAccess:
 
     def test_companion_blocked_from_other_owner_transaction(
         self, app, db, seed_user, seed_periods_today, seed_companion,
+        seed_second_user, seed_second_periods,
     ):
         """Companion gets 404 for transactions belonging to a different owner.
 
-        Creates a second owner with a companion-visible transaction.
-        The companion (linked to seed_user) cannot mark it as done
-        because the pay_period belongs to a different owner.
+        The second owner holds a companion-visible row of their own
+        definition -- the isolation fixtures' owner rather than one restated
+        here (plan step balance:X-cf-4).  The companion (linked to seed_user)
+        cannot mark it as done because the pay_period belongs to a different
+        owner.
         """
-        from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
-
-        # Create a second owner with minimal data.
-        second_user = User(
-            email="second@shekel.local",
-            password_hash=hash_password("secondpass123"),
-            display_name="Second Owner",
+        template = make_expense_template(
+            db.session, seed_second_user, amount="400.00",
+            name="Other Groceries", companion_visible=True,
         )
-        db.session.add(second_user)
-        db.session.flush()
-
-
-        # The account_service factory requires the user to have at least one
-        # pay period to anchor against.
-        # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
-        from datetime import date as _date
-        from tests._test_helpers import open_owner_calendar as _open_calendar
-        _bootstrap = _open_calendar(second_user.id, _date(2024, 1, 5))[0]
-        settings = UserSettings(user_id=second_user.id)
-        db.session.add(settings)
-
-        checking_type = (
-            db.session.query(AccountType).filter_by(name="Checking").one()
-        )
-        account = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=second_user.id,
-                account_type_id=checking_type.id,
-                name="Checking",
-                anchor_balance=Decimal("1000.00"),
-            ),
-        )
-        db.session.add(account)
-
-        scenario = Scenario(
-            user_id=second_user.id,
-            name="Baseline",
-            is_baseline=True,
-        )
-        db.session.add(scenario)
-        db.session.flush()
-
-        category = Category(
-            user_id=second_user.id,
-            group_name="Home",
-            item_name="Rent",
-        )
-        db.session.add(category)
-        db.session.flush()
-
-        # A second period for the second owner, appended past their opening
-        # one through the writer, so it lands at index 1 because the writer
-        # DERIVED it rather than because this line typed it.  The transaction
-        # below lives in this period; its index is irrelevant to the
-        # companion-access assertion.
-        # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
-        from datetime import date  # pylint: disable=import-outside-toplevel
-        from tests._test_helpers import open_owner_calendar as _open_calendar
-        period = _open_calendar(second_user.id, date(2026, 1, 2))[0]
-
-        expense_type = (
-            db.session.query(TransactionType)
-            .filter_by(name="Expense").one()
-        )
-
-        template = TransactionTemplate(
-            user_id=second_user.id,
-            name="Other Groceries",
-            default_amount=Decimal("400.00"),
-            transaction_type_id=expense_type.id,
-            account_id=account.id,
-            category_id=category.id,
-            companion_visible=True,
-            is_envelope=False,
-        )
-        db.session.add(template)
-        db.session.flush()
-
-        txn = Transaction(
-            name="Other Groceries",
-            amount_ownership=AmountOwnership.own(Decimal("400.00")),
-            transaction_type_id=expense_type.id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            account_id=account.id,
-            category_id=category.id,
-            scenario_id=scenario.id,
-            template_id=template.id,
-        )
-        db.session.add(txn)
+        txn = generate_row_of(template, seed_second_periods[0])
         db.session.commit()
 
         # Companion (linked to seed_user) tries to mark the second owner's txn.

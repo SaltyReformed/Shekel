@@ -37,8 +37,11 @@ from tests._test_helpers import (
     create_transfer,
     current_pay_period,
     derived_span,
+    generate_row_of,
+    make_expense_template,
     open_books_before_the_first_assertion,
     open_owner_calendar,
+    resolved_amount,
     settle_day_columns,
     settle_instant_on,
     settlement_basis_id,
@@ -1771,43 +1774,17 @@ class TestTheReconcileRoute:
                 distinguishable blocks in one panel.
 
         Returns:
-            The Transaction object.
+            The Transaction object -- the engine's row of a priced envelope
+            definition on *account* (:func:`generate_row_of`, plan step
+            balance:X-cf-4).
         """
         from app.models.transaction_entry import TransactionEntry
-        from app.models.transaction_template import TransactionTemplate
 
-        account = account if account is not None else seed_user["account"]
-        projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense_type = db.session.query(TransactionType).filter_by(
-            name="Expense",
-        ).one()
-
-        template = TransactionTemplate(
-            user_id=seed_user["user"].id,
-            account_id=account.id,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=expense_type.id,
-            name=name,
-            default_amount=Decimal("500.00"),
-            is_envelope=True,
+        template = make_expense_template(
+            db.session, seed_user, amount="500.00", name=name,
+            category_key="Groceries", is_envelope=True, account=account,
         )
-        db.session.add(template)
-        db.session.flush()
-
-        txn = Transaction(
-            template_id=template.id,
-            user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=account.id,
-            status_id=projected.id,
-            name=name,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("500.00")),
-        )
-        db.session.add(txn)
-        db.session.flush()
+        txn = generate_row_of(template, seed_periods_today[0])
 
         for amount, purchased_on, is_credit, settled_on in entries:
             db.session.add(TransactionEntry(
@@ -2967,7 +2944,9 @@ class TestTheReconcileRoute:
             db.session.expire_all()
             settled = db.session.get(Transaction, txn.id)
             assert settled.settled_amount == Decimal("412.09")
-            assert settled.estimated_amount == Decimal("500.00")
+            # The correction is the RECORD's; the plan the row derives from
+            # its definition is untouched by it.
+            assert resolved_amount(settled) == Decimal("500.00")
 
     def test_a_malformed_amount_refuses_and_commits_NOTHING(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3145,39 +3124,17 @@ class TestTheReconcileRoutesUngradedBranches:
 
     @staticmethod
     def _bill(seed_user, period, *, name="Electricity", amount="180.00"):
-        """Create a projected NON-envelope row -- correctable, so it draws a box."""
-        from app.models.transaction_template import TransactionTemplate
+        """Create a projected NON-envelope row -- correctable, so it draws a box.
 
-        projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense_type = db.session.query(TransactionType).filter_by(
-            name="Expense",
-        ).one()
-        template = TransactionTemplate(
-            user_id=seed_user["user"].id,
-            account_id=seed_user["account"].id,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=expense_type.id,
-            name=name,
-            default_amount=Decimal(amount),
-            is_envelope=False,
+        The engine's row of a priced definition (:func:`generate_row_of`,
+        plan step balance:X-cf-4), so the figure the box prefills is what
+        the row RESOLVES to.
+        """
+        template = make_expense_template(
+            db.session, seed_user, amount=amount, name=name,
+            category_key="Groceries",
         )
-        db.session.add(template)
-        db.session.flush()
-        txn = Transaction(
-            template_id=template.id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=projected.id,
-            name=name,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal(amount)),
-        )
-        db.session.add(txn)
-        db.session.flush()
-        return txn
+        return generate_row_of(template, period)
 
     def test_a_PARTLY_landed_submission_says_so(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -5587,49 +5544,23 @@ def _override_account_anchor(db_session, account, pay_period, anchor_balance):
 
 
 def _make_projected_envelope_expense(
-    db_session, *, seed_user, pay_period, account_id, estimated,
+    db_session, *, seed_user, pay_period, account, estimated,
     name="Groceries",
 ):
     """Create a Projected envelope expense + its template in ``pay_period``.
 
-    Mirrors the helper in ``test_savings_dashboard_service.py``.  Uses
-    the seed user's Groceries category so the row matches the symptom
-    #1 / #5 worked example.
+    Mirrors the helper in ``test_savings_dashboard_service.py``: the engine's
+    own row of a priced, every-paycheck ``is_envelope=True`` definition on
+    *account* (:func:`generate_row_of`, plan step balance:X-cf-4) -- the
+    engine puts a row on its DEFINITION's account, so the account is stated
+    there.  Uses the seed user's Groceries category so the row matches the
+    symptom #1 / #5 worked example.
     """
-    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
-
-    projected = db_session.query(Status).filter_by(name="Projected").one()
-    expense_type = (
-        db_session.query(TransactionType).filter_by(name="Expense").one()
+    template = make_expense_template(
+        db_session, seed_user, amount=estimated, name=name,
+        category_key="Groceries", is_envelope=True, account=account,
     )
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=account_id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        name=name,
-        default_amount=estimated,
-        is_envelope=True,
-    )
-    db_session.add(template)
-    db_session.flush()
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=pay_period.user_id,
-        pay_period_id=pay_period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=account_id,
-        status_id=projected.id,
-        name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(estimated),
-    )
-    db_session.add(txn)
-    db_session.flush()
-    return txn
+    return generate_row_of(template, pay_period)
 
 
 #: The civil day :func:`_add_cleared_debit_entry` buys and settles on.  Named
@@ -5723,7 +5654,7 @@ class TestCheckingDetailCanonicalProducer:
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
-                account_id=account.id,
+                account=account,
                 estimated=Decimal("500.00"),
             )
             for amt in (Decimal("20.00"), Decimal("15.71"), Decimal("10.00")):
@@ -5872,7 +5803,7 @@ class TestCheckingDetailCanonicalProducer:
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
-                account_id=account_a.id,
+                account=account_a,
                 estimated=Decimal("500.00"),
                 name="Groceries A",
             )
@@ -5888,7 +5819,7 @@ class TestCheckingDetailCanonicalProducer:
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
-                account_id=account_b.id,
+                account=account_b,
                 estimated=Decimal("300.00"),
                 name="Groceries B",
             )

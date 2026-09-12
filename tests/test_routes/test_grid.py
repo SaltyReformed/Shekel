@@ -7,7 +7,6 @@ Tests the main budget grid view and transaction CRUD endpoints.
 import re
 from datetime import date, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from decimal import Decimal
 
 import pytest
@@ -21,13 +20,11 @@ from app.models.scenario import Scenario
 from app.models.user import User, UserSettings
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app import ref_cache
 from app.services import template_amount_service
 from app.enums import (
-    AmountSourceEnum,
     SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
@@ -35,7 +32,6 @@ from app.enums import (
 from app.services import (
     account_service,
     balance_at,
-    income_service,
     pay_period_write,
     posting_service,
     status_seam,
@@ -57,8 +53,10 @@ from tests._test_helpers import (
     derived_span,
     field_is_disabled,
     freeze_today,
+    generate_row_of,
     last_covered_day,
     make_expense_template,
+    make_income_template,
     make_investment_account,
     make_salary_profile,
     mark_purchase_settled,
@@ -977,21 +975,12 @@ class TestTransactionCRUD:
     def test_soft_delete_template_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """DELETE /transactions/<id> soft-deletes template-linked items."""
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods_today)
-            # Simulate template linkage.
-            from app.models.transaction_template import TransactionTemplate
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                name="Template",
-                default_amount=Decimal("100.00"),
+            # A definition's own row (the engine's, plan step balance:X-cf-4).
+            template = make_expense_template(
+                db.session, seed_user, amount="100.00", name="Template",
+                category_key="Groceries",
             )
-            db.session.add(template)
-            db.session.flush()
-            txn.template_id = template.id
+            txn = generate_row_of(template, seed_periods_today[0])
             db.session.commit()
 
             response = auth_client.delete(f"/transactions/{txn.id}")
@@ -1191,21 +1180,11 @@ class TestTransactionCRUD:
         sentence that is true of neither.
         """
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods_today)
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
+            template = make_expense_template(
+                db.session, seed_user, amount="100.00", name="Template",
+                category_key="Groceries",
             )
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                name="Template",
-                default_amount=Decimal("100.00"),
-            )
-            db.session.add(template)
-            db.session.flush()
-            txn.template_id = template.id
+            txn = generate_row_of(template, seed_periods_today[0])
             db.session.commit()
 
             html = auth_client.get(
@@ -1368,22 +1347,11 @@ class TestTransactionCRUD:
         must not survive its now-invisible source.
         """
         with app.app_context():
-            from app.models.transaction_template import TransactionTemplate
-            txn = self._create_test_txn(seed_user, seed_periods_today)
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
+            template = make_expense_template(
+                db.session, seed_user, amount="123.45", name="Template",
+                category_key="Groceries",
             )
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                name="Template",
-                default_amount=Decimal("123.45"),
-            )
-            db.session.add(template)
-            db.session.flush()
-            txn.template_id = template.id
+            txn = generate_row_of(template, seed_periods_today[0])
             db.session.commit()
 
             auth_client.post(f"/transactions/{txn.id}/mark-credit")
@@ -3788,8 +3756,6 @@ class TestTransactionNameRows:
         each with the transaction name in the row header.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
             # Create a second category item under "Auto" group.
@@ -3801,51 +3767,18 @@ class TestTransactionNameRows:
             db.session.add(auto_insurance)
             db.session.flush()
 
-            # Two templates, same category.
-            tmpl_sf = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=auto_insurance.id,
-                transaction_type_id=expense_type.id,
-                name="State Farm",
-                default_amount=Decimal("150.00"),
+            # Two definitions, same category, each with its own row in the
+            # current paycheck (the engine's, plan step balance:X-cf-4).
+            tmpl_sf = make_expense_template(
+                db.session, seed_user, amount="150.00", name="State Farm",
+                category=auto_insurance,
             )
-            tmpl_geico = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=auto_insurance.id,
-                transaction_type_id=expense_type.id,
-                name="Geico",
-                default_amount=Decimal("120.00"),
+            tmpl_geico = make_expense_template(
+                db.session, seed_user, amount="120.00", name="Geico",
+                category=auto_insurance,
             )
-            db.session.add_all([tmpl_sf, tmpl_geico])
-            db.session.flush()
-
-            txn_sf = Transaction(
-                template_id=tmpl_sf.id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="State Farm",
-                category_id=auto_insurance.id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("150.00")),
-            )
-            txn_geico = Transaction(
-                template_id=tmpl_geico.id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Geico",
-                category_id=auto_insurance.id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("120.00")),
-            )
-            db.session.add_all([txn_sf, txn_geico])
+            generate_row_of(tmpl_sf, current)
+            generate_row_of(tmpl_geico, current)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -5756,34 +5689,17 @@ class TestGridMatchedByRowPeriod:
             assert current is not None
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
-            income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
             expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
             salary_cat = seed_user["categories"]["Salary"]
             groceries_cat = seed_user["categories"]["Groceries"]
 
-            # (a) Template-linked income.
-            salary_template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=salary_cat.id,
-                transaction_type_id=income_type_id,
-                name="Biweekly Salary",
-                default_amount=Decimal("2500.00"),
+            # (a) Template-linked income: the definition's own row (the
+            # engine's, plan step balance:X-cf-4).
+            salary_template = make_income_template(
+                db.session, seed_user, amount="2500.00",
+                name="Biweekly Salary", category_key="Salary",
             )
-            db.session.add(salary_template)
-            db.session.flush()
-            txn_a = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=projected_id,
-                name="Biweekly Salary",
-                category_id=salary_cat.id,
-                transaction_type_id=income_type_id,
-                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
-                template_id=salary_template.id,
-            )
+            txn_a = generate_row_of(salary_template, current)
             # (b) Standalone expense.
             txn_b = Transaction(
                 account_id=seed_user["account"].id,
@@ -5821,7 +5737,7 @@ class TestGridMatchedByRowPeriod:
                 amount_ownership=AmountOwnership.own(Decimal("60.00")),
                 is_deleted=True,
             )
-            db.session.add_all([txn_a, txn_b, txn_c, txn_d])
+            db.session.add_all([txn_b, txn_c, txn_d])
             db.session.commit()
             txn_a_id = txn_a.id
             txn_b_id = txn_b.id
@@ -9766,50 +9682,33 @@ class TestGridInterestAccrual:
         hysa = create_hysa_account(
             seed_user, db.session, seed_periods_today[0], Decimal("10000.00"),
         )
-        scenario = seed_user["scenario"]
         bctx = BalanceContext.build(seed_user["user"].id)
         user_id = seed_user["user"].id
-        status = db.session.query(Status).filter_by(name="Projected").one()
-        income_type = (
-            db.session.query(TransactionType).filter_by(name="Income").one()
-        )
         period = seed_periods_today[2]
-        template = TransactionTemplate(
-            user_id=user_id,
-            account_id=hysa.id,
-            category_id=next(iter(seed_user["categories"].values())).id,
-            transaction_type_id=income_type.id,
-            name="Paycheck",
-            # NOT the graded figure: the series states $5,000 and this states
-            # something else, so a producer reading the scalar instead of the
-            # series answers a number no assertion here expects.  A first
-            # version set both to $5,000 and an adversarial review of plan step
-            # X-au-d showed that makes ``_stated_amount``'s empty-series
-            # refusal invisible.
-            default_amount=Decimal("7.77"),
+        # NOT the graded figure: the definition is built stating $7.77 (its
+        # scalar, and a version dated TODAY), and the $5,000 the assertions
+        # expect is a version dated at the row's own paycheck below -- so a
+        # producer reading the scalar instead of the series on the row's due
+        # date answers a number no assertion here expects.  A first version
+        # set both to $5,000 and an adversarial review of plan step X-au-d
+        # showed that makes ``_stated_amount``'s empty-series refusal
+        # invisible.  The row is the engine's, on the definition's HYSA (plan
+        # step balance:X-cf-4); its due date is the paycheck's start, which
+        # is where the $5,000 version is in force.
+        template = make_income_template(
+            db.session, seed_user, amount="7.77", name="Paycheck",
+            category_key=next(iter(seed_user["categories"])), account=hysa,
         )
-        db.session.add(template)
-        db.session.flush()
         template_amount_service.set_amount(
             template, Decimal("5000.00"), effective_on=period.start_date,
         )
-        income = Transaction(
-            account_id=hysa.id,
-            template_id=template.id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=scenario.id,
-            status_id=status.id,
-            name="Paycheck",
-            due_date=period.start_date,
-            transaction_type_id=income_type.id,
-            amount_ownership=AmountOwnership.derived(
-                ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-            ),
-        )
-        db.session.add(income)
+        income = generate_row_of(template, period)
         db.session.commit()
         assert income.estimated_amount is None
+        assert template.default_amount == Decimal("7.77"), (
+            "the scalar must still disagree with the series on the row's day, "
+            "or the control cannot see a producer reading the scalar"
+        )
         current = current_pay_period(user_id)
         # The seam builds the live map itself (ruling R-Q), so no override is
         # threaded here or by the route -- this IS the live figure.

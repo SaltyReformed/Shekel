@@ -43,6 +43,8 @@ from tests._test_helpers import (
     add_anchor_history as _add_anchor_history,
     add_txn as _add_txn,
     current_pay_period,
+    generate_row_of,
+    make_expense_template,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -181,7 +183,6 @@ class TestDashboardPulseRendering:
         # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType
         from app.models.transaction_entry import TransactionEntry
-        from app.models.transaction_template import TransactionTemplate
         from app.services import account_service, transfer_service
 
         with app.app_context():
@@ -192,33 +193,14 @@ class TestDashboardPulseRendering:
                 due_date=cur.start_date + timedelta(days=2),
             )
 
-            # Over-budget tracked envelope: $100 budget, $130 spent.
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                name="Groceries",
-                default_amount=Decimal("100.00"),
-                is_envelope=True,
+            # Over-budget tracked envelope: $100 budget, $130 spent.  The
+            # definition's own row (the engine's, plan step balance:X-cf-4),
+            # due on the paycheck's start as an every-paycheck row is.
+            template = make_expense_template(
+                db.session, seed_user, amount="100.00", name="Groceries",
+                category_key="Groceries", is_envelope=True,
             )
-            db.session.add(template)
-            db.session.flush()
-            envelope = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=cur.user_id,
-                pay_period_id=cur.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                template_id=template.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                due_date=cur.start_date + timedelta(days=3),
-            )
-            db.session.add(envelope)
-            db.session.flush()
+            envelope = generate_row_of(template, cur)
             db.session.add(TransactionEntry(
                 transaction_id=envelope.id, account_id=envelope.account_id,
                 user_id=seed_user["user"].id,
@@ -308,7 +290,6 @@ class TestDashboardPulseRendering:
         """
         # pylint: disable=import-outside-toplevel
         from app.models.transaction_entry import TransactionEntry
-        from app.models.transaction_template import TransactionTemplate
 
         with app.app_context():
             cur = current_pay_period(seed_user["user"].id)
@@ -316,32 +297,14 @@ class TestDashboardPulseRendering:
                 db.session, seed_user, cur, "Rent", "1200.00",
                 due_date=cur.start_date + timedelta(days=1),
             )
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                name="Groceries",
-                default_amount=Decimal("500.00"),
-                is_envelope=True,
+            # The tracked definition's own row (the engine's, plan step
+            # balance:X-cf-4): dated on the paycheck's start, so a STREET
+            # event like the Rent beside it.
+            template = make_expense_template(
+                db.session, seed_user, amount="500.00", name="Groceries",
+                category_key="Groceries", is_envelope=True,
             )
-            db.session.add(template)
-            db.session.flush()
-            tracked = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=cur.user_id,
-                pay_period_id=cur.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                template_id=template.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                due_date=cur.start_date + timedelta(days=2),
-            )
-            db.session.add(tracked)
-            db.session.flush()
+            tracked = generate_row_of(template, cur)
             db.session.add(TransactionEntry(
                 transaction_id=tracked.id, account_id=tracked.account_id,
                 user_id=seed_user["user"].id,

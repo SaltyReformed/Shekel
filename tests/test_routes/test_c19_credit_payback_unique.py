@@ -30,7 +30,7 @@ the race we are trying to verify.
 from __future__ import annotations
 
 import threading
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -39,20 +39,20 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
-from app.models.account import Account
 from app.models.category import Category
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services import credit_workflow
 from app.services.auth_service import hash_password
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services import account_service
 from app.utils.dates import display_today
-from tests._test_helpers import open_owner_calendar
+from tests._test_helpers import (
+    generate_row_of, make_expense_template, open_owner_calendar,
+)
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -646,40 +646,12 @@ class TestSyncEntryPaybackTOCTOUPrevention:
     concurrent entry mutations on the same parent."""
 
     def _make_envelope_template_and_txn(self, seed_user, seed_periods):
-        """Insert an envelope (entry-tracked) template + parent txn."""
-        expense_type = (
-            db.session.query(TransactionType).filter_by(name="Expense").one()
+        """Insert an envelope (entry-tracked) definition + its engine-generated parent row."""
+        template = make_expense_template(
+            db.session, seed_user, amount="400.00", name="Tracked Groceries",
+            category_key="Groceries", is_envelope=True,
         )
-        projected = (
-            db.session.query(Status).filter_by(name="Projected").one()
-        )
-        cat = seed_user["categories"]["Groceries"]
-        template = TransactionTemplate(
-            user_id=seed_user["user"].id,
-            account_id=seed_user["account"].id,
-            category_id=cat.id,
-            transaction_type_id=expense_type.id,
-            name="Tracked Groceries",
-            default_amount=Decimal("400.00"),
-            is_envelope=True,
-        )
-        db.session.add(template)
-        db.session.flush()
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            template_id=template.id,
-            status_id=projected.id,
-            category_id=cat.id,
-            transaction_type_id=expense_type.id,
-            name="Tracked Groceries",
-            amount_ownership=AmountOwnership.own(Decimal("400.00")),
-        )
-        db.session.add(txn)
-        db.session.flush()
-        return txn
+        return generate_row_of(template, seed_periods[0])
 
     def test_sync_acquires_row_lock(self, app, db, seed_user, seed_periods):
         """``sync_entry_payback`` issues a row-level lock on the parent txn.
@@ -752,35 +724,13 @@ class TestSyncEntryPaybackTOCTOUPrevention:
         amount equals the sum of both entries.
         """
         data = _create_concurrent_user(db.session)
-        # Build an envelope template + parent txn directly.
-        expense_type = (
-            db.session.query(TransactionType).filter_by(name="Expense").one()
+        # The threaded owner's envelope definition and its engine-generated
+        # parent row; the owner dict has the shape the shared builder reads.
+        template = make_expense_template(
+            db.session, data, amount="400.00", name="Concurrent Tracked",
+            category_key="Groceries", is_envelope=True,
         )
-        projected = db.session.query(Status).filter_by(name="Projected").one()
-        template = TransactionTemplate(
-            user_id=data["user"].id,
-            account_id=data["account"].id,
-            category_id=data["categories"]["Groceries"].id,
-            transaction_type_id=expense_type.id,
-            name="Concurrent Tracked",
-            default_amount=Decimal("400.00"),
-            is_envelope=True,
-        )
-        db.session.add(template)
-        db.session.flush()
-        txn = Transaction(
-            account_id=data["account"].id,
-            user_id=data['periods'][0].user_id,
-            pay_period_id=data["periods"][0].id,
-            scenario_id=data["scenario"].id,
-            template_id=template.id,
-            status_id=projected.id,
-            category_id=data["categories"]["Groceries"].id,
-            transaction_type_id=expense_type.id,
-            name="Concurrent Tracked",
-            amount_ownership=AmountOwnership.own(Decimal("400.00")),
-        )
-        db.session.add(txn)
+        txn = generate_row_of(template, data["periods"][0])
         db.session.commit()
         txn_id = txn.id
 

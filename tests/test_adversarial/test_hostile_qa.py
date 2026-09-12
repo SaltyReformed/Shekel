@@ -17,6 +17,8 @@ from tests._test_helpers import (
     rhythm_of,
     default_settle_day,
     freeze_today,
+    generate_row_of,
+    make_expense_template,
     settle_day_columns,
     settlement_basis_id,
     settlement_columns,
@@ -43,7 +45,6 @@ from app.models.category import Category
 from app.models.ref import AccountType, FilingStatus, Status, TransactionType
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services.balance_at import BalanceContext
 from app.services import (
@@ -655,22 +656,12 @@ class TestReferentialIntegrity:
         transactions survive template deletion but lose their link.
         """
         with app.app_context():
-            # Create a template.
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                name="Rent Template",
-                default_amount=Decimal("1500.00"),
+            # A definition and its own row (the engine's, plan step
+            # balance:X-cf-4).
+            template = make_expense_template(
+                db.session, seed_user, amount="1500.00", name="Rent Template",
             )
-            db.session.add(template)
-            db.session.flush()
-
-            # Create a transaction linked to the template.
-            txn = _make_transaction(seed_user, seed_periods, name="Rent", amount="1500.00")
-            txn.template_id = template.id
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
             txn_id = txn.id
 
@@ -775,21 +766,12 @@ class TestCarryForwardEdgeCases:
         of setting is_override=True on template-linked transactions.
         """
         with app.app_context():
-            # Create a template-linked transaction in period 0.
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                name="Rent Template",
-                default_amount=Decimal("1500.00"),
+            # A definition's own row in period 0 (the engine's, plan step
+            # balance:X-cf-4).
+            template = make_expense_template(
+                db.session, seed_user, amount="1500.00", name="Rent Template",
             )
-            db.session.add(template)
-            db.session.flush()
-
-            txn = _make_transaction(seed_user, seed_periods, name="Rent", amount="1500.00")
-            txn.template_id = template.id
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
 
             # Carry forward from period 0 to period 0.

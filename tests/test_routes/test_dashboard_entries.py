@@ -40,9 +40,12 @@ from app.extensions import db
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 
-from tests._test_helpers import current_pay_period
+from tests._test_helpers import (
+    current_pay_period,
+    generate_row_of,
+    make_expense_template,
+)
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -65,40 +68,16 @@ def _create_tracked_txn_in_period(
 ):
     """Create a tracked (is_envelope) projected expense in the period.
 
-    Builds an envelope template, then a projected expense bound to it,
-    due on the period start so it lands as a dated event on the current
-    period's STREET band.  Returns ``(Transaction, TransactionTemplate)``.
+    Builds a priced envelope definition, then its engine-generated row
+    (:func:`generate_row_of`, plan step balance:X-cf-4) -- an every-paycheck
+    row is due on the period start, so it lands as a dated event on the
+    current period's STREET band.  Returns ``(Transaction, TransactionTemplate)``.
     """
-    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-    projected = db.session.query(Status).filter_by(name="Projected").one()
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        name=name,
-        default_amount=estimated,
-        is_envelope=True,
+    template = make_expense_template(
+        db.session, seed_user, amount=estimated, name=name,
+        category_key="Groceries", is_envelope=True,
     )
-    db.session.add(template)
-    db.session.flush()
-
-    txn = Transaction(
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
-        name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        template_id=template.id,
-        amount_ownership=AmountOwnership.own(estimated),
-        due_date=period.start_date,
-    )
-    db.session.add(txn)
-    db.session.flush()
+    txn = generate_row_of(template, period)
     return txn, template
 
 
