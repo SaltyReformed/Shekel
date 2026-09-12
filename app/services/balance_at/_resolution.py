@@ -420,16 +420,20 @@ def is_standing_loan_payment(
       renders locked and a submission stating one is refused
       (:data:`~app.routes._recurrence_form_refusals.LOAN_PAYMENT_BOUND_IS_DERIVED`).
       A SECOND recurring transfer into the same loan has its start derived at
-      creation (``settle_first_occurrence``) and never re-synced afterwards --
-      plan ledger row **D50**, ruled at R7d-g -- so its control stays the
-      owner's.
+      creation (``settle_first_occurrence``), or at the edit that makes it one
+      (``settle_destination_for_update``, plan step R7d-f-4), and never
+      re-synced afterwards -- plan ledger row **D50**, ruled at R7d-g -- so
+      its control stays the owner's.
     * The CLOSING bound.  The loan's own payment runs to the payoff and has
       NO authored stop: archiving is the door to stop it early (ruling
       **R-R59**, developer 2026-09-05, taken at R7d-f).  Its "Ends" control
       renders the composed door's derived answer, locked; a stated bound is
       refused -- at create as well, where the identity is asked the other way
       round, a loan holding no active payment making the new definition its
-      payment (``settle_first_occurrence``, ruling **R-R60**); and the column
+      payment (``settle_first_occurrence``, ruling **R-R60**), and at the two
+      edits that make a definition such a transfer
+      (``settle_destination_for_update``, rulings **R-R76** and **R-R77**);
+      and the column
       the chokepoints cache the payoff into is read as that cache rather than
       as the owner's word (ruling **R-R56**, :func:`authored_closing`) until
       R7d-g NULLs it.  A second transfer's authored stop is its owner's and

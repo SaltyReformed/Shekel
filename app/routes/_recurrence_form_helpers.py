@@ -517,7 +517,11 @@ def update_recurrence_rule_from_form(
     # while a form that shows it always states one (the schema requires it
     # beside a chosen cadence).  Collapsing the two would make a loan edit
     # erase the origination bound that keeps its payments from generating
-    # before the loan exists.
+    # before the loan exists.  A transfer route's destination settle WRITES
+    # the key for an edit that moves a repeating transfer onto a loan (plan
+    # step R7d-f-4), so PRESENT here also means "the loan's own first
+    # installment, derived", which this branch carries onto the rule exactly
+    # as it would an owner's date.
     #
     # ``nominal_day`` follows the SAME key, not its own: the two are one
     # statement of when the rule fires, and the control that posts the second
@@ -820,7 +824,11 @@ def resolve_recurrence_rule_for_update(
     # already having a rule, and a schema never sees the template.  Refusing
     # here with the schema's own message is what keeps the two layers saying
     # one thing -- see
-    # ``schemas/validation/_helpers.RECURRENCE_NEEDS_A_START``.
+    # ``schemas/validation/_helpers.RECURRENCE_NEEDS_A_START``.  A transfer
+    # into a LOAN never reaches the refusal: the route's destination settle
+    # has written the loan's own first occurrence into the payload by now
+    # (``_transfer_creation_helpers.settle_destination_for_update``, plan step
+    # R7d-f-4), the same way the create door fills the locked control's gap.
     if (
         data.get("recurrence_unit") is not None
         and data.get(RECURRENCE_STARTS_ON_KEY) is None

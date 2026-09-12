@@ -88,14 +88,24 @@ payment is refused, because the definition being created IS that loan's
 payment, and a stop stated for a loan that already holds one is a SECOND
 transfer's and stays its owner's.  What the limit still names is every row
 whose column holds an owner's word this door reads as the cache: the rows
-that path wrote before the refusal existed; a second transfer PROMOTED by
-the archiving of the first (above); and the UPDATE door's two paths, which
-R7d-f-3's adversarial review found and no step yet owns -- a rule-less
-transfer into a payment-less loan given a cadence on the edit form (the
-identity answers ``False`` for a template with no rule, so the authoring
-branch writes the owner's start AND stop), and a bounded transfer whose
-destination is MOVED onto a payment-less loan (the identity is judged
-against the stored destination, then the column moves).  (2) An ARCHIVED
+that path wrote before the refusal existed, and a second transfer PROMOTED
+by the archiving of the first (above).  Until plan step R7d-f-4 it also
+named the UPDATE door's two paths, which R7d-f-3's adversarial review found
+(plan ledger row **REC-521**) -- a rule-less transfer into a payment-less
+loan given a cadence on the edit form (the identity answers ``False`` for a
+template with no rule, so the authoring branch wrote the owner's start AND
+stop), and a bounded transfer whose destination is MOVED onto a payment-less
+loan (the identity was judged against the stored destination, then the
+column moved).  That leaf closed both at the door through the create door's
+own reading (``_transfer_creation_helpers.settle_destination_for_update``,
+rulings **R-R76** and **R-R77**).  What the limit names now is the two above
+and a THIRD that leaf's adversarial review found and R7d-g owns (plan ledger
+row **REC-522**): an ARCHIVED recurring transfer into a loan is editable, is
+nobody's standing payment while archived (the identity reads the ACTIVE set),
+so its edit form unlocks both bound rows and the update door judges it as any
+savings transfer; ``unarchive_transfer_template`` then regenerates it with no
+sync, and it is the loan's payment again with an owner's word in the column.
+(2) An ARCHIVED
 loan payment -- no longer the account's active transfer -- has the column the
 app wrote while it was active
 read as its owner's bound in the Archived drawer, and a cache EARLIER than the
@@ -104,16 +114,17 @@ must DECIDE archived loan payments rather than sweep them (plan ledger row
 **D56**, an OPEN fork: a NULL-every-loan-payment predicate cannot tell an
 authored bound from the cache, so D56 asks R7d-g either to scope the migration
 or to rule the erasure intended).  (3) **R7d-g must DELETE this arm with the
-column**, and not because the arm goes dead: limit (1) names four producers
-of an owner's bound in that column that outlive R7d-f-3's refusal
-(**R-R60**); R7d-g stops nine of the ten syncs and must name whether the
+column**, and not because the arm goes dead: limit (1) names three producers
+of an owner's bound in that column that outlive the two doors' refusals
+(**R-R60**, **R-R77**); R7d-g stops nine of the ten syncs and must name whether the
 tenth still overwrites such a bound; if none does, a kept arm would read
 that owner's word as the cache forever.  The EDIT control does not
-reopen that route: it stays locked for the loan's own payment (ruling
-**R-R59** -- archiving is the door to stop early), so nothing an owner can do
-on the edit form writes an authored bound into the column this arm reads
-around.  It is a fence around the stored copy and not a design, and it leaves
-with the copy.
+reopen that route for an ACTIVE definition: it stays locked for the loan's
+own payment (ruling **R-R59** -- archiving is the door to stop early), so
+nothing an owner can do on an active definition's edit form writes an
+authored bound into the column this arm reads around; the archived one is
+REC-522's.  It is a fence around the stored copy and not a design, and it
+leaves with the copy.
 
 Flask-isolated (``CLAUDE.md`` Architecture): it takes a template and a read
 pass and returns plain values, reads no ``request`` / ``session``, opens no

@@ -226,7 +226,9 @@ def loan_payment_window(
     the composed closing; and a closing bound an owner authored on the generic
     create form, which cannot lock the control, is read as the cache before
     the first chokepoint makes it one (plan ledger row **N-512**; R7d-f's
-    third leaf refuses it at create -- rulings **R-R60** and **R-R61**).
+    third leaf refuses it at create -- rulings **R-R60** and **R-R61** -- and
+    its fourth at the two edits that make a definition a loan's recurring
+    transfer, plan ledger row **REC-521**, rulings **R-R76** and **R-R77**).
     R7d-f moved the form's locked "Ends"
     control and its inverted-window refusal onto the same door; R7d-c-2 moves
     generation, and R7d-g then stops the column being written at all.

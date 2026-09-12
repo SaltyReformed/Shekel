@@ -135,7 +135,13 @@ where the loan holds no active payment -- the definition being created would
 be that payment.  It reads "stated" as a real stop rather than as the key's
 presence, because that form's server render cannot lock the control and emits
 "Never" as its default; the reasoning is on
-``_refuse_stop_on_a_new_loan_payment``.
+``_refuse_stop_on_a_new_loan_payment``.  **And the UPDATE door states it for
+the two edits that make a definition a loan's recurring transfer** (plan step
+R7d-f-4, plan ledger row **REC-521**): a cadence added to a one-time transfer
+into a loan, or a repeating transfer moved onto one, through the same reading
+(``_transfer_creation_helpers.settle_destination_for_update``, rulings
+**R-R76** and **R-R77**) -- ahead of :func:`refuse_recurrence_update`, whose
+presence rule below is the standing payment's alone.
 
 **Which definitions it fires for is
 ``balance_at.is_standing_loan_payment``, not
