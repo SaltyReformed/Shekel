@@ -1,17 +1,21 @@
 """
-Shekel Budget App -- What the Reconcile page's QUERY STRING says
+Shekel Budget App -- What the Reconcile page's REQUEST asked for
 
-Three readers, one per argument the screen carries: which TAB is open, whether
-the bound on the settled tabs is lifted, and which card's MATCH pane renders
-in the document.  Plan step ``bank_import:X-gi-1``.
+Three readers of the query string, one per argument the screen carries --
+which TAB is open, whether the bound on the settled tabs is lifted, and which
+card's MATCH pane renders in the document (plan step ``bank_import:X-gi-1``)
+-- and, since plan step ``bank_import:X-gi-2a``, the reader of what the FORM
+holds for one card's MATCH tab, and the ask the page is handed for the card it
+opens.
 
 **They are here because the page module is FULL**, and that is the honest
 reason rather than a discovered cohesion: ``statement_reconcile`` stood at 993
-of pylint's 1000-line ``max-module-lines`` before this step, so the correctness
-fix below could not be written where it belonged.  The cohesion is real all the
-same -- these three are the only readers of ``request`` in that module that
-answer *what did the URL ask for*, they share one argument's worth of state
-between them, and every one of them is called by a ROUTE.
+of pylint's 1000-line ``max-module-lines`` before ``X-gi-1``, so the
+correctness fix below could not be written where it belonged, and
+``X-gi-2a``'s two readers pushed a first draft of it past the ceiling, which
+is why they landed here instead.  The cohesion is real all the same -- every
+function here answers *what did this request ask for*, before the door, and
+every one of them is called by a ROUTE.
 
 **THAT LAST WORD IS THE CORRECTNESS FIX** (adversarial review 2026-09-05).
 :func:`asked_to_open` was read inside the page's context builder, which
@@ -21,13 +25,31 @@ money pass, committed it, and then answered a bare 404.  A reader of the
 request runs before its door; putting all three in one module is what makes
 that visible rather than remembered.
 
-Services boundary: these are HTTP-shaped concerns and import no service beyond
-the :class:`~app.services.statement_match.Tab` they resolve to.
+Services boundary: these are HTTP-shaped concerns.  What they import from the
+service package is only the VALUES they hand back --
+:class:`~app.services.statement_match.Tab`,
+:class:`~app.services.statement_match.OpenedAsk`,
+:class:`~app.services.statement_match.MatchSubmission` -- and the one schema
+the form reader grades with.
 """
 
 from flask import abort, request
 
-from app.services.statement_match import Tab
+from app.routes.accounts._statement_doors import (
+    refusal_sentence,
+    submitted_match,
+)
+from app.schemas.validation.statement_reconcile import reconcile_match_payload
+from app.schemas.validation.statements import StatementMatchSchema
+from app.services.statement_match import MatchSubmission, OpenedAsk, Tab
+from app.utils.digit_strings import parse_row_id
+
+#: The schema that grades ONE card's MATCH tab, constructed at import like
+#: every sibling's.  It is the same schema
+#: :class:`~app.schemas.validation.statements.StatementBatchSchema` nests, so
+#: a card priced by the live fragment, the same card priced by the page on
+#: Apply, and the same card the pass applies are graded by one set of rules.
+_match_schema = StatementMatchSchema()
 
 
 def requested_tab() -> Tab:
@@ -113,14 +135,14 @@ def asked_to_open() -> "int | None":
     **Over ``request.args``**, for the reason :func:`asked_for_everything`
     argues two functions above.  The Apply form carries it in its ACTION's
     query string, so a REFUSED press answers with the card's rows rather than
-    the spinner -- though NOT with the owner's ticks, since the page prices
-    its pane from what the pass OFFERS and never from the submitted body.
-    **That is finding bank_import:BI-478**, and it is now the only hand-build
-    door there is: it was parity with the workbench, which lost a refused
-    press's ticks the same way, until plan step ``bank_import:X-gi-2`` deleted
-    that page.  ``bank_import:X-gi-2a`` owns the remedy -- pricing the pane
-    from the submitted body when one is present, which is what the live
-    fragment already does.
+    the spinner -- and, since plan step ``bank_import:X-gi-2a``, with the
+    owner's own ticks: the route reads what the body holds for this card
+    through :func:`read_match` and hands the page the pair as one
+    :func:`opened_ask`.  *Until then the page priced its pane from what the
+    pass OFFERS and never from the body*, which was finding
+    **bank_import:BI-478**: parity with the workbench, which lost a refused
+    press's ticks the same way, until ``bank_import:X-gi-2`` deleted that
+    page and left this the only hand-build door there is.
 
     **CALLED BY EACH ROUTE, BEFORE ITS DOOR**, exactly as :func:`requested_tab`
     is.  It was read inside :func:`~.statement_reconcile._reconcile_context`
@@ -138,16 +160,88 @@ def asked_to_open() -> "int | None":
         a stale ``?open=`` is, and :func:`~app.services.statement_match
         .reconcile_page` answers it with no pane.
 
+    **Read through** :func:`~app.utils.digit_strings.parse_row_id`, **the one
+    spelling a row id has** (plan step ``bank_import:X-gi-2a``).  It was a
+    bare ``int()`` until then -- which reads ``0``, ``-5``, ``007`` and
+    ``+5`` as line ids, none of which names a row -- and that laxness became
+    load-bearing the moment :func:`read_match` graded the same value as a
+    ``line_ids`` member through :class:`~app.schemas.validation._helpers
+    .RowId`: ``?open=0`` on Apply would have refused the WHOLE PASS at 400 in
+    a sentence naming a field the body never carried, where the query string
+    is this module's to answer and its answer is the 404 below.  Two readers
+    of one value that disagree on ``"0"`` are the shape
+    :mod:`app.utils.digit_strings` exists to delete, and
+    :func:`~.statement_merchants._asked` already reads its own ``open`` this
+    way.
+
     Raises:
-        werkzeug.exceptions.NotFound: When the value is not an integer at all,
-            which is the answer :func:`requested_tab` already gives for the
-            same shape -- nothing composes this URL by hand, so a value that
-            cannot even be a line id is tampered rather than stale.
+        werkzeug.exceptions.NotFound: When the value does not name a row at
+            all, which is the answer :func:`requested_tab` already gives for
+            the same shape -- nothing composes this URL by hand, so a value
+            that cannot even be a line id is tampered rather than stale.
     """
     asked = request.args.get("open")
     if asked is None:
         return None
-    try:
-        return int(asked)
-    except ValueError:
+    line_id = parse_row_id(asked)
+    if line_id is None:
         return abort(404)
+    return line_id
+
+
+def read_match(
+    form, line_id: int,
+) -> "tuple[MatchSubmission | None, str | None]":
+    """Return what *form* holds for one card's MATCH tab, graded.
+
+    **ONE reading for the two renders that price a card from a body** (plan
+    step ``bank_import:X-gi-2a``): the live fragment reads the card it is
+    re-pricing, and Apply reads the card ``?open=`` names so a refused press
+    answers with the owner's ticks rather than the tier's proposal.  It is the
+    fragment's own four lines, moved here when the page became the second
+    caller -- the payload through
+    :func:`~app.schemas.validation.statement_reconcile.reconcile_match_payload`,
+    graded by :class:`~app.schemas.validation.statements.StatementMatchSchema`,
+    built by :func:`~._statement_doors.submitted_match` -- so the figure the
+    pane shows and the figure the door compares against stay one derivation.
+
+    **It reads the card whether or not the card was OK'd**, exactly as the
+    fragment never reads ``ok``: an owner who ticked rows on one card and
+    pressed Apply for another has still ticked them, and the page comes back
+    with that card as they left it.
+
+    Args:
+        form: The request's ``MultiDict``.
+        line_id: The bank line whose card to read.
+
+    Returns:
+        ``(submission, refusal)``: the
+        :class:`~app.services.statement_match.MatchSubmission` and ``None``,
+        or ``None`` and the schema's own sentence where the body is not one
+        this page could have rendered.
+    """
+    payload = reconcile_match_payload(form, str(line_id))
+    errors = _match_schema.validate(payload)
+    if errors:
+        return None, refusal_sentence(errors)
+    return submitted_match(_match_schema.load(payload)), None
+
+
+def opened_ask(line_id: "int | None", submitted=None) -> "OpenedAsk | None":
+    """Return what the page is asked to open, or ``None`` for nothing.
+
+    Args:
+        line_id: What :func:`asked_to_open` read.
+        submitted: What this request's form holds for that card
+            (:func:`read_match`), or ``None`` where the request carries no
+            form holding it -- **the route's fact to state**, for the reason
+            :class:`~app.services.statement_match.OpenedAsk` gives: a reader
+            inferring it from a missing field would read an owner who
+            unticked every row as one who never touched the card.
+
+    Returns:
+        The :class:`~app.services.statement_match.OpenedAsk`, or ``None``.
+    """
+    if line_id is None:
+        return None
+    return OpenedAsk(line_id=line_id, submitted=submitted)

@@ -145,22 +145,18 @@ what it leaves a LATER step is on that step's own entry.
         REFERENCE true across a module boundary -- nine broke here, seven unqualified Sphinx roles
         and two direction words -- and pylint, the suite and byte-identity are all blind to it. The
         docstring was NOT divided; six of eleven paragraphs span both halves (**BI-484**).
-  - [ ] **X-gp** `feat(import): one control, whose options are the acts` -- **R-BI2**, superseding
-        **R-IV**. The MATCH pane draws TWO controls for ONE decision -- `difference_on-<line>` and a
-        consent box whose label is composed from the select's server-side value -- and the door
-        compares only the FIGURE, so two different acts submit the same consent. R-IV accepted that
-        bound because the htmx swap re-renders the box unticked, which is a DOM event holding a
-        money consent together; `X-gi-2a` is what makes the select reachable on the scriptless pane,
-        where nothing swaps. ONE control, options labelled with the figures they write, value
-        carrying landing AND figure, door comparing it whole. **MOVES MONEY, own PR, own review.**
-  - [ ] **X-gi-2a** `fix(import): a refused Apply keeps the owner's ticks` -- **BI-478**, which that
-        row measures; given its own leaf by the developer 2026-09-06 so `X-gi-2` stayed a pure
-        deletion. `reconcile_page`'s fifth parameter becomes the ASK rather than the line id, and
-        the route builds it through `reconcile_match_payload` when a body is present -- which is
-        what the live fragment already does, so this is ONE producer reaching a second caller rather
-        than a second spelling. **It moves no money**: the cost is RE-TICKING.
-        **X-gi-2 armed nothing here** -- the pane behaved this way before it -- but the workbench
-        whose identical defect made rule 6 defer this is gone, so the parity argument is spent.
+  - [x] **X-gp** `40354328` -- ONE control whose options ARE the acts (**R-BI2**, superseding
+        **R-IV**): `ReviewedDifference` carries the figure AND the member under one `consent-<line>`
+        field, the door compares it whole, the preview reads no consent. Closes **BI-481**: both
+        docstrings that named `X-gn` as the step re-arming R-IV's bound were rewritten with the
+        bound. **A LATER STEP MUST OBEY**: a pre-X-gp page FAILS CLOSED, since `residual-` and
+        `difference_on-` are not read, so a stale tab refuses rather than mints.
+  - [x] **X-gi-2a** `8fa4d0bc` -- the `?open=` pane is priced from the SUBMITTED form (`OpenedAsk`;
+        `read_match` is ONE reading for the fragment and Apply), so a refused press comes back with
+        the rows ticked and the acts offered; closes **BI-478**. **R-BI3**: every still-offered
+        control is echoed, the consent on whole-value equality. `asked_to_open` reads through
+        `parse_row_id`. Moves no money. **A LATER STEP MUST OBEY**: the SCRIPTED page without
+        `?open=` still loses a refused press's ticks (placeholder re-fetch), unfiled.
   - [x] **X-gi-3** `43ce313b` -- `_queue.py`, `_register.py`, THREE `ReviewSet` members (the census
         said four; `unmatched` is LIVE via `card_subject`), plus `answered_merchants` and
         `MerchantRegister`, which the enumeration missed and whose reach survives in
