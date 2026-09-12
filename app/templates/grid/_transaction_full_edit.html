@@ -455,7 +455,7 @@
       <div class="form-check mb-2">
         <input type="checkbox" class="form-check-input" id="is_envelope"
                name="is_envelope" value="true"
-               {{ 'checked' if txn.is_envelope else '' }}>
+               {{ 'checked' if txn.tracks_purchases else '' }}>
         <input type="hidden" name="is_envelope" value="false">
         <label class="form-check-label small" for="is_envelope">
           Track individual purchases

@@ -122,9 +122,9 @@ what it leaves a LATER step is on that step's own entry.
 - [x] **X-gf-3b-2** `ff744d79` -- one list by the decision (**R-HB**, **R-HD**). **N-380** shut,
       **N-381** open.
 - [x] **X-gk** `8569e5ec` -- the MERCHANTS surface (**R-IC**); opened **N-402** and **N-403**.
-- [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the DECOMPOSED
-      parent of the exception queue's retirement, split 2026-09-05 at its own census into five
-      leaves. **The census may delete nothing it has not shown orphaned**, because a route that
+- [x] **X-gi** `cd78499a` `refactor(import): the queue's replaced model leaves orphans` -- the
+      DECOMPOSED parent of the exception queue's retirement, split 2026-09-05 at its own census into
+      five leaves. **The census may delete nothing it has not shown orphaned**, because a route that
       reads dead is not one no door reaches (**N-112**'s shape). Its link and page counts are
       SPENT -- `X-gi-1` repointed and `X-gi-2` deleted -- and its headline was VOIDED by **R-KC**,
       so what survives is the rule, not the numbers; `X-gi-3`..`X-gi-5` carry their own.
@@ -147,9 +147,10 @@ what it leaves a LATER step is on that step's own entry.
   - [x] **X-gi-4** `ba5ae344` -- **N-470** rendered and logged; **N-405** at `af6f8a3f`; **N-402**
         by **R-BI4**, ONE default-deny login gate. **A LATER LANE OBEYS**: write no decorator; a
         public route is named in `PUBLIC_ENDPOINTS`. Filed **BI-486**..**BI-490** (`X-gr`, `X-gs`).
-  - [ ] **X-gi-5** `fix(import): one ordered read takes every lock a pass needs` -- **N-471**.
-        `apply_reviewed` locks in submission order across THREE loops, so two presses naming the
-        same lines in opposite order deadlock. **MOVES MONEY, OWN PR.** No X-gm dependency.
+  - [x] **X-gi-5** `cd78499a` -- every line lock FIRST, in one read ordered by `id` (**R-BI5**: the
+        mode is `FOR NO KEY UPDATE`, one helper). Closed **N-471**, REPRODUCED first by a forced
+        interleave. **A LATER STEP OBEYS**: `balance:X-bn`'s advisory lock goes ABOVE `lock_lines`;
+        what remains is the transactions-plus-advisory cycle, X-bn's.
 - [x] **X-gm** `1b722d52` -- the badge and the inbox are ONE producer (**R-KB**, **R-KD**); closed
       **N-476**. **A LATER STEP OBEYS TWO**: removing a line reprices another's row (**R-GD(a)**),
       and `to_explain` counts CARDS where the badge counts LINES -- `X-gn` keeps those equal.
@@ -168,6 +169,17 @@ what it leaves a LATER step is on that step's own entry.
       anonymous principal as an owner wherever the login gate (**R-BI4**) is off. Read the attribute
       outright; fixtures that lack a role set one. Minted by the developer 2026-09-11 from
       `X-gi-4`'s review findings, beside `X-gr`.
+- [ ] **X-gt** `refactor(import): the receipt value leaves _batch.py` -- **BI-491**. `_batch.py`
+      sits at 998 of pylint's 1000 lines after `X-gi-5`; `BatchOutcome` and `_Tally` move to
+      `_outcome.py` as a PURE move in its own commit, the cut ruled first (**R-PC71**'s shape),
+      before `balance:X-bn` touches the file; **N-474**'s wording fix is its second commit (the X-gi
+      container owned that row and shipped). Minted by the developer 2026-09-12.
+- [ ] **X-gu** `fix(import): the delete door locks its lines in the shared order` -- **BI-492**.
+      `lock_lines` over the import's lines before `delete_import` deletes the row, so the cascade
+      cannot cross a press; the cross-resource half is `balance:X-bn`'s. Minted 2026-09-12.
+- [ ] **X-gv** `fix(import): a locked read re-hydrates what it locks` -- **BI-493**. The locked
+      reads take `populate_existing()`; a line hydrated before the lock is otherwise returned stale.
+      Minted 2026-09-12 from `X-gi-5`'s design review.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.

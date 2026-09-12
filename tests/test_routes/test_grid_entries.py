@@ -485,9 +485,9 @@ class TestBuildEntryListsDict:
     ):
         """Non-envelope (no template) txn is NOT in the result dict.
 
-        The macro's ``txn.template.is_envelope`` guard means the
+        The macro's ``txn.tracks_purchases`` guard means the
         inline entries section is only rendered for envelope
-        templates.  Pre-computing entries for non-envelopes would
+        rows.  Pre-computing entries for non-envelopes would
         waste work and leak a misleading entry record.
         """
         with app.app_context():
