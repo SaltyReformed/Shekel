@@ -2,10 +2,11 @@
 #
 # Runs linting (pylint) and the full test suite (pytest) on every push
 # to main and on pull requests -- except that a pull request touching
-# ONLY the planning registries and the plan gate runs the plan gate
-# alone (step 2b, ``tools/plan_gate/ci_scope.py``; the PostgreSQL
-# service still starts, because a job-level service cannot be
-# conditioned on a step).  Uses a PostgreSQL 18 service container
+# ONLY the planning documents and the plan gate runs the plan gate in
+# place of the suite in this job (step 2b, ``tools/plan_gate/ci_scope.py``;
+# polyglot-lint below still runs, and the PostgreSQL service still
+# starts, because a job-level service cannot be conditioned on a step).
+# Uses a PostgreSQL 18 service container
 # to match the production database version (upgraded from PG 16 to
 # PG 18 in Phase 2 of docs/audits/test_improvements/
 # test-performance-implementation-plan.md to enable Phase 3's reflink-
