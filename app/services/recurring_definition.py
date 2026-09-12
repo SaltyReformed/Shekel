@@ -76,31 +76,39 @@ is what the sync will make it.
 
 **Three limits, stated because the schema records who wrote a bound nowhere.**
 (1) The predicate answers "does the app write this bound", not "did it write
-the value there now".  The generic create form (``POST /transfers``) cannot
-lock the Ends control -- the destination is unknown at render -- and
-``settle_first_occurrence`` refuses only a bound BEFORE the derived start, so
-an owner CAN author a closing bound on a loan-destination transfer there; no
-chokepoint runs on that path, so the column holds the owner's word until the
-first chokepoint overwrites it with the payoff (the closing-bound twin of the
-opening-bound defect plan step R7c-b fixed; plan ledger row **N-512**, which
-R7d-f's third leaf closes by REFUSING such a bound at create for a loan with
-no standing payment -- rulings **R-R60** and **R-R61**, developer
-2026-09-05).  For that window this
-door already reads the column as the cache the sync will make it, so the
-Recurring row names the payoff while generation still honours the owner's
-date.  (2) An ARCHIVED loan payment -- no longer the
-account's active transfer -- has the column the app wrote while it was active
+the value there now".  Until plan step R7d-f-3 the generic create form
+(``POST /transfers``) could author a closing bound on a loan-destination
+transfer -- its server render cannot lock the Ends control, and
+``settle_first_occurrence`` refused only a bound BEFORE the derived start --
+and no chokepoint runs on that path, so the column held the owner's word
+until the first chokepoint overwrote it with the payoff while this door read
+it as the cache from the start (plan ledger row **N-512**).  That leaf closed
+it at the door (ruling **R-R60**): a stop stated for a loan holding no active
+payment is refused, because the definition being created IS that loan's
+payment, and a stop stated for a loan that already holds one is a SECOND
+transfer's and stays its owner's.  What the limit still names is every row
+whose column holds an owner's word this door reads as the cache: the rows
+that path wrote before the refusal existed; a second transfer PROMOTED by
+the archiving of the first (above); and the UPDATE door's two paths, which
+R7d-f-3's adversarial review found and no step yet owns -- a rule-less
+transfer into a payment-less loan given a cadence on the edit form (the
+identity answers ``False`` for a template with no rule, so the authoring
+branch writes the owner's start AND stop), and a bounded transfer whose
+destination is MOVED onto a payment-less loan (the identity is judged
+against the stored destination, then the column moves).  (2) An ARCHIVED
+loan payment -- no longer the account's active transfer -- has the column the
+app wrote while it was active
 read as its owner's bound in the Archived drawer, and a cache EARLIER than the
 derived stop still binds that drawer row until plan step R7d-g NULLs it.  R7d-g
 must DECIDE archived loan payments rather than sweep them (plan ledger row
 **D56**, an OPEN fork: a NULL-every-loan-payment predicate cannot tell an
 authored bound from the cache, so D56 asks R7d-g either to scope the migration
 or to rule the erasure intended).  (3) **R7d-g must DELETE this arm with the
-column**, and not because the arm goes dead: limit (1) means the create form
-stores an owner's bound in that column until R7d-f's third leaf refuses it
+column**, and not because the arm goes dead: limit (1) names four producers
+of an owner's bound in that column that outlive R7d-f-3's refusal
 (**R-R60**); R7d-g stops nine of the ten syncs and must name whether the
-tenth still overwrites a create-form bound; if none does, a kept arm would
-read that owner's word as the cache forever.  The EDIT control does not
+tenth still overwrites such a bound; if none does, a kept arm would read
+that owner's word as the cache forever.  The EDIT control does not
 reopen that route: it stays locked for the loan's own payment (ruling
 **R-R59** -- archiving is the door to stop early), so nothing an owner can do
 on the edit form writes an authored bound into the column this arm reads
