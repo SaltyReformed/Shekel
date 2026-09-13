@@ -882,9 +882,9 @@ section 4, under their unchanged ids.*
     figure can move and the harness is the proof. **Its tier is WIDENED by N-115** (ruling **R-BU**, which SEQUENCED the residual double load here
     rather than deferring it): the dashboard tracks
     section pays twice per render for three more loaders, and the expensive one is **two full
-    `calculate_paycheck` runs (7.2 ms / 7 SQL for the second alone)**. **`salary:C12` and this step
-    decide for each other** (that arc's document, section 0): the merged current-paycheck producer
-    is what gives `income_service`'s basis a threaded calendar.
+    `calculate_paycheck` runs (7.2 ms / 7 SQL for the second alone)**. **Its input tier's shape was
+    decided at `salary:C12-a` (R-SAL27)**: the basis takes the pass's PRICER, which carries the calendar
+    and the per-payday memo.
   * [ ] **X-i2 THE CLOCK** -- the cutover. Each memoized loader takes `ctx.as_of` and `ctx.scenario`,
     and this **MOVES MONEY**: the gross measured at `$3,631.74` today against `$3,722.53` at a 2027
     read and `$0` before the first pay period, and FU-3 changes a loan's whole forward trajectory on
