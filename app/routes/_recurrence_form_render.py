@@ -283,9 +283,13 @@ def create_form_recurrence_state() -> RecurrenceFormState:
     :func:`create_form_default_starts_on` for why that difference is a money
     decision rather than a convenience.  Nothing is resolved here because
     there is no definition yet to resolve: a create form takes no read pass,
-    and the loan-destination lock it applies as the user picks an account is
-    the browser's affordance over ``data-loan-account-ids``, with the
-    derivation itself the route's (``settle_first_occurrence``).
+    and the loan-destination locks it applies as the user picks an account
+    are the browser's affordance over the two sets the transfer route emits
+    (:class:`~app.routes._transfer_creation_helpers.LoanDestinationLocks`:
+    every loan derives the start, a loan holding no payment yet derives the
+    stop as well), with the derivation and the refusal the route's
+    (``settle_first_occurrence``, rulings **R-R60** and 2026-09-12's on what
+    a stated stop is at create).
 
     Returns:
         The :class:`RecurrenceFormState`.

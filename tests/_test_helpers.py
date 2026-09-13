@@ -8117,7 +8117,7 @@ def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
     # ``pay_calendar:C4-b-1`` nothing else does.**  Two accidental protections
     # went when ``conftest._drop_seed_user_bootstrap`` did, and an adversarial
     # review of that step found both: the hand-rolled version APPENDED beside
-    # the owner's existing paydays, so ``_reject_backward_payday`` refused any
+    # the owner's existing paydays, so ``reject_backward_payday`` refused any
     # first payday earlier than one cadence after the latest -- and where that
     # let something through, a backward-only restatement moved the books to
     # meet it.  The reset door retires every surviving payday in the SAME call
@@ -8203,7 +8203,7 @@ def rebuild_calendar_from_spans(user_id, spans):
     Raises:
         ValidationError: Two spans open closer together than the last span's
             length, which is the forward-only rule
-            ``pay_period_write._reject_backward_payday`` states.
+            ``pay_period_batch.reject_backward_payday`` states.
     """
     from app.extensions import db  # pylint: disable=import-outside-toplevel
     from app.services import (  # pylint: disable=import-outside-toplevel

@@ -36,6 +36,8 @@ from app.enums import (
 from app.models.category import Category
 from app.models.scenario import Scenario
 from app.models.transfer import Transfer
+from app.models.transfer_template import TransferTemplate
+from app.schemas.validation import end_bound_before_start_message
 from app.services import (
     balance_at,
     loan_loaders,
@@ -61,6 +63,7 @@ from tests._test_helpers import (
     create_loan_account,
     derived_span,
     last_covered_day,
+    make_loan_payment_template,
     make_transfer_template,
 )
 
@@ -873,9 +876,34 @@ class TestALoanCreateMayNotStopBeforeTheDerivedStart:
     "Ends on" passed every validator and reached the write door beside a start
     it had never been compared to.
 
-    The "Ends" control is NOT locked on the create form -- the server does not
-    know the destination at render -- so the form invites this.
+    The "Ends" control is NOT locked on the create form for a loan that
+    already holds a payment -- a second transfer into it keeps its owner's
+    stop -- so the form invites this.  **Both cases here create that SECOND
+    transfer** (plan step R7d-f-3, ruling **R-R60**): for a loan holding no
+    payment the definition would be the loan's own, whose stop is refused
+    outright before this comparison is reached, and the create-side twin is
+    graded in ``tests/test_routes/test_transfer_create_derived_stop.py``.
+    Giving the loan a standing payment first is what keeps these two cases
+    about the window rule alone.
     """
+
+    def _paid_loan(self, seed_user, db):
+        """Return a COMMITTED loan already holding its standing payment.
+
+        Args:
+            seed_user: The owner fixture.
+            db: The session fixture.
+
+        Returns:
+            The loan :class:`~app.models.account.Account`.
+        """
+        loan = create_loan_account(
+            seed_user, db.session, origination_date=ORIGINATION,
+            principal=PRINCIPAL, payment_day=1,
+        )
+        make_loan_payment_template(db.session, seed_user, loan)
+        db.session.commit()
+        return loan
 
     def _post_a_bounded_monthly_transfer(
         self, auth_client, seed_user, db, to_account, ends_on,
@@ -922,12 +950,15 @@ class TestALoanCreateMayNotStopBeforeTheDerivedStart:
         The loan originates 2026-04-15 with ``payment_day`` 1, so the derived
         first installment is 2026-05-01; an end of 2026-01-01 is before it.
         The rule such a submission would author names no occurrence at all.
+        The message is asserted, because a loan create now has TWO refusals
+        that redirect to the same place and only this one names the window.
         """
-        loan = create_loan_account(
-            seed_user, db.session, origination_date=ORIGINATION,
-            principal=PRINCIPAL, payment_day=1,
+        loan = self._paid_loan(seed_user, db)
+        rows_before = (
+            db.session.query(Transfer)
+            .filter(Transfer.to_account_id == loan.id)
+            .count()
         )
-        db.session.commit()
 
         resp = self._post_a_bounded_monthly_transfer(
             auth_client, seed_user, db, loan, date(2026, 1, 1),
@@ -935,11 +966,18 @@ class TestALoanCreateMayNotStopBeforeTheDerivedStart:
 
         assert resp.status_code == 302
         assert resp.headers["Location"].endswith("/transfers/new")
-        assert not (
+        with auth_client.session_transaction() as sess:
+            flashed = [message for _category, message in sess.get("_flashes", [])]
+        assert end_bound_before_start_message(
+            date(2026, 1, 1), date(2026, 5, 1),
+        ) in flashed, flashed
+        assert (
             db.session.query(Transfer)
             .filter(Transfer.to_account_id == loan.id)
-            .all()
-        ), "a submission stating an impossible window must persist nothing"
+            .count()
+        ) == rows_before, (
+            "a submission stating an impossible window must persist nothing"
+        )
 
     def test_an_end_AFTER_it_still_saves(
         self, auth_client, seed_user, db, seed_periods,  # pylint: disable=unused-argument
@@ -948,13 +986,11 @@ class TestALoanCreateMayNotStopBeforeTheDerivedStart:
 
         Without this arm a comparison inverted the wrong way -- or one that
         refused whenever a bound was stated at all -- would pass the refusal
-        above while making a bounded loan payment uncreatable.
+        above while making a bounded second transfer into a loan uncreatable.
+        The stored bound is read back: a redirect alone cannot tell a saved
+        stop from a dropped one.
         """
-        loan = create_loan_account(
-            seed_user, db.session, origination_date=ORIGINATION,
-            principal=PRINCIPAL, payment_day=1,
-        )
-        db.session.commit()
+        loan = self._paid_loan(seed_user, db)
 
         resp = self._post_a_bounded_monthly_transfer(
             auth_client, seed_user, db, loan, date(2030, 1, 1),
@@ -962,3 +998,9 @@ class TestALoanCreateMayNotStopBeforeTheDerivedStart:
 
         assert resp.status_code == 302
         assert resp.headers["Location"].endswith("/transfers")
+        second = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=loan.id, name=f"To {loan.name} bounded")
+            .one()
+        )
+        assert second.recurrence_rule.end_date == date(2030, 1, 1)

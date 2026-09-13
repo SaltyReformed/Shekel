@@ -127,6 +127,16 @@ row: a submitted COUNT beside the sync's DATE is the pair
 :class:`~app.services.recurrence.EndBound` makes that unwritable, this is what
 stops the user's stated bound being thrown away without a word.
 
+**The CREATE door states the same rule for a definition that does not exist
+yet** (plan step R7d-f-3, ruling **R-R60**):
+``_transfer_creation_helpers.settle_first_occurrence`` derives the opening
+bound for any loan destination and flashes THIS sentence for a stop stated
+where the loan holds no active payment -- the definition being created would
+be that payment.  It reads "stated" as a real stop rather than as the key's
+presence, because that form's server render cannot lock the control and emits
+"Never" as its default; the reasoning is on
+``_refuse_stop_on_a_new_loan_payment``.
+
 **Which definitions it fires for is
 ``balance_at.is_standing_loan_payment``, not
 :func:`is_loan_payment`** (plan step R7b-4; read off the pass since R7d-f).

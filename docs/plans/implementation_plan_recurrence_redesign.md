@@ -400,31 +400,20 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
 - [x] **R7d-b** `0462dc38` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R7d-c -- the DECOMPOSED parent of "generation takes the resolver."** Split into TWO leaves
-      2026-08-27 (**R-R38**): the pass has to REACH generation first, and WHO opens it is a question
-      about the three write doors, each of which did a write and then a read-dependent write in ONE
-      call so no caller could get between them.
+- [x] **R7d-c** `b8509c1e` -- the DECOMPOSED parent of "generation takes the resolver", split into
+      TWO leaves 2026-08-27 (**R-R38**): the pass had to REACH generation first (R7d-c-1), and who
+      opens it was a question about the three write doors, each of which did a write and then a
+      read-dependent write in ONE call. Both leaves shipped; the container ships with the last.
 
 - [x] **R7d-c-1** `61d81c7f` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R7d-c-2 -- GENERATION takes the resolver.** Both engines' `resolve_generation_plan` applies
-      `loan_payment_window`'s answer over the rule's own bound. **MOVES MONEY**: `$0.00` today
-      (production and dev both store `2029-02-22` on rule 48, equal to the derivation, measured
-      2026-09-11), and the `$531.94` installment the stale column once dropped is the MECHANISM.
-      **D46** closed at `R16-b-2` (**R-R64**).
-
-**A second build is HELD at `de8d1a56`** (`feat/r7d-c-2`, pushed, no PR), superseding `9aff7ab9`:
-`resolve_generation_plan` reads `recurring_definition.read_definition` over the pass the schedule
-carries, with the harness `tests/manual/verify_loan_bound_at_generation.py` (five doors on a stamped
-production clone). It ships AFTER R16-b-2 (**R-R65**): alone it regressed the reset door, the
-mechanism ruled at **R-R64**. **RE-CUT on R16-b-2's tree at `e5404ac1`** (merge of `8c654712`, the
-re-cut `a01839aa`, merge of the memo `7e2e6413`): the `$50` second-definition fixture, three
-controls (the reset door in its hole, D46; two full definitions, D47; the `$3,000` cent, REC-517),
-and the harness re-measured with R16-b-2's tree as the base -- live doors byte-identical, and the
-planted second definition 35/65 -> 32/32 rows to `2028-11-22`: the sum reaches the ROWS only through
-generation taking the door. Full suite 13335, exit 0. The 2026-08-31 measurement `balance:X-au-f`
-rests on (rows raised to `$900.00` -> `2028-02-22`, halved -> `2030-04-22`) stands.
+- [x] **R7d-c-2** `b8509c1e` -- generation resolves a loan payment's stop through the composed door
+      (`read_definition` over the pass the schedule carries), so a stale `end_date` binds nothing
+      either way (**R-R56**) and R16-b-2's summed payoff reaches the ROWS. `$0.00` live on the
+      clone; the planted `$50` definition 35/65 -> 32/32 rows at `2028-11-22` (measured 2026-09-11
+      on R16-b-2's tree; not re-run on the era calendar). Held behind R16-b-2 (**R-R65**), re-cut at
+      `a01839aa`, its first review found the id-keyed memo (**R-R73**). Closed **D46** via R16-b-2.
 
 - [x] **R7d-h** `83dd4b8a` -- a loan gets ONE closing date, past AND future: `loan_closing_date`
       answers the forward crossing while the loan owes and the day it LAST became closed once it
@@ -437,7 +426,7 @@ rests on (rows raised to `$900.00` -> `2028-02-22`, halved -> `2030-04-22`) stan
       `recurring_view` and its route take ONE read pass and read each definition through
       `recurring_definition`; the resolver takes the resolved rule; `4f40d6de` is ruling **R-R56**
       (an app-written `end_date` is read as the cache). Later steps obey: R7d-e moved the monthly
-      equivalent off the column (`89302ba4`); R7d-f owns **N-511** and **N-512**; R7d-g deletes the
+      equivalent off the column (`89302ba4`); R7d-f closed **N-511**, **N-512**; R7d-g deletes the
       door's arm with the column. As built: commits `f6ba59f8`..`713c4fce` (PR #240).
 
 - [x] **R7d-e** `89302ba4` -- the monthly totals took the resolver: every `DerivedStop` answers
@@ -465,10 +454,16 @@ NULL-the-column census, because the difference is in what the next save persists
       `tests/manual/verify_recurrence_form.py` is still owed.
 - [ ] **R7d-f-2** -- memo the readings on the pass, put the horizon on `RuleReading`, and bound the
       form's live preview by the loan's own closing date. Closes **N-513**, **N-514**, **REC-515**.
-- [ ] **R7d-f-3** -- refuse a stated closing bound AT CREATE where the destination loan holds no
-      active payment (**R-R60**), the JS lock demoted to an affordance. The refusal lands in
-      `_transfer_creation_helpers` because `app/routes/transfers/templates.py` is at 997 of 1000.
-      Closes **N-512**.
+- [x] **R7d-f-3** `e3661f6f` -- a stated stop is REFUSED at create where the destination loan holds
+      no active payment (**R-R60**), "stated" meaning a real stop and never the key's presence
+      (**R-R74**); the server emits which loans derive the stop and the script locks the "Ends" row
+      as an affordance. Closed **N-512**; the update door's twin is **REC-521** (R7d-f-4).
+      **R7d-g MUST OBEY**: `recurring_definition` limit (1) names four producers of an owner's bound
+      that outlive this refusal. Browser pass RAN (154 checks), R7d-f-1's too.
+- [ ] **R7d-f-4** -- the UPDATE door's authoring branch and its destination move take the create
+      door's two loan-destination rules -- derive the start, refuse a stated stop where the loan
+      holds no active payment -- through `_loan_holds_no_active_payment`, so an edit cannot author
+      what a create refuses. Closes **REC-521**.
 - [ ] **R7d-g -- the column stops being WRITTEN, and the CHECK lands.**
 
 Nine of the ten call sites go, `end_date` goes NULL for every loan payment in a migration, and
@@ -482,9 +477,10 @@ NULL-every-loan-payment predicate cannot tell an authored bound from the cache, 
 scopes the migration to the rows the sync wrote or rules the erasure intended -- and must DECIDE
 archived loan payments, whose cached columns the composed door still reads as authored (ruling
 **R-R56**). It stops nine of the ten syncs and must NAME whether the tenth (`params.py:190`, kept
-for the opening bound) still overwrites a closing bound authored on the generic create form
-(**N-512**); if none does, the door's arm in `recurring_definition` must be DELETED with the column
-or it reads that owner's word as the cache forever.
+for the opening bound) still overwrites an owner's bound in the cached column -- the four producers
+`recurring_definition` limit (1) names since R7d-f-3, **REC-521**'s among them; if none does, the
+door's arm in `recurring_definition` must be DELETED with the column or it reads that owner's word
+as the cache forever.
 
 - [ ] **R7e -- the recurrence form's three-state fields become ONE typed submission.**
 

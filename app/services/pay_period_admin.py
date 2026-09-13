@@ -14,9 +14,11 @@ module adds or removes goes through
 changes ``budget.pay_periods``.  That single home is why plan step
 ``pay_calendar:C4-c`` could drop ``end_date`` and ``period_index`` in one
 place: while they were stored, the rule that they equalled the derivation
-over the owner's paydays lived there and nowhere else.  What stays here are
-the two gates and the orchestration: which periods may go (the lock classifier
-and the discard count) and which reconciles a wipe owes.
+over the owner's paydays lived there and nowhere else.  What stays here is
+the orchestration -- the four doors, and which reconciles a wipe owes; the two
+gates they consult (which periods may go: the lock classifier and the discard
+count) moved to :mod:`app.services.pay_period_gates` at plan step
+``pay_calendar:C14-f``.
 
 **Nothing here REPOPULATES any more, and that is ruling R-R38** (plan step
 R7d-c-1).  Each door recorded its paydays and then, in the SAME call,
@@ -233,7 +235,7 @@ def extend_pay_periods(user_id, num_periods):
     # denies it a cadence question (finding P29 above) -- so it hands the
     # stored values straight back.
     rhythm = facts.rhythm
-    # WHERE THE LAST PAYCHECK ENDS -- ``_reject_backward_payday``'s own
+    # WHERE THE LAST PAYCHECK ENDS -- ``reject_backward_payday``'s own
     # subject, so the producer below answers a day the floor admits rather than
     # a second spelling of the floor.  Through ``final_covered_day`` and not
     # ``saved[-1].end_date``, which the destructive-doors census refuses and is
@@ -591,12 +593,13 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     **The other direction is what R7d-c-2 makes load-bearing.**  The wipe
     CASCADE-deletes the loan's genesis entries, so the OLD order generated
     against an EMPTIED loan ledger and the new one generates against the
-    re-posted ledger.  Nothing on today's generation path reads a loan: its
-    reads off the schedule are FOUR of ``schedule.calendar`` and TWO of
-    ``schedule.write_period_ids``, which is the whole set, so the change is
-    invisible now.  From R7d-c-2 the pass folds the loan to bound a
-    payment, and then generating before the re-sync would fold a ledger the
-    wipe had emptied.  The new order is the one that survives that step.
+    re-posted ledger.  Before plan step R7d-c-2 nothing on the generation
+    path read a loan (its reads off the schedule were four of
+    ``schedule.calendar`` and two of ``schedule.write_period_ids``), so the
+    order was invisible; since R7d-c-2 the pass folds the loan through
+    ``schedule.ctx`` to bound a payment, and generating before the re-sync
+    would fold a ledger the wipe had emptied.  This order is the one that
+    survives it.
     The new rhythm is persisted by step 4's writer rather than by a line of
     this function's own (plan step C3-b): ``record_paydays`` applies the one
     rule -- a batch that RECORDED a payday on a rhythm no era covers mints an
