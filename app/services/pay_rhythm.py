@@ -8,9 +8,20 @@ application, and it is a TYPE rather than two arguments because the halves
 carry a JOINT rule -- a convention that displaces a payday is legal only on a
 cadence longer than the longest run of consecutive closed days
 (:func:`~app.utils.business_days.shortest_collision_free_cadence`).
-:class:`Era` is a rhythm together with the day it took effect and the KIND it
-runs on -- one row of that table as a value (plan step ``pay_calendar:C17-a``,
-ruling **R-PC58**).
+:class:`Era` is a rhythm together with the day it took effect -- one row of
+that table as a value (plan step ``pay_calendar:C17-a``, ruling **R-PC58**).
+
+**The cadence is a VALUE OF ITS OWN KIND, and the kind is its type** (plan
+step ``pay_calendar:C17-d-1``, rulings **R-PC80** and **R-PC81**).
+:class:`FixedDays` is the one kind this leaf holds -- every ``days`` days from
+the era's first payday -- and the day-of-month kinds land beside it as
+further classes at ``C17-d-2``.  A kind is a class rather than an enum member
+beside an ``int`` because each kind's parameters have a shape of their own
+(a day count; a day of the month; a pair of them), so an ``int`` field that
+meant "days apart" under one kind and something else under another would be
+a conditionally meaning-shifting column of the value.  Which arithmetic a
+kind pays on is :mod:`app.services.pay_calendar._grid`'s, dispatched on the
+value's type; this module holds the values and no arithmetic.
 
 **Why it is a module of its own, which is plan step ``C14-e-1``'s one
 structural decision.**  The pair was declared in
@@ -51,7 +62,28 @@ this step's.*
 from dataclasses import dataclass
 from datetime import date
 
-from app.enums import BusinessDayShiftEnum, PayCadenceKindEnum
+from app.enums import BusinessDayShiftEnum
+
+
+@dataclass(frozen=True)
+class FixedDays:
+    """A cadence of every *days* days from the era's first payday.
+
+    The kind every owner held until plan step ``pay_calendar:C17-d`` -- a
+    fortnight, a week, thirty days -- and the one whose grid is an arithmetic
+    progression: ``budget.pay_eras.cadence_days`` is its one parameter, and
+    :mod:`app.services.pay_calendar._grid` steps it by plain day arithmetic.
+
+    Attributes:
+        days: Days between consecutive paydays.  Bounded by
+            :func:`~app.services.pay_schedule_service.reject_out_of_range_cadence`,
+            not by this type -- a range is the column's own rule and belongs
+            where its one writer asks it.  Validated again, for a different
+            bound and a different reason, by
+            :func:`~app.services.pay_calendar.derive_periods`.
+    """
+
+    days: int
 
 
 @dataclass(frozen=True)
@@ -62,7 +94,7 @@ class Rhythm:
     ``cadence_days`` and ``shift_id`` (``budget.pay_schedule`` did, until
     ``C17-a``).  Written through two statements the row passes through a
     state neither statement means, and either order refuses a legal request
-    -- so :func:`~app.services.pay_schedule_service.mint_era` takes the pair,
+    -- so :func:`~app.services.pay_era_write.mint_era` takes the pair,
     judges the pair, and writes the pair, and no caller is able to hand it half
     of one.
 
@@ -81,19 +113,17 @@ class Rhythm:
     separately.
 
     Attributes:
-        cadence_days: Days between consecutive paydays.  Bounded by
-            :func:`~app.services.pay_schedule_service.reject_out_of_range_cadence`,
-            not by this type -- a range is the column's own rule and belongs
-            where its one writer asks it.  Validated again, for a different
-            bound and a different reason, by
-            :func:`~app.services.pay_calendar.derive_periods`.
+        cadence: How often, as a value of its own KIND (:class:`FixedDays`
+            until ``C17-d-2`` adds the day-of-month kinds).  Its parameters
+            are bounded by the write door and the derivation, not by this
+            type -- see the kind's own docstring.
         shift: What payroll does when a payday lands on a day no money moves
             on, as the :class:`~app.enums.BusinessDayShiftEnum` member rather
             than the ``ref.business_day_shifts`` id that spells it on the
             wire.  The id is what crosses a form and what the column holds, so
             :class:`~app.schemas.validation.pay_periods.BusinessDayShiftField`
             converts on the way in and
-            :func:`~app.services.pay_schedule_service.mint_era`
+            :func:`~app.services.pay_era_write.mint_era`
             converts on the way out; between them the value is a member, which
             is what :func:`~app.utils.business_days.shift_to_business_day`
             requires -- it REFUSES an integer rather than defaulting, so a
@@ -103,7 +133,7 @@ class Rhythm:
             it: no ``name`` string is ever compared.
     """
 
-    cadence_days: int
+    cadence: FixedDays
     shift: BusinessDayShiftEnum
 
 
@@ -112,8 +142,8 @@ class Era:
     """One span of an owner's pay history: the rhythm, and since when.
 
     Plan step **pay_calendar:C17-a** (ruling **R-PC58**).  One row of
-    ``budget.pay_eras`` as a value: the day the rhythm took effect, the KIND
-    of rhythm it is, and the rhythm itself.  Which days an era governs is not
+    ``budget.pay_eras`` as a value: the day the rhythm took effect and the
+    rhythm itself.  Which days an era governs is not
     a field, because it is not a fact of the row -- an era governs from its
     ``effective_from`` up to the next era's, and the earliest one also runs
     backward below the record, bounded by the owner's stated history.
@@ -125,17 +155,21 @@ class Era:
     batch wrote; a second field here would have to agree with this one modulo
     the cadence, which is the maintenance contract rule 14 exists to delete.
 
+    **The KIND is not a field, since plan step ``C17-d-1``.**  ``C17-a``
+    carried ``kind: PayCadenceKindEnum`` here so that the day-of-month leaf
+    would add members rather than a field; that leaf's design found the kind
+    to be the cadence's TYPE (``rhythm.cadence`` is a :class:`FixedDays`, or
+    from ``C17-d-2`` a day-of-month value), so a field naming it beside the
+    value was one fact in two homes.  ``budget.pay_eras.kind_id`` still
+    stores it until ``C17-d-2`` (ruling **R-PC80**), and
+    ``pay_era_write.mint_era`` writes that column from the value's type.
+
     Attributes:
         effective_from: The era's first nominal payday.
-        kind: What kind of rhythm the era runs on
-            (:class:`~app.enums.PayCadenceKindEnum`).  ``FIXED_DAYS`` is the
-            only member until the day-of-month kinds land (``C17-d``); it is
-            carried now so that leaf adds members rather than a field.
         rhythm: The cadence and the payday convention (:class:`Rhythm`).
     """
 
     effective_from: date
-    kind: PayCadenceKindEnum
     rhythm: Rhythm
 
 

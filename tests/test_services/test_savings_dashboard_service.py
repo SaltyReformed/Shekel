@@ -6677,7 +6677,7 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
             # below is the guard's and not a refusal wearing its clothes.
             calendar = calendar_for(user_id)
             assert calendar.periods == ()
-            assert calendar.cadence.cadence_days == 14
+            assert calendar.cadence.cadence.days == 14
 
             cell = savings_dashboard_service.compute_account_balance_cell(
                 BalanceContext.build(user_id), seed_user["account"].id,

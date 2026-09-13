@@ -9,12 +9,16 @@ a weekly-paid owner's ``$100`` per-paycheck bill reported ``$216.67`` a month
 against a true ``$433.33``.
 
 **This is THE producer of "how many paychecks in a year", for every side of
-the application.**  The fact here is ``cadence_days``, and the count is derived
-from it in this module and nowhere else -- it is not a column, because a
-derivation stored beside its own input is a cache and a cache drifts the moment
-one writer moves one side alone (the argument
-:mod:`app.services.recurrence._resolution` makes for the two-axis recurrence
-values, applied to this one).
+the application.**  The fact here is the CADENCE -- a value of one of the
+kinds :mod:`app.services.pay_rhythm` declares, which since plan step
+``pay_calendar:C17-d-1`` is what every door hands this type instead of a bare
+day count -- and the count is derived from it in this module and nowhere else
+-- it is not a column, because a derivation stored beside its own input is a
+cache and a cache drifts the moment one writer moves one side alone (the
+argument :mod:`app.services.recurrence._resolution` makes for the two-axis
+recurrence values, applied to this one).  The day-of-month kinds ``C17-d-2``
+adds answer 12 and 24 here without dividing; the fixed-days derivation below
+is the one this leaf holds.
 
 **It became the only one at plan step R-F16, and until then it was not.**
 ``salary.salary_profiles.pay_periods_per_year`` was a SECOND, stored,
@@ -124,6 +128,7 @@ owner's cadence out of the table is :func:`~._loader.cadence_for`.
 from dataclasses import dataclass
 from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
+from app.services.pay_rhythm import FixedDays
 from app.utils.money import MONTHS_PER_YEAR
 
 from ._eras import validate_cadence
@@ -161,24 +166,25 @@ class PayCadence:
     never builds a second, and there is still exactly one derivation.
 
     Attributes:
-        cadence_days: Days between the owner's paydays, from
-            ``budget.pay_schedule.cadence_days``.  The ONLY fact here;
-            everything else is derived from it.  Validated at construction
-            against the same 1..365 bound
+        cadence: How often the owner is paid, as a value of one of the kinds
+            :mod:`app.services.pay_rhythm` declares -- the latest era's
+            ``rhythm.cadence`` (:class:`~app.services.pay_rhythm.FixedDays`
+            at this leaf).  The ONLY fact here; everything else is derived
+            from it.  Validated at construction against the same bounds
             :func:`~._derive.derive_periods` holds a calendar's cadence to --
-            through :func:`~._derive.validate_cadence` itself, so the two
+            through :func:`~._eras.validate_cadence` itself, so the two
             cannot part company.
     """
 
-    cadence_days: int
+    cadence: FixedDays
 
     def __post_init__(self) -> None:
-        """Refuse a cadence ``ck_pay_schedule_cadence_range`` would refuse.
+        """Refuse a cadence ``ck_pay_eras_cadence_range`` would refuse.
 
         The check is a property of the VALUE rather than of any one producer,
         which is why it is here and not merely repeated from
         :func:`~._derive.derive_periods`.  A :class:`PayCadence` is constructed
-        from a bare ``int`` at four sites in ``app/`` -- ``_loader.cadence_for``,
+        at four sites in ``app/`` -- ``_loader.cadence_for``,
         :meth:`~._calendar.PayCalendar.cadence`,
         ``routes.salary.profiles``' paycheck count, and
         ``recurrence._frequency._WEEKLY``, a module-level literal answering to
@@ -186,7 +192,7 @@ class PayCadence:
         passes through.  A type that admitted 800 would answer "half a
         paycheck a year" and misstate every monthly equivalent derived from it.
         It is graded directly, not inferred:
-        ``test_paycheck_calculator`` asserts ``PayCadence(cadence_days=0)``
+        ``test_paycheck_calculator`` asserts ``PayCadence(FixedDays(0))``
         raises, and ``test_grid`` builds one at 365 to drive the range options.
 
         *An earlier draft of this paragraph cited "the harness that drives the
@@ -212,10 +218,11 @@ class PayCadence:
         argument for it never needed that producer.*
 
         Raises:
-            PayCalendarError: The value is not a plain ``int`` (a ``bool``
-                included) or falls outside 1..365.
+            PayCalendarError: The cadence is of no known kind, or its day
+                count is not a plain ``int`` (a ``bool`` included) or falls
+                outside 1..365.
         """
-        validate_cadence(self.cadence_days)
+        validate_cadence(self.cadence)
 
     @property
     def periods_per_year(self) -> Decimal:
@@ -240,7 +247,7 @@ class PayCadence:
             downstream.  At least 1 for every cadence in the domain
             (``365.2425 / 365`` rounds to 1).
         """
-        return (DAYS_PER_YEAR / self.cadence_days).quantize(
+        return (DAYS_PER_YEAR / self.cadence.days).quantize(
             _WHOLE_PAYCHECKS, rounding=ROUND_HALF_UP,
         )
 
@@ -404,7 +411,7 @@ class PayCadence:
         return int(
             (
                 Decimal(months) * DAYS_PER_YEAR
-                / (MONTHS_PER_YEAR * self.cadence_days)
+                / (MONTHS_PER_YEAR * self.cadence.days)
             ).to_integral_value(rounding=ROUND_FLOOR)
         )
 

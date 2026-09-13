@@ -647,7 +647,7 @@ class TestAnOwnerWithNoPaydaysReachesEveryDoor:
             ]
             # The repair is COMPLETE: the owner now has a calendar, so every
             # door that refused them above is open.
-            assert calendar_for(user_id).cadence.cadence_days == 14
+            assert calendar_for(user_id).cadence.cadence.days == 14
 
 
 class TestTruncateResolvesItsFactsOnce:

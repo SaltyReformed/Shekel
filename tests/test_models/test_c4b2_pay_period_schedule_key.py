@@ -46,6 +46,7 @@ from app.models.pay_schedule import PaySchedule
 from app.models.user import User, UserSettings
 from app.services import pay_era_write, pay_schedule_service
 from app.services.auth_service import hash_password
+from app.services.pay_rhythm import FixedDays
 from tests._test_helpers import (
     open_owner_calendar,
     relax_pay_schedule_shift_not_null,
@@ -373,7 +374,7 @@ class TestTheForbiddenOwnerIsUnstorable:
             ).delete(synchronize_session=False)
             db.session.commit()
 
-            assert pay_schedule_service.resolve_cadence(user.id) == 14
+            assert pay_schedule_service.resolve_cadence(user.id) == FixedDays(14)
 
             db.session.add(PayPeriod(
                 user_id=user.id,

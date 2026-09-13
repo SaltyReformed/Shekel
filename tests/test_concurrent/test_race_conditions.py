@@ -630,7 +630,7 @@ class TestConcurrentRollingTopUp:
         # The OWNER's own stored cadence, not a constant restated here: it is
         # what the top-up appends at and what the derivation projects the last
         # period from, so this cannot go stale if the fixture's cadence moves.
-        cadence = pay_schedule_service.resolve_cadence(user_id)
+        cadence = pay_schedule_service.resolve_cadence(user_id).days
         assert gaps == {cadence}, (
             f"the race left an off-cadence schedule: gaps {sorted(gaps)} "
             f"against a stored cadence of {cadence}"
@@ -690,7 +690,7 @@ class TestConcurrentRollingTopUp:
         # The OWNER's own stored cadence, not a constant restated here: it is
         # what the top-up appends at and what the derivation projects the last
         # period from, so this cannot go stale if the fixture's cadence moves.
-        cadence = pay_schedule_service.resolve_cadence(user_id)
+        cadence = pay_schedule_service.resolve_cadence(user_id).days
         assert gaps == {cadence}, (
             f"the race left an off-cadence schedule: gaps {sorted(gaps)} "
             f"against a stored cadence of {cadence}"

@@ -256,7 +256,7 @@ def requested_paydays(
             convention.
 
     Returns:
-        *num_periods* days, ascending: the grid days ``rhythm.cadence_days``
+        *num_periods* days, ascending: the grid days ``rhythm.cadence``
         apart from *first_payday*, each displaced onto a business day.  Under
         :attr:`~app.enums.BusinessDayShiftEnum.NONE` that is the grid itself.
     """
@@ -408,7 +408,7 @@ def reject_backward_payday(
             f"fall on or after {floor.isoformat()} -- the "
             f"day the next paycheck opens after your latest recorded payday "
             f"({latest_payday.isoformat()}, at a "
-            f"{era.rhythm.cadence_days}-day cycle); "
+            f"{era.rhythm.cadence.days}-day cycle); "
             f"got {earliest_new.isoformat()}.  An earlier date lands inside a "
             f"paycheck you already have and would split it in half, which this "
             f"app cannot yet do safely.  Choose a later date, or rebuild the "

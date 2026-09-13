@@ -64,6 +64,7 @@ from tests._test_helpers import (
     settlement_columns,
 )
 from app.models.amount_ownership import AmountOwnership
+from app.services.pay_rhythm import FixedDays
 
 
 _CURRENT_IDX = 5  # seed_periods index that contains the frozen today.
@@ -313,7 +314,7 @@ class TestPulseHero:
 #: hardcoded ``_CHART_HORIZON_PERIODS = 13``.  Passing the real value object
 #: rather than a stand-in keeps these cases on the production derivation, and
 #: at 14 days it answers the same 13 points they were written against.
-_BIWEEKLY = PayCadence(cadence_days=14)
+_BIWEEKLY = PayCadence(FixedDays(14))
 
 
 class TestPulseChart:
@@ -361,7 +362,7 @@ class TestPulseChart:
             forward, balances = self._periods_and_balances(periods)
 
             chart = _pulse._chart(
-                forward, balances, None, PayCadence(cadence_days=7),
+                forward, balances, None, PayCadence(FixedDays(7)),
             )
 
             assert len(chart["points"]) == 26
@@ -390,9 +391,9 @@ class TestPulseChart:
             db.session.commit()
             forward, balances = self._periods_and_balances(periods)
 
-            assert PayCadence(cadence_days=300).paychecks_within(6) == 0
+            assert PayCadence(FixedDays(300)).paychecks_within(6) == 0
             chart = _pulse._chart(
-                forward, balances, None, PayCadence(cadence_days=300),
+                forward, balances, None, PayCadence(FixedDays(300)),
             )
 
             assert len(chart["points"]) == 1

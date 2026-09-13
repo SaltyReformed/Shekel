@@ -583,7 +583,7 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
             "them; reaching here means a caller built the sequence by hand."
         )
     for era in eras:
-        validate_cadence(era.rhythm.cadence_days)
+        validate_cadence(era.rhythm.cadence)
     for earlier, later in zip(eras, eras[1:]):
         if later.effective_from <= earlier.effective_from:
             raise PayCalendarError(
@@ -603,7 +603,7 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
                 f"before the previous era's second planned payday "
                 f"({projected_payday(era.effective_from, era.rhythm, 1).isoformat()}"
                 f", from {era.effective_from.isoformat()} at a "
-                f"{era.rhythm.cadence_days}-day cadence), so that era would "
+                f"{era.rhythm.cadence.days}-day cadence), so that era would "
                 f"pay nothing: a later era's first payday replaces the "
                 f"earlier era's last planned payday at or before it (ruling "
                 f"R-PC75).  pay_period_batch's floor keeps a minted era's "

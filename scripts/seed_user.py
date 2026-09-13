@@ -258,11 +258,11 @@ def seed_user():
                 # a claim made on their behalf.  The owner answers on the
                 # pay-periods settings card.
                 rhythm=pay_rhythm.Rhythm(
-                    cadence_days=_read_int_env(
+                    cadence=pay_rhythm.FixedDays(_read_int_env(
                         "SEED_USER_CADENCE_DAYS",
                         BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
                         unit="days",
-                    ),
+                    )),
                     shift=BusinessDayShiftEnum.NONE,
                 ),
                 num_periods=_read_int_env(
