@@ -27,6 +27,7 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     strip_owner_schedule,
     all_periods,
@@ -5200,7 +5201,7 @@ class TestCheckingDetail:
     def test_checking_detail_page_renders(self, app, auth_client, seed_user):
         """GET /accounts/<id>/checking renders the detail page with account name and balance."""
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -5226,7 +5227,7 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Salary"]
 
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=27, rhythm=rhythm_of(14),
@@ -5294,7 +5295,7 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Salary"]
 
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=27, rhythm=rhythm_of(14),
@@ -5381,7 +5382,7 @@ class TestCheckingDetail:
     ):
         """Checking detail with no transactions shows flat balance at anchor amount."""
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=27, rhythm=rhythm_of(14),
@@ -5400,7 +5401,7 @@ class TestCheckingDetail:
     ):
         """Short horizon: 3-month projection available, 12-month projection missing."""
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -5429,7 +5430,7 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Rent"]
 
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -5484,7 +5485,7 @@ class TestCheckingDetail:
         # test convention.
         from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -5876,7 +5877,7 @@ class TestCheckingDetailCanonicalProducer:
             # The CALL is the setup: it creates the ten periods this
             # page projects across.  The return value is unused since
             # the anchor no longer names a period.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -6017,7 +6018,7 @@ class TestCheckingDashboardLink:
         with app.app_context():
             # The CALL is the setup: the dashboard can only compute a
             # balance for the seed account across periods that exist.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -6046,7 +6047,7 @@ class TestCheckingDashboardLink:
         with app.app_context():
             # The CALL is the setup: the dashboard can only compute a
             # balance for either card across periods that exist.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -6148,7 +6149,7 @@ class TestCashDetailContext:
         26 they replaced are the same numbers and no case could tell them
         apart.
         """
-        periods = pay_period_write.record_paydays(
+        periods = record_paydays_across_a_hole(
             user_id=seed_user["user"].id,
             first_payday=display_today(),
             num_periods=num_periods, rhythm=rhythm_of(cadence_days),
@@ -6569,7 +6570,7 @@ class TestCashDetailContext:
         with app.app_context():
             # The CALL is the setup: the next-year window needs a year
             # of periods to sum interest across.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=30, rhythm=rhythm_of(14),
@@ -6612,7 +6613,7 @@ class TestCashDetailContext:
         # test convention.
         from app.services.balance_at import _kernel as net_worth_kernel  # pylint: disable=import-outside-toplevel
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=33, rhythm=rhythm_of(14),
@@ -6685,7 +6686,7 @@ class TestCashDetailContext:
         from app.services.balance_at import _kernel as net_worth_kernel  # pylint: disable=import-outside-toplevel
         from app.services.balance_at import BalanceContext  # pylint: disable=import-outside-toplevel
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=60, rhythm=rhythm_of(7),
@@ -7738,7 +7739,7 @@ class TestCashDetailClickToEditHero:
         with app.app_context():
             # The CALL is the setup: it creates the ten periods the
             # band's horizon chips read across.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),

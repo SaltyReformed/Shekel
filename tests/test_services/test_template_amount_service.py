@@ -364,8 +364,8 @@ class TestSetAmount:
     ):
         """The salary path reaches this door and must record nothing.
 
-        ``_regenerate_salary_transactions`` writes the recomputed net pay to
-        the column on every profile edit; a version per edit would be a fake
+        ``salary_regeneration.regenerate_salary_transactions`` writes the
+        recomputed net pay to the column on every profile edit; a version per edit would be a fake
         price history of a computed figure.
         """
         with app.app_context():

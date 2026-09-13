@@ -27,6 +27,7 @@ from marshmallow import (
 )
 
 from app import ref_cache
+from app.services.salary_raises import RAISE_YEAR_MAX, RAISE_YEAR_MIN
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 from app.utils.rendered_figure import as_rendered_field
 from app.utils.digit_strings import MIN_ROW_ID, is_ascii_digits, parse_row_id
@@ -89,6 +90,17 @@ _NON_NEGATIVE_MONETARY = validate.Range(
 # name the whole application knows it by.
 EFFECTIVE_DATE_MIN: date = CALENDAR_DATE_MIN
 EFFECTIVE_DATE_MAX: date = CALENDAR_DATE_MAX
+
+# The window a salary raise's YEAR -- effective or terminal -- may fall in, as
+# the per-control validator: the owner gets a message on the control instead
+# of an IntegrityError.  The NUMBERS live with the rule, in
+# ``app.services.salary_raises`` (``end_year_of`` states the ceiling as a clause
+# of ruling R-SAL22's one end-year rule), and this is built from them.  ONE
+# instance since plan step salary:S3-f-2b, when the ``/retirement`` rail's
+# per-raise probe became a third field stating the same window: the raise form's
+# two year fields spelled it twice already, and a third copy is the shape rule
+# 14 names.
+_RAISE_YEAR_RANGE = validate.Range(min=RAISE_YEAR_MIN, max=RAISE_YEAR_MAX)
 
 
 # E-28 / HIGH-06 (Commit 24): the percent-to-fraction divisor used by

@@ -21,7 +21,7 @@ fixture; the rules themselves are transient (never added to a session) and
 every schedule is hand-built, so nothing here touches a pay-period table.
 """
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -31,7 +31,11 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction_template import TransactionTemplate
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
+    BoundReading,
+    EndsOnDate,
     RecurrenceResolutionError,
+    RuleReading,
+    has_ended,
     read_rule,
     resolved_recurrence,
     rule_occurrences,
@@ -252,6 +256,9 @@ class TestTheEmptySchedule:
 
             assert reading.resolved is None
             assert reading.placements == ()
+            assert reading.horizon is None, (
+                "an empty schedule reaches nowhere, and the reading says so"
+            )
 
     def test_the_projection_answers_empty_too(self, app):
         """The shape three surfaces and the baseline take is unchanged."""
@@ -263,6 +270,140 @@ class TestTheEmptySchedule:
             rule = _rule(EVERY_PERIOD)
 
             assert rule_occurrences(rule, empty) == ()
+
+
+class TestTheReadingKnowsHowFarItReached:
+    """The horizon rides ON the reading (plan step R7d-f-2, ledger row N-514).
+
+    ``has_ended`` took the owner's calendar as a third argument for its
+    horizon, beside a reading whose placements had been walked against
+    whatever calendar the door was handed -- two arguments that had to name
+    one schedule, kept in step by both callers handing the pass's memoised
+    one.  The horizon is a field of :class:`RuleReading` now, so the walk and
+    the fact that bounds it travel together and the mis-pairing has no
+    spelling.
+    """
+
+    def test_read_rule_carries_the_calendars_horizon(self, app):
+        """The reading's horizon IS the walked calendar's last covered day."""
+        with app.app_context():
+            calendar = build_calendar()
+            reading = read_rule(_rule(MONTHLY), calendar)
+
+            assert reading.horizon == calendar.horizon()
+            assert reading.horizon is not None, (
+                "precondition: the shared schedule reaches somewhere"
+            )
+            assert all(
+                placement.occurrence <= reading.horizon
+                for placement in reading.placements
+            ), "the walk ran through the horizon it now carries, and no further"
+
+    def test_placements_with_no_horizon_are_refused(self, app):
+        """A walk that placed anything ran against a schedule that reaches.
+
+        The generated ``__init__`` would accept the pair; the value refuses
+        it, for the reason the resolved-without-placements check beside it
+        exists.
+        """
+        with app.app_context():
+            walked = read_rule(_rule(MONTHLY), build_calendar())
+            assert walked.placements, "precondition: something was placed"
+
+            with pytest.raises(RecurrenceResolutionError, match="no horizon"):
+                RuleReading(
+                    resolved=walked.resolved,
+                    placements=walked.placements,
+                    horizon=None,
+                )
+
+    def test_a_resolved_reading_with_no_placements_may_carry_a_horizon(
+        self, app,
+    ):
+        """The refusal is one-directional: nothing placed needs no reach.
+
+        A definition its destination closed before it ever fires is resolved,
+        places nothing, and was still walked against a schedule that reaches
+        somewhere -- that pair is legal and is what the composed door builds
+        for it.
+        """
+        with app.app_context():
+            calendar = build_calendar()
+            walked = read_rule(_rule(MONTHLY), calendar)
+
+            reading = RuleReading(
+                resolved=walked.resolved, placements=(),
+                horizon=calendar.horizon(),
+            )
+
+            assert reading.horizon == calendar.horizon()
+            assert reading.bound_reading() == BoundReading(
+                occurrences=(), horizon=calendar.horizon(),
+            )
+
+    def test_bound_reading_projects_the_occurrences_and_the_horizon(self, app):
+        """What every closing shape judges, read off ONE value."""
+        with app.app_context():
+            calendar = build_calendar()
+            reading = read_rule(_rule(MONTHLY), calendar)
+
+            assert reading.bound_reading() == BoundReading(
+                occurrences=tuple(
+                    placement.occurrence for placement in reading.placements
+                ),
+                horizon=calendar.horizon(),
+            )
+
+    def test_has_ended_judges_the_readings_OWN_horizon(self, app):
+        """Same placements, two horizons, two answers -- the field is read.
+
+        A date bound still ahead with no occurrence left inside the walk is
+        "ended" only when the schedule REACHES the bound's last day
+        (``date_bound_has_closed``); short of it, the occurrences are merely
+        unscheduled and the commitment is live.  Two readings built from one
+        walk, differing only in the horizon they carry, must therefore differ
+        in the answer -- which is exactly the pairing the old third argument
+        let a caller get wrong.  The stored rule is walked to the SAME
+        occurrences either way, so the field is the only thing that can move
+        the answer.
+        """
+        with app.app_context():
+            calendar = build_calendar()
+            # Monthly on the 22nd from 2026-04-22, bounded to end 2026-12-31:
+            # the walk emits Apr 22 .. Dec 22 and stops at the bound.
+            bound = EndsOnDate(on=date(2026, 12, 31))
+            rule = _rule(MONTHLY, end_date=bound.on)
+            walked = read_rule(rule, calendar)
+            assert walked.resolved.closing.authored == bound, (
+                "precondition: the rule reads back the bound it stores"
+            )
+            # The day after the last occurrence and BEFORE the bound's last
+            # day, so the cheap date arm cannot answer and the walk owes
+            # nothing: only the horizon is left to decide.
+            on = max(
+                placement.occurrence for placement in walked.placements
+            ) + timedelta(days=1)
+            assert on <= bound.on, "precondition: the cheap arm is silent"
+
+            # Hand-built from ONE walk, differing only in the field under
+            # test -- the pairing the old third argument let a caller state.
+            short = RuleReading(
+                resolved=walked.resolved, placements=walked.placements,
+                horizon=bound.on - timedelta(days=1),
+            )
+            long = RuleReading(
+                resolved=walked.resolved, placements=walked.placements,
+                horizon=bound.on,
+            )
+
+            assert has_ended(rule, short, on=on) is False, (
+                "a schedule one day short of the bound has not reached it: "
+                "the occurrences are unscheduled, not over"
+            )
+            assert has_ended(rule, long, on=on) is True, (
+                "a schedule that reaches the bound's last day with nothing "
+                "left inside it says the definition is over"
+            )
 
 
 class TestItSwallowsNothingElse:
