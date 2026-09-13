@@ -172,9 +172,12 @@ what it leaves a LATER step is on that step's own entry.
 - [ ] **X-gu** `fix(import): the delete door locks its lines in the shared order` -- **BI-492**.
       `lock_lines` over the import's lines before `delete_import` deletes the row, so the cascade
       cannot cross a press; the cross-resource half is `balance:X-bn`'s. Minted 2026-09-12.
-- [ ] **X-gv** `fix(import): a locked read re-hydrates what it locks` -- **BI-493**. The locked
-      reads take `populate_existing()`; a line hydrated before the lock is otherwise returned stale.
-      Minted 2026-09-12 from `X-gi-5`'s design review.
+- [x] **X-gv** `88f38feb` -- `locked_for_write` composes `populate_existing()` beside the mode, so a
+      door reads the row the lock holds rather than the one `review_set` hydrated before it; vacuous
+      on `lock_lines` (id column only), acting at `load_lines` and `_line_on`. Closed **BI-493**,
+      REPRODUCED first at both doors: a skip landed on a line whose merchant now paid an account the
+      owner holds (**R-JI**), and a purchase took its posting day over a stated transaction day.
+      Graded by `test_locked_read_refresh.py` (4 cases, one firing control).
 - [ ] **X-gx** `fix(import): the offer names the merchant the door filed under` -- **BI-495**. The
       create door reports the merchant it filed for, the receipt item carries it, and the offer
       filters the applied items instead of reading the pre-lock `review`. Minted 2026-09-12 from
