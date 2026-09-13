@@ -102,13 +102,14 @@ stored.  What the limit still names is every row whose column holds an
 owner's word this door reads as the cache: the rows that path wrote before
 the refusal existed; a second transfer PROMOTED by the archiving of the first
 (above); and the UPDATE door's two paths, which R7d-f-3's adversarial review
-found and no step yet owns -- a rule-less transfer into a payment-less loan
-given a cadence on the edit form (the identity answers ``False`` for a
-template with no rule, so the authoring branch writes the owner's start AND
-stop), and a bounded transfer whose destination is MOVED onto a payment-less
-loan (the identity is judged against the stored destination, then the column
-moves).  (2) An ARCHIVED loan payment -- no longer the account's active
-transfer -- has the column the app wrote while it was active
+found and plan step R7d-f-4 owns (ledger row **REC-521**): a rule-less
+transfer into a payment-less loan given a cadence on the edit form (the
+identity answers ``False`` for a template with no rule, so the authoring
+branch writes the owner's start AND stop), and a bounded transfer whose
+destination is MOVED onto a payment-less loan (the identity is judged against
+the stored destination, then the column moves).  (2) An ARCHIVED loan payment
+-- no longer the account's active transfer -- has the column the app wrote
+while it was active
 read as its owner's bound in the Archived drawer, and a cache EARLIER than the
 derived stop still binds that drawer row until plan step R7d-g NULLs it.  R7d-g
 must DECIDE archived loan payments rather than sweep them (plan ledger row
