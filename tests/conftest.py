@@ -739,6 +739,7 @@ from tests._test_helpers import (
     create_loan_account,
     insert_trueup_event,
     make_appreciating_account,
+    make_every_period_rule,
     make_expense_template,
     make_investment_account,
     open_books_before_the_first_assertion,
@@ -3197,6 +3198,11 @@ def _build_full_user_data(db, seed_user, periods):
     # priced by this series on its own due date, so a template without one
     # generates rows ``_stated_amount`` REFUSES.
     state_template_price(transfer_tpl)
+    # ...and its CADENCE, so a test wanting a transfer of this definition
+    # takes the ENGINE's (:func:`generate_transfer_of`, plan step
+    # balance:X-ch) rather than hand-building one.  No transfer is generated
+    # here: unlike the transaction template above, no fixture reads one.
+    make_every_period_rule(db.session, transfer_tpl)
 
     # d) Salary profile.
     salary_profile = SalaryProfile(
@@ -3331,9 +3337,10 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
     )
     db.session.add(transfer_tpl)
     db.session.flush()
-    # Its price, stated as every app-side create door states it (see the
-    # calendar-anchored twin above).
+    # Its price, stated as every app-side create door states it, and its
+    # cadence (see the calendar-anchored twin above).
     state_template_price(transfer_tpl)
+    make_every_period_rule(db.session, transfer_tpl)
 
     # d) Salary profile.
     salary_profile = SalaryProfile(

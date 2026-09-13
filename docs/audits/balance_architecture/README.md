@@ -1039,9 +1039,8 @@ section 4, under their unchanged ids.*
   Two engine rows in one paycheck share ONE due date (D18), so WHICH row a carry topped up is read off the rows, never a figure; its review found an index restore restating the pre-X-au-h DDL that no test could see, because every case clones its own database.
 * [x] **X-cf-4** `ccf88c01` -- the route suites' 38 hand-built rows (28 undated, 5 hand-dated, 5 `txn.template_id = ...` assignments) and four owner-act spellings take the engine's row; every BAL-480 census reads zero, and BAL-480 closed with it.
   Its review measured the ambiguous carry-forward target got STRONGER (the old undated pair was refused on `occurs_on IS NULL` alone; the dated pair only by the `is_override` rule), and the three reads of the column a derived row leaves NULL name the definition's stated figure instead.
-* [ ] **X-ch** `test(fixtures): a transfer of a definition is the engine's` -- closes **BAL-488**.
-  `generate_transfer_of(template, period)`, R-BAL17's builder one table over; 23 hand-built linked-transfer
-  sites in 11 files converted, so `X-bv-2`'s twin CHECK binds on rows the engine wrote.
+* [x] **X-ch** `28a6317e` -- `generate_transfer_of`, R-BAL17's builder one table over (one private body with `generate_row_of`), and `transfer_repriced_by_the_owner`; all 23 hand-built linked-transfer sites in 11 files converted, BAL-488 closed.
+  **Its review caught the conversion DISARMING a control**: under the every-paycheck cadence the engine dates a row on its period's start, so "the later price on the row's own date" read one day for both; both later-price cases now take MONTHLY on the 1st in the straddling paycheck.
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
   The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
   `is_override` term; the undated arm keeps the term because its index does. Script and test only.

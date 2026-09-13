@@ -45,8 +45,8 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from tests._test_helpers import (
     create_savings_account,
-    create_transfer,
     generate_row_of,
+    generate_transfer_of,
     load_migration_module,
     make_every_period_rule,
     make_salary_profile,
@@ -124,6 +124,43 @@ def _row(  # pylint: disable=too-many-arguments
         txn.scenario_id = scenario.id
     _db.session.flush()
     return txn
+
+
+def _transfer_template(seed_user, savings, name, amount):
+    """Create a plain recurring transfer template (no series yet).
+
+    :func:`_template`'s twin: the every-paycheck cadence the transfer engine
+    needs (:func:`_transfer_row`) and NO price series, for the same reason.
+    """
+    template = TransferTemplate(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=savings.id,
+        name=name,
+        default_amount=Decimal(amount),
+    )
+    _db.session.add(template)
+    _db.session.flush()
+    make_every_period_rule(_db.session, template)
+    return template
+
+
+def _transfer_row(template, period, amount, due_date, *, is_override=False):
+    """Create one generated transfer for *template* with a stated shape.
+
+    :func:`_row` one table over (plan step balance:X-ch): the transfer is the
+    ENGINE's (:func:`generate_transfer_of`), and the shape this migration
+    MINED is laid back onto the PARENT -- its own copy of the price (the
+    pre-X-au-f stored figure the transfer arm reads), the due date the case
+    names, and the override flag.  The two legs are left as the engine wrote
+    them; the backfill's transfer arm reads ``budget.transfers`` alone.
+    """
+    xfer = generate_transfer_of(template, period)
+    xfer.amount_ownership = AmountOwnership.own(Decimal(amount))
+    xfer.due_date = due_date
+    xfer.is_override = is_override
+    _db.session.flush()
+    return xfer
 
 
 # Stamp a timestamptz at MIDDAY in the display timezone, so the civil day the
@@ -539,27 +576,16 @@ class TestTheTransferArm:
             savings = create_savings_account(
                 seed_user, db.session, "Money Market", Decimal("0.00"),
             )
-            template = TransferTemplate(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                name="Money Market Contribution",
-                default_amount=Decimal("250.00"),
+            template = _transfer_template(
+                seed_user, savings, "Money Market Contribution", "250.00",
             )
-            db.session.add(template)
-            db.session.flush()
 
             for amount, due, period in zip(
                 ("500.00", "500.00", "250.00"),
                 (date(2026, 4, 9), date(2026, 5, 7), date(2026, 5, 21)),
                 seed_periods,
             ):
-                create_transfer(
-                    seed_user, db.session, seed_user["account"], savings, period,
-                    amount=Decimal(amount), due_date=due,
-                    name="Money Market Contribution",
-                ).transfer_template_id = template.id
-            db.session.flush()
+                _transfer_row(template, period, amount, due)
 
             _run_backfill()
 
@@ -582,30 +608,15 @@ class TestTheTransferArm:
             savings = create_savings_account(
                 seed_user, db.session, "Money Market", Decimal("0.00"),
             )
-            template = TransferTemplate(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                name="Emergency Fund",
-                default_amount=Decimal("500.00"),
+            template = _transfer_template(
+                seed_user, savings, "Emergency Fund", "500.00",
             )
-            db.session.add(template)
-            db.session.flush()
 
-            hand_edited = create_transfer(
-                seed_user, db.session, seed_user["account"], savings,
-                seed_periods[0], amount=Decimal("999.99"),
-                due_date=date(2026, 4, 9), name="Emergency Fund",
+            _transfer_row(
+                template, seed_periods[0], "999.99", date(2026, 4, 9),
+                is_override=True,
             )
-            hand_edited.transfer_template_id = template.id
-            hand_edited.is_override = True
-            canonical = create_transfer(
-                seed_user, db.session, seed_user["account"], savings,
-                seed_periods[1], amount=Decimal("500.00"),
-                due_date=date(2026, 5, 7), name="Emergency Fund",
-            )
-            canonical.transfer_template_id = template.id
-            db.session.flush()
+            _transfer_row(template, seed_periods[1], "500.00", date(2026, 5, 7))
 
             _run_backfill()
 

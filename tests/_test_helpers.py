@@ -4327,6 +4327,112 @@ def generate_row_of(template, period):
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
     from app.services import recurrence_engine
+    return _the_one_row_the_engine_writes(recurrence_engine, template, period)
+
+
+def generate_transfer_of(template, period):
+    """Generate the ONE transfer of *template* in *period* through the engine.
+
+    **The suite's one builder for a transfer of a definition** -- plan step
+    balance:X-ch, ruling R-BAL17 applied to the twin table, finding BAL-488
+    -- and :func:`generate_row_of` one table over.  A transfer that names a
+    recurring definition has exactly one constructor in the application:
+    ``transfer_recurrence._create_from_definition``, reached from the generate
+    pass's ``_new_row`` and from the maintain pass's create arm alike, which
+    splats ``DerivedTransferFields`` (the two accounts, name, category, amount
+    OWNERSHIP and due date the definition derives) into a
+    ``transfer_service.TransferSpec`` and so gets the parent AND its two
+    shadow legs from the one door that writes ``budget.transfers``.  This
+    helper CALLS the generate pass, with a window of exactly one paycheck,
+    and hands back what the engine wrote; every promise
+    :func:`generate_row_of` makes and every refusal the shared private body
+    fires is the same here.
+
+    **What the hand-built transfers were** (BAL-488, measured 2026-09-12 on
+    the full suite when X-bv-2's twin CHECK was bound): twenty-three sites in
+    eleven files constructed ``Transfer(transfer_template_id=...)`` or a
+    ``TransferSpec`` naming a template by hand -- undated, and OWNING a
+    figure beside the link, the pre-X-au-f shape no producer writes.
+    Forty-four tests grade transfers the application cannot make.
+
+    What follows from the engine's transfer, and each is the point:
+
+    * **It is DERIVED, parent and both legs.**  It stores no figure; its
+      definition's series answers for it on its own due date, so a fixture
+      states the figure it expects on the template (:func:`state_template_price`;
+      :func:`make_transfer_template` already does).  A reader that asks the
+      raw ``amount`` column gets ``None``, as on production.
+    * **It answers an OCCURRENCE** (``occurs_on``), so
+      ``idx_transfers_template_scenario_occurrence`` holds over it and a
+      second ask for the same paycheck writes nothing (the 0-rows refusal).
+    * **It is Projected**; the engine writes nothing else.  A fixture wanting
+      a SETTLED transfer of a definition settles this one through
+      ``transfer_service.update_transfer`` (a settling ``status_id``, the
+      shape :func:`create_settled_transfer` uses), and one wanting the OWNER's
+      transfer takes ownership through the same door with ``is_override=True``
+      beside the figure -- the two acts ``routes/transfers/mutations``
+      performs -- because a transfer's three rows are kept equal by that
+      service and nothing else (Transfer Invariants 3 and 4).
+
+    Args:
+        template: The flushed
+            :class:`~app.models.transfer_template.TransferTemplate`.  It must
+            carry a cadence (``recurrence_rule``) and, to be worth anything,
+            a stated price; :func:`make_transfer_template` gives it both.
+        period: The :class:`~app.models.pay_period.PayPeriod` row the
+            generated transfer is funded in.  Must be one of the owner's
+            saved periods.
+
+    Returns:
+        The :class:`~app.models.transfer.Transfer` the engine created,
+        flushed, with its two shadow transactions.
+
+    Raises:
+        ValueError: As :func:`generate_row_of` -- no cadence; the engine
+            wrote no transfer in *period* (its rule names no occurrence
+            there, or one already claims it) or wrote more than one.
+        RecurrenceWindowError: *period* is not one of the owner's saved
+            periods.
+        BaselineMissingError: The owner has no baseline scenario.
+        ValidationError: From ``transfer_service.create_transfer``, which the
+            transaction engine has no counterpart of -- the definition's
+            endpoints are refused (an amortizing loan as the SOURCE, the same
+            account at both ends), or the occurrence precedes the
+            destination loan's origination (ruling R-C).
+        NotFoundError: From the same door -- an endpoint or the template
+            itself is not the owner's.
+    """
+    # pylint: disable=import-outside-toplevel  -- see generate_row_of
+    from app.services import transfer_recurrence
+    return _the_one_row_the_engine_writes(transfer_recurrence, template, period)
+
+
+def _the_one_row_the_engine_writes(engine, template, period):
+    """The body :func:`generate_row_of` and :func:`generate_transfer_of` share.
+
+    The two engines expose the same ``generate_for_template(template,
+    schedule, scenario_id)`` and the two definitions the same
+    ``recurrence_rule``, so what differs between a row of a definition and a
+    transfer of one is the engine handed in and nothing else -- one statement
+    of the window, the refusals and the count, rather than two that agree
+    today (``CLAUDE.md`` rule 14).
+
+    Args:
+        engine: ``app.services.recurrence_engine`` or
+            ``app.services.transfer_recurrence``.
+        template: The flushed definition, carrying a cadence.
+        period: The owner's saved :class:`~app.models.pay_period.PayPeriod`.
+
+    Returns:
+        The one row the engine wrote in *period*.
+
+    Raises:
+        ValueError: No cadence, or the engine wrote a number of rows other
+            than one.  See the public builders for the causes.
+        RecurrenceWindowError: *period* is not one of the owner's saved periods.
+        BaselineMissingError: The owner has no baseline scenario.
+    """
+    # pylint: disable=import-outside-toplevel  -- see generate_row_of
     from app.services.balance_at import BalanceContext
     from app.services.generation_schedule import GenerationSchedule
     if template.recurrence_rule is None:
@@ -4336,7 +4442,7 @@ def generate_row_of(template, period):
             "(make_every_period_rule) before asking for its row"
         )
     ctx = BalanceContext.build(template.user_id)
-    created = recurrence_engine.generate_for_template(
+    created = engine.generate_for_template(
         template, GenerationSchedule.for_period_ids(ctx, [period.id]),
         ctx.scenario_id,
     )
@@ -4382,6 +4488,41 @@ def repriced_by_the_owner(row, figure):
     row.is_override = True
     db.session.flush()
     return row
+
+
+def transfer_repriced_by_the_owner(xfer, figure):
+    """Re-price the transfer *xfer* the way the transfer edit door does.
+
+    :func:`repriced_by_the_owner` one table over (plan step balance:X-ch,
+    ruling R-BAL17 on the twin), with the difference the twin table has: a
+    transfer's figure lives on THREE rows -- the parent and its two shadow
+    legs -- and ``transfer_service.update_transfer`` is the one door that
+    moves them together (Transfer Invariants 3 and 4), so the two acts
+    ``routes/transfers/mutations`` performs on a typed figure go through it:
+    the figure as OWNERSHIP, and ``is_override=True`` beside it because the
+    transfer is the owner's now rather than the rule's.  A fixture that set
+    ``amount_ownership`` on the parent alone would leave the legs declaring
+    a parent that no longer prices them the way it did.
+
+    Args:
+        xfer: The flushed :class:`~app.models.transfer.Transfer`, the
+            engine's (:func:`generate_transfer_of`).
+        figure: The figure the owner typed (str or Decimal-coercible).
+
+    Returns:
+        *xfer*, flushed, owning *figure* with both legs following it.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services import transfer_service
+
+    transfer_service.update_transfer(
+        xfer.id, xfer.user_id,
+        amount_ownership=AmountOwnership.own(Decimal(str(figure))),
+        is_override=True,
+    )
+    return xfer
 
 
 def moved_by_the_owner(row, *, into):
@@ -6009,6 +6150,46 @@ def make_income_template(
         category=category,
     )
 
+
+
+def make_projected_envelope_expense(
+    db_session, *, seed_user, pay_period, estimated, account=None,
+    name="Groceries",
+):
+    """Create a Projected envelope expense + its definition in ``pay_period``.
+
+    The engine's own row of a priced, every-paycheck ``is_envelope=True``
+    definition (:func:`make_expense_template` then :func:`generate_row_of`,
+    plan step balance:X-cf), which is what entries attach to.  Uses the seed
+    user's Groceries category so the row matches the symptom #1 / #5 worked
+    example.  ``account`` defaults to the seed user's checking account; pass
+    the account when the row should live elsewhere -- the engine puts a row
+    on its DEFINITION's account, so that is where the choice is made.
+
+    **One definition** (plan ledger row BAL-490, closed at balance:X-ch): the
+    accounts route suite and the savings dashboard suite each carried a
+    private copy, and by the time they were folded here the copies had
+    already drifted in signature (one required ``account``, one defaulted
+    it), which is the drift a fixture spelled twice invites.
+
+    Args:
+        db_session: The test session.
+        seed_user: The seed user fixture dict.
+        pay_period: The period the row lands in.
+        estimated: The definition's stated price, as a string.
+        account: The account the definition (and so the row) lives on;
+            ``None`` means the seed user's checking account.
+        name: The definition's name.
+
+    Returns:
+        The generated Transaction row, flushed.
+    """
+    template = make_expense_template(
+        db_session, seed_user, amount=estimated,
+        name=name, category_key="Groceries", is_envelope=True,
+        account=account,
+    )
+    return generate_row_of(template, pay_period)
 
 def _priced_repeating_template(
     db_session, seed_user, txn_type, amount, is_active, *,

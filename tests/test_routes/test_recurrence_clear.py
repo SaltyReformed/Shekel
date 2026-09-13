@@ -59,13 +59,13 @@ from app.services import (
     recurrence_engine,
     recurring_transfer_query,
     transfer_recurrence,
-    transfer_service,
 )
 from tests._test_helpers import (
     all_periods,
     create_loan_account,
     derived_span,
     generate_row_of,
+    generate_transfer_of,
     make_cadence_rule,
     repriced_by_the_owner,
     shadow_amount,
@@ -73,15 +73,9 @@ from tests._test_helpers import (
     transfer_amount,
 )
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
-
-
-def _projected_id():
-    """Return the Projected status id."""
-    return ref_cache.status_id(StatusEnum.PROJECTED)
 
 
 def _every_period_rule(template):
@@ -576,22 +570,17 @@ class TestClearingATransferTemplatesRecurrence:
         """
         savings = _savings_account(seed_user)
         template = _recurring_transfer_template(seed_user, savings, recurs=False)
-        xfer = transfer_service.create_transfer(
-            transfer_service.TransferSpec(
-                user_id=seed_user["user"].id,
-                from_account_id=template.from_account_id,
-                to_account_id=template.to_account_id,
-                pay_period_id=seed_periods[6].id,
-                scenario_id=seed_user["scenario"].id,
-                amount_ownership=AmountOwnership.own(template.default_amount),
-                status_id=_projected_id(),
-                category_id=template.category_id,
-                name=template.name,
-                transfer_template_id=template.id,
-                due_date=seed_periods[6].start_date,
-            ),
-        )
+        # The transfer of a definition that no longer repeats: the engine's
+        # transfer under a cadence, then the cadence cleared the way the edit
+        # door clears one -- the transaction twin's shape above (plan step
+        # balance:X-ch).  A hand-built one OWNED its figure, which the
+        # one-time branch of ``routes/transfers/_instances`` has not written
+        # since plan step X-au-f: that transfer is derived, like this one.
+        _every_period_rule(template)
+        xfer = generate_transfer_of(template, seed_periods[6])
+        template.recurrence_rule = None
         db.session.commit()
+        assert template.recurrence_rule is None
         xfer_id = xfer.id
 
         resp = auth_client.post(f"/transfers/{template.id}", data={
