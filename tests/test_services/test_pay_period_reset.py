@@ -77,6 +77,7 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     add_txn,
     all_periods,
@@ -150,7 +151,7 @@ def _seed_old_schedule(db_session, seed_user, count=5):
     Checking account anchors to; these are the extra periods the reset
     will wipe alongside it.
     """
-    pay_period_write.record_paydays(
+    record_paydays_across_a_hole(
         user_id=seed_user["user"].id,
         first_payday=date(2026, 1, 2),
         num_periods=count,

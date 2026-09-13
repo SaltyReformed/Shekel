@@ -32,6 +32,7 @@ from app.services import (
     status_seam,
 )
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     eras_of,
     generate_row_of,
     last_covered_day,
@@ -1096,7 +1097,7 @@ class TestThirdPaycheckDetection:
         month holds exactly two.
         """
         with app.app_context():
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
@@ -1131,7 +1132,7 @@ class TestThirdPaycheckDetection:
         none at all, because the schedule does not reach it.
         """
         with app.app_context():
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2025, 7, 4),
                 num_periods=40,
@@ -1157,7 +1158,7 @@ class TestThirdPaycheckDetection:
         page calls.
         """
         with app.app_context():
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
@@ -1198,7 +1199,7 @@ class TestThirdPaycheckDetection:
         month the two producers answer differently.
         """
         with app.app_context():
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
@@ -1252,7 +1253,7 @@ class TestThirdPaycheckDetection:
         above pins where they deliberately do.
         """
         with app.app_context():
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
@@ -1323,7 +1324,7 @@ class TestYearOverview:
             # The BINDING went with the ``current_anchor_period_id`` line it
             # fed (ruling R-EH); the CALL is fixture setup and stays -- these
             # 26 periods ARE the third-paycheck year under test.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
@@ -1420,7 +1421,7 @@ class TestEdgeCases:
         with app.app_context():
             from app.services import pay_period_service
             # Create a period that overlaps Feb 2028.
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=date(2028, 2, 18),
                 num_periods=2,

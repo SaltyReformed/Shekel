@@ -247,8 +247,10 @@ fi
 #     THREE running (two private clusters plus a peer's gating run) two of them
 #     reached only ~38% in 13 minutes, at a run-queue of 32, ~950,000 context
 #     switches/sec and 28% iowait.  No test FAILED in either -- the slowest
-#     single test is 2.58 s against pytest.ini's 30 s per-test timeout, so
-#     there is roughly 11x of headroom and that measurement was sitting on it.
+#     single test is 2.58 s against pytest.ini's per-test timeout (30 s then;
+#     90 s since 2026-09-13, sized to CI's clock -- docs/testing-standards.md,
+#     Test Run Guidelines), so there is roughly 11x of headroom and that
+#     measurement was sitting on it.
 #
 # So what survives is a resource fact, not a defect, and the right instrument
 # for a resource fact is information rather than a mutex: this prints what else
@@ -438,7 +440,7 @@ docker run -d --rm --name "$_run_container" \
 # mechanism.  ``tests/_test_helpers.py`` (twice) and three migration tests
 # state that a conflicting DDL "dies on the cluster's 10-second
 # ``lock_timeout``" -- PostgreSQL's default is 0, meaning wait forever, so
-# without the flag that becomes a 30-second pytest-timeout naming a timeout
+# without the flag that becomes the per-test pytest-timeout naming a timeout
 # instead of a lock, with four docstrings telling the author to expect the
 # other signature.  ``statement_timeout`` and
 # ``idle_in_transaction_session_timeout`` come along for the same reason: a

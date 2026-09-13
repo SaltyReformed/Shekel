@@ -667,14 +667,14 @@ def nominal_payday_after(anchor: date, rhythm: Rhythm, day: date) -> date:
     **Its caller passes the HORIZON, not the last recorded payday, and that is
     what makes the pairing total WITH RESPECT TO THE PHASE** (adversarial
     review of ``C14-e-2``).  The two differ by a whole cadence, and
-    ``_reject_backward_payday`` bounds a batch at the day AFTER the last
-    paycheck ends -- so answering against the payday would let a stored phase
-    that does not place that payday on its own grid produce a day the floor
-    then refuses.  A phase like that is ordinary for a PIECEWISE owner (ledger
-    row **N-492**: one stored cadence cannot describe a schedule whose cadence
-    changed), and the refusal would arrive on a read path with no handler.
-    Asked against the horizon the answer is a grid day the floor admits
-    whatever the phase's PROVENANCE.
+    ``pay_period_batch.reject_backward_payday`` bounds a batch at the day
+    AFTER the last paycheck ends -- so answering against the payday would let
+    a stored phase that does not place that payday on its own grid produce a
+    day the floor then refuses.  A phase like that is ordinary for a PIECEWISE
+    owner (ledger row **N-492**: one stored cadence cannot describe a schedule
+    whose cadence changed), and the refusal would arrive on a read path with
+    no handler.  Asked against the horizon the answer is a grid day the floor
+    admits whatever the phase's PROVENANCE.
 
     **It is NOT total with respect to the CONVENTION, and a second adversarial
     review struck a sentence that read as though it were.**  This returns the
@@ -684,7 +684,7 @@ def nominal_payday_after(anchor: date, rhythm: Rhythm, day: date) -> date:
     BELOW it: anchor 2030-11-14, cadence 14, ``next`` gives 2030-11-28 against
     a floor of 2030-11-29.  That was ledger row **PC-497** fault 1, and
     ``C14-e-3`` CLOSED it at the writer rather than here:
-    ``pay_period_write._requested_paydays`` records each element displaced, so
+    ``pay_period_batch.requested_paydays`` records each element displaced, so
     the day this hands over and the floor that judges it are one value again.
     Nothing here discharges it, and nothing here needs to.
 

@@ -17,12 +17,11 @@ from decimal import Decimal
 
 import pytest
 from flask import Blueprint, Flask
-from flask_login import login_user
+from flask_login import current_user, login_user
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.pay_period import PayPeriod
-from app.models.ref import AccountType, Status, TransactionType
+from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.utils.auth_helpers import (
     fresh_login_required,
@@ -40,6 +39,7 @@ from app.utils.log_events import (
 from app.utils.session_helpers import FRESH_LOGIN_AT_KEY
 from app.models.amount_ownership import AmountOwnership
 from tests._test_helpers import rhythm_of
+from tests._test_helpers import record_paydays_across_a_hole
 
 
 class TestGetOr404:
@@ -132,7 +132,7 @@ class TestGetOwnedViaParent:
 
             # Create a pay period for the second user.
             from app.services import pay_period_write
-            periods2 = pay_period_write.record_paydays(
+            periods2 = record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 3, 1),
                 num_periods=2,
@@ -577,7 +577,7 @@ class TestAccessDeniedLogging:
         """A cross-user denial through the parent path emits ``access_denied_cross_user``."""
         # Build a transaction owned by the second user.
         from app.services import pay_period_write  # noqa: WPS433
-        periods2 = pay_period_write.record_paydays(
+        periods2 = record_paydays_across_a_hole(
             user_id=second_user["user"].id,
             first_payday=date(2026, 3, 1),
             num_periods=2,
@@ -755,7 +755,7 @@ class TestAccessDeniedLogging:
         from app.services import pay_period_write  # noqa: WPS433
         with app.test_request_context("/some/path"):
             login_user(seed_user["user"])
-            periods2 = pay_period_write.record_paydays(
+            periods2 = record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 3, 1),
                 num_periods=2,
@@ -835,3 +835,43 @@ class TestAccessDeniedLogging:
             "the helper must stay silent on the happy path.  Records: "
             f"{[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
         )
+
+
+class TestRequireOwnerFailsClosed:
+    """Plan step ``bank_import:X-gs`` (ledger row **BI-486**).
+
+    ``require_owner`` read ``getattr(current_user, "role_id", owner_id)``,
+    so a principal with no ``role_id`` at all -- Flask-Login's
+    ``AnonymousUserMixin`` -- was defaulted to the OWNER's id and ran the
+    view.  Unreachable behind the login gate, which bounces every
+    anonymous request first; reachable exactly where the gate is off
+    (``LOGIN_DISABLED``, or an app built without it), which is where a
+    second layer is supposed to hold.  The read is outright now, and this
+    case is the one the owner-id default admitted.
+    """
+
+    def test_an_anonymous_principal_never_reaches_the_view(self, app):
+        """No session, so no ``role_id``: the wrapped view does not run.
+
+        A direct call on a stub view, so the case grades the decorator and
+        not the gate: through the test client the gate answers first and the
+        decorator is never consulted.  ``current_user`` is asserted anonymous
+        BEFORE the call because Flask-Login caches the loaded user on ``g``
+        for the life of the app context the autouse ``db`` fixture holds; a login
+        earlier in the same context would leave this case measuring an owner
+        and passing for the wrong reason.
+        """
+        reached = []
+
+        @require_owner
+        def owner_only_view():
+            """Stub view that must never run without a session."""
+            reached.append(True)
+            return "should-not-reach"
+
+        with app.test_request_context("/owner-only"):
+            assert not current_user.is_authenticated
+            with pytest.raises(AttributeError, match="role_id"):
+                owner_only_view()
+
+        assert not reached

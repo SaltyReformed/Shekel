@@ -49,15 +49,25 @@ this step corrected an earlier paragraph here for claiming it.**
 :func:`~app.services.recurrence.resolve` builds a :class:`Closing` with no
 derived half, because a spec names no destination and this package cannot fold
 a balance -- so ``resolved_recurrence``, ``read_rule`` and ``rule_occurrences``
-all still hand back a value nothing has narrowed, and generation
-(``recurrence_engine/_plan.py``, until plan step R7d-c-2 lands) still takes
-one -- the display readers took the door at R7d-d and R7d-e, and the form's
-preview at R7d-f-2.  The composed door is what narrows; a caller that goes round
-it gets the rule's own answer, which is correct for the definitions that have
-no derived stop and incomplete for the ones that do.  The encoding gets
-stronger as the remaining R7d leaves move their readers onto the door, and
-only when the last one has is "a caller cannot reach the un-narrowed answer"
-a claim this module may make.
+all still hand back a value nothing has narrowed.  The composed door is what
+narrows; a caller that goes round it gets the rule's own answer, which is
+correct for the definitions that have no derived stop and incomplete for the
+ones that do.  The production readers took the door one R7d leaf at a time --
+the Recurring surface at R7d-d, the monthly totals at R7d-e, the form's locked
+control at R7d-f-1, GENERATION at R7d-c-2 (the reader whose answer becomes
+rows) and the form's live preview at R7d-f-2
+(``recurring_definition.resolved_submission``) -- and what still goes round it
+in ``app/`` (census 2026-09-11 on the tree R7d-c-2 shipped on, re-read
+2026-09-13 on R7d-f-2's) is two readers that ask no closing question -- the
+write door's refusal and the opening-bound comparison in
+``loan_recurrence_sync._sync_loan_cadence`` -- and ONE that goes round it on
+purpose: the balance seam's definition walk (``balance_at._plan_definitions``,
+plan step R16-b-2), which sums every definition paying into a loan under its
+AUTHORED closing alone, because the derived stop is that fold's own output and
+a fold reading its own answer would be a fixed point (ruling **R-R65**).  So
+since R7d-f-2 "a reader that asks the closing question cannot reach the
+un-narrowed answer" is a claim this module may make, and the seam's walk is
+the one caller that must reach it.
 
 **The derived stop's SHAPES are here and its RESOLVER is not.**  Deciding
 which shape applies means folding a loan's balance, which needs the balance

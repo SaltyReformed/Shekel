@@ -2102,7 +2102,7 @@ def seed_schedule_at_cadence(app, db, seed_user):
         **``periods_before`` used to be bounded by the writer's forward-only
         rule and no longer is** (plan step ``pay_calendar:C4-b-1``).  While this
         fixture APPENDED beside the seeded owner's opening payday,
-        ``pay_period_write._reject_backward_payday`` refused a first payday
+        ``pay_period_batch.reject_backward_payday`` refused a first payday
         earlier than one full cycle after it -- so four periods of history at a
         300-day cadence started three years before that payday and was refused.
         Going through the reset door retires every existing period in the same
