@@ -139,7 +139,7 @@ class GenerationSchedule:
         ctx: The read pass this generation runs inside -- the owner, the
             pinned ``as_of``, the baseline scenario, and the memos every
             derivation on the pass shares.  It answers what the schedule
-            half of a pass needs (:attr:`calendar`) and, from plan step
+            half of a pass needs (:attr:`calendar`) and, since plan step
             R7d-c-2, what a loan payment's DERIVED closing bound is.  It is
             TAKEN and never built here: the 2026-08-16 ruling and ruling
             **R-R38** together make the ROUTE the only layer that opens a
