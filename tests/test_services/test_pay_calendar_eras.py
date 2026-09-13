@@ -157,13 +157,22 @@ class TestARecordedPaydayStandsForItsNearestPlannedOne:
         )
 
     def test_it_agrees_with_a_brute_force_listing_over_randomised_records(self):
-        """The loop is graded against an explicit grid, not against itself."""
+        """The loop is graded against an explicit grid, not against itself.
+
+        Cadences below the collision floor (legal under ``none`` only) and
+        the 365-day ceiling are drawn beside the floor..45 range: the
+        residue sweep ``C14-e-2`` wrote for the extend door's grid search
+        covered those tails, and plan step ``C17-c-2b`` deleted that search
+        -- this producer is where the record meets the grid now.
+        """
         rng = random.Random(1702)
         floor = shortest_collision_free_cadence()
         phase = date(2027, 3, 5)
         for _ in range(3000):
-            cadence = rng.randint(floor, 45)
-            shift = rng.choice([PRIOR, NEXT, NONE])
+            cadence = rng.choice([
+                rng.randint(1, floor - 1), rng.randint(floor, 45), 365,
+            ])
+            shift = NONE if cadence < floor else rng.choice([PRIOR, NEXT, NONE])
             record = phase + timedelta(days=rng.randint(-200, 900))
             rhythm = rhythm_of(cadence, shift)
 

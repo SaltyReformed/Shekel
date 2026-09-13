@@ -204,16 +204,15 @@ def era_to_mint(
        the same cadence.
 
     A batch whose first payday sits on the covering era's grid at that era's
-    rhythm CONTINUES it and mints nothing.  That is every extend and rolling
-    top-up for an owner whose latest era covers the horizon -- every owner
-    the migration backfills: their first payday comes from
-    :func:`~app.services.pay_calendar.nominal_payday_after`, stepped from the
-    latest era's own ``effective_from``, so it is on that grid by
-    construction and the rhythm is the one read off the calendar.  *An owner
-    who truncated below their latest era's day is the exception, and an
-    adversarial review of C17-a named it: that era describes no surviving
-    payday, the batch retires it, and the extend restates its rhythm as an
-    era from the day it continues -- and is judged like any stated era.*
+    rhythm CONTINUES it and mints nothing.  **Extend and the rolling top-up
+    do not reach this question at all since plan step ``C17-c-2b``**: they
+    state no rhythm, so they go through
+    ``pay_period_write.continue_paydays``, which records the paydays the
+    stored eras already plan and mints and retires nothing.  *Until then the
+    extend door restated the LATEST era from the horizon as a stated batch,
+    and an owner truncated below that era's day had it retired and re-minted
+    from the day the extend continued (ledger row **PC-509**); the door that
+    replaced it materialises the plan of the era COVERING the record.*
 
     **The grid test is arithmetic on the NOMINAL day, which is what
     *first_payday* is** (the writer's own reading of it).  ``C17-d`` branches
@@ -264,9 +263,9 @@ def retire_eras(user_id: int, standing: "tuple[date, ...]") -> int:
 
     An era is never retired by a batch that records nothing: truncating a
     schedule's tail shortens the record and leaves the owner's declared
-    rhythm as it was, so the next extend continues the era they stated --
-    restating it from the day it continues, when the truncate cut below
-    that era's own day.
+    rhythm as it was, so the next extend continues the plan they stated --
+    the era covering the record first, then the later era from its own
+    first payday (ruling **R-PC75**), and mints nothing on the way.
 
     Args:
         user_id: The owning user's id.

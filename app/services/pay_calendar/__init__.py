@@ -129,7 +129,6 @@ from ._searches import (
     earliest_started_period,
     final_covered_day,
     latest_started_period,
-    nominal_payday_after,
     opening_payday,
     period_by_id,
 )
@@ -158,7 +157,6 @@ __all__ = [
     "first_payday_of",
     "latest_started_period",
     "nominal_payday",
-    "nominal_payday_after",
     "opening_payday",
     "paychecks_from",
     "span_starting_on_or_after",

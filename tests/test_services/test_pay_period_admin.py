@@ -590,16 +590,18 @@ class TestAnOwnerWithNoPaydaysReachesEveryDoor:
 
         ``bare_user`` holds no ``budget.pay_schedule`` row, which is the
         companion's shape and production's user 2.  THREE of the four doors
-        above build a calendar first, so the refusal arrives before the empty
-        branch each of them documents -- which is the point of the ruling: one
-        answer for one state, at one door, instead of each door improvising
-        past it.
+        above read the schedule first -- truncate and regenerate build a
+        calendar, and extend asks ``schedule_for`` through the writer's
+        continue door since plan step ``C17-c-2b`` -- so the refusal arrives
+        before the empty branch each of them documents -- which is the point
+        of the ruling: one answer for one state, at one door, instead of each
+        door improvising past it.
 
         **``reset_pay_periods`` is the fourth and it builds NO calendar**,
         which an adversarial review of this step measured and an earlier draft
         of this docstring denied by writing "every door above".
-        ``pay_period_admin`` calls ``calendar_for`` at extend, truncate and
-        regenerate and NOT in reset.  That is not an oversight to fix here: it
+        ``pay_period_admin`` calls ``calendar_for`` at truncate and regenerate
+        and NOT in reset.  That is not an oversight to fix here: it
         is the property that makes reset the one door a row-less owner can
         still reach, and it is what
         :meth:`test_reset_repairs_a_row_less_owner` grades below.

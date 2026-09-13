@@ -284,12 +284,14 @@ def era_index_at(eras: "tuple[Era, ...]", day: date) -> int:
 def step_after(anchor: date, rhythm: Rhythm, day: date) -> int:
     """Return the first grid step whose PAYDAY falls strictly after *day*.
 
-    The one loop behind two questions: :func:`~._searches.nominal_payday_after`
-    answers the grid day a writer continues from (the day the floor admits),
-    and :func:`last_step_of` answers where an era's paydays stop, which since
-    ruling **R-PC75** is two steps before the first one paid strictly after
-    the next era's first payday.  Each asks about a DERIVED day -- a horizon,
-    a seam -- never a recorded one; a recorded payday is placed by
+    The loop behind the seam: :func:`last_step_of` answers where an era's
+    paydays stop, which since ruling **R-PC75** is two steps before the
+    first one paid strictly after the next era's first payday.  *It had a
+    second caller from plan step ``C14-e-2`` to ``C17-c-2b`` --
+    ``nominal_payday_after``, the grid day the extend door continued a
+    rhythm from -- which went when that door began materialising the plan
+    (:func:`planned_paydays_after`).*  It asks about a DERIVED day -- a
+    seam -- never a recorded one; a recorded payday is placed by
     :func:`matched_step`, whose docstring says why the two rules differ.
 
     **Three candidates are enough, and it is a theorem rather than a
@@ -551,13 +553,15 @@ def planned_paydays_after(
     ``pay_calendar:C17-c-2a``).  It opens at :func:`horizon_step` and steps
     with :func:`following_planned`, so the seam between two eras is read
     here exactly as :func:`~._projection.project_period_after` reads it for
-    a projected period's end -- one recurrence, two readers.  Two callers
+    a projected period's end -- one recurrence, two readers.  Three callers
     take a prefix of it: :func:`payday_after` the first day, which is where
     the last saved paycheck closes and where ``pay_period_batch``'s floor
     sits; ``pay_period_batch.reject_skipped_paycheck`` the second, which is
     the day a batch's first payday must fall BEFORE (ruling **R-PC67**) --
     over the eras the batch leaves standing, which are the stored ones
-    whenever it retires none.
+    whenever it retires none; and ``pay_period_write.continue_paydays`` the
+    first *n*, since plan step ``C17-c-2b``, which is what makes the
+    continue path a prefix of the sequence both fences read.
 
     The first day is strictly after *last_payday* by construction -- the
     matched step's next payday is later than the record it follows, and a
@@ -566,10 +570,14 @@ def planned_paydays_after(
     **PC-505**: the reversed period the recorded anchor admitted below the
     collision floor is unrepresentable here).
 
-    LAZY and UNBOUNDED, so a caller takes the prefix it needs: every
-    payday a door records is held inside the application's calendar window
-    by ``app.schemas.validation.pay_periods.payday_field``, and the two
-    callers above read at most two days past it.
+    LAZY and UNBOUNDED, so a caller takes the prefix it needs.  The two
+    fences read at most two days past a record that
+    ``app.schemas.validation.pay_periods.payday_field`` held inside the
+    application's calendar window; the continue door takes up to
+    ``PERIOD_BATCH_MAX`` days past it with no clamp at
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX`, exactly as the batch it
+    replaced ran the grid unbounded, and ``budget.pay_periods.start_date``
+    carries no range CHECK -- a stated gap, not a fence.
 
     Args:
         eras: The owner's eras, validated.
