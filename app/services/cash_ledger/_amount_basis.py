@@ -218,10 +218,10 @@ def derived_amount_basis(user_id: int, scenario_id: int) -> AmountBasis:
     (:func:`~app.services.income_service.derived_paycheck_pricing`), which is
     exactly what :func:`amount_basis` itself did for every caller until plan
     step salary:C12.  So this costs what that cost and refuses what that
-    refused: a non-salary row derives nothing.  Their ledger row is minted
-    with C12-a's tick and names the owner that moves them; a caller holding a
-    pass reads ``ctx.amounts()`` instead, each site moved deletes one call
-    here, and this constructor goes with the last.
+    refused: a non-salary row derives nothing.  Their ledger row is
+    **BAL-491**, owned by plan step balance:X-i6; a caller holding a pass
+    reads ``ctx.amounts()`` instead, each site moved deletes one call here,
+    and this constructor goes with the last.
 
     Args:
         user_id: The owner whose rows are being priced.
