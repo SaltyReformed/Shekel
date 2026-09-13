@@ -10,7 +10,7 @@ TransferTemplate and seed its Transfer instances:
 * :func:`app.routes.loan.payment_transfer.create_payment_transfer` -- a monthly P&I +
   escrow payment transfer into a debt account.
 * :func:`app.routes.transfers.templates.create_transfer_template` /
-  :func:`app.routes.transfers.templates.unarchive_transfer_template` -- the
+  :func:`app.routes.transfers.lifecycle.unarchive_transfer_template` -- the
   generic transfer-template create / restore paths.
 
 Those routes were near-forks: the investment and loan creators ran a
