@@ -69,15 +69,16 @@ from tests.oracles.recurrence_baseline import (
     ANNUAL,
 )
 from tests._test_helpers import (
-    rhythm_of,
     all_periods,
     an_entered_day,
     derived_span,
+    eras_of,
     last_covered_day,
     make_cadence_rule,
     make_every_period_rule,
     rebuild_calendar_from_spans,
     resolved_amount,
+    rhythm_of,
     settlement_basis_id,
     settlement_if_settling,
     state_template_price,
@@ -526,9 +527,10 @@ def _calendar(periods, cadence_days=_CADENCE_DAYS):
         The :class:`~app.services.pay_calendar.PayCalendar` for
         :data:`_MATCH_USER_ID`.
     """
+    paydays = [(period.id, period.start_date) for period in periods]
     return PayCalendar.from_paydays(
-        paydays=[(period.id, period.start_date) for period in periods],
-        rhythm=rhythm_of(cadence_days),
+        paydays=paydays,
+        eras=eras_of(paydays, cadence_days),
         user_id=_MATCH_USER_ID,
         history_opens_on=None,
     )

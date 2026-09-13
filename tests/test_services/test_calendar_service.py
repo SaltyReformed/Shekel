@@ -32,10 +32,11 @@ from app.services import (
     status_seam,
 )
 from tests._test_helpers import (
-    restate_fixture_era,
-    rhythm_of,
+    eras_of,
     generate_row_of,
     last_covered_day,
+    restate_fixture_era,
+    rhythm_of,
     settle_day_columns,
     settlement_columns,
     state_template_price,
@@ -1117,8 +1118,7 @@ class TestThirdPaycheckDetection:
         it.*
         """
         with app.app_context():
-            calendar = PayCalendar.from_paydays(
-                [], rhythm_of(14), user_id=1, history_opens_on=None,
+            calendar = PayCalendar.from_paydays([], eras_of([], 14), user_id=1, history_opens_on=None,
             )
             assert self._three_paycheck_months(calendar, 2026) == set()
 

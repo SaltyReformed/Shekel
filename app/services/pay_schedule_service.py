@@ -95,10 +95,11 @@ class ScheduleFacts:
     a :class:`~app.services.pay_rhythm.Rhythm` beside a ``nominal_anchor``;
     a pay schedule is a SEQUENCE OF ERAS now, and this value is that sequence
     with the owner's history bound beside it.  :attr:`rhythm` still answers --
-    the LATEST era's -- because at this leaf every reader of the calendar
-    takes one rhythm exactly where it took the row's, and that is what makes
-    the leaf move ``$0.00`` by construction; ``C17-b`` is where readers ask
-    the era covering their own day.
+    the LATEST era's -- for the readers of the CURRENT rhythm: the cadence
+    door (:func:`~app.services.pay_calendar.cadence_for`) and the extend door,
+    which continues the latest era.  The calendar itself takes the whole
+    sequence since plan step ``C17-b-2``, every reader asking the era
+    covering its own day.
 
     **It is the facts OF AN OWNER WHO HOLDS AN ERA, and cannot say
     otherwise** (ruling **R-PC45**'s principle, one relation over).  The
@@ -149,16 +150,17 @@ class ScheduleFacts:
     def rhythm(self) -> Rhythm:
         """Return the LATEST era's cadence and convention.
 
-        **The one rhythm every calendar reader takes at plan step ``C17-a``**,
-        where the schedule row's own pair used to be -- which is what holds
-        this leaf at ``$0.00``: a single-era owner (every owner the migration
-        backfills) reads back exactly the values the row held.  For a
-        PIECEWISE owner it is the rhythm their most recent RECORDING batch
-        stated -- the writer retires every era past the last surviving payday
-        and mints from the batch's day, so the latest era is either that
-        batch's mint or the era it continued at the same rhythm -- which is
-        also what the overwritten row held.  Readers that ask a PAST day's
-        rhythm are ``C17-b``'s.
+        **The one rhythm every calendar reader took at plan step ``C17-a``**,
+        where the schedule row's own pair used to be -- which is what held
+        that leaf at ``$0.00``: a single-era owner (every owner the migration
+        backfills) read back exactly the values the row held.  Since
+        ``C17-b-2`` the calendar takes :attr:`eras` whole and each reader asks
+        the era covering its own day; what is left here is the CURRENT
+        rhythm, for the cadence door and for extend, which continues the
+        latest era.  For a PIECEWISE owner it is the rhythm their most recent
+        RECORDING batch stated -- the writer retires every era past the last
+        surviving payday and mints from the batch's day, so the latest era is
+        either that batch's mint or the era it continued at the same rhythm.
 
         Returns:
             :attr:`latest_era`'s :class:`~app.services.pay_rhythm.Rhythm`.

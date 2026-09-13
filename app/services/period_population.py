@@ -33,7 +33,7 @@ answers it is now the call ORDER at the route and nothing in the type system
 restates it.  A pass built BEFORE the pay-period write holds the pre-write
 calendar -- which :meth:`~app.services.generation_schedule.GenerationSchedule.__post_init__`
 refuses for ``for_period_ids``, because the new ids are not in it -- and the
-pre-write LOAN, which nothing catches: from plan step R7d-c-2 a loan payment's
+pre-write LOAN, which nothing catches: since plan step R7d-c-2 a loan payment's
 closing bound is a fold over the loan's forward plan, and a pass memoizes each
 loan's resolution for its whole life.  Measured on a production clone
 (2026-08-27): with a pass built first, deleting the Van Loan's 5 already-due
@@ -90,7 +90,7 @@ def populate_periods_from_active_templates(
 
     **ONE read pass serves every template** (plan step R7d-c-1), so the batch
     holds one derivation of the owner's calendar, one baseline-scenario
-    resolution, and -- from plan step R7d-c-2 -- one answer per loan to "when
+    resolution, and -- since plan step R7d-c-2 -- one answer per loan to "when
     does this stop", pinned at the state the pay-period write left.  A
     per-template pass would derive the owner's 62-payday calendar once per
     definition.
