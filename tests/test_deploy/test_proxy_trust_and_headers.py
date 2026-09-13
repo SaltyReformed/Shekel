@@ -743,7 +743,7 @@ class TestCloudflaredTemplate:
 
 
 # 120s per-test timeout for the runtime header class.  The default
-# 30s in pytest.ini covers Python-only tests; orchestrating a stub
+# in pytest.ini covers Python-only tests; orchestrating a stub
 # upstream + Nginx on a user-defined Docker network needs more
 # headroom for the (possibly cold-cache) image pulls, the network
 # create/destroy, the readiness probes, and the curl probes.

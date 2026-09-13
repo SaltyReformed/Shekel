@@ -194,6 +194,9 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 - [ ] **S3-f-3** -- the Save (**R-SAL22**): a write-through arm of `retirement.update_settings`, the
       ownership 404, the ONE end-year rule shared with `RaiseCreateSchema` against the row's
       effective year, the ORM write and the rail re-render with the error on its row.
+- [ ] **S3-f-4** -- the refused probe RENDERED: the readiness GET re-renders the rail with the
+      message on the raise's row in the one 422 shape the Save uses, and the schema's nested shape
+      goes. Minted 2026-09-13 from `S3-f-2b`'s reviews (**SAL-548**); the container ships with it.
 - [x] **S3-e** `a6af5b3c` -- the hold is DELETED (the DECOMPOSED parent, split 2026-09-06 into the
       NO-MONEY re-homing and the MONEY; **R-SAL16** carries the argument and **R-SAL15** the
       design). Both leaves shipped, so the container ships with the last of them.
