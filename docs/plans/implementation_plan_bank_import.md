@@ -165,11 +165,10 @@ what it leaves a LATER step is on that step's own entry.
       a second spelling of any of them is the defect BI-490 named.
 - [x] **X-gs** `eec1a2be` -- `require_owner` reads `current_user.role_id` outright; closed
       **BI-486** (the fixture half was EMPTY, measured twice; the commit carries the census).
-- [ ] **X-gt** `refactor(import): the receipt value leaves _batch.py` -- **BI-491**. `_batch.py`
-      sits at 998 of pylint's 1000 lines after `X-gi-5`; `BatchOutcome` and `_Tally` move to
-      `_outcome.py` as a PURE move in its own commit, the cut ruled first (**R-PC71**'s shape),
-      before `balance:X-bn` touches the file; **N-474**'s wording fix is its second commit (the X-gi
-      container owned that row and shipped). Minted by the developer 2026-09-12.
+- [x] **X-gt** `89e39a18` -- the receipt value (`AppliedItem`, `RefusedItem`, `BatchOutcome`,
+      `Tally`) left `_batch.py` (998 -> 679) for `_outcome.py` (374) as a PURE move, AST-graded
+      (**R-BI7**); **N-474**'s wording fixed at `74673532`, two more exclusive sentences in the
+      rider. Closed **BI-491**, **N-474**; **BI-494** filed under `X-gw`.
 - [ ] **X-gu** `fix(import): the delete door locks its lines in the shared order` -- **BI-492**.
       `lock_lines` over the import's lines before `delete_import` deletes the row, so the cascade
       cannot cross a press; the cross-resource half is `balance:X-bn`'s. Minted 2026-09-12.
@@ -185,6 +184,10 @@ what it leaves a LATER step is on that step's own entry.
       A/B on the runner names the rest, the fix lands with its measurement, and `pytest.ini`'s cap
       is re-sized from CI's own `--durations` table. Minted 2026-09-13 by the developer from the
       coordinator's triage of PR #337's timeout.
+- [ ] **X-gw** `refactor(import): the tally freezes itself` -- **BI-494**. `Tally.frozen()` beside
+      both classes in `_outcome.py`, built from the field names so a counter on one side and not the
+      other refuses loudly; `apply_reviewed` returns it (`X-gx`, queued ahead, edits the same file).
+      Minted by the developer 2026-09-12 at `X-gt`'s ruling.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.
