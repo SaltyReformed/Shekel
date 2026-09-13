@@ -70,6 +70,12 @@ the recorded line can be re-aimed at another envelope on the next pass.
 shared derivation safe rather than merely fast: the guard above reads the
 database.
 
+**Every LINE lock FIRST, in ONE order, before any arm runs** (plan step
+``bank_import:X-gi-5``, finding **N-471**): four arms calling a door per item
+took a pass's line locks in SUBMISSION order, and two presses naming the same
+lines in different arms crossed.  :func:`~._resolve.lock_lines` carries the
+argument, what it closes and what it leaves ``balance:X-bn``.
+
 **It is NOT the only way one item can move a figure another item names, and
 saying so was measured FALSE on 2026-08-19.**  Settling a matched purchase runs
 ``entry_service.update_entry``, which re-derives the envelope's CC Payback and
@@ -106,6 +112,7 @@ from ._receipt_sentences import (
     match_summary,
     skip_summary,
 )
+from ._resolve import lock_lines
 from ._scope import ReviewScope
 from ._skipping import SkipRequest, skip_line
 from ._submission import MatchSubmission
@@ -302,6 +309,24 @@ class ReviewedBatch:
         return (
             len(self.matches) + len(self.creations) + len(self.incomes)
             + len(self.skips)
+        )
+
+    @property
+    def line_ids(self) -> "frozenset[int]":
+        """Return every bank line this batch names, across all of its arms.
+
+        **What :func:`~._resolve.lock_lines` locks before any arm runs**
+        (plan step ``bank_import:X-gi-5``), and it moves with the field block
+        above for :attr:`item_count`'s reason: a set naming three of the four
+        arms leaves the fourth's lines locked in submission order -- finding
+        **N-471** itself.  ``test_lock_order`` grades it on the mechanism.
+        """
+        return frozenset(
+            line_id
+            for submission in self.matches for line_id in submission.line_ids
+        ) | frozenset(
+            item.line_id
+            for item in self.creations + self.incomes + self.skips
         )
 
 
@@ -905,6 +930,11 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
             the whole request loud rather than being reported as one item's
             refusal.
     """
+    # **EVERY ROW LOCK FIRST, in one order** (plan step ``bank_import:X-gi-5``,
+    # finding **N-471**; the argument is :func:`~._resolve.lock_lines`'s).
+    # Before any arm, because an item that ran ahead of it would lock its
+    # line in submission order, which is the cycle this removes.
+    lock_lines(scope.account_id, batch.line_ids)
     tally = _Tally(applied=[], refused=[])
     # **One registry per REQUEST**, which is what makes a sweep mint one
     # envelope per answer per pay period rather than one per line (finding

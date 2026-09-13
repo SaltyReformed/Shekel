@@ -51,23 +51,26 @@ Boundary discipline (``CLAUDE.md``), stated PER MODULE because plan step C2-b1
 made one of them impure and a claim about "the package" would then be false of
 part of it:
 
-* :mod:`._grid`, :mod:`._derive`, :mod:`._projection`, :mod:`._searches`,
-  :mod:`._window`, :mod:`._views`, :mod:`._calendar`, :mod:`._walks`,
-  :mod:`._rhythm` and :mod:`._cadence` -- no Flask symbol, no database
-  session, no clock.  Every answer is a pure function of values a caller
-  supplies, and that is load-bearing rather than tidy: it is what lets C1's
-  harness drive the derivation over production's real 63 paydays and over a
-  generated sweep with no database, so the two runs exercise the same code.
-  The pure half is a one-way chain -- ``_grid`` -> ``_derive`` ->
-  ``_projection`` -> ``_searches`` -> ``_window`` -> ``_views`` ->
-  ``_calendar`` -> (``_walks``, ``_rhythm``) -- split at plan step C2-c and
-  again at C2-f3b, each time when the calendar module reached pylint's
-  1,000-line ceiling, so a search, a producer of a view, a view over a calendar and the
-  calendar itself cannot answer one question differently.  **``_projection``
-  is ``C17-b-1``'s** (ruling **R-PC69**, developer 2026-09-11): the forward
-  continuation past the record left ``_derive`` when that module reached the
-  same ceiling (ledger row **PC-498**), a split rather than a trim.  **The ``_grid``
-  head of that chain is C14-d's** (ruling **R-PC60**, developer 2026-09-05)
+* :mod:`._grid`, :mod:`._eras`, :mod:`._derive`, :mod:`._projection`,
+  :mod:`._searches`, :mod:`._window`, :mod:`._views`, :mod:`._calendar`,
+  :mod:`._walks`, :mod:`._rhythm` and :mod:`._cadence` -- no Flask symbol, no
+  database session, no clock.  Every answer is a pure function of values a
+  caller supplies, and that is load-bearing rather than tidy: it is what lets
+  C1's harness drive the derivation over production's real 63 paydays and
+  over a generated sweep with no database, so the two runs exercise the same
+  code.  The pure half is a one-way chain -- ``_grid`` -> ``_eras`` ->
+  ``_derive`` -> ``_projection`` -> ``_searches`` -> ``_window`` ->
+  ``_views`` -> ``_calendar`` -> (``_walks``, ``_rhythm``) -- split at plan
+  step C2-c and again at C2-f3b, each time when the calendar module reached
+  pylint's 1,000-line ceiling, so a search, a producer of a view, a view over
+  a calendar and the calendar itself cannot answer one question differently.
+  **``_projection`` is ``C17-b-1``'s** (ruling **R-PC69**, developer
+  2026-09-11): the forward continuation past the record left ``_derive`` when
+  that module reached the same ceiling (ledger row **PC-498**), a split rather
+  than a trim; **``_eras`` is ``C17-b-2``'s** (ruling **R-PC73**, the same
+  day): the displacement producer, the package's refusal and the cadence bound
+  moved below the derivation so the era producers could land beside them.
+  **The ``_grid`` head of that chain is C14-d's** (ruling **R-PC60**, developer 2026-09-05)
   and is the
   one split made for a DISTINCTION rather than for the ceiling: the nominal
   rhythm and the rhythm displaced onto business days stopped being the same
@@ -83,8 +86,8 @@ part of it:
 **One more value landed here at the recurrence arc's plan step R7a-2a**, and it
 is in this package because the fact it derives from is:
 :class:`~._cadence.PayCadence` answers "how many paychecks does this owner
-receive in a year", which is ``budget.pay_schedule.cadence_days`` and nothing
-else.  It replaced ``app.utils.money.PAY_PERIODS_PER_YEAR``, a hardcoded
+receive in a year", which is the latest era's ``budget.pay_eras.cadence_days``
+and nothing else.  It replaced ``app.utils.money.PAY_PERIODS_PER_YEAR``, a hardcoded
 ``Decimal("26")`` read by nine files while the cadence it stood for is
 user-selectable 1..365 -- so every monthly-equivalent figure on
 ``/obligations``, ``/savings`` and the Recurring surface was wrong for an owner
@@ -97,12 +100,14 @@ second answer.
 
 from ._cadence import DAYS_PER_YEAR, PayCadence
 from ._calendar import PayCalendar
-from ._derive import (
+from ._derive import DerivedPeriod, derive_periods
+from ._eras import (
     MAX_CADENCE_DAYS,
     MIN_CADENCE_DAYS,
-    DerivedPeriod,
     PayCalendarError,
-    derive_periods,
+    era_index_at,
+    first_payday_of,
+    payday_after,
     projected_payday,
 )
 from ._grid import cadence_steps_to, nominal_payday
@@ -147,7 +152,9 @@ __all__ = [
     "containing_period",
     "derive_periods",
     "earliest_started_period",
+    "era_index_at",
     "final_covered_day",
+    "first_payday_of",
     "latest_started_period",
     "nominal_payday",
     "nominal_payday_after",
@@ -155,6 +162,7 @@ __all__ = [
     "paychecks_from",
     "span_starting_on_or_after",
     "paydays_in_month_through",
+    "payday_after",
     "paydays_in_year_before",
     "period_by_id",
     "projected_payday",

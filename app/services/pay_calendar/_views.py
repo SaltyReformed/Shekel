@@ -40,8 +40,12 @@ because a free function cannot see the constructor that holds it, and
 ``elapsed // None``).  The cadence is a plain ``int`` at every tier now, so
 there is no precondition left to document and none of these three producers can
 be handed the pair that had no answer.  *Since plan step ``C14-e-1`` the
-producers take the cadence inside a* :class:`~app.services.pay_rhythm.Rhythm`, *which carries the
-payday convention beside it; the ``int`` and its bound are unchanged.*
+producers took the cadence inside a* :class:`~app.services.pay_rhythm.Rhythm`,
+*which carries the payday convention beside it, and since ``C17-b-2`` they
+take the owner's ERAS -- one* :class:`~app.services.pay_rhythm.Era` *per*
+``budget.pay_eras`` *row, the rhythm with the day it took effect -- because
+the projection anchors on the phase of the era covering each day (rulings
+**R-PC66**, **R-PC72**); the ``int`` and its bound are unchanged.*
 
 **Five of the six cannot produce a gapped window and the sixth can**, which is
 :class:`~._window.PeriodWindow`'s own contiguity refusal restated from the
@@ -61,17 +65,18 @@ from collections.abc import Iterator
 from itertools import takewhile
 from datetime import date, timedelta
 
-from app.services.pay_rhythm import Rhythm
+from app.services.pay_rhythm import Era
 from app.utils.dates import CALENDAR_DATE_MAX
 
-from ._derive import DerivedPeriod, PayCalendarError
+from ._derive import DerivedPeriod
+from ._eras import PayCalendarError
 from ._projection import project_period_after
 from ._searches import final_covered_day, materialised_periods, opening_payday
 from ._window import PeriodWindow
 
 
 def projected_paychecks(
-    periods: "tuple[DerivedPeriod, ...]", rhythm: Rhythm,
+    periods: "tuple[DerivedPeriod, ...]", eras: "tuple[Era, ...]",
     from_day: "date | None" = None,
 ) -> "Iterator[DerivedPeriod]":
     """Yield the paychecks that follow the SAVED schedule, at the owner's cadence.
@@ -118,9 +123,10 @@ def projected_paychecks(
     Args:
         periods: The owner's SAVED periods, ``start_date`` ascending.  Only the
             last one is read; an EMPTY tuple yields nothing.
-        rhythm: The owner's cadence and payday convention
-            (:class:`~app.services.pay_rhythm.Rhythm`), forwarded to
-            :func:`~._projection.project_period_after`.
+        eras: The owner's eras (:class:`~app.services.pay_rhythm.Era`,
+            ``effective_from`` ascending), forwarded to
+            :func:`~._projection.project_period_after`, which anchors each
+            paycheck on the era covering it.
         from_day: Skip to the paycheck COVERING this day before yielding, when
             it falls past the schedule's horizon.  ``None`` (the default)
             starts at the first projected paycheck, which is what a caller
@@ -144,10 +150,10 @@ def projected_paychecks(
     opens_at = horizon + timedelta(days=1)
     if from_day is not None and from_day > opens_at:
         opens_at = project_period_after(
-            periods, rhythm, from_day,
+            periods, eras, from_day,
         ).start_date
     while opens_at <= CALENDAR_DATE_MAX:
-        period = project_period_after(periods, rhythm, opens_at)
+        period = project_period_after(periods, eras, opens_at)
         yield period
         opens_at = period.end_date + timedelta(days=1)
 
@@ -318,7 +324,7 @@ def current_and_future_window(
 
 def axis_window(
     periods: "tuple[DerivedPeriod, ...]",
-    rhythm: Rhythm,
+    eras: "tuple[Era, ...]",
     user_id: int,
     first_day: date,
     last_day: date,
@@ -365,18 +371,19 @@ def axis_window(
 
     Args:
         periods: The calendar's periods, ``start_date`` ascending.
-        rhythm: The owner's cadence and payday convention
-            (:class:`~app.services.pay_rhythm.Rhythm`).  **Its cadence is a plain ``int`` since
-            plan step C4-d** (ruling **R-PC45**): it was ``int | None``, legal
-            ONLY beside an empty *periods*, and this docstring's own statement
-            of that was the fence -- *"a hand-assembled call passing ``None``
-            beside a payday reaches ``elapsed // None`` and a ``TypeError``,
-            which is the precondition this function cannot check for itself."*
-            It has no subject now: no calendar carries an absent cadence, so no
-            caller can hand one down.  *It became the PAIR at plan step
-            ``C14-e-1``, which threaded the rhythm ahead of ``C14-e-3``
-            displacing the projection under the convention; the bound is
-            unchanged and the displacement is not live yet.*
+        eras: The owner's eras (:class:`~app.services.pay_rhythm.Era`,
+            ``effective_from`` ascending, non-empty), forwarded to
+            :func:`projected_paychecks`.  **Each cadence is a plain ``int``
+            since plan step C4-d** (ruling **R-PC45**): it was ``int | None``,
+            legal ONLY beside an empty *periods*, and this docstring's own
+            statement of that was the fence -- *"a hand-assembled call passing
+            ``None`` beside a payday reaches ``elapsed // None`` and a
+            ``TypeError``, which is the precondition this function cannot
+            check for itself."*  It has no subject now: no calendar carries an
+            absent cadence, so no caller can hand one down.  *It became the
+            PAIR at plan step ``C14-e-1``, which threaded the rhythm ahead of
+            ``C14-e-3`` displacing the projection under the convention, and
+            the era sequence at ``C17-b-2``.*
         user_id: The owner these periods belong to, named in the refusal below
             so a traceback says whose schedule the range fell outside of.
         first_day: Inclusive lower bound of the range.  Must be at or after the
@@ -416,7 +423,7 @@ def axis_window(
         period
         for period in takewhile(
             lambda paycheck: paycheck.start_date <= last_day,
-            projected_paychecks(periods, rhythm),
+            projected_paychecks(periods, eras),
         )
         if period.end_date >= first_day
     )
@@ -425,7 +432,7 @@ def axis_window(
 
 def projection_axis_window(
     periods: "tuple[DerivedPeriod, ...]",
-    rhythm: Rhythm,
+    eras: "tuple[Era, ...]",
     user_id: int,
     first_day: date,
     last_day: date,
@@ -465,8 +472,8 @@ def projection_axis_window(
 
     Args:
         periods: The calendar's periods, ``start_date`` ascending.
-        rhythm: The owner's cadence and payday convention
-            (:class:`~app.services.pay_rhythm.Rhythm`), forwarded to :func:`axis_window`.
+        eras: The owner's eras (:class:`~app.services.pay_rhythm.Era`),
+            forwarded to :func:`axis_window`.
         user_id: The owner these periods belong to, forwarded for the crossed-
             range refusal's message.
         first_day: The day the projection window opens -- the day AFTER the
@@ -486,11 +493,11 @@ def projection_axis_window(
             them.
     """
     if last_day < first_day:
-        return axis_window(periods, rhythm, user_id, first_day, last_day)
+        return axis_window(periods, eras, user_id, first_day, last_day)
     opening = opening_payday(periods)
     if opening is None:
         return PeriodWindow(periods=())
     window_opens = max(first_day, opening)
     if last_day < window_opens:
         return PeriodWindow(periods=())
-    return axis_window(periods, rhythm, user_id, window_opens, last_day)
+    return axis_window(periods, eras, user_id, window_opens, last_day)
