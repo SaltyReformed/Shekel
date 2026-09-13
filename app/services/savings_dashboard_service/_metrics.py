@@ -55,7 +55,7 @@ class CurrentPay:
     :class:`~app.services.paycheck_calculator.PaycheckBreakdown` was carried
     here until C12-b, one profile's, chosen by an unordered ``.first()``; a
     two-job owner's "current paycheck" is the SUM over their profiles
-    (ruling **R-SAL<b>**), and two breakdowns do not add, so the value is the
+    (ruling **R-SAL26**), and two breakdowns do not add, so the value is the
     two totals the page consumes.  Absent as a whole (``None`` from
     :func:`_current_pay`) when there is no current period or no active
     profile -- absence of an income source is not a ``$0.00`` income (E-12).
@@ -264,7 +264,7 @@ def _current_pay(balance_ctx, current_period):
     that dropped applicable ``SalaryRaise`` rows.
 
     **Priced through the PASS's pricer, CALIBRATED, since plan step
-    salary:C12-b** (ruling **R-SAL<a>**; ledger row **P62**'s last site).
+    salary:C12-b** (ruling **R-SAL25**; ledger row **P62**'s last site).
     It was a direct ``calculate_paycheck`` that loaded the tax configs itself
     and passed NO ``calibration=`` -- the door **R-SAL21** measured on
     ``/retirement`` -- while every other surface priced the same payday with
@@ -275,7 +275,7 @@ def _current_pay(balance_ctx, current_period):
     recorded the implementations as agreeing; that was never measured across
     the calibration.
 
-    **SUMMED over the owner's active profiles** (ruling **R-SAL<b>**), where
+    **SUMMED over the owner's active profiles** (ruling **R-SAL26**), where
     it priced ONE profile chosen by an unordered ``.first()`` -- the shape
     ``recurrence:R-F16``'s adversarial review measured at a 39% swing between
     renders on a two-job owner, and which C12-b's own control caught picking

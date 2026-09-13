@@ -346,7 +346,7 @@ _PER_PERIOD = "calculate_paycheck"
 #: doors), and ``profiles.create_profile`` prices a profile flushed in the
 #: same request with no calibration row.  The LAST, ``/savings``'
 #: ``_metrics._get_current_paycheck_breakdown``, at C12-b (ruling
-#: **R-SAL<a>**): it passed no calibration either, and it was the one that
+#: **R-SAL25**): it passed no calibration either, and it was the one that
 #: MOVED a figure -- net ``$2,541.49`` by its door against ``$2,572.78`` by
 #: the pricer on the developer's 2026-09-10 paycheck, the Emergency Fund
 #: target ``$16,519.69 -> $16,723.07`` -- so it shipped as its own money leaf.

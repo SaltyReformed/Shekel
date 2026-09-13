@@ -6662,7 +6662,7 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
 class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
     """``/savings``' current pay is the pass's pricer's, CALIBRATED, SUMMED.
 
-    Plan step **salary:C12-b**, rulings **R-SAL<a>** and **R-SAL<b>**, ledger
+    Plan step **salary:C12-b**, rulings **R-SAL25** and **R-SAL26**, ledger
     row **P62**'s last site.  ``_metrics._get_current_paycheck_breakdown``
     priced ONE profile -- an unordered ``.first()`` -- through a direct engine
     call with NO calibration, while every other surface priced the same payday

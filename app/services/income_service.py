@@ -546,9 +546,9 @@ def derived_paycheck_pricing(user_id: int) -> PaycheckPricing:
     -- the two settle doors, the row re-render helpers, the two
     template-conflict choosers, the companion, reconcile and statement-match
     scopes, the spending report, the credit workflow and the profile archive
-    (greppable as ``cash_ledger.derived_amount_basis``; their ledger row is
-    minted with C12-a's tick) -- and until each takes its pass, this is the
-    pricer their basis is built over: :func:`paycheck_pricing` with
+    (greppable as ``cash_ledger.derived_amount_basis``; ledger row
+    **BAL-491**, owned by balance:X-i6) -- and until each takes its pass,
+    this is the pricer their basis is built over: :func:`paycheck_pricing` with
     :func:`~app.services.pay_calendar.calendar_for` bound to the owner.  It
     derives the calendar on the first paycheck it prices and never before,
     which is exactly the laziness :class:`SalaryPricing` had when it derived
