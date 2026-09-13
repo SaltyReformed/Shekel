@@ -1,9 +1,13 @@
 {% from "_money_macros.html" import money %}
 {# HTMX fragment: the assumptions rail's savable rows (P3a contract,
    P3b styling).  One small form per savable field so the rail saves ONE
-   field per POST (retirement.update_settings); submitted values are
-   echoed back on a 422 with the field's error (the retirement_controls
-   shim re-enables the swap for that status).  Saves target the stable
+   field per POST (retirement.update_settings); a 422 re-renders the WHOLE
+   rail with the field's error, so each row echoes its own submitted value
+   only when the refused form carried its control and otherwise states its
+   stored value -- a row that echoed ``fd.get(name, '')`` rendered EMPTY on
+   every other row's 422, and an emptied date row then Saved cleared the
+   pension's planned date (an adversarial review of plan step
+   salary:S3-f-3, which made a rail 422 a routine path).  Saves target the stable
    #assumptions-region wrapper in dashboard.html with an innerHTML swap;
    a successful save triggers a full page reload there so every derived
    figure re-computes.  The assumed-annual-return row is intentionally
@@ -17,7 +21,9 @@
    step salary:S3-c deleted that setting; the recurring-raise rows that
    replaced it carry the what-if directly since plan step salary:S3-f-2b
    (their GET parameter names are their own, so nothing mirrors), and
-   their Save is plan step S3-f-3's. #}
+   since plan step salary:S3-f-3 each row's Save posts the SAME two
+   controls, so the what-if and the write cannot name the pair
+   differently. #}
 {% set fd = form_data|default(none) %}
 <div id="assumptions-panel">
   {# Acceptance r2 item 2 (developer ruling): the date row is ALWAYS
@@ -35,7 +41,7 @@
     <label class="form-label" for="assump-retirement-date">Retirement date</label>
     <input type="date" id="assump-retirement-date" name="planned_retirement_date"
            class="form-control form-control-sm retire-assump-input retire-assump-input--date {% if errors and 'planned_retirement_date' in errors %}is-invalid{% endif %}"
-           value="{{ fd.get('planned_retirement_date', '') if fd else (date_provenance.date.isoformat() if date_provenance and date_provenance.date else '') }}">
+           value="{{ fd['planned_retirement_date'] if fd and 'planned_retirement_date' in fd else (date_provenance.date.isoformat() if date_provenance and date_provenance.date else '') }}">
     <button type="submit" class="btn btn-sm btn-outline-secondary">Save</button>
     {% if errors and 'planned_retirement_date' in errors %}
     <div class="invalid-feedback">{{ errors['planned_retirement_date']|join('. ') }}</div>
@@ -56,7 +62,7 @@
     <input type="number" step="0.1" min="0" max="100" id="assump-swr"
            name="safe_withdrawal_rate" data-mirror="swr-whatif-mirror"
            class="form-control form-control-sm retire-assump-input js-whatif-input {% if errors and 'safe_withdrawal_rate' in errors %}is-invalid{% endif %}"
-           value="{{ fd.get('safe_withdrawal_rate', '') if fd else ("%.2f"|format(settings.safe_withdrawal_rate|to_percent) if settings and settings.safe_withdrawal_rate is not none else '') }}">
+           value="{{ fd['safe_withdrawal_rate'] if fd and 'safe_withdrawal_rate' in fd else ("%.2f"|format(settings.safe_withdrawal_rate|to_percent) if settings and settings.safe_withdrawal_rate is not none else '') }}">
     <button type="submit" class="btn btn-sm btn-outline-secondary">Save</button>
     {% if errors and 'safe_withdrawal_rate' in errors %}
     <div class="invalid-feedback">{{ errors['safe_withdrawal_rate']|join('. ') }}</div>
@@ -73,38 +79,59 @@
      on every refresh (``hx-include`` in dashboard.html), the point resolves a
      pair equal to the stored year to the stored plan, and a changed one
      recomputes the verdict, the chart, the income target and both levers
-     under that belief -- nothing is saved.  The parameter names carry the
-     raise id because a flat query string has no other way to pair a mode
-     with its raise; the readiness schema gathers them by prefix.  The year
-     input states the row's effective year as its floor, which is the rule
-     the service applies against the row.  The rail states the end year the
-     owner has RECORDED for each recurring raise on every active profile --
-     not, in the multi-profile case, exactly the set the page projects -- and
-     the salary page owns the edit until S3-f-3 gives these rows a Save. #}
+     under that belief.  The parameter names carry the raise id because a
+     flat query string has no other way to pair a mode with its raise; the
+     readiness schema gathers them by prefix.  The year input states the
+     row's effective year as its floor, which is the rule the service applies
+     against the row.  **Each row is also a Save form since plan step
+     salary:S3-f-3** (ruling R-SAL22): it posts the same pair to
+     update_settings, which writes the row's end year and regenerates its
+     profile's paychecks; a refusal comes back as this fragment at 422 with
+     the message on the refused control, a stale race at 409 with it on the
+     row, and the submitted pair echoed on the row it was submitted for --
+     every other row keeps stating its stored value.  The rail states the
+     end year the owner has RECORDED for each recurring raise on every active
+     profile -- not, in the multi-profile case, exactly the set the page
+     projects -- and the salary page still owns the raise's other fields. #}
   {% for ra in raise_assumptions|default([]) %}
-  <div class="retire-assump-row" data-assumption="raise_terminal_year"
-       data-raise-id="{{ ra.raise_id }}">
+  {% set mode_name = 'raise_end_mode_' ~ ra.raise_id %}
+  {% set year_name = 'raise_end_year_' ~ ra.raise_id %}
+  {% set echoed = fd is not none and mode_name in fd %}
+  {# The mode the row shows: the submitted one when this row's own Save is
+     being re-rendered, else the stored answer (R-SAL13's vocabulary, the
+     option values below). #}
+  {% set shown_mode = fd[mode_name] if echoed else ('none' if ra.terminal_year is none else 'year') %}
+  <form method="POST" action="{{ url_for('retirement.update_settings') }}"
+        hx-post="{{ url_for('retirement.update_settings') }}"
+        hx-target="#assumptions-region" hx-swap="innerHTML"
+        class="retire-assump-row" data-assumption="raise_terminal_year"
+        data-raise-id="{{ ra.raise_id }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label class="form-label" for="assump-raise-end-mode-{{ ra.raise_id }}">
       {{ ra.raise_type|title }}
       {% if ra.percentage %}{{ "%.2f"|format(ra.percentage|to_percent) }}%{% else %}{{ money(ra.flat_amount) }}{% endif %}
       from {{ ra.effective_month|month_name(abbr=true) }} {{ ra.effective_year }}
     </label>
     <select id="assump-raise-end-mode-{{ ra.raise_id }}"
-            name="raise_end_mode_{{ ra.raise_id }}"
-            class="form-select form-select-sm retire-assump-input retire-assump-input--mode whatif-param js-whatif-input">
-      <option value="none"{% if ra.terminal_year is none %} selected{% endif %}>no end year</option>
-      <option value="year"{% if ra.terminal_year is not none %} selected{% endif %}>ends after</option>
+            name="{{ mode_name }}"
+            class="form-select form-select-sm retire-assump-input retire-assump-input--mode whatif-param js-whatif-input {% if errors and mode_name in errors %}is-invalid{% endif %}">
+      <option value="none"{% if shown_mode == 'none' %} selected{% endif %}>no end year</option>
+      <option value="year"{% if shown_mode == 'year' %} selected{% endif %}>ends after</option>
     </select>
     <input type="number" step="1" min="{{ ra.effective_year }}" max="2100"
            id="assump-raise-end-year-{{ ra.raise_id }}"
-           name="raise_end_year_{{ ra.raise_id }}" placeholder="year"
-           class="form-control form-control-sm retire-assump-input retire-assump-input--year whatif-param js-whatif-input"
-           value="{{ ra.terminal_year if ra.terminal_year is not none else '' }}"
+           name="{{ year_name }}" placeholder="year"
+           class="form-control form-control-sm retire-assump-input retire-assump-input--year whatif-param js-whatif-input {% if errors and year_name in errors %}is-invalid{% endif %}"
+           value="{{ fd.get(year_name, '') if echoed else (ra.terminal_year if ra.terminal_year is not none else '') }}"
            aria-label="Last year this raise is believed">
+    <button type="submit" class="btn btn-sm btn-outline-secondary">Save</button>
+    {% if errors and (mode_name in errors or year_name in errors) %}
+    <div class="invalid-feedback">{{ (errors.get(mode_name, []) + errors.get(year_name, []))|join('. ') }}</div>
+    {% endif %}
     <span class="retire-assump-caption w-100">
       <a href="{{ url_for('salary.edit_profile', profile_id=ra.profile_id) }}">edit on {{ ra.profile_name }}</a>
     </span>
-  </div>
+  </form>
   {% else %}
   <div class="retire-assump-row" data-assumption="raise_terminal_year">
     <span class="retire-assump-label">Recurring raises</span>
@@ -121,7 +148,7 @@
     <input type="number" step="0.1" min="0" max="100" id="assump-tax-rate"
            name="estimated_retirement_tax_rate"
            class="form-control form-control-sm retire-assump-input {% if errors and 'estimated_retirement_tax_rate' in errors %}is-invalid{% endif %}"
-           value="{{ fd.get('estimated_retirement_tax_rate', '') if fd else ("%.1f"|format(settings.estimated_retirement_tax_rate|to_percent) if settings and settings.estimated_retirement_tax_rate is not none else '') }}">
+           value="{{ fd['estimated_retirement_tax_rate'] if fd and 'estimated_retirement_tax_rate' in fd else ("%.1f"|format(settings.estimated_retirement_tax_rate|to_percent) if settings and settings.estimated_retirement_tax_rate is not none else '') }}">
     <button type="submit" class="btn btn-sm btn-outline-secondary">Save</button>
     {% if errors and 'estimated_retirement_tax_rate' in errors %}
     <div class="invalid-feedback">{{ errors['estimated_retirement_tax_rate']|join('. ') }}</div>

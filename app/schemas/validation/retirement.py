@@ -32,6 +32,9 @@ from app.services.salary_raises import RAISE_END_MODES
 #: posts what the template emits.
 _RAISE_END_MODE_PARAM = "raise_end_mode_"
 _RAISE_END_YEAR_PARAM = "raise_end_year_"
+#: The same two, keyed by :class:`~app.services.salary_raises.EndYearError`'s
+#: ``field`` so a refusal can name its control (:func:`raise_end_control`).
+_RAISE_END_PARAMS = {"mode": _RAISE_END_MODE_PARAM, "year": _RAISE_END_YEAR_PARAM}
 
 
 class PensionProfileCreateSchema(BaseSchema):
@@ -127,66 +130,6 @@ class PensionProfileUpdateSchema(BaseSchema):
     planned_retirement_date = fields.Date(allow_none=True)
 
 
-# ── Retirement Settings Schema (Phase 5) ──────────────────────
-
-
-class RetirementSettingsSchema(BaseSchema):
-    """Validates POST data for updating retirement planning settings.
-
-    E-28 / HIGH-06 / F-17 (Commit 12 of the follow-up plan):
-    ``safe_withdrawal_rate`` and ``estimated_retirement_tax_rate``
-    are persisted as decimal fractions matching the
-    ``user_settings`` DB CHECKs (``[0, 1]`` on both columns).  The
-    ``@pre_load`` converts the form's user-facing percent (e.g.
-    ``"4"`` for 4% SWR) to its fraction equivalent (``"0.04"``).
-
-    Every field is optional, so the assumptions panel's per-field saves
-    (P3a: one field per POST) and a multi-field submit validate through
-    the same schema.  There is deliberately NO field for an assumed annual
-    return: its save semantics are an open developer question, so the
-    panel's return row stays what-if-only.  There is no longer one for the
-    merit-raise horizon either -- plan step salary:S3-c deleted that
-    setting (ruling **R-SAL11**), and a raise's end year is written on the
-    salary page through :class:`~app.schemas.validation.salary.RaiseCreateSchema`.
-    """
-
-    _PERCENT_FIELDS = (
-        "safe_withdrawal_rate", "estimated_retirement_tax_rate",
-    )
-
-    @pre_load
-    def normalize_inputs(self, data, **kwargs):
-        """Normalize empty inputs, then convert percent fields to fractions."""
-        data = _normalize_empty_inputs(self, data)
-        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
-
-    safe_withdrawal_rate = fields.Decimal(
-        places=4, as_string=True,
-        validate=validate.Range(min=0, max=1),
-    )
-    planned_retirement_date = fields.Date(allow_none=True)
-    estimated_retirement_tax_rate = fields.Decimal(
-        places=4, as_string=True, allow_none=True,
-        validate=validate.Range(min=0, max=1),
-    )
-    @validates_schema
-    def validate_future_retirement_date(self, data, **kwargs):
-        """Reject a planned retirement date that is not in the future.
-
-        Mirrors the pension schemas' rule (M1): a past or today date
-        collapses the projection horizon to zero periods, producing a
-        contradictory page (a shortfall verdict beside a lever with no
-        periods to solve over).  ``None`` (clearing the date) stays
-        valid -- only a present-or-past DATE is rejected.
-        """
-        planned = data.get("planned_retirement_date")
-        if planned and planned <= date.today():
-            raise ValidationError(
-                "Planned retirement date must be in the future.",
-                field_name="planned_retirement_date",
-            )
-
-
 class RaiseProbeSchema(BaseSchema):
     """ONE rail row's end-year answer: the salary form's pair, off the wire.
 
@@ -256,6 +199,150 @@ def _gather_raise_probes(data) -> dict:
     return probes
 
 
+def _normalize_with_raise_probes(schema, data, percent_fields) -> dict:
+    """The ``@pre_load`` body both schemas that read the rail's pair share.
+
+    Gather the per-raise pairs FIRST (see :func:`_gather_raise_probes` for why
+    the order matters), then the two normalisations every retirement schema
+    runs, then attach the pairs under ``raise_probes`` for the declared field
+    to grade.  One body because the readiness GET and the settings POST carry
+    the SAME controls -- the rail's rows are the what-if inputs and, since plan
+    step salary:S3-f-3, the Save's -- and two spellings of how they are read
+    off the wire would be the disagreement the pair's naming was designed to
+    prevent.
+
+    Args:
+        schema: The schema instance, for :func:`_normalize_empty_inputs`.
+        data: The raw payload.
+        percent_fields: The schema's ``_PERCENT_FIELDS``.
+
+    Returns:
+        The normalised payload, with ``raise_probes`` present iff a pair was.
+    """
+    probes = _gather_raise_probes(data)
+    data = _normalize_empty_inputs(schema, data)
+    data = _normalize_percent_fields(data, percent_fields)
+    if probes:
+        data["raise_probes"] = probes
+    return data
+
+
+def raise_end_control(raise_id, field: str) -> str:
+    """The rail control's NAME for one half of a raise's end-year pair.
+
+    The one spelling of ``raise_end_mode_<id>`` / ``raise_end_year_<id>``
+    outside the template: ``retirement.update_settings`` keys a refusal by the
+    control it belongs to, exactly as the rail's other rows key theirs, so the
+    fragment renders it on that control (plan step salary:S3-f-3).
+
+    Args:
+        raise_id: The raise's id, as submitted or as stored.
+        field: :class:`~app.services.salary_raises.EndYearError`'s
+            vocabulary -- ``"mode"`` or ``"year"``.
+
+    Returns:
+        The control name.
+    """
+    return f"{_RAISE_END_PARAMS[field]}{raise_id}"
+
+
+def raise_probe_errors_by_control(field_errors: dict) -> dict[str, list[str]]:
+    """Re-key the ``raise_probes`` field's refusals onto the rail's controls.
+
+    marshmallow reports a ``Dict`` field per key: ``{"value": {half:
+    [messages]}}`` when the nested pair failed, ``{"key": [messages]}`` when
+    the id itself did.  The rail renders errors by control name, so each half
+    lands on its control and a refused id -- which names no rendered row --
+    lands on the mode control of the id as submitted.
+
+    Args:
+        field_errors: ``errors["raise_probes"]`` from ``schema.validate``.
+
+    Returns:
+        ``{control name: [messages]}``.
+    """
+    by_control: dict[str, list[str]] = {}
+    for raise_id, halves in field_errors.items():
+        for half, messages in halves.get("value", {}).items():
+            by_control.setdefault(raise_end_control(raise_id, half), []).extend(messages)
+        if "key" in halves:
+            by_control.setdefault(raise_end_control(raise_id, "mode"), []).extend(halves["key"])
+    return by_control
+
+
+# ── Retirement Settings Schema (Phase 5) ──────────────────────
+
+
+class RetirementSettingsSchema(BaseSchema):
+    """Validates POST data for updating retirement planning settings.
+
+    E-28 / HIGH-06 / F-17 (Commit 12 of the follow-up plan):
+    ``safe_withdrawal_rate`` and ``estimated_retirement_tax_rate``
+    are persisted as decimal fractions matching the
+    ``user_settings`` DB CHECKs (``[0, 1]`` on both columns).  The
+    ``@pre_load`` converts the form's user-facing percent (e.g.
+    ``"4"`` for 4% SWR) to its fraction equivalent (``"0.04"``).
+
+    Every field is optional, so the assumptions panel's per-field saves
+    (P3a: one field per POST) and a multi-field submit validate through
+    the same schema.  There is deliberately NO field for an assumed annual
+    return: its save semantics are an open developer question, so the
+    panel's return row stays what-if-only.  There is no longer one for the
+    merit-raise horizon either -- plan step salary:S3-c deleted that
+    setting (ruling **R-SAL11**); **what replaced it is the per-raise
+    pair** (plan step salary:S3-f-3, ruling **R-SAL22**): a rail row's Save
+    posts the SAME ``raise_end_mode_<id>`` / ``raise_end_year_<id>`` controls
+    its what-if sends, gathered and graded exactly as
+    :class:`RetirementReadinessQuerySchema` gathers and grades them, into
+    ``raise_probes`` -- ``{raise_id: (mode, year)}`` -- which the route
+    resolves against the ROW through the ONE end-year rule and writes.  The
+    salary page still writes the whole raise through
+    :class:`~app.schemas.validation.salary.RaiseCreateSchema`.
+    """
+
+    _PERCENT_FIELDS = (
+        "safe_withdrawal_rate", "estimated_retirement_tax_rate",
+    )
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Gather the per-raise pairs, normalize empties, convert percents."""
+        return _normalize_with_raise_probes(self, data, self._PERCENT_FIELDS)
+
+    safe_withdrawal_rate = fields.Decimal(
+        places=4, as_string=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    planned_retirement_date = fields.Date(allow_none=True)
+    estimated_retirement_tax_rate = fields.Decimal(
+        places=4, as_string=True, allow_none=True,
+        validate=validate.Range(min=0, max=1),
+    )
+    # The rail's per-raise pair, declared as the readiness query declares it
+    # (one spelling: the same field, the same nested schema, the same strict
+    # id key); absent when no rail row posted.
+    raise_probes = fields.Dict(
+        keys=RowId(), values=fields.Nested(RaiseProbeSchema),
+    )
+
+    @validates_schema
+    def validate_future_retirement_date(self, data, **kwargs):
+        """Reject a planned retirement date that is not in the future.
+
+        Mirrors the pension schemas' rule (M1): a past or today date
+        collapses the projection horizon to zero periods, producing a
+        contradictory page (a shortfall verdict beside a lever with no
+        periods to solve over).  ``None`` (clearing the date) stays
+        valid -- only a present-or-past DATE is rejected.
+        """
+        planned = data.get("planned_retirement_date")
+        if planned and planned <= date.today():
+            raise ValidationError(
+                "Planned retirement date must be in the future.",
+                field_name="planned_retirement_date",
+            )
+
+
 class RetirementReadinessQuerySchema(BaseSchema):
     """Validates the /retirement/readiness HTMX what-if query string (P3a).
 
@@ -294,12 +381,7 @@ class RetirementReadinessQuerySchema(BaseSchema):
     @pre_load
     def normalize_inputs(self, data, **kwargs):
         """Gather the per-raise pairs, normalize empties, convert percents."""
-        probes = _gather_raise_probes(data)
-        data = _normalize_empty_inputs(self, data)
-        data = _normalize_percent_fields(data, self._PERCENT_FIELDS)
-        if probes:
-            data["raise_probes"] = probes
-        return data
+        return _normalize_with_raise_probes(self, data, self._PERCENT_FIELDS)
 
     swr = fields.Decimal(
         places=5, as_string=True, allow_none=True,
