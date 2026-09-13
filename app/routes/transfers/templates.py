@@ -33,7 +33,6 @@ from app.utils import archive_helpers
 from app.services import (
     account_service,
     category_service,
-    loan_loaders,
     template_amount_service,
     transfer_recurrence,
     transfer_service,
@@ -75,6 +74,7 @@ from app.schemas.validation import RECURRENCE_END_BOUND_KEY
 from app.routes._transfer_creation_helpers import (
     flush_template_or_namedup_redirect,
     generate_transfers_for_all_periods,
+    loan_destination_locks,
     settle_first_occurrence,
 )
 from app.routes.transfers._bp import transfers_bp
@@ -170,15 +170,14 @@ def new_transfer_template():
         # twin).  A CREATE form locks nothing on the SERVER -- there is no
         # template yet to ask ``is_standing_loan_payment`` about -- but this
         # form offers every active account as a destination, so the definition
-        # it is about to create may be a loan payment.  Which accounts those
-        # are rides to the browser below and ``recurrence_form.js`` locks the
-        # "Starts on" row when one is chosen; the derivation itself is the
-        # route's (``settle_first_occurrence``), so the lock is an affordance
+        # it is about to create may be a loan payment.  Which accounts derive
+        # which bound rides to the browser below and ``recurrence_form.js``
+        # locks the "Starts on" row for any loan and the "Ends" row for a loan
+        # holding no payment yet; the derivation and the refusal are the
+        # route's (``settle_first_occurrence``), so the locks are affordances
         # rather than the enforcement.
         recurrence=create_form_recurrence_state(),
-        loan_account_ids=loan_loaders.load_loan_account_ids_for_user(
-            current_user.id,
-        ),
+        loan_locks=loan_destination_locks(current_user.id),
         periods=periods,
         current_period=current_period,
         prefill_from=prefill_from,
@@ -231,9 +230,10 @@ def _settle_create_references(data, start_period_id):
     3. **A loan destination's first occurrence is DERIVED**, and it must be
        settled before the rule is built so nothing is authored that
        ``bind_rule_to_loan`` then replaces (plan step R7c-b, developer ruling
-       2026-08-15).  It runs LAST because it reads the destination's loan
-       parameters, which step 1 has just proved are the owner's -- reading them
-       first would be an IDOR.
+       2026-08-15); and a stop stated for a loan holding no payment yet is
+       REFUSED there too (plan step R7d-f-3, ruling **R-R60**).  It runs LAST
+       because it reads the destination's loan parameters, which step 1 has
+       just proved are the owner's -- reading them first would be an IDOR.
 
     Args:
         data: The validated payload, mutated in place by step 3.
