@@ -52,7 +52,6 @@ from app.schemas.validation import (
 from app.services.cash_ledger import is_loan_payment_definition
 from app.services.balance_at import (
     BalanceContext,
-    authored_closing,
     is_standing_loan_payment,
 )
 from app.services.recurrence import (
@@ -108,24 +107,19 @@ is an affordance, and a client may post whatever it likes.
 
 ``loan_recurrence_sync`` owns BOTH of the loan's standing payment's validity
 bounds, each in its own way since ruling **R-R29**: the OPENING bound is
-WRITTEN -- the loan's first contractual installment, re-synced on every
-payoff-affecting edit -- and the CLOSING bound is DERIVED, the loan's payoff
-resolved through the composed door on every read.  A start accepted here
-would be silently discarded by the next such edit, which is worse than
-refusing it, and the OPENING half is worse still: it is what keeps a payment
-from generating before the loan originates, measured at $3,220.92 of phantom
-cash debits on a mortgage closing one month out.  A stop accepted here would
-be discarded the same way until plan step R7d-g stops the syncs, and after it
-would state a plan the loan does not know about -- so the loan's own payment
-runs to the payoff and archiving is the door to stop it early (ruling
-**R-R59**, developer 2026-09-05, taken at plan step R7d-f: the control stays
-locked).
-
-Refusing also keeps the two shapes of "a rule stops" from ever meeting on one
-row: a submitted COUNT beside the sync's DATE is the pair
-``ck_recurrence_rules_single_end_bound`` refuses, and while
-:class:`~app.services.recurrence.EndBound` makes that unwritable, this is what
-stops the user's stated bound being thrown away without a word.
+WRITTEN -- the loan's first contractual installment, re-derived when the
+loan's ``payment_day`` moves -- and the CLOSING bound is DERIVED, the loan's
+payoff resolved through the composed door on every read and stored nowhere
+(plan step R7d-g).  A start accepted here would be silently discarded by the
+next such edit, which is worse than refusing it, and the OPENING half is
+worse still: it is what keeps a payment from generating before the loan
+originates, measured at $3,220.92 of phantom cash debits on a mortgage
+closing one month out.  A stop accepted here would state a plan the loan
+does not know about -- so the loan's own payment runs to the payoff and
+archiving is the door to stop it early (ruling **R-R59**, developer
+2026-09-05, taken at plan step R7d-f: the control stays locked).  Until R7d-g
+it would also have been discarded by the next payoff-affecting edit, which
+wrote the derived payoff over it.
 
 **The CREATE door states the same rule for a definition that does not exist
 yet** (plan step R7d-f-3, ruling **R-R60**):
@@ -221,7 +215,6 @@ def refuse_inverted_window(
     data: dict[str, Any],
     *,
     ctx: RecurrenceFormContext,
-    pass_ctx: BalanceContext,
 ) -> Response | None:
     """Refuse an UPDATE that would leave the rule stopping before it starts.
 
@@ -238,44 +231,36 @@ def refuse_inverted_window(
       control, which no reviewer listed and which the schema cannot see at all
       because the bound is not in the payload.
 
-    **There is no CHECK behind this**, which is why it is a door rather than a
-    convenience.  ``ck_recurrence_rules_valid_window`` was held back on a
-    developer ruling: the columns carry DERIVED loan-payment windows as well as
-    authored ones, and an empty derived window is a correct answer a constraint
-    cannot tell from a user's mistake.  See
+    **``ck_recurrence_rules_valid_window`` stands behind this since plan step
+    R7d-g**, and this door is still the one that can REPORT the mistake: the
+    constraint refuses the pair at the flush as an ``IntegrityError``, which
+    is a 500 and not a sentence, so the door grades the same pair first and
+    says so.  The CHECK was held back until R7d-g on a developer ruling
+    (2026-08-15): the columns carried DERIVED loan-payment windows beside
+    authored ones, and an empty derived window was a correct answer a
+    constraint could not tell from a user's mistake.  Nothing derived is
+    stored there now.  See
     :func:`~app.schemas.validation.end_bound_before_start_message`, which both
     doors word the refusal with.
 
     Reads the EFFECTIVE pair on both sides -- submitted where the form stated
     it, stored where it did not -- which is the same present-versus-absent rule
-    :func:`update_recurrence_rule_from_form` applies when it writes them.
+    :func:`update_recurrence_rule_from_form` applies when it writes them.  The
+    stored half is the owner's word for EVERY definition (plan step R7d-g), a
+    second recurring transfer into a loan included, so it is graded as
+    stated.  Until R7d-g it was read through the composed door's cache arm
+    (ruling **R-R56**), because the loan's standing payment stored the
+    chokepoints' payoff there and a loan cleared before its first installment
+    stored an INVERTED pair through the sync's own production door; that arm
+    is deleted with the writers, and the stored pair of a standing payment
+    cannot invert (its closing bound is NULL, or an owner's stop the
+    loan-params door refuses to move the start past).
 
-    **The stored half of the pair is read through the composed door's own
-    arm, never off the column** (plan step ``recurrence:R7d-f``).  Until then
-    this read ``rule.end_date`` directly and carried a SKIP for the definition
-    whose window the app derives: a loan cleared before its first installment
-    stores an inverted pair through the sync's own production door (plan step
-    ``recurrence:R7d-h``), and refusing on it made this door the constraint
-    the developer declined to add -- on an edit whose only unlocked control is
-    the "Repeats" select, so the owner was told "ends before it starts" with
-    nothing to fix it.
-    :func:`~app.services.balance_at.authored_closing` answers
-    ``NEVER_ENDS`` for that definition -- its column is the chokepoints' cache
-    of the payoff and not the owner's word (ruling **R-R56**) -- so its stored
-    pair cannot invert here, and the skip is DELETED rather than kept: the
-    refusal and the door read one arm, and the fence is structurally
-    unnecessary.  Every other definition's stored bound is its owner's and is
-    graded exactly as before, a second recurring transfer into the same loan
-    included.
-
-    The stored rule is NOT resolved here, deliberately.  The arm needs the
-    loan's identity and the two bound columns, neither of which decodes the
-    cadence, so a rule whose stored pattern the application no longer models
-    still reaches its repair save without this door raising on the way -- the
-    same property the render side states for its own read of the bound.  And
-    the arm is asked only once the columns already read inverted: an
-    adversarial review of this step found the first cut asking it on every
-    edit, which resolved the destination loan for one boolean on a rename.
+    The stored rule is NOT resolved here, deliberately.  The comparison needs
+    the two bound columns and the start, none of which decodes the cadence,
+    so a rule whose stored pattern the application no longer models still
+    reaches its repair save without this door raising on the way -- the same
+    property the render side states for its own read of the bound.
 
     Args:
         template: The template being updated.  A template with no rule is
@@ -285,8 +270,6 @@ def refuse_inverted_window(
             the recurrence keys afterwards and must still see them.
         ctx: The form context, read for the submitted closing bound (``None``
             when the form stated none) and for where a refusal sends the user.
-        pass_ctx: The read pass the standing-payment identity is read from
-            (:func:`~app.services.balance_at.authored_closing`).
 
     Returns:
         * ``None`` -- the window is well-formed, or nothing this edit states
@@ -306,20 +289,6 @@ def refuse_inverted_window(
     end_date = bound.columns().end_date
     if starts_on is None or end_date is None or end_date >= starts_on:
         return None
-    # The pair reads INVERTED off the columns.  A stored bound is read as the
-    # DOOR reads it before it is refused back at the owner: for the loan's
-    # standing payment that column is the cache and not the owner's word, so
-    # the arm answers ``NEVER_ENDS`` and there is nothing to refuse.  Asked
-    # only here -- an ordinary edit of any definition never reaches this line
-    # and never resolves the loan for one boolean; a STATED bound was already
-    # refused for the standing payment one rule up, so the arm is asked only
-    # about a stored one.  The arm can only REMOVE an inversion, never make
-    # one, so asking it after the column test answers exactly what asking it
-    # before would.
-    if ctx.end_bound is None:
-        end_date = authored_closing(template, bound, pass_ctx).columns().end_date
-        if end_date is None:
-            return None
     flash(end_bound_before_start_message(end_date, starts_on), "danger")
     return ctx.redirect.to_response()
 
@@ -446,9 +415,9 @@ def refuse_recurrence_update(
         pass_ctx: The read pass.  Read for ONE fact, whether *template* is
             the standing payment of the loan it pays into
             (:func:`~app.services.balance_at.is_standing_loan_payment`),
-            which two of the four rules turn on and the fourth reads through
-            the composed door's arm -- and read only when one of them can
-            fire, because answering it resolves the loan.  Built by the route BEFORE any write, as
+            which two of the four rules turn on -- and read only when one of
+            them can fire, because answering it resolves the loan.  Built by
+            the route BEFORE any write, as
             the 2026-08-16 ruling has it (a producer below the route takes the
             pass and never builds one); regeneration afterwards builds its own,
             as a writer must.
@@ -477,8 +446,8 @@ def refuse_recurrence_update(
     # PATCH (an adversarial review of plan step R7d-f measured the first cut
     # doing exactly that).  Each rule below asks only when it can fire; where
     # both can, the pass's memo makes the second read free.  The
-    # inverted-window door reads the same memo through the composed door's
-    # arm, and only once a stored pair already reads inverted.
+    # inverted-window door asks no identity at all: since plan step R7d-g a
+    # stored bound is the owner's word for every definition.
     #
     # A loan payment may not be made one-time, and WHICH definitions that
     # covers is the UNION of two questions rather than either alone (developer
@@ -537,9 +506,7 @@ def refuse_recurrence_update(
         flash(UNREPAIRED_CADENCE_CANNOT_BE_CLEARED, "danger")
         return ctx.redirect.to_response()
 
-    inverted = refuse_inverted_window(
-        template, data, ctx=ctx, pass_ctx=pass_ctx,
-    )
+    inverted = refuse_inverted_window(template, data, ctx=ctx)
     if inverted is not None:
         return inverted
     return None

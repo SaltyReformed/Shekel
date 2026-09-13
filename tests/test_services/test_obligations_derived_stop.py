@@ -88,14 +88,16 @@ def _live_loan_payment(seed_user):
 
 
 def _cache_the_bound(template, bound: date, ctx) -> None:
-    """Write *bound* into the rule's column the way a chokepoint's sync does.
+    """Write *bound* into the rule's column through the real write door.
 
-    Through the real write door, so the column holds exactly what a sync
-    leaves and the test's precondition can assert it.
+    Named for what it did until plan step R7d-g -- reproduce the chokepoints'
+    cache -- and kept because the column holds exactly what the door leaves
+    and the test's precondition can assert it; what it writes now is a stop
+    an owner authored (ruling **R-R82**).
 
     Args:
-        template: The loan payment whose rule takes the cached bound.
-        bound: The date to cache.
+        template: The loan payment whose rule takes the bound.
+        bound: The date to store.
         ctx: The owner's read pass: its calendar is what the write door
             re-authors against, and its loan-resolution memo is what the
             standing-payment identity is read off.
@@ -172,9 +174,14 @@ class TestADerivedStopLeavesTheObligationsTotal:
         2028 is cleared early; its rule's column still holds the 2028 date the
         last sync wrote, and ``has_ended`` read that column -- a date that has
         not passed -- so the payment stayed in both totals for two more years
-        unless a later chokepoint happened to rewrite it.  The door reads the
-        app-written column as the cache it is (ruling **R-R56**) and the
-        derived stop is the whole answer.
+        unless a later chokepoint happened to rewrite it.  The door composes
+        BOTH halves and the EARLIER binds: the loan's own closing date is
+        the day it cleared, so the payment is finished whatever a later date
+        in the column says.  (Until plan step R7d-g that column was the
+        cache and the door read it as none, ruling **R-R56**; nothing writes
+        a cache there now and a stored date is the owner's word, ruling
+        **R-R82** -- the composition answers the same either way, because
+        the derived stop is the earlier.)
         """
         with app.app_context():
             _loan, tpl = make_retired_loan_payment(
@@ -191,39 +198,56 @@ class TestADerivedStopLeavesTheObligationsTotal:
                 "committed total"
             )
 
-    def test_a_cached_bound_EARLIER_than_the_payoff_no_longer_drops_a_live_payment(
+    def test_an_owners_stop_on_the_standing_payment_is_honoured_by_the_total(
         self, app, seed_user, seed_periods_52,
     ):
-        """Plan ledger row **D35**'s shape: the understating direction.
+        """Ruling **R-R82** in the committed total: a stored stop binds, on both sides of it.
 
-        A live loan originating on the frozen day, first installment
-        2026-08-01; its column holds 2026-07-15 -- the production shape,
-        ``2029-01-22`` stored against ``2029-02-22`` derived, moved onto the
-        fixture.  Read on 2026-07-20, before this step
-        ``EndsOnDate(2026-07-15).has_closed`` said the bound had passed and the
-        payment LEFT both totals while the loan owed all twenty-four
-        installments -- the direction that understates what the owner is
-        committed to.  The door composes ``NEVER_ENDS`` for the app-written
-        column (ruling **R-R56**) and the loan's own stop is later than the
-        cache, so the payment counts.
+        Until plan step R7d-g this case pinned plan ledger row **D35**'s
+        understating direction: the column held a cache EARLIER than the
+        payoff and the door read it as none (ruling **R-R56**), so the
+        payment stayed in the total.  A date in that column is the owner's
+        word now.  A live loan originating on the frozen day, first
+        installment 2026-08-01, whose standing payment carries an owner's
+        stop of 2026-08-15: read on 2026-07-20 the 08-01 installment is still
+        owed and the payment counts (``$200.00`` a month, ``200 * 12 / 12``);
+        read on 2026-08-05 it has ended -- under ruling **R-R45** "ended"
+        means no occurrence is owed on or after the day asked, and the next
+        1st falls past the stop -- so it leaves the total while the loan
+        still owes twenty-three installments, which is what the owner said
+        and what the summed plan (ruling **R-R37**) prices too.  The stop
+        follows the rule's start so the stored pair is the ordered one the
+        window CHECK admits.
         """
         with app.app_context():
             loan, tpl = _live_loan_payment(seed_user)
             owner = seed_user["user"].id
-            stale = date(2026, 7, 15)
-            _cache_the_bound(tpl, stale, BalanceContext.build(owner, _TODAY))
-            after_the_cache = BalanceContext.build(owner, date(2026, 7, 20))
-            closing = balance_at.loan_figures(loan, after_the_cache).closing_date
-            assert closing is not None and closing > stale, (
-                f"precondition: the loan's own stop ({closing}) must be LATER "
-                f"than the cache ({stale})"
+            authored = date(2026, 8, 15)
+            assert tpl.recurrence_rule.starts_on <= authored, (
+                "precondition: the stored pair must be the ordered one the "
+                "window CHECK admits"
+            )
+            _cache_the_bound(tpl, authored, BalanceContext.build(owner, _TODAY))
+            before_the_stop = BalanceContext.build(owner, date(2026, 7, 20))
+            after_the_stop = BalanceContext.build(owner, date(2026, 8, 5))
+            assert balance_at.loan_figures(
+                loan, after_the_stop,
+            ).payoff_date is None, (
+                "precondition: with its only payment stopped after one "
+                "installment the loan never pays off"
             )
 
             assert obligations_aggregator.template_monthly_or_none(
-                tpl, after_the_cache,
+                tpl, before_the_stop,
             ) == Decimal("200.00"), (
-                "a stale cache earlier than the payoff dropped a live loan "
-                "payment out of the committed total"
+                "a stop with an installment still owed before it dropped a "
+                "live loan payment out of the committed total"
+            )
+            assert obligations_aggregator.template_monthly_or_none(
+                tpl, after_the_stop,
+            ) is None, (
+                "a stop the owner authored, and the pass has passed, kept the "
+                "payment in the committed total"
             )
 
     def test_the_emergency_fund_floor_drops_a_retired_loans_payment(

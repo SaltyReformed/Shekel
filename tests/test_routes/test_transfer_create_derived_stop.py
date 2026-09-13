@@ -246,7 +246,7 @@ class TestAStopStatedForANewLoanPayment:
 
         The standing payment is the loan's OLDEST active recurring transfer,
         so a second one is not the payment and its authored stop binds beside
-        the derived one (ruling **R-R56**'s second-transfer clause).  The
+        the derived one (ruling **R-R60**'s second-transfer clause).  The
         posted date is read back off the stored rule, not inferred from the
         redirect.
 

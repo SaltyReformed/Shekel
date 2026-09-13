@@ -63,6 +63,11 @@ MUST move there.
   generation stops at the column and the ``$531.94`` installment due
   ``2029-02-22`` is never written; on the branch the column is read as the
   cache it is (ruling **R-R56**) and the derived stop is the whole answer.
+  **Since plan step R7d-g DOOR 5 reads the other way**: the writers are
+  gone, a date planted in that column is the owner's word (ruling
+  **R-R82**), and generation honours it -- so a re-run against a tree at or
+  past R7d-g reports DOOR 5 stopping at the planted date, which is that
+  tree working, not the R7d-c-2 branch regressing.
 
 **Nothing it prints carries a sequence-assigned id**, for the reason
 ``verify_generation_pass.py`` states: PostgreSQL does not roll a sequence back,

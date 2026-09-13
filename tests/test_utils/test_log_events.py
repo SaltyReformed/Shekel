@@ -40,7 +40,6 @@ from app.utils.log_events import (
     EVT_ENTRY_UPDATED,
     EVT_HIBP_CHECK_FAILED,
     EVT_HIBP_CHECK_REJECTED,
-    EVT_LOAN_RECURRENCE_END_DATE_UPDATED,
     EVT_LOGIN_FAILED,
     EVT_LOGIN_SUCCESS,
     EVT_LOGOUT,
@@ -292,7 +291,6 @@ class TestExpectedEventsRegistered:
         (EVT_RECURRENCE_GENERATED, BUSINESS),
         (EVT_CROSS_USER_BLOCKED, BUSINESS),
         (EVT_CARRY_FORWARD, BUSINESS),
-        (EVT_LOAN_RECURRENCE_END_DATE_UPDATED, BUSINESS),
         # Business (C-14 / F-080 new -- service-tier mutations)
         (EVT_TRANSFER_CREATED, BUSINESS),
         (EVT_TRANSFER_UPDATED, BUSINESS),

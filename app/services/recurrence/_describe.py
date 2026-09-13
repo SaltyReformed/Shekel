@@ -179,14 +179,12 @@ class RecurrenceDescription:
             words the whole :class:`~app.services.recurrence.Closing` -- the
             same value the occurrence walk reads, so the cell and the walk
             cannot disagree with each other.  Generation takes the same door
-            since plan step R7d-c-2, so the phrase and the rows agree; one
-            limit stands while the R7d leaves land: the cached ``end_date`` column
-            does not reach this phrase for the ACTIVE loan payment the app
-            bounds (the door reads it as the cache it is, ruling **R-R56**),
-            but it does for an ARCHIVED one, whose column the app wrote while
-            it was active, until R7d-g NULLs it; and a bound an owner authored
-            on the generic create form is read as the cache before the first
-            chokepoint writes it.
+            since plan step R7d-c-2, so the phrase and the rows agree, and
+            since plan step R7d-g the ``end_date`` column that reaches this
+            phrase is the owner's word for every definition -- the cache the
+            chokepoints wrote there for a loan payment (read around for the
+            ACTIVE one under ruling **R-R56**, shown as the owner's for an
+            ARCHIVED one) is NULLed and never written.
 
             **It was two fields, ``until`` and ``after_occurrences``, with a
             ``__post_init__`` refusing the pair, until plan step R7b-3.**  That
@@ -569,8 +567,8 @@ def _derived_closes_on(derived: ClosesOn, authored: EndBound) -> str:
       whichever comes first is when the definition stops, and saying both would
       state one fact twice.
     * **The owner named no stop at all** -- the derived date is the whole
-      answer.  This is the case every live loan payment is in once plan step
-      R7d-g NULLs the cached column.
+      answer.  This is the case every live loan payment is in since plan step
+      R7d-g NULLed the cached column.
     * **The owner named a stop that is not a date** -- a count, today, and the
       two are INCOMPARABLE without walking the occurrences: "for 12 of them"
       and "until the loan clears" cannot be ordered as values.  Both bind, so

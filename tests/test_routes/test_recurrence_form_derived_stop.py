@@ -53,6 +53,7 @@ from app.services.recurrence import (
     EMPTY,
     INDEFINITE,
     ClosesOn,
+    EmptyAuthoredWindowError,
     EndsOnDate,
     reauthor_rule,
     recurrence_spec,
@@ -130,10 +131,12 @@ def _payment_into(seed_user, loan, *, fires_on_day=1):
 
 
 def _cache_the_bound(tpl, bound, ctx):
-    """Write *bound* into the rule's column the way a chokepoint's sync does.
+    """Write *bound* into the rule's column through the real write door.
 
-    Through the real write door, so the column holds exactly what a sync
-    leaves; asserted back so a case cannot pass on a write that never landed.
+    Named for what it reproduced until plan step R7d-g -- the chokepoints'
+    cache -- and kept because the column holds exactly what the door leaves;
+    asserted back so a case cannot pass on a write that never landed.  What
+    it writes now is a stop the owner authored (ruling **R-R82**).
     """
     reauthor_rule(
         tpl.recurrence_rule,
@@ -142,6 +145,21 @@ def _cache_the_bound(tpl, bound, ctx):
     )
     db.session.commit()
     assert tpl.recurrence_rule.end_date == bound, "precondition: the column is cached"
+
+
+def _end_bound_help(body):
+    """Return the RENDERED help text under the "Ends" row.
+
+    The rendered text and not the page: the transfer form ships the payoff
+    sentence as a ``data-locked-text`` attribute for the script's swap on a
+    destination change, so a substring test over the whole body cannot tell
+    the caption the row shows from the one the script holds in reserve.
+    """
+    match = re.search(
+        r'id="end-bound-help"[^>]*>\s*(.*?)\s*</div>', body, re.S,
+    )
+    assert match is not None, "the Ends row rendered no help text"
+    return match.group(1)
 
 
 def _selected_mode(body):
@@ -206,36 +224,49 @@ def _ends_select(body):
 class TestTheLockedEndsRowReadsTheResolver:
     """What the locked control DISPLAYS, per shape the resolver can answer."""
 
-    def test_a_stale_cached_column_is_not_what_the_form_shows(
+    def test_a_stored_stop_on_the_standing_payment_is_what_the_locked_row_shows(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Plan ledger row **D35**'s shape, on the surface that showed the cache.
+        """Ruling **R-R82** on the locked row: a stored stop is the owner's, and it is displayed.
 
-        The column is falsified to a date the loan's own fold does not name.
-        Until this step the locked control rendered exactly that date under a
-        sentence saying it came from the projected payoff; it now renders the
-        composed door's phrase, and the falsified date appears nowhere on the
-        page.  The phrase is asserted as a LITERAL rather than against the
-        seam's figure, so this cannot pass by two readers agreeing on a wrong
-        producer -- the door's own suite pins ``2028-07-01`` for this loan.
+        Until plan step R7d-g this case was plan ledger row **D35**'s shape:
+        the column held the chokepoints' cache, the door read it as none
+        (ruling **R-R56**), and the locked control rendered the derived
+        payoff with the cached date appearing nowhere on the page.  A date in
+        that column is the owner's word now, kept from before the definition
+        became the loan's standing payment; the door composes it, the row
+        stays LOCKED (the standing payment's stop is not editable here:
+        archive it, ruling **R-R59**) and displays the composed phrase, which
+        names the owner's date.  The derived half is INDEFINITE, because the
+        summed plan honours the same stop and the loan then never clears --
+        the same fact read from both sides.  **The help text says which of
+        the two the row is showing**: an adversarial review of R7d-g-1 found
+        the first cut rendering the owner's date under "Set from the loan's
+        projected payoff, and updated when the loan changes", neither of which
+        is true of it; the row now names it as the owner's, still in force,
+        with the archive as its door.  The payoff sentence is pinned on the
+        NULL-column case beside this one.
         """
         with app.app_context():
             loan = _loan(seed_user)
             tpl = _payment_into(seed_user, loan)
             _cache_the_bound(tpl, _STALE, _ctx(seed_user))
-            assert resolved_definition(tpl, _ctx(seed_user)).closing.derived == (
-                ClosesOn(on=date(2028, 7, 1))
-            ), "precondition: the loan's own stop is LATER than the cache"
+            closing = resolved_definition(tpl, _ctx(seed_user)).closing
+            assert closing.authored == EndsOnDate(on=_STALE)
+            assert closing.derived == INDEFINITE, closing
 
             body = auth_client.get(f"/transfers/{tpl.id}/edit").data.decode()
 
             select_tag, options = _ends_select(body)
             assert "disabled" in select_tag
-            assert options == ["until Jul 01, 2028"], options
-            assert _STALE.isoformat() not in body, (
-                "the cached column reached the page; the form still reads it"
+            assert options == ["until Jan 01, 2027"], options
+            help_text = _end_bound_help(body)
+            # Jinja escapes the apostrophe, so the fragments avoid it.
+            assert "A stop set before this became the loan" in help_text
+            assert "archive the payment to change it" in help_text
+            assert "projected payoff" not in help_text, (
+                "the owner's stop was captioned as the loan's payoff"
             )
-            assert "projected payoff" in body
 
     def test_a_loan_that_never_pays_off_reads_Never(
         self, app, auth_client, seed_user, seed_periods,
@@ -246,8 +277,8 @@ class TestTheLockedEndsRowReadsTheResolver:
         payment cannot cover the interest, the fold never reaches zero, and the
         describer words no stop at all.  A form control has to SAY something
         there, and what it says is the same "Never" its open twin offers.  The
-        column is falsified too, and must not surface: a loan that never pays
-        off has NO date to show, so any date on this page is the cache.
+        column is NULL, as the R7d-g migration leaves every standing
+        payment's: a loan that never pays off has NO date to show.
         """
         with app.app_context():
             loan = _loan(
@@ -259,7 +290,7 @@ class TestTheLockedEndsRowReadsTheResolver:
                 loan_params_for(db.session, loan.id), Decimal("900000.00"),
             )
             tpl = _payment_into(seed_user, loan)
-            _cache_the_bound(tpl, _STALE, _ctx(seed_user))
+            assert tpl.recurrence_rule.end_date is None
             ctx = _ctx(seed_user)
             assert loan_payment_window(
                 tpl, resolved_recurrence(tpl.recurrence_rule, ctx.calendar()), ctx,
@@ -270,7 +301,9 @@ class TestTheLockedEndsRowReadsTheResolver:
             select_tag, options = _ends_select(body)
             assert "disabled" in select_tag
             assert options == ["Never"], options
-            assert _STALE.isoformat() not in body
+            help_text = _end_bound_help(body)
+            assert "projected payoff" in help_text
+            assert "A stop set before this became the loan" not in help_text
 
     def test_a_loan_cleared_before_its_first_installment_reads_never_runs(
         self, app, auth_client, seed_user, seed_periods,
@@ -540,68 +573,49 @@ class TestTheInvertedWindowRefusalReadsTheDoor:
             )
             assert second.recurrence_rule.starts_on == starts_on_before
 
-    def test_the_standing_payments_stale_cache_cannot_be_refused_back(
+    def test_the_standing_payment_can_store_no_inverted_pair_to_refuse(
         self, app, seed_user, seed_periods,
     ):
-        """A cache EARLIER than the start is the app's, and inverts nothing.
+        """The state the deleted skip existed for is unconstructible (plan step R7d-g).
 
-        The column is falsified to a date before the rule's first occurrence
-        -- the pair the sync writes for a loan cleared before its first
-        installment (plan step ``recurrence:R7d-h``), reproduced by hand so
-        the loan itself stays live.  An ordinary cadence edit states neither
-        bound; the refusal reads the stored pair through the door's arm, finds
-        ``NEVER_ENDS`` on the authored side, and lets the edit through.  There
-        is no skip left for this to pass on.
+        Until R7d-g the sync wrote an inverted pair for a loan cleared before
+        its first installment, the door read that column as the cache, and
+        this case held that the refusal let an ordinary cadence edit through
+        on it.  Nothing writes that pair now: the write door refuses it off
+        the values it would store (``EmptyAuthoredWindowError``, the one
+        comparison), and ``ck_recurrence_rules_valid_window`` stands behind
+        the door for a writer that never sees it (graded in
+        ``test_recurrence_window_check``).  So the refusal never meets the
+        pair and carries no arm for it.
         """
         with app.app_context():
             loan = _loan(seed_user)
             tpl = _payment_into(seed_user, loan)
             ctx = _ctx(seed_user)
             inverted = tpl.recurrence_rule.starts_on - date.resolution
-            _cache_the_bound(tpl, inverted, ctx)
-            assert tpl.recurrence_rule.end_date < tpl.recurrence_rule.starts_on, (
-                "precondition: the stored pair is inverted"
-            )
-            assert is_standing_loan_payment(tpl, ctx), (
-                "precondition: this is the definition whose column is the cache"
-            )
 
-            with app.test_request_context():
-                refusal = resolve_recurrence_rule_for_update(
-                    tpl,
-                    validated_cadence(
-                        unit=RecurrenceUnitEnum.MONTH, states_a_start=False,
-                    ),
-                    ctx=_form_ctx(None),
-                    pass_ctx=ctx,
-                )
-
-            assert refusal is None, (
-                "an ordinary cadence edit was refused on the app's own cached "
-                "column -- the owner has no control that could fix it"
-            )
+            with pytest.raises(EmptyAuthoredWindowError):
+                _cache_the_bound(tpl, inverted, ctx)
+            db.session.rollback()
+            assert tpl.recurrence_rule.end_date is None
 
 
-class TestAnUnrelatedEditLeavesTheCacheAlone:
-    """The one reader of the column a NULL-the-column census cannot see."""
+class TestAnUnrelatedEditLeavesTheStoredBoundAlone:
+    """The re-author carries the stored closing bound through untouched."""
 
-    def test_a_cadence_edit_writes_the_cached_bound_back_unchanged(
+    def test_a_cadence_edit_writes_the_stored_bound_back_unchanged(
         self, app, seed_user, seed_periods,
     ):
         """``update_recurrence_rule_from_form`` re-authors the stored bound on every edit.
 
-        For the standing payment that bound is the cache; the form locks the
-        control and posts nothing about it, so the re-author carries the stored
-        value through -- byte-identical, which is what R7d-g relies on when it
-        NULLs the column and this line begins writing ``NEVER_ENDS`` back.
-
-        Graded at the HELPER, not through the route, and an adversarial review
-        of this step is why: the route regenerates after the write, every
-        regenerated transfer into a loan runs ``sync_recurring_payment_bounds``,
-        and that chokepoint rewrites the column with the payoff -- so a
-        route-level case reads the SECOND producer and would stay green with
-        the re-author writing anything at all.  The cached date is the STALE
-        one for the same reason: the payoff is the value a sync would restore.
+        For the standing payment the form locks the control and posts nothing
+        about it, so the re-author carries the stored value through
+        byte-identical -- the owner's word since plan step R7d-g (ruling
+        **R-R82**), where until then it was the chokepoints' cache and this
+        was the one reader of the column a NULL-the-column census could not
+        see.  Graded at the HELPER, not through the route: the route
+        regenerates after the write, and a route-level case would read that
+        second producer.
         """
         with app.app_context():
             loan = _loan(seed_user)

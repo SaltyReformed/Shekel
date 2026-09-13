@@ -35,7 +35,6 @@ from app.services import (
     escrow_calculator,
     loan_loaders,
     loan_posting_service,
-    loan_recurrence_sync,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
@@ -164,9 +163,9 @@ def add_rate_change(account_id):
         )
         return _render_rate_history(account, params)
 
-    # R-4: a rate change re-amortizes the loan, moving the projected payoff, so
-    # re-bound the recurring payment's window before committing.
-    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
+    # A rate change re-amortizes the loan and moves the projected payoff; the
+    # recurring payment's closing bound is derived from it on every read
+    # (plan step R7d-g), so there is nothing to re-bound before committing.
     db.session.commit()
     logger.info("Recorded rate change for loan %d: %s", account.id, data["interest_rate"])
     # The re-amortization moves the whole balance trajectory, but this HTMX swap

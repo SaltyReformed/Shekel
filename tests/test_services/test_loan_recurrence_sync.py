@@ -1,19 +1,16 @@
-"""Tests for loan_recurrence_sync (Risk R-4: recurring end_date off the GET path).
+"""Tests for loan_recurrence_sync: the resolver, and the one bound still written.
 
-``app.services.loan_recurrence_sync`` keeps a loan's recurring-payment
-``RecurrenceRule.end_date`` equal to the loan's projected payoff, so the
-recurrence engine stops generating shadow transactions past payoff.  It used to
-run as a write on the loan-detail GET (Risk R-4); it now runs at every
-payoff-affecting mutation.
-
-Since plan step C8d the bound is DERIVED from the balance instead of being read
-off the last row of the resolver's committed schedule walk, and since plan step
-``recurrence:R7d-h`` the whole of it -- past and future --
-is ``balance_at.loan_closing_date``, read off
-``LoanFigures.closing_date``; the ``recurrence_end_date`` mapping those tests
-used to pin is DELETED, because the ``None`` it disambiguated no longer means
-two things.  These tests pin the service (``sync_recurring_payment_bounds``)
-and the window resolver against real loans.
+``app.services.loan_recurrence_sync`` answers a loan payment's CLOSING bound on
+every read (:func:`~app.services.loan_recurrence_sync.loan_payment_window`,
+the resolver plan step R7d-b built) and WRITES its OPENING bound from the
+loan's contract (:func:`~app.services.loan_recurrence_sync.sync_loan_payment_start`,
+ruling **R-R29**).  Until plan step R7d-g it also wrote the closing bound into
+``budget.recurrence_rules.end_date`` from ten chokepoints, and the first class
+here pinned that writer against real loans; **R7d-g deleted the writer**, so
+that class now pins the opposite -- the column is NEVER written -- and the
+payoff figures it used to assert on the column (``2028-07-01``,
+``2028-08-01``) are asserted on the resolver, which is where they always came
+from (``LoanFigures.closing_date``, plan step ``recurrence:R7d-h``).
 
 All money is ``Decimal`` from strings.
 """
@@ -25,7 +22,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.exceptions import BaselineMissingError
+from app.exceptions import BaselineMissingError, ValidationError
 from app.services import balance_at, loan_recurrence_sync, template_amount_service
 from app.models.transfer import Transfer
 from app.services import pay_period_write, transfer_recurrence, transfer_service
@@ -90,8 +87,19 @@ def _window(template, ctx):
     )
 
 
-class TestSyncRecurringPaymentBounds:
-    """The relocated end_date write, driven directly against a resolvable loan."""
+class TestTheClosingBoundIsNeverWritten:
+    """The opening-only sync, driven directly against a resolvable loan (plan step R7d-g).
+
+    ``sync_loan_payment_start`` is what ``sync_recurring_payment_bounds``
+    became when its closing half was deleted: it re-derives the standing
+    payment's ``starts_on`` from the loan's contract and touches NOTHING else.
+    Every case here that used to assert a written ``end_date`` now asserts
+    the column is left exactly as the owner stored it -- NULL, a date, or a
+    count -- while the resolver still answers the payoff the column used to
+    cache.  A mutation that restores the deleted write (any assignment to
+    ``end_date`` or ``max_occurrences`` in the sync) turns the three
+    survival cases red.
+    """
 
     @pytest.fixture(autouse=True)
     def _frozen(self, monkeypatch):
@@ -114,17 +122,17 @@ class TestSyncRecurringPaymentBounds:
             origination_date=date(2026, 7, 1),
         )
 
-    def test_a_current_loan_bounds_at_its_contractual_payoff(
+    def test_a_current_loan_leaves_the_column_NULL_and_the_resolver_answers_the_payoff(
         self, app, db, seed_user, seed_periods,
     ):
-        """A loan with nothing overdue bounds recurrence at its contractual payoff.
+        """The control that used to read ``end_date == 2028-07-01`` off the column.
 
         Originated on the as-of, so its whole 24-month term is ahead of it and
-        every installment is synthesized at the contractual P&I: the fold reaches
-        zero on the contractual last installment, 2028-07-01 (origination
-        2026-07-01 + 24 monthly payments, the first on 2026-08-01).  This is the
-        no-drift control for the delinquent case below -- the derived payoff and
-        the contractual payoff are the SAME date when the borrower is on plan.
+        every installment is synthesized at the contractual P&I: the fold
+        reaches zero on the contractual last installment, 2028-07-01.  That
+        date is the RESOLVER's answer and nothing else's: the column stays
+        NULL through the sync, and the composed door's derived stop is what
+        generation and every display read (plan steps R7d-c-2, R7d-d).
         """
         with app.app_context():
             loan = self._current_loan(seed_user, db.session)
@@ -133,263 +141,179 @@ class TestSyncRecurringPaymentBounds:
             rule = tpl.recurrence_rule
             assert rule.end_date is None
 
-            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            loan_recurrence_sync.sync_loan_payment_start(loan.id)
             db.session.commit()
             db.session.refresh(rule)
 
-            assert rule.end_date == date(2028, 7, 1)
-            assert isinstance(rule.end_date, date)
-
-    def test_a_count_bound_is_REPLACED_by_the_derived_payoff(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The crash plan step R7b-3's bound type exists to make impossible.
-
-        A loan payment's stop is DERIVED, and this module states its change as
-        ``replace(spec, end_bound=...)``.  While the bound was two independent
-        columns the same call wrote a date beside a count the rule already
-        carried, and ``ck_recurrence_rules_single_end_bound`` refused the pair
-        at the flush -- a 500 on an ordinary loan edit.
-
-        A count can only reach a loan payment's rule around the form door,
-        which refuses one; this drives the sync directly against such a row, so
-        the TYPE's half of the guarantee is pinned rather than resting on the
-        door's.
-        """
-        with app.app_context():
-            loan = self._current_loan(seed_user, db.session)
-            tpl = make_loan_payment_template(db.session, seed_user, loan)
-            rule = tpl.recurrence_rule
-            rule.max_occurrences = 12
-            db.session.commit()
-
-            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
-            db.session.commit()
-            db.session.refresh(rule)
-
-            assert rule.end_date == date(2028, 7, 1)
+            assert rule.end_date is None
             assert rule.max_occurrences is None
+            ctx = BalanceContext.build(seed_user["user"].id, date(2026, 7, 1))
+            assert _window(tpl, ctx) == ClosesOn(on=date(2028, 7, 1))
 
-    def test_a_count_bound_is_cleared_even_when_the_loan_never_pays_off(
-        self, app, db, seed_user, seed_periods,
+    @pytest.mark.parametrize(
+        ("end_date", "max_occurrences"),
+        [
+            pytest.param(None, None, id="unbounded"),
+            pytest.param(date(2027, 3, 1), None, id="an owner's date"),
+            pytest.param(None, 12, id="an owner's count"),
+        ],
+    )
+    def test_a_stored_closing_bound_survives_the_sync_in_every_shape(
+        self, app, db, seed_user, seed_periods, end_date, max_occurrences,
     ):
-        """The case the COLUMN comparison could not see.
+        """The column is the owner's word and the sync does not read it, let alone write it.
 
-        The idempotence guard used to read ``rule.end_date``; a count-bounded
-        rule has ``end_date IS NULL``, so against a loan whose derived payoff is
-        ``None`` it compared ``None == None`` and returned early -- leaving a
-        count bound on a payment whose stop this module owns.  Comparing BOUNDS
-        is what closes it.
-
-        Reached with a template that names no loan the seam can value: the
-        no-configured-loan path returns before any write, so the case is built
-        instead on a loan that DOES resolve and a bound that is already
-        correct -- the count must still go.
+        Until plan step R7d-g the sync REPLACED whatever stood here with the
+        derived payoff -- a date, and a count too (the crash plan step R7b-3's
+        bound type made impossible).  Ruling **R-R82** keeps a stop authored
+        before a definition became the standing payment, so all three shapes
+        must come back untouched, on a loan whose derived payoff (2028-07-01)
+        differs from every one of them.  Written around the form door, which
+        refuses a stated bound on a standing payment; the sync must not be a
+        second door.
         """
         with app.app_context():
             loan = self._current_loan(seed_user, db.session)
             tpl = make_loan_payment_template(db.session, seed_user, loan)
             rule = tpl.recurrence_rule
+            rule.end_date = end_date
+            rule.max_occurrences = max_occurrences
             db.session.commit()
 
-            # First sync writes the derived payoff.
-            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
-            db.session.commit()
-            db.session.refresh(rule)
-            payoff = rule.end_date
-            assert payoff is not None
-
-            # Now put the rule in the state only a row written around the form
-            # door can reach: a COUNT bound where the derived answer is a date.
-            rule.end_date = None
-            rule.max_occurrences = 6
-            db.session.commit()
-
-            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            loan_recurrence_sync.sync_loan_payment_start(loan.id)
             db.session.commit()
             db.session.refresh(rule)
 
-            assert rule.end_date == payoff
-            assert rule.max_occurrences is None
+            assert rule.end_date == end_date
+            assert rule.max_occurrences == max_occurrences
 
-    def test_unpaid_overdue_installments_push_the_bound_out(
+    def test_a_start_that_would_pass_an_authored_stop_is_REFUSED_not_written(
         self, app, db, seed_user, seed_periods,
     ):
-        """A loan whose past installments were never PAID pays off later (B-9).
+        """The one pair ``ck_recurrence_rules_valid_window`` refuses that a loan edit can reach.
 
-        This 24-month loan originated 2025-01-01 and is read on 2026-07-01 with
-        no settled payment at all, so it still owes the full $12,000.00 with only
-        seven contractual installments left.  The pre-C8d bound came off the
-        resolver's schedule walk, which amortizes an installment per month
-        whether or not one was paid, and so reported the CONTRACTUAL 2027-01-01 --
-        a payoff the borrower has not remotely earned.  The fold reports when the
-        balance actually reaches zero: the seven remaining contractual
-        installments plus the post-contractual extension (plan C8c) at the same
-        level payment.  Hand-checked: the level P&I on $12,000.00 / 24 months /
-        5% is $526.46, and $12,000.00 at 5%/12 amortizes in exactly 24 payments
-        at that figure -- so a borrower who has paid NOTHING is a full 24
-        installments from zero PLUS the arrears.  Since plan step R16-b-2 the
-        seventeen skipped months from 2025-02-01 to 2026-06-01 each accrue
-        their $50.00 of interest (ruling R-R71: a skipped month owes its
-        interest whichever side of today it is on): with July's own charge,
-        $900.00 stands when the first payment lands on 2026-07-01, which
-        clears it and CAPITALIZES the $373.54 shortfall (balance $12,373.54);
-        the 08-01 payment then pays $474.90 of principal, and counting from
-        there the balance reaches zero on 2028-08-01 -- 26 payments, seven
-        contractual installments and nineteen from the extension, 20 months
-        past the contractual 2027-01-01.  It read 2028-06-01 while the skipped
-        months charged nothing (B-9's holds-flat, repealed by the ruling).
-        Re-derived with ``accrue_monthly_interest`` / ``apply_payment_cash``
-        after an adversarial review found this paragraph's first count wrong.
-
-        **"Never paid" is a fact the OWNER states since plan step R16-b-2, and
-        this fixture states it.**  Ruling **R-R64**: an occurrence the
-        schedule places that no row in any state answers is "not generated
-        yet" and the plan prices it as generation would -- so a loan whose
-        rows were merely never generated is NOT delinquent, it is unplanned,
-        and the plan would pay its 2026 installments the day after ``as_of``.
-        What makes an installment unpaid is a row the owner un-planned: a
-        cancelled or deleted row still answers its occurrence and pays
-        nothing.  So the schedule is extended to cover ``as_of`` (a live
-        schedule always does; ``seed_periods`` stops in May), the rows are
-        GENERATED, and every overdue one is soft-deleted, which is the state a
-        delinquent owner's books are in; the 2025 installments fall before the
-        schedule opens (2026-01-02), where nothing is generated or estimated
-        either way.
-        """
-        with app.app_context():
-            loan = self._loan(seed_user, db.session)
-            tpl = make_loan_payment_template(db.session, seed_user, loan)
-            db.session.commit()
-            rule = tpl.recurrence_rule
-            pay_period_write.record_paydays(
-                user_id=seed_user["user"].id,
-                first_payday=seed_periods[0].start_date,
-                num_periods=16,
-                rhythm=rhythm_of(14),
-            )
-            db.session.flush()
-            # Every SAVED period is open for writing -- the whole schedule,
-            # not only the six paydays just recorded -- so every in-schedule
-            # occurrence gets its row.
-            generation_ctx = BalanceContext.build(tpl.user_id)
-            transfer_recurrence.generate_for_template(
-                tpl,
-                GenerationSchedule.for_period_ids(
-                    generation_ctx,
-                    {
-                        period.period_id
-                        for period in generation_ctx.calendar().periods
-                    },
-                ),
-                seed_user["scenario"].id,
-            )
-            db.session.flush()
-            overdue = (
-                db.session.query(Transfer)
-                .filter(
-                    Transfer.transfer_template_id == tpl.id,
-                    Transfer.due_date < date(2026, 7, 1),
-                )
-                .all()
-            )
-            assert overdue, "precondition: the schedule reaches overdue installments"
-            for row in overdue:
-                transfer_service.delete_transfer(
-                    row.id, seed_user["user"].id, soft=True,
-                )
-            db.session.commit()
-
-            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
-            db.session.commit()
-            db.session.refresh(rule)
-
-            assert rule.end_date is not None
-            assert rule.end_date > date(2027, 1, 1), (
-                f"end_date {rule.end_date} is at or before the CONTRACTUAL "
-                "payoff 2027-01-01, so the bound is still coming off the "
-                "schedule walk that pays down installments nobody paid (B-9)."
-            )
-            assert rule.end_date == date(2028, 8, 1)
-
-    def test_a_STATED_price_at_the_contractual_figure_bounds_identically(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A payment that STATES the contract's figure bounds where DERIVE does.
-
-        **The arm production is actually in, driven through the real sync.**
-        ``budget.loan_payment_settings`` holds ZERO rows on the developer's
-        database, so both live loan payments state a price rather than deriving
-        one -- and plan step R7d-a made that distinction decide how every
-        uncovered installment is priced. An adversarial review found the fixture
-        repair had moved every sync test into the DERIVE arm, where the new rule
-        reduces to the old behaviour, leaving the production arm untested
-        through any door.
-
-        A definition stating exactly the contractual P&I must reach the same
-        bound as one deriving it: 2028-07-01, the control above's figure, from
-        the same $12,000.00 / 24-month / 5% loan whose level payment is $526.46.
+        The standing payment carries an owner's stop (ruling **R-R82**) two
+        days after its derived first installment; the loan's ``payment_day``
+        then moves the installment past it.  Written, that pair is the
+        constraint's ``IntegrityError`` out of an ordinary loan edit; so the
+        sync refuses BEFORE writing, naming the transfer, and leaves both the
+        start and the stop as they were.  The refusal is fired here rather
+        than assumed: the same edit with the stop one day LATER goes through
+        and moves the start.
         """
         with app.app_context():
             loan = self._current_loan(seed_user, db.session)
+            tpl = make_loan_payment_template(db.session, seed_user, loan)
+            loan_recurrence_sync.bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+            db.session.commit()
+            rule = tpl.recurrence_rule
+            first_installment = rule.starts_on
+            assert first_installment == date(2026, 8, 1)
+            rule.end_date = date(2026, 8, 3)
+            db.session.commit()
+
             params = load_loan_params(loan.id)
-            contractual_pi = compute_contractual_pi(
-                params, load_rate_changes(loan.id),
-            )
-            tpl = make_loan_payment_template(
-                db.session, seed_user, loan,
-                amount=str(contractual_pi), derive_from_loan=False,
-            )
-            template_amount_service.set_amount(
-                tpl, contractual_pi, effective_on=params.origination_date,
-            )
-            db.session.commit()
-            rule = tpl.recurrence_rule
+            params.payment_day = 15
+            db.session.flush()
 
-            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            with pytest.raises(ValidationError) as refused:
+                loan_recurrence_sync.sync_loan_payment_start(loan.id)
+            assert tpl.name in str(refused.value)
+            assert "Aug 15, 2026" in str(refused.value)
+            assert "Aug 3, 2026" in str(refused.value)
+            db.session.rollback()
+            db.session.refresh(rule)
+            assert rule.starts_on == first_installment
+            assert rule.end_date == date(2026, 8, 3)
+
+            # The control: a stop the moved start does NOT pass is left alone
+            # and the start moves.
+            rule.end_date = date(2026, 8, 15)
+            db.session.commit()
+            params = load_loan_params(loan.id)
+            params.payment_day = 15
+            db.session.flush()
+            loan_recurrence_sync.sync_loan_payment_start(loan.id)
             db.session.commit()
             db.session.refresh(rule)
+            assert rule.starts_on == date(2026, 8, 15)
+            assert rule.end_date == date(2026, 8, 15)
 
-            assert rule.end_date == date(2028, 7, 1)
+    def test_the_refusal_is_graded_on_the_STORED_start_of_a_paycheck_rule(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An every-paycheck payment stores its installment's PAYDAY, and that is what is graded.
 
-    def test_is_idempotent(self, app, db, seed_user, seed_periods):
-        """A second sync at the same payoff writes nothing new.
-
-        A genuine fixpoint, not just a skipped write: the first sync bounds
-        shadow generation at the payoff, and re-deriving against that narrower
-        plan returns the same date (the removed payments are the ones the fold
-        had already run past zero on).
+        The contract's first installment 2026-08-15 (``payment_day`` 15) is
+        hosted by the paycheck opening 2026-08-14 on this biweekly schedule,
+        so the write door stores 08-14.  An owner's stop ON 08-14 is a valid
+        stored pair and the edit goes through -- a comparison against the RAW
+        installment would have refused it (an adversarial review of R7d-g-1
+        found the first cut doing exactly that); a stop on 08-13 is refused,
+        and the sentence names Aug 14, the date the row would have held, not
+        Aug 15.
         """
         with app.app_context():
             loan = self._current_loan(seed_user, db.session)
-            tpl = make_loan_payment_template(db.session, seed_user, loan)
+            tpl = make_loan_payment_template(
+                db.session, seed_user, loan, cadence=EVERY_PERIOD,
+            )
+            loan_recurrence_sync.bind_rule_to_loan(tpl.recurrence_rule, loan.id)
             db.session.commit()
             rule = tpl.recurrence_rule
-            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
-            db.session.commit()
-            first = rule.end_date
-            assert first is not None
+            assert rule.starts_on == date(2026, 7, 31), (
+                "precondition: the 08-01 installment is hosted by the paycheck "
+                f"opening 07-31, got {rule.starts_on}"
+            )
 
-            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            rule.end_date = date(2026, 8, 14)
+            db.session.commit()
+            params = load_loan_params(loan.id)
+            params.payment_day = 15
+            db.session.flush()
+            loan_recurrence_sync.sync_loan_payment_start(loan.id)
             db.session.commit()
             db.session.refresh(rule)
-            assert rule.end_date == first
+            assert rule.starts_on == date(2026, 8, 14)
+            assert rule.end_date == date(2026, 8, 14)
+
+            # Back to the 1st (start 07-31), then a stop the 15th's payday
+            # would pass.  The stop is set only once the start is back below
+            # it: the table refuses the other order, which is the CHECK doing
+            # its job on this test's own bare write.
+            params = load_loan_params(loan.id)
+            params.payment_day = 1
+            db.session.flush()
+            loan_recurrence_sync.sync_loan_payment_start(loan.id)
+            db.session.commit()
+            db.session.refresh(rule)
+            assert rule.starts_on == date(2026, 7, 31)
+            rule.end_date = date(2026, 8, 13)
+            db.session.commit()
+            params = load_loan_params(loan.id)
+            params.payment_day = 15
+            db.session.flush()
+            with pytest.raises(ValidationError) as refused:
+                loan_recurrence_sync.sync_loan_payment_start(loan.id)
+            assert "Aug 14, 2026" in str(refused.value)
+            assert "Aug 15, 2026" not in str(refused.value)
+            db.session.rollback()
 
     def test_no_template_is_a_noop(self, app, db, seed_user, seed_periods):
         """A loan with no recurring transfer is a safe no-op (no crash)."""
         with app.app_context():
             loan = self._loan(seed_user, db.session)
             # No template created; the sync must return cleanly.
-            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            loan_recurrence_sync.sync_loan_payment_start(loan.id)
             db.session.commit()
 
     def test_unconfigured_account_is_a_noop(self, app, db, seed_user):
         """A non-loan account with no recurring transfer is a safe no-op.
 
-        Returns at the template check, before the seam is consulted at all.
+        Returns at the template check, before the loan is consulted at all.
         """
         with app.app_context():
-            loan_recurrence_sync.sync_recurring_payment_bounds(
+            loan_recurrence_sync.sync_loan_payment_start(
                 seed_user["account"].id,
             )
             db.session.commit()
@@ -401,11 +325,9 @@ class TestSyncRecurringPaymentBounds:
 
         The not-a-loan guard's own shape, and it is reachable: an account whose
         TYPE is amortizing but whose loan details were never filled in still
-        classifies as amortizing, so a transfer settling into it reaches this
-        sync (``transfer_service._loan_posting`` gates on the account TYPE, not on the
-        params row).  The seam's ``loan_figures`` answers ``None`` for it, which
-        is what this must return on -- without the guard the payoff read would
-        raise on ``None``, from a WRITE path, mid-mutation.
+        classifies as amortizing, so a transfer settling into it reaches the
+        loan-side reconcile.  With no params there is no contract to derive a
+        start from, and the sync must return before reading one.
         """
         with app.app_context():
             acct = create_account_of_type(
@@ -418,7 +340,7 @@ class TestSyncRecurringPaymentBounds:
             make_loan_payment_template(db.session, seed_user, acct)
             db.session.commit()
 
-            loan_recurrence_sync.sync_recurring_payment_bounds(acct.id)
+            loan_recurrence_sync.sync_loan_payment_start(acct.id)
             db.session.commit()
 
 
@@ -445,10 +367,9 @@ class TestIsStandingLoanPayment:
     Every arm is exercised, and the THREE False ones are the point: a predicate
     that only ever returns True where it is asked is indistinguishable from no
     predicate.  Each False arm is a state in which
-    :func:`~app.services.loan_recurrence_sync.sync_recurring_payment_bounds`
+    :func:`~app.services.loan_recurrence_sync.sync_loan_payment_start`
     writes nothing for the template (no rule, not a configured loan, not the
-    account's active payment); the sync's own scenario arm has no twin here,
-    because the identity is scenario-independent.
+    account's active payment).
     """
 
     @staticmethod
@@ -459,7 +380,7 @@ class TestIsStandingLoanPayment:
     def test_a_loans_active_recurring_payment_owns_its_window(
         self, app, db, seed_user, seed_periods,
     ):
-        """The True arm: exactly the template the sync writes for."""
+        """The True arm: exactly the template the opening-bound sync writes for."""
         with app.app_context():
             loan = create_loan_account(seed_user, db.session)
             template = make_loan_payment_template(db.session, seed_user, loan)
@@ -814,41 +735,149 @@ class TestLoanPaymentWindowResolver:
                 on=date(2028, 7, 1),
             )
 
-    def test_it_agrees_with_what_the_SYNC_writes_into_the_column(
+    def test_unpaid_overdue_installments_push_the_payoff_out(
         self, app, db, seed_user, seed_periods,
     ):
-        """The additive claim, measured: the resolver moves no figure.
+        """A loan whose past installments were never PAID pays off later (B-9).
 
-        Plan step R7d-b changes no behaviour precisely because the resolver
-        answers what the ten call sites already write.  The window and the
-        column are derived by two different code paths here -- one through
-        :attr:`~app.services.balance_at.LoanFigures.closing_date` into an
-        ``EndBound``, one through it into a
-        :class:`~app.services.recurrence.DerivedStop` -- so this is the seam
-        where they could
-        disagree, and R7d-g deletes the writer on the strength of them not
-        doing so.
+        This 24-month loan originated 2025-01-01 and is read on 2026-07-01 with
+        no settled payment at all, so it still owes the full $12,000.00 with only
+        seven contractual installments left.  The pre-C8d bound came off the
+        resolver's schedule walk, which amortizes an installment per month
+        whether or not one was paid, and so reported the CONTRACTUAL 2027-01-01 --
+        a payoff the borrower has not remotely earned.  The fold reports when the
+        balance actually reaches zero: the seven remaining contractual
+        installments plus the post-contractual extension (plan C8c) at the same
+        level payment.  Hand-checked: the level P&I on $12,000.00 / 24 months /
+        5% is $526.46, and $12,000.00 at 5%/12 amortizes in exactly 24 payments
+        at that figure -- so a borrower who has paid NOTHING is a full 24
+        installments from zero PLUS the arrears.  Since plan step R16-b-2 the
+        seventeen skipped months from 2025-02-01 to 2026-06-01 each accrue
+        their $50.00 of interest (ruling R-R71: a skipped month owes its
+        interest whichever side of today it is on): with July's own charge,
+        $900.00 stands when the first payment lands on 2026-07-01, which
+        clears it and CAPITALIZES the $373.54 shortfall (balance $12,373.54);
+        the 08-01 payment then pays $474.90 of principal, and counting from
+        there the balance reaches zero on 2028-08-01 -- 26 payments, seven
+        contractual installments and nineteen from the extension, 20 months
+        past the contractual 2027-01-01.  It read 2028-06-01 while the skipped
+        months charged nothing (B-9's holds-flat, repealed by the ruling).
+        Re-derived with ``accrue_monthly_interest`` / ``apply_payment_cash``
+        after an adversarial review found this paragraph's first count wrong.
 
-        **It grades the WRAPPING, not the MAPPING**, and that limit is worth
-        stating because this test is named as what R7d-g's deletion rests on:
-        both paths read the same
-        :attr:`~app.services.balance_at.LoanFigures.closing_date`, so a wrong
-        RULE inside it would move both together and read green here. What it can see
-        is the two ways that one answer is dressed coming apart.
+        **"Never paid" is a fact the OWNER states since plan step R16-b-2, and
+        this fixture states it.**  Ruling **R-R64**: an occurrence the
+        schedule places that no row in any state answers is "not generated
+        yet" and the plan prices it as generation would -- so a loan whose
+        rows were merely never generated is NOT delinquent, it is unplanned,
+        and the plan would pay its 2026 installments the day after ``as_of``.
+        What makes an installment unpaid is a row the owner un-planned: a
+        cancelled or deleted row still answers its occurrence and pays
+        nothing.  So the schedule is extended to cover ``as_of`` (a live
+        schedule always does; ``seed_periods`` stops in May), the rows are
+        GENERATED, and every overdue one is soft-deleted, which is the state a
+        delinquent owner's books are in; the 2025 installments fall before the
+        schedule opens (2026-01-02), where nothing is generated or estimated
+        either way.
+
+        Asserted on the RESOLVER since plan step R7d-g; until then the same
+        figure was read off the column the sync wrote.
         """
         with app.app_context():
-            loan = self._current_loan(seed_user, db.session)
+            loan = create_loan_account(
+                seed_user, db.session, name="Recurring Loan",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2025, 1, 1),
+            )
             tpl = make_loan_payment_template(db.session, seed_user, loan)
             db.session.commit()
-            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=seed_periods[0].start_date,
+                num_periods=16,
+                rhythm=rhythm_of(14),
+            )
+            db.session.flush()
+            # Every SAVED period is open for writing -- the whole schedule,
+            # not only the six paydays just recorded -- so every in-schedule
+            # occurrence gets its row.
+            generation_ctx = BalanceContext.build(tpl.user_id)
+            transfer_recurrence.generate_for_template(
+                tpl,
+                GenerationSchedule.for_period_ids(
+                    generation_ctx,
+                    {
+                        period.period_id
+                        for period in generation_ctx.calendar().periods
+                    },
+                ),
+                seed_user["scenario"].id,
+            )
+            db.session.flush()
+            overdue = (
+                db.session.query(Transfer)
+                .filter(
+                    Transfer.transfer_template_id == tpl.id,
+                    Transfer.due_date < date(2026, 7, 1),
+                )
+                .all()
+            )
+            assert overdue, "precondition: the schedule reaches overdue installments"
+            for row in overdue:
+                transfer_service.delete_transfer(
+                    row.id, seed_user["user"].id, soft=True,
+                )
             db.session.commit()
-            rule = tpl.recurrence_rule
-            db.session.refresh(rule)
-            assert rule.end_date is not None
 
             window = _window(tpl, self._ctx(seed_user))
 
-            assert window == ClosesOn(on=rule.end_date)
+            assert isinstance(window, ClosesOn)
+            assert window.on > date(2027, 1, 1), (
+                f"the payoff {window.on} is at or before the CONTRACTUAL "
+                "payoff 2027-01-01, so the bound is still coming off the "
+                "schedule walk that pays down installments nobody paid (B-9)."
+            )
+            assert window == ClosesOn(on=date(2028, 8, 1))
+            assert tpl.recurrence_rule.end_date is None, (
+                "the resolver's answer reached the column: a writer survived R7d-g"
+            )
+
+    def test_a_STATED_price_at_the_contractual_figure_closes_identically(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A payment that STATES the contract's figure closes where DERIVE does.
+
+        **The arm production is actually in.**  ``budget.loan_payment_settings``
+        holds ZERO rows on the developer's database, so both live loan payments
+        state a price rather than deriving one -- and plan step R7d-a made that
+        distinction decide how every uncovered installment is priced.  An
+        adversarial review found a fixture repair had moved every sync test
+        into the DERIVE arm, where the new rule reduces to the old behaviour,
+        leaving the production arm untested through any door.
+
+        A definition stating exactly the contractual P&I must resolve to the
+        same stop as one deriving it: 2028-07-01, the control above's figure,
+        from the same $12,000.00 / 24-month / 5% loan whose level payment is
+        $526.46.
+        """
+        with app.app_context():
+            loan = self._current_loan(seed_user, db.session)
+            params = load_loan_params(loan.id)
+            contractual_pi = compute_contractual_pi(
+                params, load_rate_changes(loan.id),
+            )
+            tpl = make_loan_payment_template(
+                db.session, seed_user, loan,
+                amount=str(contractual_pi), derive_from_loan=False,
+            )
+            template_amount_service.set_amount(
+                tpl, contractual_pi, effective_on=params.origination_date,
+            )
+            db.session.commit()
+
+            assert _window(tpl, self._ctx(seed_user)) == ClosesOn(
+                on=date(2028, 7, 1),
+            )
 
     def test_a_SECOND_recurring_transfer_into_one_loan_gets_the_SAME_window(
         self, app, db, seed_user, seed_periods,

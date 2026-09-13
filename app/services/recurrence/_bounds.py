@@ -10,17 +10,20 @@ SQL has no sum type to write it in.  Python does, so above the columns the
 bound is ONE value with three shapes and the illegal fourth state is
 UNREPRESENTABLE rather than refused.
 
-**That is not tidiness; it is what stops the count bound this step authors
-turning an ordinary loan edit into a 500.**
-``loan_recurrence_sync.sync_recurring_payment_bounds`` owns a loan payment's
-closing bound -- the loan's derived payoff -- and states its change the way
+**That is not tidiness; it is what stopped the count bound this step authors
+turning an ordinary loan edit into a 500.**  Until plan step R7d-g
+``loan_recurrence_sync.sync_recurring_payment_bounds`` wrote a loan payment's
+closing bound -- the loan's derived payoff -- and stated its change the way
 every in-place writer in this package does, ``dataclasses.replace`` over the
 rule's authored spec.  With two independent optional fields,
-``replace(spec, end_date=payoff)`` leaves a count sitting beside the date it
-just wrote, and ``ck_recurrence_rules_single_end_bound`` refuses the pair at
+``replace(spec, end_date=payoff)`` left a count sitting beside the date it
+just wrote, and ``ck_recurrence_rules_single_end_bound`` refused the pair at
 the flush.  With ONE field the same call replaces the WHOLE bound, so a count
 cannot survive beside a date and there is no second rule for a writer to
-remember.
+remember.  That writer is gone (the closing bound is derived on every read
+and stored nowhere), and the shape it was built for still holds for the two
+in-place writers that remain: the form's update door and the opening-bound
+sync.
 
 **That crash was PROSPECTIVE, not measured, and the distinction matters.**
 Before this step nothing wrote a count at all, so the pair was unreachable;

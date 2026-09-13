@@ -192,24 +192,36 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
             "+ INTERVAL '1 month - 1 day'))))",
             name="ck_recurrence_rules_nominal_day",
         ),
-        # **There is deliberately NO ``end_date >= starts_on`` CHECK**, and the
-        # absence is a ruling rather than an omission (developer ruling
-        # 2026-08-15, plan step R7c-b).  These two columns hold two different
-        # KINDS of fact: what a user AUTHORS about a repeating definition,
-        # where a stop before the start is a mistake to report, and what the
-        # app DERIVES for a recurring loan payment, where an EMPTY window is a
-        # legitimate answer -- a loan paid off before its first contractual
-        # installment owes nothing, and ``loan_recurrence_sync`` states that by
-        # writing a payoff below the installment date.  A CHECK cannot tell the
-        # two apart, so it would turn a correct derived state into an unhandled
-        # ``CheckViolation`` out of a balance true-up.  The invariant is held at
-        # the two AUTHORING doors instead
-        # (``schemas/validation/_helpers.require_end_bound_after_start`` and
-        # ``_recurrence_form_refusals.refuse_inverted_window``), and the CHECK
-        # lands with the step that stops persisting the derived window, when
-        # every row is user-authored.  See the R7c-b migration's own docstring
-        # for the measured case.
-        #
+        # A closing DATE never precedes the first occurrence.  **HELD BACK from
+        # plan step R7c-b to plan step R7d-g on a developer ruling
+        # (2026-08-15), and the absence was a ruling rather than an
+        # omission**: until R7d-g these two columns held two different KINDS
+        # of fact -- what a user AUTHORS about a repeating definition, where a
+        # stop before the start is a mistake to report, and what the app
+        # DERIVED for a recurring loan payment, where an EMPTY window is a
+        # legitimate answer (a loan paid off before its first contractual
+        # installment owes nothing, and ``loan_recurrence_sync`` stated that
+        # by writing a payoff below the installment date).  A CHECK cannot
+        # tell the two apart, so it would have turned a correct derived state
+        # into an unhandled ``CheckViolation`` out of a balance true-up.
+        # R7d-g deleted the writers of the derived half, NULLed what they had
+        # written (migration ``bf50951a3599``, ruling **R-R80**), and the derived
+        # stop lives only as a VALUE the composed door builds on read
+        # (``recurrence.DerivedStop``) -- so every stored pair is an owner's
+        # word, and the ONE writer of these columns
+        # (``recurrence._authoring._author``) grades the pair it is about to
+        # store -- the NORMALISED start beside the stated stop -- and refuses
+        # an inverted one before touching the row (``EmptyAuthoredWindowError``;
+        # the two authoring doors grade the AUTHORED pair for the user's
+        # sentence, and the loan-params door translates the writer's refusal
+        # into one naming the transfer).  True by construction at the
+        # writer; this is the backstop for one that never sees it.  A COUNT
+        # bound cannot invert against a date, so ``max_occurrences`` is not
+        # named here.
+        db.CheckConstraint(
+            "end_date IS NULL OR end_date >= starts_on",
+            name="ck_recurrence_rules_valid_window",
+        ),
         # How far the application's calendar reaches, mirrored on the column
         # for a writer that never sees a schema -- the same job
         # ``ck_template_amount_versions_effective_date_range`` does for the

@@ -582,11 +582,12 @@ def _require_owner(spec: RecurrenceSpec, calendar: PayCalendar) -> None:
     A pay-period cadence's first occurrence is normalised against a schedule
     and its phase is read off one, so pairing a rule with the wrong owner's
     calendar produces values that are silently WRONG rather than an error --
-    and a call site derives the calendar's owner from a different object than
-    the rule's: ``loan_recurrence_sync.sync_recurring_payment_bounds`` uses
-    ``account.user_id`` against a spec read from the rule.  It is consistent
-    today and nothing else enforces it, so checking the pairing here makes the
-    assumption a fact.
+    and a call site could derive the calendar's owner from a different
+    object than the rule's: ``loan_recurrence_sync.sync_recurring_payment_bounds``
+    used ``account.user_id`` against a spec read from the rule until plan
+    step R7d-g deleted it (its successor reads ``rule.user_id``).  Nothing
+    else enforces the pairing, so checking it here makes the assumption a
+    fact rather than a property of today's callers.
 
     Args:
         spec: The authored recurrence.

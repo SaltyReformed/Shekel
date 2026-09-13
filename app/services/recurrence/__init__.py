@@ -162,6 +162,7 @@ under it; what changes above the door then is the two surfaces that still read
 ``obligations_aggregator``, both through :func:`cadence_of`).
 """
 from app.services.recurrence._authoring import (
+    EmptyAuthoredWindowError,
     RecurrenceOwner,
     author_rule,
     build_transient_rule,
@@ -287,6 +288,7 @@ __all__ = [
     "RecurrenceGenerationError",
     "RecurrenceOwner",
     "RecurrenceResolutionError",
+    "EmptyAuthoredWindowError",
     "RecurrenceSpec",
     "ResolvedRecurrence",
     "RuleReading",

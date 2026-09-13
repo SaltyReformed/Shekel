@@ -23,6 +23,7 @@ from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services.recurrence import (
     EMPTY,
+    INDEFINITE,
     NEVER_ENDS,
     ClosesOn,
     EndsAfterOccurrences,
@@ -112,16 +113,17 @@ def _loan(seed_user, db_session, **kwargs):
 def _second_transfer_into(seed_user, db_session, loan):
     """Return ``(first, second)``: two recurring transfers paying *loan*.
 
-    The FIRST is the definition the app bounds -- ``is_standing_loan_payment``
-    names the account's active recurring transfer, tie-broken on id -- so its column
-    is the chokepoints' cache and the door reads it as such (ruling **R-R56**).
-    The SECOND's column is not written by the app while the first is active:
-    whatever bound it carries is the owner's word, which makes it the subject
-    for every case about an AUTHORED bound.  (Archive the first and the second
-    is promoted; the next chokepoint then writes its column and the door reads
-    it as the cache -- the same fact from both sides.)  The first is renamed
-    before the second is built because the helper names a payment after its
-    loan and the pair is unique per owner.
+    The FIRST is the loan's standing payment -- ``is_standing_loan_payment``
+    names the account's oldest active recurring transfer -- whose opening
+    bound the app writes and whose "Ends" control the form locks.  The
+    SECOND's bounds are its owner's from every door, which makes it the
+    subject for every case about an AUTHORED bound that a form can state.
+    (Until plan step R7d-g the first's column was the chokepoints' cache and
+    the door read it as such, ruling **R-R56**; every stored bound is the
+    owner's word now, ruling **R-R82**, so the split is of which door WROTE
+    it, not of how the door READS it.)  The first is renamed before the
+    second is built because the helper names a payment after its loan and
+    the pair is unique per owner.
 
     Args:
         seed_user: The owner.
@@ -243,66 +245,37 @@ class TestWhatTheDoorComposes:
 
             assert resolved.closing.derived == ClosesOn(on=date(2028, 7, 1))
 
-    def test_the_stored_column_is_NOT_what_the_door_reads(
+    def test_a_stored_stop_on_the_standing_payment_is_the_owners_word(
         self, app, db, seed_user, seed_periods,
     ):
-        """Plan ledger row **D35**, made unconstructible for this reader.
+        """Ruling **R-R82** (plan step R7d-g): the column is the owner's word, and it binds.
 
-        The column is deliberately falsified to a date the loan's own fold
-        does not name.  The derived half comes from the loan and never from the
-        column; and for the loan payment the app itself bounds, the column is
-        the chokepoints' CACHE of that payoff rather than the owner's word, so
-        the door reads it as no authored bound at all (ruling **R-R56**,
-        developer, 2026-09-04).  The falsified value therefore reaches NEITHER
-        half.  Until that ruling the stale date sat in the authored half and,
-        being EARLIER, still bound -- which an adversarial review of this step
-        measured against D35's own shape (``2029-01-22`` stored against
-        ``2029-02-22`` derived).
+        Until R7d-g this case pinned the OPPOSITE: the column was the ten
+        chokepoints' CACHE of the loan's payoff for the definition the app
+        bounded, so the door read it as no authored bound at all (ruling
+        **R-R56**) and a stale EARLIER date reached neither half.  R7d-g
+        deleted the writers and NULLed the cache, so a date standing in that
+        column can only be one an owner authored -- kept from before the
+        definition became the loan's standing payment -- and the door
+        composes it as the authored half beside the derived stop.  The walk
+        stops at it and the phrase names it.
+
+        **The derived half is INDEFINITE here, and that is the ruling read
+        from the other side.**  The forward plan honours the same authored
+        stop (ruling **R-R37**, the summed ESTIMATED tier of plan step
+        R16-b-2): a $12,000 loan whose only payment stops after six
+        installments never folds to zero, so the loan has no closing date.
+        The two halves are two readings of ONE stored fact -- the owner said
+        the money stops in January -- where the deleted cache arm had the
+        plan honour a bound the door then ignored.
         """
         with app.app_context():
             loan = _loan(seed_user, db.session)
             tpl = make_loan_payment_template(db.session, seed_user, loan)
             db.session.commit()
             rule = tpl.recurrence_rule
-            stale = date(2027, 1, 1)
-            _restate_bound(rule, EndsOnDate(on=stale), _ctx(seed_user))
-            db.session.commit()
-
-            resolved = resolved_definition(tpl, _ctx(seed_user))
-
-            assert rule.end_date == stale, "precondition: the column is stale"
-            assert is_standing_loan_payment(tpl, _ctx(seed_user)), (
-                "precondition: this is the definition whose bound the app writes"
-            )
-            assert resolved.closing.derived == ClosesOn(on=date(2028, 7, 1))
-            assert resolved.closing.authored == NEVER_ENDS
-
-    def test_an_app_written_stored_bound_is_read_as_the_cache_it_is(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Ruling **R-R56**: a stale EARLIER cache no longer binds the phrase or the walk.
-
-        For a loan payment the ``end_date`` column is not the owner's word --
-        the form locks the Ends control and ten chokepoints write the loan's
-        derived payoff into it -- and the composed value cannot tell a cached
-        date from an authored one: it ANDs the two
-        (:meth:`~app.services.recurrence.Closing.admits`, and the ``min`` in
-        ``_describe._derived_closes_on``).  So until this ruling, where the
-        cache was EARLIER than the loan's closing date -- plan ledger row
-        **D35**'s measured shape -- the cell named the cached date and the walk
-        stopped there, exactly as before plan step R7d-d.  The door now
-        composes ``NEVER_ENDS`` for the definition the app bounds, so the
-        derived stop is the whole answer: the phrase names the payoff and the
-        walk runs to it.  Plan step R7d-g deletes the column and this arm.
-        """
-        with app.app_context():
-            loan = _loan(seed_user, db.session)
-            tpl = make_loan_payment_template(db.session, seed_user, loan)
-            db.session.commit()
-            stale = date(2027, 1, 1)
-            _restate_bound(
-                tpl.recurrence_rule, EndsOnDate(on=stale), _ctx(seed_user),
-            )
+            authored = date(2027, 1, 1)
+            _restate_bound(rule, EndsOnDate(on=authored), _ctx(seed_user))
             db.session.commit()
 
             ctx = _ctx(seed_user)
@@ -311,15 +284,51 @@ class TestWhatTheDoorComposes:
                 resolved, ctx.calendar(), through=date(2030, 1, 1),
             ))
 
-            assert resolved.closing.derived == ClosesOn(on=date(2028, 7, 1)), (
-                "precondition: the loan's own stop is LATER than the cache"
+            assert rule.end_date == authored, "precondition: the column holds it"
+            assert is_standing_loan_payment(tpl, ctx), (
+                "precondition: this is the loan's standing payment"
             )
-            assert describe(resolved).stops == "until Jul 01, 2028"
+            assert resolved.closing.authored == EndsOnDate(on=authored)
+            assert resolved.closing.derived == INDEFINITE, (
+                "the plan did not honour the owner's stop: with the standing "
+                "payment ending 2027-01-01 the loan cannot pay off, so its "
+                f"derived stop must be INDEFINITE, got {resolved.closing.derived!r}"
+            )
+            assert describe(resolved).stops == "until Jan 01, 2027"
             assert narrowed, "precondition: it fires at all"
-            assert max(narrowed) > stale, (
-                "the cached column bound the walk; the door read it as authored"
+            assert max(narrowed) <= authored, (
+                "the owner's stop did not bind the walk: a cache arm survived R7d-g"
             )
-            assert max(narrowed) <= date(2028, 7, 1)
+
+    def test_a_NULL_column_composes_no_authored_bound_and_the_payoff_binds(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The state every live loan payment is in since the R7d-g migration.
+
+        With nothing stored, the authored half is ``NEVER_ENDS`` and the
+        derived stop is the whole answer: the phrase names the payoff and the
+        walk runs to it.  This is the same reading the deleted cache arm used
+        to MANUFACTURE for the standing payment; it holds now because the
+        column is empty rather than because an arm ignores it.
+        """
+        with app.app_context():
+            loan = _loan(seed_user, db.session)
+            tpl = make_loan_payment_template(db.session, seed_user, loan)
+            db.session.commit()
+            assert tpl.recurrence_rule.end_date is None
+            assert tpl.recurrence_rule.max_occurrences is None
+
+            ctx = _ctx(seed_user)
+            resolved = resolved_definition(tpl, ctx)
+            narrowed = list(occurrences(
+                resolved, ctx.calendar(), through=date(2030, 1, 1),
+            ))
+
+            assert resolved.closing.authored == NEVER_ENDS
+            assert resolved.closing.derived == ClosesOn(on=date(2028, 7, 1))
+            assert describe(resolved).stops == "until Jul 01, 2028"
+            assert narrowed and max(narrowed) <= date(2028, 7, 1)
+            assert max(narrowed) > date(2027, 1, 1)
 
 
 class TestTheNarrowingReachesTheWalk:
@@ -376,13 +385,12 @@ class TestTheNarrowingReachesTheWalk:
         has said will stop moving.  The authored date here precedes the
         payoff, so it is the one that must bind.
 
-        **The bound is authored on a SECOND transfer into the loan.**  The
-        first recurring transfer into a loan is the one the app bounds -- its
-        column is the chokepoints' cache and the door reads it as such (ruling
-        **R-R56**) -- so a bound restated on it would be read as the cache and
-        this case could not fire.  The second transfer's column is never
-        written by the app; what it holds IS the owner's word, and that is the
-        definition whose authored bound must still bind.
+        **The bound is authored on a SECOND transfer into the loan**, the
+        definition whose "Ends" control a form offers.  (The standing
+        payment's is locked, and until plan step R7d-g its column was read as
+        the chokepoints' cache under ruling **R-R56**, so this case could not
+        have fired on it; it would now -- ruling **R-R82** -- and
+        ``TestWhatTheDoorComposes`` holds that case.)
         """
         with app.app_context():
             loan = _loan(seed_user, db.session)
@@ -779,9 +787,7 @@ class TestTheDoorAgreesWithItsOwnParts:
         rebuild it -- would be the second spelling this arc exists to delete,
         so the authored bound is carried across from the value the pure
         resolver already built.  Asserted on a SECOND transfer into the loan,
-        whose column the app never writes: for the first, ruling **R-R56** has
-        the door read the column as the cache and compose ``NEVER_ENDS``
-        instead, which the case above it holds.
+        the definition a form can author a stop on.
         """
         with app.app_context():
             loan = _loan(seed_user, db.session)

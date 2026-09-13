@@ -17,14 +17,17 @@ and any reader can arrive before the next writer runs -- plan ledger row
 **D35**, measured on production 2026-08-25 as ``2029-01-22`` stored against
 ``2029-02-22`` derived: one ``$531.94`` installment never generated.
 
-**For the loan's STANDING payment the column binds nothing here, in EITHER
-direction** (ruling **R-R56**, applied by the door): the app writes that
-column, so it is read as the cache it is and the derived stop is the whole
-answer.  A cache EARLIER than the payoff no longer drops the last installment
-(the create direction); a cache LATER than it no longer projects payments
-against a debt that is gone (the retire direction).  A SECOND recurring
-transfer into the same loan keeps its owner's authored bound, ANDed with the
-loan's stop -- the pair :class:`TestTheRulesOwnBoundStillBinds` grades.
+**Since plan step R7d-g the column is the owner's word for EVERY definition,
+the standing payment included** (ruling **R-R82**): the ten chokepoints that
+wrote the cache are deleted and the cache is NULLed (ruling **R-R80**), so a
+date in that column can only be one an owner authored, and the door composes
+it with the derived stop -- both bind, the earlier wins.  Between R7d-c-2
+and R7d-g the door read the standing payment's column as the cache it was
+(ruling **R-R56**) and :class:`TestAStoredStopOnTheStandingPaymentIsTheOwnersWord`
+pinned that a cache in either direction bound nothing; it now pins the
+opposite for the same two directions.  A SECOND recurring transfer into the
+same loan was always its owner's -- the pair
+:class:`TestTheRulesOwnBoundStillBinds` grades.
 
 **Measured on a production clone, 2026-09-11** (harness
 ``tests/manual/verify_loan_bound_at_generation.py``, base ``584b30fa``): the
@@ -170,12 +173,15 @@ SECOND_PAYMENT = Decimal("50.00")
 D47_PAYMENT = Decimal("402.00")
 D47_PAYOFF = date(2026, 3, 15)
 
-#: A stale cache one installment EARLIER than the payoff -- plan ledger row
-#: D35's measured shape, scaled onto this loan.
+#: A stored stop one installment EARLIER than the payoff -- plan ledger row
+#: D35's measured shape, scaled onto this loan.  A stale CACHE until plan
+#: step R7d-g; an owner's word since (ruling **R-R82**), and the name is
+#: kept so the two directions read the same on both sides of that step.
 STALE_EARLY = date(2026, 3, 15)
 
-#: A stale cache LATER than the payoff, which a chokepoint leaves behind when a
-#: true-up moves the payoff earlier and no later chokepoint has run.
+#: A stored stop LATER than the payoff -- what a chokepoint left behind when
+#: a true-up moved the payoff earlier, and what an owner may author on a
+#: definition the loan then outlives.
 STALE_LATE = date(2026, 12, 31)
 
 
@@ -369,19 +375,23 @@ class TestGenerationStopsWhenTheLoanDoes:
             assert _occurrences_stored(template) == list(INSTALLMENTS)
 
 
-class TestTheStoredColumnIsNotWhatGenerationReads:
-    """Ruling R-R56 at the one reader that MOVES MONEY, in both directions."""
+class TestAStoredStopOnTheStandingPaymentIsTheOwnersWord:
+    """Ruling R-R82 at the one reader that MOVES MONEY, in both directions."""
 
-    def test_a_cache_EARLIER_than_the_payoff_no_longer_drops_the_last_installment(
+    def test_an_EARLIER_stop_is_honoured_and_the_last_installment_is_NOT_written(
         self, app, db, seed_user, seed_periods,
     ):
-        """Plan ledger row D35's shape: the ``PAYOFF`` installment is written.
+        """An owner's stop in March on the loan's own payment stops the rows in March.
 
-        Until this step generation read the column as the rule's own bound,
-        so a cache one month early stopped the walk one installment short --
-        the ``$531.94`` due ``2029-02-22`` that production's stale
-        ``2029-01-22`` never created.  The row this asserts on is that
-        installment, scaled onto this loan.
+        Until plan step R7d-g this case was plan ledger row **D35**'s shape
+        the other way round: the column held the chokepoints' cache one month
+        early, the door read it as none (ruling **R-R56**), and the
+        ``PAYOFF`` installment was written.  A date in that column is the
+        owner's word now, so generation writes nothing past it -- and the
+        summed plan honours the same stop (ruling **R-R37**), so a loan whose
+        only payment stops after two installments never folds to zero and
+        its derived stop is INDEFINITE: two readings of one fact, where the
+        deleted arm had the plan honour a bound generation then ignored.
         """
         with app.app_context():
             loan = _short_loan(seed_user, db.session)
@@ -393,26 +403,33 @@ class TestTheStoredColumnIsNotWhatGenerationReads:
             )
             db.session.commit()
             assert template.recurrence_rule.end_date == STALE_EARLY, (
-                "precondition: the column is stale, one installment early"
+                "precondition: the column holds the owner's stop"
+            )
+            resolved = resolved_definition(template, _ctx(seed_user))
+            assert resolved.closing.authored == EndsOnDate(on=STALE_EARLY)
+            assert resolved.closing.derived == INDEFINITE, (
+                "the plan did not honour the owner's stop: with the standing "
+                "payment ending in March the loan cannot pay off"
             )
 
             created = _generate(template, _ctx(seed_user))
             db.session.commit()
 
-            assert PAYOFF in [row.occurs_on for row in created], (
-                "the stale column bound generation; the last installment "
-                "the loan owes was never written"
+            assert PAYOFF not in [row.occurs_on for row in created], (
+                "the owner's stop did not bind generation: an installment was "
+                "written past it"
             )
-            assert _occurrences_stored(template) == list(INSTALLMENTS)
+            assert _occurrences_stored(template) == list(INSTALLMENTS[:2])
 
-    def test_a_cache_LATER_than_the_payoff_no_longer_projects_past_the_loan(
+    def test_a_LATER_stop_is_narrowed_to_the_loans_life(
         self, app, db, seed_user, seed_periods,
     ):
-        """The other direction: a late cache writes no row the loan will refund.
+        """An owner's stop in December on the loan's own payment writes no row past the payoff.
 
-        On the tree before this step a late column was the only bound the walk
-        applied, so the ``PAST_PAYOFF`` occurrence was written and the cash
-        side debited a payment the loan fold routes whole to Refund.
+        The same composition, the other way: both halves bind and the
+        derived stop is the earlier, so the ``PAST_PAYOFF`` occurrence the
+        owner's bound alone would admit is not written -- the row the loan
+        fold would route whole to Refund.
         """
         with app.app_context():
             loan = _short_loan(seed_user, db.session)
@@ -423,13 +440,16 @@ class TestTheStoredColumnIsNotWhatGenerationReads:
                 _ctx(seed_user),
             )
             db.session.commit()
+            resolved = resolved_definition(template, _ctx(seed_user))
+            assert resolved.closing.authored == EndsOnDate(on=STALE_LATE)
+            assert resolved.closing.derived == ClosesOn(on=PAYOFF)
 
             created = _generate(template, _ctx(seed_user))
             db.session.commit()
 
             assert PAST_PAYOFF not in [row.occurs_on for row in created], (
-                "the stale column bound generation; a payment was projected "
-                "against a debt that is gone"
+                "the owner's later stop bound generation alone; a payment was "
+                "projected against a debt that is gone"
             )
             assert _occurrences_stored(template) == list(INSTALLMENTS)
 
@@ -437,9 +457,11 @@ class TestTheStoredColumnIsNotWhatGenerationReads:
 class TestTheRulesOwnBoundStillBinds:
     """A SECOND definition into the loan: authored AND derived, never substituted.
 
-    The first transfer into a loan is the one the app bounds -- its column is
-    the chokepoints' cache and the door reads it as such -- so a case about an
-    AUTHORED bound needs a second definition, whose column nothing writes.
+    The first transfer into a loan is its standing payment, whose "Ends"
+    control the form locks, so a case about a bound a form can AUTHOR needs a
+    second definition.  (Until plan step R7d-g the first's column was also
+    the chokepoints' cache and the door read it as such; the class above
+    grades what a stored stop on it means now.)
     It pays :data:`SECOND_PAYMENT`, and that constant says why the loan still
     closes on 04-15 with it: the plan sums both definitions (plan step
     R16-b-2), so the pair below can tell an authored bound from the derived
