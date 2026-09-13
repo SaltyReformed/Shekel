@@ -19,14 +19,18 @@ from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.models.transfer import Transfer
 from app.models.user import User, UserSettings
 from app.services import cash_ledger
 from tests._test_helpers import (
     bare_expense_template,
+    create_savings_account,
     definition_firing_twice_in_a_paycheck,
     generate_row_of,
+    generate_transfer_of,
     make_cadence_rule,
     make_expense_template,
+    make_transfer_template,
 )
 from tests.conftest import SEED_USER_BOOTSTRAP_START
 from tests.oracles.recurrence_baseline import MONTHLY
@@ -544,3 +548,123 @@ class TestGenerateRowOf:
             assert db.session.query(Transaction).filter_by(
                 template_id=template.id,
             ).count() == 1
+
+
+class TestGenerateTransferOf:
+    """The suite's one builder for a TRANSFER of a definition (plan step X-ch).
+
+    :func:`generate_row_of`'s twin, sharing its private body, so the
+    refusals that body fires -- no cadence, a paycheck the rule names no
+    occurrence in, a cadence firing twice -- are graded above and once.  What
+    is this engine's, and graded here: the transfer has the transfer engine's
+    shape WITH its two shadow legs, it is priced by its definition, the
+    occurrence claim refuses a second ask, and another owner's paycheck is
+    refused before any of the three rows is written.
+    """
+
+    def test_the_transfer_is_the_engines_with_both_legs(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Derived, dated, answering an occurrence, Projected, two derived legs.
+
+        Every column here is one the engine sets and a hand-built fixture
+        got wrong or left empty (finding BAL-488): undated, the state the
+        CHECK plan step balance:X-bv-2 binds refuses on this table too, and
+        an OWN figure beside the link -- and a bare ``Transfer(...)`` has no
+        legs at all.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Engine's savings", Decimal("0.00"),
+            )
+            template = make_transfer_template(db.session, seed_user, savings)
+            xfer = generate_transfer_of(template, seed_periods[1])
+            assert xfer.id is not None
+            assert xfer.transfer_template_id == template.id
+            assert xfer.pay_period_id == seed_periods[1].id
+            assert xfer.scenario_id == seed_user["scenario"].id
+            assert xfer.from_account_id == seed_user["account"].id
+            assert xfer.to_account_id == savings.id
+            assert xfer.due_date is not None
+            assert xfer.occurs_on is not None
+            assert xfer.is_override is False
+            assert xfer.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert xfer.amount_ownership.figure is None
+            assert xfer.amount_ownership.source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+            legs = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            )
+            assert len(legs) == 2
+            assert {leg.account_id for leg in legs} == {
+                seed_user["account"].id, savings.id,
+            }
+            for leg in legs:
+                assert leg.template_id is None
+                assert leg.due_date == xfer.due_date
+                assert leg.amount_ownership.figure is None
+                assert leg.amount_ownership.source_id == (
+                    ref_cache.amount_source_id(AmountSourceEnum.PARENT_TRANSFER)
+                )
+
+    def test_the_transfer_is_worth_what_its_definition_states(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The figure a fixture expects is the transfer template's series' answer."""
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Engine's savings", Decimal("0.00"),
+            )
+            template = make_transfer_template(
+                db.session, seed_user, savings, amount="321.09",
+            )
+            xfer = generate_transfer_of(template, seed_periods[0])
+            assert cash_ledger.resolve_transfer_amount(
+                xfer,
+                cash_ledger.amount_basis(
+                    seed_user["user"].id, seed_user["scenario"].id,
+                ),
+            ) == Decimal("321.09")
+
+    def test_a_second_transfer_in_the_same_paycheck_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The transfer engine writes nothing where a transfer claims the occurrence."""
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Engine's savings", Decimal("0.00"),
+            )
+            template = make_transfer_template(db.session, seed_user, savings)
+            generate_transfer_of(template, seed_periods[0])
+            with pytest.raises(ValueError, match="wrote 0 rows"):
+                generate_transfer_of(template, seed_periods[0])
+            assert db.session.query(Transfer).filter_by(
+                transfer_template_id=template.id,
+            ).count() == 1
+
+    def test_another_owners_paycheck_is_refused_before_any_write(
+        self, app, db, seed_user, seed_periods, seed_second_periods,
+    ):
+        """A period outside the owner's calendar never reaches the engine.
+
+        Three rows would have been written -- the parent and two legs -- and
+        none is: the refusal is the schedule's, one tier above the composite
+        keys that would refuse the INSERTs.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Engine's savings", Decimal("0.00"),
+            )
+            template = make_transfer_template(db.session, seed_user, savings)
+            with pytest.raises(RecurrenceWindowError):
+                generate_transfer_of(template, seed_second_periods[0])
+            assert db.session.query(Transfer).filter_by(
+                transfer_template_id=template.id,
+            ).count() == 0
+            assert db.session.query(Transaction).filter(
+                Transaction.transfer_id.isnot(None),
+                Transaction.user_id == seed_user["user"].id,
+            ).count() == 0

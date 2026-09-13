@@ -1006,7 +1006,7 @@ section 4, under their unchanged ids.*
   that is precisely the form the first ruling specified and measurement rejected. The instrument is
   an open question the step's trace decides, and it must be shown FIRING on a planted defect.
 * [ ] **X-ah** `fix(routes): a query-string id is parsed like every other id` -- closes **N-142**.
-  The one submitted-id surface X-ae did not convert: the `request.args.get(..., type=int)` calls (census 29 code lines `request\.args\.get\([^)]*type=int` in `app/**/*.py`); `X-ah`'s own marker counts every `type=int` coercion, which is 34
+  The one submitted-id surface X-ae did not convert: the `request.args.get(..., type=int)` calls (census 30 code lines `request\.args\.get\([^)]*type=int` in `app/**/*.py`); `X-ah`'s own marker counts every `type=int` coercion, which is 34
   where Werkzeug catches the `ValueError` (so no crash) but the coercion is `int()` (so `'١٠٦'` is
   106, `' 2026 '` is 2026, `'1_0'` is 10). **It needs a per-site ruling, which is why it is a step**:
   the path parameters were all row ids and the schema fields all row ids, so each took one blanket
@@ -1025,24 +1025,16 @@ section 4, under their unchanged ids.*
   `steps.md` state the same number and were moved with it.
 *The `X-br` family -- the fresh container per run, its container and four leaves -- is ARCHIVED to `archive/x_br_family_2026-09-09.md` (2026-09-09, developer's call under rule 4). Every id still resolves in `steps.md`.*
 * [x] **X-bv** `66ff070b` -- closed the STRAND at its producer: a leftover carries `compute_due_date`'s answer, so `declare_derived` cannot leave a row amount rule 3 must price on a due date it has not got. **Its written remedy aimed at the wrong tier**; the CHECK is `X-bv-2`'s.
-* [ ] **X-bv-2** `fix(models): the CHECK the producer fix makes unreachable` -- owns **BAL-463**.
-  `template_id IS NULL OR due_date IS NOT NULL` on BOTH row tables, replacing `b4d9e1c7a052`'s
-  three-term predicate, which admitted the undated leftover and refused only the TRANSITION. The
-  two-term form needs NO guard: nothing can reach the state. **RE-SPECIFIED 2026-09-11 (R-BAL17)**
-  and sequenced behind `X-cf`: it binds only once the suite's rows of a definition are the engine's.
-  Deletes `_stated_amount`'s `on_date is None` arm with its test and the two tests grading frozen
-  migrations' `due_date IS NULL` arms; tightens `DerivedRowFields.due_date` to `date`. Its re-cut on
-  BOTH tables, PARKED at `d73ec289`; `down_revision` is re-pointed at dev's head (`flask db heads`).
-* [ ] **X-cf** -- the DECOMPOSED parent of the suite's ONE builder for a row of a definition
-  (**R-BAL17**), split 2026-09-11 into five leaves; carries **BAL-480**, whose row holds the census.
+* [x] **X-bv-2** `6fa17bac` -- the CHECK on BOTH row tables in one migration (`4d7123cd9803`); `_stated_amount`'s no-due-date arm and the three tests that graded fences DELETED, three derived-date types tightened to `date`; BAL-463 closed.
+  **Binding the twin measured 44 red tests the transaction-side census never saw** (BAL-488), which is why the step waited for `X-ch`; a three-term mutation turns all six refusal cases red, and the round trip plants a violator on each table in turn.
+* [x] **X-cf** `ccf88c01` -- the DECOMPOSED parent of the suite's ONE builder for a row of a definition
+  (**R-BAL17**), five leaves shipped 2026-09-11..12 (`8fac9e6f`, `b3e51806`, `641801a3`, `699bd05d`, `ccf88c01`); BAL-480 closed with the last.
 * [x] **X-cf-3b** `699bd05d` -- the three plan-figure builders (164 sites) take the engine's row; the owner's re-price and move gained ONE spelling each (`repriced_by_the_owner`, `moved_by_the_owner`, beside `generate_row_of`).
   Two engine rows in one paycheck share ONE due date (D18), so WHICH row a carry topped up is read off the rows, never a figure; its review found an index restore restating the pre-X-au-h DDL that no test could see, because every case clones its own database.
-* [ ] **X-cf-4** `test(fixtures): the route suites take a definition's row from the engine` -- closes
-  **BAL-480**. 28 census sites, five `txn.template_id = template.id` assignments and five hand-dated
-  sites; a route test posts what the popover RENDERS (`budgets[txn.id]`), never a stored column.
-* [ ] **X-ch** `test(fixtures): a transfer of a definition is the engine's` -- closes **BAL-488**.
-  `generate_transfer_of(template, period)`, R-BAL17's builder one table over; 23 hand-built linked-transfer
-  sites in 11 files converted, so `X-bv-2`'s twin CHECK binds on rows the engine wrote.
+* [x] **X-cf-4** `ccf88c01` -- the route suites' 38 hand-built rows (28 undated, 5 hand-dated, 5 `txn.template_id = ...` assignments) and four owner-act spellings take the engine's row; every BAL-480 census reads zero, and BAL-480 closed with it.
+  Its review measured the ambiguous carry-forward target got STRONGER (the old undated pair was refused on `occurs_on IS NULL` alone; the dated pair only by the `is_override` rule), and the three reads of the column a derived row leaves NULL name the definition's stated figure instead.
+* [x] **X-ch** `28a6317e` -- `generate_transfer_of`, R-BAL17's builder one table over (one private body with `generate_row_of`), and `transfer_repriced_by_the_owner`; all 23 hand-built linked-transfer sites in 11 files converted, BAL-488 closed.
+  **Its review caught the conversion DISARMING a control**: under the every-paycheck cadence the engine dates a row on its period's start, so "the later price on the row's own date" read one day for both; both later-price cases now take MONTHLY on the 1st in the straddling paycheck.
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
   The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
   `is_override` term; the undated arm keeps the term because its index does. Script and test only.

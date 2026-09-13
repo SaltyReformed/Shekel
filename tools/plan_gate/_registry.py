@@ -811,13 +811,13 @@ REGISTRY_CAPS = {
     # **RAISED by the developer 2026-09-05 on rule 4's terms**: lessons.md
     # 200 -> 280, conventions.md 280 -> 320.  Each had come to REST on its own
     # headroom floor (lessons.md at 179-180 since 2026-08-16, conventions.md at
-    # 256 of 260), and a file pinned at its floor reads like one STOPPED growing,
-    # so an edit there DISPLACES a rule or a lesson rather than adds one.  Rule 5
-    # answers neither: a rule and a lesson have no span to end.  **320 -> 350 and
-    # lessons.md 280 -> 300, developer 2026-09-11**, the same terms (259 of 260).
+    # 256 of 260); a file pinned at its floor reads like one STOPPED growing, so
+    # an edit there DISPLACES a rule or a lesson.  Rule 5 answers neither: a rule
+    # and a lesson have no span to end.  Same terms: **320 -> 350 and lessons.md
+    # 280 -> 300, 2026-09-11** (259 of 260); **lessons.md 300 -> 340, 2026-09-13**.
     "conventions.md": 350,
     "verification.md": 120,
-    "lessons.md": 300,
+    "lessons.md": 340,
 }
 
 #: The number of ``steps.md`` rows that can only be an accident.

@@ -67,7 +67,8 @@ from app.services.projection_inputs import (
 )
 
 from ._asset_contributions import ContributionInputs
-from ._context import BalanceContext, require_scenario
+from ._context import BalanceContext
+from ._memoize import require_scenario
 from . import _kernel
 from ._positions import positions_period_map
 from ._resolution import configured_loan

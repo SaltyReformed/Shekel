@@ -7,8 +7,8 @@ that the next loan edit silently overwrote with the payoff, while the composed
 door read the stored date as the chokepoints' cache from the start (plan
 ledger row **N-512**).  The edit form has refused such a bound since plan step
 R7b-4 (``LOAN_PAYMENT_BOUND_IS_DERIVED``); this is the create door's half,
-landed beside ``settle_first_occurrence`` in ``_transfer_creation_helpers``
-because the route module stands at pylint's line cap.
+landed beside ``settle_first_occurrence`` (in ``_loan_destination`` since plan
+step R7d-f-5) because the route module stands at pylint's line cap.
 
 **What "stated" means at create is a REAL stop -- a date or a count -- and
 not the key's presence** (developer ruling 2026-09-12).  The create form's
@@ -36,7 +36,7 @@ from app.models.category import Category
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.routes._recurrence_form_refusals import LOAN_PAYMENT_BOUND_IS_DERIVED
-from app.routes._transfer_creation_helpers import loan_destination_locks
+from app.routes._loan_destination import loan_destination_locks
 from app.schemas.validation import end_bound_before_start_message
 from tests._test_helpers import (
     cadence_payload,
@@ -418,20 +418,25 @@ class TestTheCreateFormNamesTheDestinationsThatDeriveAStop:
             assert locks.start_derived_for == (paid.id, unpaid.id, was_paid.id)
             assert locks.stop_derived_for == (unpaid.id, was_paid.id)
 
-    def test_the_ends_help_carries_both_sentences_on_the_transfer_create_form_alone(
+    def test_the_ends_help_carries_both_sentences_on_the_transfer_forms_alone(
         self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
         """The copy the script swaps rides on the row only where the row can lock.
 
-        The transfer CREATE form's destination is chosen in the form, so its
-        "Ends" help carries the locked and the open sentence for the script
-        to choose between.  The transfer EDIT form renders from the same
-        template with ``swappable=(template is none)`` and already knows its
-        destination, so it carries neither -- and it is the one call site
-        that can regress, since the transaction form never passes the flag.
-        The locked sentence holds the word "updated", which
-        ``test_template_flags`` asserts no page renders without a save
-        behind it.
+        The transfer form's destination is chosen in the form on a create and
+        can be changed on an edit, so its "Ends" help carries the locked and
+        the open sentence for the script to choose between -- on BOTH renders
+        since plan step R7d-f-5.  **REVERSED for the edit form by ruling**
+        (developer 2026-09-12, ruling **R-R79**; CLAUDE.md rule 5's
+        exception): until then the edit render passed
+        ``swappable=(template is none)`` and this case asserted it carried
+        neither, on the premise that an edit form "already knows" its
+        destination -- false once the update door derives bounds for a
+        destination MOVE (plan step R7d-f-4).  The transaction form still
+        carries neither: it has no destination and can never be a loan
+        payment.  The locked sentence holds the word "updated", which
+        ``test_template_flags`` asserts no transaction page renders without a
+        save behind it.
         """
         with app.app_context():
             savings = create_account_of_type(
@@ -452,8 +457,8 @@ class TestTheCreateFormNamesTheDestinationsThatDeriveAStop:
         def ends_help_tag(html):
             return html.split('id="end-bound-help"')[1].split(">")[0]
 
-        assert "data-locked-text=" in ends_help_tag(create_form)
-        assert "data-open-text=" in ends_help_tag(create_form)
-        for page in (edit_form, transaction_form):
-            assert "data-locked-text=" not in ends_help_tag(page)
-            assert "data-open-text=" not in ends_help_tag(page)
+        for page in (create_form, edit_form):
+            assert "data-locked-text=" in ends_help_tag(page)
+            assert "data-open-text=" in ends_help_tag(page)
+        assert "data-locked-text=" not in ends_help_tag(transaction_form)
+        assert "data-open-text=" not in ends_help_tag(transaction_form)

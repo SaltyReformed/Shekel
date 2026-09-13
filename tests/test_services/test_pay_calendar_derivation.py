@@ -60,7 +60,6 @@ from types import SimpleNamespace
 import pytest
 
 from app.enums import BusinessDayShiftEnum
-from app.services import pay_calendar, pay_period_admin
 from app.services import pay_period_write
 from app.services.pay_calendar import (
     MAX_CADENCE_DAYS,
@@ -69,7 +68,6 @@ from app.services.pay_calendar import (
     PayCalendarError,
     PeriodWindow,
     derive_periods,
-    nominal_payday_after,
     payday_after,
     projected_payday,
     schedule_for,
@@ -552,12 +550,13 @@ class TestReDerivationStability:
     def test_appending_exactly_one_cadence_later_moves_no_end(self):
         """The extend path's append is the only stable one.
 
-        ``pay_period_admin.extend_pay_periods`` opens its batch on the NOMINAL
-        grid one cadence after the last recorded payday (plan step ``C14-d``;
-        it read ``last.end_date + 1`` off the calendar until then, which is the
-        same day while nothing displaces a payday).  The old last period's end
-        is then ``lead - 1``, the same day the projection gave it -- so nothing
-        moves and only the FLAG changes.
+        ``pay_period_admin.extend_pay_periods`` records the plan's own next
+        payday (``pay_period_write.continue_paydays``, plan step ``C17-c-2b``;
+        it stepped the NOMINAL grid one cadence after the last recorded
+        payday from ``C14-d`` until then, and read ``last.end_date + 1`` off
+        the calendar before that -- the same day while nothing displaces a
+        payday).  The old last period's end is then ``lead - 1``, the same day
+        the projection gave it -- so nothing moves and only the FLAG changes.
         """
         before = derive_periods(self._PAYDAYS, eras_of(self._PAYDAYS, 14))
         assert before[-1].end_date == date(2026, 1, 29)
@@ -714,10 +713,9 @@ class TestTheWritersOwnScheduleDerives:
 
         ``pay_period_admin.extend_pay_periods`` asks a PRODUCER where the next
         payday falls rather than doing arithmetic of its own (plan step
-        C2-f3b), and since plan step ``C14-d`` the producer it asks is the
-        NOMINAL grid rather than the calendar -- the same day until ``C14-e``
-        displaces one.  This is the append that moves no previously-derived
-        end; see :class:`TestReDerivationStability`.
+        C2-f3b; the plan's own sequence since ``C17-c-2b``, the NOMINAL grid
+        from ``C14-d`` until then).  This is the append that moves no
+        previously-derived end; see :class:`TestReDerivationStability`.
         """
         with app.app_context():
             user_id = bare_user["user"].id
@@ -1031,62 +1029,6 @@ class TestTheProjectedPaydayHasOneProducer:
         )
 
 
-class TestTheGridIsNotTheProjection:
-    """Plan step ``C14-d``: two producers, and a displacing convention separates them.
-
-    They answered the same day until ``C14-e-3``, so a test comparing them
-    under ``none`` grades nothing -- which is why every case here states a
-    DISPLACING convention.  What the split is FOR is that a writer continuing a
-    rhythm and a calendar displaying a paycheck stop wanting the same day, and
-    both callers exist: ``pay_period_admin.extend_pay_periods`` takes the grid,
-    ``derive_periods`` takes the projection.
-    """
-
-    @pytest.mark.parametrize(
-        "shift", [BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT],
-        ids=lambda s: s.name.lower(),
-    )
-    def test_the_TWO_DOORS_read_two_different_producers(self, shift):
-        """The writer's binding displaces and the extend door's does not.
-
-        **Read off the APPLICATION modules, and an adversarial review of this
-        step is why.**  A first form of this case called the names this test
-        module imported, which ``monkeypatch`` can never reach -- so it would
-        have passed unchanged even if the substitution HAD displaced the grid,
-        which is the one thing it claimed to detect.  It also compared the
-        substituted producer against the expression that producer computes, an
-        equality whose two sides share one body.
-
-        What is asserted now is the pair of bindings the two doors actually
-        call: ``pay_period_batch.reject_backward_payday`` reaches
-        ``pay_calendar.projected_payday`` and ``extend_pay_periods`` reaches
-        ``pay_period_admin.nominal_payday_after``.  If ``C14-e`` displaces the
-        second of those, the extend door starts recording cash dates again and
-        this fails.
-
-        *It named ``pay_period_admin.nominal_payday`` until ``C14-e-2`` moved
-        the grid-index search into the package; the binding moved with it and
-        the case follows the door rather than the old name.*
-        """
-        anchor, thanksgiving = date(2030, 11, 14), date(2030, 11, 28)
-        rhythm = rhythm_of(14)
-        # The horizon the door asks against: the day before the next payday.
-        assert pay_period_admin.nominal_payday_after(
-            anchor, rhythm, date(2030, 11, 27),
-        ) == thanksgiving
-
-        displacing = rhythm_of(14, shift)
-
-        assert pay_period_admin.nominal_payday_after(
-            anchor, displacing,
-            pay_calendar.projected_payday(anchor, displacing, 1)
-            - timedelta(days=1),
-        ) == thanksgiving, "the extend door must still hand over a GRID day"
-        assert pay_calendar.projected_payday(
-            anchor, displacing, 1,
-        ) != thanksgiving
-
-
 class TestTheCoveringProbeToleratesAMovedBoundary:
     """The probe, driven through the shipped producer under a real convention.
 
@@ -1389,67 +1331,35 @@ class TestTheShapeCatalogueRefusesAnUnknownLabel:
             shape("no_such_shape")
 
 
-class TestTheGridDayAfterAHorizonIsTotal:
-    """Plan step **C14-e-2**: :func:`nominal_payday_after` over EVERY residue.
+class TestTheRecordClosesWhereThePlanOpens:
+    """The derived last end and the plan's first payday are ONE producer.
 
-    **The axis this producer lives on is
-    ``(horizon - nominal_anchor) % cadence_days``, and no case varied it until
-    an adversarial review of ``C14-e-2`` said so.**  Every other case anchors
-    an owner on their own single recorded payday, which is residue 0 by
-    construction -- the one value that cannot fail.  The defect the review
-    found was exactly there: asked against the last recorded PAYDAY rather than
-    against the paycheck's END, the producer answered a grid day BELOW
-    ``pay_period_batch.reject_backward_payday``'s floor on 13 of the 14
-    residues, and the extend door refused its own answer permanently, on a read
-    path with no handler.
-
-    A stored phase off the horizon's own grid is ordinary rather than exotic:
-    it is a PIECEWISE owner (ledger row **N-492**), and a truncate back across
-    a cadence change produces one through shipped doors.
+    Plan step **C14-e-2** wrote this class for ``nominal_payday_after``, the
+    grid search the extend door continued a rhythm from, and swept it over
+    every residue of ``(horizon - phase) % cadence``.  Plan step
+    ``C17-c-2b`` deleted that producer with the door's computation: extend
+    materialises :func:`~app.services.pay_calendar.planned_paydays_after`
+    now (``pay_period_write.continue_paydays``), so the residue axis moved:
+    the record is placed on the era's grid by
+    :func:`~app.services.pay_calendar._eras.matched_step`, whose randomised
+    sweep in ``test_pay_calendar_eras.py`` draws records at random residues
+    over cadences 1 to 45 and 365, and the writer's floor is the plan's
+    first element by construction.  What survives here is the seam that
+    pairing rested on and the new one still does.
     """
 
-    @pytest.mark.parametrize("cadence", [1, 2, 3, 7, 14, 15, 30, 31, 365])
-    def test_the_answer_is_never_below_the_floor(self, cadence):
-        """EVERY residue at EVERY cadence, against the floor the writer applies.
-
-        The floor is ``payday_after(eras, latest)`` -- the era grid's next
-        payday after the one the last record stands for (plan step
-        ``C17-b-2``) -- and it is read from that producer rather than
-        restated, so the case cannot drift from the fence it grades.
-
-        **Both axes are varied**, because the theorem is cadence-independent
-        and a sweep at one cadence cannot say so: the estimate satisfies
-        ``nominal(estimate) <= horizon < nominal(estimate + 1)`` whatever the
-        cadence, which is what bounds the search at three candidates.
-        """
-        rhythm = rhythm_of(cadence)
-        latest = date(2026, 5, 11)
-        for residue in range(cadence):
-            anchor = latest - timedelta(days=residue)
-            horizon = payday_after(_eras(anchor, cadence), latest) - timedelta(days=1)
-
-            answer = nominal_payday_after(anchor, rhythm, horizon)
-
-            assert answer > horizon, (
-                f"cadence {cadence}, residue {residue}: {answer} lands inside "
-                f"the paycheck ending {horizon}, which the floor refuses"
-            )
-            assert (answer - anchor).days % cadence == 0, (
-                f"cadence {cadence}, residue {residue}: {answer} is not on the "
-                f"owner's stored grid"
-            )
-
-    def test_the_HORIZON_a_caller_passes_IS_the_floor_minus_one_day(self):
+    def test_the_record_closes_the_day_before_the_plans_first_payday(self):
         """The seam the whole pairing rests on, pinned so a split would fire.
 
-        ``extend_pay_periods`` asks against the last paycheck's END and
-        ``pay_period_batch.reject_backward_payday`` bounds the batch at
-        ``payday_after(eras, latest)``.  Those are the same value one day
-        apart ONLY because :func:`derive_periods` closes the last saved period
-        with that same producer -- so if a step ever moved one side and not
-        the other, every other case here would stay green and only one door
-        case would notice.  An adversarial review of ``C14-e-2`` named that
-        hole; this is the assertion that fills it.
+        :func:`derive_periods` closes the last saved period the day before
+        ``payday_after(eras, latest)``; ``pay_period_batch.reject_backward_payday``
+        bounds a stated batch at that same day, and since plan step
+        ``C17-c-2b`` the continue door RECORDS it as its first payday.  Those
+        are one value only because all three read one producer -- so if a
+        step ever moved one side and not the other, every other case here
+        would stay green and only one door case would notice.  An adversarial
+        review of ``C14-e-2`` named that hole; this is the assertion that
+        fills it.
         """
         eras = _eras(date(2026, 4, 27), 14)
         latest = date(2026, 5, 11)
@@ -1460,26 +1370,3 @@ class TestTheGridDayAfterAHorizonIsTotal:
             days=1,
         )
 
-    @pytest.mark.parametrize("residue", range(14))
-    def test_it_answers_the_SAME_day_the_deleted_expression_did_at_residue_0(
-        self, residue,
-    ):
-        """`$0.00` where the phase and the record share a grid, and only there.
-
-        At residue 0 the answer must equal ``latest + cadence`` -- the
-        expression ``C14-e-2`` replaced -- which is what makes that step
-        `$0.00` for every owner the migration backfills.  Off residue 0 the
-        two differ BY DESIGN, and asserting only the first would hide that the
-        producer had stopped moving at all.
-        """
-        rhythm = rhythm_of(14)
-        latest = date(2026, 5, 11)
-        anchor = latest - timedelta(days=residue)
-        horizon = payday_after(_eras(anchor, 14), latest) - timedelta(days=1)
-
-        answer = nominal_payday_after(anchor, rhythm, horizon)
-
-        if residue == 0:
-            assert answer == latest + timedelta(days=14)
-        else:
-            assert answer != latest + timedelta(days=14)

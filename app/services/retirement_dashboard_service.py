@@ -20,6 +20,7 @@ All functions accept plain data (the render's read pass, loaded inputs) and
 return plain data.  No Flask imports.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -27,6 +28,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.pension_profile import PensionProfile
 from app.models.salary_profile import SalaryProfile
+from app.models.salary_raise import SalaryRaise
 from app.models.user import UserSettings
 from app.services import (
     paycheck_calculator,
@@ -34,6 +36,7 @@ from app.services import (
 )
 from app.services.pay_calendar import PayCadence
 from app.services.payroll_basis import gross_per_paycheck
+from app.services.salary_raises import RaiseTerms
 from app.utils.dates import add_months
 from app.utils.money import round_money
 
@@ -131,6 +134,46 @@ class GapInputs:
     pensions: list[PensionProfile]
     salary_profiles: list[SalaryProfile]
     pay_cadence: PayCadence
+
+
+#: What a plan point believes a profile's raises to be: the profile's rows'
+#: terms with each recurring raise's end year read off the point.  The
+#: :class:`~app.services.retirement_plan.PlanPoint` is the one producer of it
+#: (its ``terms_for``); every salary-path reader below TAKES one rather than
+#: reading ``profile.raises``, so a probe over one raise's end year reaches the
+#: pension, the income target, the current paycheck and the payroll feeds
+#: through one input (plan step salary:S3-f-2b, rulings **R-SAL20**, **R-SAL21**).
+TermsFor = Callable[[SalaryProfile], tuple[RaiseTerms, ...]]
+
+
+@dataclass(frozen=True)
+class BelievedPayroll:
+    """The owner's payroll as ONE plan point believes it.
+
+    The parameter object :func:`compute_gap_net_biweekly` takes for what the
+    point resolved (plan step salary:S3-f-2b): the raise set each profile is
+    believed under, and the current paycheck priced under that set.  It exists
+    because that producer was already at five arguments when the believed set
+    became its sixth input, and a sixth positional argument -- or a disable --
+    is not the remedy; the two travel together because they are one fact
+    stated twice over, the set and a paycheck priced from it, and a caller
+    holding one without the other could price the target's rate under one
+    belief and its salary path under another.
+
+    Built once per point by
+    :func:`~app.services.retirement_plan._derive_picture`.  The pension summary
+    takes :attr:`terms_for` alone, because that is all it reads.
+
+    Attributes:
+        terms_for: ``profile -> tuple[RaiseTerms, ...]``, the point's believed
+            set for any profile (see :data:`TermsFor`).
+        current_paycheck: The owner's current paycheck off the pass's pricer
+            under that set (:func:`compute_current_paycheck`), or ``None``
+            when they have no active profile or no current period.
+    """
+
+    terms_for: TermsFor
+    current_paycheck: paycheck_calculator.PaycheckBreakdown | None
 
 
 def load_gap_inputs(balance_ctx):
@@ -243,6 +286,7 @@ def resolve_swr_fraction(settings):
 def compute_pension_summary(
     pensions: list[PensionProfile],
     as_of: date,
+    terms_for: TermsFor,
     month_offset: int = 0,
 ) -> PensionSummary:
     """Aggregate the pension benefit across the user's active pensions.
@@ -266,6 +310,16 @@ def compute_pension_summary(
             projecting its salary path from year N while the lever card beside
             it projects from N+1, which is the two-cards-two-clocks shape plan
             step C2-f2d-1 measured at ``$4.18`` for the read pass itself.
+        terms_for: The raise set each pension's profile is believed under at
+            this plan point (plan step salary:S3-f-2b) -- the point's own
+            :meth:`~app.services.retirement_plan.PlanPoint.terms_for`.  The
+            salary path read the profile's ROWS here until then, so a probe
+            over one raise's end year could reach the income target and the
+            payroll feed but not the pension that the same salary funds -- two
+            beliefs on one verdict, the shape ruling **R-SAL20** rejected.  A
+            pension linked to a profile the rail does not list (an archived
+            one) is projected from that profile's stored rows, which is what
+            the point's fallback answers for it.
         month_offset: Whole months added to EACH qualifying pension's
             planned retirement date before projecting (the P2b retire-later
             probes: a later retirement extends the salary path, the years
@@ -291,6 +345,7 @@ def compute_pension_summary(
             )
             salary_by_year = pension_calculator.project_profile_salaries(
                 profile,
+                terms_for(profile),
                 as_of.year,
                 planned.year,
             )
@@ -315,7 +370,7 @@ def compute_pension_summary(
 
 
 def compute_current_paycheck(
-    balance_ctx, salary_profiles: list[SalaryProfile],
+    balance_ctx, salary_profiles: list[SalaryProfile], terms_for: TermsFor,
 ) -> paycheck_calculator.PaycheckBreakdown | None:
     """The owner's current paycheck, priced by the PASS's pricer.
 
@@ -345,11 +400,13 @@ def compute_current_paycheck(
     half of that ruling and why this is a resolver
     :func:`~app.services.retirement_plan._derive_picture` calls rather than a
     field of :class:`GapInputs`.  A what-if over a raise's end year (plan step
-    S3-f-2b) can move THIS YEAR's paycheck when the probed year precedes it,
-    so the picture at a point must price the current paycheck under that
-    point's raise set or the income target and the salary path it scales would
-    disagree.  At S3-f-2a the stored set is the only set: every point derives
-    the same paycheck, and the pricer's per-payday memo makes the repeats free.
+    S3-f-2b, which is where *terms_for* arrived) can move THIS YEAR's paycheck
+    when the probed year precedes it, so the picture at a point prices the
+    current paycheck under that point's raise set or the income target and the
+    salary path it scales would disagree.  At the stored set every point
+    derives the same paycheck, the pricer is the one the feed loader built,
+    and its per-payday memo makes the repeats free; a probed set is a pricer
+    of its own, memoized under the set, so ten probes at one belief share one.
 
     **WHICH period is current comes off the read pass** (plan step C2-f2d-1,
     corrected by its adversarial code review): the pass's ONE memoized
@@ -365,6 +422,8 @@ def compute_current_paycheck(
         salary_profiles: The owner's active salary profiles; the FIRST is the
             page's current profile, the same rule
             :func:`compute_gap_net_biweekly` projects the salary path from.
+        terms_for: The raise set that profile is believed under at this plan
+            point (see :data:`TermsFor`).
 
     Returns:
         The current period's
@@ -379,9 +438,41 @@ def compute_current_paycheck(
     )
     if current_period is None:
         return None
-    return balance_ctx.paychecks().for_profile(salary_profiles[0]).at(
-        current_period,
-    )
+    profile = salary_profiles[0]
+    return balance_ctx.paychecks().for_profile(
+        profile, terms_for(profile),
+    ).at(current_period)
+
+
+def recurring_raises(salary_profiles: list[SalaryProfile]) -> list[SalaryRaise]:
+    """Every RECURRING raise on the owner's active profiles, in rail order.
+
+    **The one membership walk** for the set the ``/retirement`` rail states,
+    the plan point believes and a probe may name (plan step salary:S3-f-2b).
+    Recurring only, and that is the whole rule: an end year answers how long
+    a FORECAST is believed, and a one-time raise is a recorded fact that
+    happens once, which is why
+    ``ck_salary_raises_terminal_year_only_on_a_recurring_raise`` forbids the
+    column a value there at all (developer ruling 2026-09-05, plan step
+    salary:S3-b).  It was spelled inline in
+    :func:`resolve_recurring_raise_assumptions` alone until the point needed
+    the same set; two inline spellings of one membership are rule 14's shape.
+
+    Args:
+        salary_profiles: The owner's active
+            :class:`~app.models.salary_profile.SalaryProfile` rows.
+
+    Returns:
+        The recurring :class:`~app.models.salary_raise.SalaryRaise` rows, in
+        profile then row order (the relationship's ``effective_year,
+        effective_month`` ordering).
+    """
+    return [
+        raise_obj
+        for profile in salary_profiles
+        for raise_obj in profile.raises
+        if raise_obj.is_recurring
+    ]
 
 
 def resolve_recurring_raise_assumptions(
@@ -396,13 +487,13 @@ def resolve_recurring_raise_assumptions(
     assembled in the template would be assembled twice, in Jinja, which is
     where this project does not compute.
 
-    **Recurring raises only, and that is the whole membership rule.**  An end
-    year answers how long a FORECAST is believed; a one-time raise is a
-    recorded fact that happens once, which is why
-    ``ck_salary_raises_terminal_year_only_on_a_recurring_raise`` forbids the
-    column a value there at all (developer ruling 2026-09-05, plan step
-    salary:S3-b).  So a one-time raise has no assumption to state
-    and contributes no row.
+    **Recurring raises only**, which is :func:`recurring_raises`'s membership
+    rule and is stated there; a one-time raise has no assumption to state and
+    contributes no row.  **Each row is a PROBE since plan step salary:S3-f-2b**:
+    the rail renders the salary form's own end-year pair (a mode and a year,
+    ruling **R-SAL13**) pre-filled from the row, and every readiness refresh
+    carries them, so the ``effective_year`` here is the floor the year input
+    states and the ``raise_id`` is what names the probe's parameters.
 
     Args:
         salary_profiles: The owner's active
@@ -411,37 +502,38 @@ def resolve_recurring_raise_assumptions(
     **It lists every ACTIVE profile's recurring raises, which is not the
     same set as the raises the page PROJECTS**, and an adversarial review of
     plan step salary:S3-c is why that is said here rather than implied.  The
-    projections read ``salary_profiles[0]`` and each pension's own
-    ``salary_profile``; an owner with two active profiles therefore sees rows
-    for raises that feed no figure.  Listing what the owner has RECORDED is
-    the honest claim and the useful one -- the rail links each row to the
-    page that edits it -- but it is a weaker claim than "what this page
-    projects from", and only the first is true.
+    projections read ``salary_profiles[0]``, each pension's own
+    ``salary_profile`` and the profiles that FUND an account; an owner with
+    two active profiles therefore sees rows for raises that feed no figure,
+    and a probe on one of those moves nothing.  Listing what the owner has
+    RECORDED is the honest claim and the useful one -- the rail links each
+    row to the page that edits it -- but it is a weaker claim than "what this
+    page projects from", and only the first is true.
 
     Returns:
         One dict per recurring raise, in profile then row order, carrying
         ``raise_id``, ``profile_id``, ``profile_name``, ``raise_type`` (the
-        DISPLAY name, or ``None``), ``percentage``, ``flat_amount``,
-        ``effective_month``, ``effective_year`` and ``terminal_year`` (the
-        last year it is believed, ``None`` for indefinitely).
+        type's DISPLAY name, off the row's own property), ``percentage``,
+        ``flat_amount``, ``effective_month``, ``effective_year`` and
+        ``terminal_year`` (the last year it is believed, ``None`` for
+        indefinitely).
     """
     return [
         {
             "raise_id": raise_obj.id,
-            "profile_id": profile.id,
-            "profile_name": profile.name,
-            "raise_type": (
-                raise_obj.raise_type.name if raise_obj.raise_type else None
-            ),
+            "profile_id": raise_obj.salary_profile.id,
+            "profile_name": raise_obj.salary_profile.name,
+            # The row's ONE spelling of its type's name (plan step
+            # salary:S3-f-1 made it a property over the FK through the ref
+            # cache; this site kept reading the relationship until S3-f-2b).
+            "raise_type": raise_obj.raise_type_name,
             "percentage": raise_obj.percentage,
             "flat_amount": raise_obj.flat_amount,
             "effective_month": raise_obj.effective_month,
             "effective_year": raise_obj.effective_year,
             "terminal_year": raise_obj.terminal_year,
         }
-        for profile in salary_profiles
-        for raise_obj in profile.raises
-        if raise_obj.is_recurring
+        for raise_obj in recurring_raises(salary_profiles)
     ]
 
 
@@ -519,7 +611,7 @@ def resolve_planned_retirement_date(
 
 def compute_gap_net_biweekly(
     gap: GapInputs,
-    current_paycheck: paycheck_calculator.PaycheckBreakdown | None,
+    payroll: BelievedPayroll,
     planned_retirement_date: date | None,
     salary_by_year: list[tuple[int, Decimal]] | None,
     as_of: date,
@@ -548,12 +640,15 @@ def compute_gap_net_biweekly(
             salary profiles (the first is the profile whose salary path is
             projected) and the pay cadence the final-year salary is divided
             into a paycheck by.
-        current_paycheck: The owner's current paycheck off the pass's
-            pricer (:func:`compute_current_paycheck`), or ``None`` when they
-            have no active profile or no current period.  **An ARGUMENT
-            rather than a field of *gap* since plan step salary:S3-f-2a**,
-            because it is derived per plan point where the bundle is loaded
-            once per render; see :class:`GapInputs`.
+        payroll: What the plan point believes (:class:`BelievedPayroll`):
+            the owner's current paycheck off the pass's pricer
+            (:func:`compute_current_paycheck`; ``None`` when they have no
+            active profile or no current period), and the raise set the
+            salary path is projected under when this has to open one.  **A
+            per-point ARGUMENT rather than a field of *gap* since plan step
+            salary:S3-f-2a**, because it is derived per plan point where the
+            bundle is loaded once per render (see :class:`GapInputs`); the
+            believed set joined it at S3-f-2b.
         planned_retirement_date: The projection horizon, or ``None``.
         salary_by_year: The pension-derived salary projection if one was
             already built, else ``None`` (recomputed here when needed).
@@ -574,9 +669,9 @@ def compute_gap_net_biweekly(
         the projection cannot be performed; ``Decimal("0")`` when there is no
         current paycheck.
     """
-    if current_paycheck is None:
+    if payroll.current_paycheck is None:
         return Decimal("0")
-    earnings = current_paycheck.earnings
+    earnings = payroll.current_paycheck.earnings
     net_biweekly = earnings.net_pay
     # ``None`` when the engine's gross is not positive -- the one zero-gross
     # guard, stated where the ratio is defined rather than repeated here.
@@ -596,7 +691,8 @@ def compute_gap_net_biweekly(
     effective_take_home_rate = take_home_rate_pct / _PCT_SCALE
     if salary_by_year is None:
         salary_by_year = pension_calculator.project_profile_salaries(
-            profile, as_of.year, planned_retirement_date.year,
+            profile, payroll.terms_for(profile), as_of.year,
+            planned_retirement_date.year,
         )
     if not salary_by_year:
         return net_biweekly

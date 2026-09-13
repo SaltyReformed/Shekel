@@ -41,9 +41,10 @@ door still can: ``resolve`` builds a value with no derived half, because the
 pure package cannot fold a balance.  **Generation takes this door since plan
 step R7d-c-2** (``recurrence_engine.resolve_generation_plan`` reads
 :func:`read_definition` over the pass its schedule carries), which was the one
-reader that MOVES MONEY; what still goes round it in ``app/`` is the form's
-live preview, which composes a transient rule from the request and is plan
-step R7d-f-2's, two readers that ask no closing question at all -- the write
+reader that MOVES MONEY, and the form's live preview takes it since plan step
+R7d-f-2 (:func:`resolved_submission`, over the transient definition the
+request composes); what still goes round it in ``app/`` (re-read 2026-09-13)
+is two readers that ask no closing question at all -- the write
 door's refusal of the unresolvable and the opening-bound comparison in
 ``loan_recurrence_sync._sync_loan_cadence`` -- and the balance seam's own
 definition walk (``balance_at._plan_definitions``, plan step R16-b-2), which
@@ -100,32 +101,42 @@ through this door too, so the Recurring row names the payoff AND the rows are
 generated to it: a stored owner's word binds nothing from the moment it is
 stored.  What the limit still names is every row whose column holds an
 owner's word this door reads as the cache: the rows that path wrote before
-the refusal existed; a second transfer PROMOTED by the archiving of the first
-(above); and the UPDATE door's two paths, which R7d-f-3's adversarial review
-found and plan step R7d-f-4 owns (ledger row **REC-521**): a rule-less
-transfer into a payment-less loan given a cadence on the edit form (the
-identity answers ``False`` for a template with no rule, so the authoring
-branch writes the owner's start AND stop), and a bounded transfer whose
-destination is MOVED onto a payment-less loan (the identity is judged against
-the stored destination, then the column moves).  (2) An ARCHIVED loan payment
--- no longer the account's active transfer -- has the column the app wrote
-while it was active
+the refusal existed, and a second transfer PROMOTED by the archiving of the
+first (above).  Until plan step R7d-f-4 it also named the UPDATE door's two
+paths, which R7d-f-3's adversarial review found (plan ledger row **REC-521**)
+-- a rule-less transfer into a payment-less loan given a cadence on the edit
+form (the identity answers ``False`` for a template with no rule, so the
+authoring branch wrote the owner's start AND stop), and a bounded transfer
+whose destination is MOVED onto a payment-less loan (the identity was judged
+against the stored destination, then the column moved).  That leaf closed
+both at the door through the create door's own reading
+(``_loan_destination.settle_destination_for_update``, rulings **R-R76**
+and **R-R77**).  What the limit names now is the two above and a
+THIRD that leaf's adversarial review found and R7d-g owns (plan ledger row
+**REC-522**): an ARCHIVED recurring transfer into a loan is editable, is
+nobody's standing payment while archived (the identity reads the ACTIVE set),
+so its edit form unlocks both bound rows and the update door judges it as any
+savings transfer; ``unarchive_transfer_template`` then regenerates it with no
+sync, and it is the loan's payment again with an owner's word in the column.
+(2) An ARCHIVED loan payment -- no longer the account's active transfer --
+has the column the app wrote while it was active
 read as its owner's bound in the Archived drawer, and a cache EARLIER than the
 derived stop still binds that drawer row until plan step R7d-g NULLs it.  R7d-g
 must DECIDE archived loan payments rather than sweep them (plan ledger row
 **D56**, an OPEN fork: a NULL-every-loan-payment predicate cannot tell an
 authored bound from the cache, so D56 asks R7d-g either to scope the migration
 or to rule the erasure intended).  (3) **R7d-g must DELETE this arm with the
-column**, and not because the arm goes dead: limit (1) names four producers
-of an owner's bound in that column that outlive R7d-f-3's refusal
-(**R-R60**); R7d-g stops nine of the ten syncs and must name whether the
+column**, and not because the arm goes dead: limit (1) names three producers
+of an owner's bound in that column that outlive the two doors' refusals
+(**R-R60**, **R-R77**); R7d-g stops nine of the ten syncs and must name whether the
 tenth still overwrites such a bound; if none does, a kept arm would read
 that owner's word as the cache forever.  The EDIT control does not
-reopen that route: it stays locked for the loan's own payment (ruling
-**R-R59** -- archiving is the door to stop early), so nothing an owner can do
-on the edit form writes an authored bound into the column this arm reads
-around.  It is a fence around the stored copy and not a design, and it leaves
-with the copy.
+reopen that route for an ACTIVE definition: it stays locked for the loan's
+own payment (ruling **R-R59** -- archiving is the door to stop early), so
+nothing an owner can do on an active definition's edit form writes an
+authored bound into the column this arm reads around; the archived one is
+REC-522's.  It is a fence around the stored copy and not a design, and it
+leaves with the copy.
 
 Flask-isolated (``CLAUDE.md`` Architecture): it takes a template and a read
 pass and returns plain values, reads no ``request`` / ``session``, opens no
@@ -135,17 +146,56 @@ the 2026-08-16 ruling that a producer below the route does not call
 pass its derived stop is resolved in cannot be two values that disagree.
 """
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from app.services.loan_recurrence_sync import loan_payment_window
 from app.services.balance_at import BalanceContext, authored_closing
 from app.services.recurrence import (
     Closing,
+    EndBound,
     RecurrenceOwner,
+    RecurrenceSpec,
     ResolvedRecurrence,
     RuleReading,
-    occurrence_placements,
+    resolved_spec,
 )
+
+
+@dataclass(frozen=True)
+class UnsavedDefinition:
+    """A recurring definition a form DESCRIBES and nothing stores yet.
+
+    What the recurrence form's live preview reads through this door (plan
+    step R7d-f-2, plan ledger row **REC-515**): the template being previewed
+    may not exist -- the create form is showing what saving WOULD produce --
+    so there is no row to hand :func:`resolved_definition`, and plan step
+    R-F6 deleted the transient ROW the preview used to fabricate for exactly
+    that reason.  What the destination-half of the composition actually reads
+    off a definition is ONE column
+    (:func:`~app.services.recurring_transfer_query.destination_account` reads
+    ``to_account_id`` and nothing else), so this is that column and nothing
+    else, and :func:`resolved_submission` pairs it with the
+    :class:`~app.services.recurrence.RecurrenceSpec` the form states.
+
+    **It carries no ``recurrence_rule`` and no ``id`` on purpose.**  The
+    authored half of an unsaved definition's closing is the submission's own
+    word by construction -- the form never reads the stored column, so ruling
+    **R-R56**'s cache arm (:func:`~app.services.balance_at.authored_closing`)
+    has no subject here and :func:`resolved_submission` does not ask it.
+    Nothing else about a definition's identity reaches the derived stop.
+
+    Attributes:
+        to_account_id: The destination account the form names, or ``None``
+            for a transaction template (which pays into no account) and for a
+            transfer form that has not stated one.  **Must be the pass
+            owner's**: the route resolves the submitted id through the
+            ownership gate before building this (the house rule -- 404 for
+            missing and for foreign alike), and the pass refuses a foreign
+            account a second time when it memoises the loan
+            (``ForeignAccountError`` from ``_memoize_once``, plan step X-i4).
+    """
+
+    to_account_id: int | None
 
 
 def resolved_definition(
@@ -164,11 +214,11 @@ def resolved_definition(
     same split :func:`~app.services.recurrence.resolved_recurrence` and
     :func:`~app.services.recurrence.read_rule` already keep one layer down.
 
-    **The narrowing is applied HERE and only here**, so "what stops this
-    definition" has one implementation.  ``replace`` rather than a mutation
-    because :class:`~app.services.recurrence.ResolvedRecurrence` is frozen, and
-    the authored half is carried across from the value the pure resolver
-    built rather than re-read off the rule: reading it twice would be a second
+    **The narrowing is applied in :func:`_narrowed` and only there**, so
+    "what stops this definition" has one implementation for a stored
+    definition and for an unsaved one (:func:`resolved_submission`).  The
+    authored half is carried across from the value the pure resolver built
+    rather than re-read off the rule: reading it twice would be a second
     spelling of the same column.  The one exception is ruling **R-R56** (see
     the module docstring and :func:`~app.services.balance_at.authored_closing`):
     for the definition
@@ -190,7 +240,7 @@ def resolved_definition(
             :func:`~app.services.recurrence.resolve`, which will not resolve a
             rule against another owner's calendar, and that refusal is reached
             FIRST here: the read pass refuses a foreign loan too
-            (``ForeignAccountError`` from ``BalanceContext._memoize_once``,
+            (``ForeignAccountError`` from ``balance_at._memoize._memoize_once``,
             plan step X-i4), but only after loading the account, so resolving
             first is the cheaper refusal and the one whose exception names the
             rule.
@@ -240,24 +290,121 @@ def resolved_definition(
     # the resolver, whose EMPTY test needs the definition's first occurrence:
     # this is the one resolution of the rule on the pass (``CLAUDE.md`` rule
     # 14), where a first build had the resolver derive it again on its own.
-    derived = loan_payment_window(template, resolved, ctx)
     # Ruling R-R56 (:func:`~app.services.balance_at.authored_closing`): the
     # bound the APP writes is the cache, not the owner's word.  Asked
-    # unconditionally since plan step R7d-f, because the identity now costs
-    # nothing the resolver above has
-    # not already paid -- it reads the pass's memoised loan resolution, which
-    # ``loan_figures`` just filled (or filled with ``None`` for a savings
-    # destination), and a transaction template answers before any lookup.
-    # The ``derived is not None`` guard that stood here priced a predicate
-    # that re-ran two queries per call (plan ledger row **N-511**).  R7d-g
-    # deletes the arm with the column it reads around.
+    # unconditionally since plan step R7d-f, because the identity costs
+    # nothing the resolver does not pay anyway -- both read the pass's ONE
+    # memoised loan resolution (``resolved_loan``), whichever of the two
+    # fills it (the identity does, since R7d-f-2 evaluates it first; the
+    # resolver's ``loan_figures`` then reads the memo), and a transaction
+    # template answers before any lookup.  The ``derived is not None`` guard
+    # that stood here priced a predicate that re-ran two queries per call
+    # (plan ledger row **N-511**).  R7d-g deletes the arm with the column it
+    # reads around.
+    return _narrowed(
+        template, resolved,
+        authored=authored_closing(template, resolved.closing.authored, ctx),
+        ctx=ctx,
+    )
+
+
+def resolved_submission(
+    spec: RecurrenceSpec, definition: UnsavedDefinition, ctx: BalanceContext,
+) -> ResolvedRecurrence | None:
+    """Return what an UNSAVED definition would mean, narrowed by its destination.
+
+    :func:`resolved_definition` for the recurrence form's live preview (plan
+    step R7d-f-2, plan ledger row **REC-515**), which has a
+    :class:`~app.services.recurrence.RecurrenceSpec` the request states and
+    a destination the form names, and no row.  The preview walked the spec's
+    own resolution until then, so a transfer into a loan previewed
+    occurrences running past the loan's payoff whenever fewer than five
+    remained -- on the one surface whose contract is "what saving would
+    produce", and while every other reader of a loan payment's schedule had
+    taken this door (**R-R34**'s census of the preview as a reader of the
+    stored column was inexact: it read neither the column nor the derived
+    stop).
+
+    **The same narrowing, applied by the same code.**  Both entries hand
+    :func:`_narrowed` a resolved value and what stops it; the ONLY difference
+    is the authored half.  A stored definition's is read through ruling
+    **R-R56**'s arm because its column may hold the chokepoints' cache; a
+    submission's IS the owner's word -- the form's "Ends" controls, or
+    :data:`~app.services.recurrence.NEVER_ENDS` when the row is locked and
+    posts nothing, which is what the loan's standing payment posts -- so it
+    is taken as stated.  Resolved through
+    :func:`~app.services.recurrence.resolved_spec`, the producer the pass's
+    own memo wraps, rather than through that memo: the memo is keyed by a
+    rule's spec and this caller resolves one spec once per request, so there
+    is one producer either way and nothing here to collapse.
+
+    Args:
+        spec: What the form states, unresolved.
+        definition: The destination the form names, as an
+            :class:`UnsavedDefinition`.  See its ownership contract.
+        ctx: The read pass the ROUTE built (the 2026-08-16 ruling: a producer
+            below the route never builds one).  Its calendar is what *spec*
+            resolves against; its scenario and ``as_of`` scope the loan fold
+            behind the derived stop.
+
+    Returns:
+        The :class:`~app.services.recurrence.ResolvedRecurrence` with both
+        halves of its closing, or ``None`` when the owner's schedule holds no
+        pay periods -- the one refusal
+        :func:`~app.services.recurrence.resolved_spec` answers rather than
+        raises, passed through so the preview can say so in its own words.
+
+    Raises:
+        RecurrenceResolutionError: *spec* cannot be resolved against the
+            owner's schedule -- a non-positive interval, a day the date leaves
+            no room for, a first occurrence outside the authored window, or a
+            spec stating another owner's ``user_id``.
+        BaselineMissingError: The destination is a configured loan and *ctx*
+            has no baseline scenario (ruling **R-R30**); see
+            :func:`resolved_definition`.
+    """
+    resolved = resolved_spec(spec, ctx.calendar())
+    if resolved is None:
+        return None
+    return _narrowed(
+        definition, resolved, authored=resolved.closing.authored, ctx=ctx,
+    )
+
+
+def _narrowed(
+    definition: RecurrenceOwner | UnsavedDefinition,
+    resolved: ResolvedRecurrence, *,
+    authored: EndBound, ctx: BalanceContext,
+) -> ResolvedRecurrence:
+    """Return *resolved* with its closing composed from *authored* and the destination.
+
+    **The narrowing is applied HERE and only here** -- the sentence
+    :func:`resolved_definition` carried alone until plan step R7d-f-2 gave
+    the door a second entry.  The derived half is
+    :func:`~app.services.loan_recurrence_sync.loan_payment_window`'s answer
+    about *definition*'s destination; the authored half is whatever the
+    caller established it to be (see :func:`resolved_submission` for the one
+    way the two entries differ).  ``replace`` rather than a mutation because
+    :class:`~app.services.recurrence.ResolvedRecurrence` is frozen.
+
+    Args:
+        definition: What is being read -- a stored template or an
+            :class:`UnsavedDefinition`; only its ``to_account_id`` is read,
+            through :func:`~app.services.recurring_transfer_query
+            .destination_account`.
+        resolved: The rule's or spec's resolution, whose authored closing the
+            caller has already read and may have replaced.
+        authored: The closing bound the OWNER stated, as the caller reads it.
+        ctx: The read pass.
+
+    Returns:
+        *resolved* with ``closing`` holding both halves.
+    """
     return replace(
         resolved,
         closing=Closing(
-            authored=authored_closing(
-                template, resolved.closing.authored, ctx,
-            ),
-            derived=derived,
+            authored=authored,
+            derived=loan_payment_window(definition, resolved, ctx),
         ),
     )
 
@@ -282,6 +429,17 @@ def read_definition(
     second stop being added, rather than repairing a disagreement that
     existed.
 
+    **And they are walked ONCE per pass, since plan step R7d-f-2** (plan
+    ledger row **N-513**): the walk is the pass's memo
+    (:meth:`~app.services.balance_at.BalanceContext.placements_of`, keyed by
+    the composed value), as the resolution has been since R16-b-2.  A
+    ``/savings`` render reads a checking-to-goal transfer through this door
+    in two sets and used to pay the walk twice; now the second read is memo
+    hits end to end -- the resolution, the destination's loan state, the
+    identity behind ruling R-R56, and the walk.  The reading also carries the
+    horizon the walk reached (plan ledger row **N-514**), read off the same
+    calendar the memo walked against.
+
     Args:
         template: The recurring definition.  See :func:`resolved_definition`
             for the ownership contract.
@@ -302,12 +460,16 @@ def read_definition(
         BaselineMissingError: See :func:`resolved_definition`.
     """
     resolved = resolved_definition(template, ctx)
-    if resolved is None:
-        return RuleReading(resolved=None, placements=())
     return RuleReading(
         resolved=resolved,
-        placements=occurrence_placements(resolved, ctx.calendar()),
+        placements=() if resolved is None else ctx.placements_of(resolved),
+        horizon=ctx.calendar().horizon(),
     )
 
 
-__all__ = ["read_definition", "resolved_definition"]
+__all__ = [
+    "UnsavedDefinition",
+    "read_definition",
+    "resolved_definition",
+    "resolved_submission",
+]
