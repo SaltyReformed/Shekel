@@ -2,12 +2,12 @@
 
 ## Where this stands
 
-**JUST LANDED: `C17-c-1` (`7d26ec2c`)**, the pure move that took the batch shape out of
-`pay_period_write.py` (998 of pylint's 1,000 lines after `C17-b-2`) into `pay_period_batch.py` under
-**R-PC74**, `$0.00`; before it `C17-b-2` (`3369b2ab` + `06fc0d33`) MOVED MONEY (`$0.00` on
-production): every reader anchors on the phase of the era covering its own day, the projection is
-PIECEWISE with seams in cash days (**R-PC72**), and `_eras.py` holds the grid layer (**R-PC73**).
-**NEXT: `C17-c-2`, the doors** (**R-PC64**, **R-PC67**, **R-PC70**); `steps.md` carries the order.
+**JUST LANDED: `C17-c-2a` (`3d635e4a`)**, `$0.00`: a batch whose first payday skips a whole paycheck
+of the owner's plan is REFUSED from the one writer through every door (**R-PC67**, **R-PC76**), the
+gap confirmation is deleted whole, and the four payday doors ask for the SCHEDULED day (**PC-504**
+closed). **NEXT: `C17-c-2b`**, the leaf that MOVES MONEY: extend and the top-up materialise the
+plan, and the seam between two eras is drawn where the door drew it (**R-PC75**); `steps.md` carries
+the order. Then `C17-d`, and `C17-e` (**R-PC77**).
 
 **BUILT AND TICKED**: `C1`; `C2` whole, which is one step under three names (`balance:X-l`,
 `recurrence:R-F12`), ticked at `C2-f3e`; `C3`; `C4` whole; `C10` and `C11`, which came out of
@@ -297,7 +297,7 @@ their only live specimen from them, which both `_staging` docstrings predict and
       **`effective_from` IS the grid's phase**: R-PC61's anchor is absorbed into it, not carried
       beside it. An era governs from its `effective_from` to the next era's; the EARLIEST also runs
       backward below the record, bounded by `history_opens_on`. The DECOMPOSED parent, ticking with
-      `C17-d`.
+      `C17-e` (**R-PC77**).
 - [x] **C17-a -- the relation.** `6caf56bc`, migration `6fc77e86d76f`. One era per owner backfilled,
       phased on the record's opening; the three columns dropped; every reader takes the LATEST era's
       rhythm where it took the row's (`$0.00`). A batch mints an era only where it STATES a rhythm
@@ -315,24 +315,27 @@ their only live specimen from them, which both `_staging` docstrings predict and
       **N-492**, **PC-505**; carried **N-496**; opened **PC-509** for `C17-c-2`.
 - [ ] **C17-c -- the doors ask for the ERA.** The DECOMPOSED parent, split 2026-09-11 (**R-PC71**)
       into the pure-move split of `pay_period_write.py` and the door rewrite it makes room for; it
-      ticks with `C17-c-2`.
+      ticks with `C17-c-2b`.
 - [x] **C17-c-1 -- `pay_period_write.py` leaves the ceiling.** `7d26ec2c`. A pure move of the batch
       shape -- `PERIOD_BATCH_*`, `reject_out_of_range_batch_size`, `reject_undatable_payday`,
       `requested_paydays`, `reject_backward_payday` and the record of R-PC1's two refusals -- into a
       new `pay_period_batch.py` (**R-PC74**: the whole shape, not the refusals or the floor alone);
       the writer 998 -> 663 lines, `$0.00`. `ddbbe87b` rides with it: the writer and admin
       docstrings stop placing the gates in `pay_period_admin`. Closed **PC-507**.
-- [ ] **C17-c-2 -- the doors** (**R-PC64**, **R-PC67**, **R-PC70**). Registration and first-time
-      generate take the NOMINAL first payday with the cadence and convention; `regenerate` is the
-      era-mint door, its rebuilt tail the new era's grid, REFUSING a first payday that skips a whole
-      paycheck of the old era -- `reject_unconfirmed_gap`, `PayPeriodGapRequired`, `confirm_gap` and
-      the banner are DELETED, since a hole is unrepresentable; `reset` wipes eras with the periods.
-      That door is also the repair for an era a moved holiday set makes illegal (**R-PC70**: the
-      read path is loud, no sweep), so the recovery page offers it; and the top-up of an owner
-      truncated below their latest era's day, which restates that era and is judged, stops meeting
-      an unhandled `ValidationError` (**N-494**'s one surviving path); and it owns **PC-509**, the
-      top-up restating the latest era where the calendar projects the era covering the horizon.
-      Closes **PC-504**, **P80**, **N-493**, **N-494**, **PC-509**; carries **N-496**.
+- [ ] **C17-c-2 -- the doors** (**R-PC64**, **R-PC67**). The DECOMPOSED parent, split 2026-09-12
+      (**R-PC78**) into the `$0.00` leaf and the money leaf; it ticks with `C17-c-2b`.
+- [x] **C17-c-2a -- a hole is refused, and the doors ask for the scheduled day.** `3d635e4a`. A
+      batch whose first new payday skips a whole paycheck of the owner's plan is REFUSED from the
+      one writer (`pay_period_batch.reject_skipped_paycheck` beside the floor; **R-PC67**,
+      **R-PC76**); `reject_unconfirmed_gap`, `PayPeriodGapRequired`, `confirm_gap` and the banner
+      DELETED; the four payday doors ask for the SCHEDULED day. R-PC70's loud-read-path premise
+      measured FALSE (**R-PC77**). Closed **P80**, **PC-504**; **N-493** re-pointed at `C17-e`.
+- [ ] **C17-c-2b -- extend materialises the plan, and the seam is the door's** (**R-PC75**).
+      **MOVES MONEY, OWN PR**; `$0.00` on production. A CONTINUING writer entry records the
+      calendar's own next paydays, minting and retiring nothing, so the top-up's restatement of a
+      truncated era (**PC-509**; **N-494**'s surviving path) goes; `last_step_of` becomes the step
+      before the old era's last planned payday at or before the next era's first, and
+      `validate_eras` refuses an era that would then pay nothing. Closes **PC-509**, **N-494**.
 - [ ] **C17-d -- the day-of-month cadence KIND** (**R-PC68**; one commit with `recurrence:R13`).
       `monthly` and `semi_monthly` join `ref.pay_cadence_kinds`; `_grid.nominal_payday`,
       `cadence_steps_to` and `PayCadence.periods_per_year` branch on the era's kind, so a
@@ -340,6 +343,9 @@ their only live specimen from them, which both `_staging` docstrings predict and
       `365.2425 / 15 = 24.35`. **MOVES MONEY** for such an owner; `$0.00` on production. P78's eight
       fixtures go through the door. Closes **P78**; carries **N-399**, closing it only where the
       kind ends `_month_ordinal`'s walk per prior payday (measured, not asserted).
+- [ ] **C17-e -- coalesced nominal paydays are ONE paycheck** (**R-PC77**; closes **N-493**). Two
+      nominal paydays a closed run displaces onto one cash day derive one paycheck wherever an era's
+      grid is read; `reject_shift_on_short_cadence` is then a fence. `$0.00`, after `C17-d`.
 - [ ] **C15 -- the retire-later solve runs only when an assumption moved** (ruling **R-PC52**;
       closes **P60**). The readiness card re-solves the retire-later binary search -- about nine
       projection walks of pure compute no query cost covers -- on every refresh, so a slider-only
