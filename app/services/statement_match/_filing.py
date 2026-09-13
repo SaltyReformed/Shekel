@@ -82,9 +82,10 @@ from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch
 
 from ._accepted_view import AcceptedGroup, accepted_groups
-from ._batch import BatchOutcome, Consent, ReviewedBatch, apply_reviewed
+from ._batch import Consent, ReviewedBatch, apply_reviewed
 from ._creations import IncomeCreation, PurchaseCreation
 from ._offers import BankLine
+from ._outcome import BatchOutcome
 from ._reads import ReviewSet, review_set
 from ._scope import ReviewScope
 from ._verdict import CHECK_FIRST
@@ -125,7 +126,7 @@ class RuleFiling:
 
     Attributes:
         outcome: What :func:`~._batch.apply_reviewed` did
-            (:class:`~._batch.BatchOutcome`) -- the applied items, the refused
+            (:class:`~._outcome.BatchOutcome`) -- the applied items, the refused
             ones and every count the review screen's own receipt carries.  A
             pass with nothing to file still produces one, because *your rules
             filed nothing* and *your rules were not consulted* are different
@@ -168,7 +169,7 @@ class RuleFiling:
         **ALL THREE counts, and the third arrived the same way the second
         did.**  It read ``recorded_count`` alone until plan step
         ``bank_import:X-gj-2a``, which is purchases only
-        (:attr:`~._batch.BatchOutcome.deposited_count` is deliberately not
+        (:attr:`~._outcome.BatchOutcome.deposited_count` is deliberately not
         folded into it), so a pass that filed nothing but deposits under ruling
         **R-HT(a)** would have reported filing NOTHING -- with the acts landed,
         the money moved and the receipt silent about all of it.  That is the
@@ -194,7 +195,7 @@ class RuleFiling:
         """Return what the bank moved on the lines a rule filed, signed.
 
         Derived from the acts that LANDED rather than tallied beside them,
-        which is the rule :attr:`~._batch.BatchOutcome.moved_nothing` states
+        which is the rule :attr:`~._outcome.BatchOutcome.moved_nothing` states
         one type over: two fields that must agree are two fields that can come
         to disagree.  In the BANK's own direction, so the receipt states the
         figure without inventing a second convention for it.

@@ -39,6 +39,7 @@ from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger, statement_match
 from app.services.posting_reads import PostingError
 from app.services.statement_match import (
+    IncomeCreation,
     MatchSubmission,
     NewEnvelope,
     PurchaseCreation,
@@ -46,6 +47,7 @@ from app.services.statement_match import (
     ReviewedBatch,
     SkipRequest,
 )
+from app.services.statement_match._outcome import FiledMerchant
 
 # Pylint: protected-access -- MintedEnvelopes is an internal collaboration
 # between two PRIVATE modules of this package and has no importer outside
@@ -70,6 +72,7 @@ from ._builders import (
     an_import,
     an_unexplained_outflow,
     an_envelope,
+    the_merchant_id,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -738,6 +741,76 @@ class TestTheReceiptSaysWhatHappened:
             assert outcome.recorded_count == 1
             assert outcome.envelopes_created == 1
             assert outcome.moved_nothing is False
+
+    def test_only_the_CREATE_arm_names_the_merchant_it_filed_for(
+        self, app, db, seed_user,
+    ):
+        """``AppliedItem.merchant`` is the create door's fact and nobody else's.
+
+        Plan step ``bank_import:X-gx``, finding **BI-495**: the receipt's
+        standing-rule offer is a filter over the items that name a merchant,
+        so a match, an income or a skip that named one would be asked about
+        as spending.  Four arms, one merchant-bearing creation, one
+        merchant-less creation: exactly one item carries a
+        :class:`FiledMerchant`, and it is the line's own merchant as the door
+        read it.  FIRING CONTROL: pass ``merchant=None`` from the creations
+        arm and the named line's item reads ``None``.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            matched_line = a_bank_line(
+                seed_user, statement, amount="-180.00", posted_on=day,
+                merchant="Duke Energy",
+            )
+            projected = a_transaction(
+                seed_user, name="Electricity", amount="180.00",
+            )
+            named = a_bank_line(
+                seed_user, statement, amount="-9.99", posted_on=day,
+                sequence_in_group=1, merchant="Amazon",
+            )
+            nameless = a_bank_line(
+                seed_user, statement, amount="-4.50", posted_on=day,
+                sequence_in_group=2,
+            )
+            deposit = a_bank_line(
+                seed_user, statement, amount="0.15", posted_on=day,
+                sequence_in_group=3, merchant="Dividend Earned",
+                description="DIVIDEND EARNED (Dividend Earned)",
+            )
+            to_skip = a_bank_line(
+                seed_user, statement, amount="-1.00", posted_on=day,
+                sequence_in_group=4, merchant="Walmart",
+            )
+            envelope = an_envelope(seed_user)
+            db.session.commit()
+
+            outcome = _batch(
+                seed_user,
+                matches=[_match(
+                    seed_user, lines=[matched_line], transactions=[projected],
+                )],
+                creations=[
+                    _creation(seed_user, named, transaction_id=envelope.id),
+                    _creation(seed_user, nameless, transaction_id=envelope.id),
+                ],
+                incomes=[IncomeCreation(line_id=deposit.id)],
+                skips=[SkipRequest(line_id=to_skip.id)],
+            )
+
+            assert outcome.applied_count == 5, outcome.refused
+            by_line = {item.line_ids: item.merchant for item in outcome.applied}
+            assert by_line == {
+                (matched_line.id,): None,
+                (named.id,): FiledMerchant(
+                    merchant_id=the_merchant_id(seed_user, "Amazon"),
+                    name="Amazon",
+                ),
+                (nameless.id,): None,
+                (deposit.id,): None,
+                (to_skip.id,): None,
+            }
 
     def test_a_pass_that_only_CONFIRMS_says_it_moved_nothing(
         self, app, db, seed_user,

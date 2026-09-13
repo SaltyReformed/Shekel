@@ -39,11 +39,12 @@ to the next generated instance: the composed read door
 each occurrence on a pay period -- the SAME composition the generation seam
 makes since plan step R4b-2 -- and ``recurrence.compute_due_date``
 gives the instance's due date, so a row's "next date" is the date the grid
-cell it points at would carry.  **One divergence stands until plan step
-R7d-c-2**: generation still walks the rule's own bound
-(``recurrence_engine/_plan.py``) while this surface reads the composed one, so
-a loan payment whose derived stop precedes its stored bound shows no next date
-here while the grid may still hold generated rows up to the stored one.  This
+cell it points at would carry.  **The one divergence that stood closed at
+plan step R7d-c-2**: generation walked the rule's own bound
+(``recurrence_engine/_plan.py``) while this surface read the composed one, so
+a loan payment whose derived stop preceded its stored bound showed no next
+date here while the grid could still hold generated rows up to the stored
+one; since R7d-c-2 both read ``read_definition`` over one pass.  This
 retires the ``/obligations`` approximation (``_next_occurrence``) the audit
 flagged.
 

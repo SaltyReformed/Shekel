@@ -1,9 +1,9 @@
 """
 Shekel Budget App -- Companion Service
 
-Data access layer for the companion view.  Provides visibility-filtered
-queries that return only the linked owner's transactions from templates
-marked ``companion_visible=True``.
+Data access layer for the companion view.  Answers only the linked owner's
+transactions a companion may see -- those whose
+``Transaction.visible_to_companion`` is True -- for one pay period.
 
 This is the security boundary for all companion data access.  Every
 function validates that the requesting user is a companion with a
@@ -27,7 +27,6 @@ Architecture:
 import logging
 from typing import NamedTuple
 
-from sqlalchemy import and_, or_
 from sqlalchemy.orm import selectinload
 
 from app.extensions import db
@@ -35,7 +34,6 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.exceptions import NotFoundError
 from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
 from app.models.user import User
 from app.services.pay_calendar import DerivedPeriod, calendar_for
 from app.services.scenario_resolver import require_baseline_scenario
@@ -121,11 +119,26 @@ def get_visible_transactions(
 ) -> CompanionPageRead:
     """Get transactions visible to a companion user for a pay period.
 
-    Queries the linked owner's transactions filtered to those marked
-    companion-visible: either generated from a template with
-    ``companion_visible=True``, or an ad-hoc (template_id IS NULL) row
-    whose own ``companion_visible`` flag is set.  Eager-loads entries
-    for progress computation.
+    Loads the linked owner's live rows for the period in the baseline
+    scenario and keeps those whose :attr:`Transaction.visible_to_companion`
+    answers True -- a template-generated row by its definition's flag, an
+    ad-hoc row by its own.  Eager-loads entries for progress computation.
+
+    **The visibility rule is asked of each row, never restated in SQL**
+    (plan step ``balance:X-bi-1b``, ruling **R-BAL19**, finding
+    **BAL-482**).  This query carried ``TransactionTemplate.companion_visible
+    OR (template_id IS NULL AND Transaction.companion_visible)`` -- the
+    property's resolution rule spelled a second time, in another language,
+    on the predicate that decides what a companion may see -- and it was the
+    one reader that kept the row's ``companion_visible`` cell a public
+    column when ``is_envelope`` was sealed at X-bi-1.  The clause is gone,
+    the cell is sealed, and a query keyed on either name refuses to build;
+    what a companion sees is decided in exactly one place, the same one
+    ``auth_helpers.get_accessible_transaction`` asks.  The cost is loading
+    the rows the filter drops: measured 2026-09-12 on a production restore,
+    the baseline scenario's 951 live rows across its 64 saved paychecks are
+    what the 64 companion pages load, 232 of them are shown, and the 719
+    dropped carry 5 purchase entries between them.
 
     Defense-in-depth: verifies the user is a companion with a valid
     ``linked_owner_id`` before querying.
@@ -200,25 +213,15 @@ def get_visible_transactions(
         if period is None:
             raise NotFoundError("Period not found.")
 
-    transactions = (
+    period_rows = (
         db.session.query(Transaction)
-        # OUTER join so ad-hoc (template_id IS NULL) rows survive the
-        # join -- an inner join would silently drop them.  The
-        # visibility predicate below accepts either a companion-visible
-        # template or an ad-hoc row whose own companion_visible flag is
-        # set.
-        .outerjoin(
-            TransactionTemplate,
-            Transaction.template_id == TransactionTemplate.id,
-        )
         # Eager-load both the entries (for progress / pct totals) and
-        # the template (for ``txn.template.name`` and
-        # ``txn.tracks_purchases`` accesses from the shared
+        # the template -- which the visibility filter below reads on every
+        # generated row, and which ``txn.template.name`` /
+        # ``txn.tracks_purchases`` read again from the shared
         # ``render_row_card`` macro and ``grid_view_service.build_row_keys``
-        # introduced in mobile-first v3 plan Commit 13).  Without the
-        # template eager-load the macro would lazy-load each
-        # transaction's template individually, producing one SELECT per
-        # visible card.
+        # (mobile-first v3 plan Commit 13).  Without it each generated row
+        # would lazy-load its template individually, one SELECT per row.
         .options(
             selectinload(Transaction.entries),
             selectinload(Transaction.template),
@@ -236,18 +239,18 @@ def get_visible_transactions(
             # the fix rather than a guard at the pricing door: the companion is
             # a read of the owner's plan, and the plan is one scenario.
             Transaction.scenario_id == require_baseline_scenario(owner_id).id,
-            or_(
-                TransactionTemplate.companion_visible.is_(True),
-                and_(
-                    Transaction.template_id.is_(None),
-                    Transaction.companion_visible.is_(True),
-                ),
-            ),
             Transaction.is_deleted.is_(False),
         )
-        .order_by(Transaction.name)
+        # By name, and by id within a name: the cards render in this order,
+        # and ``ORDER BY name`` alone left two rows of one definition in one
+        # period (a carried leftover beside its canonical) to the query plan,
+        # which the join's removal at X-bi-1b flipped on one production page.
+        .order_by(Transaction.name, Transaction.id)
         .all()
     )
+    # The ONE spelling of what a companion may see, asked of each row (plan
+    # step balance:X-bi-1b).  The order is the query's: a filter keeps it.
+    transactions = [txn for txn in period_rows if txn.visible_to_companion]
 
     # The two navigation searches, resolved HERE off the calendar this
     # function already derived rather than handed out for the route to search.

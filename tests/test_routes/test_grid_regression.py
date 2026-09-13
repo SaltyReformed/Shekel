@@ -37,13 +37,14 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.account import Account
 from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
 from app.models.ref import Status, TransactionType
 from app.services import cash_ledger
 
 from tests._test_helpers import (
     current_pay_period,
     derived_span,
+    generate_row_of,
+    make_expense_template,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -184,33 +185,14 @@ class TestPaydayWorkflowRegression:
 
             past_period = seed_periods_today[0]
 
-            # Create a template so one transaction is template-linked.
-            # Carry forward sets is_override=True on template-linked items
-            # because they moved from their rule-assigned period.
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                name="Rent Payment",
-                default_amount=Decimal("100.00"),
+            # Projected expense 1: a definition's own row (the engine's, plan
+            # step balance:X-cf-4).  Carry forward sets is_override=True on
+            # template-linked items because they moved from their
+            # rule-assigned period.
+            template = make_expense_template(
+                db.session, seed_user, amount="100.00", name="Rent Payment",
             )
-            db.session.add(template)
-            db.session.flush()
-
-            # Projected expense 1: template-linked.
-            txn_template = Transaction(
-                template_id=template.id,
-                user_id=past_period.user_id,
-                pay_period_id=past_period.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Rent Payment",
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-            )
+            txn_template = generate_row_of(template, past_period)
             # Projected expense 2: ad-hoc (no template).
             txn_adhoc = Transaction(
                 user_id=past_period.user_id,
@@ -235,7 +217,7 @@ class TestPaydayWorkflowRegression:
                 transaction_type_id=expense_type.id,
                 amount_ownership=AmountOwnership.own(Decimal("300.00")),
             )
-            db.session.add_all([txn_template, txn_adhoc, txn_done])
+            db.session.add_all([txn_adhoc, txn_done])
             db.session.commit()
 
             response = auth_client.post(

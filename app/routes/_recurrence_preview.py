@@ -10,10 +10,23 @@ this belongs inside the transaction-template CRUD module it used to live in.
 
 The preview reads request args and never writes: it RESOLVES the submitted
 recurrence through the same producer a save resolves through
-(:func:`app.services.recurrence.resolve`), so what the user is shown is what
-saving would produce.  Before plan step R2c-1 it built the rule by hand and
-derived the ``Every N Periods`` phase inline, which is exactly the kind of
-second copy of a derivation the seam exists to remove.
+(:func:`app.services.recurrence.resolve`, reached through the composed door
+:func:`app.services.recurring_definition.resolved_submission`), so what the
+user is shown is what saving would produce.  Before plan step R2c-1 it built
+the rule by hand and derived the ``Every N Periods`` phase inline, which is
+exactly the kind of second copy of a derivation the seam exists to remove.
+
+**It reads the DESTINATION too, since plan step R7d-f-2** (plan ledger row
+**REC-515**).  A transfer into a loan stops when the loan does, and that stop
+is derived rather than stored, so a preview that walked the submitted rule
+alone listed occurrences past the loan's payoff whenever fewer than five
+remained -- on the one surface whose contract is the sentence above.  The
+transfer form's ``to_account_id`` rides on the request, is resolved through
+the ownership gate (404 for a missing id and a foreign one alike, the house
+rule), and the walk is narrowed by the same door every other reader of a loan
+payment's schedule takes.  The transaction form has no destination control,
+sends none, and is narrowed by nothing -- which is the door's own answer for
+a definition that pays into no account.
 
 **It stopped building a transient ROW at plan step R-F6.**  It used to author
 the submission onto an unsaved ``RecurrenceRule`` and hand that to
@@ -29,12 +42,14 @@ Route-layer module rather than service because these read ``request`` and
 import logging
 from datetime import date
 
-from flask import request
+from flask import abort, request
 from flask_login import current_user
 from markupsafe import Markup
 
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
-from app.services.pay_calendar import DerivedPeriod, PayCalendar, calendar_for
+from app.models.account import Account
+from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import DerivedPeriod
 from app.services.recurrence import (
     NEVER_ENDS,
     EndBoundInputError,
@@ -45,8 +60,12 @@ from app.services.recurrence import (
     modelled_unit,
     occurrence_placements,
     placed_periods,
-    resolve,
 )
+from app.services.recurring_definition import (
+    UnsavedDefinition,
+    resolved_submission,
+)
+from app.utils.auth_helpers import get_or_404
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +261,7 @@ def _muted(text: str) -> str:
 
 def _submitted_preview(
     starts_on: date | None,
-) -> tuple[RecurrenceUnitEnum, PeriodPlacementEnum, date, PayCalendar] | str:
+) -> tuple[RecurrenceUnitEnum, PeriodPlacementEnum, date] | str:
     """Return the inputs a preview needs, or the line to show instead.
 
     Reading the request is a different job from walking the rule, and splitting
@@ -264,11 +283,14 @@ def _submitted_preview(
     row can carry) rather than being defaulted into a schedule the save would
     not produce.
 
-    The schedule is resolved BEFORE the rule: the authoring seam measures a
-    rule's first occurrence against it, so an empty schedule is refused rather
-    than anchored against nothing.  ONE calendar, from the same door the SAVE
-    goes through, which is what stops the preview from resolving against a
-    different schedule than the save would (plan step R4b-1).
+    **The schedule is not read here since plan step R7d-f-2.**  This used to
+    load the owner's calendar and refuse an empty one before the rule was
+    looked at; the door the preview now resolves through
+    (:func:`~app.services.recurring_definition.resolved_submission`) answers
+    ``None`` for exactly that state, so the caller reads the one producer's
+    answer rather than a second spelling of "has this owner any pay periods".
+    ONE calendar still -- the read pass's, the same one the SAVE resolves
+    against (plan step R4b-1's point, kept).
 
     Args:
         starts_on: The parsed ``starts_on`` argument, or ``None`` when it was
@@ -276,7 +298,7 @@ def _submitted_preview(
             caller states which argument it means.
 
     Returns:
-        ``(unit, placement, starts_on, calendar)`` when the request describes a
+        ``(unit, placement, starts_on)`` when the request describes a
         previewable rule, or the muted markup to render instead.
     """
     unit_id = request.args.get("recurrence_unit", type=int)
@@ -288,22 +310,52 @@ def _submitted_preview(
     )
     if unit is None or placement is None:
         return _muted("Unknown cadence")
-    calendar = calendar_for(current_user.id)
-    if not calendar.periods:
-        return _muted("No pay periods generated yet")
     # Since plan step R7c-b there is nothing to preview without a first
     # occurrence: a rule cannot be authored without stating when it first
     # happens, so an absent or unparseable value is a request the save could
     # not honour either.
     if starts_on is None:
         return _muted(NOTHING_TO_PREVIEW)
-    return unit, placement, starts_on, calendar
+    return unit, placement, starts_on
+
+
+def _submitted_destination() -> UnsavedDefinition:
+    """Return the destination the request names, owner-checked, or abort 404.
+
+    The transfer form's ``to_account_id`` control (plan step R7d-f-2, plan
+    ledger row **REC-515**): the one fact about a definition beyond its rule
+    that decides where its occurrences stop, because a transfer into a loan
+    stops when the loan does.
+
+    **An untrusted id becomes a row through the ownership gate and nowhere
+    else.**  A missing account and another owner's account are both answered
+    ``404`` (the house rule, and :func:`~app.utils.auth_helpers.get_or_404`
+    logs the cross-user probe); neither can come from the form, whose
+    ``<select>`` offers only the owner's own accounts, so both are hand-crafted
+    queries and the strict answer costs no real user anything.  An
+    unparseable value is ABSENT rather than refused, on the ground
+    :func:`_submitted_iso_date` states for the two dates: the control cannot
+    produce one, and the honest preview of "no readable destination" is the
+    un-narrowed rule.  An absent id is the transaction form's normal request,
+    and the door's own answer for a definition that pays into no account.
+
+    Returns:
+        The :class:`~app.services.recurring_definition.UnsavedDefinition`
+        the door composes the derived stop from.
+    """
+    account_id = request.args.get("to_account_id", type=int)
+    if account_id is None:
+        return UnsavedDefinition(to_account_id=None)
+    account = get_or_404(Account, account_id)
+    if account is None:
+        abort(404)
+    return UnsavedDefinition(to_account_id=account.id)
 
 
 def recurrence_preview_fragment() -> str:
     """Return the preview fragment for the recurrence the request describes.
 
-    The whole body of ``templates.preview_recurrence``, beside the three
+    The whole body of ``templates.preview_recurrence``, beside the
     helpers it composes rather than in the transaction-template CRUD module
     that merely routes to it.
 
@@ -355,16 +407,41 @@ def recurrence_preview_fragment() -> str:
     refused by it.
     :func:`_submitted_iso_date` handles it -- BOTH closing-bound dates, through
     one parser since plan step R7b-4 -- and the docstring there says why an
-    unparseable bound is dropped rather than refused.
+    unparseable bound is dropped rather than refused.  **The destination is
+    the other exception, and it is REFUSED**: ``to_account_id`` names a row,
+    so it goes through the ownership gate (:func:`_submitted_destination`)
+    before the door sees it.
 
     Returns:
         The fragment markup, or a muted one-line explanation when there is
         nothing to preview.
+
+    Raises:
+        BaselineMissingError: The destination is a configured loan and the
+            owner has no baseline scenario (ruling **R-R30**), from the seam's
+            own guard on the way to the derived stop.  The application-level
+            handler answers it -- and what the browser then shows is stated
+            rather than implied: ``recurrence_form.js`` fetches this fragment
+            with a plain ``fetch()`` and no ``HX-Request`` header, so
+            ``_recovery_response`` answers the FULL recovery page at ``200``
+            and the script swaps that page into the preview ``<div>``.  The
+            state is the broken invariant finding **F-10** names (registration
+            bootstraps a baseline and nothing deletes one), the owner's edit
+            form already rendered the recovery page one request earlier for
+            the loan's own payment, and a fragment-aware branch in the handler
+            is that handler's change, not this route's.  Every definition
+            with no loan behind it previews for such an owner.
     """
     requested = _submitted_preview(_submitted_iso_date("starts_on"))
     if isinstance(requested, str):
         return requested
-    unit, placement, starts_on, calendar = requested
+    unit, placement, starts_on = requested
+    destination = _submitted_destination()
+    # The READ PASS, built here because this is the route (the 2026-08-16
+    # ruling): the door resolves the rule against its calendar and folds the
+    # destination loan in its scenario, so the schedule the preview walks and
+    # the stop it is narrowed by are one pass's and cannot disagree.
+    ctx = BalanceContext.build(current_user.id)
 
     # ``effective_from`` is a DISPLAY choice -- "show me the next five from
     # here" -- and so the route's, not the rule's.  It follows the submitted
@@ -375,18 +452,22 @@ def recurrence_preview_fragment() -> str:
     effective_from = starts_on
 
     try:
-        resolved = resolve(
-            build_preview_spec(unit, placement, starts_on), calendar,
+        resolved = resolved_submission(
+            build_preview_spec(unit, placement, starts_on), destination, ctx,
         )
+        if resolved is None:
+            return _muted("No pay periods generated yet")
         # ``effective_from`` is this ROUTE's display choice, made above --
         # "show me the next five from here" -- never the rule's opening bound,
         # which is its anchor.  The retired ``match_periods`` adapter applied
         # the bound for its callers, which is how a caller's window came to
         # look like a property of the recurrence (defect D2); the PROJECTION is
         # still shared, so this surface and the generation seam cannot come to
-        # disagree about which periods a rule fires in.
+        # disagree about which periods a rule fires in.  The walk reads the
+        # COMPOSED closing off the resolved value, so a loan's derived stop
+        # narrows it without this surface gaining a parameter.
         matching = placed_periods(
-            occurrence_placements(resolved, calendar),
+            occurrence_placements(resolved, ctx.calendar()),
             ending_on_or_after=effective_from,
         )
     except (RecurrenceResolutionError, EndBoundInputError) as exc:

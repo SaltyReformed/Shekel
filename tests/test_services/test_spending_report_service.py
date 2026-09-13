@@ -66,6 +66,7 @@ from app.services.spending_report_service._window import (
     _spent_total,
 )
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     add_entry,
     create_envelope_txn,
     create_savings_account,
@@ -775,7 +776,7 @@ class TestTheChartReadsTheDerivedOrdinal:
         to NOBODY takes the same branch as one belonging to someone else.
         """
         with app.app_context():
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=10,

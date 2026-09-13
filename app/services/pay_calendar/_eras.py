@@ -32,7 +32,8 @@ this module takes is a PURE LEAF** -- ``app.exceptions``,
 :mod:`._derive` states and this module inherits.
 """
 
-from datetime import date, timedelta
+from collections.abc import Iterator
+from datetime import date
 
 from app.exceptions import ShekelError
 from app.services.pay_rhythm import Era, Rhythm
@@ -283,13 +284,15 @@ def era_index_at(eras: "tuple[Era, ...]", day: date) -> int:
 def step_after(anchor: date, rhythm: Rhythm, day: date) -> int:
     """Return the first grid step whose PAYDAY falls strictly after *day*.
 
-    The one loop behind two questions: :func:`~._searches.nominal_payday_after`
-    answers the grid day a writer continues from (the day the floor admits),
-    and :func:`last_step_of` answers where an era's paydays stop, which is
-    the step before the first one paid on or after the next era's first
-    payday.  Each asks about a DERIVED day -- a horizon, a seam -- never a
-    recorded one; a recorded payday is placed by :func:`matched_step`, whose
-    docstring says why the two rules differ.
+    The loop behind the seam: :func:`last_step_of` answers where an era's
+    paydays stop, which since ruling **R-PC75** is two steps before the
+    first one paid strictly after the next era's first payday.  *It had a
+    second caller from plan step ``C14-e-2`` to ``C17-c-2b`` --
+    ``nominal_payday_after``, the grid day the extend door continued a
+    rhythm from -- which went when that door began materialising the plan
+    (:func:`planned_paydays_after`).*  It asks about a DERIVED day -- a
+    seam -- never a recorded one; a recorded payday is placed by
+    :func:`matched_step`, whose docstring says why the two rules differ.
 
     **Three candidates are enough, and it is a theorem rather than a
     margin.**  The estimate satisfies ``nominal(estimate) <= day <
@@ -391,15 +394,55 @@ def matched_step(anchor: date, rhythm: Rhythm, payday: date) -> int:
 def last_step_of(eras: "tuple[Era, ...]", index: int) -> "int | None":
     """Return the last grid step era *index* PAYS, or ``None`` for the latest.
 
-    An era's paydays run up to the day before the next era's first payday
-    (:func:`first_payday_of`), so its last step is the one before the first
-    step paid on or after that day.  Measured in CASH days rather than
-    nominal ones, for :func:`era_index_at`'s reason: where two conventions
-    meet, a nominal bound can put one era's last paycheck on the same day as
-    the next era's first, and a day paid twice is a phantom paycheck.
+    **The seam between two eras is drawn where the door that minted the
+    later one drew it** (ruling **R-PC75**, plan step
+    ``pay_calendar:C17-c-2b``, revising **R-PC72**'s seam clause): the next
+    era's first payday (:func:`first_payday_of`) REPLACES this era's last
+    planned payday at or before it, so this era's last step is the one
+    before the last step paid on or before that day -- ``step_after(...) -
+    2``, where ``- 1`` would name the payday the seam replaces.  Measured in
+    CASH days rather than nominal ones, for :func:`era_index_at`'s reason:
+    where two conventions meet, a nominal bound can put one era's last
+    paycheck on the same day as the next era's first, and a day paid twice
+    is a phantom paycheck.
+
+    **Why REPLACES, and not "runs up to the day before"** (the rule this
+    function read until ``C17-c-2b``; ledger row **PC-509**).  The one door
+    that mints a later era, once this step's continue door has landed beside
+    this rule, is ``regenerate``: it keeps the record through
+    some payday ``P0``, retires the tail, and states a first payday ``F``
+    the writer bounds to ``[P1, P2)`` -- from the plan's next payday after
+    ``P0`` (the floor) up to, not including, the one after (the ceiling,
+    **R-PC67**).  It DELETED ``P1`` and recorded ``F``, so the schedule it
+    wrote runs ``P0``, then ``F``, and the old era's last paycheck is
+    ``[P0, F - 1]``.  Read literally, "up to the day before ``F``" put
+    ``P1`` back the moment a truncate exposed the seam: eras 14 days from
+    2030-01-03 and 7 from 02-22 with the record cut to 01-17 projected
+    01-31, **02-14**, 02-22, where the regenerate that minted the 7-day era
+    had written a 22-day 01-31 paycheck; and where ``F`` fell the day after
+    a planned payday it projected a ONE-day paycheck (19 days from 01-19,
+    10 from 02-08: 02-07..02-07).  Under this rule the projection
+    reproduces the regenerate's own record after any truncate, which is
+    what lets the continue door (``pay_period_write.continue_paydays``)
+    MATERIALISE it.  Rejected (the ruling's own list): matching ``F`` to
+    the NEAREST old planned payday, which re-invents ``P1`` whenever ``F``
+    falls in the second half of ``[P1, P2)``; and retiring eras on a
+    truncate, which deletes a stated fact.
+
+    **The old era's last step is therefore up to TWO below the arithmetic
+    estimate for a day inside its last paycheck**, where the literal rule
+    kept it within one: that paycheck runs from its last planned payday
+    ``payday(L)`` to ``F - 1``, and ``F < payday(L + 2) < nominal(L + 3)``
+    (a displacement is shorter than a cadence), so the estimate for a day in
+    it is at most ``L + 2``.  About two cadences long on the nominal grid
+    (two less a day), and a displacement at either end can stretch it past
+    that; :func:`~._projection.project_period_after` clamps its estimate to
+    this answer before probing the neighbours.
 
     Args:
-        eras: The owner's eras, validated.
+        eras: The owner's eras, validated -- which since ``C17-c-2b`` means
+            every non-latest era answers at least ``0`` here
+            (:func:`~._derive.validate_eras`).
         index: Which era.
 
     Returns:
@@ -409,8 +452,8 @@ def last_step_of(eras: "tuple[Era, ...]", index: int) -> "int | None":
     if index + 1 == len(eras):
         return None
     era = eras[index]
-    seam = first_payday_of(eras[index + 1]) - timedelta(days=1)
-    return step_after(era.effective_from, era.rhythm, seam) - 1
+    seam = first_payday_of(eras[index + 1])
+    return step_after(era.effective_from, era.rhythm, seam) - 2
 
 
 def matched_planned(
@@ -501,15 +544,62 @@ def horizon_step(
     return following_planned(eras, *matched_planned(eras, last_payday))
 
 
+def planned_paydays_after(
+    eras: "tuple[Era, ...]", last_payday: date,
+) -> "Iterator[date]":
+    """Yield the paydays the owner's eras PROJECT after *last_payday*, ascending.
+
+    **The plan past the record, stated once** (plan step
+    ``pay_calendar:C17-c-2a``).  It opens at :func:`horizon_step` and steps
+    with :func:`following_planned`, so the seam between two eras is read
+    here exactly as :func:`~._projection.project_period_after` reads it for
+    a projected period's end -- one recurrence, two readers.  Three callers
+    take a prefix of it: :func:`payday_after` the first day, which is where
+    the last saved paycheck closes and where ``pay_period_batch``'s floor
+    sits; ``pay_period_batch.reject_skipped_paycheck`` the second, which is
+    the day a batch's first payday must fall BEFORE (ruling **R-PC67**) --
+    over the eras the batch leaves standing, which are the stored ones
+    whenever it retires none; and ``pay_period_write.continue_paydays`` the
+    first *n*, since plan step ``C17-c-2b``, which is what makes the
+    continue path a prefix of the sequence both fences read.
+
+    The first day is strictly after *last_payday* by construction -- the
+    matched step's next payday is later than the record it follows, and a
+    next era's first payday is later than any day its predecessor covers --
+    so the period it closes can never end before it opens (ledger row
+    **PC-505**: the reversed period the recorded anchor admitted below the
+    collision floor is unrepresentable here).
+
+    LAZY and UNBOUNDED, so a caller takes the prefix it needs.  The two
+    fences read at most two days past a record that
+    ``app.schemas.validation.pay_periods.payday_field`` held inside the
+    application's calendar window; the continue door takes up to
+    ``PERIOD_BATCH_MAX`` days past it with no clamp at
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX`, exactly as the batch it
+    replaced ran the grid unbounded, and ``budget.pay_periods.start_date``
+    carries no range CHECK -- a stated gap, not a fence.
+
+    Args:
+        eras: The owner's eras, validated.
+        last_payday: The latest recorded payday.
+
+    Yields:
+        Each projected payday after the record, displaced under its era's
+        convention, ascending.
+    """
+    index, steps = horizon_step(eras, last_payday)
+    while True:
+        era = eras[index]
+        yield projected_payday(era.effective_from, era.rhythm, steps)
+        index, steps = following_planned(eras, index, steps)
+
+
 def payday_after(eras: "tuple[Era, ...]", last_payday: date) -> date:
     """Return the first payday the owner's eras PROJECT after *last_payday*.
 
-    :func:`horizon_step` as a day.  It is strictly after *last_payday* by
-    construction -- the matched step's next payday is later than the record
-    it follows, and a next era's first payday is later than any day its
-    predecessor covers -- so the period it closes can never end before it
-    opens (ledger row **PC-505**: the reversed period the recorded anchor
-    admitted below the collision floor is unrepresentable here).
+    The first of :func:`planned_paydays_after`, which carries the argument:
+    what :func:`~._derive.derive_periods` closes the last saved period
+    before, and ``pay_period_batch``'s floor.
 
     Args:
         eras: The owner's eras, validated.
@@ -518,9 +608,7 @@ def payday_after(eras: "tuple[Era, ...]", last_payday: date) -> date:
     Returns:
         The next projected payday, displaced under its era's convention.
     """
-    index, steps = horizon_step(eras, last_payday)
-    era = eras[index]
-    return projected_payday(era.effective_from, era.rhythm, steps)
+    return next(planned_paydays_after(eras, last_payday))
 
 
 def validate_cadence(cadence_days: int) -> None:

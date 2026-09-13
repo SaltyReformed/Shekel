@@ -223,8 +223,23 @@
                   {% else %}
                   <span class="text-muted">as of {{ row.balance.stated_on }}</span>
                   <br>
+                  {# THE SENTENCE ASSERTS NO CAUSE, because this table cannot
+                     know one (plan step bank_import:X-gr, finding BI-489,
+                     developer ruling 2026-09-12).  Two states reach this
+                     branch: a figure no day of the file reconciled with what
+                     was recorded before it, and a placement the app itself
+                     RELEASED -- a later import recording a line at or before
+                     its day, or a delete removing the lines it rested on
+                     (release_anchors_from) -- which writes NULL and keeps
+                     nothing saying it was once placed.  It read "This file's
+                     lines stop at {period_end}, so they cannot reach the day
+                     it states this figure for", the never-placed case's
+                     date-range cause, and so blamed the file for a state the
+                     app produced.  balance:X-bj-1's level relation records a
+                     release as an appended superseding row; the badge names
+                     the cause once it can read one. #}
                   <span class="badge text-bg-warning"
-                        title="This file's lines stop at {{ row.period_end }}, so they cannot reach the day it states this figure for. Nothing here could place it.">not placed</span>
+                        title="No day holds this figure. Either no day this file covers reconciled it with what was already recorded before the file's first day, or a later import or a delete changed the lines it had been placed on and released the placement. A later import can place a balance again.">not placed</span>
                   {% endif %}
                   {% else %}
                   <span class="text-muted">no balance stated</span>
@@ -247,7 +262,16 @@
                    A BLOCKED delete says so INSTEAD of naming a destruction:
                    one refusing release takes the whole delete down, so the
                    figure would be attached to a press that changes nothing --
-                   which is what a first version of this line did. #}
+                   which is what a first version of this line did.
+                   THE PLACEMENTS RELEASED AND THE MERCHANTS FORGOTTEN are on
+                   the confirmation since plan step bank_import:X-gr (finding
+                   BI-490, developer ruling 2026-09-11): the receipt reported
+                   both and the confirmation neither, so the owner learned that
+                   the account's checked balance went only after pressing.
+                   Both come from the ONE read the act counts with
+                   (ImportRemovalPreview.anchors / .merchants), which is what
+                   stops a confirmation counting differently from the act it
+                   confirms. #}
                 <td class="text-end">
                   {% if row.removes.blocked %}
                   <div class="small text-warning-emphasis mb-1">
@@ -262,7 +286,7 @@
                   {% endif %}
                   <form method="post" class="d-inline"
                         action="{{ url_for('accounts.delete_statement_import', account_id=account.id) }}"
-                        data-confirm="{% if row.removes.blocked %}This delete is REFUSED right now and will change nothing: {{ row.removes.blocked }}{% else %}Delete the import of &quot;{{ row.file_name }}&quot;? This removes {{ row.recorded_count }} bank line(s) the app has on record{% if row.matches_affected %}, and undoes {{ row.matches_affected }} accepted match(es) so their rows can be matched again{% endif %}{% if row.removes.rows %}. It also DESTROYS {{ row.removes.rows }} row(s) created from those lines, worth {{ money(row.removes.cash) }} of money the app currently records{% endif %}{% if row.removes.skips %}. It also forgets {{ row.removes.skips }} line(s) you had SKIPPED, so re-importing this span will ask about those again{% endif %}. Settle dates a match already corrected are NOT changed. To get the lines back you would import the file again.{% endif %}">
+                        data-confirm="{% if row.removes.blocked %}This delete is REFUSED right now and will change nothing: {{ row.removes.blocked }}{% else %}Delete the import of &quot;{{ row.file_name }}&quot;? This removes {{ row.recorded_count }} bank line(s) the app has on record{% if row.matches_affected %}, and undoes {{ row.matches_affected }} accepted match(es) so their rows can be matched again{% endif %}{% if row.removes.rows %}. It also DESTROYS {{ row.removes.rows }} row(s) created from those lines, worth {{ money(row.removes.cash) }} of money the app currently records{% endif %}{% if row.removes.skips %}. It also forgets {{ row.removes.skips }} line(s) you had SKIPPED, so re-importing this span will ask about those again{% endif %}{% if row.removes.anchors %}. It also RELEASES the checked balance {{ row.removes.anchors }} other import(s) had placed on these lines, so the account holds no checked balance from them until a later import places one{% endif %}{% if row.removes.merchants %}. It also forgets {{ row.removes.merchants }} merchant(s) nothing else names and you have stated no rule for{% endif %}. Settle dates a match already corrected are NOT changed. To get the lines back you would import the file again.{% endif %}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="import_id" value="{{ row.import_id }}">
                     <button type="submit" class="btn btn-sm btn-outline-danger"
@@ -277,11 +301,17 @@
             </tbody>
           </table>
         </div>
+        {# IT SAID "not what the app decided" until plan step bank_import:X-gr
+           (finding BI-487), and that was false since ruling R-GG: a row the
+           review CREATED from one of these lines goes with the line, which
+           the confirmation two lines up already says.  The page may not
+           contradict its own confirmation. #}
         <p class="text-muted small mb-0 mt-2">
-          Deleting an import removes what the <em>bank</em> said, not what the
-          app decided. Settle dates an accepted match corrected stay as they
-          are -- the bank is still the best evidence of when that money moved.
-          Re-importing the file puts the lines back.
+          Deleting an import removes what the <em>bank</em> said, and with it
+          any row the review created <em>from</em> those lines; the
+          confirmation names them. Settle dates an accepted match corrected
+          stay as they are -- the bank is still the best evidence of when that
+          money moved. Re-importing the file puts the lines back.
         </p>
         {% endif %}
       </div>
