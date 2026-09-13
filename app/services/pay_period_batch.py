@@ -227,12 +227,12 @@ def requested_paydays(
     than the cadence alone.
 
     **``first_payday`` is READ as a point on the nominal grid, and since plan
-    step ``C17-c-2a`` every form door ASKS for one.**  The extend door hands
-    a grid day by construction (``pay_calendar.nominal_payday_after``), and
-    :class:`~app.services.pay_period_write._PaydayChange` stores whatever
-    arrives as the phase, so the day this spaces from and the day the next
-    extend continues from are one value.  What no door could establish is
-    that the day the OWNER typed is on payroll's grid.  *An adversarial
+    step ``C17-c-2a`` every form door ASKS for one.**  The continue path
+    (extend, the rolling top-up) states no first payday at all since plan
+    step ``C17-c-2b``: ``pay_period_write.continue_paydays`` records the
+    plan's own next paydays, so this function is asked only of a STATED
+    batch.  What no door could establish is that the day the OWNER typed is
+    on payroll's grid.  *An adversarial
     review of ``C14-e-3`` struck a sentence resting that on the typed day
     being a business day and so its own displacement: being a fixed point of
     the displacement does not make a day a grid point.*  Worked: an owner
@@ -455,23 +455,19 @@ def reject_skipped_paycheck(
     state the tree's own predicate reserves for "a row no application door
     can write".
 
-    **One continue-path state meets this refusal until plan step
-    ``C17-c-2b`` lands, and it is stated rather than absorbed** (this step's
-    adversarial review).  ``pay_period_admin.extend_pay_periods`` still
-    restates the LATEST era from the horizon (ledger row **PC-509**): for an
-    owner truncated below a later era whose cadence is LONGER than the kept
-    one's, its batch skips a paycheck of the kept rhythm -- a weekly era
-    from 01-02, a 30-day era at 01-30, the record cut to 01-16: the top-up
-    offered 01-30 at 30 days, skipping the weekly 01-23.  That batch wrote
-    P80's hole silently before this step; it is refused now, and the rolling
-    top-up reaches it from ``/grid`` and ``/dashboard`` with no
-    ``ValidationError`` handler, so that owner meets a 500 there on every
-    render until a regenerate from inside the window.  Not in production's
-    data (one era), but two posts away for any owner -- a regenerate to a
-    longer cadence, then a truncate below its first payday -- which is why
-    ``C17-c-2b`` is ranked next and the two deploy together: it materialises
-    the plan's own paydays (01-23, then 01-30), so the continue path cannot
-    skip.
+    **The continue path cannot reach it, since plan step ``C17-c-2b``.**
+    Between ``C17-c-2a`` and that step one continue-path state did, and it
+    was stated rather than absorbed (``C17-c-2a``'s adversarial review):
+    ``pay_period_admin.extend_pay_periods`` restated the LATEST era from the
+    horizon (ledger row **PC-509**), so for an owner truncated below a later
+    era whose cadence was LONGER than the kept one's -- a weekly era from
+    01-02, a 30-day era at 01-30, the record cut to 01-16 -- the top-up
+    offered 01-30 at 30 days, skipping the weekly 01-23, and met this
+    refusal from ``/grid`` with no handler.  ``C17-c-2b`` made the door
+    record the plan's own paydays (01-23, then 01-30) through
+    ``pay_period_write.continue_paydays``, a prefix of the sequence this
+    function reads, so it is neither asked of that batch nor able to fire on
+    it; the two steps deployed together.
 
     **It replaced ``pay_period_gates.reject_unconfirmed_gap``,
     ``PayPeriodGapRequired``, ``confirm_gap`` and the settings banner**,

@@ -1379,6 +1379,17 @@ class TestTheDerivedHorizonFollowsTheStoredCadence:
         the cadence projection, 2026-01-29.  An on-cadence fixture cannot see
         this at all, because ``lead(start) - 1`` and ``start + cadence - 1``
         coincide there.
+
+        **The off-grid successor is a DIRECT row since plan step
+        ``C17-c-2b``**, the shape the tree reserves for a row no door writes
+        (ruling **R-PC47**: payroll moved a payday for a reason the
+        convention does not model).  It was recorded through the writer,
+        which since ``C17-a`` mints a phase-corrected ERA at 02-11 -- and
+        under the seam rule **R-PC75** an era outlives the truncate and its
+        first payday replaces the old era's 01-30, so the survivor's
+        projected end would be 02-10 either way and the case would grade
+        nothing.  Off the plan and with one era, the fact (02-10) and the
+        projection (01-29) still part, which is this case's subject.
         """
         with app.app_context():
             user_id = bare_user["user"].id
@@ -1386,10 +1397,7 @@ class TestTheDerivedHorizonFollowsTheStoredCadence:
                 user_id=user_id, first_payday=date(2026, 1, 2),
                 num_periods=2, rhythm=rhythm_of(14),
             )
-            pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 2, 11),
-                num_periods=1, rhythm=rhythm_of(14),
-            )
+            db.session.add(PayPeriod(user_id=user_id, start_date=date(2026, 2, 11)))
             db.session.commit()
             assert _paydays(user_id)[1] == (
                 date(2026, 1, 16), date(2026, 2, 10), 1,

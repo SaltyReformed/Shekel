@@ -99,7 +99,9 @@ def _holds_paydays(user_id: int) -> bool:
 
     **A DIVERGENCE worth naming rather than leaving implicit**: the same
     question has three homes -- the template's ``pp_periods``, this, and
-    ``extend_pay_periods``' own ``not saved`` refusal.  *Until plan step
+    the continue door's own empty-record refusal
+    (``pay_period_write.continue_paydays``; ``extend_pay_periods``' ``not
+    saved`` until plan step ``C17-c-2b``).  *Until plan step
     ``C17-a`` the extend door asked a second half too, ``nominal_anchor is
     None``, which this did not; that column is gone and the two doors ask one
     question again.*  The rule-14 remedy is still for the service to expose
@@ -193,7 +195,8 @@ def generate():
     # **THE DOOR ASKS ONE JOB'S QUESTIONS, NOT TWO** (plan step
     # ``pay_calendar:C14-f``, ruling **R-PC63**).  An owner who already holds a
     # rhythm is asked only HOW MANY MORE paychecks, and the days come from
-    # ``nominal_payday_after`` by way of the shared continue path -- so
+    # the owner's own plan (``pay_period_write.continue_paydays``, since
+    # plan step ``C17-c-2b``) by way of the shared continue path -- so
     # ``start_date``, ``cadence_days`` and ``shift`` are not consulted for them.
     #
     # **P80's write is unrepresentable THROUGH THIS DOOR** (this step) **and
