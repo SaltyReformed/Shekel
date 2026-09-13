@@ -148,7 +148,7 @@ class TestTheExtendAnchorIsTheNOMINALGrid:
         builds and deleted that function with its duplicate query.*
         The recorded row is 2030-11-14 under every convention, because that day
         is an ordinary Thursday and so is its own displacement -- which is what
-        keeps this one fixture now that ``_requested_paydays`` DISPLACES what
+        keeps this one fixture now that ``requested_paydays`` DISPLACES what
         it records (``C14-e-3``).
         """
         pay_period_write.record_paydays(
@@ -289,7 +289,7 @@ class TestTheExtendAnchorIsTheNOMINALGrid:
         refusal, and said in its own docstring that what would make it fail is
         ``C14-e`` landing without the writer's half.
 
-        **The remedy it named is what shipped**: ``_requested_paydays`` runs
+        **The remedy it named is what shipped**: ``requested_paydays`` runs
         the progression on the grid and records each element DISPLACED, which
         lands 2030-11-29 -- exactly the floor -- and is accepted.  So this
         asserts the ACCEPTANCE and the three recorded days, and the ``$0.00``
@@ -512,7 +512,7 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
 
         Asked against the last recorded PAYDAY the door answers 2030-01-18,
         which falls inside the paycheck the owner still holds and which
-        ``_reject_backward_payday`` refuses -- permanently, and on a read path
+        ``reject_backward_payday`` refuses -- permanently, and on a read path
         with no handler, because ``top_up_rolling_window`` reaches this door
         from ``/grid`` and ``/dashboard``.  Asked against the paycheck's END,
         which is the floor's own subject, it answers a day past the floor and

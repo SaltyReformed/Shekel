@@ -505,7 +505,7 @@ class TestTheCadenceThreadedIsTheOWNERSStoredOne:
         # step ``pay_calendar:C17-a``, ruling **R-PC58**): a 3-day grid
         # phased on the 14-day batch's opening would run 07-30, 08-02, and
         # 08-02 falls INSIDE the paycheck opened by the recorded 07-31, which
-        # ``_reject_backward_payday`` refuses.  So the era takes effect on the
+        # ``reject_backward_payday`` refuses.  So the era takes effect on the
         # last recorded payday -- what ``record_paydays`` would have minted
         # for a batch stated at the new cadence from there -- which is the
         # phase the extend continues.  The old row held the cadence and the
