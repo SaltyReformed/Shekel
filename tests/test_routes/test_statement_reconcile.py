@@ -1294,22 +1294,29 @@ class TestTheReceiptOffersOneStandingRulePerMerchant:
 class TestTheROUTEHandsTheOfferWhatTheDoorAPPLIED:
     """The SEAM, graded where the two derivations differ.
 
-    ``rules_worth_offering`` takes ``applied_line_ids`` as a PARAMETER, so a
-    service test can only grade what a caller passes -- and an adversarial
-    review proved the gap by hand: replacing the route's
+    ``rules_worth_offering`` takes the APPLIED items as a PARAMETER (the
+    id set ``applied_line_ids`` until plan step ``bank_import:X-gx``, the
+    items themselves since), so a service test can only grade what a caller
+    passes -- and an adversarial review proved the gap by hand: replacing the
+    route's
 
         frozenset(l for item in outcome.applied for l in item.line_ids)
 
     with the pre-ruling ``frozenset(item["line_id"] for item in creations)``
     left **11,969 tests green**, shipping the exact regression ruling
-    **bank_import:R-IB** exists to make unconstructible.
+    **bank_import:R-IB** exists to make unconstructible.  The route hands
+    ``outcome.applied`` now, and the equivalent regression is an item built
+    from the submission rather than from the door.
 
     **Choosing the refusal is the whole difficulty**, because
-    ``rules_worth_offering`` has three ways to drop a line and only one of
-    them is the seam. A destination the pass does not offer is dropped by its
-    own arm; a line that is not ``creatable`` (a deposit) is dropped by
-    another; an answer the rule door would refuse is dropped by a third. The
-    refusal used here trips none of them: a line past the saved pay calendar
+    ``rules_worth_offering`` has more than one way to drop a line and only
+    one of them is the seam. A destination the pass does not offer is dropped
+    by its own arm, and since plan step ``bank_import:X-gx`` a line no applied
+    item names a merchant for -- not applied, or merchant-less -- is dropped
+    by the other (a line that was not ``creatable`` had an arm of its own
+    until then; an answer the rule door would refuse is not dropped but
+    carried as ``blocked``). The refusal used here trips none of them: a line
+    past the saved pay calendar
     IS creatable, is filed to a NEW envelope under an ACTIVE category -- an
     answer the rule door takes -- and the create door refuses it by name at
     ``scope.period_holding``. So the only thing that can keep it out of the

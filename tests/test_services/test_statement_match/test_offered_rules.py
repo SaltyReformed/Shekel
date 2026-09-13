@@ -11,21 +11,45 @@ door would refuse and asserting no offer came back -- and it passed with the
 narrowing DELETED, because the stale destination it used was dropped by a
 different arm of the same function (*a destination the scope does not offer is
 skipped*).  Two arms, one observable outcome, and the case could not tell which
-had fired.  ``applied_line_ids`` is a parameter, so a test can state it.
+had fired.  ``applied`` is a parameter, so a test can state it -- and since
+plan step ``bank_import:X-gx`` it is stated by running the REAL door
+(:func:`_filed`), because the items carry the merchant the door filed for and
+an item a test wrote for itself would agree with the offer by construction.
+
+**Since that step the offer reads the MERCHANT off the receipt too** (finding
+**BI-495**): it read each line's merchant off the page's pre-lock derivation
+until then, so a re-import naming a merchant between the derivation and the
+press -- plan step ``bank_import:X-gv``'s window -- was filed under by the door
+and asked about by nobody.  :class:`TestTheOfferNamesTheMerchantTheDoorFiledFor`
+reproduces that on the tree before the step.
 """
 
+from datetime import timedelta
+
+from sqlalchemy import text
+
 from app.models.category import Category
+from app.services import statement_match
 from app.services.statement_match import (
+    Consent,
+    NewEnvelope,
+    PurchaseCreation,
+    ReviewedBatch,
     RuleAnswer,
     RuleDoorAccepts,
     review_set,
     rules_worth_offering,
 )
+from app.services.statement_match._outcome import FiledMerchant
 from app.services.statement_match._rules import offerable_templates
 from tests.test_services.test_statement_match._builders import (
+    a_bank_line,
+    a_merchant,
     a_scope,
     an_envelope,
+    an_import,
     an_unexplained_outflow,
+    filed_by,
     the_merchant_id,
 )
 
@@ -45,6 +69,52 @@ def _two_swipes(seed_user, db, merchant="Lowe's"):
     )
     db.session.commit()
     return envelope, first, second
+
+
+def _filed(scope, *creations):
+    """Run the REAL create door over *creations* and return the receipt's items.
+
+    **Through ``apply_reviewed`` and never by constructing an ``AppliedItem``**,
+    for the reason :func:`_accepts` states about the door's set: an item a test
+    wrote for itself carries the merchant the test chose, and the offer would
+    agree with it by construction.  The door reads the merchant off the line
+    it holds locked, which is the fact these cases grade.
+
+    Args:
+        scope: The pass to apply against.
+        *creations: :class:`PurchaseCreation` values -- the same acts
+            :func:`_creations` states to the offer in the schema's shape, since
+            the route hands the offer both.
+
+    Returns:
+        :attr:`~app.services.statement_match._outcome.BatchOutcome.applied`.
+    """
+    return statement_match.apply_reviewed(
+        ReviewedBatch(
+            consent=Consent.TICKED, matches=(), incomes=(), skips=(),
+            creations=creations,
+        ),
+        scope,
+    ).applied
+
+
+def _into(envelope, *lines):
+    """Return the :class:`PurchaseCreation` filing each of *lines* into *envelope*."""
+    return tuple(
+        PurchaseCreation(line_id=line.id, transaction_id=envelope.id)
+        for line in lines
+    )
+
+
+def _minting(name, category_id, *lines):
+    """Return the :class:`PurchaseCreation` filing each line into a NEW envelope."""
+    return tuple(
+        PurchaseCreation(
+            line_id=line.id,
+            new_envelope=NewEnvelope(name=name, category_id=category_id),
+        )
+        for line in lines
+    )
 
 
 def _accepts(db, seed_user):
@@ -94,17 +164,24 @@ class TestTheOfferIsWhatTheDoorAPPLIEDAndNotWhatWasOKd:
     def test_a_line_the_door_REFUSED_earns_no_offer(
         self, app, db, seed_user,
     ):
-        """One OK'd, one refused: only the one that landed is offered."""
-        envelope, first, second = _two_swipes(seed_user, db)
-        scope = a_scope(seed_user)
-        review = review_set(scope)
+        """One OK'd, one refused: only the one that landed is offered.
 
+        The second line is already explained by a match, so the create door
+        refuses it by name (``load_lines``) inside its own savepoint -- a
+        REAL refusal, with a destination the offer set holds, so the only
+        thing keeping it out of the offer is that the door did not apply it.
+        """
+        envelope, first, second = _two_swipes(seed_user, db)
+        garden = an_envelope(seed_user, name="Garden")
+        db.session.commit()
+        filed_by(seed_user, second, garden, by_rule=False)
+        db.session.commit()
+        scope = a_scope(seed_user)
+
+        applied = _filed(scope, *_into(envelope, first, second))
+        assert [item.line_ids for item in applied] == [(first.id,)]
         offers = rules_worth_offering(
-            _creations(envelope, first, second),
-            # What the outcome reported: the second item was refused.
-            frozenset({first.id}),
-            review,
-            scope,
+            _creations(envelope, first, second), applied, scope,
             _accepts(db, seed_user),
         )
 
@@ -116,15 +193,19 @@ class TestTheOfferIsWhatTheDoorAPPLIEDAndNotWhatWasOKd:
     def test_a_pass_that_applied_NOTHING_offers_NOTHING(
         self, app, db, seed_user,
     ):
-        """The whole-pass shape of the same rule."""
+        """The whole-pass shape of the same rule: both refused, no offer."""
         envelope, first, second = _two_swipes(seed_user, db)
+        garden = an_envelope(seed_user, name="Garden")
+        db.session.commit()
+        filed_by(seed_user, first, garden, by_rule=False)
+        filed_by(seed_user, second, garden, by_rule=False)
+        db.session.commit()
         scope = a_scope(seed_user)
 
+        applied = _filed(scope, *_into(envelope, first, second))
+        assert applied == ()
         offers = rules_worth_offering(
-            _creations(envelope, first, second),
-            frozenset(),
-            review_set(scope),
-            scope,
+            _creations(envelope, first, second), applied, scope,
             _accepts(db, seed_user),
         )
 
@@ -153,8 +234,7 @@ class TestOneMerchantIsAskedAboutOnce:
 
         offers = rules_worth_offering(
             _creations(envelope, first, second),
-            frozenset({first.id, second.id}),
-            review_set(scope),
+            _filed(scope, *_into(envelope, first, second)),
             scope,
             _accepts(db, seed_user),
         )
@@ -187,8 +267,7 @@ class TestOneMerchantIsAskedAboutOnce:
 
         offers = rules_worth_offering(
             _creations(first_envelope, first) + _creations(other, second),
-            frozenset({first.id, second.id}),
-            review_set(scope),
+            _filed(scope, *_into(first_envelope, first), *_into(other, second)),
             scope,
             _accepts(db, seed_user),
         )
@@ -224,8 +303,7 @@ class TestTheOfferNamesTheDestinationTheWayARuleMEANSIt:
 
         offers = rules_worth_offering(
             _creations(envelope, first, second),
-            frozenset({first.id, second.id}),
-            review_set(scope),
+            _filed(scope, *_into(envelope, first, second)),
             scope,
             _accepts(db, seed_user),
         )
@@ -260,8 +338,7 @@ class TestAnAnswerTheRuleDoorWouldREFUSEIsNotOffered:
 
         offers = rules_worth_offering(
             _creations(envelope, first, second),
-            frozenset({first.id, second.id}),
-            review_set(scope),
+            _filed(scope, *_into(envelope, first, second)),
             scope,
             # The door's set, minus the very template this pass filed into.
             RuleDoorAccepts(
@@ -292,8 +369,7 @@ class TestAnAnswerTheRuleDoorWouldREFUSEIsNotOffered:
                 "line_id": first.id, "destination": "new",
                 "envelope_name": "Decking", "category_id": category_id,
             }],
-            frozenset({first.id}),
-            review_set(scope),
+            _filed(scope, *_minting("Decking", category_id, first)),
             scope,
             RuleDoorAccepts(
                 template_ids=accepts.template_ids,
@@ -318,8 +394,7 @@ class TestAnAnswerTheRuleDoorWouldREFUSEIsNotOffered:
 
         offers = rules_worth_offering(
             _creations(envelope, first),
-            frozenset({first.id}),
-            review_set(scope),
+            _filed(scope, *_into(envelope, first)),
             scope,
             _accepts(db, seed_user),
         )
@@ -343,21 +418,25 @@ class TestWhatTheWireCannotCarryIsNAMEDAndNotDropped:
         """The narrow case, stated so the counts still add up."""
         _, first, second = _two_swipes(seed_user, db)
         scope = a_scope(seed_user)
+        category_id = seed_user["categories"]["Groceries"].id
         creations = [
             {
                 "line_id": first.id, "destination": "new",
-                "envelope_name": "Decking", "category_id": 1,
+                "envelope_name": "Decking", "category_id": category_id,
             },
             {
                 "line_id": second.id, "destination": "new",
-                "envelope_name": "Fencing", "category_id": 1,
+                "envelope_name": "Fencing", "category_id": category_id,
             },
         ]
 
         offers = rules_worth_offering(
             creations,
-            frozenset({first.id, second.id}),
-            review_set(scope),
+            _filed(
+                scope,
+                *_minting("Decking", category_id, first),
+                *_minting("Fencing", category_id, second),
+            ),
             scope,
             _accepts(db, seed_user),
         )
@@ -368,3 +447,93 @@ class TestWhatTheWireCannotCarryIsNAMEDAndNotDropped:
         assert offer.offerable[0].statement.envelope_name == "Decking"
         assert len(offer.unofferable) == 1
         assert offer.unofferable[0].statement.envelope_name == "Fencing"
+
+
+class TestTheOfferNamesTheMerchantTheDoorFiledFor:
+    """Finding **BI-495**, plan step ``bank_import:X-gx``.
+
+    The press runs the page's derivation (``review_set``) and then the door
+    in one transaction, and the door reads its line under a row lock that
+    hands back the row as it stands (plan step ``bank_import:X-gv``).  The
+    offer read each line's merchant off that DERIVATION until this step, so a
+    re-import naming the merchant between the two -- the 10-column export
+    first, the one with the merchant column second -- was the merchant the
+    door filed under and not the one the offer asked about: the door applied
+    the creation and the receipt offered nothing.  **Reproduced on the tree
+    before this step**: ``applied_count == 1`` and ``offers == ()``.
+    """
+
+    def test_a_merchant_filled_after_derivation_is_the_one_offered(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: derive the merchant from ``review`` and this reads ``()``."""
+        with app.app_context():
+            envelope = an_envelope(seed_user)
+            line = a_bank_line(
+                seed_user, an_import(seed_user), amount="-57.96",
+                posted_on=seed_user["bootstrap_period"].start_date + timedelta(days=5),
+                description="POINT OF SALE DEBIT L340 THING",
+            )
+            amazon = a_merchant(seed_user, "Amazon")
+            db.session.commit()
+            scope = a_scope(seed_user)
+            review = review_set(scope)
+            # What the screen showed: the line, with no merchant to answer for.
+            assert {each.line_id: each.merchant_id for each in review.unmatched} == {
+                line.id: None,
+            }
+            # The re-import's NULL-fill, landing from a second connection
+            # between the derivation and the press.
+            with db.engine.connect() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE budget.bank_statement_lines "
+                        "SET merchant_id = :merchant WHERE id = :id"
+                    ),
+                    {"merchant": amazon.id, "id": line.id},
+                )
+                connection.commit()
+
+            applied = _filed(scope, *_into(envelope, line))
+            offers = rules_worth_offering(
+                _creations(envelope, line), applied, scope,
+                _accepts(db, seed_user),
+            )
+
+            assert [item.merchant for item in applied] == [
+                FiledMerchant(merchant_id=amazon.id, name="Amazon"),
+            ]
+            assert [(offer.merchant_id, offer.merchant) for offer in offers] == [
+                (amazon.id, "Amazon"),
+            ]
+            assert offers[0].filed_count == 1
+            db.session.rollback()
+
+    def test_a_line_naming_no_merchant_earns_no_offer_and_its_item_says_so(
+        self, app, db, seed_user,
+    ):
+        """There is nobody to answer for, and the receipt item carries ``None``.
+
+        The control for the filter: an offer built over every applied item
+        would ask about a merchant that does not exist.
+        """
+        with app.app_context():
+            envelope = an_envelope(seed_user)
+            line = a_bank_line(
+                seed_user, an_import(seed_user), amount="-57.96",
+                posted_on=seed_user["bootstrap_period"].start_date + timedelta(days=5),
+                description="POINT OF SALE DEBIT L340 THING",
+            )
+            db.session.commit()
+            scope = a_scope(seed_user)
+
+            applied = _filed(scope, *_into(envelope, line))
+            offers = rules_worth_offering(
+                _creations(envelope, line), applied, scope,
+                _accepts(db, seed_user),
+            )
+
+            assert [item.line_ids for item in applied] == [(line.id,)]
+            assert applied[0].merchant is None
+            assert offers == ()
+            db.session.rollback()
