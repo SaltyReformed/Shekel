@@ -309,7 +309,8 @@ def contributions_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
     asks both against ONE -- which is how a single request stopped running the
     paycheck engine once per row set (findings **N-268**, **N-269**).  A caller with a
     read pass passes ``ctx.amounts()``; one without builds its own with
-    :func:`~._amount_source.amount_basis`.
+    :func:`~._amount_basis.derived_amount_basis`, the interim that goes site
+    by site as each producer takes its pass.
 
     That ordering is the point rather than an optimisation: an excluded row is
     worth ``$0.00`` and its derived amount has no producer to answer it, so a

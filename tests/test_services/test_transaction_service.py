@@ -40,8 +40,8 @@ from app.services import posting_service, status_seam, transaction_service
 from app.services.transaction_service import _settle
 from app.services.row_valuation import settled_contribution, settled_figure
 from app.services.cash_ledger import (
-    amount_basis,
     amounts_by_id,
+    derived_amount_basis,
     resolve_transaction_amount,
 )
 from tests._test_helpers import (
@@ -947,7 +947,7 @@ class TestASettleBooksTheFreshestFigure:
             # this and nothing grading it -- ``estimated_amount is None`` says
             # the column is empty, not that the derivation still answers.
             assert amounts_by_id(
-                [txn], amount_basis(txn.account.user_id, txn.scenario_id),
+                [txn], derived_amount_basis(txn.account.user_id, txn.scenario_id),
             )[txn.id] == Decimal("4000.00")
 
     def test_an_overridden_row_is_not_re_derived(
@@ -1122,7 +1122,7 @@ class TestASettleBooksTheFreshestFigure:
             with pytest.raises(ValidationError) as exc:
                 transaction_service.settle_amount(
                     txn,
-                    amount_basis(
+                    derived_amount_basis(
                         seed_user["user"].id, seed_user["scenario"].id,
                     ),
                 )

@@ -112,10 +112,14 @@ _CALENDAR_WIDE_KEYWORD = "configs_by_year"
 #: The ONE module allowed to spell it, relative to the repo root.
 _THE_LEAF = "app/services/income_service.py"
 
-#: Where the engine itself defines the function.  Its ``def`` is not a call,
-#: so it never enters the census -- named here so a reader is not left
-#: wondering whether the scanner is simply blind to it.
-_THE_ENGINE = "app/services/paycheck_calculator.py"
+#: Where the engine itself defines the function: the PACKAGE since plan step
+#: salary:C12 split the one module into leaves (ledger row P64).  Its ``def``
+#: is not a call, so it never enters the first census -- named here so a
+#: reader is not left wondering whether the scanner is simply blind to it --
+#: and the whole package is excluded from the second, because ``_pricing
+#: .project_salary`` calls ``calculate_paycheck`` in the loop that IS the
+#: batch entry (see :func:`_per_period_census`).
+_THE_ENGINE = "app/services/paycheck_calculator"
 
 
 def _repo_root() -> Path:
@@ -211,18 +215,21 @@ def test_the_calendar_wide_projection_is_spelled_once():
 
 
 def test_the_engine_module_defines_it_without_calling_it():
-    """The engine's own module is not a hidden member of the census.
+    """The engine's own package is not a hidden member of the census.
 
-    ``project_salary`` is DEFINED in ``paycheck_calculator``; a ``def`` is not
-    an ``ast.Call``, so the module contributes nothing above.  Stated as a test
-    rather than a comment because "the scanner does not see the engine" and
-    "the engine does not call it" look identical from the census alone.
+    ``project_salary`` is DEFINED in ``paycheck_calculator._pricing``; a
+    ``def`` is not an ``ast.Call``, so no leaf of the package contributes
+    anything above.  Stated as a test rather than a comment because "the
+    scanner does not see the engine" and "the engine does not call it" look
+    identical from the census alone.  Every leaf is read, and the package is
+    asserted to HAVE leaves, so a split that left the definition somewhere
+    this walk does not reach cannot pass as "clean".
     """
-    root = _repo_root()
-    tree = ast.parse(
-        (root / _THE_ENGINE).read_text(encoding="utf-8"), filename=_THE_ENGINE,
-    )
-    assert _calendar_wide_calls(tree) == 0
+    leaves = sorted((_repo_root() / _THE_ENGINE).glob("*.py"))
+    assert leaves, f"{_THE_ENGINE} holds no modules to read"
+    for leaf in leaves:
+        tree = ast.parse(leaf.read_text(encoding="utf-8"), filename=str(leaf))
+        assert _calendar_wide_calls(tree) == 0, leaf
 
 
 def test_the_scanner_fires_on_a_planted_second_spelling():
@@ -325,44 +332,41 @@ _PER_PERIOD = "calculate_paycheck"
 #: Every ``app/`` site that prices a paycheck by calling the engine's
 #: per-period entry directly, as ``{relative path: call count}``.
 #:
-#: **These are ledger rows P62 / P63 / P64 and plan step C12, enumerated
-#: rather than described.**  Each prices ONE period through
+#: **This is ledger row P62's LAST site and plan step C12's money leaf,
+#: enumerated rather than described.**  It prices ONE period through
 #: ``load_tax_configs_for_year``, which is the SAME resolver body the pass's
 #: :class:`~app.services.income_service.ProfilePaychecks` reads
-#: (``_configs_from_series``), so the calibration is the only axis on which a
-#: pricer route can differ from these -- and it is not one axis for all five
-#: (read 2026-09-12): ``salary_regeneration.regenerate_salary_transactions``
-#: (``_helpers._regenerate_salary_transactions`` until plan step
-#: salary:S3-f-3 moved the walk below the route layer, ruling **R-SAL24**;
-#: the call is the same and the census moved with it) and
-#: ``cockpit.anatomy`` already pass ``calibration=profile.calibration``;
-#: ``_helpers._compute_total_pre_tax`` reads a pre-tax deductions total and
-#: ``profiles.create_profile`` prices a profile created in the same request,
-#: neither of which a calibration reaches;
-#: ``_metrics._get_current_paycheck_breakdown`` is the one that can MOVE a
-#: figure ``/savings`` publishes -- which is why plan step salary:S3-d left
-#: them alone and why C12 is ruled to need its own decision first.
+#: (``_configs_from_series``), so the calibration is the only axis on which
+#: a pricer route can differ from it -- and it passes none, so
+#: ``_metrics._get_current_paycheck_breakdown`` is the one site left that
+#: MOVES a figure ``/savings`` publishes (measured on the developer's data
+#: 2026-09-12: net ``$2,541.49`` by this door against ``$2,572.78`` by the
+#: pricer, and through the Emergency Fund goal a target of ``$16,519.69``
+#: against ``$16,723.07``).  That is why plan step salary:S3-d left it alone,
+#: why C12 was ruled to need its own decision first, and why it ships as
+#: C12's own money leaf rather than with the four below.
 #:
-#: **``retirement_dashboard_service.py`` LEFT this map at plan step
-#: salary:S3-f-2a** (ruling **R-SAL21** as amended 2026-09-12).  Its one call,
-#: ``_compute_current_pay``, priced ``/retirement``'s current paycheck without
-#: the profile's calibration while the payroll feed on the same page priced
-#: the same payday with it: measured ``$31.29`` apart on one paycheck and
-#: ``+$41,562.00`` on the required savings the verdict states.  The page reads
-#: ``balance_ctx.paychecks().for_profile(profile).at(period)`` now, so that
-#: payday is priced ONCE per render where it was priced twice, and the move
-#: was its own money leaf with its own harness.  ``/savings``'
-#: ``_metrics.py`` still prices the same shape and is C12's.
+#: **FOUR sites LEFT this map at plan step salary:C12's first leaf**, each
+#: byte-identical through the pass's pricer and each saying why at its own
+#: site: ``salary_regeneration.regenerate_salary_transactions`` and
+#: ``cockpit.anatomy`` already passed ``calibration=profile.calibration``;
+#: ``_helpers._compute_total_pre_tax`` reads a pre-tax deductions total a
+#: calibration never reaches (``$713.29`` by both doors); and
+#: ``profiles.create_profile`` prices a profile flushed in the same request,
+#: which has no calibration row for the pricer to find.
+#: **``retirement_dashboard_service.py`` LEFT it at plan step salary:S3-f-2a**
+#: (ruling **R-SAL21** as amended 2026-09-12): its ``_compute_current_pay``
+#: priced ``/retirement``'s current paycheck without the calibration while
+#: the payroll feed on the same page priced the same payday with it, measured
+#: ``$31.29`` apart on one paycheck and ``+$41,562.00`` on the required
+#: savings the verdict states; that move was its own money leaf with its own
+#: harness.
 #:
 #: The census is by ENUMERATION and not by subtraction: every entry here was
-#: read and counted (five calls across five files since S3-f-3), so a new
-#: site fails this test and C12 deleting one fails it too.  Both directions
-#: are the point.
+#: read and counted (one call in one file since C12's first leaf), so a new
+#: site fails this test and C12's money leaf deleting the last one fails it
+#: too.  Both directions are the point.
 _DIRECT_ENGINE_CALLERS = {
-    "app/routes/salary/_helpers.py": 1,
-    "app/routes/salary/cockpit.py": 1,
-    "app/routes/salary/profiles.py": 1,
-    "app/services/salary_regeneration.py": 1,
     "app/services/savings_dashboard_service/_metrics.py": 1,
 }
 
@@ -401,15 +405,18 @@ def _per_period_calls(tree: ast.AST) -> int:
 def _per_period_census(root: Path) -> dict[str, int]:
     """Return ``{relative path: count}`` for direct engine callers under app/.
 
-    The ENGINE's own module is excluded: ``project_salary`` calls
+    The ENGINE's own package is excluded: ``_pricing.project_salary`` calls
     ``calculate_paycheck`` once, in the loop that IS the batch entry, and
     counting the definition's own use would put the producer in a census of
-    its bypassers.
+    its bypassers.  The exclusion is by PATH PREFIX so every leaf of the
+    package is outside the census, and only the package -- a module named
+    ``paycheck_calculator_x.py`` beside it would not match the trailing
+    separator.
     """
     counts: dict[str, int] = {}
     for path in sorted((root / "app").rglob("*.py")):
         relative = str(path.relative_to(root))
-        if relative == _THE_ENGINE:
+        if relative.startswith(_THE_ENGINE + "/"):
             continue
         hits = _per_period_calls(
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
@@ -448,10 +455,33 @@ def test_the_direct_engine_callers_are_the_ones_C12_owns():
         "income_service.PaycheckPricing -- route it through "
         "ctx.paychecks().for_profile(profile).at(period) instead, unless it "
         "genuinely needs a tax-config door of its own, in which case say so "
-        "here. A MISSING entry means plan step C12 has folded one in: delete "
-        "it from _DIRECT_ENGINE_CALLERS, and when the map empties delete this "
-        "test with the finding it tracks (ledger rows P62 / P63 / P64)."
+        "here. A MISSING entry means plan step C12-b has folded the last one "
+        "in: delete it from _DIRECT_ENGINE_CALLERS, and when the map empties "
+        "delete this test with the finding it tracks (ledger row P62; P63 and "
+        "P64 closed at C12-a)."
     )
+
+
+def test_the_engine_package_calls_its_own_per_period_entry_exactly_once():
+    """Inside the excluded package, ``calculate_paycheck`` is called ONCE.
+
+    The prefix exclusion in :func:`_per_period_census` hides six leaves where
+    it hid one module, so a helper added INSIDE the package that priced a
+    paycheck on its own would be invisible to the census above.  This pins
+    the package's own count: exactly one call, in ``_pricing.py``, the loop
+    that IS the batch entry.  A second call anywhere in the package fails
+    here, and so does the batch entry moving to a leaf this does not name.
+    """
+    root = _repo_root()
+    counts = {
+        str(leaf.relative_to(root)): _per_period_calls(
+            ast.parse(leaf.read_text(encoding="utf-8"), filename=str(leaf)),
+        )
+        for leaf in sorted((root / _THE_ENGINE).glob("*.py"))
+    }
+    assert {path: n for path, n in counts.items() if n} == {
+        f"{_THE_ENGINE}/_pricing.py": 1,
+    }, counts
 
 
 def test_the_per_period_scanner_fires_on_a_planted_call():

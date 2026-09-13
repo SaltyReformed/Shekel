@@ -35,7 +35,7 @@ from tests._test_helpers import (
     settlement_basis_id,
 )
 from app.services.cash_ledger import _resolve_loan_basis
-from app.services.cash_ledger import amount_basis
+from app.services.cash_ledger import derived_amount_basis
 from app.services.row_valuation import settled_contribution
 from app.services.loan_payment_service import (
     compute_contractual_pi,
@@ -69,7 +69,7 @@ def _basis(seed_user):
     its derivations are lazy and neither may outlive the session that will
     resolve them.
     """
-    return amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+    return derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id)
 
 
 
@@ -574,7 +574,7 @@ class TestGetPaymentHistory:
 
             result = get_payment_history(
                 loan.id,
-                amount_basis(seed_user["user"].id, other_scenario.id),
+                derived_amount_basis(seed_user["user"].id, other_scenario.id),
                 _PAYMENT_DAY,
             )
             assert result == []

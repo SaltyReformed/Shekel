@@ -38,7 +38,7 @@ from app.services.amortization_engine import schedule_dates, slotted_dates
 from app.services.loan_ledger import payment_installments
 from app.services.loan_loaders import _shadows, query_shadow_income
 from app.services.loan_payment_service import get_payment_history, load_loan_context
-from app.services.cash_ledger import amount_basis
+from app.services.cash_ledger import derived_amount_basis
 from app.services.transfer_service import TransferSpec, create_transfer
 from tests._test_helpers import (
     an_entered_day,
@@ -505,7 +505,7 @@ class TestBothFeedsReachOneSlotAssignment:
             )
             priced = load_loan_context(
                 loan.id,
-                amount_basis(seed_user["user"].id, scenario_id),
+                derived_amount_basis(seed_user["user"].id, scenario_id),
                 loan_params_for(db.session, loan.id),
             ).payments
 
@@ -659,7 +659,7 @@ class TestTheCallerStatesItsOwnEagerLoad:
             db.session.commit()
             _seam_shadows(seed_user, loan, seed_periods)
             db.session.expire_all()
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
 

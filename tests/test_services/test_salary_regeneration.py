@@ -131,9 +131,10 @@ class TestTheServiceTakesThePassAndReturnsWhatItKept:
             monkeypatch.setattr(
                 salary_regeneration.recurrence_engine, "regenerate_for_template", _never,
             )
-            monkeypatch.setattr(
-                salary_regeneration.paycheck_calculator, "calculate_paycheck", _never,
-            )
+            # The paycheck door is the PASS's pricer since plan step
+            # salary:C12 (it was a direct ``calculate_paycheck`` on this
+            # module), so the pricer is what must never be asked for.
+            monkeypatch.setattr(BalanceContext, "paychecks", _never)
             ctx = BalanceContext.build(seed_user["user"].id)
 
             assert salary_regeneration.regenerate_salary_transactions(ctx, profile) == []

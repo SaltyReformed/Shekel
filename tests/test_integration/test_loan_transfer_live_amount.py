@@ -84,7 +84,7 @@ def _derived_cash(seed_user, rows):
     Returns:
         ``{transaction_id: Decimal}`` covering every row.
     """
-    basis = cash_ledger.amount_basis(
+    basis = cash_ledger.derived_amount_basis(
         seed_user["user"].id, seed_user["scenario"].id,
     )
     return cash_ledger.amounts_by_id(rows, basis)

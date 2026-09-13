@@ -19,12 +19,6 @@ from app.services.exceptions import InvalidGrossPayError
 from app.services.tax_calculator import calculate_fica
 from app.models.salary_raise import SalaryRaise
 from app.services.paycheck_calculator import (
-    _is_third_paycheck,
-    _month_ordinal,
-    _inflation_years,
-    _get_cumulative_wages,
-    _calculate_deductions,
-    _DeductionContext,
     calculate_paycheck,
     project_salary,
     DeductionLine,
@@ -33,8 +27,20 @@ from app.services.paycheck_calculator import (
     PaycheckBreakdown,
     PeriodInfo,
     TaxLines,
-    ZERO,
 )
+# The private helpers come from their LEAF since the engine became a package
+# (plan step salary:C12, ledger row P64), as pay_calendar's do.
+from app.services.paycheck_calculator._calendar_questions import (
+    _get_cumulative_wages,
+    _is_third_paycheck,
+    _month_ordinal,
+)
+from app.services.paycheck_calculator._deductions import (
+    _calculate_deductions,
+    _DeductionContext,
+    _inflation_years,
+)
+from app.utils.money import ZERO
 from app import ref_cache
 from app.enums import DeductionTimingEnum
 from app.services.salary_raises import RaiseTerms, apply_raises, terms_of

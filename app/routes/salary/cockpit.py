@@ -26,12 +26,8 @@ from app.utils.auth_helpers import get_or_404, require_owner, log_refused_lookup
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services.balance_at import BalanceContext
-from app.services import paycheck_calculator
 from app.services import salary_cockpit_service
-from app.services.payroll_basis import PayrollBasis
 from app.services.salary_raises import get_raise_event
-from app.services.pay_calendar import calendar_for
-from app.services.tax_config_service import load_tax_configs_for_year
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import _get_owned_profile_and_period
 
@@ -347,23 +343,22 @@ def anatomy(profile_id, period_id):
     neighbouring period updates both at once.  Ownership of both the
     profile and the period is verified (404 for not-found and not-yours).
     """
-    calendar = calendar_for(current_user.id)
+    # The fragment's ONE read pass (plan step salary:C12, ledger row P62):
+    # its calendar answers the ownership gate and its pricer prices the
+    # period -- the same DOOR the cockpit's initial render prices through (a
+    # fragment is its own request and its own pass), so the fragment and the
+    # page cannot disagree on a period's figures.  It was a
+    # ``calendar_for`` beside a direct ``calculate_paycheck`` that resolved
+    # its own tax configs; one ``get_baseline_scenario`` query more, which is
+    # the trade ``index`` above already made.
+    ctx = BalanceContext.build(current_user.id)
+    calendar = ctx.calendar()
     profile, period = _get_owned_profile_and_period(
         profile_id, period_id, calendar,
     )
 
     periods = calendar.saved()
-    # Resolve the period's OWN tax year (DH-#30), substituting the latest
-    # CONFIGURED year at or before it -- identical resolution to the
-    # projection path so the fragment and the cockpit's initial render agree
-    # on a period's figures.
-    tax_configs = load_tax_configs_for_year(
-        current_user.id, profile, period.start_date.year,
-    )
-    breakdown = paycheck_calculator.calculate_paycheck(
-        PayrollBasis(profile, calendar), period, tax_configs,
-        calibration=profile.calibration,
-    )
+    breakdown = ctx.paychecks().for_profile(profile).at(period)
     context = _anatomy_context(
         profile, period, periods, breakdown, _calibration_active(profile),
     )
