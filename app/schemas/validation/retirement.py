@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from marshmallow import (
     fields,
+    post_load,
     pre_load,
     validate,
     validates_schema,
@@ -15,9 +16,22 @@ from marshmallow import (
 from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
+    _RAISE_YEAR_RANGE,
     _normalize_empty_inputs,
     _normalize_percent_fields,
 )
+from app.services.salary_raises import RAISE_END_MODES
+
+#: What the assumptions rail names each recurring raise's end-year pair on the
+#: wire (plan step salary:S3-f-2b): ``raise_end_mode_<raise id>`` and
+#: ``raise_end_year_<raise id>``.  The id rides in the NAME rather than in a
+#: value because every rail row submits on every readiness refresh
+#: (``hx-include=".whatif-param, .lever-param"``), and a flat query string has
+#: no other way to say which raise a mode belongs to.  Spelled here and in
+#: ``retirement/_assumptions.html``, which renders the controls; the route test
+#: posts what the template emits.
+_RAISE_END_MODE_PARAM = "raise_end_mode_"
+_RAISE_END_YEAR_PARAM = "raise_end_year_"
 
 
 class PensionProfileCreateSchema(BaseSchema):
@@ -173,6 +187,75 @@ class RetirementSettingsSchema(BaseSchema):
             )
 
 
+class RaiseProbeSchema(BaseSchema):
+    """ONE rail row's end-year answer: the salary form's pair, off the wire.
+
+    The same two controls :class:`~app.schemas.validation.salary
+    .RaiseCreateSchema` reads (``raise_end_mode`` and ``terminal_year``) under
+    the rail's shorter names, graded by the same vocabulary and the same year
+    window.  What it does NOT grade is the cross-field rule -- a year cannot
+    precede the raise's effective year -- because that needs the ROW, which
+    only the service holding the rows has:
+    :meth:`~app.services.retirement_plan.RetirementInputs.plan_with` applies
+    :func:`~app.services.salary_raises.end_year_of` there.  A schema that
+    graded half the rule here and left the other half to the service would be
+    two homes for one rule; this one grades the FIELDS and hands the pair on.
+    """
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Map an empty year box to ``None``; drop an empty mode."""
+        return _normalize_empty_inputs(self, data)
+
+    mode = fields.String(
+        required=True, validate=validate.OneOf(RAISE_END_MODES),
+    )
+    year = fields.Integer(allow_none=True, validate=_RAISE_YEAR_RANGE)
+
+    @post_load
+    def as_pair(self, data, **kwargs):
+        """Hand the service the ``(mode, year)`` pair ``end_year_of`` takes.
+
+        Args:
+            data: The deserialized ``{"mode": ..., "year": ...}``.
+            **kwargs: Marshmallow's contract, unused.
+
+        Returns:
+            ``(mode, year_or_None)``.
+        """
+        return (data["mode"], data.get("year"))
+
+
+def _gather_raise_probes(data) -> dict:
+    """Collect the rail's per-raise pairs out of a flat query string.
+
+    Read off the RAW payload, before :func:`_normalize_empty_inputs` runs:
+    that helper drops an undeclared key whose value is ``""`` -- which is
+    exactly what a rail row under *no end year* submits for its year box --
+    and ``BaseSchema`` excludes whatever undeclared keys survive.  Gathering
+    first is what lets :class:`RaiseProbeSchema` see the empty box and map it
+    to ``None`` itself.
+
+    Args:
+        data: The ``@pre_load`` payload -- a ``MultiDict`` from the route or a
+            plain mapping from a test.
+
+    Returns:
+        ``{raise id as submitted: {"mode": ..., "year": ...}}`` -- raw strings,
+        one entry per raise id that appeared under either prefix, so a mode
+        without its year or a year without its mode reaches the nested schema
+        and is graded there rather than silently paired with nothing.
+    """
+    probes: dict = {}
+    for key in data:
+        for prefix, half in (
+            (_RAISE_END_MODE_PARAM, "mode"), (_RAISE_END_YEAR_PARAM, "year"),
+        ):
+            if key.startswith(prefix):
+                probes.setdefault(key[len(prefix):], {})[half] = data[key]
+    return probes
+
+
 class RetirementReadinessQuerySchema(BaseSchema):
     """Validates the /retirement/readiness HTMX what-if query string (P3a).
 
@@ -187,7 +270,13 @@ class RetirementReadinessQuerySchema(BaseSchema):
     ``merit_raise_horizon_years`` what-if until plan step salary:S3-c
     deleted the setting behind it (ruling **R-SAL11**); a stale bookmark
     still passing one is DROPPED rather than rejected, because
-    ``BaseSchema`` excludes unknown keys.  The two lever stepper values:
+    ``BaseSchema`` excludes unknown keys.  **The per-raise probe replaced it
+    at plan step salary:S3-f-2b**: ``raise_end_mode_<id>`` /
+    ``raise_end_year_<id>`` pairs, one per recurring raise the rail lists,
+    gathered in ``@pre_load`` (the ids are in the NAMES, so no declared
+    field could catch them before ``EXCLUDE`` drops them) into
+    ``raise_probes``, ``{raise_id: (mode, year)}``, which the route hands to
+    ``plan_with`` to resolve against the rows.  The two lever stepper values:
     ``months`` capped at
     the P2b +180 search bound
     (:data:`app.services.retirement_levers._MAX_DELAY_MONTHS`) and
@@ -204,9 +293,13 @@ class RetirementReadinessQuerySchema(BaseSchema):
 
     @pre_load
     def normalize_inputs(self, data, **kwargs):
-        """Normalize empty inputs, then convert percent fields to fractions."""
+        """Gather the per-raise pairs, normalize empties, convert percents."""
+        probes = _gather_raise_probes(data)
         data = _normalize_empty_inputs(self, data)
-        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
+        data = _normalize_percent_fields(data, self._PERCENT_FIELDS)
+        if probes:
+            data["raise_probes"] = probes
+        return data
 
     swr = fields.Decimal(
         places=5, as_string=True, allow_none=True,
@@ -227,4 +320,10 @@ class RetirementReadinessQuerySchema(BaseSchema):
         validate=validate.Range(
             min=Decimal("0"), max=Decimal("100000"),
         ),
+    )
+    # Keyed by the raise id as every other submitted row id is read
+    # (:class:`RowId`), so ``raise_end_mode_007`` and ``raise_end_mode_`` are
+    # refusals rather than coercions; absent when no rail row submitted.
+    raise_probes = fields.Dict(
+        keys=RowId(), values=fields.Nested(RaiseProbeSchema),
     )

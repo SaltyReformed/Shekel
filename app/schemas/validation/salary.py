@@ -21,23 +21,23 @@ from app.schemas.validation._helpers import (
     RowId,
     _NON_NEGATIVE_MONETARY,
     _PERCENT_INPUT_RANGE,
+    _RAISE_YEAR_RANGE,
     _normalize_empty_inputs,
+)
+from app.services.salary_raises import (
+    RAISE_END_MODES,
+    EndYearError,
+    end_year_of,
 )
 from app.utils.dates import to_display_date
 
-# The raise form's end-year answer, as the two states the owner picks between
-# (plan step **salary:S3-c**, ruling **R-SAL11**).  It is a FORM control
-# rather than a column: ``salary.salary_raises.terminal_year`` stores the year
-# and ``NULL`` for "believed indefinitely", but a form cannot tell an
-# unanswered number input from a deliberate "no end year", and the developer
-# ruled on 2026-09-05 that a recurring raise must be ASKED rather than
-# defaulted -- a default is a global belief in per-raise clothing, which is
-# the shape the deleted ``merit_raise_horizon_years`` had.  The mode is
-# consumed by :meth:`RaiseCreateSchema.drop_end_year_mode` and never reaches
-# the model.
-_RAISE_END_MODE_YEAR = "year"
-_RAISE_END_MODE_NONE = "none"
-_RAISE_END_MODES = (_RAISE_END_MODE_YEAR, _RAISE_END_MODE_NONE)
+# The raise form's end-year answer is a MODE beside the year (plan step
+# **salary:S3-c**, ruling **R-SAL13**); the vocabulary and the ONE rule that
+# grades an answer live in :mod:`app.services.salary_raises` since plan step
+# salary:S3-f-2b, where the ``/retirement`` rail's probe reaches them too.  The
+# mode is consumed by :meth:`RaiseCreateSchema.drop_end_year_mode` and never
+# reaches the model.  This maps the rule's two halves onto THIS form's controls.
+_END_YEAR_FIELDS = {"mode": "raise_end_mode", "year": "terminal_year"}
 
 
 class SalaryProfileCreateSchema(BaseSchema):
@@ -143,9 +143,7 @@ class RaiseCreateSchema(BaseSchema):
     effective_month = fields.Integer(
         required=True, validate=validate.Range(min=1, max=12)
     )
-    effective_year = fields.Integer(
-        required=True, validate=validate.Range(min=2000, max=2100),
-    )
+    effective_year = fields.Integer(required=True, validate=_RAISE_YEAR_RANGE)
     # F-011 / C-24: Tightened from Range(-100, 1000) to a positive,
     # column-fitting bound.  The user enters percent (e.g. "3" for a
     # 3% raise); the route divides by 100 before persistence into
@@ -180,44 +178,41 @@ class RaiseCreateSchema(BaseSchema):
     is_recurring = fields.Boolean(load_default=False)
     # The last year the raise is believed to happen (plan step
     # **salary:S3-c**).  ``allow_none`` because ``NULL`` is a real answer --
-    # "believed indefinitely" -- rather than an unanswered field, and the
-    # ``Range`` mirrors ``ck_salary_raises_valid_terminal_year``'s upper bound
-    # and ``ck_salary_raises_valid_effective_year``'s window so the owner gets
-    # a message on the control instead of an IntegrityError.  Its LOWER bound
-    # against the effective year is a cross-field rule -- see
-    # :meth:`validate_end_year`, which mirrors
-    # ``ck_salary_raises_terminal_year_not_before_effective``.
-    terminal_year = fields.Integer(
-        allow_none=True, validate=validate.Range(min=2000, max=2100),
-    )
-    raise_end_mode = fields.String(validate=validate.OneOf(_RAISE_END_MODES))
+    # "believed indefinitely" -- rather than an unanswered field; the shared
+    # ``Range`` mirrors the column's window so the owner gets a message on the
+    # control instead of an IntegrityError.  Its LOWER bound against the
+    # effective year is a cross-field rule -- see :meth:`validate_end_year`,
+    # which mirrors ``ck_salary_raises_terminal_year_not_before_effective``.
+    terminal_year = fields.Integer(allow_none=True, validate=_RAISE_YEAR_RANGE)
+    raise_end_mode = fields.String(validate=validate.OneOf(RAISE_END_MODES))
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
 
     @validates_schema
     def validate_end_year(self, data, **kwargs):
         """Require a recurring raise to STATE how long it is believed.
 
-        Mirrors the two CHECKs that bound the column, plus the developer's
-        2026-09-05 ruling that the answer is asked rather than defaulted:
-
-        * ``ck_salary_raises_terminal_year_only_on_a_recurring_raise`` -- a
-          one-time raise is a recorded fact that happens once, so an end year
-          on one is storable-but-inert and the column forbids it outright.
-        * ``ck_salary_raises_terminal_year_not_before_effective`` -- a raise
-          cannot end before it starts.
-        * The ruling -- an unanswered end year would silently mean
-          "indefinitely", so a recurring raise with no mode selected is
-          REFUSED rather than quietly believed forever.
+        The one-time half is this schema's own:
+        ``ck_salary_raises_terminal_year_only_on_a_recurring_raise`` -- a
+        one-time raise is a recorded fact that happens once, so an end year on
+        one is storable-but-inert and the column forbids it outright.  The
+        recurring half is :func:`~app.services.salary_raises.end_year_of`, the
+        ONE end-year rule (ruling **R-SAL22**), which this calls against the
+        payload's effective year and the ``/retirement`` rail's per-raise probe
+        calls against the ROW's (plan step salary:S3-f-2b): the mode must be
+        answered (an unanswered end year would silently mean *indefinitely*,
+        so it is REFUSED rather than quietly believed forever), a year is
+        required where the mode demands one, and a raise cannot end before it
+        starts (``ck_salary_raises_terminal_year_not_before_effective``).
 
         **It does NOT police the mode against the year**, and an adversarial
-        review of this step is why: it did, and the refusal it produced made
-        the step's own headline operation impossible in a browser.  Editing a
-        raise that ends 2031 fills the year box; choosing "no end year" left
-        2031 sitting in it, and the form then refused with a message about a
-        control the owner had just said was irrelevant.  The remedy is the
-        one CLAUDE.md rule 14 names -- delete a home rather than keep two in
-        step -- so :meth:`drop_end_year_mode` makes the MODE authoritative
-        and the disagreement cannot be represented.
+        review of plan step salary:S3-c is why: it did, and the refusal it
+        produced made the step's own headline operation impossible in a
+        browser.  Editing a raise that ends 2031 fills the year box; choosing
+        "no end year" left 2031 sitting in it, and the form then refused with
+        a message about a control the owner had just said was irrelevant.  The
+        remedy is the one CLAUDE.md rule 14 names -- delete a home rather than
+        keep two in step -- so the MODE is authoritative, and
+        :meth:`drop_end_year_mode` resolves through the same rule.
 
         Each is stated here as well as in the database so the refusal
         happens before an ``IntegrityError`` a raise route would surface as a
@@ -250,32 +245,17 @@ class RaiseCreateSchema(BaseSchema):
                 )
             return
 
-        mode = data.get("raise_end_mode")
-        if mode not in _RAISE_END_MODES:
-            raise ValidationError(
-                "Say how long this recurring raise is believed: pick an end "
-                "year, or say it has none.",
-                field_name="raise_end_mode",
+        # ``effective_year`` is required and this hook is skipped on field
+        # errors (marshmallow's ``skip_on_field_errors`` default), so it is
+        # present here.
+        try:
+            end_year_of(
+                data.get("raise_end_mode"), year, data["effective_year"],
             )
-        if mode == _RAISE_END_MODE_YEAR and year is None:
+        except EndYearError as exc:
             raise ValidationError(
-                "Enter the last year this raise is believed to happen.",
-                field_name="terminal_year",
-            )
-        if mode == _RAISE_END_MODE_NONE:
-            # No ordering rule to check: :meth:`drop_end_year_mode` discards
-            # whatever the year box holds under this mode, so there is no
-            # value left to contradict the effective year.
-            return
-
-        effective_year = data.get("effective_year")
-        if (year is not None and effective_year is not None
-                and year < effective_year):
-            raise ValidationError(
-                f"A raise cannot end before it starts: it takes effect in "
-                f"{effective_year}.",
-                field_name="terminal_year",
-            )
+                exc.message, field_name=_END_YEAR_FIELDS[exc.field],
+            ) from exc
 
     @post_load
     def drop_end_year_mode(self, data, **kwargs):
@@ -289,13 +269,18 @@ class RaiseCreateSchema(BaseSchema):
         value rather than two.**  "No end year" resolves to ``NULL`` whatever
         the year box happens to hold, so the two controls cannot disagree and
         no rule has to hold them in step.  They can disagree in a real
-        browser, which is how an adversarial review of this step found it:
-        the edit form fills the year box from the stored value, so choosing
-        "no end year" on a raise that ends 2031 leaves 2031 sitting in it.
-        The earlier form of this schema REFUSED that, which made the
+        browser, which is how an adversarial review of plan step salary:S3-c
+        found it: the edit form fills the year box from the stored value, so
+        choosing "no end year" on a raise that ends 2031 leaves 2031 sitting
+        in it.  The earlier form of this schema REFUSED that, which made the
         headline operation of the whole step -- "this raise no longer has an
         end year" -- impossible to perform in a browser while its route test
         passed, because that test posted an empty box no rendered form emits.
+
+        **The resolution is :func:`~app.services.salary_raises.end_year_of`'s**
+        (plan step salary:S3-f-2b), the same call :meth:`validate_end_year`
+        has already made and passed by the time this runs, so "none means
+        NULL" is spelled once for the form, the rail's probe and the Save.
 
         ``terminal_year`` is forced PRESENT (as ``None``) rather than merely
         left absent, because the update path applies only the keys it is
@@ -311,8 +296,11 @@ class RaiseCreateSchema(BaseSchema):
             always present -- ``None`` wherever the mode said there is no end
             year, whatever the year control carried.
         """
-        if data.pop("raise_end_mode", None) == _RAISE_END_MODE_NONE:
-            data["terminal_year"] = None
+        mode = data.pop("raise_end_mode", None)
+        if data.get("is_recurring", False):
+            data["terminal_year"] = end_year_of(
+                mode, data.get("terminal_year"), data["effective_year"],
+            )
         data.setdefault("terminal_year", None)
         return data
 

@@ -21,6 +21,7 @@ from app.enums import (
     EmployerContributionTypeEnum,
 )
 from app.extensions import db
+from app.models.calibration_override import CalibrationOverride
 from app.models.investment_params import InvestmentParams
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType, FilingStatus
@@ -40,6 +41,7 @@ from app.services import (
     retirement_projection,
 )
 from app.services.retirement_plan import load_retirement_inputs, picture_at
+from app.services.salary_raises import terms_of
 from tests._test_helpers import (
     rhythm_of,
     all_periods,
@@ -49,8 +51,10 @@ from tests._test_helpers import (
     last_covered_day,
     make_expense_template,
     make_investment_account,
+    make_salary_profile,
     mark_purchase_settled,
     open_books_before_the_first_assertion,
+    seed_fica_config,
 )
 
 
@@ -185,25 +189,25 @@ class TestThePicturesPublishedSurface:
 _AS_OF = date(2026, 3, 20)
 
 
-def _gap_inputs(profile, pay, cadence_days=14):
-    """Wrap a profile and a pay snapshot in the bundle the producer takes.
+def _gap_inputs(profile, cadence_days=14):
+    """Wrap a profile in the bundle the producer takes.
 
-    ``compute_gap_net_biweekly`` reads the owner's salary profiles and the
-    current-pay snapshot off its
+    ``compute_gap_net_biweekly`` reads the owner's salary profiles off its
     :class:`~app.services.retirement_dashboard_service.GapInputs` since
     pay-calendar plan step C2-f2e, so the pure-unit cases build the bundle the
-    one production caller builds rather than handing the two values in loose.
+    one production caller builds rather than handing the values in loose.
     Two fields are inert: the producer reads neither the settings nor the
     pensions.  **The pay cadence is NOT one of them since plan step R-F16**,
     which is what divides the projected final-year salary into a paycheck --
     it read a ``pay_periods_per_year`` column off the profile until then, and
     this docstring said the field was inert.  *A third inert field, the
     bundle's STORED merit horizon, went with the setting at plan step
-    salary:S3-c.*
+    salary:S3-c; the current-pay snapshot left it at plan step salary:S3-f-2a,
+    when the paycheck became a per-point argument the cases below hand in as
+    the engine's own breakdown (:func:`_current_paycheck`).*
 
     Args:
         profile: The owner's primary :class:`SalaryProfile`.
-        pay: The ``_CurrentPay`` snapshot.
         cadence_days: Days between the owner's paydays.  Stated rather than
             fixed so a case can vary the one axis a 14-day fixture cannot
             see: at 26 the derived count equals the constant it replaced.
@@ -215,8 +219,62 @@ def _gap_inputs(profile, pay, cadence_days=14):
         settings=None,
         pensions=[],
         salary_profiles=[profile],
-        pay=pay,
         pay_cadence=PayCadence(cadence_days=cadence_days),
+    )
+
+
+def _stored_terms(profile):
+    """The raise set a profile is believed under when nothing is probed: its rows.
+
+    What :meth:`~app.services.retirement_plan.PlanPoint.terms_for` answers at
+    the stored plan, spelled directly so these pure cases need no plan point.
+    """
+    return terms_of(profile.raises)
+
+
+def _believed(pay):
+    """The believed payroll ``compute_gap_net_biweekly`` takes, at the stored set.
+
+    Since plan step salary:S3-f-2b the producer takes the current paycheck
+    and the believed raise set together as one
+    :class:`~app.services.retirement_dashboard_service.BelievedPayroll`; these
+    cases hand in the paycheck each names under the rows' own terms.
+    """
+    return retirement_dashboard_service.BelievedPayroll(
+        terms_for=_stored_terms, current_paycheck=pay,
+    )
+
+
+def _current_paycheck(net_pay, gross_biweekly, annual_salary):
+    """The engine's breakdown for one current paycheck, with hand-set figures.
+
+    ``compute_gap_net_biweekly`` takes the current paycheck as the engine's own
+    :class:`~app.services.paycheck_calculator.PaycheckBreakdown` since plan
+    step salary:S3-f-2a (inside :func:`_believed` since S3-f-2b), and reads
+    three things off it: ``net_pay``, the ``take_home_rate_pct`` the earnings
+    derive from net over gross, and -- through that rate's ``None`` -- whether
+    the gross is positive.  These cases are pure unit cases over the scaling
+    arithmetic, so the breakdown is built here with the figures each case
+    names rather than priced by the engine, which is what keeps the asserted
+    numbers hand-checkable.
+
+    Args:
+        net_pay: The paycheck's net, as the case states it.
+        gross_biweekly: Its gross -- the take-home rate's denominator.  A
+            case may hand in ``0`` to reach the no-positive-gross arm, a
+            state the engine cannot price into being.
+        annual_salary: The annual figure the earnings record carries.
+
+    Returns:
+        The :class:`~app.services.paycheck_calculator.PaycheckBreakdown`.
+    """
+    return paycheck_calculator.PaycheckBreakdown(
+        period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
+        earnings=paycheck_calculator.Earnings(
+            annual_salary=annual_salary,
+            gross_biweekly=gross_biweekly,
+            net_pay=net_pay,
+        ),
     )
 
 
@@ -227,10 +285,13 @@ class TestComputeGapNetBiweekly:
     biweekly by the current effective take-home rate (net / gross) so the
     gap calculator compares retirement income against a raise-adjusted
     pre-retirement take-home figure rather than today's pay.  The cleanup
-    (ce65229) reshaped the inputs into the ``_CurrentPay`` snapshot but
+    (ce65229) reshaped the inputs into a ``_CurrentPay`` snapshot but
     left the scaling arithmetic itself unpinned; these tests assert the
-    formula and its two early-return guards on hand-computed values,
+    formula and its early-return guards on hand-computed values,
     independent of the tax engine that produces the real net / gross.
+    *The snapshot went at plan step salary:S3-f-2a and the paycheck arrives
+    as the engine's own breakdown; the figures these cases pin did not move,
+    which is what the scaling's exactness claim rests on.*
 
     Supplying ``salary_by_year`` directly keeps the helper pure (no DB,
     no ref_cache, no paycheck engine) so the asserted numbers depend only
@@ -255,64 +316,100 @@ class TestComputeGapNetBiweekly:
         recompute silently dropped any applicable raise).
         """
         profile = SalaryProfile()
-        pay = retirement_dashboard_service._CurrentPay(
-            net_biweekly=Decimal("2000.00"),
-            current_breakdown=paycheck_calculator.PaycheckBreakdown(
-                period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
-                earnings=paycheck_calculator.Earnings(
-                    annual_salary=Decimal("65000.00"),
-                    gross_biweekly=Decimal("2500.00"),
-                ),
-            ),
+        pay = _current_paycheck(
+            Decimal("2000.00"), Decimal("2500.00"), Decimal("65000.00"),
         )
         salary_by_year = [
             (2026, Decimal("120000.00")),
             (2055, Decimal("131000.00")),
         ]
-        # merit_horizon_years is inert here: salary_by_year is supplied,
-        # so the helper never recomputes it (the horizon only affects the
-        # internal project_salaries_by_year call on the None branch).
+        # salary_by_year is supplied, so the helper never recomputes it (the
+        # ``None`` branch is the only one that opens a salary path).
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            _gap_inputs(profile, pay), date(2055, 1, 1), salary_by_year,
-            _AS_OF,
+            _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
+            salary_by_year, _AS_OF,
         )
         assert result == Decimal("4030.77")
+
+    def test_a_non_terminating_rate_is_carried_at_full_precision(self):
+        """The take-home rate reaches the scaling UNROUNDED.
+
+        Every other ratio in this class is exact at two decimals of percent
+        (0.80, 0.7735), so none of them can see a rounding added to
+        ``Earnings.take_home_rate_pct`` -- the engine property this scales by
+        since plan step salary:S3-f-2a, whose docstring still calls it a
+        DISPLAY pre-computation (an adversarial review of that step).  Here
+        the rate is ``2000 / 3000 = 0.666...``:
+
+          final-year gross = 65,000.00 / 26 = 2,500.00
+          x 0.666...       = 1,666.666...  -> 1,666.67 (quantize .01)
+
+        A rate quantized to two decimals of percent (66.67%) answers
+        ``1,666.75``; to one decimal (66.7%) ``1,667.50``.  Only the
+        unrounded ratio answers the line asserted.
+        """
+        profile = SalaryProfile()
+        pay = _current_paycheck(
+            Decimal("2000.00"), Decimal("3000.00"), Decimal("65000.00"),
+        )
+        salary_by_year = [
+            (2026, Decimal("65000.00")),
+            (2055, Decimal("65000.00")),
+        ]
+        result = retirement_dashboard_service.compute_gap_net_biweekly(
+            _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
+            salary_by_year, _AS_OF,
+        )
+        assert result == Decimal("1666.67")
 
     def test_returns_current_net_when_no_retirement_horizon(self):
         """No planned retirement date -> current net biweekly, unscaled.
 
-        The first guard returns ``pay.net_biweekly`` verbatim when any of
+        The first guard returns the paycheck's net verbatim when any of
         salary profile / horizon / positive current pay is missing.  A
         ``None`` horizon must not scale (and must not raise), so the gap
         calculator falls back to comparing against today's take-home.
         """
         profile = SalaryProfile()
-        pay = retirement_dashboard_service._CurrentPay(
-            net_biweekly=Decimal("1800.00"),
-            current_breakdown=None,
+        pay = _current_paycheck(
+            Decimal("1800.00"), Decimal("2250.00"), Decimal("58500.00"),
         )
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            _gap_inputs(profile, pay), None,
+            _gap_inputs(profile), _believed(pay), None,
             [(2026, Decimal("120000.00"))], _AS_OF,
         )
         assert result == Decimal("1800.00")
 
-    def test_returns_current_net_when_current_gross_is_zero(self):
-        """No current breakdown -> gross 0.00 -> unscaled, no divide-by-zero.
+    def test_returns_zero_when_there_is_no_current_paycheck(self):
+        """No current paycheck -> ``Decimal("0")``, whatever else is set.
 
-        Past the first guard (profile + horizon + positive net all
-        present) the rate denominator is ``current_breakdown.earnings.
-        gross_biweekly``; a missing breakdown resolves it to 0.00.  The
-        helper must return the current net biweekly rather than divide by
-        zero, so a no-current-period user still gets a defined comparison.
+        The owner has no active profile or no saved period covers the pass's
+        day, so :func:`compute_current_paycheck` answered ``None``.  There is
+        no net to fall back on and nothing to scale; the producer answers zero
+        pre-retirement pay rather than raising on the missing record, which is
+        what the ``_CurrentPay(Decimal("0"), None)`` snapshot answered before
+        plan step salary:S3-f-2a made the breakdown the argument.
+        """
+        result = retirement_dashboard_service.compute_gap_net_biweekly(
+            _gap_inputs(SalaryProfile()), _believed(None), date(2055, 1, 1),
+            [(2055, Decimal("131000.00"))], _AS_OF,
+        )
+        assert result == Decimal("0")
+
+    def test_returns_current_net_when_current_gross_is_zero(self):
+        """A non-positive gross -> unscaled net, no divide-by-zero.
+
+        With profile, horizon and a positive net all present, the rate is the
+        engine's ``take_home_rate_pct``, which is ``None`` when the gross is
+        not positive.  The helper must return the current net rather than
+        divide by zero.  The state is built by hand -- the engine prices no
+        paycheck with a positive net over a zero gross -- so this pins the
+        guard's arm, not a reachable render.
         """
         profile = SalaryProfile()
-        pay = retirement_dashboard_service._CurrentPay(
-            net_biweekly=Decimal("1500.00"),
-            current_breakdown=None,
-        )
+        pay = _current_paycheck(Decimal("1500.00"), Decimal("0"), Decimal("0"))
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            _gap_inputs(profile, pay), date(2055, 1, 1),
+            _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
             [(2055, Decimal("131000.00"))], _AS_OF,
         )
         assert result == Decimal("1500.00")
@@ -369,10 +466,10 @@ class TestTheRenderDayOpensTheSalaryPath:
         )
 
         early = retirement_dashboard_service.compute_pension_summary(
-            [pension], date(2027, 3, 20),
+            [pension], date(2027, 3, 20), _stored_terms,
         )
         late = retirement_dashboard_service.compute_pension_summary(
-            [pension], date(2028, 3, 20),
+            [pension], date(2028, 3, 20), _stored_terms,
         )
 
         assert [year for year, _ in early.salary_by_year] == [
@@ -393,23 +490,16 @@ class TestTheRenderDayOpensTheSalaryPath:
         the horizon guard: a pass pinned PAST the retirement date projects an
         empty series and the producer returns the current net unchanged.
         """
-        pay = retirement_dashboard_service._CurrentPay(
-            net_biweekly=Decimal("2000.00"),
-            current_breakdown=paycheck_calculator.PaycheckBreakdown(
-                period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
-                earnings=paycheck_calculator.Earnings(
-                    annual_salary=Decimal("100000.00"),
-                    gross_biweekly=Decimal("2500.00"),
-                ),
-            ),
+        pay = _current_paycheck(
+            Decimal("2000.00"), Decimal("2500.00"), Decimal("100000.00"),
         )
-        gap = _gap_inputs(self._profile(), pay)
+        gap = _gap_inputs(self._profile())
 
         # Pass pinned BEFORE the horizon: the path is walked and the final-year
         # gross ($100,000.00 / 26 = $3,846.15) is scaled by the take-home rate
         # (2000 / 2500 = 0.80) -> $3,076.92.
         before = retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, date(2030, 6, 30), None, date(2027, 3, 20),
+            gap, _believed(pay), date(2030, 6, 30), None, date(2027, 3, 20),
         )
         assert before == Decimal("3076.92")
 
@@ -417,7 +507,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         # to the current net.  A producer reading its own clock would answer
         # the line above for both.
         after = retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, date(2030, 6, 30), None, date(2032, 3, 20),
+            gap, _believed(pay), date(2030, 6, 30), None, date(2032, 3, 20),
         )
         assert after == Decimal("2000.00")
 
@@ -433,22 +523,15 @@ class TestTheRenderDayOpensTheSalaryPath:
         26 -- so none of them can tell the two apart. This is the case that
         fails if the divisor stops being the owner's cadence.
         """
-        pay = retirement_dashboard_service._CurrentPay(
-            net_biweekly=Decimal("2000.00"),
-            current_breakdown=paycheck_calculator.PaycheckBreakdown(
-                period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
-                earnings=paycheck_calculator.Earnings(
-                    annual_salary=Decimal("100000.00"),
-                    gross_biweekly=Decimal("2500.00"),
-                ),
-            ),
+        pay = _current_paycheck(
+            Decimal("2000.00"), Decimal("2500.00"), Decimal("100000.00"),
         )
-        gap = _gap_inputs(self._profile(), pay, cadence_days=7)
+        gap = _gap_inputs(self._profile(), cadence_days=7)
 
         # $100,000 / 52 = $1,923.0769 -> $1,923.08; x 0.80 -> $1,538.464 ->
         # $1,538.46.
         assert retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, date(2030, 6, 30), None, date(2027, 3, 20),
+            gap, _believed(pay), date(2030, 6, 30), None, date(2027, 3, 20),
         ) == Decimal("1538.46")
 
     def test_the_RENDER_threads_its_own_day_into_the_salary_path(
@@ -510,6 +593,103 @@ class TestTheRenderDayOpensTheSalaryPath:
             assert [year for year, _ in late.pension.salary_by_year] == [
                 2028, 2029, 2030,
             ]
+
+
+class TestTheCurrentPaycheckIsThePassPricers:
+    """``/retirement``'s current paycheck is the pass's pricer's, CALIBRATED.
+
+    Plan step **salary:S3-f-2a**, ruling **R-SAL21** as amended.  The verdict's
+    income target scaled by a paycheck ``_compute_current_pay`` priced with a
+    direct engine call and NO calibration, while the payroll feed on the same
+    page priced the same payday through
+    :meth:`~app.services.balance_at.BalanceContext.paychecks` with the
+    profile's calibration -- measured ``$31.29`` apart on the developer's
+    2026-09-10 paycheck, ``+$41,562.00`` on the required savings.  Both cases
+    here go through the route's own two steps (:func:`_picture`) and assert a
+    HAND-COMPUTED figure at the surface the page publishes, so neither side of
+    the equality is the producer under test.
+
+    The owner: a raise-free ``$52,000.00`` profile on a 14-day cadence, no
+    deductions, FICA seeded for 2026 and no bracket set or state config, so
+    every line is arithmetic::
+
+        gross per paycheck   52,000.00 / 26            = 2,000.00
+        Social Security      2,000.00 x 6.20%          =   124.00
+        Medicare             2,000.00 x 1.45%          =    29.00
+
+    With no calibration the bracket path withholds no federal or state (no
+    config seeded), so net is ``2,000.00 - 153.00 = 1,847.00``.  With an
+    ACTIVE calibration at 10% federal, 5% state, 6.2% SS and 1.45% Medicare
+    (:func:`~app.services.calibration_service.apply_calibration`: the income
+    rates on the taxable base, which equals the gross here; FICA on the gross,
+    the SS cap far away), net is ``2,000.00 - 453.00 = 1,547.00``.
+
+    A retirement date is set so the SCALING arm runs -- the final-year gross
+    of a raise-free profile is the same ``$2,000.00``, scaled by the engine's
+    take-home rate back to the same net -- and the picture states it per
+    MONTH: ``net x 26 / 12``, rounded once.  Both cases are the same seed with
+    one row toggled, which is what shows the calibration is the whole
+    difference; the calibrated case failed on the tree before this step
+    (``4001.83`` where ``3351.83`` is asserted).
+    """
+
+    @staticmethod
+    def _seed_owner(db, seed_user, *, calibrated):
+        """The owner above, with the calibration row present or not."""
+        profile = make_salary_profile(
+            seed_user, db.session, annual_salary=Decimal("52000.00"),
+        )
+        db.session.flush()
+        seed_fica_config(seed_user["user"].id)
+        settings = (
+            db.session.query(UserSettings)
+            .filter_by(user_id=seed_user["user"].id)
+            .one()
+        )
+        settings.planned_retirement_date = date(2050, 1, 1)
+        if calibrated:
+            db.session.add(CalibrationOverride(
+                salary_profile_id=profile.id,
+                actual_gross_pay=Decimal("2000.00"),
+                actual_federal_tax=Decimal("200.00"),
+                actual_state_tax=Decimal("100.00"),
+                actual_social_security=Decimal("124.00"),
+                actual_medicare=Decimal("29.00"),
+                effective_federal_rate=Decimal("0.1000000000"),
+                effective_state_rate=Decimal("0.0500000000"),
+                effective_ss_rate=Decimal("0.0620000000"),
+                effective_medicare_rate=Decimal("0.0145000000"),
+                pay_stub_date=date(2026, 1, 16),
+                is_active=True,
+            ))
+        db.session.commit()
+
+    def test_the_calibrated_net_is_what_the_verdict_scales_by(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An active calibration reaches the income target: $1,547.00 a paycheck.
+
+        ``1,547.00 x 26 / 12 = 3,351.8333...`` -> ``3,351.83``.  The
+        uncalibrated door answered ``1,847.00`` here, which is ``4,001.83``.
+        """
+        with app.app_context():
+            self._seed_owner(db, seed_user, calibrated=True)
+            picture = _picture(seed_user["user"].id)
+            assert picture.net.pre_retirement_net_monthly == Decimal("3351.83")
+
+    def test_without_a_calibration_the_bracket_net_is_what_it_scales_by(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The same owner with no calibration row: $1,847.00 a paycheck.
+
+        ``1,847.00 x 26 / 12 = 4,001.8333...`` -> ``4,001.83``.  The pair is
+        the control: one row toggled, one figure moved, by the calibration's
+        ``$300.00`` of federal and state and nothing else.
+        """
+        with app.app_context():
+            self._seed_owner(db, seed_user, calibrated=False)
+            picture = _picture(seed_user["user"].id)
+            assert picture.net.pre_retirement_net_monthly == Decimal("4001.83")
 
 
 class TestTheDisplayedRates:

@@ -84,7 +84,7 @@ def mint_era(user_id: int, era: Era) -> PayEra:
             (``uq_pay_eras_user_effective_from``).  The writer holds that
             two ways before calling here: it retires every era whose first
             payday falls after the last surviving payday, and it bounds a
-            minting batch at its era's first payday (``pay_period_write``'s
+            minting batch at its era's first payday (``pay_period_batch``'s
             floor, since plan step ``C17-b-2``) -- so an era restated from a
             day the record already holds is REFUSED at the door rather than
             colliding on the key.  *Until then this sentence claimed the
@@ -134,7 +134,7 @@ def eras_describing(
     ``effective_from`` displaced under its own convention), so one whose
     first payday falls after the last surviving payday describes nothing the
     batch keeps; the batch's new paydays all fall past that day
-    (``pay_period_write``'s floor) and take their era from the mint decision.
+    (``pay_period_batch``'s floor) and take their era from the mint decision.
     ``retire_eras`` is handed this set, so what is judged against and what
     survives are one set.
 

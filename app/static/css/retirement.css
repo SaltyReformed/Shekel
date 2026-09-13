@@ -173,6 +173,19 @@
   text-align: left;
 }
 
+/* The recurring-raise rows' end-year pair (salary:S3-f-2b): the mode select
+   reads left like its label and is sized for "no end year" beside
+   form-select-sm's 2.25rem chevron padding; the year box keeps the numeric
+   right-align and is narrow enough for the pair to share the row on a phone. */
+.retire-assump-input--mode {
+  width: 8.75rem;
+  text-align: left;
+}
+
+.retire-assump-input--year {
+  width: 5rem;
+}
+
 .retire-assump-caption {
   font-size: 0.71875rem;
   color: var(--shekel-text-muted);

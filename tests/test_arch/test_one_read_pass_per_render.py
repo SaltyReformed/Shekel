@@ -1244,9 +1244,12 @@ class TestOnePaycheckProjectionPerProfilePerRender:
     prices the stored set alone, so a second pricer for the same profile is a
     memo that was missed.
     :meth:`~app.services.balance_at.BalanceContext.paychecks` is that memo.
-    (A ``/retirement/readiness`` request carrying a per-raise probe, plan step
-    salary:S3-f, legitimately builds a second one under the probed set; that
-    request is not among these three renders.)
+    **The one legitimate second construction is a ``/retirement/readiness``
+    request carrying a per-raise probe at a NON-stored year** (plan step
+    salary:S3-f-2b): the probed set is a different function, so it is a
+    pricer of its own, and :meth:`test_a_probed_raise_set_is_exactly_one_more_pricer`
+    pins it at exactly two -- the stored set's and the probed set's -- while
+    the same request carrying the STORED year stays at one.
 
     **Plan step salary:S3-d moved the door and NARROWED what this class has
     left to catch, and the narrowing is worth stating.**  It counted
@@ -1340,6 +1343,112 @@ class TestOnePaycheckProjectionPerProfilePerRender:
             f"{counts['ProfilePaychecks']} times; the page holds one read pass "
             "and its batch load and its seam reads must share that pass's "
             "pricer"
+        )
+
+    def test_retirement_prices_its_current_paycheck_through_the_pricer(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /retirement builds the pricer even when the profile funds nothing.
+
+        **The case above cannot see plan step salary:S3-f-2a, and this one
+        exists because it cannot.**  There the profile FUNDS the account, so
+        the feed loader builds its pricer and the count reads 1 whether the
+        verdict's current paycheck comes off that pricer or off a direct
+        engine call beside it -- the direct call (``_compute_current_pay``,
+        the door that priced without the calibration) constructed no
+        ``ProfilePaychecks`` at all.  Here nothing funds the account, so the
+        feed loader wires no profile and builds nothing: the ONE pricer this
+        render builds is the one the current paycheck is priced through.  On
+        the tree before S3-f-2a this count read 0.
+
+        It is still within the budget the class states -- one per active
+        profile -- and it is the direction the case above is blind to: a
+        regression re-pricing the current paycheck outside the pass reads 0
+        here and 1 there.
+        """
+        with app.app_context():
+            _seed_projecting_account(db, seed_user, seed_periods_today)
+
+        with counting_calls(_PROJECTION_DOOR) as counts:
+            resp = auth_client.get("/retirement")
+
+        assert resp.status_code == 200
+        assert counts["ProfilePaychecks"] == 1, (
+            f"/retirement built the owner's paycheck pricer "
+            f"{counts['ProfilePaychecks']} times for a profile that funds no "
+            "account; the verdict's current paycheck must be priced through "
+            "the pass's pricer (plan step salary:S3-f-2a), which is the one "
+            "construction this render has left"
+        )
+
+    @staticmethod
+    def _seed_forever_raise(db, seed_user):
+        """One recurring 5% January raise from next year, believed forever."""
+        # pylint: disable=import-outside-toplevel
+        from app.utils.dates import display_today
+        from tests._test_helpers import make_recurring_raise
+
+        profile = (
+            db.session.query(SalaryProfile)
+            .filter_by(user_id=seed_user["user"].id, is_active=True)
+            .first()
+        )
+        effective = display_today().year + 1
+        row = make_recurring_raise(
+            profile.id, db.session, effective_year=effective,
+        )
+        db.session.commit()
+        return row.id, effective
+
+    def test_a_probed_raise_set_is_exactly_one_more_pricer(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """A readiness refresh at a probed end year builds TWO pricers, not N.
+
+        The rail's pair at the STORED answer (``none``, the row's own) is the
+        stored plan and builds one pricer -- the probe cannot be told from a
+        plain refresh.  At a NON-stored year the request derives the stored
+        picture (the what-if panel's baseline) AND the probed one, and the
+        probed set is a legitimate second pricer: the current paycheck, the
+        payroll feed and every retire-later probe at that set must all read
+        that ONE pricer, so the count is exactly two.  Three or more is a
+        reader that built its own instead of asking the pass's memo.
+        """
+        with app.app_context():
+            account = _seed_projecting_account(
+                db, seed_user, seed_periods_today,
+            )
+            self._fund_the_account(db, seed_user, account)
+            raise_id, effective = self._seed_forever_raise(db, seed_user)
+
+        with counting_calls(_PROJECTION_DOOR) as stored_counts:
+            resp = auth_client.get(
+                "/retirement/readiness",
+                query_string={
+                    f"raise_end_mode_{raise_id}": "none",
+                    f"raise_end_year_{raise_id}": "",
+                },
+                headers={"HX-Request": "true"},
+            )
+        assert resp.status_code == 200
+        assert stored_counts["ProfilePaychecks"] == 1, (
+            "the rail's pre-filled pair built a second pricer; a probe equal "
+            "to the stored year must resolve to the stored plan"
+        )
+
+        with counting_calls(_PROJECTION_DOOR) as probed_counts:
+            resp = auth_client.get(
+                "/retirement/readiness",
+                query_string={
+                    f"raise_end_mode_{raise_id}": "year",
+                    f"raise_end_year_{raise_id}": str(effective),
+                },
+                headers={"HX-Request": "true"},
+            )
+        assert resp.status_code == 200
+        assert probed_counts["ProfilePaychecks"] == 2, (
+            f"a probed readiness refresh built {probed_counts['ProfilePaychecks']} "
+            "pricers; the stored set and the probed set are the only two"
         )
 
     def test_investment_projects_each_profile_once(

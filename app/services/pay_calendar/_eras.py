@@ -138,10 +138,10 @@ def projected_payday(anchor: date, rhythm: Rhythm, steps: int) -> date:
     PRODUCER, because the payday a COUNT uses and the payday a PERIOD opens on
     are one value).  Every consumer inherits the shift from this one
     expression: :func:`~._derive.derive_periods` closes the last saved period with it
-    (through :func:`payday_after`, as ``pay_period_write``'s floor does),
+    (through :func:`payday_after`, as ``pay_period_batch``'s floor does),
     :func:`~._projection.project_period_after` opens and closes a projected one,
     :func:`~._rhythm._backdated_paydays` walks the rhythm below the record,
-    ``pay_period_write._requested_paydays`` records the days a batch asks for,
+    ``pay_period_batch.requested_paydays`` records the days a batch asks for,
     and ``auth_service`` bounds the payday a sign-up may state.
 
     **The GRID is a module below this one** (``C14-d``, **R-PC60**), and the
@@ -487,7 +487,7 @@ def horizon_step(
     (:func:`matched_planned`) and the next payday is the one that follows it
     (:func:`following_planned`).  :func:`payday_after` reads this for the
     day itself, which is what :func:`~._derive.derive_periods` closes the
-    last saved period before and what ``pay_period_write``'s floor admits;
+    last saved period before and what ``pay_period_batch``'s floor admits;
     :func:`~._projection.project_period_after` reads it for the ordinal
     every projected period's ``period_index`` is counted from.
 

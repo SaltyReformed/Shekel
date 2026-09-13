@@ -713,10 +713,11 @@ def account_merchants(account_id: int) -> "dict[int, str]":
     refused that submission whole.  An ANSWERED
     :class:`~app.models.merchant.Merchant` row OUTLIVES its lines, so the union
     IS this table and the second half has nothing left to add.  The set is
-    exactly that union rather than a superset of it: deleting an import sweeps
-    the merchants no line names and no answer is about
-    (``statement_import._undo._forget_orphan_merchants``), which is the half
-    that preserved nothing.
+    that union and no more because deleting an import removes the merchants
+    its lines alone named and no answer is about
+    (``statement_import._reads.orphan_merchants_by_import``), the half that
+    preserved nothing, and because no door mints a merchant it does not also
+    write onto a line (``statement_import._merchants.resolve_merchants``).
 
     **What it is still FOR is the sentence, not the scope.**  A rule names a
     ``merchant_id`` held to this account by

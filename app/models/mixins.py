@@ -340,51 +340,6 @@ class SoftDeleteOverridableMixin:
     )
 
 
-class CompanionVisibilityMixin:
-    """Companion-visibility flag.
-
-    Adds one column:
-
-      ``companion_visible`` -- ``BOOLEAN NOT NULL DEFAULT FALSE``.  Exposes
-                               the row in the linked companion's read-only
-                               view.
-
-    Used by both :class:`TransactionTemplate` and :class:`Transaction`.
-    The flag means the same thing on each, but resolves differently: a
-    template-generated transaction inherits the template's flag (the
-    template is the source of truth for every instance it generates),
-    while an ad-hoc transaction -- which has no template -- carries its
-    own.  ``Transaction.visible_to_companion`` encodes that resolution.
-
-    **It was ``TrackingVisibilityMixin`` and carried ``is_envelope`` too,
-    until plan step ``balance:X-bi-1``.**  That column is declared per
-    model now because the two tables stopped treating it alike: on the
-    template it is the definition's own setting and stays a public column;
-    on a transaction the cell is SEALED -- mapped privately, read only
-    through ``Transaction.tracks_purchases`` -- because on a
-    template-generated row it is dead and keying on it read 4 envelopes
-    where there are 238.  ``companion_visible`` has the same dead cell and
-    is NOT sealed, because ``companion_service`` keys SQL on
-    ``Transaction.companion_visible`` and a plain property cannot serve a
-    query; that is its own finding, not this mixin's.  Both per-model
-    declarations of ``is_envelope`` are identical to the one they replace;
-    only their position in ``CREATE TABLE`` moved, which is load-bearing
-    nowhere here (see :class:`UserScopedMixin`).
-
-    Unlike :class:`SoftDeleteOverridableMixin`, this mixin IS safe on
-    the template table: the column already exists there with identical
-    semantics, so applying the mixin is a pure refactor (single
-    canonical definition), not a schema change.  Declared at class level
-    (NOT via ``@declared_attr``) so the SQLAlchemy DDL is byte-identical
-    to the prior inline declaration; an autogenerate diff against a
-    migrated schema must be empty.
-    """
-
-    companion_visible = db.Column(
-        db.Boolean, nullable=False, default=False, server_default="false",
-    )
-
-
 class OptimisticLockMixin:
     """Optimistic-locking version counter for concurrently-edited rows.
 
@@ -515,7 +470,10 @@ class SettleDatedMixin:
     block past pylint's ``duplicate-code`` threshold, which is the gate saying
     what was already true -- these are the same three columns recording the same
     fact about two kinds of row.  Extracting them is the same cleanup
-    :class:`SoftDeleteOverridableMixin` and :class:`CompanionVisibilityMixin` are.
+    :class:`SoftDeleteOverridableMixin` is.  (``TrackingVisibilityMixin`` was
+    another until plan steps ``balance:X-bi-1`` and ``X-bi-1b`` sealed both of
+    its columns on ``Transaction``: the two tables stopped treating them alike,
+    so each declares its own, and a mixin with one consumer dissolved.)
 
     **The ``datetime`` refusal is now on BOTH tables, and that is a widening
     rather than a move** (finding **N-179**).  It was a ``@validates`` on

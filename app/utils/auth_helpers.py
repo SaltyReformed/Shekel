@@ -66,7 +66,7 @@ def _safe_user_id():
     The ownership helpers run after the application's login gate
     (``app/login_gate.py``, a ``before_request`` hook that refuses every
     anonymous request not declared public) so ``current_user`` is always
-    authenticated, but the access decorators are also reachable in
+    authenticated, but the ownership readers below are also reachable in
     adversarial paths (an app built without the gate, ``LOGIN_DISABLED``
     set on a throwaway app, or test scaffolding that hits the helper
     directly).
@@ -74,7 +74,9 @@ def _safe_user_id():
     ``AttributeError`` from an anonymous user keeps the audit log
     informative on every branch -- a missing ``user_id`` on a
     ``resource_not_found`` event signals "anonymous probe" rather than
-    "the helper crashed".
+    "the helper crashed".  :func:`require_owner` is not one of those
+    readers: it reads the role outright and raises on such a principal
+    before it logs anything (plan step ``bank_import:X-gs``).
     """
     return getattr(current_user, "id", None)
 
@@ -89,9 +91,24 @@ def require_owner(f):
     Companions receive 404 (not 403) per the project security
     response rule: "404 for both 'not found' and 'not yours.'"
 
-    The ``getattr`` fallback to ``owner_id`` ensures safe behavior
-    when ``role_id`` is absent (e.g. test fixtures that do not
-    explicitly set it) -- the user is treated as an owner.
+    The role is read off ``current_user`` outright, as the role checks in
+    ``app/__init__`` and ``app/routes`` read it.  A principal with no
+    ``role_id`` at all (Flask-Login's ``AnonymousUserMixin``) reaches a
+    view only where the gate is off -- ``LOGIN_DISABLED``, an app built
+    without ``register_login_gate``, or test scaffolding that calls the
+    decorated view directly -- and raises ``AttributeError`` here rather
+    than running the view: the gate is the authentication check, and this
+    helper decides ROLE alone.  Until plan step ``bank_import:X-gs``
+    (ledger row **BI-486**) a ``getattr`` defaulted that read to the
+    OWNER's id "for test fixtures that do not set it", and the one
+    principal the default could ever admit was an anonymous one: a
+    ``User`` instance always HAS the attribute, because ``role_id`` is a
+    mapped column -- unset it reads ``None``, which the comparison
+    refuses, and persisted it reads the server default -- so no fixture
+    ever reached the default, and the second layer opened on exactly the
+    axis it existed for.  The one sibling that keeps a ``getattr`` on the
+    role, :func:`get_accessible_transaction`, defaults to ``None`` and so
+    fails closed.
 
     On the deny branch, emits ``access_denied_owner_only`` (ACCESS
     category, WARNING level) with the offending user's id, role id,
@@ -109,7 +126,7 @@ def require_owner(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         owner_id = ref_cache.role_id(RoleEnum.OWNER)
-        actual_role_id = getattr(current_user, "role_id", owner_id)
+        actual_role_id = current_user.role_id
         if actual_role_id != owner_id:
             log_event(
                 logger, logging.WARNING,

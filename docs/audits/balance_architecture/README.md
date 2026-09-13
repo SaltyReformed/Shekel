@@ -382,17 +382,11 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * [x] **X-bi-1** `18f9efac` -- the row's `is_envelope` cell SEALED on X-au-k's pattern rather than the move
     pinned (**R-BAL18**): private column, public name reads the accessor and writes the cell, every derived
     flag's class-level name refuses a query; the last two second spellings moved. No migration.
-  * [ ] **X-bi-1b** `companion_service` keeps the twin's dead cell alive: its query restates
-    `visible_to_companion` in SQL (`TransactionTemplate.companion_visible OR (template_id IS NULL AND
-    Transaction.companion_visible)`), a second spelling of the one property on the predicate that decides what
-    a companion may see, which is why `companion_visible` could not take `is_envelope`'s seal at X-bi-1
-    (**BAL-482**). Ruled **R-BAL19** from four worked options: the query keeps its owner / period / baseline
-    scenario / not-deleted scope and DELETES the visibility clause, the rows are filtered in Python through the
-    ONE property, and `companion_visible` then takes the same seal (private cell, public name reads the
-    accessor; the popover's `txn.companion_visible` control moves onto it). REJECTED: a `column_property` (a
-    stored copy inside the session with no reconciler), widening X-bi-5 (two spellings live until then), a
-    hybrid (two bodies of one rule). The companion page's ROW SET is unchanged -- only the filter's language
-    moves -- so the before/after equality is the grade. Closes **BAL-482**.
+  * [x] **X-bi-1b** `71e09443` -- the companion query asks each loaded row `visible_to_companion` and
+    restates nothing in SQL (**R-BAL19**); `companion_visible` sealed on the row as `is_envelope` was,
+    the one-consumer mixin dissolved, an id tie-break where `ORDER BY name` left a carried pair to the
+    plan. Row set before and after on a production restore: 64 pages, 232 of 951, byte-identical.
+    Closes **BAL-482**.
   * [ ] **X-bi-2** entries gain the full movement column set: a category, a type, `scenario_id` --
     which `cash_ledger/_amount_source.py` REFUSES a mismatch on -- and the settle-day basis pair.
     Additive; nothing reads them yet and the downgrade is a column drop.
@@ -1037,18 +1031,18 @@ section 4, under their unchanged ids.*
   two-term form needs NO guard: nothing can reach the state. **RE-SPECIFIED 2026-09-11 (R-BAL17)**
   and sequenced behind `X-cf`: it binds only once the suite's rows of a definition are the engine's.
   Deletes `_stated_amount`'s `on_date is None` arm with its test and the two tests grading frozen
-  migrations' `due_date IS NULL` arms; tightens `DerivedRowFields.due_date` to `date`. The transaction
-  half is PARKED at `0341a568`; its `down_revision` is re-pointed at dev's head (`flask db heads`).
+  migrations' `due_date IS NULL` arms; tightens `DerivedRowFields.due_date` to `date`. Its re-cut on
+  BOTH tables, PARKED at `d73ec289`; `down_revision` is re-pointed at dev's head (`flask db heads`).
 * [ ] **X-cf** -- the DECOMPOSED parent of the suite's ONE builder for a row of a definition
   (**R-BAL17**), split 2026-09-11 into five leaves; carries **BAL-480**, whose row holds the census.
-* [ ] **X-cf-3b** `test(fixtures): the plan-figure builders take the engine's row` -- carries **BAL-480**.
-  `test_carry_forward_service._create_envelope_txn`, `test_transaction_service._make_projected_txn`
-  and `test_amount_source._template_row`: callers state a figure the definition does not, or stage
-  two rows of one every-paycheck definition in one paycheck. A figure is stated on the definition or
-  laid on as the owner's re-price; a pair takes the pinned calendar; `X-bv-2`'s deleted no-due-date case rides with it.
+* [x] **X-cf-3b** `699bd05d` -- the three plan-figure builders (164 sites) take the engine's row; the owner's re-price and move gained ONE spelling each (`repriced_by_the_owner`, `moved_by_the_owner`, beside `generate_row_of`).
+  Two engine rows in one paycheck share ONE due date (D18), so WHICH row a carry topped up is read off the rows, never a figure; its review found an index restore restating the pre-X-au-h DDL that no test could see, because every case clones its own database.
 * [ ] **X-cf-4** `test(fixtures): the route suites take a definition's row from the engine` -- closes
   **BAL-480**. 28 census sites, five `txn.template_id = template.id` assignments and five hand-dated
   sites; a route test posts what the popover RENDERS (`budgets[txn.id]`), never a stored column.
+* [ ] **X-ch** `test(fixtures): a transfer of a definition is the engine's` -- closes **BAL-488**.
+  `generate_transfer_of(template, period)`, R-BAL17's builder one table over; 23 hand-built linked-transfer
+  sites in 11 files converted, so `X-bv-2`'s twin CHECK binds on rows the engine wrote.
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
   The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
   `is_override` term; the undated arm keeps the term because its index does. Script and test only.

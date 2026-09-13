@@ -89,13 +89,17 @@ from decimal import Decimal
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.merchant import Merchant
-from app.models.merchant_rule import MerchantRule
-from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_import import StatementImport
 from app.services.statement_match import release_match
 
 from ._anchor import release_anchors_from
 from ._identity import forget_identity_if_last
-from ._reads import matches_by_import, skips_by_import
+from ._reads import (
+    lines_by_import,
+    matches_by_import,
+    orphan_merchants_by_import,
+    skips_by_import,
+)
 
 
 @dataclass(frozen=True)
@@ -142,12 +146,19 @@ class ImportRemoval:  # pylint: disable=too-many-instance-attributes
         anchors_released: Balance anchors this delete invalidated by removing
             the lines they rested on.  Reported rather than silent because an
             account that had a checked bank balance and now has none is a
-            change the owner should see stated, not discover later.
+            change the owner should see stated, not discover later -- and
+            since plan step ``bank_import:X-gr`` (finding **BI-490**) the
+            confirmation previews it from the same predicate
+            (:func:`~._anchor.resting_on`).
         identity_forgotten: Whether the source-account pairing went too, which
             happens exactly when this was the account's LAST import from that
             source.
         merchants_forgotten: Merchants this account has been left with no
-            reason to remember (:func:`_forget_orphan_merchants`).
+            reason to remember -- the ones this import's lines alone named and
+            no standing rule is about
+            (:func:`~._reads.orphan_merchants_by_import`), deleted by
+            :func:`_forget_merchants`.  Previewed on the confirmation from
+            that same read since plan step ``bank_import:X-gr``.
         skips_forgotten: Decisions that a line was explained by nothing, which
             went with the lines they were about (plan step
             ``bank_import:X-gj-4a``, ruling **R-JG**).  **Counted rather than
@@ -214,8 +225,8 @@ class _Doomed:
         )
 
 
-def _forget_orphan_merchants(account_id: int) -> int:
-    """Delete this account's merchants that nothing has a reason to remember.
+def _forget_merchants(account_id: int, merchant_ids: "list[int]") -> int:
+    """Delete the merchants this delete has left nothing with a reason to remember.
 
     Plan step ``bank_import:X-gd-1``, on an adversarial security review of
     2026-08-25.  A merchant is created by an import and is deliberately NOT
@@ -235,31 +246,41 @@ def _forget_orphan_merchants(account_id: int) -> int:
     (:func:`~._identity.forget_identity_if_last`) makes the same trade for the
     same reason.
 
-    Run AFTER the import and its lines are gone, so *surviving* means what it
-    says.
+    **WHICH merchants is :func:`~._reads.orphan_merchants_by_import`'s
+    answer, read before the rows go, and this function only deletes** (plan
+    step ``bank_import:X-gr``, finding **BI-490**).  It swept the table for
+    *whatever is orphaned now* until that step, which the confirmation could
+    preview only by a second derivation agreeing with it under an invariant;
+    deleting the list the one read named is what makes the confirmation and
+    the receipt the same count over the same stored state.  What separates
+    the two evaluations is the window between the page's GET and this POST,
+    and it fails CLOSED: a line recorded or a rule stated for a listed
+    merchant in that window makes this DELETE raise under the two ``NO
+    ACTION`` foreign keys, and the door rolls the whole delete back with its
+    "nothing was changed" sentence -- where the sweep would have succeeded
+    with a count the confirmation never showed.  It still runs AFTER the
+    import and its lines are gone, because a line names its merchant under
+    ``fk_bank_statement_lines_merchant_account`` and would refuse the delete
+    while it stood.
 
     Args:
-        account_id: The account whose merchants to sweep.  Scoped like every
-            other read here; a merchant is per-account.
+        account_id: The account the merchants belong to.  The ids are this
+            account's by construction -- the read groups this account's lines
+            and a line's merchant is held to the line's account -- so the
+            filter is the scope every destructive statement here carries
+            rather than a control a case could fire.
+        merchant_ids: The merchants to delete, from the read.
 
     Returns:
         How many were removed, for the receipt.
     """
-    named_by_a_line = (
-        db.session.query(BankStatementLine.merchant_id)
-        .filter(BankStatementLine.account_id == account_id)
-        .filter(BankStatementLine.merchant_id.isnot(None))
-    )
-    answered_for = (
-        db.session.query(MerchantRule.merchant_id)
-        .filter(MerchantRule.account_id == account_id)
-    )
+    if not merchant_ids:
+        return 0
     return (
         db.session.query(Merchant)
         .filter(
             Merchant.account_id == account_id,
-            Merchant.id.notin_(named_by_a_line),
-            Merchant.id.notin_(answered_for),
+            Merchant.id.in_(merchant_ids),
         )
         .delete(synchronize_session=False)
     )
@@ -378,18 +399,15 @@ def delete_import(
     # import's declared span.  An import that recorded NOTHING removes nothing
     # and must therefore release nothing -- measured on the developer's own
     # database, where undoing a re-import of his 2026-08-16 export took a good
-    # anchor with it while deleting 0 lines.
-    lines_removed, earliest_removed = (
-        db.session.query(
-            db.func.count(BankStatementLine.id),
-            db.func.min(BankStatementLine.posted_on),
-        )
-        .filter(
-            BankStatementLine.import_id == import_id,
-            BankStatementLine.account_id == account_id,
-        )
-        .one()
-    )
+    # anchor with it while deleting 0 lines.  **The SAME read the page
+    # previews with** (:func:`~._reads.lines_by_import`), for the reason the
+    # two reads below give: the confirmation keys its preview of the release
+    # on this day, and a second spelling of it here could disagree.
+    owned = lines_by_import(account_id).get(import_id)
+    # **Decided BEFORE the rows go, from the ONE read the confirmation
+    # previews with** (:func:`~._reads.orphan_merchants_by_import`); deleted
+    # after, once the lines naming them are gone.
+    orphaned = orphan_merchants_by_import(account_id).get(import_id, [])
     # Counted BEFORE the cascade takes them, for the reason the line count
     # above is: afterwards the rows are gone and the receipt would have nothing
     # to read.  A skip is not released the way a match is -- it claims no app
@@ -420,15 +438,20 @@ def delete_import(
     # its span and its anchor while the evidence beneath it vanished, so the
     # coverage test reported "covered" over a `$150.00` hole -- reproduced
     # through these very doors by an adversarial review, 2026-08-23.  Run
-    # AFTER the delete so the released set is measured against what survives.
+    # AFTER the delete so the released set is measured against what survives,
+    # and naming this import's own exclusion anyway, so the call is the SAME
+    # expression the confirmation previewed with rather than its equivalent
+    # by ordering (plan step ``bank_import:X-gr``, finding **BI-490**).
     anchors_released = (
-        0 if earliest_removed is None
-        else release_anchors_from(account_id, earliest_removed)
+        0 if owned is None
+        else release_anchors_from(
+            account_id, owned.earliest, except_import_id=import_id,
+        )
     )
     db.session.flush()
 
     identity_forgotten = forget_identity_if_last(account_id, doomed.source_id)
-    merchants_forgotten = _forget_orphan_merchants(account_id)
+    merchants_forgotten = _forget_merchants(account_id, orphaned)
     db.session.flush()
 
     return ImportRemoval(
@@ -436,7 +459,7 @@ def delete_import(
         file_name=doomed.file_name,
         period_start=doomed.period_start,
         period_end=doomed.period_end,
-        lines_removed=lines_removed,
+        lines_removed=0 if owned is None else owned.count,
         matches_released=matches_released,
         identity_forgotten=identity_forgotten,
         merchants_forgotten=merchants_forgotten,

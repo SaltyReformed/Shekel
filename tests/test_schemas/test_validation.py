@@ -23,6 +23,7 @@ from app.schemas.validation import (
     PayHistorySchema,
     PayPeriodGenerateSchema,
     RaiseCreateSchema,
+    RetirementReadinessQuerySchema,
     SalaryProfileCreateSchema,
     SavingsGoalCreateSchema,
     SavingsGoalUpdateSchema,
@@ -1633,3 +1634,137 @@ class TestContributionPerPeriodRange:
                 self._base(contribution_per_period="0.00")
             )
         assert "contribution_per_period" in exc.value.messages
+
+
+class TestRaiseCreateSchemaEndYearAttribution:
+    """The ONE end-year rule's refusals land on THIS form's controls.
+
+    Plan step **salary:S3-f-2b** moved the rule into
+    :func:`app.services.salary_raises.end_year_of`, which blames a HALF of the
+    answer (``"mode"`` / ``"year"``); the schema maps that onto its own field
+    names, and nothing graded the mapping (an adversarial review of the step).
+    The rule itself is graded in ``test_salary_raises_end_year.py``; these
+    cases grade only the attribution and the resolved payload.
+    """
+
+    @staticmethod
+    def _recurring(**overrides):
+        data = {
+            "raise_type_id": "1", "effective_month": "1",
+            "effective_year": "2027", "percentage": "5",
+            "is_recurring": "on",
+        }
+        data.update(overrides)
+        return data
+
+    def test_an_unanswered_mode_lands_on_raise_end_mode(self):
+        """The mode half is the ``raise_end_mode`` control."""
+        errors = RaiseCreateSchema().validate(self._recurring())
+        assert errors == {"raise_end_mode": [
+            "Say how long this recurring raise is believed: pick an end "
+            "year, or say it has none.",
+        ]}
+
+    def test_a_missing_year_lands_on_terminal_year(self):
+        """The year half is the ``terminal_year`` control."""
+        errors = RaiseCreateSchema().validate(
+            self._recurring(raise_end_mode="year", terminal_year=""),
+        )
+        assert errors == {"terminal_year": [
+            "Enter the last year this raise is believed to happen.",
+        ]}
+
+    def test_a_year_before_the_effective_year_lands_on_terminal_year(self):
+        """...and names the payload's own effective year."""
+        errors = RaiseCreateSchema().validate(
+            self._recurring(raise_end_mode="year", terminal_year="2026"),
+        )
+        assert errors == {"terminal_year": [
+            "A raise cannot end before it starts: it takes effect in 2027.",
+        ]}
+
+    def test_no_end_year_resolves_the_column_to_none_whatever_the_box_holds(self):
+        """``drop_end_year_mode`` resolves through the same rule: mode wins."""
+        data = RaiseCreateSchema().load(
+            self._recurring(raise_end_mode="none", terminal_year="2031"),
+        )
+        assert data["terminal_year"] is None
+        assert "raise_end_mode" not in data
+        believed = RaiseCreateSchema().load(
+            self._recurring(raise_end_mode="year", terminal_year="2031"),
+        )
+        assert believed["terminal_year"] == 2031
+
+
+# ── RetirementReadinessQuerySchema: the rail's per-raise probe (S3-f-2b) ──
+
+
+class TestReadinessQueryGathersTheRaiseProbes:
+    """``raise_end_mode_<id>`` / ``raise_end_year_<id>`` become ``raise_probes``.
+
+    Plan step **salary:S3-f-2b**.  The rail submits every recurring raise's
+    end-year PAIR on every refresh, with the raise id in the parameter NAME;
+    ``BaseSchema`` drops unknown keys, so the pairs are gathered in
+    ``@pre_load`` into ``{raise_id: (mode, year)}`` and each is graded on the
+    salary form's own vocabulary and year window.  What is NOT graded here is
+    the cross-field rule against the raise's effective year -- that needs the
+    row, and ``RetirementInputs.plan_with`` applies it.
+    """
+
+    def test_two_pairs_load_as_the_probe_dict(self):
+        """One entry per raise id, each the ``(mode, year_or_None)`` pair."""
+        data = RetirementReadinessQuerySchema().load({
+            "swr": "4",
+            "raise_end_mode_1": "none", "raise_end_year_1": "",
+            "raise_end_mode_2": "year", "raise_end_year_2": "2031",
+        })
+        assert data["raise_probes"] == {1: ("none", None), 2: ("year", 2031)}
+        assert data["swr"] == Decimal("0.04000")
+
+    def test_no_pairs_means_no_probe_key(self):
+        """A request from a rail with no recurring raises carries nothing."""
+        data = RetirementReadinessQuerySchema().load({"swr": "4"})
+        assert "raise_probes" not in data
+
+    def test_an_empty_year_box_under_the_year_mode_reaches_the_service(self):
+        """``("year", None)`` is a valid PAIR here; the rule refuses it there.
+
+        The schema's job is the fields; whether "ends after" with no year is
+        an answer is the ONE end-year rule's question, asked against the row.
+        """
+        data = RetirementReadinessQuerySchema().load({
+            "raise_end_mode_5": "year", "raise_end_year_5": "",
+        })
+        assert data["raise_probes"] == {5: ("year", None)}
+
+    def test_a_mode_outside_the_vocabulary_is_refused(self):
+        """Only ``year`` and ``none`` are answers."""
+        with pytest.raises(ValidationError) as exc:
+            RetirementReadinessQuerySchema().load({
+                "raise_end_mode_5": "forever", "raise_end_year_5": "",
+            })
+        assert "raise_probes" in exc.value.messages
+
+    def test_a_year_without_its_mode_is_refused(self):
+        """A crafted query naming a year and no mode answers nothing."""
+        with pytest.raises(ValidationError) as exc:
+            RetirementReadinessQuerySchema().load({"raise_end_year_5": "2031"})
+        assert "raise_probes" in exc.value.messages
+
+    def test_a_year_outside_the_column_window_is_refused(self):
+        """The same 2000-2100 window the salary form's year fields state."""
+        for year in ("1999", "2101"):
+            with pytest.raises(ValidationError) as exc:
+                RetirementReadinessQuerySchema().load({
+                    "raise_end_mode_5": "year", "raise_end_year_5": year,
+                })
+            assert "raise_probes" in exc.value.messages
+
+    def test_a_raise_id_is_read_as_every_row_id_is(self):
+        """``RowId``'s spelling: ``007`` and an empty id are refusals."""
+        for raw in ("007", "", "-5", "1.9"):
+            with pytest.raises(ValidationError) as exc:
+                RetirementReadinessQuerySchema().load({
+                    f"raise_end_mode_{raw}": "none",
+                })
+            assert "raise_probes" in exc.value.messages
