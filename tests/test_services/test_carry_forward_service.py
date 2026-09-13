@@ -3674,12 +3674,15 @@ class TestACarriedForwardLeftoverRowIsDated:
                 AmountSourceEnum.TEMPLATE,
             )
 
-            # THE GRADED LINE, and it is first for a reason: with the producer
-            # mutated back to ``due_date=None`` this call raises
-            # ``AmountUnresolvable`` from ``_stated_amount``'s no-due-date arm.
-            # Asserting the date ahead of it would fail the case one line
-            # earlier and leave the pricing itself ungraded, which is a control
-            # that never runs the code it names.
+            # THE GRADED LINE.  With the producer mutated back to
+            # ``due_date=None`` the case now dies earlier still, at the
+            # leftover's INSERT inside ``carry_forward_unpaid`` --
+            # ``ck_transactions_template_row_needs_due_date`` (plan step
+            # X-bv-2) refuses the undated linked row, which is the storage
+            # tier saying what ``_stated_amount``'s deleted no-due-date arm
+            # used to say here.  The pricing is still asserted, because the
+            # CHECK grades that the row is DATED and only this grades that the
+            # date it carries prices the row.
             priced = resolve_transaction_amount(
                 handed_back, amount_basis_for(handed_back),
             )
