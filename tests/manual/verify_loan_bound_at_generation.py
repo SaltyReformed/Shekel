@@ -142,7 +142,6 @@ from app.routes._period_population import populate_new_periods
 from app.services import (
     loan_posting_service,
     pay_period_admin,
-    pay_period_gates,
     recurrence_engine,
     template_amount_service,
     transfer_recurrence,
@@ -329,7 +328,7 @@ with app.app_context():
     )
     regen = pay_period_admin.regenerate_pay_periods(
         USER_ID, first_open.start_date, 80, calendar.eras[-1].rhythm,
-        confirms=pay_period_gates.Confirmations(discard=True, gap=True),
+        confirm_discard=True,
     )
     db.session.flush()
     windows("D2-HOLE", templates)
