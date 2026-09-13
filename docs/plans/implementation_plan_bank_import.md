@@ -178,10 +178,12 @@ what it leaves a LATER step is on that step's own entry.
       REPRODUCED first at both doors: a skip landed on a line whose merchant now paid an account the
       owner holds (**R-JI**), and a purchase took its posting day over a stated transaction day.
       Graded by `test_locked_read_refresh.py` (4 cases, one firing control).
-- [ ] **X-gx** `fix(import): the offer names the merchant the door filed under` -- **BI-495**. The
-      create door reports the merchant it filed for, the receipt item carries it, and the offer
-      filters the applied items instead of reading the pre-lock `review`. Minted 2026-09-12 from
-      `X-gv`'s diff review; stacked on `X-gt` + `X-gv`.
+- [x] **X-gx** `c2e22790` -- `FiledMerchant` on `CreatedPurchase` and `AppliedItem`;
+      `rules_worth_offering` takes the applied items and drops `review`; the press builds
+      `RuleDoorAccepts` off `RuleView.build` and no longer runs `review_set`. Closed **BI-495**,
+      REPRODUCED first (the door applied, the receipt offered nothing). Graded by
+      `test_offered_rules.py` (BI-495 class + the real door behind every case) and `test_batch.py`
+      (only the create arm names a merchant).
 - [ ] **X-gy** `chore(ci): the suite's CI clock is measured, then fixed` -- **BI-496**. CI runs a
       database-bound test 5-13x slower than the host and only ~2x of it is accounted for; a matched
       A/B on the runner names the rest, the fix lands with its measurement, and `pytest.ini`'s cap
