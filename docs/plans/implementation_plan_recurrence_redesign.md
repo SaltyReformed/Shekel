@@ -434,7 +434,7 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
       one memoised reading, the date-bound closure rule is ONE function shared by `EndsOnDate` and
       `ClosesOn`, `has_ended` judges the reading the door produced, and the aggregator and its three
       callers take the read pass. `$0.00` on dev, `$200.00`/mo both ways in its tests. Opened
-      **N-513**, **N-514** (both R7d-f). As built: PR #253.
+      **N-513**, **N-514**, both closed at R7d-f-2. As built: PR #253.
 
 - [ ] **R7d-f -- the FORM's "Ends" control, its refusals and its preview.**
 
@@ -448,12 +448,15 @@ NULL-the-column census, because the difference is in what the next save persists
 
 - [x] **R7d-f-1** `6af50d53` -- the locked *Ends* row reads the RESOLVER and the locks read the
       pass, through one renamed identity and per-ROW lock flags. Closed **N-511**, opened
-      **REC-515**. **A LATER LEAF MUST OBEY**: the identity serves the form's locks and the door's
-      **R-R56** arm ONLY, never the resolver (**R-R35** stands); and the BROWSER PASS did not run,
-      because `shekel-dev-app` bind-mounts the main checkout rather than a worktree, so
-      `tests/manual/verify_recurrence_form.py` is still owed.
-- [ ] **R7d-f-2** -- memo the readings on the pass, put the horizon on `RuleReading`, and bound the
-      form's live preview by the loan's own closing date. Closes **N-513**, **N-514**, **REC-515**.
+      **REC-515** (closed at R7d-f-2). **A LATER LEAF MUST OBEY**: the identity serves the form's
+      locks and the door's **R-R56** arm ONLY, never the resolver (**R-R35** stands). Its browser
+      pass RAN with R7d-f-3's (154 checks).
+- [x] **R7d-f-2** `1d1f466f` -- the horizon rides ON `RuleReading` and `has_ended` takes no calendar
+      (**N-514**); the occurrence WALK is the pass's memo keyed by the COMPOSED value
+      (`placements_of`, R-R73's shape; a /savings render walks a goal transfer once, **N-513**); the
+      preview resolves an `UnsavedDefinition` through `resolved_submission`, destination
+      owner-checked (**REC-515**; R-R34's preview census now wholly corrected). Prerequisite:
+      `_context.py` split (**R-R75**, closes balance:BAL-483). Browser pass RAN (158 checks).
 - [x] **R7d-f-3** `e3661f6f` -- a stated stop is REFUSED at create where the destination loan holds
       no active payment (**R-R60**), "stated" meaning a real stop and never the key's presence
       (**R-R74**); the server emits which loans derive the stop and the script locks the "Ends" row
@@ -745,7 +748,7 @@ package's core; that package is now where it is filed.
       (baseline byte-identical over both loans; a planted `$500` sweep into the Mortgage `None` ->
       `2034-10-01`; the reset hole `2029-03-22` -> `2029-02-22`; August charged once, 91 -> 90).
       Closed **D46**, **D47**, **D48**, **D53**, **D54**; opened **REC-517** (R16-f), **REC-518**
-      (R5), **REC-519** (R20), **balance:BAL-483** (X-i1). The code supersedes its specification.
+      (R5), **REC-519** (R20), **balance:BAL-483** (closed at R7d-f-2, **R-R75**).
 
 - [ ] **R20** -- The setup door records the stated balance as the assertion it is.
 

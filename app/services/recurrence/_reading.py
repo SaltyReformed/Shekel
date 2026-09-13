@@ -11,7 +11,8 @@ through.  One composition and its projections:
   with ``dataclasses.replace``, re-author the whole value), which is why it is
   a READ living beside the other reads rather than inside the writer.
 * :func:`read_rule` -- **THE composition**: resolve the row against the
-  owner's schedule, then walk and place its occurrences, keeping BOTH halves.
+  owner's schedule, then walk and place its occurrences, keeping BOTH halves
+  and the horizon the walk reached (plan step R7d-f-2).
 * :func:`resolved_recurrence` -- the first half alone, for a caller that wants
   what the rule MEANS and not where its rows land.
 * :func:`rule_occurrences` -- the second half alone, the shape three surfaces
@@ -36,7 +37,9 @@ built, and they must not be able to disagree:
 * ``recurring_view``, whose next-date column must name the date the grid cell
   it points at will carry -- through the same door since plan step R7d-d;
 * ``routes._recurrence_preview``, the form's live "next five occurrences"
-  fragment, which must show what saving would produce;
+  fragment, which must show what saving would produce -- through the composed
+  door since plan step R7d-f-2 (``recurring_definition.resolved_submission``),
+  the same walk narrowed by the destination;
 * ``tests.oracles.recurrence_baseline``, the frozen behaviour snapshot every
   step of the redesign is measured against.
 
@@ -101,7 +104,8 @@ class RuleReading:
     """One stored rule, read against its owner's schedule.
 
     Both halves of :func:`read_rule`'s answer, held together so a caller that
-    needs each of them asks once.
+    needs each of them asks once -- and, since plan step R7d-f-2, how far the
+    walk that produced them reached.
 
     Attributes:
         resolved: What the rule MEANS on the two axes, or ``None`` when the
@@ -110,24 +114,43 @@ class RuleReading:
         placements: Every ``(occurrence, pay period)`` pair the rule names
             through the schedule's horizon; empty when *resolved* is ``None``,
             because a schedule with no periods can host nothing.
+        horizon: The last day the schedule the walk ran against reaches
+            (:meth:`~app.services.pay_calendar.PayCalendar.horizon`), or
+            ``None`` when it holds no pay periods.  **The fact that tells a
+            finished definition from an unextended schedule**, carried ON the
+            value the walk produced rather than beside it (plan step R7d-f-2,
+            plan ledger row **N-514**): :func:`has_ended` took the calendar as
+            a third argument until then, so a caller could pair a reading
+            with another owner's or another day's calendar and be answered a
+            confident "ended" about a live commitment.  Its one caller
+            handed the pass's own calendar, so the pairing was kept by a
+            contract --
+            rule 14's tell -- and now there is nothing to keep: the walk's
+            window end IS this value (``occurrence_placements`` walks through
+            the calendar's horizon), and the value travels with the placements
+            it bounded.
     """
 
     resolved: ResolvedRecurrence | None
     placements: tuple[OccurrencePlacement, ...]
+    horizon: date | None
 
     def __post_init__(self) -> None:
-        """Refuse a value whose two halves disagree.
+        """Refuse a value whose halves disagree.
 
         A rule that could not be resolved named no occurrence, so placements
-        without a meaning is a value that contradicts itself.  A check rather
-        than a docstring guarantee, for the reason
-        :class:`~app.services.recurrence.OccurrencePlacement` records in its
-        own: this project has been burned by an invariant the generated
-        ``__init__`` did not enforce.
+        without a meaning is a value that contradicts itself; and a walk that
+        placed anything ran against a schedule that reaches somewhere, so
+        placements with no horizon is one too
+        (``_occurrence._placements`` answers ``()`` before it walks when the
+        horizon is ``None``).  Checks rather than docstring guarantees, for
+        the reason :class:`~app.services.recurrence.OccurrencePlacement`
+        records in its own: this project has been burned by an invariant the
+        generated ``__init__`` did not enforce.
 
         Raises:
             RecurrenceResolutionError: When there are placements but no
-                resolved meaning.
+                resolved meaning, or placements but no horizon.
         """
         if self.resolved is None and self.placements:
             raise RecurrenceResolutionError(
@@ -137,6 +160,36 @@ class RuleReading:
                 f"itself and a caller filtering on one field would read the "
                 f"other."
             )
+        if self.horizon is None and self.placements:
+            raise RecurrenceResolutionError(
+                f"a rule reading carries {len(self.placements)} placement(s) "
+                f"with no horizon.  A walk places nothing on a schedule that "
+                f"reaches nowhere, so the placements were walked against some "
+                f"other schedule than the one this value claims."
+            )
+
+    def bound_reading(self) -> BoundReading:
+        """Return what a closing bound needs to know about this reading.
+
+        The projection every :meth:`~app.services.recurrence.EndBound
+        .has_closed` and :meth:`~app.services.recurrence.DerivedStop
+        .has_closed` takes: the occurrence dates the walk emitted, and how far
+        the schedule reached.  Stated once here rather than at each caller,
+        so the two facts a :class:`~app.services.recurrence.BoundReading`
+        pairs are read off ONE value and cannot be paired from two.
+
+        Returns:
+            The :class:`~app.services.recurrence.BoundReading` -- empty
+            occurrences and a ``None`` horizon for a reading of an owner with
+            no pay periods, which every bounded shape reads as "still owes"
+            (see :class:`~app.services.recurrence.BoundReading`).
+        """
+        return BoundReading(
+            occurrences=tuple(
+                placement.occurrence for placement in self.placements
+            ),
+            horizon=self.horizon,
+        )
 
 
 def stored_cadence(rule: RecurrenceRule) -> CadenceReading | None:
@@ -564,11 +617,13 @@ def read_rule(
         RecurrenceGenerationError: See :func:`rule_occurrences`.
     """
     resolved = resolved_recurrence(rule, calendar)
-    if resolved is None:
-        return RuleReading(resolved=None, placements=())
     return RuleReading(
         resolved=resolved,
-        placements=occurrence_placements(resolved, calendar),
+        placements=(
+            () if resolved is None
+            else occurrence_placements(resolved, calendar)
+        ),
+        horizon=calendar.horizon(),
     )
 
 
@@ -581,9 +636,11 @@ def rule_occurrences(
     has taken since plan step R4b-2 -- and the generation seam too, until plan
     step R7d-c-2 moved it onto the composed door, whose placements are this
     function's narrowed by the destination.  No production reader calls it
-    since then (census 2026-09-11): the form preview composes ``resolve``,
-    ``occurrence_placements`` and ``placed_periods`` over a transient rule
-    itself, and the oracle and the generation tests are what read this.
+    since then (census 2026-09-11, re-read 2026-09-13): the form preview took
+    the composed door too at plan step R7d-f-2
+    (``recurring_definition.resolved_submission``) and walks the NARROWED
+    value through ``occurrence_placements`` and ``placed_periods``; the oracle
+    and the generation tests are what read this.
 
     **The rule's own window is applied, and a caller cannot bypass it.**
     ``start_date`` binds through the anchor
@@ -656,8 +713,7 @@ def rule_occurrences(
 
 
 def has_ended(
-    rule: RecurrenceRule, reading: RuleReading, calendar: PayCalendar,
-    *, on: date,
+    rule: RecurrenceRule, reading: RuleReading, *, on: date,
 ) -> bool:
     """Return whether everything that stops a definition had done so before *on*.
 
@@ -691,7 +747,18 @@ def has_ended(
     ended; the schedule simply has not been extended to them, and answering
     "ended" there would silently drop a live commitment out of two money
     totals.  Each shape states its own test for telling those apart, from the
-    horizon carried beside the occurrences.
+    horizon the reading carries WITH its occurrences.  **It took the calendar
+    as a third argument for that horizon until plan step R7d-f-2** (plan
+    ledger row **N-514**): the placements had been walked against whatever
+    calendar the door was handed while this read ``calendar.horizon()`` off a
+    parameter of its own, so a caller pairing a reading with another owner's
+    or another day's calendar got a confidently wrong answer about whether a
+    payment leaves the Recurring totals and the ``/savings`` floor.  Its one
+    production caller (``obligations_aggregator.monthly_or_none``) handed the
+    pass's memoised calendar, which is rule 14's tell -- a correspondence
+    kept by contract.  The horizon now rides on
+    :class:`RuleReading` (the value the walk produced knows how far it
+    reached), so the pairing is unrepresentable rather than maintained.
 
     **Every bounded shape answers from whether the definition still owes an
     occurrence** (developer ruling 2026-08-13, plan ledger row **D33**, and
@@ -710,13 +777,15 @@ def has_ended(
     schedule's horizon, emitted under the composed closing), so the
     :class:`~app.services.recurrence.BoundReading` is built from them and a
     definition read once is walked once (``CLAUDE.md`` rule 14, ONE WALK).
-    *Read once* is the caller's part: the Recurring surface reads each
-    definition once per build, while a ``/savings`` render reads a transfer
-    from checking into a goal account in BOTH its committed floor and that
-    goal's contribution, once per set -- two reads that predate this step and
-    that now each cost a resolve and a walk where an unbounded rule used to
-    cost neither.  The remedy is a memo of definition readings on the pass,
-    which is not this step's.
+    *Read once* was the caller's part until plan step R7d-f-2: the Recurring
+    surface reads each definition once per build, while a ``/savings`` render
+    reads a transfer from checking into a goal account in BOTH its committed
+    floor and that goal's contribution, once per set -- two reads that
+    predate R7d-e and that each cost a resolve and a walk where an unbounded
+    rule used to cost neither (plan ledger row **N-513**).  The resolve
+    became the pass's memo at R16-b-2 and the walk at R7d-f-2
+    (``BalanceContext.placements_of``), so the second read is memo hits and
+    "read once" is structural rather than a discipline of the caller's.
 
     **An owner with no pay periods is answered from the AUTHORED bound alone,
     exactly as before this step.**  The door resolves nothing for such an
@@ -742,11 +811,10 @@ def has_ended(
             directly because there is no resolved value to carry it.
         reading: The definition read through the composed door.  Its
             ``resolved`` carries the closing; its ``placements`` are every
-            occurrence the definition names through the schedule's horizon.
-        calendar: The OWNER's whole pay-period schedule, for its horizon --
-            the fact that tells a finished definition from an unextended
-            schedule.  The same calendar *reading* was walked against: both
-            callers hand the pass's memoised one.
+            occurrence the definition names through the schedule's horizon,
+            and its ``horizon`` is that horizon -- the fact that tells a
+            finished definition from an unextended schedule, read off the
+            reading through :meth:`RuleReading.bound_reading`.
         on: The day being asked about, normally today.
 
     Returns:
@@ -757,21 +825,8 @@ def has_ended(
     if resolved is None:
         return end_bound_from_columns(
             rule.end_date, rule.max_occurrences,
-        ).has_closed(
-            on=on,
-            reading=lambda: BoundReading(
-                occurrences=(), horizon=calendar.horizon(),
-            ),
-        )
-    return resolved.closing.has_closed(
-        on=on,
-        reading=lambda: BoundReading(
-            occurrences=tuple(
-                placement.occurrence for placement in reading.placements
-            ),
-            horizon=calendar.horizon(),
-        ),
-    )
+        ).has_closed(on=on, reading=reading.bound_reading)
+    return resolved.closing.has_closed(on=on, reading=reading.bound_reading)
 
 
 def placed_periods(

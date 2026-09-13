@@ -509,7 +509,7 @@ class _SeamBatches:
     **That is what lets ONE predicate cover both of this projection's seam
     doors** (plan step X-s2, ruling R-BF, finding N-105).  The seam raises on a
     ``None`` scenario by contract and expects its callers to guard BEFORE
-    calling (``balance_at._context.require_scenario``); the projection reaches
+    calling (``balance_at.require_scenario``); the projection reaches
     it two ways -- the per-kind balance maps and the per-loan resolution -- and
     only the first was guarded, so four account kinds degraded to a blank
     balance while the fifth raised ``ValueError`` four lines later.  Both now

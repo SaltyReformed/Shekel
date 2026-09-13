@@ -522,10 +522,13 @@ class TestComputeReadinessWhatif:
 
         *It was ``test_merit_horizon_override_moves_the_target`` and drove
         the same figures through ``plan_with(merit_horizon_override=0)``.
-        That axis was a SETTING on the owner; there is no plan-point axis
-        over the salary path until plan step salary:S3-f adds a per-raise
-        probe, so the case drives the stored fact instead -- which is the
-        thing S3-c actually changed, and the what-if was never the subject.*
+        That axis was a SETTING on the owner, and S3-c left no plan-point
+        axis over the salary path, so the case drives the stored fact instead
+        -- which is the thing S3-c actually changed, and the what-if was never
+        the subject.  Plan step salary:S3-f-2b added the per-raise probe
+        (``plan_with(raise_probes=...)``); the stored fact is still what THIS
+        case grades, and ``tests/test_services/test_retirement_plan.py``
+        grades the probe.*
         """
         with app.app_context():
             _build_scenario(db, seed_user)

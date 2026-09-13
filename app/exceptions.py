@@ -118,7 +118,7 @@ class AmountUnresolvable(ShekelError, ValueError):
 class ForeignAccountError(ShekelError, ValueError):
     """A read pass was asked to derive state for an account it does not own.
 
-    Raised by ``app.services.balance_at._context._memoize_once`` -- the ONE
+    Raised by ``app.services.balance_at._memoize._memoize_once`` -- the ONE
     primitive that creates state keyed by ``account.id`` on a
     :class:`~app.services.balance_at.BalanceContext` -- when the account handed
     in belongs to some other owner than the pass's ``user_id`` (plan step

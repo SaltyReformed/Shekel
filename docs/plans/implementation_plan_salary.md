@@ -173,27 +173,30 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 - [x] **S3-f-1** `c463dfbc` -- the engine seam (**R-SAL20**): `RaiseTerms` is the engine's contract
       with a raise, `PayrollBasis.raises` is always that value, the pricer keys its memo on the
       canonical set, `load_payroll_feeds` is wiring plus a per-raise-set build. NO FIGURE MOVED
-      (X-bl control byte-identical). **S3-f-2b MUST OBEY**: `retirement_dashboard_service` still
-      spells a raise type's name beside `SalaryRaise.raise_type_name`.
-- [ ] **S3-f-2 -- the plan point and the probe** (the DECOMPOSED parent, split 2026-09-12 when
-      **R-SAL21** was MEASURED to move the stored verdict: `/retirement`'s current-pay door prices
-      with no calibration, so one calibrated producer is a money leaf and the probe follows it).
+      (X-bl control byte-identical). Its obligation -- `retirement_dashboard_service` spelled a
+      raise type's name beside `SalaryRaise.raise_type_name` -- was discharged at `S3-f-2b`.
+- [x] **S3-f-2** `587c20d5` -- the plan point and the probe (the DECOMPOSED parent, split 2026-09-12
+      when **R-SAL21** was MEASURED to move the stored verdict: `/retirement`'s current-pay door
+      priced with no calibration, so one calibrated producer was a money leaf and the probe followed
+      it). Both leaves shipped, so the container ships with the last of them.
 - [x] **S3-f-2a** `f3032c87` -- `/retirement` prices its current paycheck through the pass's pricer,
       calibrated (**R-SAL21** as amended): `_compute_current_pay` and `_CurrentPay` went, the
       paycheck is derived per plan point and the gap scales by the engine's own take-home rate.
       MOVED the 2026-09-10 net `$2,541.49 -> $2,572.78` and required savings
       `$1,120,707.00 -> $1,162,269.00` on the developer's data; `/savings` and `/investment` did not
       move. Closed **N-547** (the payday priced 2 -> 1 times) and **P62**'s `/retirement` half.
-- [ ] **S3-f-2b** -- the point and the probe: `PlanPoint.raise_end_years`, one resolved
-      `(raise_id, year-or-None)` per recurring raise on every active profile, canonical through
-      `plan_with`; the batch carries the `PayrollWiring` and `_derive_picture` builds the feeds per
-      raise set through `build_payroll_feeds`; the pension, the target and the current paycheck take
-      the believed set off the point's pricer; each recurring-raise rail row becomes the salary
-      form's end-year pair (**R-SAL13**'s mode, authoritative) sending the what-if. No stored figure
-      moves.
+- [x] **S3-f-2b** `587c20d5` -- the point and the probe: `PlanPoint.raise_end_years` (canonical;
+      `terms_for` feeds every salary-path read), `plan_with(raise_probes=...)` resolving the rail's
+      pairs against the rows by the ONE rule `salary_raises.end_year_of` (all three **R-SAL22**
+      clauses; the salary schema calls it too). NO STORED FIGURE MOVED. **S3-f-3 MUST OBEY**: the
+      rail's controls are `raise_end_mode_<id>` / `raise_end_year_<id>`; the probe's 422 is a JSON
+      the page never renders (the Save's rail re-render is its home); `projection_inputs.py` is 992.
 - [ ] **S3-f-3** -- the Save (**R-SAL22**): a write-through arm of `retirement.update_settings`, the
       ownership 404, the ONE end-year rule shared with `RaiseCreateSchema` against the row's
       effective year, the ORM write and the rail re-render with the error on its row.
+- [ ] **S3-f-4** -- the refused probe RENDERED: the readiness GET re-renders the rail with the
+      message on the raise's row in the one 422 shape the Save uses, and the schema's nested shape
+      goes. Minted 2026-09-13 from `S3-f-2b`'s reviews (**SAL-548**); the container ships with it.
 - [x] **S3-e** `a6af5b3c` -- the hold is DELETED (the DECOMPOSED parent, split 2026-09-06 into the
       NO-MONEY re-homing and the MONEY; **R-SAL16** carries the argument and **R-SAL15** the
       design). Both leaves shipped, so the container ships with the last of them.

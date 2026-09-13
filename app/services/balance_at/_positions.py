@@ -66,7 +66,8 @@ from decimal import Decimal
 
 from app.models.account import Account
 
-from ._context import BalanceContext, _memoize_once, require_scenario
+from ._context import BalanceContext
+from ._memoize import _memoize_once, require_scenario
 from ._fold import fold_from_walk
 from . import _kernel
 from ._plan import memoized_plan
@@ -417,7 +418,7 @@ def memoized_payoff(account: Account, ctx: BalanceContext) -> date | None:
     :func:`~app.services.balance_at._plan.memoized_plan`): it fills the read pass's
     per-loan payoff cache (:attr:`~app.services.balance_at.BalanceContext.payoffs`)
     from :func:`loan_payoff_date` through the shared store-once primitive
-    (``_context._memoize_once``), so the fold-to-zero runs at most once per account
+    (``_memoize._memoize_once``), so the fold-to-zero runs at most once per account
     per pass.  A single ``/savings`` render asks for the payoff twice on one loan
     (the debt tile's :func:`~app.services.balance_at.loan_figures`, and the
     home-equity card's configured-loan test), and the property page asks again per

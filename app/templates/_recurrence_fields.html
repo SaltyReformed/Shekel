@@ -318,8 +318,10 @@
 
 
 {# The live occurrence preview.  recurrence_form.js fetches ``preview_url``
-   (the kind-agnostic templates.preview_recurrence endpoint, which reads
-   only the rule params + the user's periods) and swaps the result in. #}
+   (the kind-agnostic templates.preview_recurrence endpoint, which reads the
+   rule params, the transfer form's destination when it states one, and the
+   user's periods -- a transfer into a loan previews to the loan's payoff,
+   plan step R7d-f-2) and swaps the result in. #}
 {# The copy matches recurrence_form.js's own no-cadence line verbatim, so the
    pre-script render and the first script pass do not say two different things
    about the same state.  The form no longer has a "pattern" to select. #}

@@ -397,11 +397,17 @@ def readiness_fragment():
     query parameters recompute the readiness picture as a what-if against
     the stored-settings baseline and return the panel's delta facts
     (funded-ratio delta in points, shortfall delta in dollars); optional
-    ``months`` / ``contribution`` set where the two lever steppers sit.  All
-    validated through :class:`RetirementReadinessQuerySchema` (bounds -> 422
-    on garbage).  Renders the minimal ``_readiness.html`` stub P3b restyles,
-    with the income panel and the lever card as out-of-band siblings so every
-    figure the request moved updates in one round trip.
+    ``months`` / ``contribution`` set where the two lever steppers sit; and
+    since plan step salary:S3-f-2b the rail's per-raise end-year pairs
+    (``raise_end_mode_<id>`` / ``raise_end_year_<id>``) probe how long each
+    recurring raise is believed.  All validated through
+    :class:`RetirementReadinessQuerySchema` (bounds -> 422 on garbage); a
+    probe naming a raise that is not this owner's, or a year before the
+    raise's own effective year, is refused by ``plan_with`` against the ROWS
+    and answered with the same 422 shape.  Renders the minimal
+    ``_readiness.html`` stub P3b restyles, with the income panel and the lever
+    card as out-of-band siblings so every figure the request moved updates in
+    one round trip.
 
     **ONE set of assumptions per response, since plan step C2-f2d-4.**  The
     verdict, the chart, the income meter and both levers are computed at the
@@ -431,14 +437,26 @@ def readiness_fragment():
     inputs = retirement_plan.load_retirement_inputs(
         BalanceContext.build(current_user.id),
     )
-    # RESOLVED against the owner's settings, not carried as overrides: a
-    # saveable rail input is pre-filled with the stored value and so submits it
-    # on every request, and an override that equals the stored value is the
-    # stored plan.  ``plan_with`` is the door that makes those one key.
-    point = inputs.plan_with(
-        swr_override=query_data.get("swr"),
-        return_rate_override=query_data.get("return_rate"),
-    )
+    # RESOLVED against the owner's settings and rows, not carried as
+    # overrides: a saveable rail input is pre-filled with the stored value and
+    # so submits it on every request, and an override that equals the stored
+    # value is the stored plan.  ``plan_with`` is the door that makes those
+    # one key -- and the one that refuses a probe on a raise this owner does
+    # not have, which is why that refusal is caught here and not in the
+    # schema: the schema has no rows to check against.
+    try:
+        point = inputs.plan_with(
+            swr_override=query_data.get("swr"),
+            return_rate_override=query_data.get("return_rate"),
+            raise_probes=query_data.get("raise_probes"),
+        )
+    except retirement_plan.RaiseProbeError as exc:
+        return jsonify(errors={
+            "raise_probes": {
+                str(raise_id): [message]
+                for raise_id, message in exc.errors.items()
+            },
+        }), 422
     whatif = retirement_readiness.compute_readiness_whatif(inputs, point)
     return render_template(
         "retirement/_readiness.html",

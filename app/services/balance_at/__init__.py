@@ -148,10 +148,15 @@ wrapper -- whose ``stale_anchor_warning`` field the fold makes unrepresentable,
 a settled row after the last assertion now MOVING the balance rather than
 warning that it might not have (findings cash D1 / D2, N-50).
 **Plan step D-ctx then moved the read
-pass's resolution CONTEXT in too** (``_context`` = ``BalanceContext`` /
-``require_scenario``, re-exported below as the seam's public read-pass handle):
-it sits at the internal DAG's FLOOR, importing only the outer loan leaves it
-memoizes and depended on by every producer that folds a loan.  **Plan step E1d-a
+pass's resolution CONTEXT in too** (``_context`` = ``BalanceContext``, and
+``require_scenario`` beside it until plan step recurrence:R7d-f-2 moved that
+guard and ``_memoize_once`` into ``_memoize`` -- ruling **R-R75**, a split of
+the module plan ledger row **BAL-483** recorded at the 1,000-line cap, on a
+different cut than the one the row named; ``require_scenario`` is re-exported
+below as before and ``_memoize_once`` stays package-private, imported by the
+five sibling modules that fill a per-account cache): it sits one rung above
+the internal DAG's FLOOR, importing ``_memoize`` and the outer loan leaves it
+memoizes, and depended on by every producer that folds a loan.  **Plan step E1d-a
 then moved the db-facing WHOLE-LOAN read in** (``_resolution`` =
 ``resolved_loan`` / ``ResolvedLoan`` / ``contractual_schedule_from_origination``,
 formerly the public module ``app.services.loan_resolution``): its only production
@@ -186,13 +191,18 @@ siblings, plus ``_confirmed_view`` for the confirmed seed it threads into every
 resolution (plan step E1d-b); ``_confirmed_view`` imports ``_context`` and
 ``_fold``, so that sub-chain is a DAG too.  ``_resolution`` also holds the
 loan-payment IDENTITY and ruling R-R56's arm since R16-b-2 (``_plan`` reads
-them and ``_loan_figures`` sits above ``_plan``).  ``_context`` sits at the
-floor, with ``_fold`` and ``_asset_contributions`` -- the three modules that
-import no sibling at runtime.  ``_plan``'s ``LoanForwardPlan``, ``_resolution``'s
+them and ``_loan_figures`` sits above ``_plan``).  ``_memoize`` sits at the
+floor, with ``_assertions``, ``_asset_contributions``, ``_fold`` and
+``_plan_records`` -- the five modules that import no sibling at runtime (an
+AST census of 2026-09-12; the sentence read "three" and named ``_context``
+among them until recurrence:R7d-f-2, wrong on both counts since ``_assertions``
+and ``_plan_records`` joined); ``_context`` imports ``_memoize`` and nothing
+else of the package.  ``_plan``'s ``LoanForwardPlan``, ``_resolution``'s
 ``ResolvedLoan`` and ``_cash_fold``'s ``AssembledCashFold`` are all type-only
 edges typing the caches the seam FILLS, so the arrow from the fourteen modules
 above stays one-way and the cycle finding N-25 names stays open.
-``_memoize_once`` lives here, and since plan step **X-i4** it is where a read
+``_memoize_once`` lives in ``_memoize`` (in ``_context`` until
+recurrence:R7d-f-2), and since plan step **X-i4** it is where a read
 pass BINDS the account it values: it takes the ``Account`` rather than a bare
 id and refuses one the pass does not own, before the membership test, so every
 per-account cache on the pass inherits the rule from the only thing that can
@@ -227,7 +237,8 @@ from ._cash_flow import (
     records_balance_at,
 )
 from ._confirmed_view import confirmed_view
-from ._context import BalanceContext, require_scenario
+from ._context import BalanceContext
+from ._memoize import require_scenario
 from ._grid import (
     GridBalanceView,
     GridColumn,
@@ -306,8 +317,10 @@ from ._secured_debt import (
 # ``._require_scenario`` was dropped in the same commit and for the same reason:
 # no reader outside this package ever reached it.  The seam modules that want it
 # import it directly -- four of them under this name from ``._inputs``, and
-# ``._plan`` / ``._positions`` as ``require_scenario`` from ``._context``, which
-# is the same guard under the name it is defined with.  (Its underlying ``require_scenario`` stays
+# ``._context`` / ``._inputs`` / ``._plan`` / ``._positions`` as
+# ``require_scenario`` from ``._memoize`` (from ``._context`` until
+# recurrence:R7d-f-2 moved it), which is the same guard under the name it is
+# defined with.  (Its underlying ``require_scenario`` stays
 # public below -- that is the seam's documented read-pass handle, and a
 # different name with a real audience.)  ``._accruing_balances`` was a fourth until plan step
 # X-c2b2 deleted it: the grid's Interest row IS the accrual map ``_interest``

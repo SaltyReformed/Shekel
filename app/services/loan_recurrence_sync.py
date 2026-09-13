@@ -107,7 +107,6 @@ from app.services.recurrence import (
     ClosesOn,
     DerivedStop,
     EndsOnDate,
-    RecurrenceOwner,
     RecurrenceSpec,
     ResolvedRecurrence,
     end_bound_from_columns,
@@ -131,12 +130,17 @@ from app.utils.log_events import (
 if TYPE_CHECKING:  # pragma: no cover -- typing only; these are ORM row types
     from app.models.loan_params import LoanParams
     from app.models.recurrence_rule import RecurrenceRule
+    # Type-only, both: ``RecurrenceOwner`` names only ``loan_payment_window``'s
+    # parameter here, and ``recurring_definition`` imports THIS module at
+    # runtime, so the edge back is a forward reference and nothing more.
+    from app.services.recurrence import RecurrenceOwner
+    from app.services.recurring_definition import UnsavedDefinition
 
 logger = logging.getLogger(__name__)
 
 
 def loan_payment_window(
-    template: RecurrenceOwner,
+    template: "RecurrenceOwner | UnsavedDefinition",
     resolved: ResolvedRecurrence,
     ctx: BalanceContext,
 ) -> DerivedStop | None:
@@ -237,15 +241,19 @@ def loan_payment_window(
     Args:
         template: The recurring definition being asked about -- a
             ``TransferTemplate``, or a ``TransactionTemplate``, which can never
-            pay into an account and always answers ``None``.  ``getattr`` on
-            the FK COLUMN is what keeps this kind-agnostic across the two, the
+            pay into an account and always answers ``None``; or, since plan
+            step R7d-f-2, the door's
+            :class:`~app.services.recurring_definition.UnsavedDefinition`,
+            the destination a form names for a definition nothing stores yet.
+            ``getattr`` on
+            the FK COLUMN is what keeps this kind-agnostic across the three, the
             same way :func:`~app.services.balance_at.is_standing_loan_payment`
             is.  **Must belong to
             ``ctx.user_id``** -- the caller owns the ownership check, as every
             seam entry this reaches states.  A pairing of one owner's
             definition with another's read pass is refused by the pass itself
             when the loan is memoized (``ForeignAccountError`` from
-            ``BalanceContext._memoize_once``, plan step X-i4); the composed
+            ``balance_at._memoize._memoize_once``, plan step X-i4); the composed
             door reaches the rule's own refusal first, before any account is
             loaded.
         resolved: What *template*'s rule MEANS against the owner's schedule

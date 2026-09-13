@@ -164,9 +164,7 @@ what it leaves a LATER step is on that step's own entry.
       read ONE producer per figure (`resting_on`, `lines_by_import`, `orphan_merchants_by_import`);
       a second spelling of any of them is the defect BI-490 named.
 - [x] **X-gs** `eec1a2be` -- `require_owner` reads `current_user.role_id` outright; closed
-      **BI-486**. The fixture half was EMPTY, measured twice: a `User` always carries the mapped
-      attribute, so the `getattr` default only ever admitted `AnonymousUserMixin`, and no fixture,
-      mock or `LOGIN_DISABLED` throwaway app reaches a `@require_owner` view.
+      **BI-486** (the fixture half was EMPTY, measured twice; the commit carries the census).
 - [ ] **X-gt** `refactor(import): the receipt value leaves _batch.py` -- **BI-491**. `_batch.py`
       sits at 998 of pylint's 1000 lines after `X-gi-5`; `BatchOutcome` and `_Tally` move to
       `_outcome.py` as a PURE move in its own commit, the cut ruled first (**R-PC71**'s shape),
@@ -182,6 +180,11 @@ what it leaves a LATER step is on that step's own entry.
       create door reports the merchant it filed for, the receipt item carries it, and the offer
       filters the applied items instead of reading the pre-lock `review`. Minted 2026-09-12 from
       `X-gv`'s diff review; stacked on `X-gt` + `X-gv`.
+- [ ] **X-gy** `chore(ci): the suite's CI clock is measured, then fixed` -- **BI-496**. CI runs a
+      database-bound test 5-13x slower than the host and only ~2x of it is accounted for; a matched
+      A/B on the runner names the rest, the fix lands with its measurement, and `pytest.ini`'s cap
+      is re-sized from CI's own `--durations` table. Minted 2026-09-13 by the developer from the
+      coordinator's triage of PR #337's timeout.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.

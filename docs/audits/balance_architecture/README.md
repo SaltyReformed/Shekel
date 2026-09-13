@@ -1006,7 +1006,7 @@ section 4, under their unchanged ids.*
   that is precisely the form the first ruling specified and measurement rejected. The instrument is
   an open question the step's trace decides, and it must be shown FIRING on a planted defect.
 * [ ] **X-ah** `fix(routes): a query-string id is parsed like every other id` -- closes **N-142**.
-  The one submitted-id surface X-ae did not convert: the `request.args.get(..., type=int)` calls (census 29 code lines `request\.args\.get\([^)]*type=int` in `app/**/*.py`); `X-ah`'s own marker counts every `type=int` coercion, which is 34
+  The one submitted-id surface X-ae did not convert: the `request.args.get(..., type=int)` calls (census 30 code lines `request\.args\.get\([^)]*type=int` in `app/**/*.py`); `X-ah`'s own marker counts every `type=int` coercion, which is 34
   where Werkzeug catches the `ValueError` (so no crash) but the coercion is `int()` (so `'١٠٦'` is
   106, `' 2026 '` is 2026, `'1_0'` is 10). **It needs a per-site ruling, which is why it is a step**:
   the path parameters were all row ids and the schema fields all row ids, so each took one blanket
