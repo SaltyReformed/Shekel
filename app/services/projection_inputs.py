@@ -439,9 +439,9 @@ class PayrollWiring:
     profiles they and the accounts' params name.  It is every query
     :func:`load_payroll_feeds` issues, held apart from the resolvers built
     over it so that a consumer pricing the SAME accounts under ANOTHER raise
-    set -- the ``/retirement`` rail's per-raise probe, plan step
-    **salary:S3-f** -- rebuilds the resolvers through
-    :func:`build_payroll_feeds` and re-issues nothing.  A frozen value
+    set -- the ``/retirement`` picture at each plan point, since plan step
+    **salary:S3-f-2b** -- rebuilds the resolvers through
+    :func:`price_payroll_feeds` and re-issues nothing.  A frozen value
     carrying dicts: it is not a memo key and is never hashed.
 
     Attributes:
@@ -470,12 +470,15 @@ def load_payroll_feeds(
 ) -> "dict[int, AccountPayrollFeed]":
     """Build each account's payroll feed over the PAYCHECK ENGINE's pricer.
 
-    **Two halves since plan step salary:S3-f-1**, composed here for the
-    callers that price the stored plan: :func:`load_payroll_wiring` issues
-    every query and :func:`build_payroll_feeds` builds the resolvers over the
-    pass's pricers, one per funding profile under its rows.  A consumer that
-    needs the same accounts priced under another raise set calls the two
-    halves itself with pricers of its own.
+    **Two halves since plan step salary:S3-f-1**, composed by
+    :func:`load_payroll` for the callers that price the stored plan:
+    :func:`load_payroll_wiring` issues every query and
+    :func:`price_payroll_feeds` builds the resolvers over the pass's pricers,
+    one per funding profile under its rows.  This door returns the feeds
+    alone; a consumer that will price the same accounts under another raise
+    set later takes the wiring too through :func:`load_payroll` and calls
+    :func:`price_payroll_feeds` with the set it believes -- which is what the
+    ``/retirement`` batch loader and picture do (salary:S3-f-2b).
 
     **The producer plan step salary:R14-b puts in place of the feed's own
     arithmetic** (ruling **R-SAL2**).  What a payroll deduction takes from a
@@ -577,23 +580,42 @@ def load_payroll_feeds(
         defaulting and a missing key is a defect instead of a silently
         unfunded account.
     """
-    if not account_ids:
-        return {}
+    return load_payroll(paychecks, account_ids, params_by_account)[1]
 
-    # The owner off the CALENDAR the prices were derived against, so the rows
-    # this scopes and the paychecks that price them cannot name two owners.
+
+def load_payroll(
+    paychecks: "PaycheckPricing",
+    account_ids: "list[int]",
+    params_by_account: "dict[int, InvestmentParams]",
+) -> "tuple[PayrollWiring, dict[int, AccountPayrollFeed]]":
+    """Load which payroll funds *account_ids* and price it under the rows.
+
+    The ONE body behind :func:`load_payroll_feeds` (plan step salary:S3-f-2b):
+    it returns the wiring beside the feeds so a caller that will re-price the
+    same accounts under another raise set -- the ``/retirement`` batch loader,
+    for the picture at each plan point -- keeps the wiring without composing
+    the two halves a second time beside this door.  A second composition
+    would have to name the OWNER for itself, and the argument for this door
+    is that the owner comes off the pricer's own calendar so the rows it
+    scopes and the paychecks that price them cannot name two owners.
+
+    Args:
+        paychecks: The read pass's
+            :class:`~app.services.income_service.PaycheckPricing`; its
+            calendar names the owner.
+        account_ids: The accounts to wire and price.  An empty list wires
+            nothing and issues no query.
+        params_by_account: ``{account_id: InvestmentParams}`` from
+            :func:`load_investment_params_for_accounts`.
+
+    Returns:
+        ``(wiring, feeds)`` -- the :class:`PayrollWiring` and the feeds
+        :func:`load_payroll_feeds` documents, TOTAL over *account_ids*.
+    """
     wiring = load_payroll_wiring(
         paychecks.calendar.user_id, account_ids, params_by_account,
     )
-    # The PRICERS, built here rather than inside a resolver: ``for_profile``
-    # loads the profile's tax series on first construction, and that query
-    # belongs to this loader, not to the pure module the resolver will fire
-    # in.  A pricer prices nothing until asked, so an account whose feed no
-    # consumer reads costs the series and no paycheck.
-    return build_payroll_feeds(wiring, {
-        profile_id: paychecks.for_profile(profile)
-        for profile_id, profile in wiring.profiles.items()
-    })
+    return wiring, price_payroll_feeds(wiring, paychecks)
 
 
 def load_payroll_wiring(
@@ -641,6 +663,52 @@ def load_payroll_wiring(
         profiles=_load_funding_profiles(user_id, wanted),
         params_by_account=params_by_account,
     )
+
+
+def price_payroll_feeds(
+    wiring: PayrollWiring,
+    paychecks: "PaycheckPricing",
+    terms_for=None,
+) -> "dict[int, AccountPayrollFeed]":
+    """Build *wiring*'s feeds over the PASS's pricers, one per funding profile.
+
+    **The one spelling of "price this wiring through the pass"** (plan step
+    salary:S3-f-2b).  Three callers build the same pricer map -- the composed
+    door :func:`load_payroll_feeds`, the ``/retirement`` batch loader for the
+    stored plan, and the picture at each plan point under the set it
+    believes -- and three comprehensions over ``wiring.profiles`` would be
+    three chances to hand :func:`build_payroll_feeds` a map built off the
+    wrong set.
+
+    The PRICERS are built here rather than inside a resolver:
+    :meth:`~app.services.income_service.PaycheckPricing.for_profile` loads
+    the profile's tax series on first construction of a pricer for a set, and
+    that query belongs to this loader, not to the pure module the resolver
+    will fire in.  A pricer prices nothing until asked, so an account whose
+    feed no consumer reads costs the series and no paycheck -- and a set
+    equal to the rows costs nothing at all, because ``for_profile`` keys its
+    memo on the canonical set and answers the pricer the rows already built.
+
+    Args:
+        wiring: The :class:`PayrollWiring`, loaded once.
+        paychecks: The read pass's
+            :class:`~app.services.income_service.PaycheckPricing`.
+        terms_for: ``profile -> raise set`` naming the terms each funding
+            profile is priced under (a plan point's
+            :meth:`~app.services.retirement_plan.PlanPoint.terms_for`), or
+            ``None`` for each profile's own rows -- the same contract
+            ``for_profile``'s ``raise_terms`` states, one call up.
+
+    Returns:
+        ``{account_id: AccountPayrollFeed}``, TOTAL over the wiring's
+        ``account_ids`` -- see :func:`load_payroll_feeds`.
+    """
+    return build_payroll_feeds(wiring, {
+        profile_id: paychecks.for_profile(
+            profile, None if terms_for is None else terms_for(profile),
+        )
+        for profile_id, profile in wiring.profiles.items()
+    })
 
 
 def build_payroll_feeds(

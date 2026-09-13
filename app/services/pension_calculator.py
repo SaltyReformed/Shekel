@@ -126,20 +126,28 @@ def project_salaries_by_year(annual_salary, raises, start_year, end_year):
     ]
 
 
-def project_profile_salaries(profile, start_year, end_year):
+def project_profile_salaries(profile, raises, start_year, end_year):
     """Project a salary profile's annual salaries to the retirement horizon.
 
     Thin convenience over :func:`project_salaries_by_year` that marshals a
-    :class:`~app.models.salary_profile.SalaryProfile` (its ``annual_salary``
-    and ``raises``) into the plain-input contract.  Shared by the two
-    retirement consumers that project the primary profile's salary path --
-    the gap-comparison net-biweekly scaling and the P1b employer-base
-    resolver -- so the ``Decimal(str(...))`` marshalling and the
-    current-year start live in one place.
+    :class:`~app.models.salary_profile.SalaryProfile`'s ``annual_salary`` into
+    the plain-input contract.  Shared by the two retirement consumers that
+    project a profile's salary path -- the pension summary and the
+    gap-comparison net-biweekly scaling -- so the ``Decimal(str(...))``
+    marshalling lives in one place.
+
+    **It takes the RAISE SET rather than reading ``profile.raises`` since plan
+    step salary:S3-f-2b** (ruling **R-SAL20**'s rule, applied to this walk):
+    the set a plan point believes a profile under is an INPUT, and a reader
+    that took it off the row could not be probed.  Both callers hand it the
+    point's :meth:`~app.services.retirement_plan.PlanPoint.terms_for`, which
+    at the stored point equals the rows' own terms by value.
 
     Args:
-        profile:             A salary profile exposing ``annual_salary`` and
-                             ``raises``.
+        profile:             A salary profile exposing ``annual_salary``.
+        raises:              The raise set to project under -- what
+                             :func:`~app.services.salary_raises.apply_raises`
+                             documents (rows or :class:`RaiseTerms` values).
         start_year:          int first year to project (the current year).
         end_year:            int last year to project (inclusive).
 
@@ -148,7 +156,7 @@ def project_profile_salaries(profile, start_year, end_year):
     """
     return project_salaries_by_year(
         Decimal(str(profile.annual_salary)),
-        profile.raises,
+        raises,
         start_year,
         end_year,
     )
