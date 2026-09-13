@@ -19,21 +19,29 @@ with them, so these cases are the refusal's successor as well as the
 constraint's grading.  Each is exercised in every direction a writer could
 reach it from, on each table.
 
-**The first case of each class is the one that tells the two-term form from
+**The three refusal cases of each class are what tell the two-term form from
 the withdrawn three-term one.**  ``... OR amount_source_id IS NULL OR due_date
 IS NOT NULL`` ADMITS an undated row that owns its figure and refuses only the
-declare that would derive it -- so a mutation swapping that predicate in
-passes every case here except the first, where an OWN-amount linked row with
-no date must be refused on INSERT.  That is what ruling R-BAL6 means by
-*invariant under the chooser's declare*: the declare touches neither column
-the CHECK names, so the CHECK cannot be what turns a button press into a 500.
+declare that would derive it -- and every row built here OWNS its figure, so
+a mutation swapping that predicate in (model and migration) turns all six
+refusal cases and the migration round trip red and leaves only the four
+accepted-shape controls green (measured 2026-09-12).  That is what ruling
+R-BAL6 means by *invariant under the chooser's declare*: the declare touches
+neither column the CHECK names, so the CHECK cannot be what turns a button
+press into a 500.
 
 Every row here is built BARE, for the reason ``test_settle_day_basis`` gives:
 the door helpers exist precisely to make the refused states unreachable, so a
 control routed through one would grade the helper and never the constraint.
 A bare ``Transfer`` has no shadow pair, which is fine for a constraint over
-the parent's own columns and is the shape ``test_amount_ownership`` already
-uses for the twin table.
+the parent's own columns; it is the shape ``test_amount_ownership``'s
+Core-insert probe and its ad-hoc arm use, while a transfer OF A DEFINITION
+anywhere else in the suite is the engine's (``generate_transfer_of``, plan
+step X-ch).  **The two link-arrival cases assign the link onto an existing
+row** (``txn.template_id = ...``, ``xfer.transfer_template_id = ...``), which
+is the pattern ledger row BAL-480's closing census greps for: they are that
+census's one deliberate exception, because the UPDATE direction of a CHECK
+over the link cannot be graded any other way.
 
 The last class drives the migration's own ``downgrade()`` and ``upgrade()``
 over this test's private database clone, so the refusal the upgrade makes on

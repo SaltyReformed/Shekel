@@ -126,9 +126,11 @@ def _apply_shadow_update(txn, txn_id, data):
         # X-au-f).  This door answers a shadow PATCH by updating its PARENT, so
         # a due date submitted here is a due date submitted for the transfer --
         # and a generated transfer's due date is its DEFINITION's, which since
-        # X-au-f is also what prices it.  Clearing it leaves a row
-        # ``_stated_amount`` refuses, on nine render sites that carry no
-        # ``AmountUnresolvable`` handler.
+        # X-au-f is also what prices it.  Clearing it is a state the schema
+        # refuses at flush since plan step X-bv-2
+        # (``ck_transfers_template_row_needs_due_date``); this gate is what
+        # turns that refusal into a designed 400 rather than a 500, and it
+        # also refuses MOVING the date, which no CHECK can say.
         #
         # The predicate is the transfer's own
         # (:attr:`~app.models.transfer.Transfer.due_date_is_its_definitions`),

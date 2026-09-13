@@ -324,6 +324,13 @@ def _insert_transfer_row(data, *, figure, source_id, **overrides):
         "name": "Ownership control",
         "amount": figure,
         "amount_source_id": source_id,
+        # DATED, because the row names a definition and
+        # ``ck_transfers_template_row_needs_due_date`` (plan step X-bv-2)
+        # refuses a linked row without a date: a probe that violated TWO
+        # constraints and matched one would be green only by the order
+        # PostgreSQL reports them in, which is not the control.  Legal in
+        # every respect but the pairing under test.
+        "due_date": data["periods"][0].start_date,
     }
     values.update(overrides)
     return db.session.execute(insert(Transfer).values(**values))

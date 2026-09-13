@@ -127,10 +127,13 @@ def _stated_amount(template, on_date: date, subject: str) -> Decimal:
     one figure here and another everywhere else).  That argument is now the
     schema's: ``ck_transactions_template_row_needs_due_date`` and
     ``ck_transfers_template_row_needs_due_date`` refuse the row at flush,
-    the only writers of a linked row date it (``compute_due_date``, which
-    always answers), and an occurrence no row answers yet is dated by the
-    same function -- so ``on_date`` is a ``date`` here by construction, and
-    a refusal over a state that cannot be stored is a fence.
+    every writer of a linked row dates it (``compute_due_date``'s answer,
+    which always exists, or the chosen paycheck's start where the definition
+    names no cadence -- the one-time transfer, the cleared-rule carry-forward
+    arm -- which is that function's own answer for a rule naming no day),
+    and an occurrence no row answers yet is dated by the same function -- so
+    ``on_date`` is a ``date`` here by construction, and a refusal over a
+    state that cannot be stored is a fence.
 
     **It names its SUBJECT rather than a row, since plan step R16-b-2.**  A
     row is one subject -- "Transfer 123" -- and an occurrence no row answers

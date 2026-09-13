@@ -643,11 +643,14 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
     this constructor still leaves it unset; the due date is the day the money
     is owed, and amount rule 3 resolves the definition's price series on it.
     Both partial unique generation indexes are keyed on ``occurs_on``, and the
-    undated one excludes ``is_override`` rows besides, so no UNIQUE index and
-    no CHECK reads ``due_date`` and dating the row can collide with nothing.
-    It is not true that the column is in no index at all -- these rows now
-    enter ``idx_transactions_due_date``, which is non-unique and exists to
-    serve range reads.
+    undated one excludes ``is_override`` rows besides, so no UNIQUE index
+    reads ``due_date`` and dating the row can collide with nothing.  The one
+    CHECK that reads it, ``ck_transactions_template_row_needs_due_date`` (plan
+    step X-bv-2), REQUIRES a linked row to be dated, which is what this
+    constructor now does; it is the reason an undated leftover cannot be
+    written any more, not a collision.  It is not true that the column is in
+    no index at all -- these rows now enter ``idx_transactions_due_date``,
+    which is non-unique and exists to serve range reads.
 
     No flush: the caller runs inside ``carry_forward_unpaid``'s
     ``no_autoflush`` block and an ``is_override`` row is index-safe in
