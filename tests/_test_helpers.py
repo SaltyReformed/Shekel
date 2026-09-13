@@ -6151,6 +6151,46 @@ def make_income_template(
     )
 
 
+
+def make_projected_envelope_expense(
+    db_session, *, seed_user, pay_period, estimated, account=None,
+    name="Groceries",
+):
+    """Create a Projected envelope expense + its definition in ``pay_period``.
+
+    The engine's own row of a priced, every-paycheck ``is_envelope=True``
+    definition (:func:`make_expense_template` then :func:`generate_row_of`,
+    plan step balance:X-cf), which is what entries attach to.  Uses the seed
+    user's Groceries category so the row matches the symptom #1 / #5 worked
+    example.  ``account`` defaults to the seed user's checking account; pass
+    the account when the row should live elsewhere -- the engine puts a row
+    on its DEFINITION's account, so that is where the choice is made.
+
+    **One definition** (plan ledger row BAL-490, closed at balance:X-ch): the
+    accounts route suite and the savings dashboard suite each carried a
+    private copy, and by the time they were folded here the copies had
+    already drifted in signature (one required ``account``, one defaulted
+    it), which is the drift a fixture spelled twice invites.
+
+    Args:
+        db_session: The test session.
+        seed_user: The seed user fixture dict.
+        pay_period: The period the row lands in.
+        estimated: The definition's stated price, as a string.
+        account: The account the definition (and so the row) lives on;
+            ``None`` means the seed user's checking account.
+        name: The definition's name.
+
+    Returns:
+        The generated Transaction row, flushed.
+    """
+    template = make_expense_template(
+        db_session, seed_user, amount=estimated,
+        name=name, category_key="Groceries", is_envelope=True,
+        account=account,
+    )
+    return generate_row_of(template, pay_period)
+
 def _priced_repeating_template(
     db_session, seed_user, txn_type, amount, is_active, *,
     name, category_key, is_envelope, companion_visible, account, category,

@@ -27,9 +27,6 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
-    record_paydays_across_a_hole,
-    rhythm_of,
-    strip_owner_schedule,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -40,13 +37,17 @@ from tests._test_helpers import (
     derived_span,
     generate_row_of,
     make_expense_template,
+    make_projected_envelope_expense,
     open_books_before_the_first_assertion,
     open_owner_calendar,
+    record_paydays_across_a_hole,
     resolved_amount,
+    rhythm_of,
     settle_day_columns,
     settle_instant_on,
     settlement_basis_id,
     settlement_if_settling,
+    strip_owner_schedule,
 )
 from app.models.interest_params import InterestParams
 from app.models.pay_period import PayPeriod
@@ -5544,25 +5545,6 @@ def _override_account_anchor(db_session, account, pay_period, anchor_balance):
     db_session.commit()
 
 
-def _make_projected_envelope_expense(
-    db_session, *, seed_user, pay_period, account, estimated,
-    name="Groceries",
-):
-    """Create a Projected envelope expense + its template in ``pay_period``.
-
-    Mirrors the helper in ``test_savings_dashboard_service.py``: the engine's
-    own row of a priced, every-paycheck ``is_envelope=True`` definition on
-    *account* (:func:`generate_row_of`, plan step balance:X-cf-4) -- the
-    engine puts a row on its DEFINITION's account, so the account is stated
-    there.  Uses the seed user's Groceries category so the row matches the
-    symptom #1 / #5 worked example.
-    """
-    template = make_expense_template(
-        db_session, seed_user, amount=estimated, name=name,
-        category_key="Groceries", is_envelope=True, account=account,
-    )
-    return generate_row_of(template, pay_period)
-
 
 #: The civil day :func:`_add_cleared_debit_entry` buys and settles on.  Named
 #: because an account's BOOKS have to precede it (ruling **R-HG**, plan step
@@ -5651,7 +5633,7 @@ class TestCheckingDetailCanonicalProducer:
                 db.session, account, current_period, Decimal("614.29"),
             )
 
-            txn = _make_projected_envelope_expense(
+            txn = make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
@@ -5800,7 +5782,7 @@ class TestCheckingDetailCanonicalProducer:
                 db.session, account_b, also_before=_CLEARED_PURCHASE_DAY,
             )
 
-            txn_a = _make_projected_envelope_expense(
+            txn_a = make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
@@ -5816,7 +5798,7 @@ class TestCheckingDetailCanonicalProducer:
                     amount=amt,
                 )
 
-            txn_b = _make_projected_envelope_expense(
+            txn_b = make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
