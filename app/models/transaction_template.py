@@ -13,14 +13,13 @@ from app.models.mixins import (
     OptimisticLockMixin,
     SortOrderMixin,
     TimestampMixin,
-    TrackingVisibilityMixin,
     UserScopedMixin,
 )
 
 
 class TransactionTemplate(
     UserScopedMixin, IsActiveMixin, SortOrderMixin, OptimisticLockMixin,
-    TrackingVisibilityMixin, TimestampMixin, db.Model,
+    TimestampMixin, db.Model,
 ):
     """Blueprint for a recurring income or expense line item.
 
@@ -79,9 +78,37 @@ class TransactionTemplate(
     )
     name = db.Column(db.String(200), nullable=False)
     default_amount = db.Column(db.Numeric(12, 2), nullable=False)
+    # Whether the rows this definition generates take PURCHASE ENTRIES -- the
+    # "envelope" mode, where a row accumulates per-purchase line items rather
+    # than settling as one figure.  This is the DEFINITION's setting and the
+    # one answer for every row it generates: ``Transaction.tracks_purchases``
+    # reads it here for a template-generated row and never that row's own
+    # cell (ruling **R-JQ**).
+    #
+    # Declared inline rather than through the mixin since plan step
+    # ``balance:X-bi-1``, because the two tables stopped treating the column
+    # alike: here it is public and settable, on ``Transaction`` it is sealed.
+    # The column declaration is identical to the mixin's it replaces, so an
+    # autogenerate diff against a migrated schema stays empty (measured); its
+    # position in ``CREATE TABLE`` moves off the tail, which is load-bearing
+    # nowhere here -- see ``UserScopedMixin`` for the standard.
+    is_envelope = db.Column(
+        db.Boolean, nullable=False, default=False, server_default="false",
+    )
+    # WHETHER A COMPANION OF THE OWNER MAY SEE the rows this definition
+    # generates -- the definition's own setting, read for every one of them
+    # by ``Transaction.visible_to_companion`` and never that row's own cell.
+    # Declared inline since plan step ``balance:X-bi-1b`` for the reason
+    # ``is_envelope`` is, one step earlier: the twin cell on ``Transaction``
+    # took the same seal, so the two tables stopped treating the column alike
+    # and the mixin they shared (``CompanionVisibilityMixin``, once
+    # ``TrackingVisibilityMixin``) had one consumer left and dissolved.  The
+    # declaration is identical to the mixin's; only its position in
+    # ``CREATE TABLE`` moves, load-bearing nowhere here.
+    companion_visible = db.Column(
+        db.Boolean, nullable=False, default=False, server_default="false",
+    )
     # is_active + sort_order: from IsActiveMixin / SortOrderMixin.
-    # is_envelope and companion_visible are provided by
-    # TrackingVisibilityMixin (shared with Transaction).
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships

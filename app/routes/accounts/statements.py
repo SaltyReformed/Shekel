@@ -12,8 +12,10 @@ a restated line, or a first import that named the wrong Shekel account, ended
 that account's ability to import at all, while the message told the owner it
 "needs a human before anything overwrites it", a promise nothing in ``app/``
 could keep.  ``delete_statement_import`` is the human's hands.  It destroys what
-the BANK said and moves no money: a settle day an accepted match wrote is the
-app's own record and stays.
+the BANK said, and since ruling **R-GG** it MOVES MONEY where the review had
+CREATED a row from one of those lines: such a row goes with its line, and the
+receipt says how many and how much.  A settle day an accepted match wrote is
+the app's own record and stays.
 
 **It RECORDS, and since plan step ``bank_import:X-ge`` it also FILES what the
 owner has already decided** (ruling **R-GH**).  Recording still moves no
@@ -262,11 +264,20 @@ def _balance_sentence(outcome):
     if outcome.balance is None:
         return "It states no balance, so there was none to check."
     if not outcome.balance.is_anchored:
+        # **It asserts no cause** (plan step ``bank_import:X-gr``, finding
+        # **BI-489**, developer ruling 2026-09-12).  This arm is
+        # :func:`~app.services.statement_import.resolve_anchor` finding no
+        # candidate day that reconciles the figure with the opening the app
+        # already holds, and that has two causes the solve cannot tell apart:
+        # a date-range export whose header states a balance its lines stop
+        # short of, and an ordinary export whose lines reach fine while the
+        # RECORDED opening is what does not agree.  It read "which its own
+        # lines do not reach", the first cause, on files in the second state.
         return (
             f"It states {outcome.balance.stated} as of "
-            f"{outcome.balance.stated_on}, which its own lines do not reach, "
-            f"so nothing here could place that figure and no balance was "
-            f"recorded from it."
+            f"{outcome.balance.stated_on}, which no day it covers reconciles "
+            f"with what was already recorded before it, so nothing here could "
+            f"place that figure and no balance was recorded from it."
         )
     copy = EVIDENCE_COPY[outcome.balance.evidence]
     placement = (
@@ -338,6 +349,17 @@ def _import_flash(outcome):
     the line list against the file's own ``Totals:`` row and would have
     detected exactly that.
 
+    **It says which OTHER imports' placements this one released** (plan step
+    ``bank_import:X-gr``, finding **BI-488**), the way :func:`_removal_flash`
+    has said it for the delete door since ``aa31bedf``.  A fresh line recorded
+    at or before another import's placed day means that placement was worked
+    out without it, so :func:`~app.services.statement_import.record_statement`
+    releases it -- and until this clause the receipt said nothing, leaving the
+    owner to learn that an import had taken a checked balance away from an
+    earlier one from the imports table's badge, if they looked.  The clause
+    renders only when the count is non-zero, and only on the branch that
+    recorded a fresh line, because a line already recorded undercuts nothing.
+
     Args:
         outcome: The :class:`~app.services.statement_import.ImportOutcome`.
 
@@ -366,9 +388,17 @@ def _import_flash(outcome):
         f", and {outcome.already_known} were already known."
         if outcome.already_known else "."
     )
+    released = (
+        f"  {outcome.anchors_released} other import(s) had placed a stated "
+        f"balance at or after the earliest day this file adds a line on, so "
+        f"those placements were released: they were worked out without these "
+        f"lines, and the account holds no checked balance from them."
+        if outcome.anchors_released else ""
+    )
     return (
         f"Recorded {outcome.recorded_count} new line(s) from "
-        f"{outcome.period_start} to {outcome.period_end}{known}{balance}",
+        f"{outcome.period_start} to {outcome.period_end}{known}{balance}"
+        f"{released}",
         "warning" if unproven else "success",
     )
 
@@ -666,6 +696,7 @@ def import_statement(account_id):
             recorded_count=outcome.recorded_count,
             period_start=outcome.period_start.isoformat(),
             period_end=outcome.period_end.isoformat(),
+            anchors_released=outcome.anchors_released,
         )
         # **Only when it did something**, which is what keeps the log honest
         # about the act rather than about the door: a re-import of an
@@ -838,9 +869,15 @@ def delete_statement_import(account_id):
     and the refusal's own message promised a human repair the app could not
     perform.
 
-    **It moves NO money.**  What it destroys is what the BANK said; a settle
-    day an accepted match wrote is the app's own record and stays, which is the
-    rule ``release_match`` already states for the same reason.
+    **It MOVES MONEY where the review CREATED a row from these lines** (ruling
+    **R-GG**): a purchase a bank line became, a recorded difference, or a budget
+    line minted to hold one goes with the line, and :func:`_removal_flash`
+    reports the count and the figure.  *It said "It moves NO money" until plan
+    step ``bank_import:X-gr`` (finding **BI-487**), a sentence true under
+    ruling **R-GB** and false since R-GG amended it.*  What else it destroys
+    is what the BANK said; a settle day an accepted match wrote is the app's
+    own record and stays, which is the rule ``release_match`` already states
+    for the same reason.
 
     **It is a plain POST-redirect-GET**, like ``release_filed_match`` and
     unlike the review screen's batch: it names ONE act and either does it or

@@ -78,9 +78,10 @@ must-knows; a fact lives in one tier and the other tiers point at it.
     running (two private clusters plus a peer's gating run on the shared one), two of them reached
     ~38% in 13 minutes, at a run-queue of 32, ~950,000 context switches/sec and 28% iowait.
     **Neither produced a failing test**, and the slowest single test is 2.58 s against
-    `pytest.ini`'s 30 s per-test timeout -- about 11x of headroom, which this measurement was
-    sitting on. A fourth concurrent suite is roughly where a timeout would start failing a test that
-    is not broken; that has not been measured.
+    `pytest.ini`'s per-test timeout, 30 s at the time -- about 11x of headroom, which this
+    measurement was sitting on. A fourth concurrent suite is roughly where a timeout would start
+    failing a test that is not broken; that has not been measured. (The cap is 90 s since 2026-09-13
+    and is sized to CI's clock, not this host's: see **Test timeout** below.)
 
   So what remains is a resource fact rather than a defect, and the instrument is information: the
   wrapper prints any other live pytest it can see, with its worktree, and proceeds.
@@ -99,10 +100,33 @@ must-knows; a fact lives in one tier and the other tiers point at it.
   marginal speedup falls off because PostgreSQL's cluster- wide `pg_database` catalog lock (formerly
   the WAL/fsync pipeline pre-Phase-3) is the serialised resource; see
   `docs/audits/test_improvements/test-performance-research.md` for the full profile.
-- **Test timeout:** 30s per test, configured in `pytest.ini`; anything past 30s raises a timeout
-  error rather than hanging the suite. The bcrypt-bound MFA/auth tests are the slow tail. (A
-  slowest-test figure once quoted here was measured stale and is dropped rather than re-pinned;
-  re-measure with `--durations` when the tail matters.)
+- **Test timeout:** 90 s per test, configured in `pytest.ini`; it covers setup + call + teardown,
+  and anything past it raises a timeout error rather than hanging the suite.
+  **The cap is a hang detector sized to CI's clock, and CI's clock is not this host's.** Measured
+  2026-09-13 over the twelve full CI runs from 2026-09-12 18:40Z to 2026-09-13 04:22Z, contiguous
+  (34711892311, 34715011327, 34720452065, 34721722432, 34723002840, 34725696007, 34729871811,
+  34733155344, 34735364929, 34735733027, 34736695029, 34737731259; each prints `--durations=25`, and
+  the last one's timed-out first attempt and green rerun are both counted): the suite takes
+  **26:39-47:38 on the hosted runner, 4 cores in every run, against 6:01-6:07 on this 24-core host**
+  (4.3x-7.9x), and the database-bound tests among the slowest 25 carry **5-13x**. The settled-bound
+  family (four cases, `filed_acts` = 51 real door calls each, in
+  `tests/test_services/test_statement_match/test_reconcile.py::TestTheSettledBoundIsLIFTABLE` and
+  `tests/test_routes/test_statement_reconcile.py::TestTheSettledBoundIsWiredToThePage`) is 2.3-2.5 s
+  here and 12.7-28.1 s there;
+  `test_loan_fold_oracle.py::TestFoldMatchesPostingsAcrossTheShapeMatrix::test_escrow` 1.2 s and
+  8.2-15.5 s (the seven shape-matrix cases together span 6.5-15.5 s); `test_loan_ledger.py`'s
+  `TestFoldAgreesWithThePostedSum::test_fold_equals_the_ledger_reader_on_every_day` 1.1 s and
+  7.6-13.3 s. The local figures are `./scripts/test.sh -p no:randomly --durations=0` over those six
+  items alone, 2026-09-13. Under the 30 s cap that stood until then the family's slowest case per
+  run left 1.9-15.7 s (1.9-6.2 s on the ten slow runs), read off `call` rows, which the cap does not
+  measure alone, and it crossed once: run 34737731259 attempt 1 (call cut at 28.06 s; green on
+  rerun), the one crossing since the family's 2026-08-31 fixture fix (`filed_acts`'s docstring: four
+  crossings before it, at 4.7 s local, so the ratio is a snapshot of one shape and not a constant).
+  90 s is 3x the cap it crossed; the worst completed call is 27.39 s.
+  **A local `--durations` figure is never the basis for a CI budget.** About 2x of the ratio is the
+  3x oversubscription `pytest.ini`'s own A/B measured (1.17 s against 0.62 s for the largest arm at
+  `-n 12` against `-n 4`); the rest is unmeasured, ledger **BI-496** (`bank_import:X-gy`).
+  Re-measure from the durations table CI prints, never from this host.
 
 ## Why the cluster is per-run, not shared
 

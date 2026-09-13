@@ -26,17 +26,23 @@ composition lives here once and the page takes the value whole.  Nothing is
 computed and discarded: a caller that wants only the meaning
 (:func:`resolved_recurrence`) never walks an occurrence.
 
-Four surfaces ask :func:`rule_occurrences` the same question, and they must not
-be able to disagree:
+Four surfaces asked :func:`rule_occurrences` the same question when it was
+built, and they must not be able to disagree:
 
 * ``recurrence_engine.resolve_generation_plan``, the generation seam both
-  engines share, which turns the answer into rows;
+  engines share, which turns the answer into rows -- since plan step R7d-c-2
+  through ``recurring_definition.read_definition``, which is this
+  composition with the destination's derived stop applied;
 * ``recurring_view``, whose next-date column must name the date the grid cell
-  it points at will carry;
+  it points at will carry -- through the same door since plan step R7d-d;
 * ``routes._recurrence_preview``, the form's live "next five occurrences"
   fragment, which must show what saving would produce;
 * ``tests.oracles.recurrence_baseline``, the frozen behaviour snapshot every
   step of the redesign is measured against.
+
+The door is this module's composition plus one narrowing, so the two readers
+that took it still answer from ONE walk; what they no longer share with the
+two below is the un-narrowed value.
 
 **This replaced ``recurrence_engine.match_periods``** (plan step R4b-2).  That
 adapter answered in PERIODS and applied a caller's lower window bound itself,
@@ -571,8 +577,13 @@ def rule_occurrences(
 ) -> tuple[OccurrencePlacement, ...]:
     """Return every occurrence *rule* names, each with the pay period it lands in.
 
-    The placement half of :func:`read_rule`, and the shape the generation seam,
-    the form preview and the frozen baseline have taken since plan step R4b-2.
+    The placement half of :func:`read_rule`, and the shape the frozen baseline
+    has taken since plan step R4b-2 -- and the generation seam too, until plan
+    step R7d-c-2 moved it onto the composed door, whose placements are this
+    function's narrowed by the destination.  No production reader calls it
+    since then (census 2026-09-11): the form preview composes ``resolve``,
+    ``occurrence_placements`` and ``placed_periods`` over a transient rule
+    itself, and the oracle and the generation tests are what read this.
 
     **The rule's own window is applied, and a caller cannot bypass it.**
     ``start_date`` binds through the anchor
@@ -587,7 +598,8 @@ def rule_occurrences(
     does -- and that stop is resolved against a read pass, which this function
     does not take.  ``recurring_definition.read_definition`` is the door that
     composes both; a caller asking THIS one about a loan payment gets the
-    rule's answer alone.  Before plan step R4a both bounds filtered
+    rule's answer alone, which is why generation stopped asking it at plan
+    step R7d-c-2.  Before plan step R4a both bounds filtered
     candidate PERIODS instead -- ``end_date`` against a period's START -- which
     generated rows dated outside the window the user set (defect D5).
 

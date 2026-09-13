@@ -80,20 +80,29 @@
         {{ recurrence_cadence_controls(recurrence.picker, recurrence.selected_cadence) }}
         {# ``data-loan-account-ids`` carries which destinations the app derives
            a first occurrence FOR, so recurrence_form.js can lock the "Starts
-           on" row the moment one is chosen (plan step R7c-b).  It is emitted
-           on the CREATE form ALONE: an EDIT form already knows whether THIS
-           template is the loan's standing payment and locks server-side
-           through recurrence.selected_start.locked, and two locks answering
-           the same question is how they come to disagree.
+           on" row the moment one is chosen (plan step R7c-b), and
+           ``data-loan-account-ids-without-payment`` the subset whose CLOSING
+           bound it derives as well -- the loans holding no active payment,
+           so the definition created into one IS that loan's payment and the
+           "Ends" row locks too (plan step R7d-f-3).  Both come off ONE value
+           (_transfer_creation_helpers.LoanDestinationLocks) so neither can
+           be emitted without the other.  They are emitted on the CREATE form
+           ALONE: an EDIT form already knows whether THIS template is the
+           loan's standing payment and locks server-side through
+           recurrence.selected_start.locked and .selected_end.locked, and two
+           locks answering the same question is how they come to disagree.
 
-           The lock is an affordance.  The enforcement is the route's --
+           The locks are affordances.  The enforcement is the route's --
            _transfer_creation_helpers.settle_first_occurrence derives the date
-           from the loan's contract whatever the payload says -- so a browser
-           with JavaScript off, or a crafted POST, gets the same stored value
-           and no worse an outcome than a discarded input. #}
+           from the loan's contract whatever the payload says, and refuses a
+           stop stated for a loan whose payment this would be (ruling R-R60)
+           -- so a browser with JavaScript off, or a crafted POST, gets the
+           same stored value or the refusal, and no worse an outcome than a
+           discarded input. #}
         <div id="recurrence-fields" class="d-none"
              {% if template is none %}
-             data-loan-account-ids="{{ loan_account_ids|join(',') }}"
+             data-loan-account-ids="{{ loan_locks.start_derived_for|join(',') }}"
+             data-loan-account-ids-without-payment="{{ loan_locks.stop_derived_for|join(',') }}"
              {% endif %}>
           {# Each validity bound's row carries its own lock (plan step R7d-f).
              Both read ONE identity -- the loan's standing payment -- but what
@@ -107,7 +116,8 @@
                                    recurrence.starts_on_max,
                                    swappable=(template is none)) }}
           {{ recurrence_detail_fields(template, include_due_day=false) }}
-          {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end) }}
+          {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end,
+                                  swappable=(template is none)) }}
           {{ recurrence_preview(url_for('templates.preview_recurrence')) }}
         </div>
         {# The pay-period selector sits OUTSIDE #recurrence-fields because it

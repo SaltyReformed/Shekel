@@ -426,10 +426,13 @@ def is_standing_loan_payment(
       NO authored stop: archiving is the door to stop it early (ruling
       **R-R59**, developer 2026-09-05, taken at R7d-f).  Its "Ends" control
       renders the composed door's derived answer, locked; a stated bound is
-      refused; and the column the chokepoints cache the payoff into is read as
-      that cache rather than as the owner's word (ruling **R-R56**,
-      :func:`authored_closing`) until R7d-g NULLs it.  A second transfer's
-      authored stop is its owner's and binds beside the derived one.
+      refused -- at create as well, where the identity is asked the other way
+      round, a loan holding no active payment making the new definition its
+      payment (``settle_first_occurrence``, ruling **R-R60**); and the column
+      the chokepoints cache the payoff into is read as that cache rather than
+      as the owner's word (ruling **R-R56**, :func:`authored_closing`) until
+      R7d-g NULLs it.  A second transfer's authored stop is its owner's and
+      binds beside the derived one.
 
     **"Standing" is the seam's own word**
     (:func:`~app.services.recurring_transfer_query.standing_payment`): the

@@ -379,12 +379,14 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   a PLAN and a RECORD with a status column pretending one becomes the other -- 161 of 238 fold facts
   on Checking are plan rows whose status was flipped, and the movement record is `$4,270.78` from
   the bank over 155 days.
-  * [ ] **X-bi-1** `tracks_purchases` DERIVES through ONE accessor from the template's flag and is
-    never stored (**R-JQ**, 2026-09-03; the first cut said *a STORED column backfilled from each
-    row's template*, which is the cache **R-IY** deletes: a template edit would stale every row).
-    Every `transactions.is_envelope` reader moves onto the accessor, because keying anything on
-    that column reads 4 envelopes where there are 238 -- the error a first draft of this family's
-    migration made, which would have over-minted 30 rows worth `$7,680.86`.
+  * [x] **X-bi-1** `18f9efac` -- the row's `is_envelope` cell SEALED on X-au-k's pattern rather than the move
+    pinned (**R-BAL18**): private column, public name reads the accessor and writes the cell, every derived
+    flag's class-level name refuses a query; the last two second spellings moved. No migration.
+  * [x] **X-bi-1b** `71e09443` -- the companion query asks each loaded row `visible_to_companion` and
+    restates nothing in SQL (**R-BAL19**); `companion_visible` sealed on the row as `is_envelope` was,
+    the one-consumer mixin dissolved, an id tie-break where `ORDER BY name` left a carried pair to the
+    plan. Row set before and after on a production restore: 64 pages, 232 of 951, byte-identical.
+    Closes **BAL-482**.
   * [ ] **X-bi-2** entries gain the full movement column set: a category, a type, `scenario_id` --
     which `cash_ledger/_amount_source.py` REFUSES a mismatch on -- and the settle-day basis pair.
     Additive; nothing reads them yet and the downgrade is a column drop.
@@ -530,8 +532,6 @@ in SILENCE where a refused DELETE is loud.
   **Two obligations RESTATED from leaves archived 2026-08-26**, binding the leaves that REMAIN: a
   derived row's answer must be INVARIANT under a change to its own amount column, agreement being
   blind to the resolver (X-au-b); and the basis is REQUIRED on both `settle_amount` twins, pinned once in `cash_ledger.baseline_amount_basis` (X-au-j).
-* [x] **X-au-c** `3d1379d1` -- the amount model's SEAM, ticked with its last leaf `X-au-c3`. THREE constraints it leaves on later steps (the resolver, the `cash_ledger` name, the STATUS-free amount rules) are in `archive/seven_shipped_pointers_2026-09-05.md`, with `archive/x_au_c_as_built_2026-08-26.md`.
-  * [x] **X-au-c3** `3d1379d1` -- a settle RECORDS what moved rather than refreshing an amount. `archive/eight_shipped_steps_2026-09-01.md`.
 * [x] **X-au-k** `7315ecd9` -- amount ownership is ONE mapped attribute (**R-IW**); `_FIGURE_COLUMNS` gone. Closed **N-293**, opened **N-437**, **N-440**. `archive/x_au_k_as_built_2026-09-02.md`.
 * [x] **X-au-d** `ed06acf6` -- a paycheck's amount is its salary profile's and it stores none; 59 rows declared (**R-JB**), FOUR absorbed defects closed or filed. `archive/x_au_d_as_built_2026-09-03.md`.
 * [x] **X-au-e** `c000d7f6` `b846386a` -- a template row reads its template's series; 525 rows declared, the `$502.45` class dead. Closed **N-244**, **N-247**, **N-444**. Its own keep-vs-use claim was REFUTED (**R-JD**) -- see `archive/seven_shipped_pointers_2026-09-05.md` and `archive/x_au_e_as_built_2026-09-03.md`.
@@ -604,10 +604,8 @@ in SILENCE where a refused DELETE is loud.
   no money. **Gated on `credit_card:CC4d`**, which gives the one derived row that carries no link
   today its own. Closes **N-440**.
 * [x] **X-au-f** `cb4239a2` -- the DECOMPOSED parent of the PARENT-transfer cutover, ticked with its last leaf; split into three 2026-09-09 (**R-BAL10**) and RE-CUT into two 2026-09-10 (**R-BAL14**), `X-au-f-3` ABSORBED into `X-au-f-2`. Family record: `archive/x_au_f_family_2026-09-11.md`.
-  * [x] **X-au-f-1** `ce8bf485` -- every parent-transfer render site takes the amount model's answer; byte-identical BY CONSTRUCTION. Closed **N-452**; opened **BAL-476**. Record: `archive/x_au_f_1_as_built_2026-09-09.md`.
-  * [x] **X-au-f-2** `cb4239a2` -- THE CUTOVER in one act (**R-BAL10**, **R-BAL11**, **R-BAL12**; `b7e4c1f38a20` empties `transfers.amount`). Closed **N-263**, **N-451**, **BAL-476**, **N-449**, **N-352**; opened **BAL-477**; **NOT N-450**, which is `X-bp`'s. Record: `archive/x_au_f_2_as_built_2026-09-10.md`.
+* [x] **X-au-f-2** `cb4239a2` -- THE CUTOVER in one act (**R-BAL10**, **R-BAL11**, **R-BAL12**; `b7e4c1f38a20` empties `transfers.amount`). Closed **N-263**, **N-451**, **BAL-476**, **N-449**, **N-352**; opened **BAL-477**; **NOT N-450**, which is `X-bp`'s. Record: `archive/x_au_f_2_as_built_2026-09-10.md`.
 
-* [x] **X-bl-1** `e0e257a7` -- a cutover's control can FAIL: seven instance-distinct perturbations of the sources a row's rule names, eight mutations firing it. Closed **N-445**. Record: `archive/x_bl_1_as_built_2026-09-09.md`.
 * [x] **X-bl-2a** `ee4fc2d7` -- ONE date producer and ONE settled-history derivation for the payment feed (**R-BAL7**), the eager load the CALLER's statement (**R-BAL8**); byte-identical, **25 statements -> 21**. Record: `archive/x_bl_2a_as_built_2026-09-11.md`.
   **A LATER step must obey:** the load is stated by whoever traverses it, graded by a statement-COUNTING pair -- a presence check passed a mutant that deleted the options.
 * [x] **X-bl-2b** `0e93ec9f` -- a loan payment's three dates are ONE value both records COMPOSE and the replay takes (**R-BAL9**); `ConfirmedPayment` deleted, **101 modules -> 46**, byte-identical. Closed **N-432**; opened **BAL-472**, **BAL-473**, **BAL-474**. Record: `archive/x_bl_2b_as_built_2026-09-09.md`.
@@ -686,9 +684,6 @@ section 4, under their unchanged ids.*
   indistinguishably, and the move needs its own representation before the flag can be deleted.
   Carries **N-238**, **F-11**, **N-245**, **N-246**, and **N-448**'s closed record.
 * [x] **X-au-h** `825fd791` -- **`is_override` says ONE thing** and authorship is on the PAYLOAD (**R-JR**); `e7c3a1f9b482` dropped the flag from the occurrence-keyed index. Closed **N-248**, **N-436**, **N-448**; opened **N-451**, **N-452**. **N-238** stays OPEN and NARROWED, with **F-11**, **N-245**, **N-246** -- the clauses a later step obeys are in `archive/seven_shipped_pointers_2026-09-05.md`.
-* [x] **X-aw** `078077db` -- a paycheck's gross is a RATE (**R-HW**), so **N-239** died by construction. Closed its horizon half; opened **N-390** and **N-391**. Record in `archive/four_shipped_steps_2026-08-30.md`.
-* [x] **X-bh-1** `b955d0c8` -- the paycheck engine reads the owner's CALENDAR, so **D25**'s narrow context is unrepresentable rather than forbidden in prose. Opened **N-394**, **N-395**, **N-396**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
-* [x] **X-bh-2** `49fdfb91` -- the rhythm runs BACKWARD too (**R-IA**), bounded by a stored registration; **`NULL` means NOT STATED** (**R-IF**). Closed **N-390** and **N-396**; opened **N-398**, **N-399**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
 
 ### Phase X -- the posting restructure
 
@@ -1029,7 +1024,6 @@ section 4, under their unchanged ids.*
   `routes/transfers/_helpers.py` (which counts its own `request.form` site, so it says 35) and
   `steps.md` state the same number and were moved with it.
 *The `X-br` family -- the fresh container per run, its container and four leaves -- is ARCHIVED to `archive/x_br_family_2026-09-09.md` (2026-09-09, developer's call under rule 4). Every id still resolves in `steps.md`.*
-* [x] **X-bu** `142f64cb` -- closed **BAL-462**: `row_valuation.owned_amount` deleted and folded into `_amount_source._own_answer`, growing one reader under **R-BAL4**. Its obligation on `X-bx` was DISCHARGED there (`f7b9e094`) by deleting the copy rather than routing it.
 * [x] **X-bv** `66ff070b` -- closed the STRAND at its producer: a leftover carries `compute_due_date`'s answer, so `declare_derived` cannot leave a row amount rule 3 must price on a due date it has not got. **Its written remedy aimed at the wrong tier**; the CHECK is `X-bv-2`'s.
 * [ ] **X-bv-2** `fix(models): the CHECK the producer fix makes unreachable` -- owns **BAL-463**.
   `template_id IS NULL OR due_date IS NOT NULL` on BOTH row tables, replacing `b4d9e1c7a052`'s
@@ -1037,21 +1031,18 @@ section 4, under their unchanged ids.*
   two-term form needs NO guard: nothing can reach the state. **RE-SPECIFIED 2026-09-11 (R-BAL17)**
   and sequenced behind `X-cf`: it binds only once the suite's rows of a definition are the engine's.
   Deletes `_stated_amount`'s `on_date is None` arm with its test and the two tests grading frozen
-  migrations' `due_date IS NULL` arms; tightens `DerivedRowFields.due_date` to `date`. The transaction
-  half is PARKED at `0341a568`; its `down_revision` is re-pointed at dev's head (`flask db heads`).
+  migrations' `due_date IS NULL` arms; tightens `DerivedRowFields.due_date` to `date`. Its re-cut on
+  BOTH tables, PARKED at `d73ec289`; `down_revision` is re-pointed at dev's head (`flask db heads`).
 * [ ] **X-cf** -- the DECOMPOSED parent of the suite's ONE builder for a row of a definition
   (**R-BAL17**), split 2026-09-11 into five leaves; carries **BAL-480**, whose row holds the census.
-* [x] **X-cf-1** `8fac9e6f` -- built `generate_row_of(template, period)`, which CALLS the engine into one paycheck, and moved the shared fixtures onto it.
-* [x] **X-cf-2** `b3e51806` -- the model, script and util suites; its review found a 60-day paycheck holding THREE monthly firings two months a year, pinned by `definition_firing_twice_in_a_paycheck`.
-* [x] **X-cf-3** `641801a3` -- the service suites (23 census sites, 8 hand-dated); two series-versus-scalar controls made real, the override-sibling pair kept UNDATED so the one-statement flip stays graded.
-* [ ] **X-cf-3b** `test(fixtures): the plan-figure builders take the engine's row` -- carries **BAL-480**.
-  `test_carry_forward_service._create_envelope_txn`, `test_transaction_service._make_projected_txn`
-  and `test_amount_source._template_row`: callers state a figure the definition does not, or stage
-  two rows of one every-paycheck definition in one paycheck. A figure is stated on the definition or
-  laid on as the owner's re-price; a pair takes the pinned calendar; `X-bv-2`'s deleted no-due-date case rides with it.
+* [x] **X-cf-3b** `699bd05d` -- the three plan-figure builders (164 sites) take the engine's row; the owner's re-price and move gained ONE spelling each (`repriced_by_the_owner`, `moved_by_the_owner`, beside `generate_row_of`).
+  Two engine rows in one paycheck share ONE due date (D18), so WHICH row a carry topped up is read off the rows, never a figure; its review found an index restore restating the pre-X-au-h DDL that no test could see, because every case clones its own database.
 * [ ] **X-cf-4** `test(fixtures): the route suites take a definition's row from the engine` -- closes
   **BAL-480**. 28 census sites, five `txn.template_id = template.id` assignments and five hand-dated
   sites; a route test posts what the popover RENDERS (`budgets[txn.id]`), never a stored column.
+* [ ] **X-ch** `test(fixtures): a transfer of a definition is the engine's` -- closes **BAL-488**.
+  `generate_transfer_of(template, period)`, R-BAL17's builder one table over; 23 hand-built linked-transfer
+  sites in 11 files converted, so `X-bv-2`'s twin CHECK binds on rows the engine wrote.
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
   The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
   `is_override` term; the undated arm keeps the term because its index does. Script and test only.
@@ -1177,9 +1168,6 @@ section 4, under their unchanged ids.*
   produces it, which a fork changes and a rebase changes. Two remedies are refused: stamp
   equality, measured GREEN on the broken template, and a `pg_indexes` spot check, which names
   one object where the next instance will be a different one -- the same shape as an allowlist.
-* [x] **X-bd** `39935763` -- every route in the sweep is its OWN pytest item. Closed **N-364**, whose diagnosis it measured FALSE; opened **N-387**. Record in `archive/four_shipped_steps_2026-08-30.md`.
-* [x] **X-be-2** `167aab8d` -- a test SAYS what world it starts in. Closed **N-387**, whose read-only premise it measured FALSE; opened **N-388**. Record in `archive/four_shipped_steps_2026-08-30.md`.
-* [x] **X-be-3** `0aa2cc80` -- the sweep grades EVERY GET route and carries no list of the ones it does not; coverage is an equality against `url_map`. Closed **N-388**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
 * [ ] **X-be** `refactor(services): three modules are at the line ceiling, not near it` -- closes
   **N-365**, whose row carries the census and both instances. **Root: in a corpus whose docstrings
   ARE the design record, a per-module LINE cap binds what gets WRITTEN DOWN.** The fork, per module:
@@ -1206,7 +1194,6 @@ section 4, under their unchanged ids.*
   disables remain in `app/` and not one has been re-measured** -- 5 in `models/`, 4 in
   `routes/`, 7 in `services/`, a breakdown that summed to FIFTEEN beside this sixteen until
   2026-09-11. The step's first deliverable is the census.
-* [x] **X-am** `7b0ddae8` -- the `Settled` ARCHIVE is DELETED (**R-HA**, which carries what `CC3b` owes). Closed **N-177**; as-built in `archive/x_am_as_built_2026-08-27.md`, entry in `archive/four_shipped_steps_2026-08-30.md`.
 * [ ] **E2-0** `the membership trace` -- NO code. Answer from the code: which modules are members,
   what the public re-export surface is, whether `account_projection` is in or out, and whether
   `ledger_report_service` is (**N-35**). Re-run the fence scan and check the arrow risk: whether any

@@ -270,3 +270,11 @@ rationale, where a reader meets it at the moment it fires.
   ends the 01-15 paycheck on 01-15 and projects a 01-16 paycheck the owner was already paid early.
   The rule was MATCHING (**R-PC72**: a record stands for its nearest planned payday). Walk a worked
   example through the OFF-grid case before building the on-grid arithmetic.
+- **A memo keyed by a row's id is a cache of that row's content, and two green branches can each be
+  one half of the defect.** R16-b-2 keyed the read pass's rule-resolution memo by `rule.id`; R7d-c-2
+  made generation read that memo. Each branch's suite was green; the merge failed two of dev's R17
+  controls (a rule re-authored and regenerated on one pass walked the pre-edit cadence), controls
+  that belonged to neither lane. The tell was the id key's implicit invariant, "this id means one
+  thing for the pass's life", which only a route convention maintained. Remedy: key a memo by the
+  derivation's input (the spec), and when a step makes a NEW READER of a memo, run the whole suite
+  of the merged tree, not the two branches' modules (`recurrence:R-R73`, 2026-09-11).

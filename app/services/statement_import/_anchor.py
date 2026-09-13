@@ -343,6 +343,67 @@ def recorded_opening_before(
     )
 
 
+def anchored_imports(account_id: int) -> "list[StatementImport]":
+    """Return every import of *account_id* whose stated balance is PLACED.
+
+    ONE fetch that :func:`resting_on` then partitions, and the two are split
+    so that a reader which needs the answer for twenty imports at once -- the
+    statements page's delete confirmation
+    (:func:`~._reads.import_history`) -- pays one query rather than twenty,
+    while still reaching the ONE predicate the release door acts on.
+
+    Args:
+        account_id: The account whose imports to read.
+
+    Returns:
+        The :class:`~app.models.statement_import.StatementImport` rows with a
+        ``balance_effective_on``, ascending by id.  ORM rows rather than
+        columns because :func:`release_anchors_from` writes to them, and a
+        counter reading the same rows counts the objects the writer changes.
+    """
+    return (
+        db.session.query(StatementImport)
+        .filter(
+            StatementImport.account_id == account_id,
+            StatementImport.balance_effective_on.isnot(None),
+        )
+        .order_by(StatementImport.id)
+        .all()
+    )
+
+
+def resting_on(
+    anchored: "list[StatementImport]", day: date,
+    except_import_id: "int | None" = None,
+) -> "list[StatementImport]":
+    """Return which of *anchored* rest on lines at or after *day*.
+
+    **THE predicate, stated once** (plan step ``bank_import:X-gr``, finding
+    **BI-490**, rule 14).  A placement is a conclusion drawn from the lines at
+    or before its own day, so a placement on or after *day* rests on lines a
+    change at *day* touches.  :func:`release_anchors_from` acts on this list;
+    the delete confirmation counts it BEFORE the rows go
+    (:func:`~._reads.import_history`), and the receipt counts it after -- and
+    because both reach this one function, the confirmation cannot count
+    differently from the act it confirms.  It lived inline in the release as a
+    SQL filter until this step, which would have left a preview as a second
+    spelling of the same question.
+
+    Args:
+        anchored: :func:`anchored_imports`' rows.
+        day: The earliest day whose lines changed.
+        except_import_id: An import to leave alone -- the one whose write this
+            is -- or ``None``.
+
+    Returns:
+        The members of *anchored* the change undercuts, in *anchored*'s order.
+    """
+    return [
+        row for row in anchored
+        if row.balance_effective_on >= day and row.id != except_import_id
+    ]
+
+
 def release_anchors_from(
     account_id: int, day: date, except_import_id: "int | None" = None,
 ) -> int:
@@ -353,7 +414,8 @@ def release_anchors_from(
     it.**  Both doors that change them call this:
     :func:`~._record.record_statement` with the earliest day it freshly
     recorded, and :func:`~._undo.delete_import` with the earliest day whose
-    lines it is removing.
+    lines it is removing.  Which rows go is :func:`resting_on`'s answer over
+    :func:`anchored_imports`; this function only writes.
 
     Args:
         account_id: The account whose anchors to examine.
@@ -384,17 +446,7 @@ def release_anchors_from(
     next import re-establishes an anchor from evidence that is actually
     present, and until then the account honestly holds none.
     """
-    released = (
-        db.session.query(StatementImport)
-        .filter(
-            StatementImport.account_id == account_id,
-            StatementImport.balance_effective_on.isnot(None),
-            StatementImport.balance_effective_on >= day,
-            StatementImport.id != except_import_id
-            if except_import_id is not None else db.true(),
-        )
-        .all()
-    )
+    released = resting_on(anchored_imports(account_id), day, except_import_id)
     for row in released:
         row.balance_effective_on = None
         row.balance_evidence_id = None

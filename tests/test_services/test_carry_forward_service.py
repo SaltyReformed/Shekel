@@ -16,7 +16,6 @@ test_idempotency.py.  Focuses on:
     period) so cell == subtotal == balance.
 """
 
-from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -30,8 +29,6 @@ from app.enums import (
 )
 from app.exceptions import ValidationError
 from app.extensions import db
-from app.models.account import Account
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
     AccountType, Status, TransactionType,
 )
@@ -45,6 +42,7 @@ from app.services import (
     account_service,
     carry_forward_service,
     recurrence_engine,
+    transaction_service,
     transfer_recurrence,
     transfer_service,
 )
@@ -55,21 +53,24 @@ from app.services.cash_ledger import (
     contribution_of,
     resolve_transaction_amount,
 )
-from app.services.row_valuation import settled_contribution, settled_figure
+from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
     amount_basis_for,
     create_account_of_type,
     default_settle_day,
+    definition_firing_twice_in_a_paycheck,
     derived_span,
     generate_row_of,
     make_cadence_rule,
     make_expense_template,
     make_income_template,
+    moved_by_the_owner,
+    populate_in_a_fresh_pass,
+    repriced_by_the_owner,
     settle_day_columns,
     settled_day_basis_id,
     settlement_basis_id,
     settlement_columns,
-    state_template_price,
 )
 from tests._test_helpers import make_every_period_rule
 from tests.oracles.recurrence_baseline import ANNUAL, MONTHLY
@@ -852,7 +853,7 @@ class TestCarryForwardShadowTransactions:
                     name="CF Transfer 2",
                 ),
             )
-            reg = _create_transaction(seed_user, seed_periods, name="Reg")
+            _create_transaction(seed_user, seed_periods, name="Reg")
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
@@ -1083,8 +1084,6 @@ class TestCarryForwardOverrideSibling:
         at two.
         """
         with app.app_context():
-            from app.models.recurrence_rule import RecurrenceRule
-
             expense_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
@@ -1104,7 +1103,7 @@ class TestCarryForwardOverrideSibling:
             db.session.add(template)
             db.session.flush()
             # The definition first, then the cadence onto it (plan step R-F6).
-            rule = make_every_period_rule(db.session, template)
+            make_every_period_rule(db.session, template)
             db.session.refresh(template)
 
             # Initial generation populates rule-generated rows for
@@ -1271,8 +1270,6 @@ class TestCarryForwardOverrideSiblingTransfers:
         override-sibling transfer.
         """
         with app.app_context():
-            from app.models.recurrence_rule import RecurrenceRule
-
             savings = _create_savings(seed_user)
             # Authored through the write door (plan step R7c-b): the
             # two-axis columns are NOT NULL, so a rule naming only a pattern
@@ -1289,7 +1286,7 @@ class TestCarryForwardOverrideSiblingTransfers:
             db.session.add(template)
             db.session.flush()
             # The definition first, then the cadence onto it (plan step R-F6).
-            rule = make_every_period_rule(db.session, template)
+            make_every_period_rule(db.session, template)
             db.session.refresh(template)
 
             # Initial generation: rule-generated transfers in periods 0
@@ -1346,91 +1343,36 @@ class TestCarryForwardOverrideSiblingTransfers:
 def _create_envelope_template(
     seed_user, *, name="Spending Money",
     default_amount="100.00", category_key="Groceries",
-    txn_type_name="Expense", with_rule=True,
 ):
-    """Create an envelope-tracked TransactionTemplate.
+    """Create a PRICED, every-paycheck envelope definition.
 
-    By default the template has an EVERY_PERIOD recurrence rule so the
-    recurrence engine will generate canonical rows in any seed period.
-    Tests that exercise the "missing target canonical" branch (where
-    the engine has not yet run) skip the rule entirely by passing
-    ``with_rule=False`` -- the carry-forward branch must still attempt
-    generation and fail loudly when the engine cannot create the row.
+    The shared builder (:func:`make_expense_template`), so the definition is
+    one the engine can generate from and its rows are the engine's own
+    (:func:`generate_row_of`, plan step balance:X-cf-3b).  It took a
+    ``with_rule=False`` switch until that step, for the "missing target
+    canonical" cases: a definition with NO cadence holds rows only one way --
+    they were generated under a cadence the owner then CLEARED, which is the
+    edit door's act (``_recurrence_form_helpers._clear_recurrence_rule``:
+    dis-associate, and delete-orphan removes the rule) -- so those cases
+    generate the source first and then set ``template.recurrence_rule = None``.
     """
-    txn_type = (
-        db.session.query(TransactionType)
-        .filter_by(name=txn_type_name).one()
+    return make_expense_template(
+        db.session, seed_user, amount=default_amount,
+        name=name, category_key=category_key, is_envelope=True,
     )
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"][category_key].id,
-        transaction_type_id=txn_type.id,
-        name=name,
-        default_amount=Decimal(default_amount),
-        is_envelope=True,
-    )
-    db.session.add(template)
-    db.session.flush()
-    state_template_price(template)
-    if with_rule:
-        # The definition first, then the cadence onto it (plan step R-F6).
-        make_every_period_rule(db.session, template)
-    return template
 
 
-def _create_envelope_txn(
-    seed_user, period, template, *,
-    estimated_amount=None, status_name="Projected",
-    is_override=False, settled_amount=None, occurs_on=None,
-):
-    """Create a single envelope transaction owned by the template.
+def _plan_of(txn):
+    """Return what *txn* PLANS -- its amount as the amount model resolves it.
 
-    Mirrors the recurrence engine's per-period generation for tests
-    that hand-place rows rather than driving the engine.  Defaults to
-    the template's default amount and Projected status.
-
-    *occurs_on* is WHICH occurrence of the template's cadence the row answers
-    (plan step **R17**).  ``None`` -- the default, and what every caller that
-    does not care passes -- leaves the row answering no occurrence, which
-    ``idx_transactions_template_scenario_undated`` holds to one per paycheck.
-    A caller staging two rows in ONE paycheck must therefore give each its own
-    occurrence, which is the only state in which two are storable.
-
-    A row built in a settled status carries the whole record -- the day, the
-    figure and how that figure is known -- through the one door a bare-built
-    fixture uses (``_test_helpers.settlement_columns``); *settled_amount* is a
-    figure a human typed, which makes it a ``corrected`` record, and with none
-    the record is ``derived`` at the row's own plan.  Building the settle DAY
-    without the record is a state ``ck_transactions_settle_day_needs_a_record``
-    refuses, and building the STATUS without either is one
-    ``row_valuation.settled_figure`` refuses to value (plan step X-au-c3).
+    A row of a definition stores no figure (plan step X-au-e), so "the
+    target's estimate is untouched" is a question to the resolver, not to the
+    ``estimated_amount`` column -- which reads ``None`` before AND after any
+    change to the definition's price.  A row a carry-forward bumped owns its
+    figure from then on and the column is that figure; the cases below read
+    it there directly, because ownership is part of what they assert.
     """
-    status = db.session.query(Status).filter_by(name=status_name).one()
-    planned = Decimal(
-        estimated_amount if estimated_amount is not None
-        else str(template.default_amount)
-    )
-    settled_on = default_settle_day(period, status.id)
-    txn = Transaction(
-        template_id=template.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=status.id,
-        name=template.name,
-        category_id=template.category_id,
-        transaction_type_id=template.transaction_type_id,
-        amount_ownership=AmountOwnership.own(planned),
-        **settle_day_columns(settled_on),
-        **settlement_columns(settled_on, planned, submitted=settled_amount),
-        occurs_on=occurs_on,
-        is_override=is_override,
-    )
-    db.session.add(txn)
-    db.session.flush()
-    return txn
+    return resolve_transaction_amount(txn, amount_basis_for(txn))
 
 
 def _add_entry(txn, seed_user, amount, *, description="Test purchase",
@@ -1472,7 +1414,7 @@ class TestCarryForwardEnvelopePartialSpend:
         Expected:
           source.status_id      == DONE
           settled_figure(source)  == 65.00
-          source.estimated      == 100.00 (untouched)
+          _plan_of(source)      == 100.00 (untouched: still the rule's)
           source.pay_period_id  == seed_periods[0].id (NOT moved)
           source.is_override    == False (envelope source is settled,
                                          not relocated)
@@ -1483,12 +1425,8 @@ class TestCarryForwardEnvelopePartialSpend:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            target = generate_row_of(template, seed_periods[1])
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
@@ -1505,9 +1443,11 @@ class TestCarryForwardEnvelopePartialSpend:
 
             done_id = ref_cache.status_id(StatusEnum.DONE)
             assert source.status_id == done_id
-            # Worked example: 65 of 100 spent.
+            # Worked example: 65 of 100 spent.  The source's PLAN is untouched:
+            # still the rule's (no figure of its own), still resolving to 100.
             assert settled_figure(source) == Decimal("65.00")
-            assert source.estimated_amount == Decimal("100.00")
+            assert source.estimated_amount is None
+            assert _plan_of(source) == Decimal("100.00")
             assert source.pay_period_id == seed_periods[0].id
             assert source.is_override is False
 
@@ -1545,12 +1485,8 @@ class TestCarryForwardEnvelopePartialSpend:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            target = generate_row_of(template, seed_periods[1])
             _add_entry(source, seed_user, "40.00",
                        description="Kroger debit")
             _add_entry(source, seed_user, "25.00",
@@ -1590,12 +1526,8 @@ class TestCarryForwardEnvelopeZeroEntries:
             template = _create_envelope_template(
                 seed_user, default_amount="200.00",
             )
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            target = generate_row_of(template, seed_periods[1])
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
@@ -1632,18 +1564,14 @@ class TestCarryForwardEnvelopeOverspend:
             template = _create_envelope_template(
                 seed_user, default_amount="100.00",
             )
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            target = generate_row_of(template, seed_periods[1])
             _add_entry(source, seed_user, "80.00")
             _add_entry(source, seed_user, "40.00",
                        description="Overspend purchase")
             db.session.commit()
 
-            target_estimated_before = target.estimated_amount
+            target_plan_before = _plan_of(target)
             target_is_override_before = target.is_override
 
             carry_forward_service.carry_forward_unpaid(
@@ -1656,8 +1584,10 @@ class TestCarryForwardEnvelopeOverspend:
             db.session.refresh(target)
             # 80 + 40 = 120 -- exceeds the 100 estimate.
             assert settled_figure(source) == Decimal("120.00")
-            # Target is untouched because leftover = max(0, 100-120) = 0.
-            assert target.estimated_amount == target_estimated_before
+            # Target is untouched because leftover = max(0, 100-120) = 0:
+            # still the rule's row, planning what it planned.
+            assert target.estimated_amount is None
+            assert _plan_of(target) == target_plan_before == Decimal("100.00")
             assert target.is_override == target_is_override_before
             assert target.is_override is False
 
@@ -1673,12 +1603,8 @@ class TestCarryForwardEnvelopeOverspend:
             template = _create_envelope_template(
                 seed_user, default_amount="100.00",
             )
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            target = generate_row_of(template, seed_periods[1])
             _add_entry(source, seed_user, "50.00")
             _add_entry(source, seed_user, "50.00")
             db.session.commit()
@@ -1692,7 +1618,8 @@ class TestCarryForwardEnvelopeOverspend:
             db.session.refresh(source)
             db.session.refresh(target)
             assert settled_figure(source) == Decimal("100.00")
-            assert target.estimated_amount == Decimal("100.00")
+            assert target.estimated_amount is None
+            assert _plan_of(target) == Decimal("100.00")
             assert target.is_override is False
 
 
@@ -1727,12 +1654,8 @@ class TestCarryForwardEnvelopeRefundedBelowZero:
             template = _create_envelope_template(
                 seed_user, default_amount="100.00",
             )
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            target = generate_row_of(template, seed_periods[1])
             _add_entry(
                 source, seed_user, "-50.00", description="Amazon refund",
             )
@@ -1777,12 +1700,8 @@ class TestCarryForwardEnvelopeRefundedBelowZero:
             template = _create_envelope_template(
                 seed_user, default_amount="100.00",
             )
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            target = generate_row_of(template, seed_periods[1])
             _add_entry(source, seed_user, "80.00")
             _add_entry(
                 source, seed_user, "-30.00", description="Amazon refund",
@@ -1821,9 +1740,7 @@ class TestCarryForwardEnvelopeMissingTarget:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
 
@@ -1866,23 +1783,22 @@ class TestCarryForwardEnvelopeMissingTarget:
     ):
         """Template without a recurrence rule + empty target: create a row.
 
-        With ``with_rule=False`` the engine returns [] (no recurrence
-        rule), so there is no canonical to bump.  Instead of refusing,
-        the branch settles the source and creates a fresh ``is_override``
-        row in the target carrying the leftover -- the Father's Day case
-        (a yearly envelope rolling into an off-anniversary period).
+        With no recurrence rule the engine returns [], so there is no
+        canonical to bump.  Instead of refusing, the branch settles the
+        source and creates a fresh ``is_override`` row in the target
+        carrying the leftover -- the Father's Day case (a yearly envelope
+        rolling into an off-anniversary period).  The source was generated
+        under a cadence the owner then cleared, which is the one way a
+        rule-less definition comes to hold a row.
 
         Source: $100 envelope, $30 spent -> settles Paid at $30,
         leftover $70.  Target had no row -> one new Projected override
         row at $70 appears.
         """
         with app.app_context():
-            template = _create_envelope_template(
-                seed_user, with_rule=False,
-            )
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
+            template = _create_envelope_template(seed_user)
+            source = generate_row_of(template, seed_periods[0])
+            template.recurrence_rule = None
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
             source_id = source.id
@@ -1938,14 +1854,9 @@ class TestCarryForwardEnvelopeSettledTarget:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                status_name="Paid",
-                settled_amount=Decimal("100.00"),
-            )
+            source = generate_row_of(template, seed_periods[0])
+            target = generate_row_of(template, seed_periods[1])
+            transaction_service.settle_transaction(target)
             _add_entry(source, seed_user, "40.00")
             db.session.commit()
 
@@ -1966,10 +1877,12 @@ class TestCarryForwardEnvelopeSettledTarget:
             assert source_after.status_id == done_id
             assert settled_figure(source_after) == Decimal("40.00")
 
-            # The pre-existing Paid row is untouched.
+            # The pre-existing Paid row is untouched: still the rule's, its
+            # plan still 100, and what it booked still 100.
             target_after = db.session.get(Transaction, target_id)
             assert target_after.status_id == done_id
-            assert target_after.estimated_amount == Decimal("100.00")
+            assert target_after.estimated_amount is None
+            assert _plan_of(target_after) == Decimal("100.00")
             assert settled_figure(target_after) == Decimal("100.00")
             assert target_after.is_override is False
 
@@ -2017,15 +1930,9 @@ class TestCarryForwardEnvelopeMultiHop:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            row_a = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            row_b = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
-            row_c = _create_envelope_txn(
-                seed_user, seed_periods[2], template,
-            )
+            row_a = generate_row_of(template, seed_periods[0])
+            row_b = generate_row_of(template, seed_periods[1])
+            row_c = generate_row_of(template, seed_periods[2])
             db.session.commit()
 
             # Hop 1: A -> B.
@@ -2110,15 +2017,9 @@ class TestCarryForwardEnvelopeMultipleSourcesToSameTarget:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            row_a = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            row_b = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
-            row_c = _create_envelope_txn(
-                seed_user, seed_periods[2], template,
-            )
+            row_a = generate_row_of(template, seed_periods[0])
+            row_b = generate_row_of(template, seed_periods[1])
+            row_c = generate_row_of(template, seed_periods[2])
             db.session.commit()
 
             # Hop 1: A -> C.
@@ -2180,17 +2081,12 @@ class TestCarryForwardEnvelopeCorruptDoubledRow:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            # Pre-existing doubled-row state in target period 1.
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                is_override=False,
-            )
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                is_override=True,
+            source = generate_row_of(template, seed_periods[0])
+            # The target's canonical, and an override the owner moved in.
+            generate_row_of(template, seed_periods[1])
+            moved_by_the_owner(
+                generate_row_of(template, seed_periods[2]),
+                into=seed_periods[1],
             )
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
@@ -2223,15 +2119,15 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
 
         A once-yearly envelope (no per-period rule) budgeted $100 with
         no purchases.  Source settles Paid at $0; the full $100 leftover
-        lands in a fresh Projected override row in the target period.
+        lands in a fresh Projected override row in the target period.  The
+        source was generated under a cadence the owner then cleared.
         """
         with app.app_context():
             template = _create_envelope_template(
-                seed_user, name="Father's Day", with_rule=False,
+                seed_user, name="Father's Day",
             )
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            template.recurrence_rule = None
             db.session.commit()
             source_id = source.id
 
@@ -2278,14 +2174,11 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            _create_envelope_txn(seed_user, seed_periods[0], template)
-            _create_envelope_txn(seed_user, seed_periods[1], template)
+            generate_row_of(template, seed_periods[0])
+            generate_row_of(template, seed_periods[1])
             # Target (period 2) canonical already Paid -> not bumpable.
-            paid = _create_envelope_txn(
-                seed_user, seed_periods[2], template,
-                status_name="Paid",
-                settled_amount=Decimal("100.00"),
-            )
+            paid = generate_row_of(template, seed_periods[2])
+            transaction_service.settle_transaction(paid)
             db.session.commit()
             paid_id_pk = paid.id
 
@@ -2318,10 +2211,11 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
             assert len(overrides) == 1
             # 0 + 100 (hop 1) + 100 (hop 2) = 200.
             assert overrides[0].estimated_amount == Decimal("200.00")
-            # The Paid canonical was never touched.
+            # The Paid canonical was never touched: still the rule's row.
             paid_after = db.session.get(Transaction, paid_id_pk)
             assert paid_after.is_override is False
-            assert paid_after.estimated_amount == Decimal("100.00")
+            assert paid_after.estimated_amount is None
+            assert _plan_of(paid_after) == Decimal("100.00")
 
     def test_only_soft_deleted_target_creates_override_row(
         self, app, db, seed_user, seed_periods,
@@ -2337,12 +2231,8 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            deleted_target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            deleted_target = generate_row_of(template, seed_periods[1])
             deleted_target.is_deleted = True
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
@@ -2395,12 +2285,8 @@ class TestCarryForwardEnvelopeMixedBatch:
                 seed_user, name="Envelope Spending",
                 default_amount="100.00", category_key="Groceries",
             )
-            envelope_source = _create_envelope_txn(
-                seed_user, seed_periods[0], envelope_template,
-            )
-            envelope_target = _create_envelope_txn(
-                seed_user, seed_periods[1], envelope_template,
-            )
+            envelope_source = generate_row_of(envelope_template, seed_periods[0])
+            envelope_target = generate_row_of(envelope_template, seed_periods[1])
             _add_entry(envelope_source, seed_user, "40.00")
 
             # Discrete template: is_envelope defaults to False.
@@ -2476,9 +2362,10 @@ class TestCarryForwardEnvelopeMixedBatch:
         """Ambiguous envelope target -- atomic rollback affects every branch.
 
         Setup: same period 0 mix as the prior test, but the envelope
-        target in period 1 has TWO mutable rows for the template (the
-        corrupt doubled-row state).  When the envelope branch refuses
-        with AMBIGUOUS, the discrete moves and the transfer move (which
+        target in period 1 holds an owner-moved override beside its
+        canonical (the state ``_leftover_recipient`` refuses).  When the
+        envelope branch refuses with AMBIGUOUS, the discrete moves and
+        the transfer move (which
         would have happened mid-batch in the no_autoflush block / shadow
         loop respectively) must NOT persist.
 
@@ -2490,17 +2377,12 @@ class TestCarryForwardEnvelopeMixedBatch:
                 seed_user, name="Envelope Spending",
                 default_amount="100.00", category_key="Groceries",
             )
-            envelope_source = _create_envelope_txn(
-                seed_user, seed_periods[0], envelope_template,
-            )
-            # Corrupt doubled-row target: two mutable rows -> AMBIGUOUS.
-            _create_envelope_txn(
-                seed_user, seed_periods[1], envelope_template,
-                is_override=False,
-            )
-            _create_envelope_txn(
-                seed_user, seed_periods[1], envelope_template,
-                is_override=True,
+            envelope_source = generate_row_of(envelope_template, seed_periods[0])
+            # An override beside the canonical -> AMBIGUOUS.
+            generate_row_of(envelope_template, seed_periods[1])
+            moved_by_the_owner(
+                generate_row_of(envelope_template, seed_periods[2]),
+                into=seed_periods[1],
             )
             _add_entry(envelope_source, seed_user, "40.00")
 
@@ -2567,12 +2449,8 @@ class TestCarryForwardEnvelopeBalanceInvariant:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            generate_row_of(template, seed_periods[1])
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
@@ -2720,12 +2598,8 @@ class TestCarryForwardEnvelopeRecurrenceSkip:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            generate_row_of(template, seed_periods[1])
             _add_entry(source, seed_user, "20.00")
             db.session.commit()
 
@@ -2896,10 +2770,8 @@ class TestPreviewCarryForwardEnvelopePlans:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            _create_envelope_txn(seed_user, seed_periods[1], template)
+            source = generate_row_of(template, seed_periods[0])
+            generate_row_of(template, seed_periods[1])
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
@@ -2938,8 +2810,8 @@ class TestPreviewCarryForwardEnvelopePlans:
             template = _create_envelope_template(
                 seed_user, default_amount="200.00",
             )
-            _create_envelope_txn(seed_user, seed_periods[0], template)
-            _create_envelope_txn(seed_user, seed_periods[1], template)
+            generate_row_of(template, seed_periods[0])
+            generate_row_of(template, seed_periods[1])
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
@@ -2967,10 +2839,8 @@ class TestPreviewCarryForwardEnvelopePlans:
             template = _create_envelope_template(
                 seed_user, default_amount="100.00",
             )
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            _create_envelope_txn(seed_user, seed_periods[1], template)
+            source = generate_row_of(template, seed_periods[0])
+            generate_row_of(template, seed_periods[1])
             _add_entry(source, seed_user, "80.00")
             _add_entry(source, seed_user, "40.00")
             db.session.commit()
@@ -2999,9 +2869,7 @@ class TestPreviewCarryForwardEnvelopePlans:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
 
@@ -3049,7 +2917,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
 
     The cases that used to block (finalised, inactive, soft-deleted
     target) are now actionable -- the preview predicts a freshly created
-    row.  Only the AMBIGUOUS doubled-row state still blocks.
+    row.  Only the AMBIGUOUS target states still block: an override beside
+    the canonical, or two rows answering one occurrence.
     """
 
     def test_settled_target_is_actionable_creates_separate_row(
@@ -3063,14 +2932,9 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                status_name="Paid",
-                settled_amount=Decimal("100.00"),
-            )
+            source = generate_row_of(template, seed_periods[0])
+            target = generate_row_of(template, seed_periods[1])
+            transaction_service.settle_transaction(target)
             _add_entry(source, seed_user, "40.00")
             db.session.commit()
 
@@ -3094,14 +2958,14 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
     def test_template_inactive_is_actionable_creates_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """No target + no rule: actionable, predicts a fresh row (Father's Day)."""
+        """No target + no rule: actionable, predicts a fresh row (Father's Day).
+
+        The source was generated under a cadence the owner then cleared.
+        """
         with app.app_context():
-            template = _create_envelope_template(
-                seed_user, with_rule=False,
-            )
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
+            template = _create_envelope_template(seed_user)
+            source = generate_row_of(template, seed_periods[0])
+            template.recurrence_rule = None
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
 
@@ -3121,19 +2985,19 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
     def test_two_mutable_targets_marked_blocked_ambiguous(
         self, app, db, seed_user, seed_periods,
     ):
-        """Two mutable target rows -> blocked, BLOCK_AMBIGUOUS_TARGETS."""
+        """An override beside the canonical -> blocked, BLOCK_AMBIGUOUS_TARGETS.
+
+        Two mutable rows a CADENCE names are no longer ambiguous (the case
+        below); a row the OWNER moved in is, whatever its occurrence, because
+        the tie-break may not choose a row the owner priced.
+        """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                is_override=False,
-            )
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                is_override=True,
+            source = generate_row_of(template, seed_periods[0])
+            generate_row_of(template, seed_periods[1])
+            moved_by_the_owner(
+                generate_row_of(template, seed_periods[2]),
+                into=seed_periods[1],
             )
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
@@ -3151,7 +3015,7 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             assert "open row" in plan.block_reason.lower()
 
     def test_two_targets_answering_different_occurrences_top_up_the_earliest(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user,
     ):
         """A cadence that names one paycheck twice is NOT ambiguous.
 
@@ -3168,31 +3032,44 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
         **The EARLIEST occurrence receives the leftover**: the unspent money
         rolls into the paycheck to meet the next obligation, and the next
         obligation is the first occurrence in it.
+
+        The pair is the ENGINE's (plan step balance:X-cf-3b): a monthly
+        definition on the pinned 60-day calendar
+        (:func:`definition_firing_twice_in_a_paycheck`), its one row in the
+        first paycheck as the source and its two in the second as the target.
+        **Which row was chosen is read off the ROW after the mutating call**,
+        not off a figure: both rows are dated on the same due date
+        (``compute_due_date`` reads the paycheck, not the occurrence -- ledger
+        row D18, plan step R5), so the definition's series prices them alike
+        and no preview figure can tell them apart.  The preview grades the
+        ruling (not ambiguous); the execution grades WHICH of the two received
+        the money.
         """
         with app.app_context():
-            template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
+            template, first_paycheck, target_period = (
+                definition_firing_twice_in_a_paycheck(
+                    db.session, seed_user, name="Spending Money",
+                )
             )
-            # Distinct amounts, so the assertion below identifies WHICH row
-            # was chosen rather than merely that one was.
-            # Two occurrences of one cadence inside the one paycheck.  The
-            # occurrence is given at CREATION: two undated rows in one paycheck
-            # is the state ``..._undated`` forbids, so assigning after the
-            # flush would trip the index rather than stage the case.
-            first = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                estimated_amount="100.00", occurs_on=date(2026, 1, 15),
+            template.is_envelope = True
+            source = generate_row_of(template, first_paycheck)
+            populate_in_a_fresh_pass(
+                seed_user["user"].id, [target_period.id],
             )
-            second = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                estimated_amount="200.00", occurs_on=date(2026, 2, 15),
+            first, second = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id, pay_period_id=target_period.id,
+                )
+                .order_by(Transaction.occurs_on)
+                .all()
             )
+            assert first.occurs_on < second.occurs_on, "fixture: two occurrences"
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
+                first_paycheck.id, target_period.id,
                 seed_user["scenario"].id,
                 balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
@@ -3202,10 +3079,26 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
                 "two rows answering two occurrences is a correct state, not "
                 "an ambiguous one"
             )
-            assert plan.target_estimated_before == Decimal("100.00"), (
-                "the leftover must top up the EARLIEST occurrence in the "
-                "target paycheck, which is the $100.00 row"
+            assert plan.target_estimated_before == Decimal("100.00")
+
+            carry_forward_service.carry_forward_unpaid(
+                first_paycheck.id, target_period.id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
+            db.session.commit()
+
+            db.session.refresh(first)
+            db.session.refresh(second)
+            # 100 of its own plan + (100 - 30) leftover = 170, on the EARLIEST
+            # occurrence; the later one is still the rule's, untouched.
+            assert first.is_override is True
+            assert first.estimated_amount == Decimal("170.00"), (
+                "the leftover must top up the EARLIEST occurrence in the "
+                "target paycheck"
+            )
+            assert second.is_override is False
+            assert second.estimated_amount is None
 
     def test_an_override_sibling_in_the_target_still_blocks(
         self, app, db, seed_user, seed_periods,
@@ -3222,28 +3115,33 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
         The 2026-08-28 ruling was about two rows a CADENCE names.  It was never
         about a row the owner owns, and the guard this leaf relaxed used to
         refuse here.  It still does.
+
+        The moved row is the engine's row of the FIRST paycheck, which the
+        owner moved into the third and re-priced (plan step balance:X-cf-3b),
+        so its occurrence really is the earlier one; the carry runs from the
+        second paycheck into the third.  A row moved in from a LATER paycheck
+        would carry a later occurrence, and the tie-break would then pick the
+        canonical whether or not the override term existed.
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
+            source = generate_row_of(template, seed_periods[1])
             # The paycheck's own canonical, and a row the owner moved in --
             # earlier occurrence, hand-priced, and theirs.
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                estimated_amount="100.00", occurs_on=date(2026, 2, 15),
+            canonical = generate_row_of(template, seed_periods[2])
+            moved = repriced_by_the_owner(
+                moved_by_the_owner(
+                    generate_row_of(template, seed_periods[0]),
+                    into=seed_periods[2],
+                ),
+                "777.77",
             )
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                estimated_amount="777.77", occurs_on=date(2026, 1, 15),
-                is_override=True,
-            )
+            assert moved.occurs_on < canonical.occurs_on, "fixture: earlier"
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
+                seed_periods[1].id, seed_periods[2].id,
                 seed_user["scenario"].id,
                 balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
@@ -3268,72 +3166,41 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
         them to credit is a guess.  Without this, widening
         ``_leftover_recipient`` to "just take the earliest" would pass every
         other carry-forward test in this file.
+
+        The pair is staged the way DC-06's duplicate case stages its own: the
+        target's canonical, and the engine's row of the NEXT paycheck filed
+        back into the target WITHOUT the override flag a move would have set,
+        rewritten to answer the canonical's occurrence once the index that
+        forbids it is dropped.  **The index is not recreated afterwards**:
+        every case clones its own database (``tests.conftest.db``), so the
+        drop cannot outlive this one, and the ``CREATE UNIQUE INDEX`` that
+        used to stand here was a second spelling of the schema -- in the shape
+        migration ``e7c3a1f9b482`` (plan step X-au-h) had already retired.
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            # The corrupt pair: one occurrence, answered twice.  The DATED
-            # index forbids it, so it is staged with the index dropped exactly
-            # as the DC-06 duplicate test stages its own.
-            #
-            # **Restored in a ``finally``, and this test COMMITS**, so a leak
-            # here is not confined to one case: the drop would outlive the
-            # rollback and every later test on this worker would run with the
-            # dated uniqueness gone, silently.  The staged rows are removed
-            # first -- CREATE UNIQUE INDEX validates the rows already there.
+            source = generate_row_of(template, seed_periods[0])
+            first = generate_row_of(template, seed_periods[1])
+            second = generate_row_of(template, seed_periods[2])
             db.session.execute(db.text(
                 "DROP INDEX budget.idx_transactions_template_scenario_occurrence"
             ))
-            try:
-                first = _create_envelope_txn(
-                    seed_user, seed_periods[1], template,
-                    occurs_on=date(2026, 1, 15),
-                )
-                second = _create_envelope_txn(
-                    seed_user, seed_periods[1], template,
-                    occurs_on=date(2026, 1, 15),
-                )
-                _add_entry(source, seed_user, "30.00")
-                db.session.commit()
+            second.pay_period_id = seed_periods[1].id
+            second.occurs_on = first.occurs_on
+            _add_entry(source, seed_user, "30.00")
+            db.session.commit()
 
-                preview = carry_forward_service.preview_carry_forward(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["scenario"].id,
-                    balance_ctx=BalanceContext.build(seed_user["user"].id),
-                )
+            preview = carry_forward_service.preview_carry_forward(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
 
-                plan = preview.plans[0]
-                assert plan.blocked is True
-                assert plan.block_reason_code == (
-                    carry_forward_service.BLOCK_AMBIGUOUS_TARGETS
-                )
-            finally:
-                db.session.query(Transaction).filter(
-                    Transaction.id.in_([first.id, second.id]),
-                ).delete(synchronize_session=False)
-                db.session.commit()
-                db.session.execute(db.text("""
-                    CREATE UNIQUE INDEX
-                        idx_transactions_template_scenario_occurrence
-                    ON budget.transactions (template_id, scenario_id, occurs_on)
-                    WHERE template_id IS NOT NULL
-                      AND occurs_on IS NOT NULL
-                      AND is_deleted = FALSE
-                      AND is_override = FALSE
-                """))
-                db.session.commit()
-                # The restore is CHECKED, not hoped for.  A silent failure
-                # here leaves every later test on this worker running without
-                # the dated uniqueness -- the "green suite covering nothing"
-                # shape -- and the worker database is dropped at the end of
-                # the run, so nothing outside this block could observe it.
-                assert db.session.execute(db.text(
-                    "SELECT count(*) FROM pg_indexes WHERE schemaname = "
-                    "'budget' AND indexname = "
-                    "'idx_transactions_template_scenario_occurrence'"
-                )).scalar() == 1, "the dated unique index was not restored"
+            plan = preview.plans[0]
+            assert plan.blocked is True
+            assert plan.block_reason_code == (
+                carry_forward_service.BLOCK_AMBIGUOUS_TARGETS
+            )
 
     def test_only_soft_deleted_target_is_actionable_creates_row(
         self, app, db, seed_user, seed_periods,
@@ -3347,12 +3214,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            target = generate_row_of(template, seed_periods[1])
             target.is_deleted = True
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
@@ -3377,34 +3240,28 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
         envelope_count names ACTIONABLE plans for the modal's summary
         line -- the user wants to know "how many will run if I
         confirm."  Blocked plans go in blocked_count instead.  Only the
-        AMBIGUOUS doubled-row state still blocks.
+        AMBIGUOUS target states still block: an override beside the
+        canonical, or two rows answering one occurrence.
         """
         with app.app_context():
-            # One actionable + one blocked (ambiguous doubled-row target).
+            # One actionable + one blocked (an override beside the canonical).
             template_a = _create_envelope_template(
                 seed_user, name="Envelope A",
                 category_key="Groceries",
             )
-            source_a = _create_envelope_txn(
-                seed_user, seed_periods[0], template_a,
-            )
-            _create_envelope_txn(seed_user, seed_periods[1], template_a)
+            source_a = generate_row_of(template_a, seed_periods[0])
+            generate_row_of(template_a, seed_periods[1])
             _add_entry(source_a, seed_user, "20.00")
 
             template_b = _create_envelope_template(
                 seed_user, name="Envelope B",
                 category_key="Rent",
             )
-            source_b = _create_envelope_txn(
-                seed_user, seed_periods[0], template_b,
-            )
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template_b,
-                is_override=False,
-            )
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template_b,
-                is_override=True,
+            source_b = generate_row_of(template_b, seed_periods[0])
+            generate_row_of(template_b, seed_periods[1])
+            moved_by_the_owner(
+                generate_row_of(template_b, seed_periods[2]),
+                into=seed_periods[1],
             )
             _add_entry(source_b, seed_user, "50.00")
 
@@ -3487,10 +3344,8 @@ class TestPreviewCarryForwardOrdering:
             envelope_t = _create_envelope_template(
                 seed_user, category_key="Groceries",
             )
-            envelope_source = _create_envelope_txn(
-                seed_user, seed_periods[0], envelope_t,
-            )
-            _create_envelope_txn(seed_user, seed_periods[1], envelope_t)
+            envelope_source = generate_row_of(envelope_t, seed_periods[0])
+            generate_row_of(envelope_t, seed_periods[1])
             _add_entry(envelope_source, seed_user, "10.00")
 
             discrete_t = _create_template(
@@ -3548,12 +3403,8 @@ class TestPreviewCarryForwardParityWithMutating:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            target = _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
+            target = generate_row_of(template, seed_periods[1])
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
@@ -3582,22 +3433,18 @@ class TestPreviewCarryForwardParityWithMutating:
     ):
         """Preview blocked (AMBIGUOUS) -> mutating call raises ValidationError.
 
-        The only remaining block is the doubled-row state; the preview
-        and the mutating call must agree the batch refuses.
+        The remaining blocks are the AMBIGUOUS target states (an override
+        beside the canonical, or two rows answering one occurrence); the
+        preview and the mutating call must agree the batch refuses.
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
-            # Two mutable target rows -> AMBIGUOUS.
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                is_override=False,
-            )
-            _create_envelope_txn(
-                seed_user, seed_periods[1], template,
-                is_override=True,
+            source = generate_row_of(template, seed_periods[0])
+            # An override beside the canonical -> AMBIGUOUS.
+            generate_row_of(template, seed_periods[1])
+            moved_by_the_owner(
+                generate_row_of(template, seed_periods[2]),
+                into=seed_periods[1],
             )
             _add_entry(source, seed_user, "40.00")
             db.session.commit()
@@ -3632,9 +3479,7 @@ class TestPreviewCarryForwardParityWithMutating:
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
-            source = _create_envelope_txn(
-                seed_user, seed_periods[0], template,
-            )
+            source = generate_row_of(template, seed_periods[0])
             _add_entry(source, seed_user, "20.00")
             db.session.commit()
 
@@ -3696,10 +3541,10 @@ class TestACarriedForwardLeftoverRowIsDated:
             seed_user, name="Monthly Envelope",
         )
         # ``_create_envelope_template`` gives an every-paycheck rule; this
-        # cadence has to name a day, so the rule is re-authored.
-        db.session.delete(template.recurrence_rule)
+        # cadence has to name a day, so the rule is re-authored -- cleared
+        # the way the edit door clears one (dis-associate; delete-orphan).
+        template.recurrence_rule = None
         db.session.flush()
-        db.session.refresh(template)
         make_cadence_rule(template, MONTHLY, fires_on_day=15)
         db.session.refresh(template)
         created = recurrence_engine.generate_for_template(
@@ -3797,13 +3642,15 @@ class TestACarriedForwardLeftoverRowIsDated:
 
         The paycheck's start is ``compute_due_date``'s own answer for a
         cadence that names no day of the month, so the two arms of
-        ``_leftover_due_date`` are one rule rather than two.
+        ``_leftover_due_date`` are one rule rather than two.  The source was
+        generated under a cadence the owner then cleared.
         """
         with app.app_context():
             template = _create_envelope_template(
-                seed_user, name="Father's Day", with_rule=False,
+                seed_user, name="Father's Day",
             )
-            _create_envelope_txn(seed_user, seed_periods[0], template)
+            generate_row_of(template, seed_periods[0])
+            template.recurrence_rule = None
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
@@ -3899,16 +3746,20 @@ class TestACarriedForwardLeftoverRowIsDated:
         """
         with app.app_context():
             template = _create_envelope_template(
-                seed_user, name="Father's Day", with_rule=False,
+                seed_user, name="Father's Day",
             )
-            # A cadence that fires in JUNE, against a schedule running
+            # The source is the engine's row under the every-paycheck cadence
+            # the definition was created with; the owner then RE-AUTHORS the
+            # cadence to one that fires in JUNE, against a schedule running
             # 2026-01-02 to 2026-05-21 -- so the engine places no row in any
             # seed period and the CREATE branch is the only one reachable.
+            generate_row_of(template, seed_periods[0])
+            template.recurrence_rule = None
+            db.session.flush()
             make_cadence_rule(
                 template, ANNUAL, fires_on_day=15, fires_in_month=6,
             )
             db.session.refresh(template)
-            _create_envelope_txn(seed_user, seed_periods[0], template)
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(

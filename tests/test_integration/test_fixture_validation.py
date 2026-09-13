@@ -6,6 +6,7 @@ independent data. Catches fixture bugs before they cascade into
 20+ failures in WU-4 and WU-5.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -510,7 +511,7 @@ class TestGenerateRowOf:
         a today-relative calendar this case read THREE rows every summer.
         """
         with app.app_context():
-            template, period = definition_firing_twice_in_a_paycheck(
+            template, _first, period = definition_firing_twice_in_a_paycheck(
                 db.session, seed_user, name="Cadence Under Test",
             )
             with pytest.raises(ValueError, match="wrote 2 rows"):
@@ -518,3 +519,28 @@ class TestGenerateRowOf:
             assert db.session.query(Transaction).filter_by(
                 template_id=template.id,
             ).count() == 2
+
+    def test_the_pinned_definition_fires_ONCE_in_the_paycheck_before(
+        self, app, db, seed_user,
+    ):
+        """The same definition's first paycheck holds exactly one occurrence.
+
+        The other half of :func:`definition_firing_twice_in_a_paycheck`'s
+        promise (plan step balance:X-cf-3b): its rule starts on 2026-04-01,
+        inside a paycheck opening 2026-03-02, so that paycheck holds the 1st
+        of April and not the 1st of March -- one row, which is what a case
+        rolling a leftover INTO the pair takes as its source.  Graded on the
+        occurrence the row answers as well as on the count, because the count
+        alone cannot tell the 1st from a rule that started mid-April and
+        named some other day once here and twice in May.
+        """
+        with app.app_context():
+            template, first, _second = definition_firing_twice_in_a_paycheck(
+                db.session, seed_user, name="Cadence Under Test",
+            )
+            row = generate_row_of(template, first)
+            assert row.pay_period_id == first.id
+            assert row.occurs_on == date(2026, 4, 1)
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).count() == 1
