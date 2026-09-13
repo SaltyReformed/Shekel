@@ -8,10 +8,12 @@ batch has a size this app will materialise in one call
 (:data:`PERIOD_BATCH_MIN` .. :data:`PERIOD_BATCH_MAX`,
 :func:`reject_out_of_range_batch_size`), a first payday that must be a civil
 day (:func:`reject_undatable_payday`), the days it lands on
-(:func:`requested_paydays`) and a floor it may not start under
-(:func:`reject_backward_payday`).  None of that touches a row: the writer asks
-every one of these before it issues a statement, which is what lets it promise
-that a refused batch leaves nothing behind.
+(:func:`requested_paydays`), a floor it may not start under
+(:func:`reject_backward_payday`) and a ceiling it may not start at
+(:func:`reject_skipped_paycheck`, since plan step ``pay_calendar:C17-c-2a``).
+None of that touches a row: the writer asks every one of these before it
+issues a statement, which is what lets it promise that a refused batch leaves
+nothing behind.
 
 **Why a module of its own.**  The writer stood at 998 of pylint's 1,000 lines
 after ``C17-a`` and ``C17-b-2``, and ``C17-c-2`` -- the leaf that rewrites its
@@ -38,17 +40,30 @@ Its imports are the derivation (:mod:`app.services.pay_calendar`, whose
 producers the batch's days and its floor are answered by), the rhythm value
 and the form error it raises.
 
-The one refusal, and why the second was DELETED
-==============================================
+The floor and its mirror, and why a third refusal was DELETED
+=============================================================
 
 Plan ruling **R-PC1** stated ONE rule -- "the last paycheck must hold no row
 dated on or after the new payday".  Tracing it against ``shekel-prod-db`` found
 it wrong in both directions, so the developer ruled it into two (2026-08-10): a
-structural floor and a financial coverage rule.  What survives is the floor.
+structural floor and a financial coverage rule.  What survives is the floor,
+and since plan step ``pay_calendar:C17-c-2a`` its mirror stands beside it.
 
 :func:`reject_backward_payday` -- **structural, and TEMPORARY.**  A new payday
 may not land inside a paycheck the owner already has.  Its only job is keeping
 plan step **C6**'s mid-schedule insert closed, and **C6 removes it.**
+
+:func:`reject_skipped_paycheck` -- **structural, and PERMANENT** (rulings
+**R-PC67** and **R-PC76**).  A batch's first new payday may not fall at or
+past the SECOND payday the owner's plan projects after their record, because
+then a whole planned paycheck is missing between the two and the derived
+calendar -- which cannot express a hole -- files it into the paycheck before.
+Both read the plan through
+:func:`~app.services.pay_calendar.planned_paydays_after` -- the floor its
+first day over the STORED eras (the calendar as it derives today), the
+ceiling its second over the eras the batch leaves STANDING (the calendar it
+leaves behind); where a batch retires no era they are one window over one
+sequence.
 
 **The coverage rule was DELETED (developer ruling 2026-08-11), and the argument
 is recorded because this module could re-derive it.**  It refused any write
@@ -211,23 +226,26 @@ def requested_paydays(
     is why this takes the whole :class:`~app.services.pay_rhythm.Rhythm` rather
     than the cadence alone.
 
-    **``first_payday`` is READ as a point on the nominal grid, and at the four
-    form doors that is a reading rather than a guarantee.**  The extend door
-    hands a grid day by construction (``pay_calendar.nominal_payday_after``),
-    and :class:`~app.services.pay_period_write._PaydayChange` stores whatever
+    **``first_payday`` is READ as a point on the nominal grid, and since plan
+    step ``C17-c-2a`` every form door ASKS for one.**  The extend door hands
+    a grid day by construction (``pay_calendar.nominal_payday_after``), and
+    :class:`~app.services.pay_period_write._PaydayChange` stores whatever
     arrives as the phase, so the day this spaces from and the day the next
-    extend continues from are one value.
-    What no door establishes is that the day the OWNER typed is on payroll's
-    grid.  *An adversarial review of ``C14-e-3`` struck a sentence resting that
-    on the typed day being a business day and so its own displacement: being a
-    fixed point of the displacement does not make a day a grid point.*  Worked:
-    an owner really paid 2025-12-31, because payroll moved the 2026-01-01
-    nominal day back, types 2025-12-31 -- which is what the sign-up form asks
-    for -- and the batch records 2025-12-31, 2026-01-14, 2026-01-28 against a
-    truth of 2026-01-15 and 2026-01-29.  Every element after the first is a day
-    early, permanently.  That is ledger row **pay_calendar:PC-504**, owned by
-    ``C17``: an ERA carries the anchor the owner would have to state, and no
-    form asks for it today.
+    extend continues from are one value.  What no door could establish is
+    that the day the OWNER typed is on payroll's grid.  *An adversarial
+    review of ``C14-e-3`` struck a sentence resting that on the typed day
+    being a business day and so its own displacement: being a fixed point of
+    the displacement does not make a day a grid point.*  Worked: an owner
+    really paid 2025-12-31, because payroll moved the 2026-01-01 nominal day
+    back, typed 2025-12-31 -- which is what the sign-up form asked for -- and
+    the batch recorded 2025-12-31, 2026-01-14, 2026-01-28 against a truth of
+    2026-01-15 and 2026-01-29, every element after the first a day early,
+    permanently.  That was ledger row **pay_calendar:PC-504**, CLOSED at
+    ``C17-c-2a``: an era carries the anchor the owner states, and the four
+    doors that take a payday -- sign-up, first-time generate, regenerate,
+    reset -- ask for the SCHEDULED day in one shared sentence
+    (``jinja_globals.PAYDAY_NOMINAL_HELP``) beside the convention control
+    that says how payroll moves it.
 
     Args:
         first_payday: The batch's first NOMINAL payday.
@@ -395,4 +413,124 @@ def reject_backward_payday(
             f"paycheck you already have and would split it in half, which this "
             f"app cannot yet do safely.  Choose a later date, or rebuild the "
             f"tail from the payday you want."
+        )
+
+
+def reject_skipped_paycheck(
+    surviving_paydays: "set[date]",
+    new_paydays: "list[date]",
+    standing_eras: "tuple[pay_rhythm.Era, ...]",
+) -> None:
+    """Refuse a batch whose earliest new payday skips a whole planned paycheck.
+
+    **A hole in the schedule is UNREPRESENTABLE, not confirmed** (ruling
+    **R-PC67**, 2026-09-11; plan step ``pay_calendar:C17-c-2a``, closing
+    ledger row **P80**).  The floor's mirror: :func:`reject_backward_payday`
+    refuses a payday landing INSIDE a paycheck the owner already has, this
+    refuses one that leaves a whole paycheck of the plan MISSING.  The plan's
+    next payday after the record (the floor) may be moved -- an owner
+    correcting a phase or a cadence going forward states where their next
+    paycheck really lands, anywhere from that day up to the one after it --
+    but the paycheck after that is not theirs to skip: the derived calendar
+    holds no hole, so a batch opening at or past the plan's SECOND projected
+    payday files every day between into the last paycheck the owner keeps.
+    Worked on P80's own example -- paydays 2026-01-02 and 01-16 at cadence
+    14, a rebuild opening 07-31 -- the 13 planned paydays between carry
+    ``$45,838.00`` at ruling **R-PC47**'s ``$3,526.00`` gross, and under the
+    confirmation this replaced the owner could accept a 196-day paycheck with
+    all of it absent at HTTP 200.  Refused, they continue the old rhythm
+    (that income appears in the forecast) or state what actually happened
+    at the day it happened.
+
+    **It binds at EVERY batch with a survivor, whichever door sent it**
+    (ruling **R-PC76**, 2026-09-12).  ``regenerate`` is the door that states
+    a start beside a kept record; registration, first-time generate and reset
+    have no survivor; and the continue path (extend, the rolling top-up)
+    continues the plan.  Ledger row P80 exists because this class of
+    constraint was once written per door, so it lives here, asked by the one
+    writer, and a future door that keeps a prefix and states a start inherits
+    it without its author remembering.  The test tree pays for that
+    totality: a fixture that needs a hole (a 2026 block beside a 2024 opening
+    payday) builds it through a helper that writes the rows directly, the
+    state the tree's own predicate reserves for "a row no application door
+    can write".
+
+    **One continue-path state meets this refusal until plan step
+    ``C17-c-2b`` lands, and it is stated rather than absorbed** (this step's
+    adversarial review).  ``pay_period_admin.extend_pay_periods`` still
+    restates the LATEST era from the horizon (ledger row **PC-509**): for an
+    owner truncated below a later era whose cadence is LONGER than the kept
+    one's, its batch skips a paycheck of the kept rhythm -- a weekly era
+    from 01-02, a 30-day era at 01-30, the record cut to 01-16: the top-up
+    offered 01-30 at 30 days, skipping the weekly 01-23.  That batch wrote
+    P80's hole silently before this step; it is refused now, and the rolling
+    top-up reaches it from ``/grid`` and ``/dashboard`` with no
+    ``ValidationError`` handler, so that owner meets a 500 there on every
+    render until a regenerate from inside the window.  Not in production's
+    data (one era), but two posts away for any owner -- a regenerate to a
+    longer cadence, then a truncate below its first payday -- which is why
+    ``C17-c-2b`` is ranked next and the two deploy together: it materialises
+    the plan's own paydays (01-23, then 01-30), so the continue path cannot
+    skip.
+
+    **It replaced ``pay_period_gates.reject_unconfirmed_gap``,
+    ``PayPeriodGapRequired``, ``confirm_gap`` and the settings banner**,
+    which asked the owner to CONFIRM the hole (plan step ``C14-f``, ruling
+    **R-PC64**) and were deleted whole: a confirmed gap was still a gap, and
+    the reference that gate graded from -- where the RETIRED tail used to
+    open -- was the record rather than the plan, so a batch retiring nothing
+    was not graded at all.  The ceiling here reads the plan
+    (:func:`~app.services.pay_calendar.planned_paydays_after`, the sequence
+    the floor's day is the first of).  Five weeks of unpaid leave is not a
+    state this refuses the owner from recording -- it is an ``unpaid`` era
+    KIND, which R-PC67 named the honest model of unemployment and deferred
+    until asked for.
+
+    **It reads the eras the batch leaves STANDING, not the stored ones**, and
+    this step's adversarial review is why.  A rebuild retires every era whose
+    first payday falls past the last kept payday, and a retired era takes its
+    plan with it: fortnightly from 01-02 with a 30-day era minted at 01-30,
+    then a fortnightly rebuild from 02-20 retiring that era, is a 35-day
+    01-16 paycheck with two fortnightly paydays missing -- accepted against
+    the stored plan (whose second payday was the 30-day era's 03-01), and the
+    same batch from 02-06 was refused against it where the kept rhythm's own
+    window ``[01-30, 02-13)`` admits it.  The floor keeps the stored eras,
+    because its question is where the paycheck the owner HAS ends, which is
+    the calendar as it derives before the batch.
+
+    Args:
+        surviving_paydays: The paydays the owner keeps once this operation's
+            retirements are applied, empty for a first-time schedule.
+        new_paydays: The paydays this batch would create, already filtered of
+            any that exist.  Its earliest is what may skip: a batch whose
+            first requested day the record already holds continues the plan
+            from there, and every day it adds is on that plan.
+        standing_eras: The eras the batch leaves STANDING -- those with a
+            surviving payday, and the earliest whenever any payday survives
+            (:func:`~app.services.pay_era_write.eras_describing`) -- whose
+            plan is the calendar the batch leaves behind.  Empty only beside
+            an empty payday set, by that function's contract.
+
+    Raises:
+        ValidationError: The earliest new payday falls at or after the
+            plan's second projected payday past the latest surviving one.
+    """
+    if not surviving_paydays or not new_paydays:
+        return
+    latest_payday = max(surviving_paydays)
+    planned = pay_calendar.planned_paydays_after(standing_eras, latest_payday)
+    next_planned, ceiling = next(planned), next(planned)
+    earliest_new = min(new_paydays)
+    if earliest_new >= ceiling:
+        raise ValidationError(
+            f"A new payday, or the first payday of a new pay rhythm, must "
+            f"fall before {ceiling.isoformat()} -- the second paycheck your "
+            f"current rhythm projects after your latest recorded payday "
+            f"({latest_payday.isoformat()}; the next one is "
+            f"{next_planned.isoformat()}); got {earliest_new.isoformat()}.  "
+            f"A later date leaves at least one whole paycheck missing, which "
+            f"this app cannot represent: every day between would be filed "
+            f"into the paycheck before it.  Choose a date before "
+            f"{ceiling.isoformat()}, or extend your current rhythm to the "
+            f"paycheck you mean and rebuild from there."
         )

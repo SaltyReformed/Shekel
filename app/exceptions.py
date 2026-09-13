@@ -327,53 +327,6 @@ class PayPeriodDiscardRequired(ShekelError):
         )
 
 
-class PayPeriodGapRequired(ShekelError):
-    """A batch would SKIP at least one whole paycheck, unconfirmed.
-
-    Plan step **pay_calendar:C14-f**, developer ruling 2026-09-07 on ledger row
-    **P80**.  Raised by ``pay_period_write.record_paydays`` when the earliest
-    payday it would record falls at or after the SECOND projected payday past
-    the owner's last surviving one -- so at least one paycheck is missing
-    between the record and the batch.
-
-    **The app cannot tell a typo from a true gap, so it asks the one party who
-    can.**  P80's own example is a typo: an owner meaning ``2026-01-30`` types
-    ``2026-07-31`` and derives a 196-day paycheck, filing six months of rows
-    into one grid column.  But five weeks of unpaid leave is a 35-day gap at a
-    fortnightly cadence and that record is CORRECT -- there really was no
-    paycheck.  Refusing the second to catch the first would refuse a true fact,
-    which is why this is a confirmation and not a refusal.
-
-    **It lives beside the FLOOR, in the one writer, and not on the door that
-    can trigger it.**  Only ``regenerate`` can reach it today -- generate and
-    extend derive their start, and reset retires every period so nothing
-    survives to gap from -- but P80 exists precisely BECAUSE this class of
-    constraint lived per door, so a future door that keeps a prefix and states
-    a start inherits this one without its author remembering.
-
-    Overridable, like :class:`PayPeriodDiscardRequired`, and NOT the same
-    confirmation: that one acknowledges rows being destroyed, this one a hole
-    being created, and one Boolean carrying both would confirm a 196-day gap
-    nobody was shown.
-
-    Attributes:
-        gap_days: Days between the last surviving payday and the first new one.
-        after: The last surviving payday.
-        resumes: The earliest payday the batch would record.
-    """
-
-    def __init__(self, gap_days, after, resumes):
-        self.gap_days = gap_days
-        self.after = after
-        self.resumes = resumes
-        super().__init__(
-            f"This leaves {gap_days} days with no paycheck, between "
-            f"{after.isoformat()} and {resumes.isoformat()}. If you were "
-            f"really not paid in that time, confirm to proceed; otherwise "
-            f"correct the first payday."
-        )
-
-
 class PayPeriodUnresolved(ShekelError):
     """A submitted pay-period id names no period the requesting owner has.
 

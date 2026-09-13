@@ -286,7 +286,10 @@ class RegistrationSpec:
             bytes maximum -- bcrypt's hard input cap).
         display_name: The user's display name; stripped, and required to be
             non-empty after stripping.
-        first_payday: The day the owner was LAST paid, which opens their
+        first_payday: The owner's most recent SCHEDULED payday -- the day on
+            their pay schedule's grid, which under a displacing convention
+            is not the day the money moved (plan step ``pay_calendar:C17-c-2a``,
+            ledger row **PC-504**; the form says so) -- which opens their
             schedule.  **Last, never next**, and that is the 2026-08-09
             ruling: an answer whose PAYCHECK still covers sign-up day has
             nothing to overlap on an empty calendar, so the default account's

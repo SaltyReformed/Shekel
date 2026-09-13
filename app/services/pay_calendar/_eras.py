@@ -32,6 +32,7 @@ this module takes is a PURE LEAF** -- ``app.exceptions``,
 :mod:`._derive` states and this module inherits.
 """
 
+from collections.abc import Iterator
 from datetime import date, timedelta
 
 from app.exceptions import ShekelError
@@ -501,15 +502,56 @@ def horizon_step(
     return following_planned(eras, *matched_planned(eras, last_payday))
 
 
+def planned_paydays_after(
+    eras: "tuple[Era, ...]", last_payday: date,
+) -> "Iterator[date]":
+    """Yield the paydays the owner's eras PROJECT after *last_payday*, ascending.
+
+    **The plan past the record, stated once** (plan step
+    ``pay_calendar:C17-c-2a``).  It opens at :func:`horizon_step` and steps
+    with :func:`following_planned`, so the seam between two eras is read
+    here exactly as :func:`~._projection.project_period_after` reads it for
+    a projected period's end -- one recurrence, two readers.  Two callers
+    take a prefix of it: :func:`payday_after` the first day, which is where
+    the last saved paycheck closes and where ``pay_period_batch``'s floor
+    sits; ``pay_period_batch.reject_skipped_paycheck`` the second, which is
+    the day a batch's first payday must fall BEFORE (ruling **R-PC67**) --
+    over the eras the batch leaves standing, which are the stored ones
+    whenever it retires none.
+
+    The first day is strictly after *last_payday* by construction -- the
+    matched step's next payday is later than the record it follows, and a
+    next era's first payday is later than any day its predecessor covers --
+    so the period it closes can never end before it opens (ledger row
+    **PC-505**: the reversed period the recorded anchor admitted below the
+    collision floor is unrepresentable here).
+
+    LAZY and UNBOUNDED, so a caller takes the prefix it needs: every
+    payday a door records is held inside the application's calendar window
+    by ``app.schemas.validation.pay_periods.payday_field``, and the two
+    callers above read at most two days past it.
+
+    Args:
+        eras: The owner's eras, validated.
+        last_payday: The latest recorded payday.
+
+    Yields:
+        Each projected payday after the record, displaced under its era's
+        convention, ascending.
+    """
+    index, steps = horizon_step(eras, last_payday)
+    while True:
+        era = eras[index]
+        yield projected_payday(era.effective_from, era.rhythm, steps)
+        index, steps = following_planned(eras, index, steps)
+
+
 def payday_after(eras: "tuple[Era, ...]", last_payday: date) -> date:
     """Return the first payday the owner's eras PROJECT after *last_payday*.
 
-    :func:`horizon_step` as a day.  It is strictly after *last_payday* by
-    construction -- the matched step's next payday is later than the record
-    it follows, and a next era's first payday is later than any day its
-    predecessor covers -- so the period it closes can never end before it
-    opens (ledger row **PC-505**: the reversed period the recorded anchor
-    admitted below the collision floor is unrepresentable here).
+    The first of :func:`planned_paydays_after`, which carries the argument:
+    what :func:`~._derive.derive_periods` closes the last saved period
+    before, and ``pay_period_batch``'s floor.
 
     Args:
         eras: The owner's eras, validated.
@@ -518,9 +560,7 @@ def payday_after(eras: "tuple[Era, ...]", last_payday: date) -> date:
     Returns:
         The next projected payday, displaced under its era's convention.
     """
-    index, steps = horizon_step(eras, last_payday)
-    era = eras[index]
-    return projected_payday(era.effective_from, era.rhythm, steps)
+    return next(planned_paydays_after(eras, last_payday))
 
 
 def validate_cadence(cadence_days: int) -> None:

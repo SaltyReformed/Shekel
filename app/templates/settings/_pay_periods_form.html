@@ -18,14 +18,19 @@
 
 {% call form_card("Generate Pay Periods", "bi-calendar-range") %}
 <p class="text-muted">
-  Enter your first payday and the app will generate pay periods forward
-  from it.
+  Enter your first scheduled payday and the app will generate pay periods
+  forward from it.
 </p>
 
 <form method="POST" action="{{ url_for('pay_periods.generate') }}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
-  {{ render_field("start_date", "First Payday", type="date", required=true, errors=errors) }}
+  {# The SCHEDULED day, in the convention control's own word (plan step
+     pay_calendar:C17-c-2a, ledger row PC-504): the writer spaces the batch
+     from this day and mints the era's phase on it, so a cash day typed here
+     under a moving convention put every later payday off by the move. #}
+  {{ render_field("start_date", "First scheduled payday", type="date", required=true,
+                   help_text=PAYDAY_NOMINAL_HELP, errors=errors) }}
 
   {# ``min`` / ``max`` mirror the schema's shared bounds rather than
      restating them.  The cadence floor is ck_pay_schedule_cadence_range's

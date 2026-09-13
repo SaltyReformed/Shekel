@@ -52,7 +52,11 @@ from app.services.auth_service import hash_password
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services import account_service
 from app.utils.dates import display_today
-from tests._test_helpers import open_owner_calendar
+from tests._test_helpers import (
+    open_owner_calendar,
+    record_paydays_across_a_hole,
+    rhythm_of,
+)
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -187,13 +191,14 @@ def _create_concurrent_user(db_session):
     # leaves the app's today outside it whenever the two calendars disagree.
     today = display_today()
     base = today - timedelta(days=today.weekday())  # Monday this week
-    # Three fortnightly periods from one batch, through the writer.
-    # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
-    # They append past the opening 2024 payday, so they take indices 1..3
-    # exactly as the hand-built rows did -- and the opening period's own end
-    # becomes the day before this batch rather than a stored value nothing
-    # reconciles.
-    periods = open_owner_calendar(user.id, base, num_periods=3)
+    # Three fortnightly periods from one batch.  They append past the opening
+    # 2024 payday, so they take indices 1..3 exactly as the hand-built rows
+    # did -- and the opening period's own end becomes the day before this
+    # batch rather than a stored value nothing reconciles.  Two years past
+    # that opening payday is a hole the writer refuses (plan step
+    # pay_calendar:C17-c-2a, ruling R-PC67), so the rows come through the
+    # tree's helper for exactly that state.
+    periods = record_paydays_across_a_hole(user.id, base, 3, rhythm_of(14))
     db_session.commit()
 
     return {

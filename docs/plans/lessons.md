@@ -278,3 +278,10 @@ rationale, where a reader meets it at the moment it fires.
   thing for the pass's life", which only a route convention maintained. Remedy: key a memo by the
   derivation's input (the spec), and when a step makes a NEW READER of a memo, run the whole suite
   of the merged tree, not the two branches' modules (`recurrence:R-R73`, 2026-09-11).
+- **A ruling can rest on a premise nobody measured, and the premise is the part nobody re-reads.**
+  **R-PC70** placed `N-493`'s repair at the era-mint door because "the read path is already LOUD --
+  the calendar raises and the recovery page renders"; `pay_calendar:C17-c-2a`'s session drove the
+  state (a four-day closed run under a cadence-4 `prior` era) and nothing raised: two nominal
+  paydays coalesced onto one cash day, a projected paycheck vanished, the ordinal ran one high. The
+  ruling's remedy was built on the premise, so a door would have been offered from a page no owner
+  reaches (**R-PC77**). Measure the sentence a ruling's remedy hangs on before ruling it.
