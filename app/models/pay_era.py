@@ -88,7 +88,7 @@ class PayEra(UserScopedMixin, CreatedAtMixin, db.Model):
     ``uq_pay_eras_user_effective_from`` makes unique: two eras cannot take
     effect on one day, so "the era covering this day" has exactly one answer.
 
-    **Written by ONE door**, ``pay_schedule_service.mint_era``, which asks the
+    **Written by ONE door**, ``pay_era_write.mint_era``, which asks the
     cadence bound and the cadence-convention pairing before it writes; every
     batch that records a payday reaches it through
     ``pay_period_write.record_paydays``, which mints an era only when the batch
@@ -113,12 +113,15 @@ class PayEra(UserScopedMixin, CreatedAtMixin, db.Model):
                           payroll INTENDS.
       ``kind_id`` -- what KIND of rhythm the era runs on, keyed to
                           ``ref.pay_cadence_kinds``
-                          (:class:`~app.enums.PayCadenceKindEnum`).
-                          ``fixed_days`` is the only member until the
-                          day-of-month kinds land (``C17-d``); it is a column
-                          now because ruling **R-PC58** puts the kind on the
-                          era so those kinds arrive as rows, not as a
-                          migration over this table.
+                          (:class:`~app.enums.PayCadenceKindEnum`), whose
+                          one member is ``fixed_days``.  Ruling **R-PC58**
+                          put it here so the day-of-month kinds would arrive
+                          as rows; ruling **R-PC80** (2026-09-13) DROPS it at
+                          plan step ``C17-d-2``, because those kinds' own
+                          parameter columns make the kind readable off the
+                          row and a stored copy would be a derived value
+                          beside its source.  Written from the cadence
+                          VALUE's type by ``pay_era_write.mint_era`` until then.
       ``cadence_days`` -- days between consecutive paydays under the
                           ``fixed_days`` kind.  ``ck_pay_eras_cadence_range``
                           bounds it to :data:`CADENCE_DAYS_MIN` ..

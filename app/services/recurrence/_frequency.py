@@ -94,6 +94,7 @@ from app.enums import (
 )
 from app.exceptions import ShekelError
 from app.services.pay_calendar import PayCadence
+from app.services.pay_rhythm import FixedDays
 from app.utils.money import MONTHS_PER_YEAR
 from app.services.recurrence._months import (
     MONTH_SPANNING_UNITS,
@@ -112,7 +113,7 @@ from app.services.recurrence._vocabulary import (
 #: writing ``52`` keeps ONE rule for "how often does something every N days
 #: happen in a year"; plan step R8-b is the WEEK unit's first writer and
 #: inherits that rule without a second one being invented for it.
-_WEEKLY = PayCadence(cadence_days=7)
+_WEEKLY = PayCadence(FixedDays(7))
 
 #: How many times a year each CALENDAR unit fires, before its interval divides
 #: the count.

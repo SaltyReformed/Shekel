@@ -38,6 +38,7 @@ from app.models.pay_schedule import PaySchedule
 from app.models.user import User, UserSettings
 from app.services import pay_era_write, pay_period_write, pay_schedule_service
 from app.services.auth_service import hash_password
+from app.services.pay_rhythm import FixedDays
 from tests._test_helpers import (
     record_paydays_across_a_hole,
     era_of,
@@ -375,7 +376,7 @@ class TestTheMigrationBothWays:
 
             assert _era_rows(db.session, user.id) == [(date(2026, 1, 2), 14)]
             assert "cadence_days" not in _columns(db.session, "pay_schedule")
-            assert pay_schedule_service.resolve_cadence(user.id) == 14
+            assert pay_schedule_service.resolve_cadence(user.id) == FixedDays(14)
 
     def test_the_upgrade_states_the_ROWS_rhythm_for_a_piecewise_owner(
         self, app, db,

@@ -16,6 +16,7 @@ from decimal import Decimal
 import pytest
 
 from app.services.pay_calendar import PayCadence
+from app.services.pay_rhythm import FixedDays
 from app.services.retirement_gap_calculator import (
     RetirementGapAnalysis,
     calculate_gap,
@@ -24,13 +25,13 @@ from app.services.retirement_gap_calculator import (
 
 #: The cadence every pre-existing case in this file was hand-computed at:
 #: 14 days between paydays, 26 paychecks a year.
-_BIWEEKLY = PayCadence(cadence_days=14)
+_BIWEEKLY = PayCadence(FixedDays(14))
 
 #: A weekly owner: 7 days between paydays, 52 paychecks a year.  Every figure
 #: this cadence produces is DOUBLE the biweekly one for the same per-paycheck
 #: pay, which is what makes it the clearest counterexample to the retired
 #: constant.
-_WEEKLY = PayCadence(cadence_days=7)
+_WEEKLY = PayCadence(FixedDays(7))
 
 
 class TestCadenceIsTheOwners:
@@ -97,7 +98,7 @@ class TestCadenceIsTheOwners:
         whole monthly income is that one paycheck.
         """
         result = calculate_gap(
-            pay_cadence=PayCadence(cadence_days=30),
+            pay_cadence=PayCadence(FixedDays(30)),
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
         )

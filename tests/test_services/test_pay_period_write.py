@@ -71,6 +71,7 @@ from tests._test_helpers import (
     record_paydays_across_a_hole,
 )
 from app.models.amount_ownership import AmountOwnership
+from app.services.pay_rhythm import FixedDays
 
 
 #: Pinned "today", before every date this module writes.  The lock classifier
@@ -402,7 +403,7 @@ class TestTheForwardOnlyFloor:
                 (date(2026, 2, 6), date(2026, 2, 12), 3),
                 (date(2026, 2, 13), date(2026, 2, 19), 4),
             ]
-            assert pay_schedule_service.resolve_cadence(user_id) == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(7)
 
     def test_a_first_batch_has_no_floor(self, app, db, bare_user):
         """An owner with no paydays can open a schedule on any day."""
@@ -644,7 +645,7 @@ class TestTheCeilingRefusesASkippedPaycheck:
                 date(2026, 2, 6), date(2026, 2, 20),
             ]
             eras = pay_schedule_service.resolve_schedule(user_id).eras
-            assert [(e.effective_from, e.rhythm.cadence_days) for e in eras] == [
+            assert [(e.effective_from, e.rhythm.cadence.days) for e in eras] == [
                 (date(2026, 1, 2), 14), (date(2026, 2, 6), 14),
             ]
 
@@ -680,7 +681,7 @@ class TestTheCeilingRefusesASkippedPaycheck:
                 date(2026, 7, 3), date(2026, 7, 10),
             ]
             eras = pay_schedule_service.resolve_schedule(user_id).eras
-            assert [(e.effective_from, e.rhythm.cadence_days) for e in eras] == [
+            assert [(e.effective_from, e.rhythm.cadence.days) for e in eras] == [
                 (date(2026, 1, 2), 14), (date(2026, 7, 3), 7),
             ]
             assert [p.start_date for p in all_periods(user_id)] == [
@@ -1438,7 +1439,7 @@ class TestTheDerivedHorizonFollowsTheStoredCadence:
             db.session.commit()
 
             assert created == []
-            assert pay_schedule_service.resolve_cadence(user_id) == 14
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(14)
             assert _paydays(user_id)[-1] == (
                 date(2026, 1, 16), date(2026, 1, 29), 1,
             )
@@ -1815,7 +1816,7 @@ class TestTheCadenceRule:
             )
             db.session.commit()
 
-            assert pay_schedule_service.resolve_cadence(user_id) == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(7)
             assert _paydays(user_id) == [
                 (date(2026, 1, 2), date(2026, 1, 8), 0),
             ]
@@ -1846,7 +1847,7 @@ class TestTheCadenceRule:
             db.session.commit()
 
             assert created == []
-            assert pay_schedule_service.resolve_cadence(user_id) == 14
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(14)
 
     def test_a_REFUSED_batch_leaves_the_cadence_alone(
         self, app, db, bare_user,
@@ -1876,7 +1877,7 @@ class TestTheCadenceRule:
                 )
             db.session.rollback()
 
-            assert pay_schedule_service.resolve_cadence(user_id) == 14
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(14)
 
     def test_extend_takes_no_cadence_at_all(self, app, db, bare_user):
         """Finding **P29**, closed by DELETION rather than by a new write.
@@ -1904,7 +1905,7 @@ class TestTheCadenceRule:
             pay_period_admin.extend_pay_periods(user_id, 1)
             db.session.commit()
 
-            assert pay_schedule_service.resolve_cadence(user_id) == 14
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(14)
             assert _paydays(user_id)[-1] == (
                 date(2026, 1, 30), date(2026, 2, 12), 2,
             )

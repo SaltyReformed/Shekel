@@ -36,6 +36,7 @@ from app.exceptions import ValidationError
 from app.models.pay_period import PayPeriod
 from app.models.pay_era import CADENCE_DAYS_MIN
 from app.models.pay_schedule import PaySchedule
+from app.services.pay_rhythm import FixedDays
 from app.utils.business_days import shortest_collision_free_cadence
 from app.services.pay_calendar import (
     PayCalendar,
@@ -138,8 +139,8 @@ class TestTheEraDoors:
             assert [e.effective_from for e in facts.eras] == [
                 date(2026, 1, 2), date(2026, 2, 20),
             ]
-            assert facts.latest_era.rhythm.cadence_days == 7
-            assert pay_schedule_service.resolve_cadence(user_id) == 7
+            assert facts.latest_era.rhythm.cadence.days == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(7)
 
     def test_retire_eras_keeps_the_standing_set_or_nothing(self, app, db, bare_user):
         """``standing`` names the eras to KEEP; an empty tuple retires all.
@@ -231,7 +232,7 @@ class TestMintEraRefusesAnUnstorableCadence:
             mint_fixture_era(bare_user["user"].id, date(2026, 1, 2), cadence)
             assert pay_schedule_service.resolve_cadence(
                 bare_user["user"].id,
-            ) == cadence
+            ) == FixedDays(cadence)
 
 
 class TestSetRolling:
@@ -251,7 +252,7 @@ class TestSetRolling:
             )
             assert updated.rolling_enabled is True
             assert updated.rolling_target_periods == 30
-            assert pay_schedule_service.resolve_cadence(user_id) == 14
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(14)
 
     def test_disable_rolling_keeps_target(self, app, bare_user):
         """Disabling flips the flag off while leaving the stored target."""
@@ -294,7 +295,7 @@ class TestSetRolling:
             )
             pay_era_write.mint_era(user_id, era_of(date(2026, 3, 6), 7))
             updated = pay_schedule_service.reread_schedule(user_id)
-            assert pay_schedule_service.resolve_cadence(user_id) == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(7)
             assert updated.rolling_enabled is True
             assert updated.rolling_target_periods == 40
 
@@ -318,7 +319,7 @@ class TestResolveCadence:
         user_id = bare_periods[0].user_id
         with app.app_context():
             restate_fixture_era(user_id, date(2026, 1, 2), 10)
-            assert pay_schedule_service.resolve_cadence(user_id) == 10
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(10)
 
     def test_an_owner_with_paydays_cannot_lose_their_cadence(
         self, app, db, bare_user,
@@ -348,7 +349,7 @@ class TestResolveCadence:
                 rhythm=rhythm_of(9),
             )
             db.session.flush()
-            assert pay_schedule_service.resolve_cadence(user_id) == 9
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(9)
             # The era is a SECOND child of the row since plan step C17-a
             # (``fk_pay_eras_schedule``); it goes first so the refusal graded
             # is the payday key's, which is this case's subject.
@@ -400,7 +401,7 @@ class TestResolveSchedule:
 
             facts = pay_schedule_service.resolve_schedule(user_id)
 
-            assert facts.rhythm.cadence_days == 10
+            assert facts.rhythm.cadence.days == 10
             assert facts.history_opens_on == date(2024, 3, 1)
 
     def test_resolve_cadence_is_its_HALF_and_not_a_second_answer(
@@ -418,8 +419,8 @@ class TestResolveSchedule:
 
             assert (
                 pay_schedule_service.resolve_cadence(user_id)
-                == pay_schedule_service.resolve_schedule(user_id).rhythm.cadence_days
-                == 7
+                == pay_schedule_service.resolve_schedule(user_id).rhythm.cadence
+                == FixedDays(7)
             )
 
     def test_both_facts_come_from_the_row_and_neither_is_derived(
@@ -456,7 +457,7 @@ class TestResolveSchedule:
 
             facts = pay_schedule_service.resolve_schedule(user_id)
 
-            assert facts.rhythm.cadence_days == 9
+            assert facts.rhythm.cadence.days == 9
             assert facts.history_opens_on is None
 
     def test_no_row_answers_NO_FACTS_rather_than_a_pair_of_nones(
@@ -606,7 +607,7 @@ class TestSetHistoryOpening:
             pay_schedule_service.set_history_opening(user_id, date(2024, 6, 1))
             row = pay_schedule_service.get_schedule(user_id)
 
-            assert pay_schedule_service.resolve_cadence(user_id) == 9
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(9)
             assert row.rolling_enabled is True
             assert row.rolling_target_periods == 13
 
@@ -901,7 +902,7 @@ class TestTheRhythmIsAPairAndIsJudgedAsOne:
             )
             assert pay_schedule_service.resolve_cadence(
                 bare_user["user"].id,
-            ) == CADENCE_DAYS_MIN
+            ) == FixedDays(CADENCE_DAYS_MIN)
 
     @pytest.mark.parametrize(
         "shift", [BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT],

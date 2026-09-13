@@ -34,6 +34,7 @@ from datetime import date, timedelta
 import pytest
 
 from app.services.pay_calendar import DerivedPeriod, PayCadence
+from app.services.pay_rhythm import FixedDays
 from app.utils.period_projections import (
     HORIZON_MONTHS,
     ONE_YEAR_MONTHS,
@@ -78,7 +79,7 @@ class TestHorizonOffsets:
         pairs rather than three numbers, because the ORDER is part of the
         contract: the chips render in this sequence.
         """
-        assert horizon_offsets(PayCadence(cadence_days=14)) == BIWEEKLY
+        assert horizon_offsets(PayCadence(FixedDays(14))) == BIWEEKLY
 
     @pytest.mark.parametrize("cadence_days, expected, why", [
         (
@@ -102,7 +103,7 @@ class TestHorizonOffsets:
     ):
         """Each cadence the replaced constant got wrong, hand-computed."""
         assert horizon_offsets(
-            PayCadence(cadence_days=cadence_days),
+            PayCadence(FixedDays(cadence_days)),
         ) == expected, why
 
     def test_a_horizon_no_paycheck_reaches_is_not_offered(self):
@@ -115,7 +116,7 @@ class TestHorizonOffsets:
         and the alternative to THAT (a $0.00 row) is the fabricated figure this
         helper's omit contract already refuses.
         """
-        assert horizon_offsets(PayCadence(cadence_days=365)) == (
+        assert horizon_offsets(PayCadence(FixedDays(365))) == (
             ("1 year", 1),
         )
 
@@ -127,7 +128,7 @@ class TestHorizonOffsets:
         and no caller needs a "there are no horizons" branch.
         """
         for cadence_days in range(1, 366):
-            offsets = horizon_offsets(PayCadence(cadence_days=cadence_days))
+            offsets = horizon_offsets(PayCadence(FixedDays(cadence_days)))
 
             assert offsets, f"cadence {cadence_days} was offered nothing"
             assert offsets[-1][0] == "1 year"
@@ -144,7 +145,7 @@ class TestHorizonOffsets:
         for cadence_days in range(1, 366):
             offsets = [
                 offset for _, offset
-                in horizon_offsets(PayCadence(cadence_days=cadence_days))
+                in horizon_offsets(PayCadence(FixedDays(cadence_days)))
             ]
 
             assert offsets == sorted(offsets), f"cadence {cadence_days}"
@@ -213,11 +214,11 @@ class TestProjectBalanceHorizons:
 
         biweekly = project_balance_horizons(
             current, all_periods, balance_map,
-            horizon_offsets(PayCadence(cadence_days=14)),
+            horizon_offsets(PayCadence(FixedDays(14))),
         )
         weekly = project_balance_horizons(
             current, all_periods, balance_map,
-            horizon_offsets(PayCadence(cadence_days=7)),
+            horizon_offsets(PayCadence(FixedDays(7))),
         )
 
         assert biweekly["3 months"] == Decimal("1000.00")

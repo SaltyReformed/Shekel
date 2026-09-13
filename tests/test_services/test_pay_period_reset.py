@@ -60,6 +60,7 @@ from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.routes._period_population import populate_new_periods
 from app.services.pay_calendar import calendar_for
+from app.services.pay_rhythm import FixedDays
 from app.services.recurrence import reauthor_rule, recurrence_spec, resolve
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -623,7 +624,7 @@ class TestResetHappyPath:
             )
             db.session.commit()
 
-            assert pay_schedule_service.resolve_cadence(user_id) == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(7)
             assert (
                 last_covered_day(new_periods[0]) - new_periods[0].start_date
             ).days + 1 == 7

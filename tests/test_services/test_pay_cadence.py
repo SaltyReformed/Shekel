@@ -42,6 +42,7 @@ from app.services.pay_calendar import (
     calendar_for,
 )
 from app.services import pay_schedule_service
+from app.services.pay_rhythm import FixedDays
 from app.utils.dates import add_months
 from app.utils.money import MONTHS_PER_YEAR, round_money
 from tests._test_helpers import (
@@ -71,7 +72,7 @@ class TestThePaycheckCountIsDerivedFromTheCadence:
         measure of what the constant cost: at every other cadence the app was
         stating a paycheck count the owner does not receive.
         """
-        assert PayCadence(cadence_days=cadence_days).periods_per_year == (
+        assert PayCadence(FixedDays(cadence_days)).periods_per_year == (
             Decimal(expected)
         ), why
 
@@ -84,8 +85,8 @@ class TestThePaycheckCountIsDerivedFromTheCadence:
         from TRUNCATION, which would answer 12 for the 29-day case.  The pair
         straddles the .5 boundary from below (28 days) and above (29 days).
         """
-        assert PayCadence(cadence_days=28).periods_per_year == Decimal("13")
-        assert PayCadence(cadence_days=29).periods_per_year == Decimal("13")
+        assert PayCadence(FixedDays(28)).periods_per_year == Decimal("13")
+        assert PayCadence(FixedDays(29)).periods_per_year == Decimal("13")
 
     def test_no_cadence_in_the_domain_lands_on_an_exact_half(self):
         """The rounding MODE can never decide an answer, and that is provable.
@@ -112,7 +113,7 @@ class TestThePaycheckCountIsDerivedFromTheCadence:
         closest the domain comes, at exactly 1.
         """
         counts = [
-            PayCadence(cadence_days=days).periods_per_year
+            PayCadence(FixedDays(days)).periods_per_year
             for days in range(MIN_CADENCE_DAYS, MAX_CADENCE_DAYS + 1)
         ]
         assert min(counts) == Decimal("1")
@@ -125,7 +126,7 @@ class TestThePaycheckCountIsDerivedFromTheCadence:
         downstream, which is the leak ``app.utils.money`` exists to close.
         """
         assert isinstance(
-            PayCadence(cadence_days=14).periods_per_year, Decimal,
+            PayCadence(FixedDays(14)).periods_per_year, Decimal,
         )
 
 
@@ -143,12 +144,12 @@ class TestTheCadenceBoundIsEnforcedHere:
     def test_a_cadence_outside_the_domain_is_refused(self, bad):
         """Outside 1..365 there is no honest paycheck count to derive."""
         with pytest.raises(PayCalendarError, match="cadence_days must be"):
-            PayCadence(cadence_days=bad)
+            PayCadence(FixedDays(bad))
 
     def test_a_bool_is_refused_even_though_it_is_an_int(self):
         """``True`` would otherwise pass as a one-day cadence, 365 a year."""
         with pytest.raises(PayCalendarError, match="plain int"):
-            PayCadence(cadence_days=True)
+            PayCadence(FixedDays(True))
 
     def test_a_float_is_refused(self):
         """``14.0`` reads as biweekly and is not an ``int``.
@@ -158,13 +159,18 @@ class TestTheCadenceBoundIsEnforcedHere:
         rest of the package holds stops at this value.
         """
         with pytest.raises(PayCalendarError, match="plain int"):
-            PayCadence(cadence_days=14.0)
+            PayCadence(FixedDays(14.0))
 
     def test_the_value_is_frozen(self):
         """A cadence resolved once per request cannot be moved mid-pass."""
-        cadence = PayCadence(cadence_days=14)
+        cadence = PayCadence(FixedDays(14))
         with pytest.raises(FrozenInstanceError):
-            cadence.cadence_days = 7
+            cadence.cadence = FixedDays(7)
+        # The value INSIDE is frozen too (plan step ``C17-d-1``): a mutable
+        # day count behind a frozen wrapper would be the same defect one
+        # attribute deeper.
+        with pytest.raises(FrozenInstanceError):
+            cadence.cadence.days = 7
 
 
 class TestTheRateAndSpanConversions:
@@ -181,10 +187,10 @@ class TestTheRateAndSpanConversions:
         433.333...  The pair is the control -- a single assertion would pass
         against a hardcoded 26 or a hardcoded 52.
         """
-        assert PayCadence(cadence_days=14).per_paycheck_to_monthly(
+        assert PayCadence(FixedDays(14)).per_paycheck_to_monthly(
             Decimal("100"),
         ).quantize(Decimal("0.01")) == Decimal("216.67")
-        assert PayCadence(cadence_days=7).per_paycheck_to_monthly(
+        assert PayCadence(FixedDays(7)).per_paycheck_to_monthly(
             Decimal("100"),
         ).quantize(Decimal("0.01")) == Decimal("433.33")
 
@@ -197,7 +203,7 @@ class TestTheRateAndSpanConversions:
         cannot carry it.
         """
         for days in (7, 14, 30):
-            cadence = PayCadence(cadence_days=days)
+            cadence = PayCadence(FixedDays(days))
             monthly = cadence.per_paycheck_to_monthly(Decimal("1234.56"))
             assert cadence.monthly_to_per_paycheck(monthly) == Decimal(
                 "1234.56",
@@ -211,10 +217,10 @@ class TestTheRateAndSpanConversions:
         overshoot the cap by $7,800 over the year, which is what the retired
         constant told the investment route to suggest.
         """
-        assert PayCadence(cadence_days=14).annual_to_per_paycheck(
+        assert PayCadence(FixedDays(14)).annual_to_per_paycheck(
             Decimal("7800"),
         ) == Decimal("300")
-        assert PayCadence(cadence_days=7).annual_to_per_paycheck(
+        assert PayCadence(FixedDays(7)).annual_to_per_paycheck(
             Decimal("7800"),
         ) == Decimal("150")
 
@@ -226,10 +232,10 @@ class TestTheRateAndSpanConversions:
         question, which is why it has its own name; this pins that the
         emergency-fund footer's "paychecks covered" uses the owner's rhythm.
         """
-        assert PayCadence(cadence_days=14).months_to_paychecks(
+        assert PayCadence(FixedDays(14)).months_to_paychecks(
             Decimal("6"),
         ) == Decimal("13")
-        assert PayCadence(cadence_days=7).months_to_paychecks(
+        assert PayCadence(FixedDays(7)).months_to_paychecks(
             Decimal("6"),
         ) == Decimal("26")
 
@@ -242,7 +248,7 @@ class TestTheRateAndSpanConversions:
         the contract exists to prevent.  $100 biweekly is 216.666..., not
         216.67.
         """
-        monthly = PayCadence(cadence_days=14).per_paycheck_to_monthly(
+        monthly = PayCadence(FixedDays(14)).per_paycheck_to_monthly(
             Decimal("100"),
         )
         assert monthly != Decimal("216.67")
@@ -262,7 +268,7 @@ class TestTheRateAndSpanConversions:
         place, so a realistic figure hides it and the next test measures what
         that means for a displayed cent.
         """
-        cadence = PayCadence(cadence_days=14)
+        cadence = PayCadence(FixedDays(14))
         assert cadence.per_paycheck_to_monthly(Decimal("0.03")) == Decimal(
             "0.065",
         )
@@ -286,7 +292,7 @@ class TestTheRateAndSpanConversions:
         docstring.
         """
         for days in (7, 14, 15, 30):
-            cadence = PayCadence(cadence_days=days)
+            cadence = PayCadence(FixedDays(days))
             ratio = cadence.periods_per_year / MONTHS_PER_YEAR
             inverse = MONTHS_PER_YEAR / cadence.periods_per_year
             for cents in range(1, 200_000, 37):
@@ -327,7 +333,7 @@ class TestAHorizonNamedInMonthsResolvesToPaychecks:
         review pointed out a reader cannot check a measurement with no artifact
         in the tree, so that claim lives in the commit message with its output.)
         """
-        cadence = PayCadence(cadence_days=14)
+        cadence = PayCadence(FixedDays(14))
 
         assert [cadence.paychecks_within(m) for m in (3, 6, 12, 24)] == [
             6, 13, 26, 52,
@@ -349,7 +355,7 @@ class TestAHorizonNamedInMonthsResolvesToPaychecks:
         Each case is a cadence the replaced constant got wrong.  ``why``
         names what the old hardcoded number claimed instead.
         """
-        assert PayCadence(cadence_days=cadence_days).paychecks_within(
+        assert PayCadence(FixedDays(cadence_days)).paychecks_within(
             months,
         ) == expected, why
 
@@ -362,7 +368,7 @@ class TestAHorizonNamedInMonthsResolvesToPaychecks:
         chip out one pay period.  The exact value is asserted beside the
         floored one so the tie is on the record rather than implied.
         """
-        cadence = PayCadence(cadence_days=14)
+        cadence = PayCadence(FixedDays(14))
 
         assert cadence.months_to_paychecks(Decimal("3")) == Decimal("6.5")
         assert cadence.paychecks_within(3) == 6
@@ -383,7 +389,7 @@ class TestAHorizonNamedInMonthsResolvesToPaychecks:
         projection reached, which is row F-17's own defect wearing a smaller
         number.
         """
-        cadence = PayCadence(cadence_days=14)
+        cadence = PayCadence(FixedDays(14))
         # **DERIVED from the value under test, not hardcoded.**  A first draft
         # wrote the literals 6 and 7 here and an adversarial review measured
         # that it then exercised no production code at all: it survived both
@@ -402,14 +408,14 @@ class TestAHorizonNamedInMonthsResolvesToPaychecks:
         floored, rounded = [], []
         for start_month in range(1, 13):
             opening = date(2026, start_month, 1)
-            for phase in range(cadence.cadence_days):
+            for phase in range(cadence.cadence.days):
                 as_of = opening + timedelta(days=phase)
                 label_day = add_months(as_of, 3)
                 for offset, errors in (
                     (floor_offset, floored), (round_offset, rounded),
                 ):
                     period_end = opening + timedelta(
-                        days=cadence.cadence_days * (offset + 1) - 1,
+                        days=cadence.cadence.days * (offset + 1) - 1,
                     )
                     errors.append((period_end - label_day).days)
 
@@ -436,7 +442,7 @@ class TestAHorizonNamedInMonthsResolvesToPaychecks:
         must render something, shows the paycheck the owner is in, because
         that one already spans the whole window).
         """
-        assert PayCadence(cadence_days=cadence_days).paychecks_within(
+        assert PayCadence(FixedDays(cadence_days)).paychecks_within(
             months,
         ) == 0, why
 
@@ -449,7 +455,7 @@ class TestAHorizonNamedInMonthsResolvesToPaychecks:
         absent-horizon branch.
         """
         for cadence_days in range(MIN_CADENCE_DAYS, MAX_CADENCE_DAYS + 1):
-            assert PayCadence(cadence_days=cadence_days).paychecks_within(12) >= 1
+            assert PayCadence(FixedDays(cadence_days)).paychecks_within(12) >= 1
 
     def test_a_year_of_paychecks_is_NOT_the_rounded_annual_count(self):
         """``paychecks_within(12)`` is not :attr:`periods_per_year`, by design.
@@ -468,7 +474,7 @@ class TestAHorizonNamedInMonthsResolvesToPaychecks:
         twelve-month span still agree, because both call this method with the
         same constant rather than because either equals that attribute.
         """
-        cadence = PayCadence(cadence_days=31)
+        cadence = PayCadence(FixedDays(31))
 
         assert cadence.paychecks_within(12) == 11
         assert cadence.periods_per_year == Decimal("12")
@@ -481,7 +487,7 @@ class TestAHorizonNamedInMonthsResolvesToPaychecks:
         ``period_index``, so an ``int`` is what a caller can use without
         converting, and a ``Decimal`` here would invite one.
         """
-        answer = PayCadence(cadence_days=14).paychecks_within(12)
+        answer = PayCadence(FixedDays(14)).paychecks_within(12)
 
         assert isinstance(answer, int)
         # It is usable as an index offset WITHOUT conversion, which is the
@@ -500,7 +506,7 @@ class TestBothDoorsReachOneDerivation:
             paydays=(), eras=eras_of((), 7), user_id=1,
             history_opens_on=None,
         )
-        assert calendar.cadence == PayCadence(cadence_days=7)
+        assert calendar.cadence == PayCadence(FixedDays(7))
         assert calendar.cadence.periods_per_year == Decimal("52")
 
     def test_the_loader_and_the_calendar_agree(self, app, seed_user, seed_periods):
@@ -571,7 +577,7 @@ class TestAnAbsentCadenceIsRefusedRatherThanDefaulted:
         )
 
         assert empty.periods == ()
-        assert empty.cadence == PayCadence(cadence_days=7)
+        assert empty.cadence == PayCadence(FixedDays(7))
 
     def test_the_loader_refuses_an_owner_with_no_schedule_and_no_periods(
         self, app, bare_user,

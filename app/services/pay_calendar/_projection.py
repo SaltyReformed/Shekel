@@ -258,7 +258,7 @@ def project_period_after(
     index = era_index_at(eras, day)
     era = eras[index]
     top = last_step_of(eras, index)
-    estimate = cadence_steps_to(era.effective_from, era.rhythm.cadence_days, day)
+    estimate = cadence_steps_to(era.effective_from, era.rhythm.cadence, day)
     if top is not None:
         estimate = min(estimate, top)
     horizon = horizon_step(eras, last.start_date)

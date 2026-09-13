@@ -215,7 +215,9 @@ def validate_derivable_rhythm(data):
         return
     try:
         pay_schedule_service.reject_shift_on_short_cadence(
-            pay_rhythm.Rhythm(cadence_days=cadence_days, shift=shift),
+            pay_rhythm.Rhythm(
+                cadence=pay_rhythm.FixedDays(cadence_days), shift=shift,
+            ),
         )
     except AppValidationError as exc:
         raise ValidationError(str(exc), "shift") from exc

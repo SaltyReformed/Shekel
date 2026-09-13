@@ -37,6 +37,7 @@ from app.services import (
     status_seam,
     transaction_service,
 )
+from app.services.pay_rhythm import FixedDays
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import DerivedPeriod, calendar_for
@@ -10053,7 +10054,7 @@ class TestTheRangeSelectorIsDerivedFromTheOwnersCadence:
         from app.routes.grid.page import _range_options
         from app.services.pay_calendar import PayCadence
 
-        assert _range_options(PayCadence(cadence_days=14)) == [
+        assert _range_options(PayCadence(FixedDays(14))) == [
             ("3P", 3, "3 pay periods"),
             ("6P", 6, "6 pay periods"),
             ("6M", 13, "6 months"),
@@ -10071,7 +10072,7 @@ class TestTheRangeSelectorIsDerivedFromTheOwnersCadence:
         from app.routes.grid.page import _range_options
         from app.services.pay_calendar import PayCadence
 
-        assert _range_options(PayCadence(cadence_days=7)) == [
+        assert _range_options(PayCadence(FixedDays(7))) == [
             ("3P", 3, "3 pay periods"),
             ("6P", 6, "6 pay periods"),
             ("6M", 26, "6 months"),
@@ -10097,7 +10098,7 @@ class TestTheRangeSelectorIsDerivedFromTheOwnersCadence:
         from app.routes.grid.page import _range_options
         from app.services.pay_calendar import PayCadence
 
-        assert _range_options(PayCadence(cadence_days=30)) == [
+        assert _range_options(PayCadence(FixedDays(30))) == [
             ("3P", 3, "3 pay periods"),
             ("6P", 6, "6 pay periods"),
             ("1Y", 12, "1 year"),
@@ -10117,7 +10118,7 @@ class TestTheRangeSelectorIsDerivedFromTheOwnersCadence:
         for cadence_days in range(1, 366):
             counts = [
                 count for _, count, _
-                in _range_options(PayCadence(cadence_days=cadence_days))
+                in _range_options(PayCadence(FixedDays(cadence_days)))
             ]
 
             assert len(counts) == len(set(counts)), (
@@ -10137,7 +10138,7 @@ class TestTheRangeSelectorIsDerivedFromTheOwnersCadence:
 
         labels = [
             label for label, _, _
-            in _range_options(PayCadence(cadence_days=365))
+            in _range_options(PayCadence(FixedDays(365)))
         ]
 
         assert labels == ["3P", "6P", "1Y", "2Y"]

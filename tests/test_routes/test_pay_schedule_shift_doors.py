@@ -28,6 +28,7 @@ from app import ref_cache
 from app.enums import BusinessDayShiftEnum
 from app.models.user import User
 from app.services import pay_schedule_service
+from app.services.pay_rhythm import FixedDays
 from app.utils.dates import display_today
 from tests._test_helpers import (
     all_periods,
@@ -351,7 +352,7 @@ class TestADoorRefusesAPairNoCalendarCanDerive:
 
             assert response.status_code == 302
             user_id = bare_user["user"].id
-            assert pay_schedule_service.resolve_cadence(user_id) == 2
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(2)
 
 
 class TestAnUnmodelledConventionIsRefusedAtTheSchema:
