@@ -39,14 +39,30 @@ declined to touch.  This takes the pass the route already opened
 (a producer below the route takes the :class:`~app.services.balance_at
 .BalanceContext` and drops ``user_id``; only a route builds one) and RETURNS
 those row ids, so each route reports them in its own voice --
-``flash_retained_notice`` for both today.  Nothing else moved: the paycheck is
-priced through the same direct engine call (one of the sites the arch census
-``tests/test_arch/test_the_calendar_wide_projection_has_one_spelling.py``
-enumerates for plan step C12, which now names this file), the amount goes
-through the same write door, and the regeneration reads the same day.  The
-one reordering: the adapter builds the pass BEFORE the template guard below
-runs, where the route-tier original guarded first -- one scenario query for a
-profile without a template, a state ``create_profile`` never produces.
+``flash_retained_notice`` for both today.  The amount goes through the same
+write door, and the regeneration reads the same day.  The one reordering:
+the adapter builds the pass BEFORE the template guard below runs, where the
+route-tier original guarded first -- one scenario query for a profile without
+a template, a state ``create_profile`` never produces.
+
+**The paycheck is priced through the pass's own pricer since plan step
+salary:C12** (ledger row **P62**), where it was a direct
+``calculate_paycheck`` call resolving its tax configs through
+``load_tax_configs_for_year`` and passing ``calibration=profile.calibration``.
+That door and the pricer's resolve the configs through one body
+(``tax_config_service._configs_from_series``) and both priced WITH the
+calibration, so the figure written is byte-identical; what changed is that
+there is one fewer place the engine is reached outside
+:class:`~app.services.income_service.PaycheckPricing`.  **What that pricer
+REQUIRES of the caller is that the pass POSTDATES the write it follows**: a
+pricer's memo is filled per payday, so a pass that priced this profile's
+current paycheck before a calibration or a deduction changed would answer
+the OLD figure here and the template would be re-stated at it.  A raise
+write is safe either way -- the memo is keyed on the raise set, so changed
+terms are a new entry -- but the rule is stated for the writes that are not.
+Every caller today builds its pass after its writes: the salary routes'
+adapter builds one per call, and the ``/retirement`` rail's Save stages its
+end years first.
 
 Boundary discipline (``CLAUDE.md`` Architecture): ORM rows and a pass in, plain
 ids out.  Flushes through the engine and does not commit -- the caller owns the
@@ -61,15 +77,9 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.exceptions import RecurrenceConflict
 from app.models.salary_profile import SalaryProfile
-from app.services import (
-    paycheck_calculator,
-    recurrence_engine,
-    template_amount_service,
-)
+from app.services import recurrence_engine, template_amount_service
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.payroll_basis import PayrollBasis
-from app.services.tax_config_service import load_tax_configs_for_year
 from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
@@ -92,7 +102,9 @@ def regenerate_salary_transactions(
     rows to regenerate and is left alone.
 
     Args:
-        ctx: The request's read pass, built by the route.
+        ctx: The request's read pass, built by the route AFTER the write this
+            regeneration follows (module docstring): its pricer is what the
+            template's amount is re-stated from.
         profile: The :class:`~app.models.salary_profile.SalaryProfile` whose
             template prices the rows.
 
@@ -118,17 +130,10 @@ def regenerate_salary_transactions(
     # Update the template's default_amount to the current net pay
     current_period = calendar.period_containing(date.today())
     if current_period:
-        # The configs are resolved for the PERIOD's own tax year, not the
-        # clock's: a period straddling New Year belongs to the year it starts
-        # in, which is the key ``configs_by_year`` uses for every
-        # other paycheck this profile computes.
-        tax_configs = load_tax_configs_for_year(
-            ctx.user_id, profile, current_period.start_date.year,
-        )
-        pay_breakdown = paycheck_calculator.calculate_paycheck(
-            PayrollBasis(profile, calendar), current_period, tax_configs,
-            calibration=profile.calibration,
-        )
+        # The pass's pricer (plan step salary:C12): the tax configs resolve
+        # for the PERIOD's own year and the profile's calibration applies,
+        # exactly as they do for every other paycheck this profile prices.
+        pay_breakdown = ctx.paychecks().for_profile(profile).at(current_period)
         # Through the amount's one write door (plan step X-au-a).  The profile
         # is salary-linked and active, so the door moves the column and records
         # NO version: a paycheck-calculated figure is derived, not a price

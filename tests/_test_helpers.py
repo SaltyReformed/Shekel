@@ -3869,7 +3869,7 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     # convention every helper in this module follows.
     from app.enums import SettlementBasisEnum
     from app.services.status_seam import Settlement, recorded_settlement
-    from app.services.cash_ledger import amount_basis
+    from app.services.cash_ledger import derived_amount_basis
     from app.services.transaction_service import (
         settle_amount,
         settles_from_entries,
@@ -3885,7 +3885,7 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     # asks the same rule once rather than re-branching on
     # ``honoured_correction`` beside it.
     booked = settle_amount(
-        txn, amount_basis(txn.account.user_id, txn.scenario_id),
+        txn, derived_amount_basis(txn.account.user_id, txn.scenario_id),
     )
     correction = (
         submitted if submitted is not None and submitted != booked else None
@@ -5303,10 +5303,10 @@ def resolved_amount(txn):
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
-    from app.services.cash_ledger import amount_basis, resolve_transaction_amount
+    from app.services.cash_ledger import derived_amount_basis, resolve_transaction_amount
 
     return resolve_transaction_amount(
-        txn, amount_basis(txn.account.user_id, txn.scenario_id),
+        txn, derived_amount_basis(txn.account.user_id, txn.scenario_id),
     )
 
 
@@ -7130,6 +7130,34 @@ def payroll_basis(profile, periods, cadence_days=14, history_opens_on=None):
     ))
 
 
+def pricing_over(calendar):
+    """Return a :class:`~app.services.income_service.PaycheckPricing` over *calendar*.
+
+    **The test-side door for a calendar already in hand**, and ONE copy of it
+    (ruling P54's shape: a production API with only test callers is the
+    speculative shape ``CLAUDE.md`` rule 13 forbids, so the production
+    constructor that took a calendar was moved here at plan step salary:C12,
+    when its last production caller went).  Production holds two doors and
+    both take a SOURCE -- the read pass hands its calendar memo, a pass-less
+    producer hands ``calendar_for`` bound to the owner -- so a test that has
+    derived a calendar for itself hands it back as the source, the owner read
+    off the same value.  Every property the pricer has in production holds
+    here: nothing is derived at construction, and the source answers once.
+
+    Args:
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
+
+    Returns:
+        The empty pricer.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.income_service import paycheck_pricing
+
+    return paycheck_pricing(calendar.user_id, lambda: calendar)
+
+
 def derived_calendar(
     paydays, cadence_days=14, user_id=1, history_opens_on=None,
 ):
@@ -7803,10 +7831,10 @@ def transfer_amount(xfer):
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
-    from app.services.cash_ledger import amount_basis, resolve_transfer_amount
+    from app.services.cash_ledger import derived_amount_basis, resolve_transfer_amount
 
     return resolve_transfer_amount(
-        xfer, amount_basis(xfer.user_id, xfer.scenario_id),
+        xfer, derived_amount_basis(xfer.user_id, xfer.scenario_id),
     )
 
 
@@ -7837,12 +7865,12 @@ def shadow_amount(shadow):
             shadow means its parent is gone (Transfer Invariant 2 broken).
     """
     from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
-        amount_basis,
+        derived_amount_basis,
         resolve_transaction_amount,
     )
 
     return resolve_transaction_amount(
-        shadow, amount_basis(shadow.account.user_id, shadow.scenario_id),
+        shadow, derived_amount_basis(shadow.account.user_id, shadow.scenario_id),
     )
 
 
@@ -7864,10 +7892,10 @@ def basis_for(account, scenario):
         The unresolved :class:`~app.services.cash_ledger.AmountBasis`.
     """
     from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
-        amount_basis,
+        derived_amount_basis,
     )
 
-    return amount_basis(account.user_id, scenario.id)
+    return derived_amount_basis(account.user_id, scenario.id)
 
 
 def all_periods(user_id):
@@ -8285,11 +8313,11 @@ def rendered_transfer_amount(xfer) -> str:
         The rendered figure as the form's string, ready to post.
     """
     from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
-        amount_basis, resolve_transfer_amount,
+        derived_amount_basis, resolve_transfer_amount,
     )
 
     return str(resolve_transfer_amount(
-        xfer, amount_basis(xfer.user_id, xfer.scenario_id),
+        xfer, derived_amount_basis(xfer.user_id, xfer.scenario_id),
     ))
 
 
@@ -8327,9 +8355,9 @@ def amount_basis_for(row):
     # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
-    from app.services.cash_ledger import amount_basis
+    from app.services.cash_ledger import derived_amount_basis
 
-    return amount_basis(row.account.user_id, row.scenario_id)
+    return derived_amount_basis(row.account.user_id, row.scenario_id)
 
 
 def amount_basis_for_scenario(scenario_id):
@@ -8360,8 +8388,10 @@ def amount_basis_for_scenario(scenario_id):
     convenience on the production constructor: a production API with only test
     callers is the speculative shape ``CLAUDE.md`` rule 13 forbids.
     **Production has the same asymmetry and it is filed, not fixed here**
-    (finding **N-432**): ``amount_basis`` takes an owner AND a scenario and
-    nothing checks they agree, where the scenario already states its owner.
+    (finding **N-432**): ``derived_amount_basis`` takes an owner AND a
+    scenario and nothing checks they agree, where the scenario already states
+    its owner.  (``amount_basis`` itself reads the owner off the pass's pricer
+    since plan step salary:C12, so the pass-side door no longer has the pair.)
 
     Args:
         scenario_id: The scenario the rows being priced belong to.
@@ -8380,12 +8410,12 @@ def amount_basis_for_scenario(scenario_id):
     # pylint: disable=import-outside-toplevel
     from app.extensions import db
     from app.models.scenario import Scenario
-    from app.services.cash_ledger import amount_basis
+    from app.services.cash_ledger import derived_amount_basis
 
     scenario = db.session.query(Scenario).filter(
         Scenario.id == scenario_id,
     ).one()
-    return amount_basis(scenario.user_id, scenario_id)
+    return derived_amount_basis(scenario.user_id, scenario_id)
 
 
 def count_amount_bases(monkeypatch):
@@ -8401,8 +8431,11 @@ def count_amount_bases(monkeypatch):
 
     ``amount_basis`` calls ``income_service.salary_pricing`` unconditionally on
     every construction, through a module ATTRIBUTE resolved at call time, so a
-    patch here is seen no matter which module reached the factory.  One entry
-    per basis built, by anybody.
+    patch here is seen no matter which module reached the factory -- and
+    ``derived_amount_basis``, the pass-less constructor since plan step
+    salary:C12, reaches it through ``amount_basis``, so both doors count.  One
+    entry per basis built, by anybody.  The owner is read off the pricer the
+    basis is built over, which costs no derivation.
 
     Args:
         monkeypatch: The test's ``monkeypatch`` fixture.
@@ -8418,9 +8451,9 @@ def count_amount_bases(monkeypatch):
     built = []
     real = income_service.salary_pricing
 
-    def _counted(user_id, scenario_id):
-        built.append((user_id, scenario_id))
-        return real(user_id, scenario_id)
+    def _counted(scenario_id, paychecks):
+        built.append((paychecks.user_id, scenario_id))
+        return real(scenario_id, paychecks)
 
     monkeypatch.setattr(income_service, "salary_pricing", _counted)
     return built

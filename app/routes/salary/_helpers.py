@@ -26,15 +26,8 @@ from app.models.ref import (
     RaiseType,
 )
 from app.routes._recurrence_conflict_chooser import flash_retained_notice
-from app.services import (
-    account_service,
-    paycheck_calculator,
-    salary_regeneration,
-)
+from app.services import account_service, salary_regeneration
 from app.services.balance_at import BalanceContext
-from app.services.payroll_basis import PayrollBasis
-from app.services.pay_calendar import calendar_for
-from app.services.tax_config_service import load_tax_configs_for_year
 from app.schemas.validation import (
     CalibrationConfirmSchema,
     CalibrationSchema,
@@ -203,22 +196,30 @@ def _compute_total_pre_tax(profile):
     are computed against.  Returns ``Decimal("0")`` when the user has no
     current pay period, so the taxable base falls back to the full gross --
     mirroring the original inline behaviour in both handlers.
+
+    **Read off a pass's pricer since plan step salary:C12** (ledger row
+    **P62**), where it was a direct ``calculate_paycheck`` call passing NO
+    calibration.  The pricer prices WITH the profile's calibration, and the
+    figure this returns is byte-identical anyway: a calibration reaches the
+    four withholding lines and nothing else, and the deductions are taken
+    before any of them (measured ``$713.29`` by both doors on the developer's
+    data, 2026-09-12).  The pass is this helper's OWN, built here rather than
+    threaded from ``calibrate_confirm``, and the reason is stated because it
+    looks like the two-passes-per-request shape: that route WRITES the
+    calibration between this read and the regeneration that follows it, and
+    a pricer that had priced the current paycheck before the write would
+    answer the old figure after it (:mod:`app.services.salary_regeneration`).
+    So this pass reads before the write and the adapter builds another after
+    it; sharing one would be the memo-staleness defect, not a saving.
     """
-    # A plain calendar read: this helper recomputes ONE paycheck and
-    # regenerates nothing, so it needs the calendar the engine prices against
-    # and none of the rest of a GenerationSchedule.  ONE derivation answers
-    # both questions (pay-calendar plan step C2-f2d-3).
-    calendar = calendar_for(current_user.id)
-    current_period = calendar.period_containing(date.today())
+    ctx = BalanceContext.build(current_user.id)
+    current_period = ctx.calendar().period_containing(date.today())
     if not current_period:
         return Decimal("0")
-    tax_configs = load_tax_configs_for_year(
-        current_user.id, profile, current_period.start_date.year,
+    return (
+        ctx.paychecks().for_profile(profile).at(current_period)
+        .deductions.total_pre_tax
     )
-    pay_breakdown = paycheck_calculator.calculate_paycheck(
-        PayrollBasis(profile, calendar), current_period, tax_configs,
-    )
-    return pay_breakdown.deductions.total_pre_tax
 
 
 def _reject_if_rates_inconsistent(data, derived_rates, taxable, profile_id):

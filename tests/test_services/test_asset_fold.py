@@ -58,7 +58,6 @@ from app.services.balance_at import (
 )
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.investment_projection import AccountPayrollFeed
-from app.services.income_service import paycheck_pricing
 from app.services.pay_calendar import calendar_for
 from app.services.balance_at._context import BalanceContext
 from app.services.cash_ledger import ReconciledThrough
@@ -80,6 +79,7 @@ from tests._test_helpers import (
     make_investment_account,
     make_salary_profile,
     period_window,
+    pricing_over,
     reassert_balance_on,
     restate_account_opening,
     settle_instant_on,
@@ -153,7 +153,7 @@ def _feed_for(seed_user, account, params=None):
     """
     user_id = seed_user["user"].id
     return load_payroll_feeds(
-        paycheck_pricing(calendar_for(user_id)), [account.id],
+        pricing_over(calendar_for(user_id)), [account.id],
         {} if params is None else {account.id: params},
     )[account.id]
 

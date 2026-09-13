@@ -41,7 +41,7 @@ from app.models.transaction import Transaction
 from app.services import posting_service
 from app.services.cash_ledger import (
     AmountBasis,
-    amount_basis,
+    derived_amount_basis,
     contribution_of,
 )
 from app.services.row_valuation import purchases_total
@@ -500,7 +500,7 @@ def settle_transaction(
         # for each ran the paycheck engine twice per settle.  It was THREE
         # questions until plan step X-au-d, whose third was a cache refresh
         # this verb no longer performs -- a derived row holds no cache.
-        basis = amount_basis(txn.account.user_id, txn.scenario_id)
+        basis = derived_amount_basis(txn.account.user_id, txn.scenario_id)
         # What this settle BOOKS, read from the same published rule the
         # reconcile panel prefills from, so the figure offered and the figure
         # recorded cannot differ.

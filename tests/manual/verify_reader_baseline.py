@@ -75,7 +75,7 @@ from app.services import (
     spending_report_service,
     transfer_service,
 )
-from app.services.cash_ledger import amount_basis
+from app.services.cash_ledger import derived_amount_basis
 from app.services.balance_at import BalanceContext
 from app.services.investment_dashboard_service import compute_dashboard_data
 from app.utils.balance_predicates import is_projected_clause
@@ -353,7 +353,7 @@ def _loans(user_id, scenario_id, accounts):
             lambda a=account: [
                 [str(p.dates.due_date), _money(p.amount), p.dates.is_confirmed]
                 for p in loan_payment_service.load_loan_context(
-                    a.id, amount_basis(user_id, scenario_id),
+                    a.id, derived_amount_basis(user_id, scenario_id),
                     db.session.query(LoanParams)
                     .filter(LoanParams.account_id == a.id).one(),
                 ).payments
@@ -449,7 +449,7 @@ def _dump_user(user_id):
                     [str(p.dates.period_start), str(p.dates.due_date),
                      _money(p.amount), p.dates.is_confirmed]
                     for p in loan_payment_service.get_payment_history(
-                        acc.id, amount_basis(user_id, scenario_id), 1,
+                        acc.id, derived_amount_basis(user_id, scenario_id), 1,
                     )
                 ],
             )

@@ -17,7 +17,7 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.services import match_withdrawal, posting_service, status_seam
 from app.services.cash_ledger import (
-    amount_basis,
+    derived_amount_basis,
     resolve_transaction_amount,
 )
 from app.services.pay_calendar import DerivedPeriod, FiledRow, calendar_for
@@ -445,7 +445,7 @@ def mark_as_credit(transaction_id, user_id):
     # **N-243**): a payback is worth the credit entries it repays, and neither
     # of this line's two terms is that.
     payback_amount = resolve_transaction_amount(
-        txn, amount_basis(txn.account.user_id, txn.scenario_id),
+        txn, derived_amount_basis(txn.account.user_id, txn.scenario_id),
     )
 
     # Create the payback transaction via the shared factory (see

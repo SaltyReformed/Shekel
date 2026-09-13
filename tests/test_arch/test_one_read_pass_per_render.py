@@ -148,6 +148,8 @@ from tests._test_helpers import (
     counting_calls,
     counting_read_passes,
     create_loan_account,
+    generate_row_of,
+    make_every_period_rule,
     make_investment_account,
     make_salary_profile,
 )
@@ -196,6 +198,14 @@ _CALENDAR_DOOR = ("app.services.pay_calendar._derive", "derive_periods")
 #: after.  What it can no longer see -- because the shape removed it -- is a
 #: single producer re-projecting a window it had already projected.
 _PROJECTION_DOOR = ("app.services.income_service", "ProfilePaychecks")
+
+#: The amount model's salary-row door, as ``(module path, attribute)``: the
+#: ONE producer of a salary row's figure (``salary_net_for``, plan step
+#: X-au-d).  Counted by the both-paths case in
+#: :class:`TestOnePaycheckProjectionPerProfilePerRender` to prove the render
+#: it measures actually priced a row through the amount model, without which
+#: "one pricer" is true of a render that never took the second path.
+_SALARY_ROW_DOOR = ("app.services.income_service", "salary_net_for")
 
 #: What the budget dashboard resolves about its own SUBJECT, as
 #: ``(module path, attribute)``.  A render answers "which account is this page
@@ -1260,15 +1270,17 @@ class TestOnePaycheckProjectionPerProfilePerRender:
     a consumer is handed the pricer, so that particular hole is closed by the
     shape rather than by this assertion.
 
-    **What it still catches is a SECOND pricer**, and one exists on purpose:
-    :class:`~app.services.income_service.SalaryPricing` derives its own,
-    because ``cash_ledger.amount_basis`` is built from an owner and a scenario
-    alone and has nothing to hand it.  That is ledger row **P63**, owned by
-    plan step **C12** with ``balance:X-i1`` as the input tier, and S3-d did
-    not close it.  These three renders read ONE of the two paths each, which
-    is why the budget below is 1 rather than 2 -- and if a change makes one of
-    them read both, this class is where that shows up as a number.  It becomes
-    deletable when C12 or X-i1 collapses the two sources.
+    **What it still catches is a SECOND pricer, and since plan step
+    salary:C12 none exists on purpose.**  Until C12,
+    :class:`~app.services.income_service.SalaryPricing` derived its own,
+    because ``cash_ledger.amount_basis`` was built from an owner and a
+    scenario alone and had nothing to hand it (ledger row **P63**); the basis
+    is built OVER the pass's pricer now, so a render that prices a salary ROW
+    through the amount model and reads a payroll FEED holds one pricer for
+    both.  :meth:`test_savings_prices_a_salary_row_and_a_feed_through_ONE_pricer`
+    is the case that reads both paths and is the one C12 turned from 2 to 1;
+    the three renders above it read one path each and were 1 before.  This
+    class stays: it is what keeps a second source from returning.
     """
 
     @staticmethod
@@ -1343,6 +1355,103 @@ class TestOnePaycheckProjectionPerProfilePerRender:
             f"{counts['ProfilePaychecks']} times; the page holds one read pass "
             "and its batch load and its seam reads must share that pass's "
             "pricer"
+        )
+
+    @staticmethod
+    def _seed_a_salary_row(db, seed_user, seed_periods_today):
+        """Give the owner's profile a definition and ONE generated paycheck row.
+
+        What makes ``/grid`` price a salary row through the AMOUNT MODEL
+        (``ctx.amounts()`` -> ``SalaryPricing.net_for``), which is the second
+        of the two paths ledger row **P63** was about.  The row is the
+        engine's own (:func:`~tests._test_helpers.generate_row_of`), derived
+        and undated by hand, so the amount model dispatches it to the salary
+        rule rather than to a stated figure.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.models.transaction_template import TransactionTemplate
+
+        profile = (
+            db.session.query(SalaryProfile)
+            .filter_by(user_id=seed_user["user"].id, is_active=True)
+            .one()
+        )
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=next(iter(seed_user["categories"].values())).id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+            name="Paycheck",
+            default_amount=Decimal("4000.00"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        make_every_period_rule(db.session, template)
+        profile.template_id = template.id
+        db.session.flush()
+        row = generate_row_of(template, seed_periods_today[0])
+        db.session.commit()
+        return row
+
+    def test_savings_prices_a_salary_row_and_a_feed_through_ONE_pricer(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /savings builds ONE pricer when it reads BOTH paycheck paths.
+
+        **The case plan step salary:C12 turned from 2 to 1** (ledger row
+        **P63**), and the one the three cases above are blind to: each of
+        them reads ONE path.  Here the owner's profile FUNDS an investment
+        account, so the seam's payroll feed prices the profile through
+        ``ctx.paychecks()``, AND the profile's definition has a generated row
+        in the reported window, so the cash fold under the same render
+        prices that row through the amount model (``ctx.amounts()``).  Until
+        C12 the amount model built a pricer of its own over a calendar of its
+        own (``cash_ledger.amount_basis`` took two ids and had nothing to
+        hand it), so this count read 2 and the calendar count 2 -- measured
+        2026-09-12 with ``ctx.amounts()`` mutated back to the pass-less
+        constructor as the negative control.  The basis is built over the
+        pass's pricer now, so both paths hit one memo.
+
+        ``/savings`` and not ``/grid``, and the reason is recorded because
+        the first draft chose the grid: the grid's cash view prices the
+        salary row and never asks the feed for a paycheck, so it built ONE
+        pricer on the broken tree too and the control could not fire.  The
+        amount-model assertion is not decoration either: an owner whose
+        profile has no generated row reads 1 on the broken tree, because the
+        amount model never prices a paycheck and never builds anything -- so
+        the case pins that ``salary_net_for`` ran, which is the path this
+        count depends on.  (A first draft asserted the row's id appeared in
+        the page body; ``/savings`` renders no transaction id, and a small
+        integer is a substring of half a page, so that graded nothing -- an
+        adversarial review of this step measured it.)
+        """
+        with app.app_context():
+            account = _seed_projecting_account(
+                db, seed_user, seed_periods_today,
+            )
+            self._fund_the_account(db, seed_user, account)
+            self._seed_a_salary_row(db, seed_user, seed_periods_today)
+
+        with counting_calls(_PROJECTION_DOOR) as counts, \
+                counting_calls(_CALENDAR_DOOR) as calendars, \
+                counting_calls(_SALARY_ROW_DOOR) as rows:
+            resp = auth_client.get("/savings")
+
+        assert resp.status_code == 200
+        assert rows["salary_net_for"] >= 1, (
+            "the amount model priced no salary row on this render, so the "
+            "count below cannot see the second path this case exists for"
+        )
+        assert counts["ProfilePaychecks"] == 1, (
+            f"/savings built the owner's paycheck pricer "
+            f"{counts['ProfilePaychecks']} times while pricing a salary row "
+            "AND a payroll feed; the amount model must read the pass's pricer "
+            "(plan step salary:C12), not derive a second one"
+        )
+        assert calendars["derive_periods"] == 1, (
+            f"/savings derived the pay calendar {calendars['derive_periods']} "
+            "times; the amount model's pricer is the pass's, over the pass's "
+            "one calendar"
         )
 
     def test_retirement_prices_its_current_paycheck_through_the_pricer(

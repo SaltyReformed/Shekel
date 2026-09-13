@@ -391,6 +391,12 @@ _FENCED_MODULE_RULINGS = {
         # surfaces that make it.  Non-producer for the identical reason --
         # it resolves nothing, folds nothing, and reads no anchor.
         "baseline_amount_basis",
+        # Its PASS-LESS form (plan step salary:C12, ledger row P63): the same
+        # constructor over a pricer that derives the owner's calendar on the
+        # first paycheck, for a producer holding no read pass.  Non-producer
+        # for the identical reason; its ledger row is minted with C12-a's
+        # tick, and each site moved onto its pass deletes one call.
+        "derived_amount_basis",
         "amount_rule",
         "transfer_amount_rule",
         "resolve_transaction_amount",

@@ -48,12 +48,14 @@ meant "no memo at all" -- the hole
 that test's own docstring records two of four callers falling through.  A
 consumer is handed the pricer now, so there is nothing left to forget to pass.
 
-**TWO sources of a paycheck survive this step, and saying so is the point.**
-The read pass holds one and :class:`SalaryPricing` derives a second; the
-argument, and what it costs, is at :class:`PaycheckPricing` and stated once
-there.  It is ledger row **P63**, owned by **C12**, and S3-d does not close
-it -- so the runtime gate keeps a subject and is kept, re-pointed from the
-deleted ``project_profile`` to :class:`ProfilePaychecks`.
+**ONE source of a paycheck per read pass since plan step salary:C12.**  Two
+survived S3-d -- the pass held one and :class:`SalaryPricing` derived a
+second, because the amount basis was built from two ids and had nothing to
+hand it (ledger row **P63**) -- and C12 closed it by making the basis TAKE
+the pass's pricer.  What it cost, and the interim a pass-less producer still
+uses, is stated once at :class:`PaycheckPricing`; the runtime gate
+``TestOnePaycheckProjectionPerProfilePerRender`` keeps its subject and counts
+:class:`ProfilePaychecks` constructions so a second source cannot return.
 
 **A SCALAR producer stood beside them until plan step salary:R14-b, and it is
 DELETED rather than re-pointed.**  ``get_current_gross_biweekly(user_id,
@@ -79,11 +81,13 @@ for as long as it had them; the list is gone with the function.
 
 Boundary discipline (``CLAUDE.md``: "services are isolated from Flask"):
 this module imports no Flask symbol.  All inputs are plain data (a user id, a
-scenario id, an ORM profile, a calendar).
+scenario id, an ORM profile, a calendar or a callable that answers one).
 """
 
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
+from functools import partial
 
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
@@ -321,15 +325,36 @@ class PaycheckPricing:
     is HANDED one -- there is no ``breakdowns=None`` to forget, which is what
     let two of four callers bypass the dict this replaced.
 
-    **What it does NOT yet make unconstructible is a SECOND one**, and the
-    limit is stated because an unstated limit reads as none.  The read pass
-    builds one (:meth:`~app.services.balance_at.BalanceContext.paychecks`) and
-    :class:`SalaryPricing` builds another, because
-    ``cash_ledger.amount_basis`` takes an owner and a scenario and has nothing
-    to hand it: ledger row **P63**, owned by **C12**.  So a render that reads
-    a salary ROW and a payroll FEED still prices those paydays twice, and
-    ``TestOnePaycheckProjectionPerProfilePerRender`` is kept -- re-pointed at
-    this class's construction -- to keep a THIRD from appearing meanwhile.
+    **A read pass holds ONE of these and every producer under it reads that
+    one, the amount model included** (plan step **salary:C12**, closing ledger
+    row **P63**).  Until C12, :class:`SalaryPricing` built a SECOND one,
+    because ``cash_ledger.amount_basis`` took an owner and a scenario and had
+    nothing to hand it -- so a render that read a salary ROW and a payroll
+    FEED derived the calendar twice and priced the overlapping paydays twice
+    (measured on the developer's data 2026-09-12: 2 calendars, 2 pricers, 115
+    engine runs for one grid-shaped read).  The basis takes the pass's pricer
+    now (:meth:`~app.services.balance_at.BalanceContext.amounts` hands
+    :meth:`~app.services.balance_at.BalanceContext.paychecks`), and
+    ``TestOnePaycheckProjectionPerProfilePerRender`` counts
+    :class:`ProfilePaychecks` constructions to keep a second from reappearing.
+
+    **It takes the calendar as a SOURCE and derives it once, on the first
+    read.**  Two production doors hand one in and neither wants it derived
+    early: the read pass hands its own memo
+    (:meth:`~app.services.balance_at.BalanceContext.calendar`, through
+    :func:`paycheck_pricing`), so building the pass's basis derives nothing
+    and a pass that folds no cash and prices no paycheck -- the loan arm, the
+    bank-agreement fragment -- pays for no calendar and cannot be refused
+    one; a producer holding NO pass hands
+    :func:`~app.services.pay_calendar.calendar_for` bound to its owner
+    (:func:`derived_paycheck_pricing`), which is the laziness
+    :class:`SalaryPricing` had when it derived its own.  (A test holding a
+    calendar already hands ``lambda: calendar`` through
+    ``tests/_test_helpers.pricing_over``.)  The owner is pinned BESIDE the
+    source, because the amount model scopes its profile lookup by owner
+    before any paycheck is priced and must not derive a calendar to learn it;
+    the two are one value at both doors, and the first derivation refuses a
+    source that answers another owner's.
 
     **More sites price a single period outside any pricer**, by calling
     :func:`~app.services.paycheck_calculator.calculate_paycheck` directly.
@@ -341,14 +366,24 @@ class PaycheckPricing:
     14 names; this paragraph replaced two verbatim copies of it.
     """
 
-    def __init__(self, calendar: PayCalendar) -> None:
-        """Pin the calendar every profile in this pass is priced against.
+    def __init__(
+        self, user_id: int, calendar_source: Callable[[], PayCalendar],
+    ) -> None:
+        """Pin the owner and where their calendar comes from; derive nothing.
+
+        Reached through the named constructors below, never directly, so the
+        owner and the source are always one value's two halves.
 
         Args:
-            calendar: The owner's
-                :class:`~app.services.pay_calendar.PayCalendar`.
+            user_id: The owner every profile in this pricer is priced for.
+            calendar_source: A zero-argument callable answering that owner's
+                :class:`~app.services.pay_calendar.PayCalendar`, called on
+                reads of :attr:`calendar` until it answers once and released
+                then, so it cannot be called again.
         """
-        self._calendar = calendar
+        self._user_id = user_id
+        self._calendar_source: "Callable[[], PayCalendar] | None" = calendar_source
+        self._calendar: "PayCalendar | None" = None
         # Keyed by ``(profile id, canonical raise terms)``: a profile's
         # paychecks are a function of the profile, the calendar AND the raise
         # set they are priced under (plan step salary:S3-f-1), and every
@@ -365,11 +400,58 @@ class PaycheckPricing:
         pricing anything up front -- and taking the two separately is how
         one owner's calendar comes to be paired with another's paychecks.
 
+        **Derived ONCE, on the first read that succeeds, from the source the
+        constructor pinned** (plan step salary:C12) -- so a pricer that is
+        built and never asked for a paycheck costs no calendar, whichever
+        source it holds.  The source is released the moment it answers, which
+        makes "once" structural rather than prose and cuts the reference
+        cycle a pass's bound method otherwise closes; a source that RAISED
+        is kept and asked again on the next read, exactly as the pass's own
+        calendar memo behaves.
+
         Returns:
             The :class:`~app.services.pay_calendar.PayCalendar` this pricer
             answers against.
+
+        Raises:
+            ValueError: The source answered another owner's calendar.  The
+                owner is pinned beside the source so the amount model can
+                scope a profile lookup without deriving; this is where the
+                pair is checked, once, at the only moment both halves exist.
+            PayCalendarError: From the source, on a read before it has
+                answered -- :func:`~app.services.pay_calendar.calendar_for`'s
+                refusals for the pass-less door, the pass's own for the pass.
         """
+        if self._calendar is None:
+            calendar = self._calendar_source()
+            if calendar.user_id != self._user_id:
+                raise ValueError(
+                    f"paycheck pricer for user {self._user_id} was handed a "
+                    f"calendar belonging to user {calendar.user_id}: the "
+                    f"owner a pricer prices for and the calendar it prices "
+                    f"against must be one owner."
+                )
+            self._calendar = calendar
+            self._calendar_source = None
         return self._calendar
+
+    @property
+    def user_id(self) -> int:
+        """The owner this pricer prices for, answered without deriving.
+
+        **The amount model's owner since plan step salary:C12**:
+        :class:`SalaryPricing` scopes its profile lookup by this rather than
+        by a ``user_id`` handed in beside the pricer, so an (owner, pricer)
+        mismatch is unrepresentable rather than unchecked -- the same reason
+        :class:`ProfilePaychecks` reads the owner off the profile.  It is the
+        pinned id and not ``self.calendar.user_id``, which is what keeps that
+        lookup a single indexed query for a row on a template no profile
+        names: the calendar is derived only when a paycheck is priced.
+
+        Returns:
+            The owner's id.
+        """
+        return self._user_id
 
     def for_profile(self, profile, raise_terms=None) -> ProfilePaychecks:
         """Return this pass's :class:`ProfilePaychecks` for *profile*.
@@ -415,36 +497,73 @@ class PaycheckPricing:
         key = (profile.id, terms)
         if key not in self._by_profile:
             self._by_profile[key] = ProfilePaychecks(
-                profile, self._calendar, terms,
+                profile, self.calendar, terms,
             )
         return self._by_profile[key]
 
 
-def paycheck_pricing(calendar: PayCalendar) -> PaycheckPricing:
-    """Return a read pass's :class:`PaycheckPricing` over *calendar*.
+def paycheck_pricing(
+    user_id: int, calendar_source: Callable[[], PayCalendar],
+) -> PaycheckPricing:
+    """Return a pricer that derives *user_id*'s calendar from *calendar_source*.
 
-    The named constructor, so no consumer reaches for the class directly.
-    **TWO callers, not one**: :meth:`~app.services.balance_at.BalanceContext
-    .paychecks` builds the read pass's, and :meth:`SalaryPricing._pricing`
-    below builds the amount model's second one -- which is ledger row
-    **P63**, stated at :class:`PaycheckPricing`.  An earlier draft of this
-    sentence said the pass was the only builder, and the file it sits in
-    refutes that 130 lines down.
+    The named constructor, so no consumer reaches for the class directly,
+    and the read pass's door (plan step salary:C12):
+    :meth:`~app.services.balance_at.BalanceContext.paychecks` hands its own
+    calendar memo, so the pass's pricer -- and the amount basis built over it
+    -- derives nothing until a paycheck is priced, and a pass that folds no
+    cash never derives a calendar it never reads.  The pass-less door below
+    is this with :func:`~app.services.pay_calendar.calendar_for` as the
+    source.  **It took a calendar in HAND until the second adversarial review
+    of C12-a**, when that form was left with test callers alone -- the shape
+    ruling P54 names -- and moved to ``tests/_test_helpers.pricing_over``.
 
-    Resolves nothing ITSELF, so a pass that prices no paycheck pays nothing
+    Resolves nothing ITSELF, so a holder that prices no paycheck pays nothing
     for holding one.  The first query lands at
     :meth:`PaycheckPricing.for_profile`, which builds a
     :class:`ProfilePaychecks` and loads that profile's tax series in three
     queries; nothing is issued before a profile is named.
 
     Args:
-        calendar: The owner's
-            :class:`~app.services.pay_calendar.PayCalendar`.
+        user_id: The owner whose paychecks may be priced.
+        calendar_source: Answers that owner's calendar; called until it
+            answers once, never after.
 
     Returns:
-        The empty :class:`PaycheckPricing`.
+        The empty pricer, its calendar not yet derived.
     """
-    return PaycheckPricing(calendar)
+    return PaycheckPricing(user_id, calendar_source)
+
+
+def derived_paycheck_pricing(user_id: int) -> PaycheckPricing:
+    """Return a pricer for a producer that holds NO read pass.
+
+    **The interim that goes when every producer holds its pass, stated as
+    such.**  Twelve call sites build an amount basis from an owner and a
+    scenario with no :class:`~app.services.balance_at.BalanceContext` in reach
+    -- the two settle doors, the row re-render helpers, the two
+    template-conflict choosers, the companion, reconcile and statement-match
+    scopes, the spending report, the credit workflow and the profile archive
+    (greppable as ``cash_ledger.derived_amount_basis``; their ledger row is
+    minted with C12-a's tick) -- and until each takes its pass, this is the
+    pricer their basis is built over: :func:`paycheck_pricing` with
+    :func:`~app.services.pay_calendar.calendar_for` bound to the owner.  It
+    derives the calendar on the first paycheck it prices and never before,
+    which is exactly the laziness :class:`SalaryPricing` had when it derived
+    its own and the two reasons it had it: a settle of a non-salary row
+    derives nothing and issues no calendar query, and an owner with no
+    ``budget.pay_schedule`` row -- whom ``calendar_for`` REFUSES -- is refused
+    only when a paycheck is actually asked for.  A caller holding a pass reads
+    ``ctx.paychecks()`` and has no business here; each site moved onto its
+    pass deletes one call, and this constructor goes with the last.
+
+    Args:
+        user_id: The owner whose paychecks may be priced.
+
+    Returns:
+        The empty pricer, its calendar not yet derived.
+    """
+    return paycheck_pricing(user_id, partial(calendar_for, user_id))
 
 
 class SalaryPricing:
@@ -454,9 +573,9 @@ class SalaryPricing:
     lookup at plan step X-au-c2b, and the one producer of a ROW's amount since
     plan step X-au-d** (finding **N-443** is the two other spellings of the
     projection itself).  What rows a caller happens to have loaded reaches
-    none of it: this is pinned to ``(user_id, scenario_id)``, which is what
-    lets one read pass resolve it ONCE however many row sets ask
-    (:class:`~app.services.cash_ledger.AmountBasis`).
+    none of it: this is pinned to a scenario and a PRICER -- whose owner is
+    the owner -- which is what lets one read pass resolve it ONCE however
+    many row sets ask (:class:`~app.services.cash_ledger.AmountBasis`).
 
     **It holds a PRICER since plan step salary:S3-d, where it held a whole
     projection**, and the change is what a row's figure costs.  It memoized
@@ -464,8 +583,10 @@ class SalaryPricing:
     saved window, so a single row's live amount ran the engine over every
     payday the owner has; it resolves the ONE period the row names now.
 
-    **It derives its own pricing rather than taking the read pass's**, which
-    is ledger row **P63** and is argued once, at :class:`PaycheckPricing`.
+    **It TAKES the read pass's pricer since plan step salary:C12**, where it
+    derived a second one -- ledger row **P63**, closed there and argued once,
+    at :class:`PaycheckPricing`.  The owner is read off that pricer rather
+    than handed in beside it, so the pair cannot disagree.
 
     It was a ``{transaction_id: Decimal}`` map built per row set until that step,
     and the two consequences are why this type exists.  A request that loaded two
@@ -496,21 +617,20 @@ class SalaryPricing:
     the pass, so the sharing this class exists for is unchanged.
     """
 
-    def __init__(self, user_id: int, scenario_id: int) -> None:
-        """Pin the owner and scenario; resolve nothing yet.
+    def __init__(self, scenario_id: int, paychecks: PaycheckPricing) -> None:
+        """Pin the scenario and the pricer; resolve nothing yet.
 
         Args:
-            user_id: The owner whose active profiles price these rows.
             scenario_id: The scenario to resolve profiles against.
+            paychecks: The pricer a row's paycheck is read from -- the read
+                pass's, or the one a pass-less producer builds
+                (:func:`derived_paycheck_pricing`).  Its ``user_id`` is the
+                owner whose active profiles price these rows, answered
+                without deriving a calendar.
         """
-        self._user_id = user_id
         self._scenario_id = scenario_id
+        self._paychecks = paychecks
         self._profiles: "dict[int, SalaryProfile] | None" = None
-        # Derived rather than taken, which is ledger row **P63** (see the
-        # class).  LAZY, so a pass that prices no paycheck derives no calendar
-        # and builds no pricer -- the property the two-stage laziness above
-        # exists for, kept exactly as the calendar memo this replaced had it.
-        self._paychecks: "PaycheckPricing | None" = None
 
     def net_for(
         self, template_id: int, pay_period_id: int,
@@ -530,7 +650,7 @@ class SalaryPricing:
         profile = self._profile_by_template().get(template_id)
         if profile is None:
             return None
-        paychecks = self._pricing()
+        paychecks = self._paychecks
         # The period is resolved by ID off the owner's calendar, and that is
         # amount rule 2's second refusal stated where it belongs: a row names
         # a ``budget.pay_periods`` row, so a ``pay_period_id`` the calendar
@@ -542,29 +662,6 @@ class SalaryPricing:
         if period is None:
             return None
         return paychecks.for_profile(profile).at(period).earnings.net_pay
-
-    def _pricing(self) -> PaycheckPricing:
-        """Return this basis's paycheck pricer, deriving it once.
-
-        The owner's saved schedule off the DERIVED calendar (pay-calendar plan
-        step C2-f2d-3), so the paydays this prices against carry the ends the
-        whole payday set dictates rather than the stored ``end_date`` column
-        plan step C4-c dropped.
-
-        **This one still DERIVES**, where every other consumer on the read
-        path is given one: the basis is built by ``cash_ledger.amount_basis``
-        from an owner and a scenario alone, so there is no pricer to take
-        without threading one through that constructor.  Ledger row **P63**
-        is that finding and :class:`PaycheckPricing` carries the argument; it
-        is repeated here only because this is the line that does it.  LAZY,
-        so a pass that prices no paycheck pays nothing for it.
-
-        Returns:
-            This basis's :class:`PaycheckPricing`.
-        """
-        if self._paychecks is None:
-            self._paychecks = paycheck_pricing(calendar_for(self._user_id))
-        return self._paychecks
 
     def _profile_by_template(self) -> "dict[int, SalaryProfile]":
         """Return ``{template_id: profile}`` for this owner and scenario.
@@ -590,7 +687,7 @@ class SalaryPricing:
             profiles = (
                 db.session.query(SalaryProfile)
                 .filter(
-                    SalaryProfile.user_id == self._user_id,
+                    SalaryProfile.user_id == self._paychecks.user_id,
                     SalaryProfile.scenario_id == self._scenario_id,
                     SalaryProfile.is_active.is_(True),
                 )
@@ -601,22 +698,24 @@ class SalaryPricing:
         return self._profiles
 
 
-def salary_pricing(user_id: int, scenario_id: int) -> SalaryPricing:
-    """Return the read pass's :class:`SalaryPricing` for an owner and scenario.
+def salary_pricing(scenario_id: int, paychecks: PaycheckPricing) -> SalaryPricing:
+    """Return the read pass's :class:`SalaryPricing` for a scenario and pricer.
 
     The named constructor the amount model calls, so no caller reaches for the
     class directly and the two pins are always supplied together.  Resolves
     nothing: every stage behind it is lazy, so a pass that prices no paycheck
-    issues no query.
+    issues no query -- and a DERIVED pricer derives no calendar either, so
+    that holds for a pass-less producer too.
 
     Args:
-        user_id: The owner whose profiles price these rows.
         scenario_id: The scenario to resolve profiles against.
+        paychecks: The pricer the rows' paychecks are read from; its owner is
+            the owner whose profiles price them.
 
     Returns:
         The unresolved :class:`SalaryPricing` handle.
     """
-    return SalaryPricing(user_id, scenario_id)
+    return SalaryPricing(scenario_id, paychecks)
 
 
 def salary_net_for(txn, pricing: SalaryPricing) -> Decimal | None:

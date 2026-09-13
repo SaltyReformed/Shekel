@@ -170,6 +170,7 @@ from ._amount_basis import (
     AmountBasis,
     amount_basis,
     baseline_amount_basis,
+    derived_amount_basis,
 )
 from ._amount_rule import (
     AmountRule,
@@ -256,6 +257,7 @@ __all__ = [
     "StatementCoverage",
     "amount_basis",
     "baseline_amount_basis",
+    "derived_amount_basis",
     "books_hold",
     "amount_rule",
     "definition_cash",

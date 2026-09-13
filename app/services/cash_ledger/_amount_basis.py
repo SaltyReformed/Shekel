@@ -7,7 +7,7 @@ it is the seam the package docstring's table already draws: what a row's amount
 IS is a question about the ROW and its rules, and it lives next door; what the
 owner's live producers ANSWER is a question about the OWNER and a SCENARIO, and
 that is this module.  Nothing here classifies a row, dispatches a rule or
-resolves a figure -- :class:`AmountBasis` is data and its two constructors
+resolves a figure -- :class:`AmountBasis` is data and its three constructors
 resolve nothing at all.
 
 **Shaving prose to stay under the cap was the alternative, and this project has
@@ -37,12 +37,12 @@ from typing import TYPE_CHECKING
 from ._loan_pricing import LoanPricing, loan_pricing
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    # Named for the annotation alone.  A runtime import would put the paycheck
-    # / tax stack on this module's load path, which is the cycle the one call
-    # site below defers to avoid (finding N-267).  The LOAN half needed the
+    # Named for the annotations alone.  A runtime import would put the paycheck
+    # / tax stack on this module's load path, which is the cycle the call
+    # sites below defer to avoid (finding N-267).  The LOAN half needed the
     # same deferral until plan step X-au-g-2a; its producer is a module of this
     # package now, so it is imported outright above.
-    from app.services.income_service import SalaryPricing
+    from app.services.income_service import PaycheckPricing, SalaryPricing
 
 @dataclass(frozen=True)
 class AmountBasis:
@@ -95,11 +95,14 @@ class AmountBasis:
     property the row-set producers had, kept rather than traded for the sharing.
 
     Attributes:
-        user_id: The owner these derivations are pinned to.
+        user_id: The owner these derivations are pinned to -- read off the
+            pricer the basis was built over since plan step salary:C12, so it
+            cannot name a different owner than the paychecks do.
         scenario_id: The scenario they resolve under.
-        salary: The owner-and-scenario salary derivation
+        salary: The scenario-and-pricer salary derivation
             (:class:`app.services.income_service.SalaryPricing`): what each
-            active profile pays, per template and period.
+            active profile pays, per template and period, read from the
+            pass's own pricer.
         loans: The pass's loan derivation
             (:class:`._loan_pricing.LoanPricing`): each destination loan's
             rate-period set, contractual payment day and escrow history,
@@ -116,13 +119,27 @@ class AmountBasis:
     loans: LoanPricing = field(compare=False, repr=False)
 
 
-def amount_basis(user_id, scenario_id) -> AmountBasis:
-    """Return the read pass's :class:`AmountBasis` for an owner and scenario.
+def amount_basis(paychecks: "PaycheckPricing", scenario_id) -> AmountBasis:
+    """Return the read pass's :class:`AmountBasis` over its pricer and scenario.
 
     Resolves NOTHING -- both derivations behind it are lazy -- so building one
     is free and a caller may build it before it knows whether any row will need
     it.  What it costs to ask is paid once per pass however many row sets ask,
     which is the point of plan step X-au-c2b's restructure.
+
+    **It takes the pass's PRICER rather than the owner's id, and that is plan
+    step salary:C12** (ledger row **P63**).  Built from ``(user_id,
+    scenario_id)`` alone, the salary derivation had nothing to read a paycheck
+    from and derived a SECOND pricer over a second calendar, so a render that
+    priced a salary row and read a payroll feed derived the owner's calendar
+    twice and priced the overlapping paydays twice.  The owner is read off the
+    pricer now, which is one fewer thing the two can disagree about.  Two
+    production callers hand a PASS's pricer: :meth:`app.services.balance_at
+    .BalanceContext.amounts`, which hands its own :meth:`~app.services
+    .balance_at.BalanceContext.paychecks`, and the carry-forward context,
+    which hands the same under the scenario it carries forward within; a
+    producer that holds NO pass builds one through :func:`derived_amount_basis`
+    below, whose name is what its census greps for.
 
     Calling the derivations per row is finding **N-228**: the paycheck engine
     runs ``paycheck_calculator.project_salary`` over the owner's whole
@@ -135,12 +152,13 @@ def amount_basis(user_id, scenario_id) -> AmountBasis:
     the per-row rules cheap; a read pass holds its own through
     :meth:`app.services.balance_at.BalanceContext.amounts`.
 
-    **It takes the OWNER's id rather than an ``Account``, and that is plan step
-    X-au-c2's re-keying.**  The only thing it ever read off the account was
-    ``account.user_id`` (the salary derivation scopes its profile lookup by
-    owner; the loan derivation scopes by scenario alone), so requiring the
-    object forced a CROSS-ACCOUNT reader -- the calendar, the spending report, a
-    dashboard -- to group its rows by account and pay for one basis per group.
+    **It took the OWNER's id rather than an ``Account`` from plan step
+    X-au-c2's re-keying until salary:C12 took the pricer.**  The only thing it
+    ever read off the account was ``account.user_id`` (the salary derivation
+    scopes its profile lookup by owner; the loan derivation scopes by scenario
+    alone), so requiring the object forced a CROSS-ACCOUNT reader -- the
+    calendar, the spending report, a dashboard -- to group its rows by account
+    and pay for one basis per group; the owner now arrives on the pricer.
 
     **The loan derivation takes NEITHER a clock nor a scenario**, and the
     second went at plan step X-au-g-2c-2 with the config map it scoped: a
@@ -161,8 +179,10 @@ def amount_basis(user_id, scenario_id) -> AmountBasis:
     left here for a pass-level clock to correct.
 
     Args:
-        user_id: The owner whose rows are being priced; scopes the salary
-            derivation's profile lookup and its pay-period set.
+        paychecks: The read pass's
+            :class:`~app.services.income_service.PaycheckPricing`.  Its owner
+            scopes the salary derivation's profile lookup, and its calendar
+            and memo are what a salary row's paycheck is read from.
         scenario_id: The scenario the amounts resolve under.
 
     Returns:
@@ -177,10 +197,45 @@ def amount_basis(user_id, scenario_id) -> AmountBasis:
     # pylint: disable=import-outside-toplevel
     from app.services import income_service
     return AmountBasis(
-        user_id=user_id,
+        user_id=paychecks.user_id,
         scenario_id=scenario_id,
-        salary=income_service.salary_pricing(user_id, scenario_id),
+        salary=income_service.salary_pricing(scenario_id, paychecks),
         loans=loan_pricing(),
+    )
+
+
+def derived_amount_basis(user_id: int, scenario_id: int) -> AmountBasis:
+    """Return an :class:`AmountBasis` for a producer that holds NO read pass.
+
+    **The interim that goes when every producer holds its pass, and its name
+    is that census.**  Twelve call sites reach here because no
+    :class:`~app.services.balance_at.BalanceContext` is in reach -- the two
+    settle doors, the row re-render helpers (two), the two template-conflict
+    choosers, the credit workflow, the spending report, the profile archive,
+    and the companion, reconcile and statement-match scopes through
+    :func:`baseline_amount_basis` -- and the pricer it is built over derives
+    the owner's calendar on the first paycheck priced
+    (:func:`~app.services.income_service.derived_paycheck_pricing`), which is
+    exactly what :func:`amount_basis` itself did for every caller until plan
+    step salary:C12.  So this costs what that cost and refuses what that
+    refused: a non-salary row derives nothing.  Their ledger row is minted
+    with C12-a's tick and names the owner that moves them; a caller holding a
+    pass reads ``ctx.amounts()`` instead, each site moved deletes one call
+    here, and this constructor goes with the last.
+
+    Args:
+        user_id: The owner whose rows are being priced.
+        scenario_id: The scenario the amounts resolve under.
+
+    Returns:
+        The unresolved :class:`AmountBasis` for that owner and scenario.
+    """
+    # Pylint: ``import-outside-toplevel`` -- deferred for the reason
+    # :func:`amount_basis` defers the same import (finding N-267).
+    # pylint: disable=import-outside-toplevel
+    from app.services import income_service
+    return amount_basis(
+        income_service.derived_paycheck_pricing(user_id), scenario_id,
     )
 
 
@@ -222,4 +277,4 @@ def baseline_amount_basis(user_id: int) -> AmountBasis:
     # to keep this module free of a service-layer import at load.
     # pylint: disable=import-outside-toplevel
     from app.services.scenario_resolver import require_baseline_scenario
-    return amount_basis(user_id, require_baseline_scenario(user_id).id)
+    return derived_amount_basis(user_id, require_baseline_scenario(user_id).id)

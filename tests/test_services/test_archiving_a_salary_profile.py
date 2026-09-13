@@ -48,7 +48,7 @@ from tests._test_helpers import (
 from app.services import salary_profile_service, template_amount_service
 from app.services.amount_ownership import state_own_amount
 from app.services.cash_ledger import (
-    amount_basis,
+    derived_amount_basis,
     amounts_by_id,
     contributions_by_id,
 )
@@ -186,7 +186,7 @@ class TestArchivingFreezesWhatItWasPricing:
                 for period in seed_periods[:4]
             ]
             db.session.commit()
-            basis = amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+            basis = derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id)
             before = amounts_by_id(rows, basis)
             before_total = sum(
                 contributions_by_id(rows, basis).values(),
@@ -197,7 +197,7 @@ class TestArchivingFreezesWhatItWasPricing:
 
             assert _archive(auth_client, profile).status_code == 200
 
-            after_basis = amount_basis(
+            after_basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
             assert sum(
@@ -289,7 +289,7 @@ class TestArchivingFreezesWhatItWasPricing:
             )
             db.session.flush()
             db.session.commit()
-            basis = amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+            basis = derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id)
             planned = amounts_by_id([settled], basis)[settled.id]
             recorded = sum(contributions_by_id([settled], basis).values())
 
@@ -307,7 +307,7 @@ class TestArchivingFreezesWhatItWasPricing:
             assert sum(
                 contributions_by_id(
                     [settled],
-                    amount_basis(
+                    derived_amount_basis(
                         seed_user["user"].id, seed_user["scenario"].id,
                     ),
                 ).values(),
@@ -507,7 +507,7 @@ class TestTheArchiveRouteFreezes:
                 for period in seed_periods[:3]
             ]
             db.session.commit()
-            basis = amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+            basis = derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id)
             before = amounts_by_id(rows, basis)
 
             response = auth_client.post(

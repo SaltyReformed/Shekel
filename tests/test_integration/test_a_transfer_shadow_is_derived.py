@@ -41,7 +41,7 @@ from app.models.transfer import Transfer
 from app.services import loan_ledger, transfer_service
 from app.services.amount_ownership import owns_its_amount
 from app.services.cash_ledger import (
-    amount_basis,
+    derived_amount_basis,
     amounts_by_id,
     pricing_load_options,
 )
@@ -774,7 +774,7 @@ class TestALoanPaymentsLegsReadTheLoan:
         with app.app_context():
             xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
             legs = _shadows(xfer.id)
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
 
@@ -859,7 +859,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
         with app.app_context():
             xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
             legs = _shadows(xfer.id)
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
             assert set(amounts_by_id(legs, basis).values()) == {
@@ -872,7 +872,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
             )
             db.session.commit()
 
-            fresh = amount_basis(
+            fresh = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
             shown = amounts_by_id(_shadows(xfer.id), fresh)
@@ -971,7 +971,7 @@ class TestTheAmountModelsOwnEagerLoad:
                 .all()
             )
             assert len(legs) >= 2
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
             # The LOAN resolve is a query and is not what this measures, so it
@@ -1012,7 +1012,7 @@ class TestTheAmountModelsOwnEagerLoad:
                 )
                 .all()
             )
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
             amounts_by_id(legs[:1], basis)

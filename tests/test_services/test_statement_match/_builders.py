@@ -34,7 +34,7 @@ from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.services.cash_ledger import amount_basis
+from app.services.cash_ledger import derived_amount_basis
 from app.services import statement_match
 from app.services.statement_match import (
     CreationBars,
@@ -915,7 +915,7 @@ def a_basis(seed_user):
     Returns:
         The :class:`~app.services.cash_ledger.AmountBasis` for that owner.
     """
-    return amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+    return derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id)
 
 
 def a_submission(

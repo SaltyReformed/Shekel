@@ -58,7 +58,7 @@ from app.services.amount_ownership import declare_derived, state_own_amount
 from app.services.cash_ledger import (
     AmountRule,
     DefinitionRow,
-    amount_basis,
+    derived_amount_basis,
     amount_rule,
     amounts_by_id,
     contribution_of,
@@ -120,7 +120,7 @@ def _basis_for(seed_user):
     to a row set, so there is one per test whatever it resolves.  Its two
     derivations are lazy, so building it here costs nothing until a rule asks.
     """
-    return amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+    return derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id)
 
 
 def _state_own_amount(row, figure):
@@ -1727,7 +1727,7 @@ class TestTheBasisIsOneDerivationPerReadPass:
         scenario_id = seed_user["scenario"].id
 
         def _price():
-            return amounts_by_id([row], amount_basis(user_id, scenario_id))
+            return amounts_by_id([row], derived_amount_basis(user_id, scenario_id))
 
         _answer, statements = capture_sql_statements(_price)
 
@@ -1870,7 +1870,7 @@ class TestTheBasisIsOneDerivationPerReadPass:
 
         assert ctx.amounts() is ctx.amounts()
         # And that it memoized the RIGHT one.  A defect passing the wrong ids
-        # -- ``amount_basis(self.user_id, self.user_id)``, or a hardcoded
+        # -- ``derived_amount_basis(self.user_id, self.user_id)``, or a hardcoded
         # baseline -- memoizes just as well, and on a single-user single-
         # scenario seed the two ids are often equal, so identity alone cannot
         # see it.  The pins are public fields precisely so this is assertable.
@@ -2008,7 +2008,7 @@ class TestThePinsAreTheContractNow:
             db.session, seed_user, seed_periods[0], "Haircut", "35.00",
         )
         db.session.flush()
-        foreign = amount_basis(
+        foreign = derived_amount_basis(
             seed_user["user"].id, seed_user["scenario"].id + 1,
         )
 
@@ -2025,7 +2025,7 @@ class TestThePinsAreTheContractNow:
         """
         txn = add_txn(db.session, seed_user, seed_periods[0], "Fuel", "60.00")
         db.session.flush()
-        foreign = amount_basis(
+        foreign = derived_amount_basis(
             seed_user["user"].id, seed_user["scenario"].id + 1,
         )
 

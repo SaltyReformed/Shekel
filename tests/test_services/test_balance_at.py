@@ -70,7 +70,6 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
-from app.services.income_service import paycheck_pricing
 from app.services.pay_calendar import DerivedPeriod, calendar_for
 from app.services.recurrence import (
     build_transient_rule,
@@ -110,9 +109,9 @@ from tests._test_helpers import (
     create_settled_transfer,
     current_pay_period,
     derived_span,
+    generate_row_of,
     insert_trueup_event,
     last_covered_day,
-    generate_row_of,
     loan_params_for,
     make_appreciating_account,
     make_every_period_rule,
@@ -120,6 +119,7 @@ from tests._test_helpers import (
     make_investment_account,
     make_salary_profile,
     posted_loan_balance_at,
+    pricing_over,
     reassert_balance_on,
     settle_instant_on,
 )
@@ -1101,7 +1101,7 @@ class TestBalanceMapInvestment:
                     # paycheck engine's per-payday answer, not the ORM rows
                     # and not a scalar gross.
                     feed=load_payroll_feeds(
-                        paycheck_pricing(calendar_for(user_id)), [inv.id],
+                        pricing_over(calendar_for(user_id)), [inv.id],
                         {inv.id: params},
                     )[inv.id],
                 ),
@@ -1139,7 +1139,7 @@ class TestBalanceMapInvestment:
                     # paycheck engine's per-payday answer, not the ORM rows
                     # and not a scalar gross.
                     feed=load_payroll_feeds(
-                        paycheck_pricing(calendar_for(user_id)), [inv.id],
+                        pricing_over(calendar_for(user_id)), [inv.id],
                         {inv.id: params},
                     )[inv.id],
                 ),
@@ -1422,7 +1422,7 @@ class TestBuildMaps:
             # plus one engine gross until plan step salary:R14-b.
             inv_ids = list(params.investment_params_map.keys())
             feeds = load_payroll_feeds(
-                paycheck_pricing(calendar_for(user_id)), inv_ids,
+                pricing_over(calendar_for(user_id)), inv_ids,
                 params.investment_params_map,
             )
             # Independent oracle for NON-loan accounts: the kernel dispatch the
@@ -1963,7 +1963,7 @@ class TestInvestmentContributions:
             # seam == kernel with the SAME manually-loaded feed.
             params = load_investment_params_for_accounts([inv]).get(inv.id)
             feeds_for_inv = load_payroll_feeds(
-                paycheck_pricing(calendar_for(user_id)), [inv.id],
+                pricing_over(calendar_for(user_id)), [inv.id],
                 {inv.id: params},
             )[inv.id]
             expected = net_worth_kernel.build_account_balance_map(
@@ -2045,7 +2045,7 @@ class TestInvestmentContributions:
                     # paycheck engine's per-payday answer, not the ORM rows
                     # and not a scalar gross.
                     feed=load_payroll_feeds(
-                        paycheck_pricing(calendar_for(user_id)),
+                        pricing_over(calendar_for(user_id)),
                         [inv_match.id],
                         {inv_match.id: params},
                     )[inv_match.id],

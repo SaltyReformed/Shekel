@@ -21,7 +21,7 @@ from flask_login import current_user
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.cash_ledger import (
-    amount_basis,
+    derived_amount_basis,
     amounts_by_id,
     recorded_amounts_by_id,
     resolve_transfer_amount,
@@ -135,7 +135,7 @@ def fragment_amounts(txn: Transaction) -> RenderAmounts:
     # builds one basis for everything it loaded, which is what findings N-228 /
     # N-268 / N-309 are about; this is the shape those findings do not cover
     # and the cost is one derivation rather than one per row.
-    basis = amount_basis(txn.account.user_id, txn.scenario_id)
+    basis = derived_amount_basis(txn.account.user_id, txn.scenario_id)
     return RenderAmounts(
         budgets=amounts_by_id([txn], basis),
         settled=recorded_amounts_by_id([txn]),
@@ -223,7 +223,7 @@ def transfer_budgets(xfer: Transfer) -> "dict[int, Decimal]":
     """
     return {
         xfer.id: resolve_transfer_amount(
-            xfer, amount_basis(xfer.user_id, xfer.scenario_id),
+            xfer, derived_amount_basis(xfer.user_id, xfer.scenario_id),
         ),
     }
 

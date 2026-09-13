@@ -247,7 +247,7 @@ class TestSeedFullUserData:
         assert isinstance(
             cash_ledger.resolve_transaction_amount(
                 data["transaction"],
-                cash_ledger.amount_basis(data["user"].id, data["scenario"].id),
+                cash_ledger.derived_amount_basis(data["user"].id, data["scenario"].id),
             ),
             Decimal,
         )
@@ -324,10 +324,10 @@ class TestSeedFullSecondUserData:
         assert a["template"].default_amount != b["template"].default_amount
         assert cash_ledger.resolve_transaction_amount(
             a["transaction"],
-            cash_ledger.amount_basis(a["user"].id, a["scenario"].id),
+            cash_ledger.derived_amount_basis(a["user"].id, a["scenario"].id),
         ) != cash_ledger.resolve_transaction_amount(
             b["transaction"],
-            cash_ledger.amount_basis(b["user"].id, b["scenario"].id),
+            cash_ledger.derived_amount_basis(b["user"].id, b["scenario"].id),
         )
         assert a["savings_goal"].target_amount != b["savings_goal"].target_amount
         assert (
@@ -436,7 +436,7 @@ class TestGenerateRowOf:
             row = generate_row_of(template, seed_periods[0])
             assert cash_ledger.resolve_transaction_amount(
                 row,
-                cash_ledger.amount_basis(
+                cash_ledger.derived_amount_basis(
                     seed_user["user"].id, seed_user["scenario"].id,
                 ),
             ) == Decimal("1234.56")

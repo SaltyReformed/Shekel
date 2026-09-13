@@ -674,7 +674,7 @@ class TestTheEngineRefusesAPaydayItsCalendarCannotPlace:
         # is imported here rather than at module scope so this file reads as a
         # test of the pay-calendar producers, with one case reaching across to
         # the refusal built on them.
-        from app.services.paycheck_calculator import (  # pylint: disable=import-outside-toplevel
+        from app.services.paycheck_calculator._calendar_questions import (  # pylint: disable=import-outside-toplevel
             _month_ordinal,
         )
 
@@ -685,7 +685,7 @@ class TestTheEngineRefusesAPaydayItsCalendarCannotPlace:
     def test_a_payday_of_this_calendar_is_placed(self):
         """The refusal above fires on the mismatch and not on every call."""
         # Pylint: ``import-outside-toplevel`` -- see above.
-        from app.services.paycheck_calculator import (  # pylint: disable=import-outside-toplevel
+        from app.services.paycheck_calculator._calendar_questions import (  # pylint: disable=import-outside-toplevel
             _month_ordinal,
         )
 

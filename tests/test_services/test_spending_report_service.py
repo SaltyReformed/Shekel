@@ -35,7 +35,7 @@ from app.services import (
 )
 from app.services.pay_calendar import PayCalendar
 from app.utils.dates import display_today
-from app.services.cash_ledger import amount_basis
+from app.services.cash_ledger import derived_amount_basis
 from app.services.row_valuation import settled_contribution
 from app.services.spending_report_service import (
     Comparison,
@@ -1220,7 +1220,7 @@ class TestDeltas:
             )
             surprises = _build_surprises(
                 rows,
-                amount_basis(
+                derived_amount_basis(
                     seed_user["user"].id, seed_user["scenario"].id,
                 ),
             )
@@ -1763,7 +1763,7 @@ class TestTheActualHalfAsksTheAmountModel:
                 "fall-through rather than the settlement arm"
             )
 
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
 
@@ -1807,7 +1807,7 @@ class TestTheActualHalfAsksTheAmountModel:
                 )
                 .one()
             )
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
 
@@ -1879,7 +1879,7 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
 
             surprises = _build_surprises(
                 [expense_leg],
-                amount_basis(seed_user["user"].id, seed_user["scenario"].id),
+                derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id),
             )
 
             assert len(surprises.rows) == 1, (
@@ -1999,7 +1999,7 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
 
             surprises = _build_surprises(
                 [txn],
-                amount_basis(seed_user["user"].id, seed_user["scenario"].id),
+                derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id),
             )
 
             assert len(surprises.rows) == 1

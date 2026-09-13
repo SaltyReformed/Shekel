@@ -247,10 +247,10 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             argument to omit -- and memoizes per profile AND per payday, so
             two consumers asking overlapping spans pay for the union.
 
-            **It does not close the first, and ledger row P63 is why.**
-            :class:`~app.services.income_service.SalaryPricing` still derives
-            a pricer of its own; that finding's argument is stated once, at
-            :class:`~app.services.income_service.PaycheckPricing`.
+            **It closed the first at plan step salary:C12** (ledger row
+            P63): :class:`~app.services.income_service.SalaryPricing` derived
+            a pricer of its own until :meth:`amounts` built the basis over
+            this one; the argument is at that class.
 
             **It exists because a paycheck is expensive and the seam asks for
             one per ACCOUNT.**  ``_contribution_inputs_for_account`` is the
@@ -686,8 +686,10 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
 
         **Nothing is resolved until something asks**, so a pass that reads no
         cash figure pays nothing for holding one: both derivations behind
-        :class:`~app.services.cash_ledger.AmountBasis` are lazy, and each
-        answers ``None`` from a row's own columns before it touches them.
+        :class:`~app.services.cash_ledger.AmountBasis` are lazy, each answers
+        ``None`` from a row's own columns before it touches them, and the
+        pricer this is built over (:meth:`paychecks`) derives the calendar
+        only when a paycheck is priced.
 
         **It pins no as-of, and since plan step X-au-g-2b there is nothing
         left for one to correct.**  The basis read ``date.today()`` for the
@@ -695,16 +697,14 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         and the remedy was expected to be plan step **X-i2**, handing every
         memoized loader this pass's clock.  Ruling **R-IJ** closed it a tier
         DOWN instead: a loan's contractual terms resolve on the installment
-        they govern, so the derivation takes no date at all and
-        ``cash_ledger`` makes no clock call anywhere
-        (``test_amount_source.TestTheAmountModelReadsNoClock``).  X-i2 keeps
-        every other loader; this derivation is no longer among its subjects.
+        they govern, so the derivation takes no date at all and ``cash_ledger``
+        makes no clock call anywhere (``test_amount_source
+        .TestTheAmountModelReadsNoClock``).  X-i2 keeps every other loader.
 
         **The derivation is imported outright**, so like :meth:`calendar` beside
-        it this memo is filled here rather than by the seam:
-        ``cash_ledger`` is a leaf BELOW the seam (it imports no ``balance_at``
-        module at all -- its own docstring states the arrow), so filling it here
-        opens no cycle.
+        it this memo is filled here rather than by the seam: ``cash_ledger`` is
+        a leaf BELOW the seam (it imports no ``balance_at`` module at all --
+        its own docstring states the arrow), so filling it here opens no cycle.
 
         Returns:
             The pass's :class:`~app.services.cash_ledger.AmountBasis`.
@@ -717,23 +717,22 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         """
         scenario_id = self.scenario_id
         if scenario_id not in self._amount_bases:
-            # **The basis is NOT handed this pass's pricer, and ledger row
-            # P63 is why** -- the argument is at ``income_service
-            # .PaycheckPricing``; this is the line that does it.
+            # Built OVER this pass's pricer (plan step salary:C12, ledger row
+            # P63): the amount model reads the paychecks every other producer
+            # under this pass reads, rather than deriving a second set.
             self._amount_bases[scenario_id] = amount_basis(
-                self.user_id, scenario_id,
+                self.paychecks(), scenario_id,
             )
         return self._amount_bases[scenario_id]
 
     def paychecks(self) -> PaycheckPricing:
         """Return the pass's paycheck pricer, building it once.
 
-        **The pass's source of a paycheck** (plan step **salary:S3-d**): the
-        payroll feeds take it
-        (:func:`~app.services.projection_inputs.load_payroll_feeds`) and so do
-        the two salary route renders.  The amount model does NOT -- it derives
-        its own, which is ledger row **P63** and is stated at the field above
-        and at :meth:`amounts`.
+        **The pass's ONE source of a paycheck** (plan step **salary:S3-d**;
+        the amount model's too since **salary:C12**): the payroll feeds take
+        it (:func:`~app.services.projection_inputs.load_payroll_feeds`), so do
+        the salary route renders, and :meth:`amounts` builds the basis over
+        it -- it derived its own until C12, ledger row **P63**.
 
         **Nothing is resolved until something asks.**  The pricer holds no
         profile and issues no query until a caller names one, so a pass that
@@ -746,19 +745,20 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         reads -- the balance seam's saved window, or a 40-year chart's axis
         -- one at a time, since plan step salary:S3-e-2 (ruling
         **R-SAL15**).  :meth:`~app.services.income_service.SalaryPricing
-        .net_for` prices the ONE period a row names, and reads its own pricer
-        rather than this one (ledger row **P63**).
+        .net_for` prices the ONE period a row names, through this pricer
+        (it read its own until plan step salary:C12, ledger row **P63**).
 
-        It is keyed by ``user_id`` for the reason :meth:`calendar` is, and it
-        is built over that same memoized calendar so a pass cannot hold
-        paydays from one derivation and paychecks priced against another.
+        Keyed by ``user_id`` for the reason :meth:`calendar` is, and built
+        over that same memo -- handed the METHOD, so the calendar is derived
+        on the first paycheck priced, not here (plan step salary:C12) -- so a
+        pass cannot hold one derivation's paydays and another's paychecks.
 
         Returns:
             The pass's :class:`~app.services.income_service.PaycheckPricing`.
         """
         if self.user_id not in self._paycheck_pricing:
             self._paycheck_pricing[self.user_id] = paycheck_pricing(
-                self.calendar(),
+                self.user_id, self.calendar,
             )
         return self._paycheck_pricing[self.user_id]
 

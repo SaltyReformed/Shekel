@@ -37,7 +37,7 @@ from app.services import (
     status_seam,
     transfer_service,
 )
-from app.services.cash_ledger import amount_basis
+from app.services.cash_ledger import derived_amount_basis
 from app.services.pay_calendar import (
     PayCalendar,
     calendar_for,
@@ -1238,7 +1238,7 @@ class TestTheTransactionArm:
                 # (plan step X-au-j).  Built here rather than defaulted inside
                 # the arm: the parameter is required precisely so a producer
                 # cannot quietly rebuild its caller's derivations.
-                amount_basis(owner_id, seed_user["scenario"].id),
+                derived_amount_basis(owner_id, seed_user["scenario"].id),
             )
 
     def test_a_settled_row_is_neither_offered_nor_re_settled(

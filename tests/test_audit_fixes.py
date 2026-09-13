@@ -28,7 +28,7 @@ from app.services.auth_service import hash_password
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services import account_service
-from app.services.cash_ledger import amount_basis, resolve_transfer_amount
+from app.services.cash_ledger import derived_amount_basis, resolve_transfer_amount
 from app.services.row_valuation import settled_contribution
 from app.models.amount_ownership import AmountOwnership
 
@@ -201,7 +201,7 @@ class TestEffectiveAmountDecimal:
         db.session.add(xfer)
         db.session.flush()
 
-        basis = amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+        basis = derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id)
         assert isinstance(resolve_transfer_amount(xfer, basis), Decimal)
         assert resolve_transfer_amount(xfer, basis) == Decimal("200.00")
 
@@ -223,7 +223,7 @@ class TestEffectiveAmountDecimal:
         db.session.add(xfer)
         db.session.flush()
 
-        basis = amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+        basis = derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id)
         assert isinstance(resolve_transfer_amount(xfer, basis), Decimal)
         assert resolve_transfer_amount(xfer, basis) == Decimal("200.00")
 

@@ -41,7 +41,6 @@ from app.services.investment_projection import (
     build_contribution_timeline,
     calculate_investment_inputs,
 )
-from app.services.income_service import paycheck_pricing
 from app.services.pay_calendar import calendar_for
 from app.services.salary_raises import RaiseTerms, terms_of
 from app.services.projection_inputs import (
@@ -58,6 +57,7 @@ from app.services.projection_inputs import (
 from tests._test_helpers import (
     an_entered_day,
     basis_for,
+    pricing_over,
     settlement_columns,
     shadow_amount,
 )
@@ -486,7 +486,7 @@ class TestLoadPayrollFeeds:
             ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
-            pricing = paycheck_pricing(calendar)
+            pricing = pricing_over(calendar)
             feeds = load_payroll_feeds(
                 pricing,
                 [ids["acct_a_id"], ids["acct_b_id"]], {},
@@ -532,7 +532,7 @@ class TestLoadPayrollFeeds:
             db.session.commit()
 
             calendar = calendar_for(ids["user_id"])
-            pricing = paycheck_pricing(calendar)
+            pricing = pricing_over(calendar)
             feed = load_payroll_feeds(
                 pricing, [ids["acct_a_id"]], {},
             )[ids["acct_a_id"]]
@@ -576,7 +576,7 @@ class TestLoadPayrollFeeds:
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
             feed = load_payroll_feeds(
-                paycheck_pricing(calendar), [ids["acct_a_id"]],
+                pricing_over(calendar), [ids["acct_a_id"]],
                 {ids["acct_a_id"]: params},
             )[ids["acct_a_id"]]
             projected = self._projected(calendar, 10)
@@ -619,7 +619,7 @@ class TestLoadPayrollFeeds:
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
             feed = load_payroll_feeds(
-                paycheck_pricing(calendar), [ids["acct_b_id"]], {},
+                pricing_over(calendar), [ids["acct_b_id"]], {},
             )[ids["acct_b_id"]]
             far = calendar.horizon() + timedelta(days=365 * 2)
             axis = calendar.projection_axis(calendar.opening_bound(), far)
@@ -683,7 +683,7 @@ class TestLoadPayrollFeeds:
             ))
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
-            pricing = paycheck_pricing(calendar)
+            pricing = pricing_over(calendar)
             feed = load_payroll_feeds(
                 pricing, [ids["acct_a_id"]], {ids["acct_a_id"]: params},
             )[ids["acct_a_id"]]
@@ -732,7 +732,7 @@ class TestLoadPayrollFeeds:
             ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
-            pricing = paycheck_pricing(calendar)
+            pricing = pricing_over(calendar)
             feed = load_payroll_feeds(
                 pricing, [ids["acct_a_id"]], {},
             )[ids["acct_a_id"]]
@@ -764,7 +764,7 @@ class TestLoadPayrollFeeds:
             db.session.commit()
 
             calendar = calendar_for(ids["user_id"])
-            pricing = paycheck_pricing(calendar)
+            pricing = pricing_over(calendar)
             feeds = load_payroll_feeds(
                 pricing,
                 [ids["acct_a_id"], ids["acct_b_id"]],
@@ -781,7 +781,7 @@ class TestLoadPayrollFeeds:
             # same memo back would share the producer under test.
             expected = {
                 breakdown.period.payday: breakdown.earnings.gross_biweekly
-                for breakdown in paycheck_pricing(calendar).for_profile(
+                for breakdown in pricing_over(calendar).for_profile(
                     profile,
                 ).over(calendar.saved())
             }[first.start_date]
@@ -816,7 +816,7 @@ class TestLoadPayrollFeeds:
             db.session.commit()
 
             calendar = calendar_for(ids["user_id"])
-            pricing = paycheck_pricing(calendar)
+            pricing = pricing_over(calendar)
             feed = load_payroll_feeds(
                 pricing, [ids["acct_a_id"]],
                 {ids["acct_a_id"]: params},
@@ -848,7 +848,7 @@ class TestLoadPayrollFeeds:
             db.session.commit()
 
             calendar = calendar_for(ids["user_id"])
-            pricing = paycheck_pricing(calendar)
+            pricing = pricing_over(calendar)
             feed = load_payroll_feeds(
                 pricing, [ids["acct_a_id"]],
                 {ids["acct_a_id"]: params},
@@ -868,7 +868,7 @@ class TestLoadPayrollFeeds:
             ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
-            pricing = paycheck_pricing(calendar)
+            pricing = pricing_over(calendar)
             feeds = load_payroll_feeds(
                 pricing,
                 [ids["acct_a_id"], ids["other_acct_id"]], {},
@@ -888,7 +888,7 @@ class TestLoadPayrollFeeds:
         construction and the answer are counted, and there are none.
         """
         with app.app_context():
-            pricing = paycheck_pricing(calendar_for(seed_user["user"].id))
+            pricing = pricing_over(calendar_for(seed_user["user"].id))
             statements = []
 
             def _count(*args):  # pylint: disable=unused-argument
@@ -1463,7 +1463,7 @@ class TestTheFeedIsBuiltOverTheWiring:
                 app, db, seed_user, seed_second_user,
             )
             calendar = calendar_for(ids["user_id"])
-            pricing = paycheck_pricing(calendar)
+            pricing = pricing_over(calendar)
             account_ids = [ids["acct_a_id"], ids["acct_b_id"]]
 
             composed = load_payroll_feeds(
@@ -1510,7 +1510,7 @@ class TestTheFeedIsBuiltOverTheWiring:
                 app, db, seed_user, seed_second_user,
             )
             calendar = calendar_for(ids["user_id"])
-            pricing = paycheck_pricing(calendar)
+            pricing = pricing_over(calendar)
             wiring = load_payroll_wiring(
                 ids["user_id"], [ids["acct_a_id"]], params_by_account,
             )
@@ -1577,7 +1577,7 @@ class TestTheFeedIsBuiltOverTheWiring:
             )
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
-            pricing = paycheck_pricing(calendar)
+            pricing = pricing_over(calendar)
             wiring = load_payroll_wiring(
                 ids["user_id"], [ids["acct_a_id"], ids["acct_b_id"]],
                 params_by_account,

@@ -53,7 +53,7 @@ from app.routes._amount_version_actions import (
     withdraw_amount_version,
 )
 from app.services.balance_at import BalanceContext
-from app.services.cash_ledger import amount_basis, resolve_transfer_amount
+from app.services.cash_ledger import derived_amount_basis, resolve_transfer_amount
 from app.routes._recurrence_conflict_chooser import (
     PreEditTemplateState,
     RecurrenceConflictKind,
@@ -429,7 +429,7 @@ _TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
     # conflicted loan payments resolve their loan N times, bounded by the
     # conflicted set and free for every other kind (the basis is lazy).
     resolve_amount=lambda row: resolve_transfer_amount(
-        row, amount_basis(row.user_id, row.scenario_id),
+        row, derived_amount_basis(row.user_id, row.scenario_id),
     ),
     regenerate_fn=transfer_recurrence.regenerate_for_template,
     resolve_fn=transfer_recurrence.resolve_conflicts,

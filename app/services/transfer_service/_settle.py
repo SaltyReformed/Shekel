@@ -72,7 +72,7 @@ from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
     AmountBasis,
-    amount_basis,
+    derived_amount_basis,
     resolve_transaction_amount,
 )
 from app.services.row_valuation import fixed_contribution
@@ -364,7 +364,9 @@ def settle(
     # X-f2-c3 -- by the arm's correction predicate, by the dispatch's own
     # predicate, and by its fallback -- and each asking is a ``Transfer`` query
     # plus, for a derive-mode payment, a loan-basis resolve and an escrow load.
-    basis = amount_basis(rows.expense.account.user_id, rows.expense.scenario_id)
+    basis = derived_amount_basis(
+        rows.expense.account.user_id, rows.expense.scenario_id,
+    )
     resolved = _resolved_figure(rows.expense, basis)
     # A RETAINED correction outranks the derivation, through the same published
     # rule :func:`settle_amount` offers from, so the pair's offer and its
