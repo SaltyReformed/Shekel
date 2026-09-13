@@ -257,7 +257,8 @@ def generate():
             first_payday=data["start_date"],
             num_periods=data["num_periods"],
             rhythm=pay_rhythm.Rhythm(
-                cadence_days=data["cadence_days"], shift=data["shift"],
+                cadence=pay_rhythm.FixedDays(data["cadence_days"]),
+                shift=data["shift"],
             ),
         )
         # POPULATE, like every other door that creates a pay period (ruling
@@ -442,7 +443,8 @@ def regenerate():
         new_periods = pay_period_admin.regenerate_pay_periods(
             current_user.id, data["new_start_date"], data["num_periods"],
             pay_rhythm.Rhythm(
-                cadence_days=data["cadence_days"], shift=data["shift"],
+                cadence=pay_rhythm.FixedDays(data["cadence_days"]),
+                shift=data["shift"],
             ),
             confirm_discard=data["confirm_discard"],
         )
@@ -523,7 +525,8 @@ def reset():
         new_periods = pay_period_admin.reset_pay_periods(
             current_user.id, data["new_start_date"], data["num_periods"],
             pay_rhythm.Rhythm(
-                cadence_days=data["cadence_days"], shift=data["shift"],
+                cadence=pay_rhythm.FixedDays(data["cadence_days"]),
+                shift=data["shift"],
             ),
         )
         # LAST, after the wipe, the rebuild and both posting re-syncs -- see

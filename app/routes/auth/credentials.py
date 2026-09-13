@@ -240,7 +240,7 @@ def register():
             display_name=register_data["display_name"],
             first_payday=register_data["last_payday"],
             rhythm=pay_rhythm.Rhythm(
-                cadence_days=register_data["cadence_days"],
+                cadence=pay_rhythm.FixedDays(register_data["cadence_days"]),
                 shift=register_data["shift"],
             ),
             num_periods=register_data["num_periods"],

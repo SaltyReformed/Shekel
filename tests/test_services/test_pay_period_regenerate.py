@@ -42,6 +42,7 @@ from app.services import (
     pay_period_write,
     pay_schedule_service,
 )
+from app.services.pay_rhythm import FixedDays
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
@@ -265,7 +266,7 @@ class TestRegenerateHappyPath:
                           )
             db.session.commit()
 
-            assert pay_schedule_service.resolve_cadence(user_id) == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(7)
             assert (
                 last_covered_day(new_periods[0]) - new_periods[0].start_date
             ).days + 1 == 7

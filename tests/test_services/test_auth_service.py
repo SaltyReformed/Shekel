@@ -37,6 +37,7 @@ from app.services import (
     tax_seed_data,
 )
 from app.exceptions import AuthError, ConflictError, ValidationError
+from app.services.pay_rhythm import FixedDays
 from app.utils.dates import display_today
 from tests._test_helpers import (
     all_periods,
@@ -774,7 +775,7 @@ class TestRegistrationBuildsARealPayCalendar:
 
             schedule = pay_schedule_service.get_schedule(user.id)
             assert schedule is not None
-            assert pay_schedule_service.resolve_cadence(user.id) == 7
+            assert pay_schedule_service.resolve_cadence(user.id) == FixedDays(7)
             periods = all_periods(user.id)
             assert all(
                 last_covered_day(p) == p.start_date + timedelta(days=6) for p in periods

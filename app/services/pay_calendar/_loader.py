@@ -333,7 +333,7 @@ def cadence_for(user_id: int) -> PayCadence:
     **Through :func:`schedule_for` rather than
     ``pay_schedule_service.resolve_cadence``, since plan step C4-d**, and it
     costs the same one query: that function IS ``resolve_schedule`` plus a
-    ``.rhythm.cadence_days``, and ``resolve_schedule`` is the one read.  What changed
+    ``.rhythm.cadence``, and ``resolve_schedule`` is the one read.  What changed
     is that the refusal for a row-less owner is written once, here and for
     :func:`calendar_for`, instead of once per door with two messages to keep in
     step.  ``resolve_cadence`` survives for the callers that want the SOFT
@@ -379,6 +379,4 @@ def cadence_for(user_id: int) -> PayCadence:
             :func:`~._derive.validate_cadence` can no longer refuse what this
             resolves.
     """
-    return PayCadence(
-        cadence_days=schedule_for(user_id).rhythm.cadence_days,
-    )
+    return PayCadence(schedule_for(user_id).rhythm.cadence)

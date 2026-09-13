@@ -230,12 +230,12 @@ def _reject_impossible_first_payday(
     # under ``none`` this is ``today - cadence + 1``.
     covering = business_days.earliest_nominal_paid_after(
         today, rhythm.shift,
-    ) - timedelta(days=rhythm.cadence_days)
+    ) - timedelta(days=rhythm.cadence.days)
     if first_payday < covering:
         closes = pay_calendar.projected_payday(first_payday, rhythm, 1)
         raise ValidationError(
             f"The paycheck starting {opens.isoformat()} has already "
-            f"ended: paid every {rhythm.cadence_days} days, it covered "
+            f"ended: paid every {rhythm.cadence.days} days, it covered "
             f"through {(closes - timedelta(days=1)).isoformat()}."
             f"  Enter the payday whose paycheck covers today -- "
             f"{covering.isoformat()} or later."
@@ -405,7 +405,7 @@ def register_user(spec: RegistrationSpec):
     # module's own question about the day.  Asking them late would let a bad
     # cadence or a zero horizon refuse several statements after the ``User``
     # row exists, under a message about accounts rather than about the input.
-    pay_schedule_service.reject_out_of_range_cadence(spec.rhythm.cadence_days)
+    pay_schedule_service.reject_out_of_range_cadence(spec.rhythm.cadence)
     # The rhythm is refused as a PAIR before the ``User`` row exists.
     # ``record_paydays`` re-asks it as the writer's own rule; asking here is
     # what keeps this block the whole of registration's refusals, exactly as

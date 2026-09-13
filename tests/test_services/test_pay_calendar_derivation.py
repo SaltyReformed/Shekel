@@ -60,14 +60,16 @@ from types import SimpleNamespace
 import pytest
 
 from app.enums import BusinessDayShiftEnum
-from app.services import pay_period_write
+from app.services import pay_period_write, pay_rhythm
 from app.services.pay_calendar import (
     MAX_CADENCE_DAYS,
     DerivedPeriod,
     PayCalendar,
     PayCalendarError,
     PeriodWindow,
+    cadence_steps_to,
     derive_periods,
+    nominal_payday,
     payday_after,
     projected_payday,
     schedule_for,
@@ -302,6 +304,13 @@ class TestTheCadenceIsRequired:
         ``validate_cadence``'s since plan step C4-d -- ``None`` is one more
         wrong TYPE beside ``bool`` and ``float`` rather than a state with a
         refusal of its own.
+
+        **Since plan step ``C17-d-1`` this ``None`` is a fixed-days cadence's
+        DAY COUNT** -- ``era_of(_OPENING, None)`` builds
+        ``Rhythm(cadence=FixedDays(None))`` -- and so are the two cases below
+        it.  A bare ``None`` where the cadence VALUE should be is the other
+        shape of absence, refused by a branch of its own, and
+        :class:`TestTheCadenceIsAValueOfAKnownKind` grades that one.
         """
         with pytest.raises(PayCalendarError, match="must be a plain int") as excinfo:
             derive_periods([(1, date(2026, 1, 2))], (era_of(_OPENING, None),))
@@ -342,6 +351,71 @@ class TestTheCadenceIsRequired:
                 [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))],
                 (era_of(_OPENING, None),),
             )
+
+
+class TestTheCadenceIsAValueOfAKnownKind:
+    """Plan step ``C17-d-1``: the cadence is a value whose KIND is its type.
+
+    ``Rhythm.cadence`` was a bare ``int`` until this leaf; it is a value of one
+    of the kinds ``pay_rhythm`` declares now, and the grid dispatches its
+    arithmetic on the value's type through ONE table (``_grid._ARITHMETIC``)
+    whose keys are ``_grid.KINDS``.  Two refusals guard the seam and each is
+    graded here, because an adversarial review of the leaf found both
+    written and neither exercised: ``validate_cadence`` refuses a value of no
+    known kind where a calendar is built (the package's error), and the grid
+    itself refuses one with Python's own ``TypeError`` for a caller that
+    reached it without building a calendar.
+    """
+
+    @pytest.mark.parametrize(
+        "cadence", [None, 14, "14", 14.0, (14,)],
+        ids=["None", "bare-int", "str", "float", "tuple"],
+    )
+    def test_a_cadence_of_no_known_kind_is_refused_where_a_calendar_is_built(self, cadence):
+        """A bare ``None`` -- and the OLD ``int`` spelling -- are of no kind.
+
+        The old spelling is the case that matters: a caller still handing the
+        grid a day count where a value is expected must be refused loudly,
+        not answered by whatever ``int`` arithmetic happens to do.
+        """
+        era = pay_rhythm.Era(
+            effective_from=_OPENING,
+            rhythm=pay_rhythm.Rhythm(cadence=cadence, shift=BusinessDayShiftEnum.NONE),
+        )
+        with pytest.raises(
+            PayCalendarError, match="a cadence must be a value of one of the kinds",
+        ) as excinfo:
+            derive_periods([(1, date(2026, 1, 2))], (era,))
+        # The message NAMES what it refused, as the plain-int refusal does.
+        assert type(cadence).__name__ in str(excinfo.value)
+
+    def test_the_kind_set_is_the_grids_own_table(self):
+        """``validate_cadence`` gates on the grid's keys, so the set has ONE spelling.
+
+        Every kind the grid can project is accepted here and nothing else is;
+        at this leaf that set is exactly ``{FixedDays}``.  A kind added to
+        the table at ``C17-d-2`` is accepted by this gate with nothing written
+        in it, which is the point of reading the table rather than restating
+        it.
+        """
+        from app.services.pay_calendar import _grid  # pylint: disable=import-outside-toplevel
+
+        assert _grid.KINDS == frozenset({pay_rhythm.FixedDays})
+        assert derive_periods([], (era_of(_OPENING, 14),)) == ()
+
+    @pytest.mark.parametrize("cadence", [None, 14, "14"], ids=["None", "bare-int", "str"])
+    def test_the_grid_itself_refuses_a_cadence_of_no_known_kind(self, cadence):
+        """Reached without a calendar, the grid refuses with ``TypeError``.
+
+        The grid cannot raise the package's error (it sits below the module
+        that declares it), so the wrong-argument-type contract Python already
+        has is the one it keeps; every path that builds a calendar meets
+        ``validate_cadence`` first and never reaches this.
+        """
+        with pytest.raises(TypeError, match="no pay grid arithmetic"):
+            nominal_payday(_OPENING, cadence, 1)
+        with pytest.raises(TypeError, match="no pay grid arithmetic"):
+            cadence_steps_to(_OPENING, cadence, _OPENING + timedelta(days=20))
 
     def test_a_duplicate_payday_is_still_refused_beside_a_GOOD_cadence(self):
         """The payday-set grading survived the reorder, which is what could break.
@@ -388,7 +462,7 @@ class TestTheCadenceIsRequired:
         )
         day = date(2026, 1, 2)
 
-        assert calendar.cadence.cadence_days == 14
+        assert calendar.cadence.cadence.days == 14
         assert calendar.periods == ()
         assert calendar.opening_bound() is None
         assert calendar.horizon() is None

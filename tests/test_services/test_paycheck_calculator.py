@@ -16,6 +16,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import pytest
 
 from app.services.exceptions import InvalidGrossPayError
+from app.services.pay_rhythm import FixedDays
 from app.services.tax_calculator import calculate_fica
 from app.models.salary_raise import SalaryRaise
 from app.services.paycheck_calculator import (
@@ -2549,7 +2550,7 @@ class TestNegativeAndBoundaryPaths:
         )
 
         with pytest.raises(PayCalendarError):
-            PayCadence(cadence_days=0)
+            PayCadence(FixedDays(0))
 
     def test_a_biweekly_cadence_prices_the_known_paycheck(
         self, simple_tax_configs
@@ -4370,7 +4371,7 @@ class TestGrossPerPaycheck:
         """
         expected = (Decimal("78000") / Decimal(count)).quantize(TWO_PLACES)
         assert gross_per_paycheck(
-            Decimal("78000"), PayCadence(cadence_days).periods_per_year,
+            Decimal("78000"), PayCadence(FixedDays(cadence_days)).periods_per_year,
         ) == expected
 
 

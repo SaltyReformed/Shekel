@@ -33,6 +33,7 @@ from app.enums import (
     RecurrenceUnitEnum,
 )
 from app.services.pay_calendar import PayCadence
+from app.services.pay_rhythm import FixedDays
 from app.services.recurrence import (
     AuthorableCadence,
     Cadence,
@@ -56,13 +57,13 @@ from app.services.recurrence._frequency import (
 )
 
 #: 14 days between paydays, 26 a year.
-_BIWEEKLY = PayCadence(cadence_days=14)
+_BIWEEKLY = PayCadence(FixedDays(14))
 
 #: 7 days between paydays, 52 a year.
-_WEEKLY = PayCadence(cadence_days=7)
+_WEEKLY = PayCadence(FixedDays(7))
 
 #: 30 days between paydays, 12 a year -- a paycheck IS a month.
-_MONTHLY_PAID = PayCadence(cadence_days=30)
+_MONTHLY_PAID = PayCadence(FixedDays(30))
 
 
 class TestUnitsPerYearIsExact:
@@ -97,7 +98,7 @@ class TestUnitsPerYearIsExact:
         assert Cadence(
             interval_n=1, unit=RecurrenceUnitEnum.WEEK,
         ).units_per_year(_BIWEEKLY) == PayCadence(
-            cadence_days=7,
+            FixedDays(7),
         ).periods_per_year
 
     def test_the_period_unit_is_the_OWNER_S_count(self):

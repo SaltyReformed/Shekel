@@ -24,6 +24,7 @@ import pytest
 from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum
 from app.services.pay_calendar import PayCadence
+from app.services.pay_rhythm import FixedDays
 from app.services.savings_goal_service import (
     calculate_required_contribution,
     GoalTargetSpec,
@@ -36,11 +37,11 @@ from app.services.savings_goal_service import (
 
 #: 14 days between paydays, 26 a year -- the cadence every figure in this file
 #: was hand-computed at, and the value the retired constant assumed for all.
-_BIWEEKLY = PayCadence(cadence_days=14)
+_BIWEEKLY = PayCadence(FixedDays(14))
 
 #: 7 days between paydays, 52 a year.  Chosen for the counterexamples because
 #: every figure it produces is exactly double the biweekly one.
-_WEEKLY = PayCadence(cadence_days=7)
+_WEEKLY = PayCadence(FixedDays(7))
 
 
 # ── TestCalculateRequiredContribution ────────────────────────────

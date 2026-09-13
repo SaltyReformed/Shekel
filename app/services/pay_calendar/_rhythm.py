@@ -497,7 +497,7 @@ def _backdated_paydays(
         return ()
     era = calendar.eras[era_index_at(calendar.eras, upper)]
     anchor, rhythm = era.effective_from, era.rhythm
-    cadence = rhythm.cadence_days
+    cadence = rhythm.cadence
     # The GRID indices whose PAYDAY can fall in ``[lower, upper]``, counted
     # from the era's phase.  ONE extra step above and none below: a
     # displacement is shorter than a cadence, so only the first grid day past

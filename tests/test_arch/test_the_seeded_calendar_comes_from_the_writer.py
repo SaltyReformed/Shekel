@@ -103,7 +103,7 @@ class TestEverySeededOwnerHasARecordedCadence:
         )
         assert pay_schedule_service.ScheduleFacts.of(
             schedule,
-        ).rhythm.cadence_days == SEED_USER_CADENCE_DAYS
+        ).rhythm.cadence.days == SEED_USER_CADENCE_DAYS
 
     def test_the_cadence_is_READ_rather_than_inferred(
         self, app, db, seed_user,  # pylint: disable=unused-argument
@@ -117,7 +117,7 @@ class TestEverySeededOwnerHasARecordedCadence:
         assert pay_schedule_service.get_schedule(seed_user["user"].id) is not None
         assert pay_schedule_service.resolve_schedule(
             seed_user["user"].id,
-        ).rhythm.cadence_days == SEED_USER_CADENCE_DAYS
+        ).rhythm.cadence.days == SEED_USER_CADENCE_DAYS
 
     @pytest.mark.parametrize("periods_fixture", [
         "seed_periods", "seed_periods_today", "seed_periods_52",

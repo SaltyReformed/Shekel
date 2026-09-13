@@ -40,6 +40,7 @@ from app.services import (
     retirement_plan,
     retirement_projection,
 )
+from app.services.pay_rhythm import FixedDays
 from app.services.retirement_plan import load_retirement_inputs, picture_at
 from app.services.salary_raises import terms_of
 from tests._test_helpers import (
@@ -220,7 +221,7 @@ def _gap_inputs(profile, cadence_days=14):
         settings=None,
         pensions=[],
         salary_profiles=[profile],
-        pay_cadence=PayCadence(cadence_days=cadence_days),
+        pay_cadence=PayCadence(FixedDays(cadence_days)),
     )
 
 

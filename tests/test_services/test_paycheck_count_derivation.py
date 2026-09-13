@@ -33,6 +33,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
+from app.services.pay_rhythm import FixedDays
 from app.services.registration_service import _seed_tax_data_for_user
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._inputs import _contribution_inputs_for_accounts
@@ -193,7 +194,7 @@ class TestTheCountIsTheSchedule:
         the two being the same number is what makes a year's paychecks add up
         to a year's salary.  It was two independently writable columns.
         """
-        assert PayCadence(cadence_days=cadence_days).periods_per_year == expected
+        assert PayCadence(FixedDays(cadence_days)).periods_per_year == expected
 
     @pytest.mark.parametrize("cadence_days,count", _CADENCES)
     def test_a_years_paychecks_sum_to_a_years_salary(

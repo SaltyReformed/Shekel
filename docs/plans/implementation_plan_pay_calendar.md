@@ -2,12 +2,12 @@
 
 ## Where this stands
 
-**JUST LANDED: `C17-c-2b` (`36c6b6af`)**, MOVED MONEY (`$0.00` on production): extend and the
-rolling top-up MATERIALISE the plan through a continuing writer entry that mints and retires
-nothing, and the seam between two eras is drawn where the door that minted the later one drew it
-(**R-PC75**). `C17-c-2` and `C17-c` ticked with it (**PC-509**, **N-494** closed).
-**NEXT: `C17-d`**, the day-of-month cadence KIND (**R-PC68**); `steps.md` carries the order, and
-`C17-e` (**R-PC77**) follows it there.
+**JUST LANDED: `C17-d-1` (`7a6bbaf5`)**, `$0.00`: the cadence is a VALUE OF ITS OWN KIND and the
+kind is its type (`pay_rhythm.FixedDays`, `Rhythm.cadence`, `Era` without `kind`), after
+**R-PC79**-**R-PC81** ruled `C17-d`'s forks 2026-09-13: two owner-chosen days of the month, absence
+as the discriminator, three leaves. **NEXT: `C17-d-2`**, the `Monthly` and `SemiMonthly` kinds with
+their migration (MOVES MONEY for such an owner, `$0.00` on production; `recurrence:R13` ticks with
+it); `steps.md` carries the order, and `C17-d-3` and `C17-e` (**R-PC77**) follow it there.
 
 **BUILT AND TICKED**: `C1`; `C2` whole, which is one step under three names (`balance:X-l`,
 `recurrence:R-F12`), ticked at `C2-f3e`; `C3`; `C4` whole; `C10` and `C11`, which came out of
@@ -125,8 +125,11 @@ budget.pay_schedule            -- the OWNER's facts, one row per owner with a pa
 budget.pay_eras                -- [C17-a] one row per "how I have been paid since"
   user_id       FK budget.pay_schedule.user_id RESTRICT  (fk_pay_eras_schedule)
   effective_from DATE NOT NULL  -- the era's first NOMINAL payday, and so the grid's PHASE
-  kind_id       FK ref.pay_cadence_kinds          -- fixed_days; monthly, semi_monthly [C17-d]
-  cadence_days  INT NOT NULL    -- ck_pay_eras_cadence_range
+  kind_id       FK ref.pay_cadence_kinds          -- DROPPED [C17-d-2]: the kind is which parameter
+                                                 -- columns are present (R-PC80)
+  cadence_days  INT NULL        -- ck_pay_eras_cadence_range; fixed-days kind only [C17-d-2]
+  nominal_day   SMALLINT NULL   -- 29..31 when the first month was too short [C17-d-2]
+  other_day     SMALLINT NULL   -- semi-monthly's second day [C17-d-2]
   shift_id      FK ref.business_day_shifts        -- the convention (R-PC47)
   UNIQUE (user_id, effective_from)                -- uq_pay_eras_user_effective_from
 ```
@@ -298,48 +301,36 @@ their only live specimen from them, which both `_staging` docstrings predict and
       beside it. An era governs from its `effective_from` to the next era's; the EARLIEST also runs
       backward below the record, bounded by `history_opens_on`. The DECOMPOSED parent, ticking with
       `C17-e` (**R-PC77**).
-- [x] **C17-a -- the relation.** `6caf56bc`, migration `6fc77e86d76f`. One era per owner backfilled,
-      phased on the record's opening; the three columns dropped; every reader takes the LATEST era's
-      rhythm where it took the row's (`$0.00`). A batch mints an era only where it STATES a rhythm
-      the covering era does not hold, and retires every era past the surviving record. Narrowed
-      **N-494** to the one top-up that restates an era; closed N-492's write half. Left
-      `pay_period_write.py` at 1,000 of 1,000 (**PC-507**).
-- [x] **C17-b-1 -- the forward continuation leaves `_derive.py`.** `1ae0cd02`. A pure move of
-      `project_period_after` and `covering_projection` into `pay_calendar/_projection.py`, between
-      `_derive` and `_searches`. Closed **PC-498**.
-- [x] **C17-b-2 -- readers anchor on the era's phase.** `3369b2ab` (the `_eras.py` cut, **R-PC73**)
-      + `06fc0d33`. **MOVED MONEY**, `$0.00` on production's 64 rows. Piecewise projection and the
-      matching rule (**R-PC72**); a minting batch bounded at its era's first payday and the era rule
-      keyed on it (ruled 2026-09-11 on the review; **PC-510** born and closed: a holiday-minted
-      `prior` era was re-minted a fortnight late by the next extend). Closed **N-495**, **PC-502**,
-      **N-492**, **PC-505**; carried **N-496**; opened **PC-509** for `C17-c-2`.
-- [x] **C17-c -- the doors ask for the ERA.** `36c6b6af`. The DECOMPOSED parent, split 2026-09-11
-      (**R-PC71**) into the pure-move split of `pay_period_write.py` and the door rewrite it made
-      room for; ticked with `C17-c-2b`.
-- [x] **C17-c-1 -- `pay_period_write.py` leaves the ceiling.** `7d26ec2c` (+ `ddbbe87b`). The batch
-      shape moved whole into `pay_period_batch.py` (**R-PC74**); the writer 998 -> 663, `$0.00`.
-      Closed **PC-507**.
-- [x] **C17-c-2 -- the doors.** `36c6b6af`. **R-PC64**, **R-PC67**; the DECOMPOSED parent, split
-      2026-09-12 (**R-PC78**) into the `$0.00` leaf and the money leaf; ticked with `C17-c-2b`.
-- [x] **C17-c-2a -- a hole is refused, and the doors ask for the scheduled day.** `3d635e4a`. A
-      batch whose first new payday skips a whole paycheck of the owner's plan is REFUSED from the
-      one writer (`pay_period_batch.reject_skipped_paycheck` beside the floor; **R-PC67**,
-      **R-PC76**); `reject_unconfirmed_gap`, `PayPeriodGapRequired`, `confirm_gap` and the banner
-      DELETED; the four payday doors ask for the SCHEDULED day. R-PC70's loud-read-path premise
-      measured FALSE (**R-PC77**). Closed **P80**, **PC-504**; **N-493** re-pointed at `C17-e`.
-- [x] **C17-c-2b -- extend materialises the plan, and the seam is the door's.** `36c6b6af`.
-      **MOVED MONEY**, `$0.00` on production. `pay_period_write.continue_paydays` records a prefix
-      of `planned_paydays_after`, minting and retiring nothing, so both fences hold by identity;
-      `last_step_of` is the step before the old era's last planned payday at or before the next
-      era's first (**R-PC75**), `validate_eras` refuses an era that would pay nothing, and the
-      projection clamps its estimate to the seam. Closed **PC-509**, **N-494**.
-- [ ] **C17-d -- the day-of-month cadence KIND** (**R-PC68**; one commit with `recurrence:R13`).
-      `monthly` and `semi_monthly` join `ref.pay_cadence_kinds`; `_grid.nominal_payday`,
-      `cadence_steps_to` and `PayCadence.periods_per_year` branch on the era's kind, so a
-      semi-monthly owner's paydays land on the 1st and 15th and their year holds 24 rather than
-      `365.2425 / 15 = 24.35`. **MOVES MONEY** for such an owner; `$0.00` on production. P78's eight
-      fixtures go through the door. Closes **P78**; carries **N-399**, closing it only where the
-      kind ends `_month_ordinal`'s walk per prior payday (measured, not asserted).
+**The `C17-a`..`C17-c-2b` span is ARCHIVED under rule 5** (2026-09-13) to
+`historical/pay_calendar_c17_a_to_c_as_built_2026-09-13.md`, one line each below; the COMMIT is the
+record.
+- [x] **C17-a -- the relation.** `6caf56bc`, migration `6fc77e86d76f`. Narrowed **N-494**.
+- [x] **C17-b-1 -- the forward continuation leaves `_derive.py`.** `1ae0cd02`. Closed **PC-498**.
+- [x] **C17-b-2 -- readers anchor on the era's phase.** `06fc0d33`; MOVED MONEY (**R-PC72**).
+- [x] **C17-c -- the doors ask for the ERA.** `36c6b6af`; the parent (**R-PC71**), ticked with c-2b.
+- [x] **C17-c-1 -- `pay_period_write.py` leaves the ceiling.** `7d26ec2c`, a pure move (**R-PC74**).
+- [x] **C17-c-2 -- the doors.** `36c6b6af`; the parent (**R-PC78**), ticked with `C17-c-2b`.
+- [x] **C17-c-2a -- a hole is REFUSED; the doors ask for the scheduled day.** `3d635e4a`, R-PC76.
+- [x] **C17-c-2b -- extend materialises the plan.** `36c6b6af`; MOVED MONEY, `$0.00` on prod.
+- [ ] **C17-d -- the day-of-month cadence KIND** (**R-PC68**; one commit with `recurrence:R13` at
+      `C17-d-2`). The DECOMPOSED parent, split 2026-09-13 (**R-PC81**) into the value's shape, the
+      kinds with their migration, and the forms; ticks with `C17-d-3`. **MOVES MONEY** at `C17-d-2`
+      for a month-kind owner; `$0.00` on production.
+- [x] **C17-d-1 -- the cadence is a value of its own kind.** `7a6bbaf5`. `pay_rhythm.FixedDays`;
+      `Rhythm.cadence`; `Era` without `kind` (the type is the kind, **R-PC80**); `_grid` dispatches
+      on the value's type through one table; `PayCadence` takes the value; `era_to_mint` asks the
+      grid's round trip. `$0.00`, a pure refactor.
+- [ ] **C17-d-2 -- the `Monthly` and `SemiMonthly` kinds** (**R-PC79**, **R-PC80**). Month
+      arithmetic in `_grid` (a day 29..31 clamps to the month's end; a pair's phase is read off the
+      anchor); migration: `cadence_days` nullable, `nominal_day` (29..31, only when the first month
+      was too short, `recurrence:R-R3`'s shape) and the other day added with CHECKs that make every
+      storable row a legal era, `kind_id` and `ref.pay_cadence_kinds` DROPPED; the floor asked of
+      the shortest gap; `PayCadence` 12 / 24 without dividing; P78's eight fixtures through the
+      door; N-399 measured. **MOVES MONEY** for such an owner; `$0.00` on production. Closes
+      **P78**.
+- [ ] **C17-d-3 -- the doors offer the kind.** The four schedule forms and registration take a kind
+      and its parameters; the schema builds the cadence value; `validate_derivable_rhythm` asks the
+      shortest-gap floor. `$0.00`.
 - [ ] **C17-e -- coalesced nominal paydays are ONE paycheck** (**R-PC77**; closes **N-493**). Two
       nominal paydays a closed run displaces onto one cash day derive one paycheck wherever an era's
       grid is read; `reject_shift_on_short_cadence` is then a fence. `$0.00`, after `C17-d`.

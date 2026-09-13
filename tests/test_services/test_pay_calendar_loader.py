@@ -249,8 +249,8 @@ class TestItLoadsTheOwnersWholeSchedule:
             calendar = calendar_for(user_id)
 
             assert calendar.periods == ()
-            assert calendar.eras[-1].rhythm.cadence_days == CADENCE + 7
-            assert calendar.cadence.cadence_days == CADENCE + 7
+            assert calendar.eras[-1].rhythm.cadence.days == CADENCE + 7
+            assert calendar.cadence.cadence.days == CADENCE + 7
             assert calendar.horizon() is None
             assert calendar.opening_bound() is None
 
@@ -339,7 +339,7 @@ class TestTheCadenceComesFromTheScheduleService:
             restate_fixture_era(user_id, date(2026, 1, 2), CADENCE + 7)
             db.session.commit()
 
-            assert calendar_for(user_id).eras[-1].rhythm.cadence_days == CADENCE + 7
+            assert calendar_for(user_id).eras[-1].rhythm.cadence.days == CADENCE + 7
 
     # ``test_it_infers_the_cadence_when_no_schedule_row_exists`` stood here
     # until plan step **C4-b-2** and was DELETED with its subject, not with
@@ -544,7 +544,7 @@ class TestCalendarAtSchedule:
             user_id = seed_user["user"].id
             resolved = pay_schedule_service.resolve_schedule(user_id)
 
-            assert resolved.rhythm.cadence_days == CADENCE
+            assert resolved.rhythm.cadence.days == CADENCE
             assert calendar_at_schedule(user_id, resolved) == calendar_for(user_id)
             assert len(calendar_for(user_id).periods) == PERIOD_COUNT
 
