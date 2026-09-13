@@ -14,6 +14,7 @@ from decimal import Decimal
 from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user
 
+from app.exceptions import ValidationError as ShekelValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.models.loan_features import RateHistory
@@ -44,6 +45,37 @@ from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.digit_strings import parse_row_id
 
 logger = logging.getLogger(__name__)
+
+
+def _sync_payment_start_or_refuse(account):
+    """Re-derive the standing payment's start from *account*'s contract, or refuse.
+
+    The one call the two routes that MOVE a loan's contract make -- setup,
+    where an account already holding a recurring transfer becomes a loan and
+    that transfer becomes its standing payment (ruling **R-R81**: its start is
+    the contract's from that moment), and the params edit, where
+    ``payment_day`` moves the first installment (ruling **R-R29**).  The
+    CLOSING bound is derived on every read since plan step R7d-g and no edit
+    writes it; the one pair that step's CHECK could refuse out of either route
+    -- the moved start passing a stop the payment's owner authored (ruling
+    **R-R82**) -- is refused HERE, whole, naming the transfer, rather than left
+    to surface as an ``IntegrityError`` from the flush.
+
+    Args:
+        account: The loan account, owner-checked by the route.
+
+    Returns:
+        ``None`` when the start is in step (or nothing needed writing), else
+        the refusal redirect with the pending edit rolled back and the sentence
+        flashed.
+    """
+    try:
+        loan_recurrence_sync.sync_loan_payment_start(account.id)
+    except ShekelValidationError as exc:
+        db.session.rollback()
+        flash(str(exc), "danger")
+        return redirect(url_for("loan.dashboard", account_id=account.id))
+    return None
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/setup", methods=["POST"])
@@ -129,6 +161,13 @@ def create_params(account_id):
     # yet resolvable, so uncorrected) also gets those payments' split
     # corrections back-posted here.
     loan_posting_service.sync_loan_postings_all_scenarios(account.id)
+    # A recurring transfer that already pays into this account is the loan's
+    # standing payment from this moment, and its start is the contract's
+    # (ruling **R-R81**; plan step R7d-g).  Until that step the next
+    # chokepoint of any kind healed it; this door is where it becomes one.
+    refused = _sync_payment_start_or_refuse(account)
+    if refused is not None:
+        return refused
     db.session.commit()
 
     logger.info("Created loan params for account %d", account.id)
@@ -180,12 +219,13 @@ def update_params(account_id):
     # re-sync every scenario's full genesis ledger UNCONDITIONALLY, not only on
     # the rate path.
     loan_posting_service.sync_loan_postings_all_scenarios(account.id)
-    # Re-bound the recurring payment before committing.  This edit can move
-    # BOTH ends: a term / rate change moves the projected payoff (end_date,
-    # R-4), and a PAYMENT-DAY change moves the loan's first contractual
-    # installment (start_date, C9a) -- the one derived bound on this rule a
-    # params edit can shift.
-    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
+    # Re-derive the standing payment's OPENING bound before committing: a
+    # PAYMENT-DAY change moves the loan's first contractual installment
+    # (plan step C9a), the one stored bound on that rule a params edit can
+    # shift (ruling **R-R29**).
+    refused = _sync_payment_start_or_refuse(account)
+    if refused is not None:
+        return refused
     db.session.commit()
     logger.info("Updated loan params for account %d", account.id)
     flash("Loan parameters updated.", "success")
@@ -319,13 +359,10 @@ def true_up_balance(account_id):
         )
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    # R-4: the true-up re-bases the balance, moving the projected payoff.
-    # ``apply_loan_anchor_true_up`` already committed the event + posting
-    # re-sync, so this sets the recurring payment's end_date and commits it in a
-    # follow-on transaction (self-healing: a failure here re-syncs at the next
-    # loan mutation).
-    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
-    db.session.commit()
+    # ``apply_loan_anchor_true_up`` committed the event and the posting
+    # re-sync.  The recurring payment's closing bound is not written here or
+    # anywhere (plan step R7d-g): the payoff this true-up moves is derived on
+    # every read through the composed door.
 
     logger.info(
         "Loan trueup: account %d set to $%s as of %s",
@@ -437,12 +474,9 @@ def record_tracking_start(account_id):
         )
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    # A tracking-start re-bases the opening balance, moving the projected payoff;
-    # re-bound the recurring payment's window (mirrors the true-up route).
-    # ``record_loan_tracking_start`` already committed the event + posting
-    # re-sync, so this commits the bound in a follow-on transaction.
-    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
-    db.session.commit()
+    # ``record_loan_tracking_start`` committed the event and the posting
+    # re-sync; the payoff it moves is derived on every read (plan step R7d-g),
+    # as at the true-up route above.
 
     logger.info(
         "Loan tracking-start: account %d set to $%s as of %s",

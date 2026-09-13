@@ -25,6 +25,8 @@ from app.models.ref import AccountType, Status
 from app.routes.loan._helpers import accelerated_overlay, build_band_chart
 from app.services.balance_at import BalanceContext
 from app.services.loan_loaders import load_loan_params, load_rate_changes
+from app.services.recurrence import ClosesOn
+from app.services.recurring_definition import resolved_definition
 from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
@@ -36,6 +38,7 @@ from app.services import (
     balance_at,
     escrow_calculator,
     loan_loaders,
+    loan_recurrence_sync,
 )
 
 from tests._test_helpers import (
@@ -54,6 +57,7 @@ from tests._test_helpers import (
     loan_params_for,
     make_cadence_rule,
     make_loan_payment_template,
+    make_transfer_template,
     posted_loan_balance_at,
     select_option_values,
     state_template_price,
@@ -478,6 +482,122 @@ class TestLoanSetup:
         )
         assert origination_rate.interest_rate == Decimal("0.05000")
         assert params.term_months == 60
+
+    def _unconfigured_loan_with_a_recurring_transfer(self, seed_user, db):
+        """Return ``(account, template)``: an every-paycheck transfer into a NOT-yet-configured Auto Loan.
+
+        The shape ruling **R-R81** names at the setup door: the transfer's
+        start is its owner's while the account is not a loan, and becomes
+        the contract's the moment it is one.  The transfer is built through
+        the generic fixture (no settings row), the way ``POST /transfers``
+        leaves one, and committed so the request can see it.
+        """
+        loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
+        account = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name="Set Up Later",
+                anchor_balance=Decimal("0"),
+            ),
+        )
+        db.session.add(account)
+        db.session.flush()
+        template = make_transfer_template(db.session, seed_user, to_account=account)
+        db.session.commit()
+        return account, template
+
+    def test_setup_after_the_transfer_exists_makes_its_start_the_contracts(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The loan-setup door derives the standing payment's start (plan step R7d-g, ruling **R-R81**).
+
+        Until R7d-g the next chokepoint of any kind healed a start authored
+        before the account was a loan; R7d-g-1's review measured that with
+        the nine chokepoints gone nothing did until a params edit, so the
+        transfer justified occurrences before the loan existed.  Setup is
+        where the transfer BECOMES the loan's payment, and it derives the
+        start there.  The every-paycheck rule's stored start is the payday of
+        the paycheck hosting the first installment (2026-04-01 on this
+        origination): the biweekly schedule from 2026-01-02 puts that in the
+        paycheck opening 2026-03-27 (six fortnights on), which is what
+        ``bind_rule_to_loan`` writes at create; the fixture's default start
+        is the schedule's opening payday.
+        """
+        account, template = self._unconfigured_loan_with_a_recurring_transfer(
+            seed_user, db,
+        )
+        rule = template.recurrence_rule
+        owners_start = rule.starts_on
+        assert owners_start == date(2026, 1, 2)
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data={
+                "original_principal": "12000.00",
+                "current_principal": "12000.00",
+                "interest_rate": "5.000",
+                "term_months": "24",
+                "origination_date": "2026-03-15",
+                "payment_day": "1",
+            },
+        )
+        assert resp.status_code == 302
+        assert db.session.query(LoanParams).filter_by(account_id=account.id).one()
+
+        db.session.refresh(rule)
+        assert rule.starts_on != owners_start
+        assert rule.starts_on == date(2026, 3, 27), (
+            "the standing payment's start must be the payday hosting the "
+            f"first installment 2026-04-01, got {rule.starts_on}"
+        )
+        assert rule.end_date is None
+
+    def test_setup_that_would_move_the_start_past_an_authored_stop_is_refused_whole(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The same refusal the params edit makes, at the door where the account becomes a loan.
+
+        The transfer carries an owner's stop of 2026-01-16 (its second
+        payday); setting the loan up with a first installment of 2026-04-01
+        would lift the start past it.  The write door refuses, the setup is
+        rolled back WHOLE -- no ``LoanParams`` row, the rule untouched -- and
+        the flash names the transfer.
+        """
+        account, template = self._unconfigured_loan_with_a_recurring_transfer(
+            seed_user, db,
+        )
+        rule = template.recurrence_rule
+        rule.end_date = date(2026, 1, 16)
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data={
+                "original_principal": "12000.00",
+                "current_principal": "12000.00",
+                "interest_rate": "5.000",
+                "term_months": "24",
+                "origination_date": "2026-03-15",
+                "payment_day": "1",
+            },
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert template.name in body
+        assert "Archive that transfer first" in body
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).one_or_none() is None, "a refused setup left LoanParams behind"
+        # The origination rate row is keyed by the account, not the params
+        # row, so it is the one artefact a partial rollback could leave.
+        assert db.session.query(RateHistory).filter_by(
+            account_id=account.id,
+        ).count() == 0, "a refused setup left the origination rate behind"
+        db.session.refresh(rule)
+        assert rule.starts_on == date(2026, 1, 2)
+        assert rule.end_date == date(2026, 1, 16)
 
     def test_create_params_writes_no_anchor_event_and_posts_the_opening(
         self, auth_client, seed_user, db, seed_periods,
@@ -5690,15 +5810,16 @@ class TestDashboardChartComposer:
             f"Breakdown percentages sum to {total_pct}, expected 100.0"
         )
 
-    def test_recurrence_end_date_sync_is_idempotent(
+    def test_recurrence_start_sync_is_idempotent(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """The relocated end_date sync writes recurrence_rules only on a change.
+        """The opening-bound sync writes recurrence_rules only on a change.
 
-        R-4: creating the recurring transfer sets end_date once.  A follow-on
-        mutation that does NOT move the payoff (a params re-save with the same
-        6.5% / 360-month terms) recomputes the same end_date, so the guard skips
-        the write -- no new ``recurrence_rules`` UPDATE lands in the audit log.
+        Creating the recurring transfer writes the rule's start once and its
+        stop never (plan step R7d-g: the column stays NULL).  A follow-on
+        params re-save with the same 6.5% / 360-month / day-1 terms derives
+        the same first installment, so the sync skips the write -- no new
+        ``recurrence_rules`` UPDATE lands in the audit log.
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
@@ -5715,19 +5836,19 @@ class TestDashboardChartComposer:
         template = db.session.query(TransferTemplate).filter_by(
             to_account_id=acct.id,
         ).one()
-        first_end_date = template.recurrence_rule.end_date
-        assert first_end_date is not None
+        first_start = template.recurrence_rule.starts_on
+        assert template.recurrence_rule.end_date is None
 
-        # The guard short-circuits when the recomputed end_date equals the
+        # The guard short-circuits when the re-derived start equals the
         # current one; the system.audit_log row count must NOT increase after a
-        # no-op-payoff params re-save.
+        # no-op params re-save.
         audit_count_sql = sa.text(
             "SELECT COUNT(*) FROM system.audit_log "
             "WHERE table_name = 'recurrence_rules' AND operation = 'UPDATE'"
         )
         audit_before = db.session.execute(audit_count_sql).scalar()
 
-        # A params re-save with unchanged terms recomputes the SAME payoff.
+        # A params re-save with unchanged terms derives the SAME start.
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/params",
             data={
@@ -5741,12 +5862,13 @@ class TestDashboardChartComposer:
         rule = db.session.query(RecurrenceRule).filter_by(
             id=template.recurrence_rule.id,
         ).one()
-        assert rule.end_date == first_end_date
+        assert rule.starts_on == first_start
+        assert rule.end_date is None
         audit_after = db.session.execute(audit_count_sql).scalar()
         assert audit_after == audit_before, (
-            "A no-op-payoff mutation wrote a new recurrence_rule UPDATE row "
+            "A no-op params mutation wrote a new recurrence_rule UPDATE row "
             f"to system.audit_log ({audit_before} -> {audit_after}) -- "
-            "the end_date sync's idempotency guard failed"
+            "the start sync's idempotency guard failed"
         )
 
     def test_no_direct_generate_schedule_in_dashboard(self):
@@ -5846,26 +5968,56 @@ def _create_transfer_template(seed_user, db_session, loan_account):
     return template, template.recurrence_rule
 
 
-class TestRecurrenceEndDateUpdate:
-    """The recurring payment's end_date is synced to the projected payoff (R-4).
+def _derived_stop_of(template, seed_user):
+    """Return the composed door's derived stop for *template*, on a fresh pass."""
+    return resolved_definition(
+        template, BalanceContext.build(seed_user["user"].id),
+    ).closing.derived
 
-    This used to be a write on the dashboard GET (Risk R-4); it now runs at every
-    payoff-affecting mutation -- recurring-transfer creation, a settled payment, a
-    params / rate edit, and a balance true-up -- and NEVER on the GET.  The payoff
-    computation itself is unit-tested in
-    tests/test_services/test_loan_recurrence_sync.py; these tests pin the WIRING
-    through the real routes.
+
+def _assert_column_untouched_and_stop_derived(rule, template, seed_user):
+    """The post-R7d-g shape every chokepoint case asserts.
+
+    The two closing-bound columns are exactly as the fixture left them
+    (NULL), and the payoff the chokepoint moved is the composed door's DERIVED
+    answer -- a real closing date, read through the same door generation
+    reads -- rather than anything stored.
+    """
+    _db.session.refresh(rule)
+    assert rule.end_date is None, (
+        f"a chokepoint wrote end_date={rule.end_date}: a writer survived R7d-g"
+    )
+    assert rule.max_occurrences is None
+    stop = _derived_stop_of(template, seed_user)
+    assert isinstance(stop, ClosesOn), stop
+    return stop
+
+
+class TestTheClosingBoundIsNeverWrittenByARoute:
+    """No payoff-affecting mutation writes ``end_date`` (plan step R7d-g).
+
+    Until R7d-g these cases pinned the opposite: ten chokepoints -- recurring-
+    transfer creation, a settled payment, a params / rate edit, a balance
+    true-up, the extra-principal and track-payment doors, the tracking start,
+    a payment leaving the loan -- each synced the rule's ``end_date`` to the
+    projected payoff, and these tests pinned that WIRING through the real
+    routes.  The writer is deleted, so the same routes are driven and the same
+    column is asserted UNTOUCHED, beside the derived stop that replaced it
+    (``recurring_definition.resolved_definition``, the door generation reads
+    since plan step R7d-c-2).  A route that grows the write back turns its
+    case red.  The payoff computation itself is graded in
+    tests/test_services/test_loan_recurrence_sync.py.
     """
 
-    def test_end_date_set_on_transfer_creation(
+    def test_transfer_creation_writes_the_start_and_not_the_stop(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Creating the recurring transfer bounds its end_date to the payoff.
+        """Creating the recurring transfer bounds its START to the contract only.
 
-        The create-transfer POST resolves the loan and sets the new rule's
-        end_date BEFORE generating any shadow, so nothing is generated past
-        payoff -- the primary place the relocated write now happens.  A
-        mortgage's payoff is years out.
+        The create-transfer POST writes the rule's first occurrence from the
+        loan's contract before generating any shadow (``bind_rule_to_loan``);
+        the closing bound is the door's derived payoff, years out for a
+        mortgage, and the column stays NULL.
         """
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
@@ -5882,23 +6034,21 @@ class TestRecurrenceEndDateUpdate:
             .first()
         )
         rule = tpl.recurrence_rule
-        assert rule.end_date is not None
-        assert isinstance(rule.end_date, date)
+        assert isinstance(rule.starts_on, date)
+        stop = _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
         # Mortgage payoff is years in the future.
-        assert rule.end_date > date.today()
+        assert stop.on > date.today()
 
-    def test_end_date_set_when_a_payment_settles(
+    def test_a_settled_payment_leaves_the_column_alone(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Settling a loan payment re-syncs the recurring end_date (settle path).
+        """Settling a loan payment moves the payoff and writes nothing (settle path).
 
-        With a recurring transfer whose end_date starts unset, settling a payment
-        through the real Projected -> Paid chokepoint fires the transfer settle
-        path's sync, which bounds the end_date to the loan's projected payoff --
-        no GET involved.
+        The transfer settle chokepoint (``_loan_posting._sync_loan_postings_if_loan``)
+        used to re-sync ``end_date``; it reconciles the loan's ledger only now.
         """
         acct = _create_mortgage(seed_user, db.session)
-        _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
+        tpl, rule = _create_transfer_template(seed_user, db.session, acct)
         assert rule.end_date is None
 
         # Settle a payment in a period that has begun, so the resolver replays it.
@@ -5908,31 +6058,26 @@ class TestRecurrenceEndDateUpdate:
         )
         db.session.commit()
 
-        db.session.refresh(rule)
-        assert rule.end_date is not None
-        assert rule.end_date > date.today()
+        stop = _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
+        assert stop.on > date.today()
 
     def test_dashboard_get_is_read_only(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """R-4: loading the loan dashboard NEVER writes the recurrence end_date.
+        """Loading the loan dashboard NEVER writes the recurrence rule (R-4).
 
-        A mortgage with a recurring transfer whose end_date is unset stays unset
-        across a GET -- the relocated sync runs only on mutations, so the detail
-        page is read-only.
+        A mortgage with a recurring transfer stays as stored across a GET:
+        the detail page is read-only, and since plan step R7d-g nothing else
+        writes the closing bound either.
         """
         acct = _create_mortgage(seed_user, db.session)
-        _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
+        tpl, rule = _create_transfer_template(seed_user, db.session, acct)
         assert rule.end_date is None
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
 
-        db.session.refresh(rule)
-        assert rule.end_date is None, (
-            "The dashboard GET must not write end_date (R-4); it is set only "
-            f"at payoff-affecting mutations. Got {rule.end_date}"
-        )
+        _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
 
     def test_no_update_when_no_transfer(
         self, auth_client, seed_user, db, seed_periods,
@@ -5949,17 +6094,17 @@ class TestRecurrenceEndDateUpdate:
         assert resp.status_code == 200
         assert b"Balance owed" in resp.data
 
-    def test_end_date_set_on_params_edit(
+    def test_a_params_edit_leaves_the_column_alone(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Editing loan params re-syncs the recurring end_date (params path).
+        """Editing loan params moves the payoff and writes no stop (params path).
 
-        A term / rate / payment-day edit moves the projected payoff, so the
-        update-params POST bounds the recurring rule's end_date to it: starting
-        from unset, the edit sets it to a future payoff.
+        The one chokepoint that still syncs anything: a term / rate /
+        payment-day edit re-derives the rule's START (ruling **R-R29**) and
+        nothing else.
         """
         acct = _create_mortgage(seed_user, db.session)
-        _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
+        tpl, rule = _create_transfer_template(seed_user, db.session, acct)
         assert rule.end_date is None
 
         resp = auth_client.post(
@@ -5972,25 +6117,69 @@ class TestRecurrenceEndDateUpdate:
         )
         assert resp.status_code == 302
 
-        db.session.refresh(rule)
-        assert rule.end_date is not None
-        assert rule.end_date > date.today()
+        stop = _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
+        assert stop.on > date.today()
 
-    def test_end_date_set_on_rate_change(
+    def test_a_params_edit_that_moves_the_start_past_an_authored_stop_is_refused(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Recording an ARM rate change re-syncs the recurring end_date (rate path).
+        """The ONE state the window CHECK refuses that a loan edit can reach (ruling **R-R82**).
 
-        A rate change re-amortizes the loan, moving payoff, so the add-rate POST
-        bounds the recurring rule's end_date to the new payoff -- starting from
-        unset, the change sets it.
+        The standing payment carries a stop its owner authored two days after
+        the loan's first installment (a stop kept from before the definition
+        became the standing payment); moving ``payment_day`` past it would
+        write ``starts_on > end_date``.  The route refuses the edit WHOLE --
+        the params are as they were, the rule is as it was, the flash names
+        the transfer -- rather than letting the flush answer with an
+        ``IntegrityError``.
         """
+        acct = _create_mortgage(seed_user, db.session)
+        tpl, rule = _create_transfer_template(seed_user, db.session, acct)
+        # Bound to the contract the way every production door binds a new
+        # rule, so the start the edit would move is the loan's own.
+        loan_recurrence_sync.bind_rule_to_loan(rule, acct.id)
+        params = load_loan_params(acct.id)
+        first_installment = rule.starts_on
+        assert first_installment.day == params.payment_day
+        rule.end_date = first_installment + timedelta(days=2)
+        db.session.commit()
+        payment_day_before = params.payment_day
+        term_before = params.term_months
+        assert payment_day_before != 15
+
+        assert term_before != 300
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/params",
+            data={
+                "interest_rate": "6.500",
+                "payment_day": "15",
+                "term_months": "300",
+            },
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        body = resp.data.decode()
+        assert tpl.name in body
+        assert "Archive that transfer first" in body
+
+        db.session.expire_all()
+        params = load_loan_params(acct.id)
+        assert params.payment_day == payment_day_before
+        assert params.term_months == term_before
+        db.session.refresh(rule)
+        assert rule.starts_on == first_installment
+        assert rule.end_date == first_installment + timedelta(days=2)
+
+    def test_a_rate_change_leaves_the_column_alone(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Recording an ARM rate change moves the payoff and writes nothing (rate path)."""
         acct = _create_loan_account(
             seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM End Date Mortgage",
             Decimal("250000.00"), Decimal("0.05000"), 360,
             date(2023, 6, 1), 1, is_arm=True,
         )
-        _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
+        tpl, rule = _create_transfer_template(seed_user, db.session, acct)
         assert rule.end_date is None
 
         resp = auth_client.post(
@@ -5999,28 +6188,27 @@ class TestRecurrenceEndDateUpdate:
         )
         assert resp.status_code == 200
 
-        db.session.refresh(rule)
-        assert rule.end_date is not None
-        assert rule.end_date > date.today()
+        stop = _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
+        assert stop.on > date.today()
 
-    def test_end_date_set_past_when_paid_off_via_trueup(
+    def test_a_true_up_to_zero_leaves_the_column_alone_and_the_stop_is_PAST(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Trueing a loan up to $0 sets a PAST end_date (true-up path).
+        """Trueing a loan up to $0 retires it: the derived stop is past, the column NULL.
 
-        Recording a $0 balance retires the loan, so its projected schedule is
-        empty and the recurring rule's end_date falls back to the origination
-        date -- a past date that stops future generation.  The stored value is a
-        plain ``date`` (not a ``datetime``), so later comparisons hold.
+        Recording a $0 balance retires the loan, so the door's derived stop is
+        the day it became closed -- a past date that stops generation -- and
+        it is read, never stored.  Until R7d-g this route wrote that past
+        date into ``end_date``; a loan cleared BEFORE its first installment
+        then stored the inverted pair that held ``ck_recurrence_rules_valid_window``
+        back, which is unconstructible now.
         """
-        from datetime import datetime  # pylint: disable=import-outside-toplevel
-
         acct = _create_loan_account_exact(
             seed_user, db.session, AcctTypeEnum.AUTO_LOAN, "Paid Off Loan",
             Decimal("1000.00"),
             Decimal("0.05000"), 12, date(2026, 1, 1), 1,
         )
-        _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
+        tpl, rule = _create_transfer_template(seed_user, db.session, acct)
         assert rule.end_date is None
 
         resp = auth_client.post(
@@ -6029,22 +6217,38 @@ class TestRecurrenceEndDateUpdate:
         )
         assert resp.status_code == 302
 
-        db.session.refresh(rule)
-        assert rule.end_date is not None
-        assert isinstance(rule.end_date, date)
-        assert not isinstance(rule.end_date, datetime)
-        assert rule.end_date <= date.today(), (
-            f"Paid-off loan should stop generation with a past end_date, "
-            f"got {rule.end_date}"
+        stop = _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
+        assert stop.on <= date.today(), (
+            f"Paid-off loan should stop generation with a past derived stop, "
+            f"got {stop.on}"
         )
+
+    def test_the_extra_principal_and_track_doors_leave_the_column_alone(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The two settings-row doors move the payoff and write no stop."""
+        acct = _create_mortgage(seed_user, db.session)
+        tpl, rule = _create_transfer_template(seed_user, db.session, acct)
+        assert rule.end_date is None
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payment-settings",
+            data={"extra_principal": "250.00"},
+        )
+        assert resp.status_code == 302
+        _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
+
+        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        assert resp.status_code == 302
+        _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
 
     def test_end_date_no_params_no_crash(
         self, auth_client, seed_user, db, seed_periods,
     ):
         """Loan account with no LoanParams: dashboard renders setup page.
 
-        The end_date update logic is never reached because the
-        dashboard returns early when params are missing.
+        Nothing about the rule is reached because the dashboard returns
+        early when params are missing.
         """
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
@@ -6084,17 +6288,17 @@ class TestRecurrenceEndDateUpdate:
         assert resp.status_code == 200
         assert b"Configure" in resp.data
 
-        # Rule should be unchanged -- end_date update never reached.
+        # Rule should be unchanged -- nothing reached it.
         db.session.refresh(rule)
         assert rule.end_date is None
 
     def test_end_date_idor(
         self, auth_client, seed_user, second_user, db, seed_periods,
     ):
-        """Other user's loan: 404-redirect, no end_date modification.
+        """Other user's loan: 404-redirect, no rule modification.
 
-        Confirms the ownership check prevents cross-user mutation of
-        recurrence rule end_date.
+        Confirms the ownership check prevents cross-user mutation of a
+        recurrence rule.
         """
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
@@ -6121,6 +6325,7 @@ class TestRecurrenceEndDateUpdate:
         # a transaction of its OWN, so the rule this test asserts is UNTOUCHED
         # has to exist as far as that request is concerned.
         db.session.commit()
+        start_before = rule.starts_on
 
         # Access other user's loan as the primary user.
         resp = auth_client.get(f"/accounts/{other_loan.id}/loan")
@@ -6129,6 +6334,7 @@ class TestRecurrenceEndDateUpdate:
         # Other user's recurrence rule should be untouched.
         db.session.refresh(rule)
         assert rule.end_date is None
+        assert rule.starts_on == start_before
 
 
 class TestLoanScheduleRoute:

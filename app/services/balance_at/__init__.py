@@ -262,7 +262,7 @@ from ._kind_correct import (
     investment_growth_since_anchor,
 )
 from ._liability import liability_owed_at_dates
-from ._resolution import authored_closing, is_standing_loan_payment
+from ._resolution import is_standing_loan_payment
 from ._loan_figures import (
     LoanFigures,
     LoanTerms,
@@ -363,7 +363,6 @@ __all__ = [
     "interest_projection_for_account",
     "investment_growth_since_anchor",
     "liability_owed_at_dates",
-    "authored_closing",
     "is_standing_loan_payment",
     "loan_closing_date",
     "loan_figures",

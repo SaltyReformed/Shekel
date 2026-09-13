@@ -94,11 +94,13 @@ from app.schemas.validation import (
     RECURRENCE_NEEDS_A_START,
     RECURRENCE_NOMINAL_DAY_KEY,
     RECURRENCE_STARTS_ON_KEY,
+    end_bound_before_start_message,
 )
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.recurrence import (
     NEVER_ENDS,
+    EmptyAuthoredWindowError,
     RecurrenceOwner,
     RecurrenceSpec,
     author_rule,
@@ -216,8 +218,11 @@ def recurrence_spec_for_create(
 
 
 def author_recurrence_for_create(
-    spec: RecurrenceSpec | None, template: RecurrenceOwner,
-) -> RecurrenceRule | None:
+    spec: RecurrenceSpec | None,
+    template: RecurrenceOwner,
+    *,
+    redirect: RedirectTarget,
+) -> RecurrenceRule | Response | None:
     """Write the create form's cadence onto the definition it belongs to.
 
     The WRITE half of :func:`recurrence_spec_for_create`, and the pair is what
@@ -243,15 +248,38 @@ def author_recurrence_for_create(
             ``user_id`` is what the owner's pay calendar is loaded for, so the
             rule and the schedule it resolves against cannot name different
             owners.
+        redirect: Where the one refusal here sends the user (the create form).
 
     Returns:
-        The flushed :class:`RecurrenceRule`, or ``None`` when *spec* is
-        ``None`` -- which the callers read as "this definition does not
-        repeat" and use to skip generation.
+        The flushed :class:`RecurrenceRule`; ``None`` when *spec* is ``None``
+        -- which the callers read as "this definition does not repeat" and
+        use to skip generation; or a redirect :class:`Response` when the
+        write door refused the pair it would store, with the pending create
+        rolled back and the doors' own sentence flashed.
+
+    **The refusal is the write door's, worded here** (plan step R7d-g).  The
+    schema grades the stop against the AUTHORED start; the door stores the
+    NORMALISED one, and for an every-paycheck cadence authored entirely before
+    the owner's first payday the two part -- the stored pair would invert and
+    ``ck_recurrence_rules_valid_window`` would answer the flush with a 500.
+    The door refuses off the stored pair (:class:`~app.services.recurrence
+    .EmptyAuthoredWindowError`) and this says so in the sentence the schema
+    would have used, naming the first occurrence the rule would actually have.
+    Rolled back because the definition is already flushed by now (the
+    name-collision helper runs first), and a refusal that left it behind would
+    leave a definition that generated nothing.
     """
     if spec is None:
         return None
-    return author_rule(spec, calendar_for(template.user_id), template)
+    try:
+        return author_rule(spec, calendar_for(template.user_id), template)
+    except EmptyAuthoredWindowError as refused:
+        db.session.rollback()
+        flash(
+            end_bound_before_start_message(refused.end_date, refused.starts_on),
+            "danger",
+        )
+        return redirect.to_response()
 
 
 def recurrence_spec_from_form(
@@ -630,16 +658,12 @@ def update_recurrence_rule_from_form(
             # A form that stated NOTHING leaves the stored bound untouched --
             # ``current`` already carries it.  That is what a loan payment's
             # disabled control produces, and what an amount-only PATCH
-            # produces, and neither may be read as "ends never".
-            # For the loan's STANDING payment the stored bound rides through
-            # here too, and it is the chokepoints' CACHE of the payoff rather
-            # than the owner's word (ruling **R-R56**) -- the form locks the
-            # control and a stated bound is refused before this runs, so this
-            # line re-writes the cache unchanged on every unrelated edit.  It
-            # is the one reader of that column a NULL-the-column census cannot
-            # see (plan step R7d's roll-call), stated here so R7d-g finds it:
-            # once the column is NULL this writes ``NEVER_ENDS`` back, which
-            # is the same no-op.
+            # produces, and neither may be read as "ends never".  For the
+            # loan's STANDING payment the stored bound rides through here too
+            # -- the form locks the control and a stated bound is refused
+            # before this runs -- and since plan step R7d-g it is its owner's
+            # word or NULL (``NEVER_ENDS``), never a cache: this line writes
+            # back exactly what the owner stored, on every unrelated edit.
             end_bound=(
                 current.end_bound if ctx.end_bound is None else ctx.end_bound
             ),
@@ -801,15 +825,20 @@ def resolve_recurrence_rule_for_update(
         return refusal
 
     if data.get("recurrence_unit") is not None and template.recurrence_rule:
-        # Re-points the rule in place and cannot fail, so this branch has no
-        # redirect to propagate -- it returns the same ``None`` the other two
-        # branches do on success.
-        update_recurrence_rule_from_form(
-            template.recurrence_rule,
-            data,
-            ctx=ctx,
-            calendar=pass_ctx.calendar(),
-        )
+        # Re-points the rule in place.  Its one refusal is the write door's
+        # (a stored pair that would invert once a paycheck-space start is
+        # normalised -- the inverted-window door grades the authored pair,
+        # this grades the stored one) and it is worded in the door's own
+        # sentence, off the first occurrence the rule would actually have.
+        try:
+            update_recurrence_rule_from_form(
+                template.recurrence_rule,
+                data,
+                ctx=ctx,
+                calendar=pass_ctx.calendar(),
+            )
+        except EmptyAuthoredWindowError as refused:
+            return _refuse_empty_window(refused, ctx)
         return None
 
     # **The one UPDATE branch that AUTHORS**, and therefore the one that needs
@@ -846,11 +875,41 @@ def resolve_recurrence_rule_for_update(
         # Authored ONTO the template (plan step R-F6), which is what links it:
         # the rule carries the owning FK now, so there is no ``recurrence_rule_id``
         # left for this branch to assign and no window in which a written rule
-        # belongs to nothing.
-        author_rule(spec, pass_ctx.calendar(), template)
+        # belongs to nothing.  The same write-door refusal as the re-point
+        # branch above, worded the same way.
+        try:
+            author_rule(spec, pass_ctx.calendar(), template)
+        except EmptyAuthoredWindowError as refused:
+            return _refuse_empty_window(refused, ctx)
     elif recurrence_submitted:
         _clear_recurrence_rule(template)
     return None
+
+
+def _refuse_empty_window(
+    refused: EmptyAuthoredWindowError, ctx: RecurrenceFormContext,
+) -> Response:
+    """Word the write door's refusal of an inverted STORED pair, and redirect.
+
+    The update door's twin of the create helper's ``except`` (plan step
+    R7d-g): ``refuse_inverted_window`` grades the AUTHORED pair before any
+    write, and this grades nothing -- the door already has -- but says it in
+    the same sentence, off the two dates the door would have stored.  Nothing
+    was written, so nothing is rolled back here; the route owns its
+    transaction and commits nothing after a redirect.
+
+    Args:
+        refused: The write door's refusal, carrying the stored pair.
+        ctx: The form context, for where the refusal sends the user.
+
+    Returns:
+        The redirect :class:`Response`, returned by the caller verbatim.
+    """
+    flash(
+        end_bound_before_start_message(refused.end_date, refused.starts_on),
+        "danger",
+    )
+    return ctx.redirect.to_response()
 
 
 __all__ = [

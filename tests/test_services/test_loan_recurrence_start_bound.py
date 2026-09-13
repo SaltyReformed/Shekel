@@ -1,8 +1,9 @@
 """C9a: a recurring loan payment cannot start before the loan does.
 
 ``RecurrenceRule.starts_on`` is the opening half of a recurrence's validity
-window, derived by ``loan_recurrence_sync.sync_recurring_payment_bounds`` from
-the loan's FIRST CONTRACTUAL INSTALLMENT.  It was ``start_date`` until plan
+window, derived by ``loan_recurrence_sync.sync_loan_payment_start`` (the
+opening-only sync plan step R7d-g left of ``sync_recurring_payment_bounds``)
+from the loan's FIRST CONTRACTUAL INSTALLMENT.  It was ``start_date`` until plan
 step R7c-b, which made the column the rule's FIRST OCCURRENCE rather than a
 bound the occurrences were filtered against (ruling R-R16); for a loan payment
 billing on a day of the month the two are the same date, because the first
@@ -158,12 +159,16 @@ class TestFirstInstallmentDate:
 
 
 class TestStartBoundIsSynced:
-    """``sync_recurring_payment_bounds`` writes the start bound from the loan."""
+    """``sync_loan_payment_start`` writes the start bound from the loan."""
 
     def test_creating_the_payment_bounds_the_rule(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """The create-transfer route leaves the rule bounded at both ends."""
+        """The create-transfer route leaves the rule's START bounded and its stop unwritten.
+
+        Both ends were written here until plan step R7d-g; the closing bound
+        is derived on every read now and the column stays NULL.
+        """
         acct = _upcoming_mortgage(seed_user, db.session, seed_periods)
         checking = seed_user["account"]
         db.session.commit()
@@ -182,7 +187,8 @@ class TestStartBoundIsSynced:
         rule = xfer.template.recurrence_rule
         # One month after the 2026-04-15 closing, on payment day 1.
         assert rule.starts_on == date(2026, 5, 1)
-        assert rule.end_date is not None
+        assert rule.end_date is None
+        assert rule.max_occurrences is None
 
     def test_a_payment_day_edit_moves_the_bound_and_the_billing_day(
         self, auth_client, seed_user, db, seed_periods,
@@ -235,7 +241,7 @@ class TestStartBoundIsSynced:
         db.session.commit()
 
         with auth_client.application.app_context():
-            loan_recurrence_sync.sync_recurring_payment_bounds(acct.id)
+            loan_recurrence_sync.sync_loan_payment_start(acct.id)
             db.session.commit()
 
         db.session.refresh(rule)
@@ -289,7 +295,7 @@ class TestStartBoundIsSynced:
             db.session.commit()
             assert scheduling_day_of_month(template.recurrence_rule) is None
 
-            loan_recurrence_sync.sync_recurring_payment_bounds(acct.id)
+            loan_recurrence_sync.sync_loan_payment_start(acct.id)
 
             assert template.recurrence_rule.starts_on == date(2026, 4, 24)
             assert template.recurrence_rule.nominal_day is None
@@ -308,11 +314,14 @@ class TestStartBoundIsSynced:
         loan configured while the baseline was gone (finding G1: a real,
         repairable state) generating payments from the beginning of time.
 
-        NEGATIVE CONTROL: move the ``_sync_loan_cadence`` call below the
-        ``ctx.scenario is None`` return in ``sync_recurring_payment_bounds`` and
-        this goes red.  (It was ``_sync_start_date`` until plan step R7c-b gave
-        the function the whole cadence to keep, and the control named the old
-        symbol for a step after it stopped existing.)
+        NEGATIVE CONTROL, historical: while ``sync_recurring_payment_bounds``
+        still wrote the END bound behind a ``ctx.scenario is None`` return,
+        moving the ``_sync_loan_cadence`` call below that return turned this
+        red.  Plan step R7d-g deleted the END half and the return with it:
+        ``sync_loan_payment_start`` builds no read pass at all, so this now
+        pins that it never grows one.  (It was ``_sync_start_date`` until plan
+        step R7c-b gave the function the whole cadence to keep, and the
+        control named the old symbol for a step after it stopped existing.)
         """
         with app.app_context():
             acct = _upcoming_mortgage(seed_user, db.session, seed_periods)
@@ -327,7 +336,7 @@ class TestStartBoundIsSynced:
             ).delete()
             db.session.commit()
 
-            loan_recurrence_sync.sync_recurring_payment_bounds(acct.id)
+            loan_recurrence_sync.sync_loan_payment_start(acct.id)
             # The pay-period normalisation, as in the day-less test above:
             # the 2026-05-01 installment is billed in period 8's paycheck.
             assert template.recurrence_rule.starts_on == date(2026, 4, 24)
@@ -465,7 +474,7 @@ class TestNoPaymentGeneratesBeforeTheLoan:
         this route builds its rule from the FORM, so nothing ever handed it the
         loan's first installment.  Measured unbounded: 3 pre-origination
         installments (2026-02-01 / 03-01 / 04-01), byte-for-byte the defect the
-        loan route produced, on a path ``sync_recurring_payment_bounds`` never
+        loan route produced, on a path the loan-side start sync never
         touches because it runs at loan mutations, not transfer creations.
 
         **The form's own "Starts on" is OVERWRITTEN here, deliberately.**  The

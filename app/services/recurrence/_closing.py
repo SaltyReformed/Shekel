@@ -113,8 +113,10 @@ class DerivedStop(ABC):
     drafted for and then held back on (plan ledger row **D35**).  An owner
     AUTHORING a stop before a start has made a mistake to report; a loan trued
     to zero before its first installment has an empty window that is CORRECT at
-    nought occurrences, and a CHECK that cannot tell those apart turns a
-    true-up into an unhandled ``CheckViolation``.
+    nought occurrences, and a CHECK that cannot tell those apart would have
+    turned a true-up into an unhandled ``CheckViolation`` while the column
+    held both.  The CHECK landed at plan step R7d-g, once the column held
+    only what owners author and this value alone carried the derived stop.
 
     **Every shape answers :meth:`admits`, and this base implements none of
     it.**  A default here -- "a shape that does not recognise the question
@@ -304,8 +306,9 @@ class Empty(DerivedStop):
     installment 2026-07-15; true its balance to zero on 2026-06-21 and it
     retires that day, so the derived window is ``[2026-07-15, 2026-06-21]`` --
     CORRECT at nought occurrences.  Plan ledger row **D35** carries the same
-    shape as the state that held ``ck_recurrence_rules_valid_window`` back,
-    because a CHECK cannot tell it from an owner's mistake.
+    shape as the state that held ``ck_recurrence_rules_valid_window`` back
+    until plan step R7d-g, because a CHECK could not tell it from an owner's
+    mistake while both were stored; it is this VALUE now and never a column.
 
     **This shape is STABLE, and plan step ``recurrence:R7d-h`` is what made it
     so.**  A retired loan's closing bound USED TO BE the read pass's own
@@ -406,11 +409,12 @@ class Closing:
             for the many live rules that state none.  Always present: a
             definition always has an authored bound, even when that bound is
             "it does not stop".  **This value cannot tell an authored date
-            from a cached one**, and until plan step R7d-g deletes the stored
-            copy the ``end_date`` column of the loan payment the app bounds
-            holds the chokepoints' cache of the derived payoff -- so the
-            composed door supplies ``NEVER_ENDS`` here for that definition
-            (ruling **R-R56**), and the derived half is its whole stop.
+            from a cached one**, which mattered until plan step R7d-g: the
+            ``end_date`` column of the loan payment the app bounded held the
+            chokepoints' cache of the derived payoff, so the composed door
+            supplied ``NEVER_ENDS`` here for that definition (ruling
+            **R-R56**).  Nothing writes a cache there now, so this is the
+            owner's word for every definition.
         derived: What something outside the rule allows, or ``None`` when
             nothing does.  ``None`` is "no derived source bounds this
             definition" and is a complete answer rather than an unknown -- a

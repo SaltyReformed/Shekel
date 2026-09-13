@@ -845,77 +845,68 @@ class TestTheDestinationsStopReachesTheRow:
         )
         assert row.next_date >= _LOAN_TODAY
 
-    def test_a_stale_EARLIER_cached_column_does_not_reach_the_row(
+    def test_an_owners_stop_on_the_standing_payment_reaches_the_row(
         self, seed_user, seed_periods_52,
     ):
-        """Plan ledger row **D35**'s shape on the surface, under ruling **R-R56**.
+        """Ruling **R-R82** on the surface: a stored stop is the owner's word and the row names it.
 
-        The column holds a date EARLIER than the loan's payoff -- the shape
-        measured on production (``2029-01-22`` stored against ``2029-02-22``
-        derived).  Before the ruling the composed value read it as the owner's
-        bound and the row named the cached date; the door now reads the column
-        the app itself writes as the cache it is, so the row names the payoff
-        and keeps a next date.
+        Until plan step R7d-g this case pinned plan ledger row **D35**'s shape
+        the other way round: the column was the chokepoints' cache, EARLIER
+        than the loan's payoff (``2029-01-22`` stored against ``2029-02-22``
+        derived on production), and the door read it as no bound at all
+        (ruling **R-R56**) so the row named the payoff.  Nothing writes a
+        cache there now; a date in that column is a stop the owner authored,
+        the door composes it, and the row names it.  The next date is still
+        placed, because the pass reads before the stop.
         """
         loan = _loan(seed_user)
         tpl = make_loan_payment_template(db.session, seed_user, loan)
         db.session.commit()
         ctx = _ctx(seed_user, _LOAN_TODAY)
-        stale = date(2027, 1, 1)
+        authored = date(2027, 1, 1)
         reauthor_rule(
             tpl.recurrence_rule,
-            replace(recurrence_spec(tpl.recurrence_rule), end_bound=EndsOnDate(on=stale)),
+            replace(recurrence_spec(tpl.recurrence_rule), end_bound=EndsOnDate(on=authored)),
             ctx.calendar(),
         )
         db.session.commit()
-        assert tpl.recurrence_rule.end_date == stale, "precondition: stale"
+        assert tpl.recurrence_rule.end_date == authored, "precondition: stored"
         assert is_standing_loan_payment(tpl, ctx), (
-            "precondition: this is the definition whose bound the app writes"
+            "precondition: this is the loan's standing payment"
         )
-        assert balance_at.loan_figures(loan, ctx).closing_date == (
-            date(2028, 7, 1)
-        ), "precondition: the loan's own stop is LATER than the cache"
 
         view = recurring_view.build_view([], [], [tpl], ctx)
         row = view.transfers.rows[0]
 
-        assert row.recurrence.stops == "until Jul 01, 2028"
+        assert row.recurrence.stops == "until Jan 01, 2027"
         assert row.next_date is not None
+        assert row.next_date <= authored
 
-    def test_an_ARCHIVED_loan_payments_cached_column_is_still_read_as_authored(
+    def test_an_ARCHIVED_loan_payments_stored_stop_is_read_as_its_owners(
         self, seed_user, seed_periods_52,
     ):
-        """The Archived drawer still reads the cache, pinned as the interim it is.
+        """The Archived drawer reads a stored stop as the owner's word, like every reader.
 
-        Ruling **R-R56** keys on the account's ACTIVE recurring transfer, and an
-        archived loan payment is no longer that -- so the column the chokepoints
-        wrote while it was active is read in the Archived drawer as its owner's
-        bound, and a cache EARLIER than the derived stop still binds the drawer
-        row.  The drawer is not the cache's only remaining reader: the edit
-        form and generation off it read the column too (the monthly equivalent
-        on this surface stopped at plan step R7d-e, when the aggregator took
-        the door).  The schema records who wrote a bound nowhere, so no
-        predicate can tell this cache from an owner's date, and plan step R7d-g
-        must DECIDE archived loan payments rather than sweep them (ledger row
-        D56, an open fork).
-
-        **What trips this is a predicate change, not R7d-g.**  The case writes
-        the stale column itself, so R7d-g's migration does not reach it; it
-        fails the day the door starts reading an archived definition's column
-        as the cache -- which is the thing to notice, because an archived
-        SECOND transfer's column can be an owner's word.  Read beside
+        Until plan step R7d-g the drawer showed the cache the chokepoints
+        wrote while the payment was active -- ruling **R-R56** keyed on the
+        account's ACTIVE transfer, so an archived one's column was read as
+        authored -- and this case pinned that as the interim it was.  R7d-g's
+        migration NULLed that cache on every archived transfer into a loan
+        (ruling **R-R80**), so a date standing there afterwards is one an
+        owner authored and the drawer names it; the migration's own test
+        holds the NULLing.  Read beside
         :meth:`test_the_archived_drawer_names_the_same_stop`, which holds that
-        the drawer composes the derived stop at all; alone this could not tell
-        "composed, and the authored minimum wins" from "never composed".
+        the drawer composes the derived stop at all; alone this could not
+        tell "composed, and the authored minimum wins" from "never composed".
         """
         loan = _loan(seed_user)
         tpl = make_loan_payment_template(db.session, seed_user, loan)
         db.session.commit()
         ctx = _ctx(seed_user, _LOAN_TODAY)
-        stale = date(2027, 1, 1)
+        authored = date(2027, 1, 1)
         reauthor_rule(
             tpl.recurrence_rule,
-            replace(recurrence_spec(tpl.recurrence_rule), end_bound=EndsOnDate(on=stale)),
+            replace(recurrence_spec(tpl.recurrence_rule), end_bound=EndsOnDate(on=authored)),
             ctx.calendar(),
         )
         tpl.is_active = False
@@ -972,65 +963,61 @@ class TestTheDestinationsStopReachesTheRow:
         )
         assert view.transfers.subtotal.monthly == Decimal("0.00")
 
-    def test_a_stale_EARLIER_cached_column_does_not_BLANK_the_monthly_figure(
+    def test_an_owners_stop_that_has_passed_BLANKS_the_monthly_figure(
         self, seed_user, seed_periods_52,
     ):
-        """The limit plan step R7d-d named and R7d-e closes.
+        """One row agreeing with itself, read after an owner's stop on the standing payment.
 
-        Plan ledger row **D35**'s shape, read on a day BETWEEN the cached date
-        and the loan's payoff: the door names the payoff (ruling **R-R56**)
-        and the walk still places a next date, but until R7d-e the monthly
-        equivalent read the column alone -- so the row showed
-        ``until Jul 01, 2028`` and a next date beside a BLANK figure, for
-        every installment the derived stop adds past the cached date.  One
-        row disagreeing with itself about whether the commitment is over,
-        which is the HIGH-05 defect this producer exists to have fixed.
-
-        The cache is ``2026-07-15`` and the pass is pinned at 2026-07-20 --
-        after the cache, before the first installment on 2026-08-01, so no
-        installment has gone unpaid and the payoff the door's own tests pin
-        for this loan (``2028-07-01``) still holds.  The loan's own stop is
-        asserted as a precondition so a drift in the fixture reports as one
-        rather than as a display defect.  ``$200.00`` monthly is
-        ``200 * 12 / (1 * 12)``.
+        Until plan step R7d-g this case pinned plan ledger row **D35**'s shape
+        -- a cache EARLIER than the payoff, read between the two -- and held
+        that the cache blanked NOTHING, because the door read it as no bound
+        (ruling **R-R56**).  A date in that column is the owner's word now
+        (ruling **R-R82**), and a stop the pass reads AFTER has ended the
+        definition on every reader of the door: the stop line names it, the
+        next date is ``None`` and the monthly equivalent is blank, which is
+        what plan step R7d-e made ONE reading rather than three.  The stop
+        sits after the first installment (2026-08-01) so the stored pair is
+        the ordered one ``ck_recurrence_rules_valid_window`` admits, and the
+        pass reads five days past it.  ``$200.00`` monthly would be
+        ``200 * 12 / (1 * 12)`` for a live row; the control beside this
+        (:meth:`test_an_owners_stop_on_the_standing_payment_reaches_the_row`)
+        reads BEFORE its stop and keeps a next date.
         """
         loan = _loan(seed_user)
         # The loan door's own shape -- monthly on the payment day, its start
         # bound to the first contractual installment -- which the fixture
-        # authors by default since plan step R16-b-2.  Stating ``fires_on_day``
-        # instead started the rule on the first 1st the 52-period schedule
-        # reaches, months before this loan exists, and the plan now prices
-        # every occurrence the schedule places that no row answers (ruling
-        # **R-R64**) -- so the loan's own stop moved six installments early
-        # on payments for months it did not owe.
+        # authors by default since plan step R16-b-2.
         tpl = make_loan_payment_template(db.session, seed_user, loan)
         db.session.commit()
-        stale = date(2026, 7, 15)
+        authored = date(2026, 8, 15)
+        assert tpl.recurrence_rule.starts_on == date(2026, 8, 1), (
+            "precondition: the stop must follow the first installment"
+        )
         reauthor_rule(
             tpl.recurrence_rule,
-            replace(recurrence_spec(tpl.recurrence_rule), end_bound=EndsOnDate(on=stale)),
+            replace(recurrence_spec(tpl.recurrence_rule), end_bound=EndsOnDate(on=authored)),
             _ctx(seed_user, _LOAN_TODAY).calendar(),
         )
         db.session.commit()
-        assert tpl.recurrence_rule.end_date == stale, "precondition: stale"
-        ctx = _ctx(seed_user, date(2026, 7, 20))
+        assert tpl.recurrence_rule.end_date == authored, "precondition: stored"
+        ctx = _ctx(seed_user, date(2026, 8, 20))
         assert is_standing_loan_payment(tpl, ctx), (
-            "precondition: this is the definition whose bound the app writes"
+            "precondition: this is the loan's standing payment"
         )
-        assert balance_at.loan_figures(loan, ctx).closing_date == (
-            date(2028, 7, 1)
-        ), "precondition: the loan's own stop is LATER than the cache"
 
         view = recurring_view.build_view([], [], [tpl], ctx)
         row = view.transfers.rows[0]
 
-        assert row.recurrence.stops == "until Jul 01, 2028"
-        assert row.next_date is not None
-        assert row.equivalent.monthly == Decimal("200.00"), (
-            "the stale cache blanked the monthly figure for a loan that still "
-            "owes all twenty-four installments"
+        assert row.recurrence.stops == "until Aug 15, 2026"
+        assert row.next_date is None, (
+            f"a payment dated {row.next_date} was projected past the stop "
+            "its owner authored"
         )
-        assert view.transfers.subtotal.monthly == Decimal("200.00")
+        assert row.equivalent.monthly is None, (
+            f"the row states {row.equivalent.monthly} a month beside a stop "
+            "line that says the money has stopped"
+        )
+        assert view.transfers.subtotal.monthly == Decimal("0.00")
 
     def test_the_archived_drawer_names_the_same_stop(
         self, seed_user, seed_periods_52,
