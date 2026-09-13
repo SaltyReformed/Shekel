@@ -72,22 +72,28 @@ class DefinitionRow:
         template: The recurring transfer definition (``Transfer.template``).
         due_date: The installment the payment satisfies -- the row's own
             ``due_date``, or the date the occurrence's row would carry
-            (:func:`app.services.recurrence.compute_due_date`).  ``None`` on
-            a written row whose owner cleared it; never ``None`` for an
-            occurrence.
+            (:func:`app.services.recurrence.compute_due_date`).  Never
+            ``None``: a written row here names a definition, and
+            ``ck_transfers_template_row_needs_due_date`` (plan step
+            **X-bv-2**, ruling **R-BAL17**) refuses such a row without a
+            date, so the state this was ``date | None`` for -- an owner
+            clearing it -- cannot be stored.
         period_start: The payday of the paycheck funding it
-            (``pay_period.start_date``) -- rule 4's installment fallback for
-            a payment carrying no due date.
+            (``pay_period.start_date``).  Rule 4's derive arm still takes it
+            beside the date because :func:`app.services.loan_loaders.installment_for`
+            serves an AD-HOC loan payment too, which names no definition and
+            may carry no date; on this row the date is always present and
+            the fallback is never reached.
         to_account_id: The account the definition pays into.
     """
 
     template: object
-    due_date: date | None
+    due_date: date
     period_start: date
     to_account_id: int
 
 
-def _stated_amount(template, on_date: date | None, subject: str) -> Decimal:
+def _stated_amount(template, on_date: date, subject: str) -> Decimal:
     """Return what *template* states for ``on_date``, refusing when it states nothing.
 
     The series arm shared by rule 3 and by :func:`resolve_transfer_amount`, so
@@ -96,7 +102,7 @@ def _stated_amount(template, on_date: date | None, subject: str) -> Decimal:
     version at or before the date, holding FLAT before the earliest one, which
     is what makes it total for a row generated into a historical period.
 
-    Three refusals, and all three are states the app can reach:
+    Two refusals, and both are states the app can reach:
 
     * **the definition does not own its amount**
       (``template_amount_service.owns_its_amount`` is False -- a salary-linked
@@ -107,17 +113,24 @@ def _stated_amount(template, on_date: date | None, subject: str) -> Decimal:
       versions stated while it was manual (X-au-a's stated behaviour -- they are
       the record of what was stated then), so an emptiness test would answer a
       derive-mode payment from a price nobody is stating any more.
-    * **no due date.**  ``due_date`` is nullable on both row tables and the
-      transfer edit form can clear it, so a row can carry no date to resolve
-      on.  A pay period's bounds are NOT a substitute -- a period begins up to
-      two weeks before the installment it funds (ruling D5's contract time), so
-      a price change inside that window would answer one figure here and
-      another everywhere else.
     * **an empty series** on a definition that DOES own its amount: its creator
       wrote the scalar without going through
       ``template_amount_service.set_amount``, the one write door.  Nobody ever
       stated a price, and X-au-a's own docstring names this refusal as the
       reason it answers ``None`` instead of guessing.
+
+    **A third refusal -- no due date -- was DELETED at plan step X-bv-2**
+    (ruling **R-BAL17**), not re-targeted.  It refused a linked row carrying
+    no date, because a pay period's bounds are not a substitute for one (a
+    period begins up to two weeks before the installment it funds, ruling
+    D5's contract time, so a price change inside that window would answer
+    one figure here and another everywhere else).  That argument is now the
+    schema's: ``ck_transactions_template_row_needs_due_date`` and
+    ``ck_transfers_template_row_needs_due_date`` refuse the row at flush,
+    the only writers of a linked row date it (``compute_due_date``, which
+    always answers), and an occurrence no row answers yet is dated by the
+    same function -- so ``on_date`` is a ``date`` here by construction, and
+    a refusal over a state that cannot be stored is a fence.
 
     **It names its SUBJECT rather than a row, since plan step R16-b-2.**  A
     row is one subject -- "Transfer 123" -- and an occurrence no row answers
@@ -138,7 +151,7 @@ def _stated_amount(template, on_date: date | None, subject: str) -> Decimal:
 
     Raises:
         AmountUnresolvable: When the definition's amount is derived rather than
-            stated, when the row has no due date, or when the series is empty.
+            stated, or when the series is empty.
     """
     if template is None:
         raise AmountUnresolvable(
@@ -157,15 +170,6 @@ def _stated_amount(template, on_date: date | None, subject: str) -> Decimal:
             "it owned its amount, so reading it here would answer a price "
             "nobody is stating any more. The rule that prices this row is the "
             "one that computes the definition's amount, and it had no answer."
-        )
-    if on_date is None:
-        raise AmountUnresolvable(
-            f"{subject} is priced by template "
-            f"{template.id} and carries no due_date, so there is no date to "
-            "resolve its price on. Its pay period's bounds are not a "
-            "substitute: a period starts up to two weeks before the "
-            "installment it funds, so a price change inside that window would "
-            "answer differently here than everywhere else."
         )
     stated = template_amount_service.amount_as_of(template, on_date)
     if stated is None:

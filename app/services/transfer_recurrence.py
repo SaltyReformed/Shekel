@@ -171,7 +171,12 @@ class DerivedTransferFields(NamedTuple):
             the stale cache this arc deletes, and the transaction twin lost the
             same field at plan step X-au-e.
         due_date: Derived from the rule and the period by
-            :func:`~app.services.recurrence.compute_due_date`.
+            :func:`~app.services.recurrence.compute_due_date`, which always
+            answers one; for a RULE-LESS definition it is the transfer's own
+            (:func:`_derive_unruled_fields`), which is a date too, because
+            ``ck_transfers_template_row_needs_due_date`` refuses a linked
+            transfer without one.  It was ``date | None`` until plan step
+            **X-bv-2** bound that CHECK (ruling **R-BAL17**).
     """
 
     from_account_id: int
@@ -179,7 +184,7 @@ class DerivedTransferFields(NamedTuple):
     name: str
     category_id: int | None
     amount_ownership: AmountOwnership
-    due_date: date | None
+    due_date: date
 
 
 def _derive_row_fields(template, rule, period) -> DerivedTransferFields:
@@ -255,8 +260,11 @@ def propagate_to_unruled_template(template, transfers) -> "list[int]":
     period, and RETIRE the row (that is defect **D16**, and why the route gates
     the sweep on "the template IS or WAS recurring").  **Since finding
     REC-516 that deletion is unreachable by a second route**: the one-time
-    transfer is created UNDATED, and an undated row is now retained rather
-    than retired.  The gate stays as defence in depth and because a retained
+    transfer is created UNDATED -- it answers no occurrence (``occurs_on`` is
+    ``None``; it does carry a ``due_date``, the chosen paycheck's start, as
+    ``ck_transfers_template_row_needs_due_date`` requires of every linked
+    transfer) -- and an undated row is now retained rather than retired.  The
+    gate stays as defence in depth and because a retained
     row still raises a conflict the owner would have no reason to see.  What is
     left is this: the row is never retired, and everything else is the same
     rule.

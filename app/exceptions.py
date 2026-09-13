@@ -94,9 +94,11 @@ class AmountUnresolvable(ShekelError, ValueError):
     Raised by ``app.services.cash_ledger.resolve_transaction_amount`` and its
     transfer twin (plan step X-au-b, ruling **R-FI**): a row's amount is either
     its OWN or DERIVED, and where the rule that owns it cannot produce a figure
-    -- no due date to resolve a price series on, an EMPTY series, no live net
-    for the row's pay period, a loan whose basis will not resolve, a shadow with
-    no parent -- this refusal is the answer.
+    -- an EMPTY series, no live net for the row's pay period, a loan whose
+    basis will not resolve, a shadow with no parent -- this refusal is the
+    answer.  (A linked row with no due date to resolve a series on was one
+    until plan step X-bv-2 made it unstorable; see
+    ``cash_ledger._definition_cash._stated_amount``.)
 
     **It is a refusal rather than a fallback, and the fallback is what the arc
     is deleting.**  Reading the stored column instead would publish exactly the

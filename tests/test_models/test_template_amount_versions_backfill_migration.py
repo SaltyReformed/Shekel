@@ -241,27 +241,6 @@ class TestMinedHistory:
                 (date(2026, 5, 1), Decimal("165.30")),
             ]
 
-    def test_a_row_with_no_due_date_places_no_version(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """No date, no dated evidence -- it is dropped, not sorted to one end.
-
-        ``due_date`` is nullable and the transfer edit form can clear it; a row
-        with none cannot say WHEN a price applied, so it must not decide a
-        version's date.
-        """
-        with app.app_context():
-            template = _template(seed_user, amount="165.30")
-            _row(template, seed_periods[0], "111.11", None)
-            _row(template, seed_periods[1], "165.30",
-                 date(2026, 5, 1))
-
-            _run_backfill()
-
-            assert _versions(template) == [
-                (date(2026, 5, 1), Decimal("165.30")),
-            ]
-
     def test_a_non_baseline_scenario_is_not_evidence(
         self, app, db, seed_user, seed_periods,
     ):

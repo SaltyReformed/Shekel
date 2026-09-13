@@ -99,8 +99,8 @@ the sum of the source's credit entries), so it places as OWN here and needs a
 relation of its own to stop -- finding **N-243**, plan step X-au-i.
 
 **A refusal is a refusal, never a fallback.**  Where a derived rule's producer
-cannot answer -- no due date to resolve a series on, an EMPTY series, no live
-net for the row's period, a loan whose basis will not resolve, a missing parent
+cannot answer -- an EMPTY series, no live net for the row's period, a loan
+whose basis will not resolve, a missing parent
 -- :class:`~app.exceptions.AmountUnresolvable` is raised naming the row and the
 rule.  Falling back to the stored column would publish exactly the stale figure
 this arc exists to delete, and once a per-kind cutover (plan steps

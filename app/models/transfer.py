@@ -86,6 +86,31 @@ class Transfer(
             "amount_source_id IS NULL OR transfer_template_id IS NOT NULL",
             name="ck_transfers_adhoc_owns_amount",
         ),
+        # A TRANSFER OF A DEFINITION IS DATED (plan step **X-bv-2**, ruling
+        # **R-BAL17**, finding **BAL-463**): the twin of
+        # ``ck_transactions_template_row_needs_due_date`` in
+        # :mod:`app.models._transaction_table_args`, which carries the full
+        # argument.  Amount rule 3 prices a derived transfer from its
+        # definition's series *as of its own due date*, and ruling **D5**
+        # forbids the pay period's bounds as a substitute -- so a linked
+        # transfer with no date is unpriceable, and the arm of
+        # ``cash_ledger._definition_cash._stated_amount`` that refused one is
+        # deleted with this constraint rather than kept as a fence.  Every
+        # constructor that sets ``transfer_template_id`` dates the row: the
+        # recurrence engine splats ``DerivedTransferFields`` (whose date is
+        # ``compute_due_date``'s answer, never ``None``) and the one-time
+        # branch of ``routes/transfers/_instances`` writes the chosen
+        # paycheck's start.  The two PATCH doors that could clear the date on
+        # a linked transfer refuse it first (``Transfer.due_date_is_its_definitions``);
+        # this is their backstop for a writer that is not the application.
+        # An AD-HOC transfer is untouched: it owns its figure, nothing prices
+        # it by its date, and the form still offers the field.  Measured
+        # before binding: 0 of 177 linked transfers undated on production,
+        # 2026-09-12.  Migration ``4d7123cd9803``.
+        db.CheckConstraint(
+            "transfer_template_id IS NULL OR due_date IS NOT NULL",
+            name="ck_transfers_template_row_needs_due_date",
+        ),
         # WHAT A GENERATED ROW IS, stated as storage (plan step **R17**).  A
         # row answers ONE occurrence of its template's cadence; the pay period
         # is where that occurrence's money lands, which is a DERIVED placement

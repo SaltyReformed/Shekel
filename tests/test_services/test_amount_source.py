@@ -1083,24 +1083,6 @@ class TestTheTransferRule:
 class TestEveryRefusalFires:
     """Each guard, reached and shown to raise.  None of them fires on production."""
 
-    def test_a_template_row_with_no_due_date_is_refused(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """There is no date to resolve the price on, and a period is not one.
-
-        Reachable: ``due_date`` is nullable and both edit forms accept an empty
-        value on it (finding N-246, X-au-a's set of 2026-08-11) -- so the empty
-        box is laid on the engine's row here.  **Plan step balance:X-bv-2
-        deletes this case with the arm it grades**: its CHECK makes the state
-        unrepresentable, and the constraint is the refusal's successor.
-        """
-        template = _priced_template(seed_user)
-        txn = _template_row(seed_periods[0], template)
-        txn.due_date = None
-        db.session.flush()
-        with pytest.raises(AmountUnresolvable, match="no due_date"):
-            _resolve(seed_user, txn)
-
     def test_a_template_row_whose_series_is_empty_is_refused(
         self, app, db, seed_user, seed_periods,
     ):

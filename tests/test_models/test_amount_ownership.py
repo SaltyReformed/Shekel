@@ -1495,7 +1495,12 @@ class TestTheTemplateCutoverRefusesRatherThanStrandingARow:
     unpriceable row or a silently moved figure.
 
     Driven against a clone of production 2026-09-03: empty on all 525, and
-    naming the row after one due date was nulled by hand.
+    naming the row after one due date was nulled by hand.  **That nulled-date
+    case is gone since plan step balance:X-bv-2** (ruling **R-BAL17**):
+    ``ck_transactions_template_row_needs_due_date`` refuses the row at flush,
+    so the guard's ``due_date IS NULL`` arm -- frozen migration code, and
+    kept -- can no longer be handed its subject; the CHECK's DDL is that
+    arm's successor and its own tests grade it.
     """
 
     def test_a_clean_population_strands_nothing(
@@ -1519,36 +1524,6 @@ class TestTheTemplateCutoverRefusesRatherThanStrandingARow:
             assert _TEMPLATE_CUTOVER.rows_the_declare_would_strand(
                 db.session.connection(),
             ) == []
-
-    def test_a_row_with_NO_DUE_DATE_is_named_and_the_upgrade_refuses(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The row X-au-e would empty and nothing could then price.
-
-        ``_stated_amount`` refuses a derived row with no due date, and ruling
-        D5 forbids substituting the pay period's bounds -- so declaring such a
-        row makes it permanently unpriceable, and ``routes/grid/page`` prices
-        every row it loads with no handler.
-        """
-        with app.app_context():
-            template = _plain_template(seed_user)
-            db.session.add(TemplateAmountVersion(
-                transaction_template_id=template.id,
-                effective_date=date(2026, 1, 1), amount=Decimal("7.77"),
-            ))
-            txn = _make_transaction(
-                seed_user, seed_periods,
-                template_id=template.id,
-                due_date=None,
-                amount_ownership=AmountOwnership.own(Decimal("7.77")),
-            )
-            db.session.commit()
-
-            stranded = _TEMPLATE_CUTOVER.rows_the_declare_would_strand(
-                db.session.connection(),
-            )
-            assert [row[0] for row in stranded] == [txn.id]
-            assert "no due_date" in stranded[0][3]
 
     def test_a_row_whose_FIGURE_DISAGREES_with_the_series_is_named(
         self, app, db, seed_user, seed_periods,
