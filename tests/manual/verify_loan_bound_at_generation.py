@@ -328,7 +328,7 @@ with app.app_context():
         if period.start_date > date.today()
     )
     regen = pay_period_admin.regenerate_pay_periods(
-        USER_ID, first_open.start_date, 80, calendar.rhythm,
+        USER_ID, first_open.start_date, 80, calendar.eras[-1].rhythm,
         confirms=pay_period_gates.Confirmations(discard=True, gap=True),
     )
     db.session.flush()

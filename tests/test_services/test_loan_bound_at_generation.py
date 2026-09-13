@@ -276,7 +276,7 @@ def _maintain(template, ctx):
 #: no loan -- or into one the pass has already folded -- must not touch.
 _SEAM_TABLES = (
     "budget.loan_params", "budget.accounts", "budget.transactions",
-    "budget.transfer_templates", "budget.loan_anchor_events",
+    "budget.transfers", "budget.transfer_templates", "budget.loan_anchor_events",
 )
 
 
