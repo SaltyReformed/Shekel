@@ -82,6 +82,7 @@ from app.services import pay_period_write
 from app.services.pay_calendar import calendar_for
 from app.services.auth_service import hash_password
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     load_migration_module,
     restore_pay_schedule_rhythm_columns,
@@ -225,10 +226,12 @@ def _off_cadence_calendar(db, user_id):
         num_periods=2, rhythm=rhythm_of(14),
     )
     db.session.commit()
-    # The forward-only floor is the latest payday plus the STORED cadence
-    # (2026-01-16 + 14 = 2026-01-30), so this batch is accepted and the stored
-    # cadence becomes 7 while the gap it leaves behind is 35 days.
-    pay_period_write.record_paydays(
+    # The forward-only floor is the plan's next payday (2026-01-30) and its
+    # ceiling the one after (02-13), so since plan step C17-c-2a the WRITER
+    # refuses this batch for skipping a paycheck: the 35-day gap it leaves is
+    # the state the tree's helper exists for, and the stored cadence still
+    # becomes 7 -- the helper mints the era the writer would.
+    record_paydays_across_a_hole(
         user_id=user_id, first_payday=date(2026, 2, 20),
         num_periods=1, rhythm=rhythm_of(7),
     )

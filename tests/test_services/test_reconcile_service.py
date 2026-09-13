@@ -48,6 +48,7 @@ from app.utils.log_events import (
     EVT_TRANSFERS_RECONCILED,
 )
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     an_entered_day,
     count_amount_bases,
@@ -471,7 +472,7 @@ class TestTheOutstandingSet:
         isolated by the test below, which is the only shape that can.
         """
         with app.app_context():
-            other_period = pay_period_write.record_paydays(
+            other_period = record_paydays_across_a_hole(
                 user_id=seed_second_user["user"].id,
                 first_payday=date(2026, 1, 2), num_periods=1, rhythm=rhythm_of(14),
             )[0]

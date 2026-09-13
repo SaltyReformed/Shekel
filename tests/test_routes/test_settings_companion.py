@@ -7,23 +7,19 @@ creation, editing, deactivation, reactivation, and the security
 guards that protect these owner-only routes.
 """
 
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 import pytest
 
 from app import ref_cache
-from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
+from app.enums import RoleEnum
 from app.extensions import db
-from app.models.account import Account
-from app.models.pay_period import PayPeriod
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import authenticate, verify_password
 from app.exceptions import AuthError
-from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import generate_row_of, make_expense_template
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -524,41 +520,15 @@ class TestDeactivateCompanion:
         hard-delete: credit card paybacks stay in sync because the
         underlying entries persist.
         """
-        # Seed a template + transaction + entry by the companion.
+        # Seed a definition, its engine-generated row and an entry by the
+        # companion.
         comp = seed_companion["user"]
-        owner = seed_user["user"]
-        expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-        projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-        category = list(seed_user["categories"].values())[0]
-
-        template = TransactionTemplate(
-            user_id=owner.id,
-            name="Groceries",
-            default_amount=Decimal("500.00"),
-            transaction_type_id=expense_type_id,
-            account_id=seed_user["account"].id,
-            category_id=category.id,
-            is_envelope=True,
-            companion_visible=True,
+        template = make_expense_template(
+            db.session, seed_user, amount="500.00", name="Groceries",
+            category_key=next(iter(seed_user["categories"])),
+            is_envelope=True, companion_visible=True,
         )
-        db.session.add(template)
-        db.session.flush()
-
-        period = seed_periods_today[0]
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            template_id=template.id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            status_id=projected_id,
-            name="Groceries",
-            category_id=category.id,
-            transaction_type_id=expense_type_id,
-            amount_ownership=AmountOwnership.own(Decimal("500.00")),
-        )
-        db.session.add(txn)
-        db.session.flush()
+        txn = generate_row_of(template, seed_periods_today[0])
 
         entry = TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id,

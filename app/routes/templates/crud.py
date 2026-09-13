@@ -866,11 +866,11 @@ def hard_delete_template(template_id):
 @templates_bp.route("/templates/preview-recurrence", methods=["GET"])
 @require_owner
 def preview_recurrence():
-    """HTMX partial: show the next 5 occurrences for a recurrence pattern.
+    """Fragment: show the next 5 occurrences for a recurrence pattern.
 
-    Routing only.  The fragment is built by
-    :func:`app.routes._recurrence_preview.recurrence_preview_fragment`, beside
-    the three helpers it composes -- the endpoint is kind-agnostic (both the
+    Routing only.  The fragment is fetched by ``recurrence_form.js`` and built
+    by :func:`app.routes._recurrence_preview.recurrence_preview_fragment`,
+    beside the helpers it composes -- the endpoint is kind-agnostic (both the
     transaction-template and transfer-template forms point at it), so its body
     does not belong in the transaction-template CRUD module.
     """

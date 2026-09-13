@@ -108,6 +108,7 @@ from ._eras import (
     era_index_at,
     first_payday_of,
     payday_after,
+    planned_paydays_after,
     projected_payday,
 )
 from ._grid import cadence_steps_to, nominal_payday
@@ -128,7 +129,6 @@ from ._searches import (
     earliest_started_period,
     final_covered_day,
     latest_started_period,
-    nominal_payday_after,
     opening_payday,
     period_by_id,
 )
@@ -157,13 +157,13 @@ __all__ = [
     "first_payday_of",
     "latest_started_period",
     "nominal_payday",
-    "nominal_payday_after",
     "opening_payday",
     "paychecks_from",
     "span_starting_on_or_after",
     "paydays_in_month_through",
     "payday_after",
     "paydays_in_year_before",
+    "planned_paydays_after",
     "period_by_id",
     "projected_payday",
     "saved_paydays_in_month_through",

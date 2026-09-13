@@ -95,11 +95,11 @@ class ScheduleFacts:
     a :class:`~app.services.pay_rhythm.Rhythm` beside a ``nominal_anchor``;
     a pay schedule is a SEQUENCE OF ERAS now, and this value is that sequence
     with the owner's history bound beside it.  :attr:`rhythm` still answers --
-    the LATEST era's -- for the readers of the CURRENT rhythm: the cadence
-    door (:func:`~app.services.pay_calendar.cadence_for`) and the extend door,
-    which continues the latest era.  The calendar itself takes the whole
-    sequence since plan step ``C17-b-2``, every reader asking the era
-    covering its own day.
+    the LATEST era's -- for the reader of the CURRENT rhythm, the cadence
+    door (:func:`~app.services.pay_calendar.cadence_for`); the extend door
+    read it too until plan step ``C17-c-2b``, where it stopped stating a
+    rhythm.  The calendar itself takes the whole sequence since plan step
+    ``C17-b-2``, every reader asking the era covering its own day.
 
     **It is the facts OF AN OWNER WHO HOLDS AN ERA, and cannot say
     otherwise** (ruling **R-PC45**'s principle, one relation over).  The
@@ -137,9 +137,11 @@ class ScheduleFacts:
     def latest_era(self) -> Era:
         """Return the era with the greatest ``effective_from``.
 
-        The era the schedule's forward continuation runs on: every extend and
-        rolling top-up records ITS grid, so after any batch the materialised
-        horizon sits inside it.
+        The era the schedule's plan ENDS on, whose rhythm is the owner's
+        current one (:attr:`rhythm`).  *Until plan step ``C17-c-2b`` every
+        extend and rolling top-up recorded ITS grid; they record the plan of
+        the era covering the record now, which is this one only once the
+        record reaches it (ruling **R-PC75**).*
 
         Returns:
             The last of :attr:`eras`.
@@ -156,11 +158,12 @@ class ScheduleFacts:
         backfills) read back exactly the values the row held.  Since
         ``C17-b-2`` the calendar takes :attr:`eras` whole and each reader asks
         the era covering its own day; what is left here is the CURRENT
-        rhythm, for the cadence door and for extend, which continues the
-        latest era.  For a PIECEWISE owner it is the rhythm their most recent
-        RECORDING batch stated -- the writer retires every era past the last
-        surviving payday and mints from the batch's day, so the latest era is
-        either that batch's mint or the era it continued at the same rhythm.
+        rhythm, for the cadence door (extend read it too until plan step
+        ``C17-c-2b``, where it stopped stating a rhythm at all).  For a
+        PIECEWISE owner it is the rhythm their most recent STATING batch
+        declared -- the writer retires every era past the last surviving
+        payday and mints from the batch's day, so the latest era is either
+        that batch's mint or the era it continued at the same rhythm.
 
         Returns:
             :attr:`latest_era`'s :class:`~app.services.pay_rhythm.Rhythm`.
@@ -349,7 +352,7 @@ def reread_schedule(user_id: int) -> PaySchedule:
 
 
 def reject_out_of_range_cadence(cadence_days: int) -> None:
-    """Refuse a cadence ``ck_pay_schedule_cadence_range`` would refuse.
+    """Refuse a cadence ``ck_pay_eras_cadence_range`` would refuse.
 
     **One implementation of the bound, two callers, and the second is why it
     is a function** (plan step X-ad-a).
@@ -700,11 +703,13 @@ def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
     and it was wrong in two ways at once.  It was CIRCULAR: since plan step
     C3-b :func:`app.services.pay_period_write.record_paydays` derives that same
     last end FROM this answer, so it read back the value it had produced and
-    could be neither right nor wrong.  And it was unbounded ABOVE, where
-    ``budget.pay_schedule.cadence_days`` is bounded to 1..365 by
-    ``ck_pay_schedule_cadence_range``: a hand-written period spanning more than
-    a year inferred a cadence ``app.services.pay_calendar`` refuses, and since
-    plan step C2-c that raise reaches every balance page as a bare 500.
+    could be neither right nor wrong.  And it was unbounded ABOVE, where the
+    stored cadence was bounded to 1..365 by the column's CHECK (then
+    ``budget.pay_schedule.cadence_days`` under ``ck_pay_schedule_cadence_range``;
+    ``budget.pay_eras.cadence_days`` under ``ck_pay_eras_cadence_range`` since
+    plan step ``C17-a``): a hand-written period spanning more than a year
+    inferred a cadence ``app.services.pay_calendar`` refuses, and since plan
+    step C2-c that raise reaches every balance page as a bare 500.
 
     What makes the arm unreachable is ``fk_pay_periods_schedule``, the key
     :class:`~app.models.pay_period.PayPeriod` carries: a pay period's owner has

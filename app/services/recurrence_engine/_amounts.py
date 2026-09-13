@@ -120,7 +120,12 @@ class DerivedRowFields(NamedTuple):
             step, and the arm that fork selected is what stored the copy the
             cutover deleted.
         due_date: Derived from the rule and the period by
-            :func:`compute_due_date`.
+            :func:`compute_due_date`, which always answers one -- a cadence
+            naming no day of the month dates the row from its period's start.
+            It was annotated ``date | None`` until plan step **X-bv-2**, which
+            binds ``ck_transactions_template_row_needs_due_date`` (a row of a
+            definition is dated) and tightened the type to the fact the
+            producer had always stated (ruling **R-BAL17**).
     """
 
     account_id: int
@@ -128,7 +133,7 @@ class DerivedRowFields(NamedTuple):
     category_id: int | None
     transaction_type_id: int
     amount_ownership: AmountOwnership
-    due_date: date | None
+    due_date: date
 
 
 

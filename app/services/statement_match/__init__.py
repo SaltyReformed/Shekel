@@ -200,7 +200,7 @@ from ._release import (
     release_match,
     removals_by_match,
 )
-from ._batch import BatchOutcome, Consent, ReviewedBatch, apply_reviewed
+from ._batch import Consent, ReviewedBatch, apply_reviewed
 from ._container import MintedEnvelopes
 from ._candidates import (
     candidates_for,
@@ -237,6 +237,7 @@ from ._offered_rules import (
     RuleOffer,
     rules_worth_offering,
 )
+from ._outcome import BatchOutcome
 from ._submission import (
     MatchSubmission,
     ReviewedDifference,

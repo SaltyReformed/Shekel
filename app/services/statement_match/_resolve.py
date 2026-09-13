@@ -36,13 +36,15 @@ not a candidate and cannot be reached by crafting a request.
 
 **The row lock every DOOR of this package takes on a bank line lives here
 too**, since plan step ``bank_import:X-gi-5``: its MODE is stated once in
-:func:`locked_for_write` (ruling **bank_import:R-BI5**) and its ORDER once in
+:func:`locked_for_write` (ruling **bank_import:R-BI5**), its ORDER once in
 the query :func:`load_lines` and :func:`lock_lines` share, so a door's own
 locked read and the pass's up-front one cannot come to take the same rows in
-two orders (finding **N-471**).  The writers OUTSIDE the package -- a
-re-import's UPDATE of a recorded line, an import delete's cascade -- are
-named on :func:`_lines_on` and :func:`lock_lines`, one composed with and one
-not.
+two orders (finding **N-471**), and since plan step ``bank_import:X-gv`` its
+REFRESH beside the mode, so a row a door reads under the lock is the row the
+lock holds rather than the one the pass hydrated before it (finding
+**BI-493**).  The writers OUTSIDE the package -- a re-import's UPDATE of a
+recorded line, an import delete's cascade -- are named on :func:`_lines_on`
+and :func:`lock_lines`, one composed with and one not.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
 frozen dataclasses out, no Flask import.  It READS and never writes; a lock is
@@ -101,15 +103,55 @@ def locked_for_write(query):
     :func:`~._skipping._line_on` all take the lock through here, and nothing
     in this package spells ``with_for_update`` on a bank line itself.
 
+    **It REFRESHES the instance it hands back, and that is the other half of
+    what the lock is for** (finding **BI-493**, plan step ``bank_import:X-gv``).
+    A press carrying creations runs :func:`~._reads.review_set` before
+    :func:`~._batch.apply_reviewed`, in the one ``READ COMMITTED``
+    transaction the request is, and that derivation reads every undisposed
+    line into the session's identity map, unlocked.  The locked ``SELECT`` a
+    door then runs fetches the row the lock holds -- and without
+    ``populate_existing()`` the ORM handed back the instance it already held,
+    unrefreshed, because it populates only the attributes an existing
+    instance has NOT loaded.  The one concurrent writer of a recorded line
+    is a re-import's NULL-fill
+    (``statement_import._record._absorb_gained_facts``: running balance,
+    source category, external id, transaction day, merchant), and two of
+    those columns reach every door's decision: ``merchant_id`` is the rule
+    lookup at the create and income doors, the deposit's category placement
+    at the income door and the skip door's account-payment refusal (ruling
+    **R-JI**); ``transaction_on`` is the day the create door files the
+    purchase on and, through :meth:`~._offers.MatchDays.of`, the day the
+    match door re-dates a purchase to (ruling **R-FW**).  *A first draft of
+    this sentence named two doors; the neutral review counted four, and an
+    enumeration a reader takes as complete has to be.*
+    ``populate_existing()`` overwrites every column from the
+    locked row and re-runs the joined ``merchant`` load, so ``merchant_name``
+    is the row's too; a change pending on the instance is flushed before the
+    statement runs (the session autoflushes), so the row read back holds it.
+    It composes HERE rather than at each site for the reason the mode does:
+    a locked read written next year inherits it by calling this.  On
+    :func:`lock_lines` it is vacuous by construction -- that read selects
+    the id column alone and hydrates no instance, so there is nothing for it
+    to hand back stale -- and the doors' own reads, which are what hand a
+    row to a door, are where it acts.  The precedent one table over is
+    :func:`app.services.credit_workflow.lock_source_transaction_for_payback`,
+    for the same trap on ``status_id``.  Graded by
+    ``tests/test_services/test_statement_match/test_locked_read_refresh.py``,
+    which reproduced the stale read on the tree before this step: the skip
+    landed on a line whose merchant now paid an account the owner holds, and
+    a purchase was filed on its posting day over a stated transaction day.
+
     Args:
         query: A query whose FROM list holds
             :class:`~app.models.statement_import.BankStatementLine`.
 
     Returns:
         The same query, locking the bank line rows it returns for the rest of
-        this transaction.
+        this transaction, and returning each as the locked row stands.
     """
-    return query.with_for_update(of=BankStatementLine, key_share=True)
+    return query.populate_existing().with_for_update(
+        of=BankStatementLine, key_share=True,
+    )
 
 
 def _lines_on(account_id: int, line_ids: "frozenset[int]"):
@@ -126,8 +168,8 @@ def _lines_on(account_id: int, line_ids: "frozenset[int]"):
     that step, because the order has to compose with the other ORDERED
     writer of these rows and only ``id`` does.**  A re-import fills what a later export
     states and the recorded line does not
-    (``statement_import._record._absorb_gained_facts``: running balance,
-    transaction day, merchant), and the ORM flushes a mapper's UPDATEs sorted
+    (``statement_import._record._absorb_gained_facts``, the five columns
+    :func:`locked_for_write` names), and the ORM flushes a mapper's UPDATEs sorted
     by PRIMARY KEY (``sqlalchemy.orm.persistence._sort_states``), so that
     transaction takes its row locks in id order.  Ids are not monotone in
     posted day across imports -- a fresher export inserts a finalized swipe
@@ -221,8 +263,11 @@ def lock_lines(account_id: int, line_ids: "frozenset[int]") -> None:
 
     **It takes the lock under the account FILTER**, so ids the pass has no
     business with lock nothing, and it returns nothing: what a door needs to
-    know about a line it reads for itself under the same lock.  An empty set
-    emits no statement at all, which is the ordinary untouched-form press.
+    know about a line it reads for itself under the same lock -- and that
+    read is the one :func:`locked_for_write` refreshes, since this one
+    selects the id column alone and hydrates no instance it could hand back
+    stale (plan step ``bank_import:X-gv``).  An empty set emits no statement
+    at all, which is the ordinary untouched-form press.
 
     **The per-user advisory lock is not taken here, and when
     ``balance:X-bn`` brings it to this door it goes ABOVE this read**: that
@@ -331,7 +376,9 @@ def load_lines(
             longer open.
 
     Returns:
-        The lines, ascending by id (:func:`_lines_on`).
+        The lines, ascending by id (:func:`_lines_on`); for a writing caller,
+        each as the locked row stands rather than as the pass first hydrated
+        it (:func:`locked_for_write`).
 
     Raises:
         ValidationError: When an id names no line on this account, names one

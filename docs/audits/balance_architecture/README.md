@@ -382,17 +382,11 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * [x] **X-bi-1** `18f9efac` -- the row's `is_envelope` cell SEALED on X-au-k's pattern rather than the move
     pinned (**R-BAL18**): private column, public name reads the accessor and writes the cell, every derived
     flag's class-level name refuses a query; the last two second spellings moved. No migration.
-  * [ ] **X-bi-1b** `companion_service` keeps the twin's dead cell alive: its query restates
-    `visible_to_companion` in SQL (`TransactionTemplate.companion_visible OR (template_id IS NULL AND
-    Transaction.companion_visible)`), a second spelling of the one property on the predicate that decides what
-    a companion may see, which is why `companion_visible` could not take `is_envelope`'s seal at X-bi-1
-    (**BAL-482**). Ruled **R-BAL19** from four worked options: the query keeps its owner / period / baseline
-    scenario / not-deleted scope and DELETES the visibility clause, the rows are filtered in Python through the
-    ONE property, and `companion_visible` then takes the same seal (private cell, public name reads the
-    accessor; the popover's `txn.companion_visible` control moves onto it). REJECTED: a `column_property` (a
-    stored copy inside the session with no reconciler), widening X-bi-5 (two spellings live until then), a
-    hybrid (two bodies of one rule). The companion page's ROW SET is unchanged -- only the filter's language
-    moves -- so the before/after equality is the grade. Closes **BAL-482**.
+  * [x] **X-bi-1b** `71e09443` -- the companion query asks each loaded row `visible_to_companion` and
+    restates nothing in SQL (**R-BAL19**); `companion_visible` sealed on the row as `is_envelope` was,
+    the one-consumer mixin dissolved, an id tie-break where `ORDER BY name` left a carried pair to the
+    plan. Row set before and after on a production restore: 64 pages, 232 of 951, byte-identical.
+    Closes **BAL-482**.
   * [ ] **X-bi-2** entries gain the full movement column set: a category, a type, `scenario_id` --
     which `cash_ledger/_amount_source.py` REFUSES a mismatch on -- and the settle-day basis pair.
     Additive; nothing reads them yet and the downgrade is a column drop.
@@ -888,9 +882,9 @@ section 4, under their unchanged ids.*
     figure can move and the harness is the proof. **Its tier is WIDENED by N-115** (ruling **R-BU**, which SEQUENCED the residual double load here
     rather than deferring it): the dashboard tracks
     section pays twice per render for three more loaders, and the expensive one is **two full
-    `calculate_paycheck` runs (7.2 ms / 7 SQL for the second alone)**. **`salary:C12` and this step
-    decide for each other** (that arc's document, section 0): the merged current-paycheck producer
-    is what gives `income_service`'s basis a threaded calendar.
+    `calculate_paycheck` runs (7.2 ms / 7 SQL for the second alone)**. **Its input tier's shape was
+    decided at `salary:C12-a` (R-SAL27)**: the basis takes the pass's PRICER, which carries the calendar
+    and the per-payday memo.
   * [ ] **X-i2 THE CLOCK** -- the cutover. Each memoized loader takes `ctx.as_of` and `ctx.scenario`,
     and this **MOVES MONEY**: the gross measured at `$3,631.74` today against `$3,722.53` at a 2027
     read and `$0` before the first pay period, and FU-3 changes a loan's whole forward trajectory on
@@ -1012,7 +1006,7 @@ section 4, under their unchanged ids.*
   that is precisely the form the first ruling specified and measurement rejected. The instrument is
   an open question the step's trace decides, and it must be shown FIRING on a planted defect.
 * [ ] **X-ah** `fix(routes): a query-string id is parsed like every other id` -- closes **N-142**.
-  The one submitted-id surface X-ae did not convert: the `request.args.get(..., type=int)` calls (census 29 code lines `request\.args\.get\([^)]*type=int` in `app/**/*.py`); `X-ah`'s own marker counts every `type=int` coercion, which is 34
+  The one submitted-id surface X-ae did not convert: the `request.args.get(..., type=int)` calls (census 30 code lines `request\.args\.get\([^)]*type=int` in `app/**/*.py`); `X-ah`'s own marker counts every `type=int` coercion, which is 34
   where Werkzeug catches the `ValueError` (so no crash) but the coercion is `int()` (so `'١٠٦'` is
   106, `' 2026 '` is 2026, `'1_0'` is 10). **It needs a per-site ruling, which is why it is a step**:
   the path parameters were all row ids and the schema fields all row ids, so each took one blanket
@@ -1031,24 +1025,16 @@ section 4, under their unchanged ids.*
   `steps.md` state the same number and were moved with it.
 *The `X-br` family -- the fresh container per run, its container and four leaves -- is ARCHIVED to `archive/x_br_family_2026-09-09.md` (2026-09-09, developer's call under rule 4). Every id still resolves in `steps.md`.*
 * [x] **X-bv** `66ff070b` -- closed the STRAND at its producer: a leftover carries `compute_due_date`'s answer, so `declare_derived` cannot leave a row amount rule 3 must price on a due date it has not got. **Its written remedy aimed at the wrong tier**; the CHECK is `X-bv-2`'s.
-* [ ] **X-bv-2** `fix(models): the CHECK the producer fix makes unreachable` -- owns **BAL-463**.
-  `template_id IS NULL OR due_date IS NOT NULL` on BOTH row tables, replacing `b4d9e1c7a052`'s
-  three-term predicate, which admitted the undated leftover and refused only the TRANSITION. The
-  two-term form needs NO guard: nothing can reach the state. **RE-SPECIFIED 2026-09-11 (R-BAL17)**
-  and sequenced behind `X-cf`: it binds only once the suite's rows of a definition are the engine's.
-  Deletes `_stated_amount`'s `on_date is None` arm with its test and the two tests grading frozen
-  migrations' `due_date IS NULL` arms; tightens `DerivedRowFields.due_date` to `date`. The transaction
-  half is PARKED at `0341a568`; its `down_revision` is re-pointed at dev's head (`flask db heads`).
-* [ ] **X-cf** -- the DECOMPOSED parent of the suite's ONE builder for a row of a definition
-  (**R-BAL17**), split 2026-09-11 into five leaves; carries **BAL-480**, whose row holds the census.
-* [ ] **X-cf-3b** `test(fixtures): the plan-figure builders take the engine's row` -- carries **BAL-480**.
-  `test_carry_forward_service._create_envelope_txn`, `test_transaction_service._make_projected_txn`
-  and `test_amount_source._template_row`: callers state a figure the definition does not, or stage
-  two rows of one every-paycheck definition in one paycheck. A figure is stated on the definition or
-  laid on as the owner's re-price; a pair takes the pinned calendar; `X-bv-2`'s deleted no-due-date case rides with it.
-* [ ] **X-cf-4** `test(fixtures): the route suites take a definition's row from the engine` -- closes
-  **BAL-480**. 28 census sites, five `txn.template_id = template.id` assignments and five hand-dated
-  sites; a route test posts what the popover RENDERS (`budgets[txn.id]`), never a stored column.
+* [x] **X-bv-2** `6fa17bac` -- the CHECK on BOTH row tables in one migration (`4d7123cd9803`); `_stated_amount`'s no-due-date arm and the three tests that graded fences DELETED, three derived-date types tightened to `date`; BAL-463 closed.
+  **Binding the twin measured 44 red tests the transaction-side census never saw** (BAL-488), which is why the step waited for `X-ch`; a three-term mutation turns all six refusal cases red, and the round trip plants a violator on each table in turn.
+* [x] **X-cf** `ccf88c01` -- the DECOMPOSED parent of the suite's ONE builder for a row of a definition
+  (**R-BAL17**), five leaves shipped 2026-09-11..12 (`8fac9e6f`, `b3e51806`, `641801a3`, `699bd05d`, `ccf88c01`); BAL-480 closed with the last.
+* [x] **X-cf-3b** `699bd05d` -- the three plan-figure builders (164 sites) take the engine's row; the owner's re-price and move gained ONE spelling each (`repriced_by_the_owner`, `moved_by_the_owner`, beside `generate_row_of`).
+  Two engine rows in one paycheck share ONE due date (D18), so WHICH row a carry topped up is read off the rows, never a figure; its review found an index restore restating the pre-X-au-h DDL that no test could see, because every case clones its own database.
+* [x] **X-cf-4** `ccf88c01` -- the route suites' 38 hand-built rows (28 undated, 5 hand-dated, 5 `txn.template_id = ...` assignments) and four owner-act spellings take the engine's row; every BAL-480 census reads zero, and BAL-480 closed with it.
+  Its review measured the ambiguous carry-forward target got STRONGER (the old undated pair was refused on `occurs_on IS NULL` alone; the dated pair only by the `is_override` rule), and the three reads of the column a derived row leaves NULL name the definition's stated figure instead.
+* [x] **X-ch** `28a6317e` -- `generate_transfer_of`, R-BAL17's builder one table over (one private body with `generate_row_of`), and `transfer_repriced_by_the_owner`; all 23 hand-built linked-transfer sites in 11 files converted, BAL-488 closed.
+  **Its review caught the conversion DISARMING a control**: under the every-paycheck cadence the engine dates a row on its period's start, so "the later price on the row's own date" read one day for both; both later-price cases now take MONTHLY on the 1st in the straddling paycheck.
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
   The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
   `is_override` term; the undated arm keeps the term because its index does. Script and test only.

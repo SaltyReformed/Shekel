@@ -13,9 +13,12 @@ from flask import request
 from flask_login import current_user
 
 from app.extensions import db
+from app.models.account import Account
+from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.schemas.validation import (
+    SAME_ACCOUNT_TRANSFER_MESSAGE,
     TransferTemplateCreateSchema,
     TransferTemplateUpdateSchema,
     TransferCreateSchema,
@@ -85,6 +88,85 @@ def _user_owns(model, pk):
     if record is None:
         return False
     return record.user_id == current_user.id
+
+
+def _first_unowned_template_fk(data):
+    """Return the label of the first submitted FK the user does not own, else None.
+
+    Route-boundary FK ownership for the transfer-template update payload
+    (commit C-27 / F-043), the :func:`_user_owns` loop
+    ``transfers.templates.update_transfer_template`` runs.  **It lived in that
+    route module until plan step R7d-f-4**, which needed the module's last
+    lines for the step itself; a loop over :func:`_user_owns` belongs beside
+    it in any case.  Each user-scoped FK is verified only when present
+    in the partial-update ``data`` (the loaded dict carries only keys the user
+    submitted -- BaseSchema's EXCLUDE meta drops stray form fields).
+    ``category_id`` accepts ``None`` per the schema; ``None`` clears the
+    category and skips the probe.
+
+    Args:
+        data: The loaded TransferTemplateUpdateSchema output (partial update).
+
+    Returns:
+        The human-readable label ("source account", "destination account" or
+        "category") of the first FK that is present, non-``None``, and not
+        owned by ``current_user``; ``None`` when every present FK is owned.
+    """
+    for field, model, label in (
+        ("from_account_id", Account, "source account"),
+        ("to_account_id", Account, "destination account"),
+        ("category_id", Category, "category"),
+    ):
+        if field not in data:
+            continue
+        value = data[field]
+        if value is None:
+            continue
+        if not _user_owns(model, value):
+            return label
+    return None
+
+
+def _first_template_fk_refusal(template, data):
+    """Return the flash for the first unusable account reference in *data*, else None.
+
+    The two rules the transfer-template update route asks of its account
+    keys, in the one order they can be asked: OWNERSHIP first
+    (:func:`_first_unowned_template_fk`; an unowned id must be refused before
+    anything reads it), then the pair the write would LEAVE -- source and
+    destination, each the submitted value where present and the stored one
+    where absent -- may not be one account.
+
+    **The second rule grades the EFFECTIVE pair because the schema cannot**
+    (plan step R7d-f-5).  ``_reject_same_account_transfer`` runs only when a
+    submission carries BOTH keys, which a partial update need not -- and since
+    R7d-f-5 a definition pinned to its loan (ruling **R-R76**) renders its
+    destination control DISABLED, so its form posts no ``to_account_id`` at
+    all.  Choosing the destination loan as the SOURCE on that form then passed
+    the schema, reached ``ck_transfer_templates_different_accounts`` at the
+    flush, and surfaced through ``flush_template_or_namedup_redirect`` as the
+    name-collision flash: nothing written, and the owner told a reason that was
+    false.  Found by this step's adversarial review; the same rule, spelled
+    with the schema's own sentence, asked where the stored row is known.
+
+    Args:
+        template: The stored :class:`TransferTemplate`, owner-checked by the
+            route; read for the two account columns an absent key leaves alone.
+        data: The loaded TransferTemplateUpdateSchema output (partial update).
+
+    Returns:
+        ``"Invalid <label>."`` for the first unowned reference,
+        :data:`SAME_ACCOUNT_TRANSFER_MESSAGE` when the effective pair is one
+        account, else ``None``.
+    """
+    unowned = _first_unowned_template_fk(data)
+    if unowned is not None:
+        return f"Invalid {unowned}."
+    source = data.get("from_account_id", template.from_account_id)
+    destination = data.get("to_account_id", template.to_account_id)
+    if source == destination:
+        return SAME_ACCOUNT_TRANSFER_MESSAGE
+    return None
 
 
 def _get_owned_transfer(xfer_id):
