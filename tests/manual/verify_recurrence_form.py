@@ -558,6 +558,54 @@ def _drive_loan_destination_lock(page) -> None:
            not page.locator("#starts_on").is_disabled(), "still disabled")
 
     _drive_ends_lock(page, loan_ids, non_loan)
+    _drive_preview_destination(page, loan_ids, non_loan)
+
+
+def _drive_preview_destination(page, loan_ids: list[str], non_loan: str) -> None:
+    """Check the live preview's fetch CARRIES the destination (plan step R7d-f-2).
+
+    Plan ledger row REC-515: the preview endpoint narrows the walk by the
+    destination's derived stop, so a transfer into a loan previews to the
+    loan's payoff -- but only if the script SENDS ``to_account_id``.  The
+    suite grades the endpoint with the argument present; this grades the
+    half the suite cannot see, the request the browser actually makes.
+    Three things are checked off the captured requests: the fetch fired on
+    the destination change alone (the edit form's and a loan-less owner's
+    listener, ``fetchPreview`` where the create form's lock path is
+    ``toggleFields``), it named the newly chosen destination, and the
+    preview answered rather than breaking.  Whether the payoff BITES depends
+    on the loan's remaining life against the first five dates and is not a
+    property this owner's data is known to have, so it is not asserted.
+
+    Args:
+        page: The Playwright page, on ``/transfers/new`` with a MONTH cadence
+            chosen and *non_loan* selected.
+        loan_ids: Every loan destination the form emitted.
+        non_loan: A destination that is not a loan.
+    """
+    print("\n=== transfer preview destination: /transfers/new ===")
+    previews: list[str] = []
+    page.on("request",
+            lambda r: previews.append(r.url) if "preview-recurrence" in r.url
+            else None)
+
+    page.select_option("#to_account_id", loan_ids[0])
+    _settle(page)
+    _check("transfer P: choosing a loan fetched a preview",
+           bool(previews), "no preview request was made")
+    _check("transfer P: the fetch names the chosen destination",
+           bool(previews) and f"to_account_id={loan_ids[0]}" in previews[-1],
+           previews[-1] if previews else "no request")
+
+    previews.clear()
+    page.select_option("#to_account_id", non_loan)
+    _settle(page)
+    _check("transfer P: deselecting the loan fetched again, naming the new one",
+           bool(previews) and f"to_account_id={non_loan}" in previews[-1],
+           previews[-1] if previews else "no request")
+    _check("transfer P: the preview survived the destination changes",
+           "Could not load preview" not in page.inner_text("#recurrence-preview"),
+           page.inner_text("#recurrence-preview"))
 
 
 def _drive_ends_lock(page, loan_ids: list[str], non_loan: str) -> None:

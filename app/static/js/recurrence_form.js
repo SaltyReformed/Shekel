@@ -614,6 +614,19 @@
       params.set('max_occurrences', maxOccEl.value);
     }
 
+    // The DESTINATION (plan step R7d-f-2, ledger row REC-515).  A transfer
+    // into a loan stops when the loan does, and that stop is derived, not
+    // stored -- so a preview that walked the rule alone listed dates past
+    // the payoff whenever fewer than five remained, on the one surface whose
+    // contract is "what saving would produce".  The endpoint narrows the
+    // walk by the destination's derived stop; the transaction form has no
+    // destination control and sends nothing, which the endpoint reads as
+    // "narrowed by nothing".  Sent whenever the control states a value,
+    // locked or not: a locked row still names the loan the save will use.
+    if (destinationSelect && destinationSelect.value) {
+      params.set('to_account_id', destinationSelect.value);
+    }
+
     // Abort any preview still in flight, then reject non-2xx so a 4xx/5xx or
     // session-expiry login page is never injected as if it were the dates.
     if (previewAbortController) previewAbortController.abort();
@@ -651,8 +664,18 @@
   // too.  ``toggleFields`` is what applies both, so the enable/disable rule
   // stays in one function rather than two that agree.  The second list is a
   // subset of the first, so the first alone decides whether to listen.
-  if (destinationSelect && loanDestinations.length > 0) {
-    destinationSelect.addEventListener('change', toggleFields);
+  //
+  // Where there is no lock to apply -- an edit form, or an owner with no
+  // loans -- the destination still drives the PREVIEW (plan step R7d-f-2):
+  // the endpoint narrows the walk by the destination's derived stop, so
+  // moving a transfer onto or off a loan changes the dates it lists.
+  // ``toggleFields`` ends in ``fetchPreview``, so the two branches fetch
+  // exactly once each rather than the first fetching twice.
+  if (destinationSelect) {
+    destinationSelect.addEventListener(
+      'change',
+      loanDestinations.length > 0 ? toggleFields : fetchPreview
+    );
   }
   ['due_day_of_month', 'nominal_day', 'end_date',
    'max_occurrences'].forEach(function(id) {
