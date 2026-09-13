@@ -14,9 +14,11 @@ module adds or removes goes through
 changes ``budget.pay_periods``.  That single home is why plan step
 ``pay_calendar:C4-c`` could drop ``end_date`` and ``period_index`` in one
 place: while they were stored, the rule that they equalled the derivation
-over the owner's paydays lived there and nowhere else.  What stays here are
-the two gates and the orchestration: which periods may go (the lock classifier
-and the discard count) and which reconciles a wipe owes.
+over the owner's paydays lived there and nowhere else.  What stays here is
+the orchestration -- the four doors, and which reconciles a wipe owes; the two
+gates they consult (which periods may go: the lock classifier and the discard
+count) moved to :mod:`app.services.pay_period_gates` at plan step
+``pay_calendar:C14-f``.
 
 **Nothing here REPOPULATES any more, and that is ruling R-R38** (plan step
 R7d-c-1).  Each door recorded its paydays and then, in the SAME call,
@@ -168,10 +170,15 @@ def extend_pay_periods(user_id, num_periods):
     ``effective_from``** (ruling **R-PC58**): the era's first nominal payday is
     a day its grid passes through by construction, so the ``nominal_anchor``
     column that used to be rewritten by every batch is gone and this door
-    steps from a day no batch rewrites.  What remains open is **N-495**, the
-    PROJECTION inheriting a displaced anchor, which this door does not reach
-    and ``C14-c``'s probe window forbids re-anchoring without widening --
-    ``C17-b``'s.
+    steps from a day no batch rewrites.  **N-495** -- the PROJECTION
+    inheriting a displaced anchor -- closed at ``C17-b-2``, which anchored
+    every reader on the era's phase; the horizon this door continues from is
+    on the era's grid since then, so the day it offers and the day the
+    calendar projects are one value for an owner whose latest era covers the
+    record.  *An owner truncated BELOW their latest era's first payday is the
+    exception: the calendar projects the era covering the horizon (ruling
+    **R-PC72**) while this door restates the latest era from the horizon, and
+    ``C17-c-2`` owns that door (ledger row **N-494**'s surviving path).*
 
     Args:
         user_id: The owning user's id.
@@ -219,16 +226,16 @@ def extend_pay_periods(user_id, num_periods):
             "Generate your first pay-period schedule before extending it."
         )
 
-    # The owner's stored rhythm, off the read above rather than out of a second
-    # query.  Its cadence is an ``int``, since plan step pay_calendar:C4-d
-    # (ruling R-PC45): a calendar carries a cadence or it is not built.  The
-    # CONVENTION arrives with it since plan step C14-e-1, which deleted the
-    # scalar ``resolve_shift`` this door used to pay for.  Extend CONTINUES a
-    # rhythm rather than stating one -- the same reading that denies it a
-    # cadence question (finding P29 above) -- so it hands the stored values
-    # straight back.
-    rhythm = calendar.rhythm
-    # WHERE THE LAST PAYCHECK ENDS -- ``_reject_backward_payday``'s own
+    # The owner's latest era's rhythm, off the read above rather than out of a
+    # second query.  Its cadence is an ``int``, since plan step
+    # pay_calendar:C4-d (ruling R-PC45): a calendar carries a rhythm or it is
+    # not built.  The CONVENTION arrives with it since plan step C14-e-1, which
+    # deleted the scalar ``resolve_shift`` this door used to pay for.  Extend
+    # CONTINUES a rhythm rather than stating one -- the same reading that
+    # denies it a cadence question (finding P29 above) -- so it hands the
+    # stored values straight back.
+    rhythm = facts.rhythm
+    # WHERE THE LAST PAYCHECK ENDS -- ``reject_backward_payday``'s own
     # subject, so the producer below answers a day the floor admits rather than
     # a second spelling of the floor.  Through ``final_covered_day`` and not
     # ``saved[-1].end_date``, which the destructive-doors census refuses and is
@@ -586,12 +593,13 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     **The other direction is what R7d-c-2 makes load-bearing.**  The wipe
     CASCADE-deletes the loan's genesis entries, so the OLD order generated
     against an EMPTIED loan ledger and the new one generates against the
-    re-posted ledger.  Nothing on today's generation path reads a loan: its
-    reads off the schedule are FOUR of ``schedule.calendar`` and TWO of
-    ``schedule.write_period_ids``, which is the whole set, so the change is
-    invisible now.  From R7d-c-2 the pass folds the loan to bound a
-    payment, and then generating before the re-sync would fold a ledger the
-    wipe had emptied.  The new order is the one that survives that step.
+    re-posted ledger.  Before plan step R7d-c-2 nothing on the generation
+    path read a loan (its reads off the schedule were four of
+    ``schedule.calendar`` and two of ``schedule.write_period_ids``), so the
+    order was invisible; since R7d-c-2 the pass folds the loan through
+    ``schedule.ctx`` to bound a payment, and generating before the re-sync
+    would fold a ledger the wipe had emptied.  This order is the one that
+    survives it.
     The new rhythm is persisted by step 4's writer rather than by a line of
     this function's own (plan step C3-b): ``record_paydays`` applies the one
     rule -- a batch that RECORDED a payday on a rhythm no era covers mints an

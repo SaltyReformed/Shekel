@@ -67,7 +67,10 @@ from app.services.recurrence import (
 )
 
 
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import (
+    era_of,
+    eras_of,
+)
 #: The developer's own schedule shape, so an assertion here can be checked
 #: against the answer measured on live data while building R2b.
 _FIRST_PAYDAY = date(2026, 3, 26)
@@ -124,7 +127,7 @@ def build_calendar(
             (index + 1, first_payday + timedelta(days=cadence_days * index))
             for index in range(count)
         ],
-        rhythm=rhythm_of(cadence_days),
+        eras=(era_of(first_payday, cadence_days),),
         user_id=user_id,
         history_opens_on=None,
     )
@@ -913,7 +916,7 @@ class TestRefusals:
         that does -- see the case below.
         """
         empty = PayCalendar.from_paydays(
-            paydays=[], rhythm=rhythm_of(_CADENCE_DAYS), user_id=_USER_ID,
+            paydays=[], eras=eras_of([], _CADENCE_DAYS), user_id=_USER_ID,
             history_opens_on=None,
         )
 
@@ -932,7 +935,7 @@ class TestRefusals:
         paydays.
         """
         empty = PayCalendar.from_paydays(
-            paydays=[], rhythm=rhythm_of(_CADENCE_DAYS), user_id=_USER_ID,
+            paydays=[], eras=eras_of([], _CADENCE_DAYS), user_id=_USER_ID,
             history_opens_on=None,
         )
 

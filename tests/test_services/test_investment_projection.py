@@ -18,7 +18,9 @@ from app.services.investment_projection import (
 )
 from app.services.pay_calendar import PayCalendar
 
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import (
+    eras_of,
+)
 
 #: The read pass's clock for every timeline case here.  It is an ARGUMENT since
 #: plan step C2-f2c -- ``build_contribution_timeline`` read ``date.today()``
@@ -67,10 +69,9 @@ def _periods(*paydays, cadence=14):
     C2-f2c and is structurally what ``/retirement``'s ORM rows are, so a case
     written over it grades both callers.
     """
+    pairs = [(index, payday) for index, payday in enumerate(paydays, start=1)]
     return PayCalendar.from_paydays(
-        [(index, payday) for index, payday in enumerate(paydays, start=1)],
-        rhythm_of(cadence), user_id=1,
-        history_opens_on=None,
+        pairs, eras_of(pairs, cadence), user_id=1, history_opens_on=None,
     ).saved()
 
 
@@ -88,10 +89,9 @@ def _axis(*paydays, cadence=14, projected=0):
     produce -- a fake with the flag set by hand would grade the flag's
     spelling and not the derivation.
     """
+    pairs = [(index, payday) for index, payday in enumerate(paydays, start=1)]
     calendar = PayCalendar.from_paydays(
-        [(index, payday) for index, payday in enumerate(paydays, start=1)],
-        rhythm_of(cadence), user_id=1,
-        history_opens_on=None,
+        pairs, eras_of(pairs, cadence), user_id=1, history_opens_on=None,
     )
     last = calendar.horizon() + timedelta(days=cadence * projected)
     window = calendar.projection_axis(calendar.opening_bound(), last)
