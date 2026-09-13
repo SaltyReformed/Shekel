@@ -232,22 +232,20 @@ def create_payment_transfer(account_id):
         template,
     )
 
-    # Bound the new recurrence at BOTH ends BEFORE generating, so no shadow
-    # transaction is ever generated outside the loan's life: past the projected
-    # payoff (R-4, the account-keyed sync below), or -- the reason this is
-    # load-bearing rather than merely tidy -- BEFORE the loan's first
-    # contractual installment (C9a).  Without the start bound this route
+    # Bound the new recurrence's START BEFORE generating -- the reason this is
+    # load-bearing rather than merely tidy is that nothing may generate BEFORE
+    # the loan's first contractual installment (C9a): without it this route
     # generated a payment into every materialized pay period, including those
-    # preceding origination.
-    #
-    # The START bound is applied to THIS rule directly rather than through the
-    # account-keyed sync, which resolves the loan's FIRST active recurring
-    # template: on a loan that already has one, that would re-bound the OLD rule
-    # and leave the new one unbounded, generating the pre-origination payments
-    # this step exists to stop (and, since C9b, failing the write outright when
-    # they are refused).
+    # preceding origination.  The rule was built from ``loan_cadence_start``
+    # above, so this is the same value written through the same producer; it
+    # is applied to THIS rule directly rather than through the account-keyed
+    # sync, which resolves the loan's FIRST active recurring template and on
+    # a loan that already has one would re-bound the OLD rule.  The CLOSING
+    # bound is not written at all (plan step R7d-g): generation reads the
+    # loan's payoff through the composed door, so no shadow is generated past
+    # it, and the payments generated below move that payoff without any
+    # stored copy to lag behind them.
     loan_recurrence_sync.bind_rule_to_loan(rule, account.id)
-    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
 
     # Generate transfers for existing pay periods.  ``create_transfer`` refuses
     # a payment dated before the loan originates (R-C) and a transfer OUT of a
@@ -261,20 +259,6 @@ def create_payment_transfer(account_id):
         db.session.rollback()
         flash(f"Could not create the recurring payment: {exc}", "danger")
         return redirect(url_for("loan.dashboard", account_id=account_id))
-
-    # ...and re-derive it AFTER, because since plan C8d the payoff is a fold over
-    # the loan's forward PLAN -- and the payments just generated are part of that
-    # plan.  The first call cannot see them (they do not exist yet), so on a loan
-    # with overdue installments it bounds against a plan with no records at all
-    # and lands months late; the next payoff-affecting mutation would then
-    # silently correct it, which is a stored value that disagrees with every
-    # screen until something unrelated happens to fix it.  Both calls are needed
-    # and neither is redundant: the first BOUNDS generation, this one RECORDS the
-    # payoff the generated plan actually implies.  Idempotent, so it is a no-op
-    # write whenever the two agree (a healthy loan: the generated payments match
-    # the contractual synthesis the first call folded).
-    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
-
 
     db.session.commit()
 
@@ -302,11 +286,11 @@ def update_payment_settings(account_id):
 
     The dashboard's extra-principal control posts here.  Updates the active
     recurring payment's ``loan_payment_settings.extra_principal`` (creating the
-    settings row when a legacy manual payment has none), then re-syncs the
-    recurrence end date, since a changed extra moves the projected payoff (so no
-    shadow is generated past the new, earlier payoff).  The extra is a LIVE
-    parameter -- applied at display, settle, and projection from this one value
-    -- so no shadow regeneration is needed.
+    settings row when a legacy manual payment has none).  A changed extra
+    moves the projected payoff, which the recurring payment's closing bound
+    is derived from on every read (plan step R7d-g), so nothing is re-synced.
+    The extra is a LIVE parameter -- applied at display, settle, and
+    projection from this one value -- so no shadow regeneration is needed.
 
     404s a cross-owner / non-loan account (``_require_configured_loan``);
     redirects with a warning when the loan has no recurring payment to edit.
@@ -337,9 +321,6 @@ def update_payment_settings(account_id):
     else:
         template.settings.extra_principal = extra_principal
 
-    # A changed extra moves the projected payoff, so re-bound the recurrence
-    # (the template already exists, so the sync finds it).
-    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
     db.session.commit()
 
     logger.info(
@@ -374,8 +355,9 @@ def track_payment(account_id):
     ``PARENT_TRANSFER`` from birth and is priced by amount rule 4, which reads
     the mode off THIS settings row (ruling **R-FK**).  So the flip changes which
     RULE prices rows that already exist, and the declaration it would otherwise
-    have had to write is already there.  The recurrence end date is re-synced
-    because a higher tracked payment can move the projected payoff.
+    have had to write is already there.  A higher tracked payment moves the
+    projected payoff, which the recurring payment's closing bound is derived
+    from on every read (plan step R7d-g), so nothing is re-synced.
 
     404s a cross-owner / non-loan account (``_require_configured_loan``); redirects
     with a warning when the loan has no recurring payment to switch.
@@ -409,15 +391,11 @@ def track_payment(account_id):
         template, contract, effective_on=display_today(),
     )
 
-    # Re-sync the recurrence end date.  **Load-bearing since plan C8d, where it
-    # used to be defensive:** the payoff is now a fold over the forward PLAN, and
-    # the PLANNED tier folds each projected shadow's cash as
-    # each projected shadow's RESOLVED cash (amount rule 4).  Flipping
-    # manual->derive is exactly what moves that value -- a manual payment folds
-    # its typed figure, a derive one the live contractual cash --
-    # so this switch MOVES the projected payoff whenever the two differ, which is
-    # the drift C7 flagged to get the user here in the first place.
-    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
+    # Flipping manual->derive MOVES the projected payoff whenever the two
+    # figures differ (the PLANNED tier folds each projected shadow's RESOLVED
+    # cash, amount rule 4), which is the drift C7 flagged to get the user
+    # here.  Nothing stores that payoff since plan step R7d-g: the recurring
+    # payment's closing bound is derived from it on every read.
     db.session.commit()
 
     logger.info(

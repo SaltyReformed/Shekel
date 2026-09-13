@@ -2,7 +2,7 @@
 # REGENERATE: SHEKEL_UPDATE_RECURRENCE_BASELINE=1 ./scripts/test.sh tests/test_services/test_recurrence_baseline.py
 # biweekly schedule: 2024-01-01 cadence=14 periods=79 (2024-01-01..2027-01-10)
 # long schedule:     2024-01-01 cadence=90 periods=12 (2024-01-01..2026-12-15)
-# shapes: 434
+# shapes: 433
 anchor.monthly.dom31.short_anchor_month idx=004 period=2024-02-26..2024-03-10 due=2024-02-29
 anchor.monthly.dom31.short_anchor_month idx=006 period=2024-03-25..2024-04-07 due=2024-03-31
 anchor.monthly.dom31.short_anchor_month idx=008 period=2024-04-22..2024-05-05 due=2024-04-30
@@ -570,7 +570,6 @@ bounds.window.both idx=029 period=2025-02-10..2025-02-23 due=2025-02-15
 bounds.window.both idx=031 period=2025-03-10..2025-03-23 due=2025-03-15
 bounds.window.both idx=033 period=2025-04-07..2025-04-20 due=2025-04-15
 bounds.window.both idx=035 period=2025-05-05..2025-05-18 due=2025-05-15
-bounds.window.inverted (none)
 due_sweep.dom01.due01 idx=000 period=2024-01-01..2024-01-14 due=2024-01-01
 due_sweep.dom01.due01 idx=002 period=2024-01-29..2024-02-11 due=2024-02-01
 due_sweep.dom01.due01 idx=004 period=2024-02-26..2024-03-10 due=2024-03-01

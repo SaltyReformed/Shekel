@@ -7,15 +7,15 @@ R1-R4 and the R7c cutover are ARCHIVED; the closed pattern set is GONE, which is
 for (R-R16 / R-R18 / R-R27). Which steps are in PRODUCTION is a measurement, never a stored value:
 `git branch -r --contains <hash>` against `origin/main`.
 
-**R7d DECOMPOSED into seven leaves 2026-08-25 (R-R33, R-R34) and R7d-c into two more 2026-08-27
-(R-R38); three have shipped.** R7d-a prices an uncovered installment from the DEFINITION, R7d-b
-built the resolver, R7d-c-1 got the read pass to generation; what is left moves readers onto the
-resolver and R7d-g stops the WRITE. **A tie-break is a sign the SEARCH is the wrong question**
-(R-R35): only ONE tier of three asks "which transfer into a loan is its payment", and **R16**
-deletes the rest -- DECOMPOSED into four leaves 2026-08-26 (**R-R36**) once the fold turned out to
-charge a month of interest per payment RECORD; its summing leaf `R16-b-2` SHIPPED 2026-09-11
-(`7e2e6413`), so the ESTIMATED tier is the outlier no longer, and `R20` (the setup door records the
-stated balance as the assertion it is, **R-R72**) is ranked next.
+**R7d DECOMPOSED into seven leaves 2026-08-25 (R-R33, R-R34), R7d-c into two more 2026-08-27 (R-R38)
+and R7d-g into three 2026-09-13 (R-R80..R-R83); every reader is on the resolver and the WRITE is
+gone.** R7d-g-1 deleted the closing bound's writers, NULLed the cache and landed the window CHECK;
+left: the stored OPENING bound's maintenance contract (R7d-g-2) and the per-definition card
+(R7d-g-3). **A tie-break is a sign the SEARCH is the wrong question** (R-R35): only ONE tier of
+three asks "which transfer into a loan is its payment", and **R16** deletes the rest -- DECOMPOSED
+into four leaves 2026-08-26 (**R-R36**); its summing leaf `R16-b-2` SHIPPED 2026-09-11 (`7e2e6413`),
+so the ESTIMATED tier is the outlier no longer, and `R20` (the setup door records the stated balance
+as the assertion it is, **R-R72**) is ranked next.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** One ruling is owed and
 section 0 states its two options. Section 4 is the steps; the findings, the index, the rules and
@@ -415,26 +415,18 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
       on R16-b-2's tree; not re-run on the era calendar). Held behind R16-b-2 (**R-R65**), re-cut at
       `a01839aa`, its first review found the id-keyed memo (**R-R73**). Closed **D46** via R16-b-2.
 
-- [x] **R7d-h** `83dd4b8a` -- a loan gets ONE closing date, past AND future: `loan_closing_date`
-      answers the forward crossing while the loan owes and the day it LAST became closed once it
-      does not (**R-R51**, the later of two crossings); `recurrence_end_date` is deleted. Two things
-      later steps still obey: the inverted-window refusal SKIPS an app-derived window (R7d-f
-      finishes that module), and a loan cleared before its first installment now STORES an inverted
-      pair until R7d-g NULLs the column. As built: the commit message and PR #214.
+- [x] **R7d-h** `83dd4b8a` -- a loan gets ONE closing date, past AND future (`loan_closing_date`,
+      **R-R51**: the later of two crossings); `recurrence_end_date` deleted. Its two obeys clauses
+      were discharged at R7d-f and R7d-g-1. As built: the commit message and PR #214.
 
-- [x] **R7d-d** `4a839587` -- the DISPLAY readers took the resolver through a COMPOSED DOOR:
-      `recurring_view` and its route take ONE read pass and read each definition through
-      `recurring_definition`; the resolver takes the resolved rule; `4f40d6de` is ruling **R-R56**
-      (an app-written `end_date` is read as the cache). Later steps obey: R7d-e moved the monthly
-      equivalent off the column (`89302ba4`); R7d-f closed **N-511**, **N-512**, **REC-521**; R7d-g
-      deletes the door's arm with the column. As built: commits `f6ba59f8`..`713c4fce` (PR #240).
+- [x] **R7d-d** `4a839587` -- the DISPLAY readers took the resolver through a COMPOSED DOOR
+      (`recurring_definition`, one read pass); `4f40d6de` is **R-R56**, an arm R7d-g-1 deleted with
+      the column. Its obeys clauses are discharged. As built: `f6ba59f8`..`713c4fce` (PR #240).
 
 - [x] **R7d-e** `89302ba4` -- the monthly totals took the resolver: every `DerivedStop` answers
-      `has_closed` under **R-R57** (R-R45's reading), `Closing.has_closed` ORs its two stops over
-      one memoised reading, the date-bound closure rule is ONE function shared by `EndsOnDate` and
-      `ClosesOn`, `has_ended` judges the reading the door produced, and the aggregator and its three
-      callers take the read pass. `$0.00` on dev, `$200.00`/mo both ways in its tests. Opened
-      **N-513**, **N-514**, both closed at R7d-f-2. As built: PR #253.
+      `has_closed` under **R-R57**, `Closing.has_closed` ORs its two stops over one memoised
+      reading, and the aggregator takes the read pass. Opened **N-513**, **N-514** (closed at
+      R7d-f-2). As built: PR #253.
 
 - [x] **R7d-f** `48e78700` -- the FORM's "Ends" control, its refusals and its preview: the
       DECOMPOSED parent, split into three leaves 2026-09-05 (**R-R61**), grown to five 2026-09-12.
@@ -477,24 +469,40 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
       one predicate; the loan-destination half moved to `_loan_destination.py` first (**R-R78**,
       `cd22baa6`). Browser pass RAN (191 checks).
 
-- [ ] **R7d-g -- the column stops being WRITTEN, and the CHECK lands.**
+- [ ] **R7d-g -- the closing bound stops being WRITTEN.** The DECOMPOSED parent, split into THREE
+      leaves 2026-09-13 once its four forks were ruled (**R-R80** D56's scope, **R-R81** D50's start
+      by kind, **R-R82** the stop at a submission-less entry, **R-R83** D49); ships with its last.
 
-Nine of the ten call sites go, `end_date` goes NULL for every loan payment in a migration, and
-`ck_recurrence_rules_valid_window` is added -- true by construction, because the only rows that
-could invert it no longer store a closing bound. Decide first what repairs the three shapes
-`_sync_loan_cadence` covers -- and note it does the SAME read-and-write-back round trip, inside the
-module this leaf rewrites, so it OUTLIVES the deletion unless named: finding **D50**, re-pointed
-here from `R7d-c` on 2026-08-27. **D35 only HALF closes** (`starts_on` stays derived AND persisted
-under R-R29), so re-point that row rather than ticking it. **D56 is an OPEN fork**: a
-NULL-every-loan-payment predicate cannot tell an authored bound from the cache, so this step either
-scopes the migration to the rows the sync wrote or rules the erasure intended -- and must DECIDE
-archived loan payments, whose cached columns the composed door still reads as authored (ruling
-**R-R56**). It stops nine of the ten syncs and must NAME whether the tenth (`params.py:190`, kept
-for the opening bound) still overwrites an owner's bound in the cached column -- the three producers
-`recurring_definition` limit (1) names since R7d-f-4 (the pre-refusal rows, a promoted second
-transfer, and **REC-522**'s archived transfer edited and unarchived, which the **D56** decision must
-count); if none does, the door's arm in `recurring_definition` must be DELETED with the column or it
-reads that owner's word as the cache forever.
+- [x] **R7d-g-1** `a776b9df` -- nine of ten `sync_recurring_payment_bounds` sites went and the tenth
+      became `sync_loan_payment_start` (opening-only; loan SETUP calls it too, the door where a
+      transfer becomes the standing payment); the write door refuses an inverted STORED pair
+      (`EmptyAuthoredWindowError`, the one comparison behind `ck_recurrence_rules_valid_window`);
+      `authored_closing` went; migration `bf50951a3599` NULLed the **R-R80** set (2 rows on
+      production, `$0.00`) and landed the CHECK. Closed **D56**; ten tests flipped by ruling.
+
+- [ ] **R7d-g-2 -- the stored opening bound's maintenance contract is COMPLETE.**
+
+Under **R-R29** the standing payment's `starts_on` is a stored derived value, so every door where a
+definition BECOMES a loan's standing payment derives it and every mover re-derives it. Create
+(**R-R60**) and the update door's two edits (**R-R77**) have it; this leaf adds, through one entry
+helper: `unarchive_transfer_template` (**REC-522**), `archive_transfer_template` where the archive
+PROMOTES the next-oldest, and the standing payment's cadence-unit edit (PERIOD -> MONTH keeps a
+payday as the monthly day); loan setup already has it (R7d-g-1, after its review). None writes the
+closing bound (**R-R82**). Under **R-R81** the create and update doors derive the start ONLY where
+the loan holds no active payment; a SECOND transfer's owner-typed start is refused below
+origination, never replaced -- deleting the `$250.00` of past sweeps the doors as built generate for
+a mid-life sweep -- and `LoanDestinationLocks`' two sets collapse to the one payment-less set. The
+archived edit door refuses a real stop where unarchiving would make the definition standing. First,
+archive/unarchive move out of `transfers/templates.py` (at its 1,000-line cap): a pure move,
+AST-graded, its own commit (R-R78's shape). Closes **D35**, **D50**, **REC-522**.
+
+- [ ] **R7d-g-3 -- the loan dashboard's payment card is PER DEFINITION.**
+
+**R-R83**: the card lists every recurring transfer into the loan with its own extra-principal and
+track controls, so `update_payment_settings`, `track_payment` and the prefill stop taking
+`.order_by(id).first()` -- the tie-break that hands the Track door a `$50` sweep created before the
+payment (`$531.94 + $531.94` a month). It reaches the seam: `resolved_loan` prices the contract with
+the STANDING payment's extra alone, so per-definition extras are summed there. Closes **D49**.
 
 - [ ] **R7e -- the recurrence form's three-state fields become ONE typed submission.**
 

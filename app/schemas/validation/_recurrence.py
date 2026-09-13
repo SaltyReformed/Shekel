@@ -385,12 +385,13 @@ def end_bound_before_start_message(end_date: date, starts_on: date) -> str:
     ``_recurrence_form_refusals.refuse_inverted_window`` for an UPDATE, where
     either value may be the STORED one and no schema can see the pair.
 
-    There is no ``ck_recurrence_rules_valid_window`` behind them.  Plan step
-    R7c-b held that CHECK back on a developer ruling: the columns carry
-    user-authored windows AND derived loan-payment ones, and an empty DERIVED
-    window is a correct answer that a CHECK cannot tell from a user's mistake.
-    So these two doors are the whole of the rule, which is why the update one
-    exists at all rather than being left to a backstop.
+    ``ck_recurrence_rules_valid_window`` stands behind them since plan step
+    R7d-g, as a backstop and not as the rule: a CHECK answers with an
+    ``IntegrityError`` and these two doors answer with this sentence.  Plan
+    step R7c-b held the CHECK back on a developer ruling while the columns
+    carried user-authored windows AND derived loan-payment ones (an empty
+    DERIVED window is a correct answer a CHECK cannot tell from a user's
+    mistake); the derived window is stored nowhere now.
 
     Args:
         end_date: The stated closing date.

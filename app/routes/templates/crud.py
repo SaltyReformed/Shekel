@@ -237,7 +237,11 @@ def create_template():
     # be written before there is an owner -- which is the same fact that makes
     # the orphan finding **F-6** measured inexpressible.  The order reversed
     # here; nothing else about the create did.
-    rule = author_recurrence_for_create(spec, template)
+    rule = author_recurrence_for_create(
+        spec, template, redirect=RedirectTarget("templates.new_template"),
+    )
+    if isinstance(rule, Response):
+        return rule
 
     # Open the amount's dated series at today (plan step X-au-a).  The
     # constructor above also carries the figure because the column is NOT NULL;

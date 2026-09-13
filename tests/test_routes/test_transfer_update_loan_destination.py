@@ -342,8 +342,10 @@ class TestACadenceAddedToAOneTimeTransferIntoALoan:
         """A loan already holding a payment makes this a SECOND transfer.
 
         Its stop is its owner's and binds beside the derived one (ruling
-        **R-R56**'s second-transfer clause); its start is still the loan's
-        (plan ledger row **D50**: every loan destination derives the start).
+        **R-R77**'s second-transfer clause); its start is still the loan's
+        on this tree -- plan ledger row **D50** was RULED at plan step R7d-g
+        (ruling **R-R81**: a second transfer's start is the owner's, refused
+        below origination) and leaf R7d-g-2 re-cuts this door and this case.
 
         NEGATIVE CONTROL: delete the ``_loan_holds_no_active_payment`` test
         from ``_refuse_stop_on_a_new_loan_payment`` and this is refused.

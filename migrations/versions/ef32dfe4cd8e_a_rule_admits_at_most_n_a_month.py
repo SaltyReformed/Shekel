@@ -68,7 +68,7 @@ stops -- so a rollback across this revision is the dump, read that way by the
 operator (ruling **R-R14**).
 
 Revision ID: ef32dfe4cd8e
-Revises: 4d7123cd9803
+Revises: bf50951a3599
 Create Date: 2026-09-13 14:30:00.000000
 """
 import sqlalchemy as sa
@@ -76,7 +76,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "ef32dfe4cd8e"
-down_revision = "4d7123cd9803"
+down_revision = "bf50951a3599"
 branch_labels = None
 depends_on = None
 

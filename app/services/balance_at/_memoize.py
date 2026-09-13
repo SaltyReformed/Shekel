@@ -185,15 +185,19 @@ def require_scenario(ctx: "BalanceContext") -> None:
     N-107); that made the callers agree on the QUESTION while they still
     disagreed on the ANSWER, so the property is gone with them.
 
-    **Exactly two callers keep their own handling, and each says why at the
-    guard** (ruling R-BY):
+    **The callers that keep their own handling say why at the guard**
+    (ruling R-BY):
 
-    * :func:`app.services.loan_recurrence_sync.sync_recurring_payment_bounds`
-      -- a WRITER, running mid-mutation.  A raise there would roll back the
-      user's just-flushed loan-params edit and answer with a setup card, losing
-      the write; it instead writes the contract-derived START bound and skips
-      only the scenario-scoped END bound, which is plan step C8e's rule ("a
-      loan's contract terms are not scenario-scoped") applied to a write.
+    * ``loan_recurrence_sync.sync_recurring_payment_bounds`` -- a WRITER,
+      running mid-mutation, UNTIL plan step R7d-g.  A raise there would have
+      rolled back the user's just-flushed loan-params edit and answered with a
+      setup card, losing the write; it instead wrote the contract-derived
+      START bound and skipped only the scenario-scoped END bound, which was
+      plan step C8e's rule ("a loan's contract terms are not scenario-scoped")
+      applied to a write.  R7d-g deleted the END half with the column's
+      writers, and the START-only sync that survives
+      (:func:`app.services.loan_recurrence_sync.sync_loan_payment_start`)
+      builds no pass, so this carve-out is spent.
     * :func:`app.services.balance_at.liability_owed_at_dates` -- the ONE seam
       entry that does not run this guard at all, because a missing baseline
       there is not an error but the degenerate case of its own rule (no loan is

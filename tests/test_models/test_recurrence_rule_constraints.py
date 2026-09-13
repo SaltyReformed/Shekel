@@ -25,8 +25,9 @@ them.  This file's own docstring predicted the retirement one leaf earlier.
 step: with the two-axis columns authored and ``NOT NULL``, the table can state
 rules it previously could not, and each closes a state a service guard used to
 stand in for.  A THIRD was drafted -- ``end_date >= starts_on`` -- and held
-back on a developer ruling; :class:`TestTheWindowIsHeldAtTheDoorsAndNotTheTable`
-carries the reason and pins the state it would have refused.
+back on a developer ruling until plan step R7d-g landed it as
+``ck_recurrence_rules_valid_window``; :class:`TestTheWindowIsHeldAtTheTableToo`
+carries the reason for the wait and pins the state it now refuses.
 
   * ck_recurrence_rules_nominal_day -- COMPLETED at R7c-b with the clamp
     equality, which is what let ``_occurrence._require_generable`` lose its
@@ -300,47 +301,41 @@ class TestTheNominalDayIsOnlyEverAClamp:
             )
 
 
-class TestTheWindowIsHeldAtTheDoorsAndNotTheTable:
-    """There is deliberately NO ``end_date >= starts_on`` CHECK (R7c-b).
+class TestTheWindowIsHeldAtTheTableToo:
+    """``end_date >= starts_on`` is a CHECK since plan step R7d-g (``ck_recurrence_rules_valid_window``).
 
-    The ruling (developer, 2026-08-15) and the reason for it: these two columns
-    hold two different KINDS of fact, and a constraint cannot tell them apart.
-    A USER-authored stop before the start is a mistake to report; the window
-    ``loan_recurrence_sync`` DERIVES for a loan payment is empty whenever the
-    loan owes nothing yet, and that is a correct answer.  So the rule lives at
-    the two authoring doors, which are the only layers that know which they are
-    looking at, and this class pins the table's side of that division.
+    Until R7d-g this class pinned the CHECK's ABSENCE as the ruling it was
+    (developer, 2026-08-15): the two columns held two different KINDS of fact
+    -- a USER-authored stop before the start is a mistake to report, while the
+    window ``loan_recurrence_sync`` DERIVED for a loan payment was empty
+    whenever the loan owed nothing yet, a correct answer -- and a constraint
+    cannot tell them apart, so the rule lived at the two authoring doors alone
+    and the table's side of that division was asserted here so nobody re-added
+    the CHECK by accident.  R7d-g deleted the derived writer, so every stored
+    pair is an owner's word and the CHECK landed (migration ``bf50951a3599``,
+    ruling **R-R80**); the doors keep the rule as the layer that can REPORT it.
+    ``test_recurrence_window_check`` grades the constraint in every writer
+    direction and the migration round trip; this class keeps the boundary and
+    the two admitted shapes beside the other constraints of the table.
     """
 
-    def test_an_end_before_the_start_is_ADMITTED_by_the_table(
+    def test_an_end_before_the_start_is_REFUSED_by_the_table(
         self, app, db, seed_user,
     ):
-        """The state a CHECK here would have made unstorable.
+        """The state that was storable until R7d-g, and is not now.
 
-        Measured: a loan originating 2026-08-01 with ``payment_day`` 1 has its
-        first contractual installment on 2026-09-01, and truing its balance to
-        zero on 2026-08-15 makes ``LoanFigures.closing_date`` answer that day
-        -- the day it BECAME closed, since plan step ``recurrence:R7d-h``.  The
-        window is empty and forward generation emits nothing, which is exactly
-        right for a loan that owes nothing -- and a CHECK would have turned it
-        into an unhandled ``CheckViolation`` out of the true-up.
-
-        Asserted rather than left implicit because "no constraint" is easy to
-        re-add by accident, and re-adding it re-opens a 500 on an ordinary
-        money action.
+        The measured shape that held the CHECK back: a loan originating
+        2026-08-01 with ``payment_day`` 1 owes its first installment 2026-09-01
+        and is trued to zero on 2026-08-15, so the derived window is
+        ``[2026-09-01, 2026-08-15]``.  The sync wrote that pair; nothing does
+        now, and the composed door answers ``EMPTY`` for it as a value
+        (``recurrence.DerivedStop``) that no column carries.
         """
         with app.app_context():
-            rule = RecurrenceRule(
-                transaction_template_id=_owner_id(seed_user),
-                **_storable_columns(
-                    starts_on=date(2026, 9, 1), end_date=date(2026, 8, 15),
-                ),
+            _refused(
+                seed_user, "ck_recurrence_rules_valid_window",
+                starts_on=date(2026, 9, 1), end_date=date(2026, 8, 15),
             )
-            db.session.add(rule)
-            db.session.flush()
-
-            assert rule.id is not None
-            db.session.rollback()
 
     def test_an_end_ON_the_start_is_admitted(self, app, db, seed_user):
         """The boundary the DOORS use ``>=`` rather than ``>`` for.

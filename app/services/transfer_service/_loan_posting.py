@@ -35,7 +35,6 @@ from app.models.transfer import Transfer
 from app.services import (
     loan_loaders,
     loan_posting_service,
-    loan_recurrence_sync,
 )
 from app.services.pay_calendar import DerivedPeriod
 from app.services.transfer_service._ownership import _get_owned_period
@@ -354,11 +353,6 @@ def _sync_loan_postings_if_loan(xfer: Transfer) -> None:
         loan_posting_service.sync_loan_postings(
             xfer.to_account_id, xfer.scenario_id,
         )
-        # R-4: an extra-principal payment shifts payoff earliest, so re-bound the
-        # recurring payment's window to the new projected payoff (baseline).
-        loan_recurrence_sync.sync_recurring_payment_bounds(
-            xfer.to_account_id,
-        )
 
 
 def _reverse_loan_payment_before_it_leaves(xfer: Transfer) -> bool:
@@ -415,9 +409,8 @@ def _resync_loan_after_payment_left(
     (:func:`app.services.loan_posting_service.sync_loan_postings`) --
     re-splitting the LATER confirmed payments whose running balance the
     departure changed AND re-deriving any true-up whose ``owed_before`` it moved
-    (a pre-true-up payment leaving) -- then re-bounds the recurring payment's
-    window to the loan's new projected payoff.  Takes the loan / scenario ids
-    explicitly because the caller has captured them before the payment moved (a
+    (a pre-true-up payment leaving).  Takes the loan / scenario ids explicitly
+    because the caller has captured them before the payment moved (a
     hard-deleted ``xfer`` can no longer be read at all).
 
     **A payment leaves a loan in two ways, and it was named for only one of
@@ -435,9 +428,6 @@ def _resync_loan_after_payment_left(
         scenario_id: The departing payment's scenario.
     """
     loan_posting_service.sync_loan_postings(loan_account_id, scenario_id)
-    # R-4: losing a payment moves the projected payoff, so re-bound the
-    # recurring payment's window to it (baseline scenario).
-    loan_recurrence_sync.sync_recurring_payment_bounds(loan_account_id)
 
 
 def _resync_vacated_loan(account_id: int, scenario_id: int) -> None:

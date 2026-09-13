@@ -330,13 +330,20 @@
   </div>
   {% set end_bound_locked_help =
        "Set from the loan's projected payoff, and updated when the loan changes." %}
+  {# A locked row can also show a stop the OWNER set before this became the
+     loan's payment (ruling R-R82) -- a date or a count, so "stop" and not
+     "end date": it stays, it does not move with the loan, and archiving is
+     the only door to it.  The script never swaps TO this sentence -- a
+     definition it locks is new and carries no authored stop. #}
+  {% set end_bound_owner_stop_help =
+       "A stop set before this became the loan's payment. It still applies; archive the payment to change it." %}
   {% set end_bound_open_help = "Entries won't be generated past this." %}
   <div id="end-bound-help" class="form-text"
        {% if swappable %}
        data-locked-text="{{ end_bound_locked_help }}"
        data-open-text="{{ end_bound_open_help }}"
        {% endif %}>
-    {{- end_bound_locked_help if end.locked else end_bound_open_help -}}
+    {{- (end_bound_owner_stop_help if end.owner_stop else end_bound_locked_help) if end.locked else end_bound_open_help -}}
   </div>
 </div>
 {% endmacro %}

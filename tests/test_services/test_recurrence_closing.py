@@ -272,12 +272,14 @@ class TestTheComposedValueAnswersForBothStops:
         ) is False
 
     def test_the_derived_stop_alone_ends_an_unbounded_rule(self):
-        """The R-R56 shape: the app-bounded loan payment composes NEVER_ENDS.
+        """The standing payment's shape: no authored stop, the derived stop is the whole answer.
 
-        For the definition whose closing bound the app itself writes, the door
-        supplies ``NEVER_ENDS`` as the authored half and the derived stop is
-        the whole answer -- so a retired loan's payment ends on the loan's
-        closing date and not on the cached column's.
+        A loan's own payment carries no authored stop (ruling **R-R59**); its
+        two bound columns are NULL since plan step R7d-g's migration, so the
+        door composes ``NEVER_ENDS`` as the authored half from the columns
+        themselves (until R7d-g an arm supplied it, ruling **R-R56**, over a
+        column that held the chokepoints' cache) -- and a retired loan's
+        payment ends on the loan's closing date.
         """
         closing = Closing(authored=NEVER_ENDS, derived=ClosesOn(on=_CLOSES))
 
@@ -311,9 +313,9 @@ class TestTheComposedValueAnswersForBothStops:
     def test_the_authored_bound_alone_ends_a_loan_still_owing(self):
         """The owner said stop before the loan did: the owner's word binds.
 
-        A second transfer into a loan keeps its authored bound (ruling
-        **R-R56** names only the account's active payment), so a stop the
-        owner authored before the payoff ends the commitment there.
+        Any definition's authored bound is its owner's word (ruling
+        **R-R82**, plan step R7d-g), so a stop the owner authored before the
+        payoff ends the commitment there.
         """
         closing = Closing(
             authored=EndsOnDate(on=date(2028, 6, 30)),

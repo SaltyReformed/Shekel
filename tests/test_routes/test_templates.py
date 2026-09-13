@@ -39,6 +39,7 @@ from app.services import account_service, status_seam, transaction_service
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
+from app.schemas.validation import end_bound_before_start_message
 from app.routes._recurrence_preview import (
     PREVIEW_OCCURRENCE_LIMIT,
     render_preview_html,
@@ -3184,6 +3185,41 @@ class TestTheEndsControlIsTheFirstWriterOfMaxOccurrences:
             assert rule.end_date is None
             assert rule.max_occurrences is None
 
+    def test_a_paycheck_window_lying_entirely_before_the_schedule_is_refused_not_stored(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The write door's refusal reaches the create form as a sentence (plan step R7d-g).
+
+        An every-paycheck rule from 2025-06-01 to 2025-12-01 is an ordered
+        AUTHORED pair the schema admits; on a schedule opening after both
+        dates the write door would store the opening payday beside the
+        2025 stop -- the inverted pair ``ck_recurrence_rules_valid_window``
+        refuses, which until R7d-g-1's review was an unhandled
+        ``IntegrityError`` out of this POST.  The door refuses off the stored
+        dates, the create helper words it with the schema's own sentence
+        naming the payday the rule would actually have started on, and the
+        pending template is rolled back rather than left generating nothing.
+        """
+        with app.app_context():
+            opening = calendar_for(seed_user["user"].id).opening_bound()
+            assert opening > date(2025, 12, 1), (
+                "precondition: the schedule opens after the authored window"
+            )
+
+            resp = self._create(
+                auth_client, seed_user, "Before The Schedule",
+                starts_on="2025-06-01",
+                **end_bound_payload(EndsOnDate(on=date(2025, 12, 1))),
+            )
+
+            assert resp.status_code == 200
+            assert end_bound_before_start_message(
+                date(2025, 12, 1), opening,
+            ) in resp.data.decode()
+            assert db.session.query(TransactionTemplate).filter_by(
+                name="Before The Schedule",
+            ).one_or_none() is None, "the refused create left a template behind"
+
     def test_choosing_a_date_and_leaving_it_blank_is_refused(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
@@ -3490,12 +3526,14 @@ def _loan_payment_template(seed_user):
 class TestALoanPaymentsClosingBoundIsDerived:
     """Plan step R7b-3: the app owns a loan payment's stop, so the form does not.
 
-    ``loan_recurrence_sync.sync_recurring_payment_bounds`` writes that rule's
-    ``end_date`` from the loan's PROJECTED PAYOFF on every payoff-affecting
-    edit.  A bound accepted from this form would therefore be discarded
-    without a word the next time the loan changed -- so the control renders
-    disabled, and a submission that states one anyway is REFUSED rather than
-    silently dropped.
+    A loan's standing payment stops when the loan's balance folds to zero,
+    which the composed door derives on every read (plan step R7d-g; until
+    then ``loan_recurrence_sync.sync_recurring_payment_bounds`` wrote that
+    payoff into ``end_date`` on every payoff-affecting edit, and a bound
+    accepted here would have been discarded without a word).  The loan's own
+    payment carries no authored stop (ruling **R-R59**) -- so the control
+    renders disabled, and a submission that states one anyway is REFUSED
+    rather than silently dropped.
 
     Both halves are needed and neither is redundant: disabling is the
     affordance a user sees, and the refusal is the rule a crafted POST meets.

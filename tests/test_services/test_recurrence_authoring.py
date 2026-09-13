@@ -59,6 +59,8 @@ from tests.oracles.recurrence_baseline import (
     ANNUAL,
 )
 from app.services.recurrence import (
+    EmptyAuthoredWindowError,
+    EndsOnDate,
     RecurrenceSpec,
     ResolvedRecurrence,
     author_rule,
@@ -664,6 +666,101 @@ class TestThePerMonthCeilingRoundTrips:
         with pytest.raises(IntegrityError, match="positive_max_per_month"):
             db.session.flush()
         db.session.rollback()
+
+
+class TestTheWriteDoorRefusesAnInvertedStoredPair:
+    """``EmptyAuthoredWindowError`` (plan step R7d-g): one comparison at the one writer.
+
+    ``_author`` stores the NORMALISED first occurrence beside the RAW closing
+    bound, so a pair every door admits -- the stop at or after the AUTHORED
+    start -- can invert once a paycheck-space start is lifted onto its payday.
+    ``ck_recurrence_rules_valid_window`` would refuse it at the flush as an
+    ``IntegrityError``; the door refuses it first, off the two dates it would
+    have stored, and leaves the row untouched.  Measured before the fix (an
+    adversarial review of R7d-g-1): an every-paycheck rule authored
+    ``2025-06-01`` to ``2025-12-01`` on a schedule opening ``2026-01-02``
+    passed both doors and stored ``[2026-01-02, 2025-12-01]``.
+    """
+
+    def test_a_paycheck_rule_authored_before_the_schedule_opens_is_refused_with_the_stored_dates(
+        self, seed_user, db, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """The reviewer's shape: the authored pair is ordered, the stored pair is not."""
+        user_id = seed_user["user"].id
+        calendar = calendar_for(user_id)
+        assert calendar.opening_bound() == date(2026, 1, 2), (
+            "precondition: the schedule opens after the authored window"
+        )
+        template = bare_expense_template(db.session, seed_user)
+        spec = spec_for(
+            EVERY_PERIOD, user_id=user_id,
+            starts_on=date(2025, 6, 1), end_bound=EndsOnDate(on=date(2025, 12, 1)),
+        )
+
+        with pytest.raises(EmptyAuthoredWindowError) as refused:
+            author_rule(spec, calendar, template)
+
+        assert refused.value.starts_on == date(2026, 1, 2), (
+            "the refusal must name the first occurrence the row would have "
+            "STORED, not the date the owner typed"
+        )
+        assert refused.value.end_date == date(2025, 12, 1)
+        assert template.recurrence_rule is None, "the refusal wrote a rule"
+
+    def test_a_paycheck_rule_whose_stop_reaches_the_opening_payday_is_written(
+        self, seed_user, db, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """The boundary: a stop ON the payday the start lifts to names one occurrence."""
+        user_id = seed_user["user"].id
+        calendar = calendar_for(user_id)
+        template = bare_expense_template(db.session, seed_user)
+        rule = author_rule(
+            spec_for(
+                EVERY_PERIOD, user_id=user_id,
+                starts_on=date(2025, 6, 1), end_bound=EndsOnDate(on=date(2026, 1, 2)),
+            ),
+            calendar, template,
+        )
+        db.session.flush()
+        assert rule.starts_on == date(2026, 1, 2)
+        assert rule.end_date == date(2026, 1, 2)
+
+    def test_a_re_author_that_would_invert_the_stored_pair_leaves_the_row_as_it_was(
+        self, seed_user, db, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """The update shape: a MONTH rule switched to every paycheck with its bounds kept.
+
+        ``[2025-06-01, 2025-12-01]`` is an ordered MONTH-unit pair the table
+        admits; re-authored as every paycheck, the start lifts to
+        ``2026-01-02`` and the pair inverts.  The refusal fires BEFORE the
+        first column assignment, so every column reads as it did.
+        """
+        user_id = seed_user["user"].id
+        calendar = calendar_for(user_id)
+        template = bare_expense_template(db.session, seed_user)
+        rule = author_rule(
+            spec_for(
+                MONTHLY, user_id=user_id,
+                starts_on=date(2025, 6, 1), end_bound=EndsOnDate(on=date(2025, 12, 1)),
+            ),
+            calendar, template,
+        )
+        db.session.flush()
+        before = derived_columns(rule) | {"end_date": rule.end_date}
+
+        with pytest.raises(EmptyAuthoredWindowError):
+            reauthor_rule(
+                rule,
+                replace(
+                    recurrence_spec(rule),
+                    unit=RecurrenceUnitEnum.PERIOD,
+                    placement=PeriodPlacementEnum.CONTAINING_DATE,
+                    interval_n=1,
+                ),
+                calendar,
+            )
+
+        assert derived_columns(rule) | {"end_date": rule.end_date} == before
 
 
 class TestSalaryProfileWriter:
