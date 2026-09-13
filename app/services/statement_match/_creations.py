@@ -38,6 +38,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from ._offers import CandidateRow, RowKind
+from ._outcome import FiledMerchant
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from app.services.pay_calendar import DerivedPeriod
@@ -340,16 +341,18 @@ class CreatedSubject:
 class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
     """What recording one bank line as a purchase did.
 
-    Pylint: too-many-instance-attributes -- **ten because the act genuinely
-    produces ten facts**, with four separate consumers reading disjoint
+    Pylint: too-many-instance-attributes -- **eleven because the act genuinely
+    produces eleven facts**, with five separate consumers reading disjoint
     subsets: the structured log takes the three ids and both days, the flash
     takes the container's label and whether it was created plus the figure and
-    the posting day, the tests take the ids, and
-    :meth:`MintedEnvelopes.remember` takes the period.  ``CandidateRow`` beside
-    it carries the same disable for the same reason.  Splitting the container's
+    the posting day, the tests take the ids,
+    :meth:`MintedEnvelopes.remember` takes the period, and the receipt's
+    standing-rule offer takes the merchant.  ``CandidateRow`` beside it
+    carries the same disable for the same reason.  Splitting the container's
     fields into a nested value would be the speculative shape rule 13 forbids
     -- nothing asks for the container alone.  *(The tenth is
-    :attr:`records_a_refund`, added at plan step ``bank_import:X-gj-2b-3``.)*
+    :attr:`records_a_refund`, added at plan step ``bank_import:X-gj-2b-3``;
+    the eleventh is :attr:`merchant`, at ``bank_import:X-gx``.)*
 
     Attributes:
         entry_id: The ``budget.transaction_entries`` row now holding the
@@ -388,6 +391,14 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
             by a caller: it is resolved once here for both arms, and a second
             derivation is how the two came to disagree once already.  It is
             what :meth:`MintedEnvelopes.remember` keys the minted envelope by.
+        merchant: The :class:`~._outcome.FiledMerchant` the purchase was
+            filed FOR -- the line's merchant as the door read it under the row
+            lock -- or ``None`` for a line the source named none on (plan step
+            ``bank_import:X-gx``, finding **BI-495**).  Carried out for the
+            reason :attr:`pay_period_id` is: the door held the locked line, so
+            the receipt's standing-rule offer names the merchant this act
+            filed under rather than re-deriving one from the page's pre-lock
+            derivation, which is how the two came to disagree.
     """
 
     entry_id: int
@@ -400,6 +411,7 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
     made_on: date
     pay_period_id: int
     records_a_refund: bool
+    merchant: FiledMerchant | None
 
 
 @dataclass(frozen=True)

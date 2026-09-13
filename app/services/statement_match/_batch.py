@@ -500,6 +500,11 @@ def _apply_creations(tally, batch: ReviewedBatch, scope: ReviewScope, minted, an
             # step ``bank_import:X-gj-2b-2``, so the general case is the
             # ordinary one rather than a future one.
             amount=-recorded.amount,
+            # **The merchant the door filed FOR, onto the receipt** (plan step
+            # ``bank_import:X-gx``): the standing-rule offer is derived from
+            # the applied items, so it names the merchant the locked row held
+            # and not the one the page's derivation hydrated before the lock.
+            merchant=recorded.merchant,
         ))
 
 

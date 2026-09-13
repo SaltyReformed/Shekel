@@ -13,7 +13,8 @@ everything the owner reviewed in ONE pass, and say what each item did* -- so
 this module is the second clause.  What it holds:
 
 * :class:`AppliedItem` and :class:`RefusedItem` -- one act each, as the
-  receipt names it, the first carrying the bank's own signed figure;
+  receipt names it, the first carrying the bank's own signed figure and,
+  where the act filed spending, the :class:`FiledMerchant` it filed it for;
 * :class:`BatchOutcome` -- the whole pass, fourteen fields: both lists and
   every count, each count's docstring recording why it exists rather than
   being folded into a neighbour whose caption would be false of it;
@@ -35,8 +36,10 @@ byte-pure move cannot keep true (finding **BI-484**) and which the move's own
 commit lists.
 
 **The dependency runs ONE WAY**: the package's ``__init__``, :mod:`._batch`
-and :mod:`._filing` import this module, and it imports nothing from the
-package -- only ``dataclass`` and ``Decimal``.
+and :mod:`._filing` import this module, and since plan step
+``bank_import:X-gx`` so do :mod:`._creations` and :mod:`._create` (for
+:class:`FiledMerchant`) and :mod:`._offered_rules` (annotations only); it
+imports nothing from the package -- only ``dataclass`` and ``Decimal``.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): frozen dataclasses
 out, no Flask import, no query -- every figure on these values arrived on
@@ -47,6 +50,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+
+
+@dataclass(frozen=True)
+class FiledMerchant:
+    """The merchant an act filed spending FOR, as the door read it under the lock.
+
+    Plan step ``bank_import:X-gx``, finding **BI-495**.  **One value and not
+    two fields**, which is ``CLAUDE.md`` rule 14 at its smallest grain: the id
+    keys a standing rule and the name is what the receipt's sentence prints,
+    and an id beside a name that could each be ``None`` on their own is a
+    representable state nothing means.  Both are the bank line's own
+    (:attr:`~app.models.statement_import.BankStatementLine.merchant_id` and
+    the joined merchant's name), read by the create door off the row it holds
+    LOCKED -- so the merchant the receipt offers a rule for is the merchant
+    the door filed under, and not the one the page's derivation hydrated
+    before the lock (plan step ``bank_import:X-gv``).
+
+    Attributes:
+        merchant_id: The ``budget.merchants`` row, which is what a standing
+            rule is keyed on.
+        name: What the source calls it, for the offer's sentence.
+    """
+
+    merchant_id: int
+    name: str
 
 
 @dataclass(frozen=True)
@@ -76,11 +104,28 @@ class AppliedItem:
             not only a count -- ruling **R-GD(a)**'s rule one door over: a
             consent naming a count and no figure is a consent to an amount
             nobody stated.
+        merchant: The :class:`FiledMerchant` this act filed SPENDING for, or
+            ``None`` where it states nothing about one (plan step
+            ``bank_import:X-gx``, finding **BI-495**).  **Carried on the
+            receipt because the receipt is what the standing-rule offer is
+            derived from** (ruling **R-IB**: once per merchant, about what
+            the door actually APPLIED), and the door is the one reader that
+            held the line under the lock.  The offer read each line's merchant
+            off the page's pre-lock derivation until this step, so a merchant
+            a re-import named between the derivation and the press was the
+            merchant the door filed under and not the one the offer asked
+            about.  Only the CREATE arm sets it: a match explains lines it does
+            not file for, an income states nothing (ruling **R-GW**), a skip
+            names nobody, and a purchase whose line names no merchant has
+            nobody to answer for -- ``None`` in every one of those, which is
+            what lets the offer be a filter over the items rather than a
+            second census of the batch.
     """
 
     line_ids: "tuple[int, ...]"
     summary: str
     amount: Decimal
+    merchant: "FiledMerchant | None" = None
 
 
 @dataclass(frozen=True)

@@ -114,6 +114,7 @@ from app.services.statement_match import (
     MatchReach,
     ReviewScope,
     RuleDoorAccepts,
+    RuleView,
     apply_reviewed,
     opened_match,
     reconcile_page,
@@ -520,12 +521,6 @@ def apply_statement_reconcile(account_id):
     if errors:
         return render(scope, error=refusal_sentence(errors))
     submitted = _batch_schema.load(payload)
-    # **Only a pass that FILES SPENDING can earn a standing-rule offer**, so a
-    # matches-only or income-only press does not pay this: ``review_set`` is
-    # measured at 0.136 s and ``rules_worth_offering`` would read nothing from
-    # it (ruling **bank_import:R-GW** -- a merchant answer says where SPENDING
-    # goes, so no inflow reaches that loop).
-    review = review_set(scope) if submitted["creations"] else None
 
     def _apply():
         """Apply the pass against *scope*, inside the caller's transaction.
@@ -538,39 +533,26 @@ def apply_statement_reconcile(account_id):
         return ReconcilePass(
             batch=outcome,
             # **From what the door APPLIED, which is the whole of
-            # ``bank_import:R-IB``'s first half.**  ``AppliedItem.line_ids``
-            # is documented as a
-            # correlation key for exactly this: saying WHICH submitted item an
-            # outcome belongs to.  Reading the submission instead is what
-            # offered a standing rule for a creation the door had refused.
-            offers=() if review is None else rules_worth_offering(
-                submitted["creations"],
-                frozenset(
-                    line_id
-                    for item in outcome.applied for line_id in item.line_ids
-                ),
-                review,
-                scope,
-                # **What the RULE door would take, which is not what this pass
-                # can file into.**  Read here because the service answers no
-                # query, and read from the two producers the door itself
-                # validates against, so the offer cannot render a press that
-                # can never succeed.
-                RuleDoorAccepts(
-                    # **The pass already holds the template set**, because
-                    # ``review_set`` derives the merchant section every pass --
-                    # so this is ``offerable_templates``' answer without a second
-                    # call to it, which is the DRY rule this package applies
-                    # to producer calls inside one request.
-                    template_ids=frozenset(
-                        template_id
-                        for template_id, _ in review.merchants.templates
-                    ),
-                    category_ids=frozenset(
-                        category.id
-                        for category in list_active_categories(scope.owner_id)
-                    ),
-                ),
+            # ``bank_import:R-IB``.**  ``AppliedItem.line_ids`` is documented
+            # as a correlation key for exactly this: saying WHICH submitted
+            # item an outcome belongs to; and since plan step
+            # ``bank_import:X-gx`` ``AppliedItem.merchant`` is the merchant the
+            # door filed FOR, read off the row it held locked.  Reading the
+            # submission instead is what offered a standing rule for a
+            # creation the door had refused; reading the page's derivation
+            # for the merchant -- ``review_set``, run here before the door
+            # until that step -- is what asked about the merchant the screen
+            # had shown rather than the one a re-import had just named and
+            # the door had just filed under (finding **BI-495**).
+            #
+            # **Only a pass that FILES SPENDING can earn a standing-rule
+            # offer** (ruling **bank_import:R-GW** -- a merchant answer says
+            # where SPENDING goes, so no inflow reaches that loop), so a
+            # matches-only or income-only press does not pay for the rule
+            # door's accepted sets.
+            offers=() if not submitted["creations"] else rules_worth_offering(
+                submitted["creations"], outcome.applied, scope,
+                _rule_door_accepts(scope),
             ),
         )
 
@@ -595,6 +577,40 @@ def apply_statement_reconcile(account_id):
         ),
         _apply,
         _record,
+    )
+
+
+def _rule_door_accepts(scope: ReviewScope) -> RuleDoorAccepts:
+    """Return what the RULE door would take, for the receipt's offer.
+
+    **Read here because the service answers no query, and read from the
+    producers the door itself validates against** --
+    :attr:`~app.services.statement_match.RuleView.template_names` is
+    ``offerable_templates``' answer, the very call ``state_rules`` makes, and
+    :attr:`~app.services.statement_match.RuleView.active_categories` is
+    ``active_category_names``', the predicate (this owner's, ``is_active``)
+    that door's own category check applies -- so the offer cannot render a
+    press that can never succeed.  **It is not what this pass can file
+    into**: an adversarial
+    review reproduced both ways the two sets part (a settled envelope from an
+    archived template, an ad-hoc envelope under an archived category).
+
+    **One view rather than a review**, since plan step ``bank_import:X-gx``.
+    The press ran ``review_set`` -- the whole inbox partition, 0.136 s -- to
+    read the merchant section's template tuple and each line's merchant, and
+    a category query beside it; the offer reads the merchant off the receipt
+    now, so what remains is the rule door's own view, built once here.
+
+    Args:
+        scope: The pass, for whose account and owner the door answers.
+
+    Returns:
+        The :class:`~app.services.statement_match.RuleDoorAccepts`.
+    """
+    view = RuleView.build(scope.owner_id, scope.account_id)
+    return RuleDoorAccepts(
+        template_ids=frozenset(view.template_names),
+        category_ids=frozenset(view.active_categories),
     )
 
 

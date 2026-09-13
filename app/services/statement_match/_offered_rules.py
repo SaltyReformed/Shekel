@@ -14,8 +14,14 @@ creatable lines over 21 merchants, so the page asked one question **86 times**
 * the rule was read off what was **OK'd**, and computed BEFORE the money door
   ran, so a per-item refusal rolled back inside its savepoint while the rule
   was written anyway -- auto-filing that merchant on the NEXT import with no
-  press.  Built from :attr:`~._outcome.BatchOutcome.applied` here, a rule for a
-  refused creation has no form to take;
+  press.  Built from :attr:`~._outcome.BatchOutcome.applied` here, a rule for
+  a refused creation has no form to take -- and since plan step
+  ``bank_import:X-gx`` (finding **BI-495**) the MERCHANT comes off those
+  items too (:attr:`~._outcome.AppliedItem.merchant`), so the offer names the
+  merchant the door filed under.  It read each line's merchant off the page's
+  pre-lock derivation until then, and a re-import naming a merchant between
+  the derivation and the press (plan step ``bank_import:X-gv``'s window) was
+  filed under by the door and asked about by nobody;
 * N controls for one fact can state N different answers.  One offer per
   merchant leaves a contradiction no form to take either.  **The measured
   contradiction rate is ZERO** -- a rule keys on ``template_id``, so all 13
@@ -51,7 +57,7 @@ from ._creations import NEW_ENVELOPE, NewEnvelope
 from ._stating import RuleSubmission, rule_creating, rule_naming
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
-    from ._reads import ReviewSet
+    from ._outcome import AppliedItem, FiledMerchant
     from ._scope import ReviewScope
 
 
@@ -241,8 +247,7 @@ class RuleDoorAccepts:
 
 def rules_worth_offering(
     creations: "list[dict]",
-    applied_line_ids: "frozenset[int]",
-    review: "ReviewSet",
+    applied: "tuple[AppliedItem, ...]",
     scope: "ReviewScope",
     accepts: RuleDoorAccepts,
 ) -> "tuple[RuleOffer, ...]":
@@ -250,18 +255,27 @@ def rules_worth_offering(
 
     Ruling **bank_import:R-IB**.
 
-    **``applied_line_ids`` is the whole point of the signature.**  Reading the
+    **``applied`` is the whole point of the signature.**  Reading the
     submission alone is what wrote a standing rule for a creation the door had
     refused: :func:`~._batch.apply_reviewed` runs each item in its own SAVEPOINT
     (ruling **R-FZ(a)**), so a refusal rolls that item back while the pass
     commits, and a rule derived from what was OK'd survives an act that did
-    not.  Taking the ids the outcome reports makes the offer a function of what
-    LANDED.
+    not.  Taking the items the outcome reports makes the offer a function of
+    what LANDED -- and, since plan step ``bank_import:X-gx``, of WHOM it landed
+    for: the merchant is :attr:`~._outcome.AppliedItem.merchant`, which the
+    create door read off the line it held under the row lock.  *It took the
+    ids alone until then, and read each line's merchant off the page's
+    pre-lock derivation* (finding **BI-495**): the door filed under the
+    merchant a re-import had just named while this asked about the merchant
+    the screen had shown, which was none.
 
     **An INCOME states nothing** (ruling **bank_import:R-GW**): a merchant
     answer says where SPENDING goes, so ``submitted["incomes"]`` is not read
-    and no inflow reaches this loop.  A creation whose line carries no merchant
-    at all states nothing either -- there is nobody to answer for.
+    and no inflow reaches this loop -- and no income item carries a
+    :attr:`~._outcome.AppliedItem.merchant`, so the filter below would drop it
+    even if one did.  A creation whose line carries no merchant at all states
+    nothing either -- there is nobody to answer for -- and its item carries
+    ``None`` for the same reason.
 
     **A destination the scope does not offer is skipped rather than refused.**
     The money door refuses that same submission on the same request, which is
@@ -273,9 +287,9 @@ def rules_worth_offering(
             :class:`~app.schemas.validation.statements.StatementBatchSchema`
             loaded, each naming a ``line_id`` and the destination the card
             submitted.
-        applied_line_ids: Every bank line the door actually explained, from
-            :attr:`~._outcome.AppliedItem.line_ids`.
-        review: The pass the cards were drawn from, for each line's merchant.
+        applied: Every act the door landed
+            (:attr:`~._outcome.BatchOutcome.applied`), each naming its lines
+            and, where it filed spending, the merchant it filed for.
         scope: The pass, whose ``destinations`` are the offer set a chosen id
             is resolved against.  **Resolved against the SCOPE's own set
             rather than queried for**: it is already derived, and a second read
@@ -293,23 +307,26 @@ def rules_worth_offering(
         where the pass filed no spending, which is every pass that only matched
         or only recorded income.
     """
-    lines = {
-        one.line.line_id: one.line for one in review.creatable
-        if one.line.merchant_id is not None
+    # **A filter over the receipt, not a census of the batch**: an item that
+    # names a merchant is a landed creation for a merchant-bearing line, by
+    # :attr:`~._outcome.AppliedItem.merchant`'s own contract, so what LANDED
+    # and WHOM it landed for are one read of one value.
+    filed = {
+        line_id: item.merchant
+        for item in applied if item.merchant is not None
+        for line_id in item.line_ids
     }
     names = {
-        line.merchant_id: line.merchant_label for line in lines.values()
+        merchant.merchant_id: merchant.name for merchant in filed.values()
     }
     offered = {
         destination.transaction_id: destination
         for destination in scope.destinations
     }
-    return _by_merchant(
-        _stated(creations, applied_line_ids, lines, offered, accepts), names,
-    )
+    return _by_merchant(_stated(creations, filed, offered, accepts), names)
 
 
-def _stated(creations, applied_line_ids, lines, offered, accepts):
+def _stated(creations, filed, offered, accepts):
     """Return ``(merchant_id, statement, label)`` per creation that LANDED.
 
     Split out of :func:`rules_worth_offering` when that function crossed
@@ -320,8 +337,9 @@ def _stated(creations, applied_line_ids, lines, offered, accepts):
 
     Args:
         creations: The creation items the schema loaded.
-        applied_line_ids: Every bank line the door actually explained.
-        lines: The pass's creatable lines by id, merchant-bearing only.
+        filed: The :class:`~._outcome.FiledMerchant` the door filed each
+            landed line for, by line id -- every line the door explained for
+            a merchant, and no other.
         offered: The pass's destinations by ``transaction_id``.
         accepts: What the rule door would take.
 
@@ -332,19 +350,19 @@ def _stated(creations, applied_line_ids, lines, offered, accepts):
         is where *accepts* is in scope.
     """
     for item in creations:
-        line = lines.get(item["line_id"])
-        if line is None or item["line_id"] not in applied_line_ids:
+        merchant: "FiledMerchant | None" = filed.get(item["line_id"])
+        if merchant is None:
             continue
         if item["destination"] == NEW_ENVELOPE:
             minted = rule_creating(
-                line.merchant_id,
+                merchant.merchant_id,
                 NewEnvelope(
                     name=item["envelope_name"],
                     category_id=item["category_id"],
                 ),
             )
             yield (
-                line.merchant_id, minted, item["envelope_name"],
+                merchant.merchant_id, minted, item["envelope_name"],
                 accepts.refusal_for(minted),
             )
             continue
@@ -360,9 +378,9 @@ def _stated(creations, applied_line_ids, lines, offered, accepts):
         # file Walmart in Groceries for that fortnight*, which is not what
         # pressing it does.  Caught by rendering the offer against a
         # production clone 2026-08-30.
-        named = rule_naming(line.merchant_id, destination)
+        named = rule_naming(merchant.merchant_id, destination)
         yield (
-            line.merchant_id, named, destination.name,
+            merchant.merchant_id, named, destination.name,
             accepts.refusal_for(named),
         )
 
