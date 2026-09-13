@@ -21,7 +21,13 @@ threading and the ``Args`` entry ``W9015`` requires.  **PC-498 named that
 remedy a SPLIT and not a trim**, because answering a ceiling by deleting
 argument is how a module loses the reasoning that keeps it correct, and it
 named the PLACEMENT the developer's rather than the next session's to assume
-(the precedent is **R-PC60**).  He placed it here.
+(the precedent is **R-PC60**).  He placed it here.  *That confirmation --
+``reject_unconfirmed_gap``, ``Confirmations.gap``, ``PayPeriodGapRequired``
+and the banner -- was DELETED whole at plan step ``pay_calendar:C17-c-2a``
+(ruling **R-PC67**): a hole in the schedule is refused by
+``pay_period_batch.reject_skipped_paycheck``, beside the floor, rather than
+confirmed.  The one overridable gate left is the discard one, and the doors
+take it as ``confirm_discard``.*
 
 **These names are PUBLIC and were private before the move.**  A function
 another module calls is part of this module's surface; keeping the underscore
@@ -36,14 +42,12 @@ that called a door would be the cycle the C3-a split exists to prevent.
 """
 
 import logging
-from dataclasses import dataclass
 from datetime import date
 
 from sqlalchemy import or_
 
 from app.exceptions import (
     PayPeriodDiscardRequired,
-    PayPeriodGapRequired,
     PayPeriodLocked,
 )
 from app.extensions import db
@@ -51,42 +55,12 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services._recurrence_common import log_resource_access_denied
-from app.services import pay_calendar
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.services.pay_period_locks import PeriodLockReason
 from app.utils.balance_predicates import is_projected_clause, settled_status_ids
 from app.utils.log_events import ACCESS, EVT_RESOURCE_NOT_FOUND, log_event
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class Confirmations:
-    """Which OVERRIDABLE gates the owner has already cleared.
-
-    Plan step ``pay_calendar:C14-f``.  The destructive doors have two gates a
-    person may answer -- :class:`~app.exceptions.PayPeriodDiscardRequired`,
-    which acknowledges rows being DESTROYED, and
-    :class:`~app.exceptions.PayPeriodGapRequired`, which acknowledges a hole
-    being CREATED.  They are asked at different moments about different facts,
-    so they are two fields rather than one flag: a single Boolean would let an
-    owner confirming a discard also confirm a 196-day gap nobody showed them.
-
-    A parameter object rather than two more arguments, for the reason the
-    project states -- a public function past the argument bound takes an
-    object.  The grouping is the real one: both are answers a PERSON gave to a
-    gate, supplied by the door, and neither is part of the payday batch.
-
-    The LOCKS are deliberately absent: :class:`PeriodLockReason` refusals are
-    not overridable, so there is nothing for an owner to clear.
-
-    Attributes:
-        discard: Proceed past the discard gate.
-        gap: Proceed past the gap gate.
-    """
-
-    discard: bool = False
-    gap: bool = False
 
 
 def log_unresolved_period(user_id: int, period_id: int) -> None:
@@ -423,78 +397,3 @@ def settled_transaction_count(user_id: int) -> int:
         )
         .count()
     )
-
-
-def reject_unconfirmed_gap(
-    surviving_paydays: "set[date]",
-    retired_paydays: "set[date]",
-    new_paydays: "list[date]",
-    stored_rhythm: "pay_rhythm.Rhythm | None",
-    gap_confirmed: bool,
-) -> None:
-    """Refuse a batch that OPENS a hole, until the owner confirms.
-
-    Plan step **pay_calendar:C14-f**, developer ruling 2026-09-07 on ledger row
-    **P80**.  The floor's mirror at the other end:
-    :func:`~app.services.pay_period_batch.reject_backward_payday` refuses a
-    payday landing INSIDE a paycheck the owner already has, this asks about one
-    that leaves a whole paycheck missing.
-    :class:`~app.exceptions.PayPeriodGapRequired` carries why it asks rather
-    than refuses, and is not repeated here.
-
-    **It grades what the batch CHANGES, not what the payday set looks like
-    afterwards, and a first cut got that wrong.**  Asking "does a hole exist"
-    fired on every rebuild by an owner who ALREADY had one -- ``seed_user``
-    holds a 2024 bootstrap payday and a 2026 block, so ten existing cases
-    tripped an 892-day gap that no batch under test created and no owner could
-    have fixed through this door.  A gate that asks about a state its caller
-    did not cause is noise, and noise is how a confirmation stops being read.
-
-    So the reference is **where the tail opened BEFORE**: the earliest payday
-    this batch RETIRES, when it retires any.  A rebuild that reopens the tail
-    within a paycheck of where it stood changes nothing worth asking about; one
-    that reopens it a whole paycheck later has skipped one.  When the batch
-    retires nothing it is an append, and the reference falls back to the next
-    projected payday after the record -- which is the floor, so the
-    unquestioned window is exactly one paycheck wide at both ends.
-
-    **Placed HERE and called from the WRITER** (plan step C14-f).  It is an
-    overridable, owner-answerable predicate, which is this module's subject;
-    calling it from ``record_paydays`` is what makes every door inherit it,
-    and P80 is what happens when this class of constraint is left to the doors.
-    Only ``regenerate`` can reach it today.  It does not CLOSE P80: a confirmed
-    gap is still a gap, and the row is re-pointed at **C17**.
-
-    Args:
-        surviving_paydays: The owner's paydays this batch does not retire.
-        retired_paydays: The paydays it retires -- empty for an append.
-        new_paydays: The paydays it would record, filtered of days already held.
-        stored_rhythm: The rhythm the last surviving paycheck runs at.  ``None``
-            only for an owner with no schedule row, who has no paydays either.
-        gap_confirmed: The owner has seen the gap and accepted it.
-
-    Raises:
-        PayPeriodGapRequired: The batch opens a hole a whole paycheck wide, and
-            *gap_confirmed* is False.
-    """
-    if gap_confirmed or not surviving_paydays or not new_paydays:
-        return
-    if not retired_paydays:
-        # An APPEND, not a replacement: nothing was displaced, so there is no
-        # "before" to have moved and no hole this batch opened.  The floor
-        # governs it, and generate / extend derive their start anyway.  A first
-        # cut graded appends too and fired on ten existing cases where a
-        # fixture appends a 2026 block onto a 2024 bootstrap payday -- a gap
-        # the batch inherits rather than makes.
-        return
-    latest_payday = max(surviving_paydays)
-    was = min(retired_paydays)
-    # One whole paycheck later than the tail used to open is a skipped payday.
-    skips_one = pay_calendar.projected_payday(was, stored_rhythm, 1)
-    earliest_new = min(new_paydays)
-    if earliest_new >= skips_one:
-        raise PayPeriodGapRequired(
-            gap_days=(earliest_new - latest_payday).days,
-            after=latest_payday,
-            resumes=earliest_new,
-        )

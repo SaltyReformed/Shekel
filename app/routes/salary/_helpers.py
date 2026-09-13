@@ -15,10 +15,8 @@ from decimal import Decimal
 
 from flask import abort, redirect, render_template, request, url_for
 from flask_login import current_user
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.utils.auth_helpers import get_or_404, log_refused_lookup
-from app.utils.dates import display_today
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.account import Account
@@ -27,16 +25,13 @@ from app.models.ref import (
     DeductionTiming,
     RaiseType,
 )
-from app.exceptions import RecurrenceConflict
 from app.routes._recurrence_conflict_chooser import flash_retained_notice
 from app.services import (
     account_service,
     paycheck_calculator,
-    recurrence_engine,
-    template_amount_service,
+    salary_regeneration,
 )
 from app.services.balance_at import BalanceContext
-from app.services.generation_schedule import GenerationSchedule
 from app.services.payroll_basis import PayrollBasis
 from app.services.pay_calendar import calendar_for
 from app.services.tax_config_service import load_tax_configs_for_year
@@ -155,74 +150,32 @@ def _get_owned_profile_and_period(profile_id, period_id, calendar):
 
 
 def _regenerate_salary_transactions(profile):
-    """Recalculate and update linked template transactions."""
-    if not profile.template:
-        return
+    """Regenerate the profile's paycheck rows and tell the owner what was kept.
 
-    # ONE read pass for the whole regeneration (plan step R7d-c-1): it pins the
-    # owner, the day and the baseline scenario, and its calendar serves both
-    # the paycheck recompute below and the regeneration's own resolution (plan
-    # step R4b-1).  The paycheck engine and the recurrence seam both read the
-    # CALENDAR (pay-calendar plan steps C2-f2d-3 and C2-f3c), so there is one
-    # value and no second read to reconcile it against.  It replaces a
-    # ``get_baseline_scenario`` beside a ``calendar_for`` -- the two facts a
-    # pass already pins.
-    ctx = BalanceContext.build(current_user.id)
-    if ctx.scenario is None:
-        return
+    The salary package's adapter over
+    :func:`~app.services.salary_regeneration.regenerate_salary_transactions`,
+    the ONE walk every salary write is followed by (plan step salary:S3-f-3,
+    ruling **R-SAL24** -- the walk moved below the route layer so the
+    ``/retirement`` rail's end-year Save could reach it too).  What is left
+    here is the Flask half the service cannot carry: this route package opens
+    the read pass for the requester, and it FLASHES the rows the pass
+    declined to touch.  The name and the signature are the pre-move ones, so
+    every call site across this package -- and the tests that patch this
+    name to simulate a stale race -- is untouched.  One thing did move: the
+    pass is built before the service's own template guard runs, one scenario
+    query for a profile without a template, a state ``create_profile`` never
+    produces.
 
-    schedule = GenerationSchedule.for_pass(ctx)
-    calendar = ctx.calendar()
-
-    # Update the template's default_amount to the current net pay
-    current_period = calendar.period_containing(date.today())
-    if current_period:
-        # The configs are resolved for the PERIOD's own tax year, not the
-        # clock's: a period straddling New Year belongs to the year it starts
-        # in, which is the key ``configs_by_year`` uses for every
-        # other paycheck this profile computes.
-        tax_configs = load_tax_configs_for_year(
-            current_user.id, profile, current_period.start_date.year,
-        )
-        pay_breakdown = paycheck_calculator.calculate_paycheck(
-            PayrollBasis(profile, calendar), current_period, tax_configs,
-            calibration=profile.calibration,
-        )
-        # Through the amount's one write door (plan step X-au-a).  The profile
-        # is salary-linked and active, so the door moves the column and records
-        # NO version: a paycheck-calculated figure is derived, not a price
-        # anybody stated.
-        template_amount_service.set_amount(
-            profile.template, pay_breakdown.earnings.net_pay,
-            effective_on=display_today(),
-        )
-
-    # Regenerate transactions
-    try:
-        recurrence_engine.regenerate_for_template(
-            profile.template, schedule, ctx.scenario_id,
-            effective_from=date.today(),
-        )
-    except RecurrenceConflict as e:
-        logger.warning("Recurrence conflict during salary regeneration: %s", e)
-        # **A RETAINED row is the owner's business, not just the log's** (plan
-        # step R10-a, adversarial review).  The override / soft-delete halves
-        # of this conflict are deliberately swallowed here -- a salary
-        # regeneration preserves them and there is nothing for the operator to
-        # decide -- but a retained row means this pass declined to apply the
-        # profile's change to a row carrying their own records, which is a
-        # silent no-op unless it is said out loud.
-        flash_retained_notice(e.retained)
-    except SQLAlchemyError:
-        # Narrow catch (C-46 / F-145): logging hook that re-raises.
-        # SQLAlchemy errors from the regenerate flush get the
-        # profile-id context here as well as in the calling route's
-        # ``except SQLAlchemyError`` block.  Non-SQLAlchemy
-        # exceptions still propagate to the caller without this
-        # extra log line; the caller's logger.exception then
-        # records the user-id + profile-id context.
-        logger.exception("Failed to regenerate salary transactions for profile %d", profile.id)
-        raise
+    Args:
+        profile: The :class:`SalaryProfile` whose template prices the rows.
+    """
+    retained = salary_regeneration.regenerate_salary_transactions(
+        BalanceContext.build(current_user.id), profile,
+    )
+    # **A RETAINED row is the owner's business, not just the log's** (plan
+    # step R10-a, adversarial review): the service returns the ids rather
+    # than dropping them, and this is where the salary page says so.
+    flash_retained_notice(retained)
 
 
 def _regenerate_all_salary_transactions():

@@ -41,6 +41,7 @@ from tests._test_helpers import (
     current_pay_period,
     derived_span,
     last_covered_day,
+    make_projected_envelope_expense,
     open_books_before_the_first_assertion,
     settle_day_columns,
 )
@@ -833,6 +834,95 @@ class TestGoalTrajectoryDashboard:
             assert gd.monthly_contribution == Decimal("500.00")
             # remaining = 6000 - 3000 = 3000, months = ceil(3000/500) = 6
             assert gd.trajectory.months_to_goal == 6
+
+
+class TestARenderWalksAGoalTransferOnce:
+    """Plan ledger row N-513, measured on its own surface (plan step R7d-f-2).
+
+    A transfer from checking into a goal account is in the emergency-fund
+    floor's set (``_metrics._committed_expense_floor``, by ``from_account_id``)
+    AND in that goal's contribution set (``_goals._load_goal_templates``, by
+    ``to_account_id``), so one render reads it through the composed door
+    twice.  Measured 2026-09-12 before this step: ``resolve`` once (R16-b-2's
+    memo), the occurrence WALK twice.  The walk is the pass's memo now, so the
+    second read is memo hits end to end and one render walks the definition
+    ONCE -- ``CLAUDE.md`` rule 14's ONE WALK, read literally.
+    """
+
+    def test_one_checking_to_goal_transfer_is_walked_once_per_render(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """Both sets read the definition; the pass walks it once.
+
+        Both consumers are shown to FIRE before the count is read: the goal's
+        monthly contribution is the transfer's own $200 x 26 / 12, and the
+        emergency-fund operand carries the same committed floor (no settled
+        expense exists on this fixture, so the floor IS the average).  A
+        count of one with either figure absent would be one consumer skipping
+        the read rather than the memo serving it.
+        """
+        # Pylint: ``import-outside-toplevel`` -- the walk-once control patches
+        # the name the PASS calls at call time (``_context``), a seam-private
+        # module this file otherwise has no business importing; kept local
+        # so the import states its one purpose beside its one use.
+        # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _context
+        from tests._test_helpers import make_transfer_template
+
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
+            )
+            savings = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Goal Account",
+                    anchor_balance=Decimal("5000.00"),
+                ),
+            )
+            db.session.add(savings)
+            db.session.flush()
+            goal = SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=savings.id,
+                name="Vacation",
+                target_amount=Decimal("10000.00"),
+                is_active=True,
+            )
+            db.session.add(goal)
+            # $200 every paycheck, checking -> the goal account: the shape
+            # both sets select.
+            make_transfer_template(db.session, seed_user, savings)
+            db.session.commit()
+
+            calls = []
+            real = _context.occurrence_placements
+
+            def counting(resolved, calendar, **kwargs):
+                calls.append(resolved)
+                return real(resolved, calendar, **kwargs)
+
+            monkeypatch.setattr(_context, "occurrence_placements", counting)
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(seed_user["user"].id),
+            )
+
+            # 200 * 26 / 12 at full precision, rounded once at the boundary.
+            biweekly_as_monthly = (
+                Decimal("200.00") * 26 / 12
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            assert result["goal_data"][0].monthly_contribution == (
+                biweekly_as_monthly
+            ), "precondition: the goal's set read the transfer"
+            assert result["avg_monthly_expenses"] == biweekly_as_monthly, (
+                "precondition: the floor's set read the same transfer"
+            )
+            assert len(calls) == 1, (
+                f"one checking-to-goal transfer was walked {len(calls)} times "
+                f"in one render; the walk is the pass's memo (row N-513)"
+            )
 
 
 class TestEmergencyFundMetrics:
@@ -2724,30 +2814,6 @@ def _override_anchor(db_session, account, pay_period, anchor_balance):
     db_session.commit()
 
 
-def _make_projected_envelope_expense(
-    db_session, *, seed_user, pay_period, estimated, account=None,
-    name="Groceries",
-):
-    """Create a Projected envelope expense in ``pay_period``.
-
-    The engine's own row of a priced, every-paycheck ``is_envelope=True``
-    definition (:func:`generate_row_of`, plan step balance:X-cf), which is
-    what entries attach to.  Uses the user's Groceries category so the row
-    is consistent with the symptom #1 worked example.  ``account`` defaults
-    to the seed user's checking account; pass the account when the row
-    should live elsewhere -- the engine puts a row on its DEFINITION's
-    account, so that is where the choice is made.
-    """
-    # pylint: disable=import-outside-toplevel
-    from tests._test_helpers import generate_row_of, make_expense_template
-
-    template = make_expense_template(
-        db_session, seed_user, amount=estimated,
-        name=name, category_key="Groceries", is_envelope=True,
-        account=account,
-    )
-    return generate_row_of(template, pay_period)
-
 
 #: The civil day every purchase :func:`_add_entry` writes is bought and settled
 #: on.  Named because the account's BOOKS must precede it (ruling **R-HG**,
@@ -2838,7 +2904,7 @@ class TestCanonicalProducerRouting:
                 Decimal("614.29"),
             )
 
-            txn = _make_projected_envelope_expense(
+            txn = make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
@@ -2952,7 +3018,7 @@ class TestCanonicalProducerRouting:
             ))
             db.session.commit()
 
-            txn = _make_projected_envelope_expense(
+            txn = make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
@@ -3023,7 +3089,7 @@ class TestCanonicalProducerRouting:
                 Decimal("614.29"),
             )
 
-            _make_projected_envelope_expense(
+            make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
@@ -6532,7 +6598,7 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
             current = current_pay_period(seed_user["user"].id)
             by_index = {derived_span(p).period_index: p for p in periods}
             for offset, amount in ((10, "100.00"), (20, "200.00"), (40, "300.00")):
-                _make_projected_envelope_expense(
+                make_projected_envelope_expense(
                     db.session, seed_user=seed_user,
                     pay_period=by_index[derived_span(current).period_index + offset],
                     estimated=Decimal(amount), name=f"Bill +{offset}",

@@ -518,13 +518,17 @@ class TestSalaryNarrowCatch:
 
 
 class TestRegenerateHelperNarrowCatch:
-    """Verify ``_regenerate_salary_transactions``' narrowed catch.
+    """Verify the salary regeneration's narrowed catch.
 
-    The helper logs ``SQLAlchemyError`` raised by
+    The walk logs ``SQLAlchemyError`` raised by
     ``recurrence_engine.regenerate_for_template`` (so operators see
     profile-id context) and re-raises so the calling route catches
-    it.  Non-SQLAlchemy exceptions propagate without the helper's
-    log entry but the route handler still records them.
+    it.  Non-SQLAlchemy exceptions propagate without that
+    log entry but the route handler still records them.  **It lives in
+    ``app.services.salary_regeneration`` since plan step salary:S3-f-3**
+    (ruling **R-SAL24**); the route package's ``_regenerate_salary_transactions``
+    is the adapter that opens the pass and flashes, and the patch below
+    targets the engine call where the catch now is.
     """
 
     def test_helper_logs_sqlalchemy_error_with_profile_id(
@@ -533,9 +537,9 @@ class TestRegenerateHelperNarrowCatch:
         """Helper logs the profile-id when regenerate raises SQLAlchemyError.
 
         Patches ``recurrence_engine.regenerate_for_template`` (the
-        only SQLAlchemy-emitting call inside the helper's try block)
-        to raise a ``DataError``, then drives the helper through
-        ``update_profile``.  The helper's ``logger.exception`` must
+        only SQLAlchemy-emitting call inside the service's try block)
+        to raise a ``DataError``, then drives the service through
+        ``update_profile``.  The service's ``logger.exception`` must
         emit a record whose message includes the profile id, and the
         outer route's ``except SQLAlchemyError`` block then converts
         the re-raised error into the standard flash + redirect.
@@ -547,9 +551,11 @@ class TestRegenerateHelperNarrowCatch:
                 name="single",
             ).one()
 
-            with caplog.at_level(logging.ERROR, logger="app.routes.salary"):
+            with caplog.at_level(
+                logging.ERROR, logger="app.services.salary_regeneration",
+            ):
                 with patch(
-                    "app.routes.salary._helpers.recurrence_engine."
+                    "app.services.salary_regeneration.recurrence_engine."
                     "regenerate_for_template",
                     side_effect=_make_data_error(),
                 ):

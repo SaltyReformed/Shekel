@@ -680,7 +680,7 @@ def _route_table_app():
 #:
 #: One case per test makes the per-test cost O(1) in the route table: two
 #: requests, whatever the app grows into.  Nothing here has a size to keep in
-#: step, and pytest-timeout's 30 s goes back to being the hang detector
+#: step, and pytest-timeout's cap goes back to being the hang detector
 #: `pytest.ini` calibrated it as.  Measured CI-shaped (4 cores, ``-n 12``,
 #: 2026-08-29): the largest single arm read 2.16 s split by account kind, and
 #: no case's CALL reaches a `--durations` report ahead of this file's own

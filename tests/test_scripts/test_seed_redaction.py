@@ -34,10 +34,8 @@ from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 import time_machine
 
-from app.extensions import db
 from app.models.user import User
 from app.utils.dates import to_display_tz
 
@@ -228,7 +226,6 @@ class TestSeedUserSubprocessOutput:
         env.update(overrides)
         return env
 
-    @pytest.mark.timeout(30)
     def test_seed_user_does_not_log_email_on_first_run(self, app, db):
         """A fresh seed run prints user_id but not the email value."""
         sentinel_email = "sentinel-redaction-test@shekel.local"
@@ -275,7 +272,6 @@ class TestSeedUserSubprocessOutput:
             db.session.delete(created)
             db.session.commit()
 
-    @pytest.mark.timeout(30)
     def test_seed_user_does_not_log_email_on_idempotent_rerun(self, app, db):
         """A second run (existing user branch) also redacts the email."""
         sentinel_email = "sentinel-redaction-rerun@shekel.local"

@@ -2425,10 +2425,11 @@ class TestShekelPackagePrivacyChecker(CheckerTestCase):
         """A package's private modules compose each other freely, both spellings.
 
         The production shape this exists for is
-        ``app/services/balance_at/_plan.py:55`` --
-        ``from ._context import BalanceContext, _memoize_once, require_scenario``
-        -- a private NAME imported out of a private SIBLING module of the
-        importer's own package.  It is the one conforming form that reaches
+        ``app/services/balance_at/_plan.py`` --
+        ``from ._memoize import _memoize_once, require_scenario`` (spelled
+        against ``._context`` until recurrence:R7d-f-2 moved the two
+        primitives) -- a private NAME imported out of a private SIBLING module
+        of the importer's own package.  It is the one conforming form that reaches
         the checker's name scan: the ``from`` clause's boundary dissolves on
         dotted-name membership, the importer is not the base module itself,
         and the imported name IS private, so ``_names_a_module`` has to

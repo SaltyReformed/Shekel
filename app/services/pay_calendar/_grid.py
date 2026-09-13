@@ -24,12 +24,17 @@ rather than tidy:
 * the PROJECTION is what a calendar shows and what money is filed against, so
   :func:`~._derive.derive_periods` and
   :func:`~._projection.project_period_after` take it;
-* the GRID is what a WRITER continues.  ``pay_period_admin.extend_pay_periods``
-  appends paydays past the owner's last recorded one, and
-  ``pay_period_write.record_paydays`` spaces the batch it is handed by flat
-  cadence arithmetic -- so an anchor read off the displaced side puts the whole
+* the GRID is what a WRITER spaces a STATED batch on.
+  ``pay_period_write.record_paydays`` runs the batch it is handed on the grid
+  from its first nominal payday and records each element displaced
+  (``pay_period_batch.requested_paydays``), and a minted era's phase is that
+  nominal day -- so an anchor read off the displaced side would put the whole
   batch a displacement off the rhythm.  That is the drift **R-PC54** names as
-  "a CASH date fed back into the rhythm".
+  "a CASH date fed back into the rhythm".  *The extend door was the other
+  grid caller until plan step ``C17-c-2b``, stepping the latest era's grid
+  past the horizon; it materialises the calendar's own plan now
+  (``pay_period_write.continue_paydays``), which reaches the grid only
+  through the projection.*
 
 **What the split could NOT make unwritable was fixed one layer up, and an
 adversarial review of ``C14-d`` struck a sentence claiming this module did it.**
@@ -73,7 +78,8 @@ def nominal_payday(anchor: date, cadence_days: int, steps: int) -> date:
     passing an anchor it took from a previous answer compounds across calls,
     and nothing here can see that.  ``extend_pay_periods`` WAS such a caller
     until ``C14-e-2`` gave it the stored phase to step from -- see this
-    module's own docstring for the measurement.
+    module's own docstring for the measurement -- and since ``C17-c-2b`` it
+    steps no grid at all.
 
     Args:
         anchor: A day the owner's rhythm passes through.  A RECORDED payday at

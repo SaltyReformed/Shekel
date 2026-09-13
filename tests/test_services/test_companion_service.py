@@ -2,9 +2,13 @@
 Shekel Budget App -- Companion Service Tests
 
 Data isolation and visibility filtering tests for the companion
-service.  Verifies that companion users can only see transactions
-from templates flagged ``companion_visible=True``, scoped to
-their linked owner's pay periods.
+service.  Verifies that companion users see exactly the transactions
+whose ``Transaction.visible_to_companion`` is True -- a generated row by
+its template's ``companion_visible`` flag, an ad-hoc row by its own --
+scoped to their linked owner's pay periods.  **The service asks that
+property of each loaded row since plan step ``balance:X-bi-1b``** (ruling
+**R-BAL19**); it restated the rule in SQL before, and
+:class:`TestVisibilityFiltering` holds the cases that tell the two apart.
 
 Covers plan test IDs: 10.1, 10.2, 10.4, 10.12, 10.13.
 Additional tests beyond the plan baseline cover period isolation,
@@ -19,11 +23,7 @@ from app import ref_cache
 from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import NotFoundError
 from app.extensions import db
-from app.models.account import Account
-from app.models.category import Category
-from app.models.pay_period import PayPeriod
-from app.models.ref import AccountType, TransactionType
-from app.models.scenario import Scenario
+from app.models.ref import TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
@@ -31,6 +31,7 @@ from app.services import companion_service
 from app.services.auth_service import hash_password
 from app.services.pay_calendar import PayCalendarError, calendar_for
 from tests._test_helpers import (
+    capture_sql_statements,
     moved_by_the_owner,
     generate_row_of,
     make_expense_template,
@@ -123,7 +124,7 @@ class TestVisibilityFiltering:
         view = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
         )
-        txns, period = view.transactions, view.period
+        txns = view.transactions
         names = [t.name for t in txns]
         assert len(txns) == 2
         assert "Groceries" in names
@@ -215,10 +216,12 @@ class TestVisibilityFiltering:
     def test_ad_hoc_transactions_excluded(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """Ad-hoc transactions (no template) are excluded from companion view.
+        """An ad-hoc row (no template) is hidden unless its OWN flag says so.
 
-        The JOIN on TransactionTemplate filters out ad-hoc transactions
-        because they have no template_id, so the join produces no match.
+        With no template to defer to, ``visible_to_companion`` reads the
+        row's own cell, and this row left it at the column's default.  (The
+        sentence here said the template JOIN dropped ad-hoc rows, which was
+        true once and had not been since the outer join of plan step F2.)
         """
         expense_type = (
             db.session.query(TransactionType)
@@ -244,6 +247,150 @@ class TestVisibilityFiltering:
             companion.id, period_id=seed_periods_today[0].id,
         ).transactions
         assert len(txns) == 0
+
+    def test_ad_hoc_transactions_included_by_their_own_flag(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """An ad-hoc row whose own ``companion_visible`` is set is shown.
+
+        The other half of the ad-hoc rule, at the service door: the route
+        cases in ``test_adhoc_flags`` see it through the page.
+        """
+        txn = Transaction(
+            name="Shared Dinner",
+            amount_ownership=AmountOwnership.own(Decimal("60.00")),
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            user_id=seed_periods_today[0].user_id,
+            pay_period_id=seed_periods_today[0].id,
+            account_id=seed_user["account"].id,
+            category_id=list(seed_user["categories"].values())[0].id,
+            scenario_id=seed_user["scenario"].id,
+            companion_visible=True,
+        )
+        db.session.add(txn)
+        db.session.commit()
+
+        companion = seed_companion["user"]
+        txns = companion_service.get_visible_transactions(
+            companion.id, period_id=seed_periods_today[0].id,
+        ).transactions
+        assert [t.id for t in txns] == [txn.id]
+
+    def test_a_generated_rows_own_cell_decides_nothing(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """The TEMPLATE decides a generated row's visibility; its cell is dead.
+
+        Two generated rows in one period, each with its own
+        ``companion_visible`` cell set to the OPPOSITE of its template's
+        flag -- the inert write a crafted PATCH can make.  The row under the
+        visible template is shown though its cell says hidden; the row under
+        the hidden template is hidden though its cell says shown.  This is
+        the case that tells the one property apart from a reader of the
+        row's column (plan step ``balance:X-bi-1b``, finding **BAL-482**):
+        on the SQL clause this replaced the answer was the same, and on a
+        filter over the raw cell it would be inverted on both rows.  It is a
+        security case -- the hidden template's row is what a companion must
+        not see.
+        """
+        shown_tpl = _make_template(
+            seed_user, companion_visible=True, name="Groceries",
+        )
+        hidden_tpl = _make_template(
+            seed_user, companion_visible=False, name="Mortgage",
+        )
+        shown = _make_txn(seed_periods_today[0], shown_tpl)
+        hidden = _make_txn(seed_periods_today[0], hidden_tpl)
+        shown.companion_visible = False
+        hidden.companion_visible = True
+        db.session.commit()
+
+        companion = seed_companion["user"]
+        txns = companion_service.get_visible_transactions(
+            companion.id, period_id=seed_periods_today[0].id,
+        ).transactions
+        assert [t.id for t in txns] == [shown.id]
+
+    def test_the_filter_costs_no_query_per_row(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """Asking each row ``visible_to_companion`` issues no SELECT per row.
+
+        The property reads ``txn.template`` on every generated row, and the
+        query eager-loads the template for exactly that reason; a dropped
+        ``selectinload`` would turn the filter into one SELECT per row.
+        Measured over the axis the defect lives on -- the service call with
+        TWO generated rows against SIX, hidden and shown alike -- and on the
+        MECHANISM rather than a total: the statements that read
+        ``budget.transaction_templates`` number exactly one either way (the
+        eager load's batch), so a capture that fired on nothing at all could
+        not pass by reading zero twice.
+        """
+        companion_id = seed_companion["user"].id
+        period = seed_periods_today[0]
+        period_id = period.id
+
+        def _template_reads_with(n_templates):
+            for i in range(n_templates):
+                tpl = _make_template(
+                    seed_user, companion_visible=(i % 2 == 0),
+                    name=f"Item {n_templates}-{i}",
+                )
+                _make_txn(period, tpl)
+            db.session.commit()
+            # Every instance is expired by the commit, so both captures start
+            # from the same identity-map state and load the same way.
+            _, statements = capture_sql_statements(
+                lambda: companion_service.get_visible_transactions(
+                    companion_id, period_id=period_id,
+                )
+            )
+            assert statements, "the capture saw no statement at all"
+            return sum(
+                1 for text, _params in statements
+                if "budget.transaction_templates" in text
+            )
+
+        assert _template_reads_with(2) == 1
+        assert _template_reads_with(4) == 1  # four more: six rows now
+
+    def test_two_rows_of_one_name_are_ordered_by_id(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """Within one name, rows come back by id -- the order the cards render.
+
+        Two rows of one definition in one period is the carried-leftover
+        shape (see the override-sibling case below), and ``ORDER BY name``
+        alone left their order to the query plan: the join removed at plan
+        step ``balance:X-bi-1b`` flipped it on one production page.
+
+        Built so that the plan's order and id order DIFFER, or the case
+        grades nothing: the carried row is created first (the smaller id)
+        and MOVED last, so its live tuple sits after the canonical's in the
+        heap and a scan without the tie-break answers descending ids.
+        Measured red under exactly that mutation before landing.
+        """
+        template = _make_template(
+            seed_user, companion_visible=True, name="Groceries",
+        )
+        target = seed_periods_today[1]
+        # The engine writes one row of a definition per paycheck, so the
+        # second row is the previous paycheck's carried forward: moved into
+        # the target and flagged ``is_override``, the move door's two acts.
+        carried = _make_txn(seed_periods_today[0], template)
+        canonical = _make_txn(target, template)
+        db.session.commit()
+        carried.pay_period_id = target.id
+        carried.is_override = True
+        db.session.commit()
+        assert carried.id < canonical.id
+
+        companion = seed_companion["user"]
+        txns = companion_service.get_visible_transactions(
+            companion.id, period_id=target.id,
+        ).transactions
+        assert [t.id for t in txns] == [carried.id, canonical.id]
 
     def test_transactions_ordered_by_name(
         self, app, db, seed_user, seed_periods_today, seed_companion,
@@ -394,8 +541,7 @@ class TestPeriodIsolation:
         # This may return a different period than seed_periods_today[0]
         # depending on the current date, but it should not raise.
         view = companion_service.get_visible_transactions(companion.id)
-        txns, period = view.transactions, view.period
-        assert period is not None
+        assert view.period is not None
 
     def test_nonexistent_period_id_raises(
         self, app, db, seed_user, seed_periods_today, seed_companion,
@@ -467,8 +613,7 @@ class TestUserValidation:
         view = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
         )
-        txns, period = view.transactions, view.period
-        assert period is not None
+        assert view.period is not None
 
 
 # ── Entry Eager Loading ──────────────────────────────────────────────

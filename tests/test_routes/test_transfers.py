@@ -34,6 +34,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     all_periods,
     pay_periods_hydrated,
@@ -232,7 +233,7 @@ def _create_other_user_with_template():
     db.session.flush()
 
     from datetime import date
-    periods = pay_period_write.record_paydays(
+    periods = record_paydays_across_a_hole(
         user_id=other_user.id,
         first_payday=date(2026, 1, 2),
         num_periods=3,
@@ -336,18 +337,35 @@ class TestTemplateList:
                 html.split('data-loan-account-ids="')[1].split('"')[0]
             )
 
-    def test_an_edit_form_names_no_such_destinations(
+    def test_an_edit_form_names_the_destinations_computed_for_this_edit(
         self, app, auth_client, seed_user, db, seed_periods,
     ):
-        """An EDIT form locks server-side and must not ship a second rule.
+        """An EDIT form ships the sets too, computed for ITS definition.
 
-        ``recurrence.selected_start.locked`` already answers "is this template
-        the loan's standing payment" from the read pass, so a client-side set
-        would be a SECOND answer to the same question -- and two answers is how
-        they come to disagree, which is the defect
-        ``is_standing_loan_payment`` was made the one predicate to close.
+        **REVERSED by ruling at plan step R7d-f-5** (developer 2026-09-12,
+        ruling **R-R79**; CLAUDE.md rule 5's exception).  Until then this case
+        asserted the edit form ships NO set, on the premise that
+        ``recurrence.selected_start.locked`` already answers the question and
+        a client-side set would be a second answer.  Plan step R7d-f-4 made
+        the premise false: the UPDATE door derives the same bounds for a
+        repeating transfer MOVED onto a loan, which the server cannot see at
+        render, so the form invited a start the save replaces.  The two do not
+        answer one question: the server answers the STORED identity and locks
+        the standing payment's rows, the script answers the CHOSEN destination
+        against sets the server computed for this edit -- a definition that
+        already repeats leaves its stored destination out, one the door pins
+        ships empty sets.  The census is
+        ``tests/test_routes/test_transfer_edit_form_locks.py``; this is the
+        representative case: a repeating savings transfer names the loan a
+        move onto which derives the start.
         """
         with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Mortgage",
+                principal=Decimal("200000.00"), rate=Decimal("0.05000"),
+                term=360, origination_date=date(2026, 4, 15), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+            )
             savings = create_account_of_type(
                 seed_user, db.session, "Savings", "Sav",
                 anchor_balance=Decimal("100.00"),
@@ -361,7 +379,7 @@ class TestTemplateList:
                 f"/transfers/{template.id}/edit",
             ).data.decode()
 
-            assert "data-loan-account-ids" not in html
+            assert f'data-loan-account-ids="{loan.id}"' in html
 
 
 class TestTemplatePrefill:
@@ -2790,7 +2808,7 @@ def _create_second_user_transfer(second_user_data):
     db.session.add(savings)
     db.session.flush()
 
-    periods = pay_period_write.record_paydays(
+    periods = record_paydays_across_a_hole(
         user_id=second_user_data["user"].id,
         first_payday=_date(2026, 1, 2),
         num_periods=3,
