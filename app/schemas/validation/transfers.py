@@ -21,6 +21,17 @@ from app.schemas.validation._helpers import (
 from app.schemas.validation._recurrence import RecurrenceFormFieldsMixin
 
 
+SAME_ACCOUNT_TRANSFER_MESSAGE: str = "From and To accounts must be different."
+"""Refusal for a transfer whose source and destination are one account.
+
+Spelled once for the two doors that ask it: this module's
+:func:`_reject_same_account_transfer`, which grades the pair a submission
+CARRIES, and the transfer-template update route, which grades the pair the
+write would LEAVE when the submission carries only one of the keys
+(``routes/transfers/_helpers._first_template_fk_refusal``, plan step R7d-f-5).
+"""
+
+
 def _reject_same_account_transfer(data):
     """Reject a transfer whose source and destination are the same account.
 
@@ -30,14 +41,17 @@ def _reject_same_account_transfer(data):
     net to zero; the route surfaces the message to the user.
 
     Runs only when both ``from_account_id`` and ``to_account_id`` are
-    present in the deserialized payload.
+    present in the deserialized payload -- a schema grades the WIRE, and a
+    partial update carrying one key leaves the other stored.  The pair the
+    write would LEAVE is graded at the update route, where the stored row is
+    known (``_first_template_fk_refusal``), with the same sentence.
 
     Raises:
         ValidationError: If ``from_account_id`` equals ``to_account_id``.
     """
     if data.get("from_account_id") and data.get("to_account_id"):
         if data["from_account_id"] == data["to_account_id"]:
-            raise ValidationError("From and To accounts must be different.")
+            raise ValidationError(SAME_ACCOUNT_TRANSFER_MESSAGE)
 
 
 class TransferTemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):

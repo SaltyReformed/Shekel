@@ -245,11 +245,12 @@
    no other.  On a locked row both stay hidden and disabled: the phrase carries
    the value. #}
 {# ``swappable`` carries both help sentences on the row as data attributes,
-   for the one form where the row can lock without a reload -- the transfer
-   CREATE form, whose destination is chosen in the form -- exactly as
-   recurrence_starts_on does for its own row; see that macro for why the
-   script reads them rather than carrying a copy of either sentence, and why
-   every other form passes FALSE. #}
+   for the forms where the row can lock without a reload -- the transfer
+   form, whose destination is chosen in the form on a create and can be
+   changed on an edit (plan step R7d-f-5) -- exactly as recurrence_starts_on
+   does for its own row; see that macro for why the script reads them rather
+   than carrying a copy of either sentence, and why the transaction form
+   passes FALSE. #}
 {% macro recurrence_end_bound(picker, end, swappable=false) %}
 <div class="mb-3 d-none" id="field-end-bound">
   <label for="recurrence_end_mode" class="form-label">Ends</label>
@@ -453,20 +454,22 @@
     </div>
   </div>
   {# Both wordings ride on the element ONLY where the row can change without a
-     reload, which is the transfer CREATE form and nowhere else: its
-     destination is chosen in the form, so the server cannot know at render
-     whether this will be a loan payment and recurrence_form.js swaps the text
-     when a loan account is picked.  It reads these attributes rather than
-     carrying a copy of either sentence -- a second wording in the script is
-     one that can disagree with the server's, the same rule that keeps the
-     nominal day's option labels here and not there.
+     reload, which is the transfer form -- create AND, since plan step R7d-f-5,
+     edit -- and nowhere else: its destination is chosen or changed in the
+     form, so the server cannot know at render whether the definition will pay
+     into a loan, and recurrence_form.js swaps the text when a loan account is
+     picked.  It reads these attributes rather than carrying a copy of either
+     sentence -- a second wording in the script is one that can disagree with
+     the server's, the same rule that keeps the nominal day's option labels
+     here and not there.  On a row the server locked (the loan's standing
+     payment) the attributes ride unused: the script leaves that row alone.
 
-     ``swappable`` is FALSE everywhere else, and that is not tidiness: the
-     transaction form has no destination account and can never be a loan
-     payment, and an EDIT form already knows.  Shipping the locked sentence to
-     a page that can never use it puts its words into every render -- caught by
-     ``test_template_flags``, which asserts a page carries no success copy and
-     met the word "updated" in an attribute nothing could read. #}
+     ``swappable`` is FALSE on the transaction form, and that is not tidiness:
+     it has no destination account and can never be a loan payment.  Shipping
+     the locked sentence to a page that can never use it puts its words into
+     every render -- caught by ``test_template_flags``, which asserts a page
+     carries no success copy and met the word "updated" in an attribute nothing
+     could read. #}
   {% set starts_on_locked_help =
        "Set from the loan's first payment, and updated when the loan changes." %}
   {% set starts_on_open_help =

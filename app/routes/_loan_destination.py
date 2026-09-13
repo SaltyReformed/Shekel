@@ -14,10 +14,12 @@ at BOTH of the generic transfer form's doors, and the form's affordance for it:
   cannot be pointed at another account at all
   (:data:`LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION`);
 * the form's lock affordance (:class:`LoanDestinationLocks`,
-  :func:`loan_destination_locks`): the sets of destination ids the transfer
-  form ships so ``recurrence_form.js`` can lock a bound row the moment a loan
-  is chosen, computed from the producers the doors read so the browser decides
-  no domain fact.
+  :func:`loan_destination_locks` for the create form and, since plan step
+  R7d-f-5, :func:`loan_destination_locks_for_edit` for the edit form; ruling
+  **R-R79**): the sets of destination ids the transfer form ships so
+  ``recurrence_form.js`` can lock a bound row the moment a loan is chosen,
+  computed from the producers the doors read so the browser decides no domain
+  fact, and whether the destination may change at all.
 
 The two doors share one derivation of the first occurrence
 (:func:`settle_loan_start`), one reading of whether the loan holds a payment
@@ -52,7 +54,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.transfer_template import TransferTemplate
 from app.routes._recurrence_form_refusals import (
     LOAN_PAYMENT_BOUND_IS_DERIVED,
-    is_loan_payment,
+    is_loan_payment_or_standing,
 )
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import (
@@ -63,7 +65,7 @@ from app.schemas.validation import (
     end_bound_before_start_message,
 )
 from app.services import loan_loaders, loan_recurrence_sync
-from app.services.balance_at import BalanceContext, is_standing_loan_payment
+from app.services.balance_at import BalanceContext
 from app.services.recurrence import (
     NEVER_ENDS,
     UNREADABLE_CADENCE_MESSAGE,
@@ -244,7 +246,7 @@ def _loan_holds_no_active_payment(account_id: int, user_id: int) -> bool:
     for its readers here**: the two doors' stop refusal
     (:func:`_refuse_stop_on_a_new_loan_payment`), the update door's
     unbounded-rule arm (:func:`settle_destination_for_update`, ruling
-    **R-R77**) and the form's affordance (:func:`loan_destination_locks`).
+    **R-R77**) and the form's affordance (:func:`_loan_destination_lock_sets`).
     The standing payment is the loan's oldest ACTIVE recurring transfer -- the
     first of
     :func:`~app.services.recurring_transfer_query.active_recurring_transfer_templates`,
@@ -461,7 +463,10 @@ def settle_destination_for_update(
     1. **A loan payment cannot be pointed at another account** (ruling
        **R-R76**, :data:`LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION`): the loan's
        STANDING payment, or a definition carrying loan-payment settings --
-       the union its twin refusal covers.  Asked first, and of the stored
+       the union its twin refusal covers, spelled once for both and for the
+       form's affordance as
+       :func:`~app.routes._recurrence_form_refusals.is_loan_payment_or_standing`
+       (plan step R7d-f-5).  Asked first, and of the stored
        definition, because it is what makes every move settled below a move
        of a NON-standing definition: its stored closing bound is its owner's
        word rather than a cached payoff, and the start written below cannot
@@ -534,9 +539,7 @@ def settle_destination_for_update(
         "to_account_id" in data
         and data["to_account_id"] != template.to_account_id
     )
-    if moving and (
-        is_loan_payment(template) or is_standing_loan_payment(template, pass_ctx)
-    ):
+    if moving and is_loan_payment_or_standing(template, pass_ctx):
         flash(LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION, "danger")
         return end_bound, redirect.to_response()
     # The two edits this door settles: a cadence added to a definition that
@@ -676,42 +679,179 @@ def _settle_stop_for_loan_destination(
 
 @dataclass(frozen=True)
 class LoanDestinationLocks:
-    """Which destinations the CREATE form's script locks a bound row for.
+    """What the transfer form's script may lock, and what it may not touch.
 
-    The browser's half of two rules the door enforces, emitted by the server
-    from the same producers the door reads so the script computes no domain
-    fact -- it tests membership and nothing else.  Held as one value rather
-    than two context keys so the two sets cannot be passed one without the
-    other.  A CREATE form's server render cannot lock either row (the
-    destination is chosen in the form), which is why the sets ride to the
-    browser at all; an EDIT form knows its template and locks server-side
-    through :class:`~app.routes._recurrence_form_render.RecurrenceStart` and
-    :class:`~app.routes._recurrence_form_render.RecurrenceEnd`, and emits
-    neither set.
+    The browser's half of the rules the two doors enforce, emitted by the
+    server from the same producers the doors read so the script computes no
+    domain fact -- it tests membership and nothing else.  Held as one value
+    rather than three context keys so the parts cannot be passed apart, and
+    with the two invariants below enforced rather than documented.
+
+    **Emitted by BOTH transfer forms since plan step R7d-f-5** (ruling
+    **R-R79**).  A CREATE form's server render cannot lock either bound row --
+    the destination is chosen in the form -- which is why the sets ride to the
+    browser at all.  An EDIT form knows its template: it locks both rows
+    server-side for the loan's standing payment
+    (:class:`~app.routes._recurrence_form_render.RecurrenceStart`,
+    :class:`~app.routes._recurrence_form_render.RecurrenceEnd`), and it emits
+    these sets COMPUTED FOR THAT EDIT
+    (:func:`loan_destination_locks_for_edit`), because the update door derives
+    the same bounds for the two edits that make a definition a recurring
+    transfer into a loan (:func:`settle_destination_for_update`) and the form
+    otherwise invited a start the save replaces and a stop the save refuses.
+    The server answers the STORED identity, the script answers the CHOSEN
+    destination against sets the server graded, and the script never
+    re-enables a control the server locked (it reads ``disabled`` once at
+    load and leaves that flag alone) -- the two never answer one question.
 
     Attributes:
-        start_derived_for: Every configured loan of the owner.  A transfer
-            into any of them has its first occurrence derived from the loan's
-            contract (:func:`settle_first_occurrence`, plan step R7c-b) -- a
-            second transfer into a paid loan included (plan ledger row
-            **D50**) -- so the "Starts on" row locks the moment one is
-            chosen.
+        start_derived_for: The destinations a transfer into which has its
+            first occurrence derived from the loan's contract
+            (:func:`settle_loan_start`), so the "Starts on" row locks the
+            moment one is chosen.  On a create form every configured loan of
+            the owner, a second transfer into a paid loan included (plan
+            ledger row **D50**); on an edit form, the loans the door would
+            derive for THIS definition -- see
+            :func:`loan_destination_locks_for_edit`.
         stop_derived_for: The subset holding no active recurring payment
             (:func:`_loan_holds_no_active_payment`).  A transfer into one of
-            these IS the loan's payment once created, and the loan's own
-            payment carries no authored stop (ruling **R-R59**), so the
-            "Ends" row locks too and the door refuses a stop stated anyway
-            (ruling **R-R60**).  A loan already holding a payment is in the
+            these IS the loan's payment once saved, and the loan's own payment
+            carries no authored stop (ruling **R-R59**), so the "Ends" row
+            locks too and the doors refuse a stop stated anyway (rulings
+            **R-R60**, **R-R77**).  A loan already holding a payment is in the
             first set and not this one: a second transfer's stop is its
-            owner's.
+            owner's.  Always a subset of *start_derived_for*, and
+            :meth:`__post_init__` refuses any other pair.
+        pinned_reason: ``None`` where the destination is the owner's to
+            change.  On an edit form of a definition ruling **R-R76** pins to
+            its loan (:func:`~app.routes._recurrence_form_refusals.is_loan_payment_or_standing`),
+            the refusal's own sentence
+            (:data:`LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION`): the form renders
+            the destination control DISABLED with it as the help text, so the
+            owner meets the rule before the save rather than as its flash.  A
+            pinned definition has no destination choice to grade, so both
+            sets are EMPTY -- :meth:`__post_init__` refuses a pinned value
+            carrying either, because a list claiming "choosing this loan
+            derives the start" for a choice the door REFUSES would be the
+            affordance and the door answering one question two ways.  A
+            disabled control posts nothing; ``to_account_id`` is optional on
+            the update schema and an absent key is "not moving", so the form
+            still submits and the door still refuses a crafted move.
     """
 
     start_derived_for: tuple[int, ...]
     stop_derived_for: tuple[int, ...]
+    pinned_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a value whose parts disagree.
+
+        Two invariants, enforced for the reason
+        :class:`~app.routes._recurrence_form_render.RecurrenceEnd` enforces
+        its own: this project has been burned by an invariant the generated
+        ``__init__`` did not enforce.
+
+        Raises:
+            ValueError: A pinned value carries a non-empty set, or a
+                destination derives the stop without deriving the start.
+        """
+        if self.pinned_reason is not None and (
+            self.start_derived_for or self.stop_derived_for
+        ):
+            raise ValueError(
+                f"LoanDestinationLocks is pinned ({self.pinned_reason!r}) yet "
+                f"names destinations that would derive a bound "
+                f"({self.start_derived_for!r} / {self.stop_derived_for!r}): "
+                f"every move of a pinned definition is refused, not derived, "
+                f"so the pair disagrees with itself."
+            )
+        stray = set(self.stop_derived_for) - set(self.start_derived_for)
+        if stray:
+            raise ValueError(
+                f"LoanDestinationLocks derives the stop for {sorted(stray)!r} "
+                f"without deriving the start: every loan that derives the "
+                f"stop is a loan, and every loan derives the start."
+            )
 
 
 def loan_destination_locks(user_id: int) -> LoanDestinationLocks:
-    """Return which of *user_id*'s loan destinations lock which bound row.
+    """Return which of *user_id*'s loan destinations lock which bound row on a CREATE form.
+
+    Every configured loan derives the start; the payment-less subset derives
+    the stop as well; nothing is pinned, because a definition that does not
+    exist yet has no destination to be pinned to.  The edit form's producer is
+    :func:`loan_destination_locks_for_edit`; both read
+    :func:`_loan_destination_lock_sets`, which is where the two sets are
+    spelled.
+
+    Args:
+        user_id: The owner rendering the create form.
+
+    Returns:
+        The :class:`LoanDestinationLocks`, both sets ascending by account id
+        (the loan-id loader's order, preserved).
+    """
+    return _loan_destination_lock_sets(user_id, excluding=None)
+
+
+def loan_destination_locks_for_edit(
+    template: TransferTemplate, pass_ctx: BalanceContext,
+) -> LoanDestinationLocks:
+    """Return what the EDIT form of *template* may lock, and whether it may move.
+
+    The sets :func:`settle_destination_for_update` would act on for THIS
+    definition, decided in that door's own order so a reader can check the
+    two against each other line by line (plan step R7d-f-5, ruling
+    **R-R79**):
+
+    1. A definition ruling **R-R76** pins to its loan -- the standing payment,
+       or one carrying loan-payment settings -- may not move at all, so it
+       has no destination choice to grade: both sets are empty and
+       ``pinned_reason`` carries the refusal's sentence for the disabled
+       control (the door's rule 1).
+    2. A definition that already REPEATS derives nothing while it stays put --
+       its stored start is its own, a second transfer into a paid loan's
+       included (plan ledger row **D50**) -- so its stored destination leaves
+       the sets, and every other loan stays: a MOVE onto one derives the start
+       (the door's early return, then its rule 2).
+    3. A definition that does not repeat yet is about to AUTHOR a rule, and
+       the door derives for whatever loan the edit leaves it paying into,
+       the stored one included -- so every configured loan stays (the door's
+       rule 2 for the authoring shape).
+
+    The standing payment's own rows are locked server-side whatever this
+    answers, and a settings-carrying second payment's are open; for both the
+    answer is "pinned", so the script is handed nothing to apply on a form
+    whose move the save refuses.
+
+    Args:
+        template: The definition being edited, owner-checked by the route.
+            Read for its stored destination, its rule and its settings row.
+        pass_ctx: The read pass the route built for the render, whose
+            loan-resolution memo answers the standing identity -- the same
+            read :func:`~app.routes._recurrence_form_render.edit_form_recurrence_state`
+            makes, so the second is free -- and whose ``user_id`` is the owner
+            (a producer below the route takes the pass and no separate id,
+            the 2026-08-16 ruling).
+
+    Returns:
+        The :class:`LoanDestinationLocks` for this edit.
+    """
+    if is_loan_payment_or_standing(template, pass_ctx):
+        return LoanDestinationLocks(
+            start_derived_for=(), stop_derived_for=(),
+            pinned_reason=LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION,
+        )
+    excluding = (
+        template.to_account_id if template.recurrence_rule is not None else None
+    )
+    return _loan_destination_lock_sets(pass_ctx.user_id, excluding=excluding)
+
+
+def _loan_destination_lock_sets(
+    user_id: int, *, excluding: int | None,
+) -> LoanDestinationLocks:
+    """Return the two sets for *user_id*'s loans, less *excluding*.
 
     One lookup per configured loan for the second set, through the producer
     that states the "active recurring transfer into this account" filter once
@@ -722,13 +862,20 @@ def loan_destination_locks(user_id: int) -> LoanDestinationLocks:
     and the price series) for a boolean -- the price of one spelling.
 
     Args:
-        user_id: The owner rendering the create form.
+        user_id: The owner rendering the form.
+        excluding: A destination to leave out of both sets -- the stored one
+            of a definition that already repeats, which derives nothing while
+            it stays put -- or ``None`` to grade every loan.
 
     Returns:
-        The :class:`LoanDestinationLocks`, both sets ascending by account id
-        (the loan-id loader's order, preserved).
+        The :class:`LoanDestinationLocks`, unpinned, both sets ascending by
+        account id (the loan-id loader's order, preserved).
     """
-    loan_ids = loan_loaders.load_loan_account_ids_for_user(user_id)
+    loan_ids = [
+        account_id
+        for account_id in loan_loaders.load_loan_account_ids_for_user(user_id)
+        if account_id != excluding
+    ]
     return LoanDestinationLocks(
         start_derived_for=tuple(loan_ids),
         stop_derived_for=tuple(
@@ -742,6 +889,7 @@ __all__ = [
     "LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION",
     "LoanDestinationLocks",
     "loan_destination_locks",
+    "loan_destination_locks_for_edit",
     "settle_destination_for_update",
     "settle_first_occurrence",
     "settle_loan_start",

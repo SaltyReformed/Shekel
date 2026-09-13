@@ -168,6 +168,7 @@ from app.schemas.validation.transactions import (
     TransactionUpdateSchema,
 )
 from app.schemas.validation.transfers import (
+    SAME_ACCOUNT_TRANSFER_MESSAGE,
     TransferCreateSchema,
     TransferTemplateCreateSchema,
     TransferTemplateUpdateSchema,
@@ -254,6 +255,7 @@ __all__ = [
     "TransferCreateSchema",
     "TransferTemplateCreateSchema",
     "TransferTemplateUpdateSchema",
+    "SAME_ACCOUNT_TRANSFER_MESSAGE",
     "TransferUpdateSchema",
     "UserSettingsSchema",
     "YtdTaxCheckpointSchema",

@@ -73,6 +73,7 @@ from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import RECURRENCE_END_BOUND_KEY
 from app.routes._loan_destination import (
     loan_destination_locks,
+    loan_destination_locks_for_edit,
     settle_destination_for_update,
     settle_first_occurrence,
 )
@@ -87,7 +88,7 @@ from app.routes.transfers._instances import (
 )
 from app.routes.transfers._helpers import (
     _create_schema,
-    _first_unowned_template_fk,
+    _first_template_fk_refusal,
     _update_schema,
     _user_owns,
 )
@@ -179,7 +180,8 @@ def new_transfer_template():
         # locks the "Starts on" row for any loan and the "Ends" row for a loan
         # holding no payment yet; the derivation and the refusal are the
         # route's (``settle_first_occurrence``), so the locks are affordances
-        # rather than the enforcement.
+        # rather than the enforcement.  The edit form ships the same value
+        # computed for its definition (plan step R7d-f-5).
         recurrence=create_form_recurrence_state(),
         loan_locks=loan_destination_locks(current_user.id),
         periods=periods,
@@ -388,6 +390,9 @@ def edit_transfer_template(template_id):
 
     accounts = account_service.list_active_accounts(current_user.id)
     categories = category_service.list_active_categories(current_user.id)
+    # The form's ONE read pass (plan step R7d-f); both readers below take the
+    # standing identity off its loan-resolution memo, the second for free.
+    pass_ctx = BalanceContext.build(current_user.id)
 
     return render_template(
         "transfers/form.html",
@@ -399,10 +404,12 @@ def edit_transfer_template(template_id):
         # repeat" option the transaction form does, and it is FIRST -- so a
         # cadence left unselected would default to the DESTRUCTIVE clear, not
         # to a wrong cadence.  ``edit_form_cadence`` is what selects it.
-        # The pass is the form's one read pass (plan step R7d-f).
-        recurrence=edit_form_recurrence_state(
-            template, BalanceContext.build(current_user.id),
-        ),
+        recurrence=edit_form_recurrence_state(template, pass_ctx),
+        # What the script may lock as the destination changes, computed for
+        # THIS definition the way ``settle_destination_for_update`` decides it
+        # (plan step R7d-f-5, ruling **R-R79**), and whether the destination
+        # may change at all (ruling **R-R76**: the disabled control's help).
+        loan_locks=loan_destination_locks_for_edit(template, pass_ctx),
         # A LOAN PAYMENT's stop is the loan's payoff, resolved through the
         # composed door: its control renders disabled and displays that.
         periods=[],
@@ -536,7 +543,10 @@ def update_transfer_template(template_id):
     # destination settle just under this reads the submitted destination's
     # loan terms, which read of a foreign loan would be an IDOR (it stood
     # after the recurrence step until plan step R7d-f-4, when that step
-    # began reading the destination).
+    # began reading the destination).  And, since plan step R7d-f-5, the pair
+    # the write would LEAVE may not be one account -- the schema grades only
+    # a submission carrying both keys, and a pinned definition's form posts
+    # no destination (``_first_template_fk_refusal`` says why).
     #
     # **A second refusal stood here until plan step R10-b**: a template that
     # neither had nor has a recurrence rule could not change its source or
@@ -550,21 +560,19 @@ def update_transfer_template(template_id):
     # a transfer between accounts now, carrying both shadows, so the refusal has
     # no cause left and :func:`propagate_to_non_repeating_transfers` states the
     # accounts with the rest of the definition.
-    unowned = _first_unowned_template_fk(data)
-    if unowned is not None:
-        flash(f"Invalid {unowned}.", "danger")
-        return redirect(url_for(
-            "transfers.edit_transfer_template", template_id=template_id,
-        ))
+    edit_form = RedirectTarget(
+        "transfers.edit_transfer_template", {"template_id": template_id},
+    )
+    refused = _first_template_fk_refusal(template, data)
+    if refused is not None:
+        flash(refused, "danger")
+        return edit_form.to_response()
 
     # ONE read pass for the pre-write side (plan step R7d-f): the destination
     # settle's standing-payment identity and the refusals' both read its
     # loan-resolution memo.  Regeneration afterwards builds its own, as a
     # writer must.
     pass_ctx = BalanceContext.build(current_user.id)
-    edit_form = RedirectTarget(
-        "transfers.edit_transfer_template", {"template_id": template_id},
-    )
     # The pre-write recurrence step, in two halves that share one refusal.
     # FIRST what the destination the edit LEAVES decides about the rule's
     # bounds (plan step R7d-f-4): the derived first occurrence is written

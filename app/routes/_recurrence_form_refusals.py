@@ -359,6 +359,55 @@ def is_loan_payment(template: Any) -> bool:
     return is_loan_payment_definition(template)
 
 
+def is_loan_payment_or_standing(template: Any, pass_ctx: BalanceContext) -> bool:
+    """Return whether *template* is a loan payment by EITHER identity.
+
+    **The UNION two refusals cover, spelled once** (plan step R7d-f-5, ruling
+    **R-R79**): a definition carrying loan-payment SETTINGS
+    (:func:`is_loan_payment`), OR the STANDING payment of the loan it pays
+    into -- its oldest active recurring transfer, read off the pass's loan
+    resolution (:func:`~app.services.balance_at.is_standing_loan_payment`).
+    Each half is the right question for one half of the harm the two refusals
+    name.  ``is_loan_payment`` is the settings row's: the standing
+    ``extra_principal`` it carries, and the amount model pricing the
+    definition off the loan it pays into (a DERIVE-mode payment is P&I plus
+    escrow, which no other destination can answer).  ``is_standing_loan_payment``
+    is the loan's: a rule's existence is how ``recurring_transfer_query`` FINDS
+    a loan's payment, so clearing the rule or re-pointing its owner leaves the
+    loan amortizing with nothing projecting a payment against it.
+
+    **Measured on a production clone 2026-08-14: neither live loan payment
+    satisfies the first predicate** (transfer templates 2 "Mortgage" and 9
+    "Van Payment" carry no settings row), so a refusal asking it alone left
+    both of the developer's real loans clearable -- the developer ruling of
+    that day made :data:`LOAN_PAYMENT_CANNOT_BE_ONE_TIME` ask the union, and
+    ruling **R-R76** (plan step R7d-f-4) made the destination refusal ask the
+    same one.  Three sites read it: that one-time refusal
+    (:func:`refuse_recurrence_update`), the destination refusal
+    (:func:`~app.routes._loan_destination.settle_destination_for_update`) and
+    the edit form's lock affordance
+    (:func:`~app.routes._loan_destination.loan_destination_locks_for_edit`),
+    whose lists are EMPTY for a definition this names because every move of
+    it is refused rather than derived.  Two inline spellings agreed until this
+    function replaced them; a third would have been the place they parted.
+
+    Cheapest half first: the settings row is a lazy one-to-one -- at most one
+    primary-key query, and none once the identity map holds it -- where the
+    standing identity resolves the loan (memoised on the pass, so a second
+    read on the same pass is free).
+
+    Args:
+        template: The ``TransactionTemplate`` or ``TransferTemplate``.  A
+            transaction template answers ``False`` on both halves.
+        pass_ctx: The read pass the route built, whose loan-resolution memo
+            answers the standing identity.
+
+    Returns:
+        ``True`` when either identity holds.
+    """
+    return is_loan_payment(template) or is_standing_loan_payment(template, pass_ctx)
+
+
 def refuse_recurrence_update(
     template: Any,
     data: dict[str, Any],
@@ -420,41 +469,25 @@ def refuse_recurrence_update(
     states_a_bound = (
         ctx.end_bound is not None or RECURRENCE_STARTS_ON_KEY in data
     )
-    # ONE identity for the two rules that turn on it (plan step R7d-f): is
-    # this the standing payment of the loan it pays into.  Asked ONLY when a
-    # submission clears the recurrence or states a bound -- the identity is
-    # read off the pass's loan resolution, and on this pre-write pass nothing
-    # else has resolved the loan yet, so asking it on every edit would resolve
-    # the loan for one boolean on an amount-only PATCH (an adversarial review
-    # of this step measured the first cut doing exactly that).  The
-    # inverted-window door below reads the same memo through the composed
-    # door's arm, and only once a stored pair already reads inverted.
-    standing_payment = (
-        (clearing or states_a_bound)
-        and is_standing_loan_payment(template, pass_ctx)
-    )
+    # The standing identity -- is this the standing payment of the loan it
+    # pays into -- is asked ONLY when a submission clears the recurrence or
+    # states a bound: it is read off the pass's loan resolution, and on this
+    # pre-write pass nothing else has resolved the loan yet, so asking it on
+    # every edit would resolve the loan for one boolean on an amount-only
+    # PATCH (an adversarial review of plan step R7d-f measured the first cut
+    # doing exactly that).  Each rule below asks only when it can fire; where
+    # both can, the pass's memo makes the second read free.  The
+    # inverted-window door reads the same memo through the composed door's
+    # arm, and only once a stored pair already reads inverted.
+    #
     # A loan payment may not be made one-time, and WHICH definitions that
     # covers is the UNION of two questions rather than either alone (developer
-    # ruling 2026-08-14, taken on the measurement below).
-    #
-    # ``is_loan_payment`` asks whether the template carries
-    # ``LoanPaymentSettings``, which is the right question for the standing
-    # ``extra_principal`` half of the harm this refusal names.
-    # ``is_standing_loan_payment`` asks whether this template IS the loan's
-    # payment, which is the right question for the rest of it: clearing the
-    # recurrence DELETES the rule row, and its existence is how
-    # ``recurring_transfer_query.active_recurring_transfer_template`` FINDS a
-    # loan's payment -- so the loan goes on amortizing with nothing projecting
-    # a payment against it.
-    #
-    # **Measured on a production clone 2026-08-14: neither live loan payment
-    # satisfies the first predicate** (transfer templates 2 "Mortgage" and 9
-    # "Van Payment" carry no settings row), so asking it alone left both of the
-    # developer's real loans clearable.  The plan step R7b-3 finding that first
-    # named this predicate read it as too BROAD; it is too NARROW where it
-    # matters, and the union is what makes the refusal cover the set the harm
-    # is measured on without giving up the set it was written for.
-    if clearing and (is_loan_payment(template) or standing_payment):
+    # ruling 2026-08-14, taken on the measurement ``is_loan_payment_or_standing``
+    # records): the plan step R7b-3 finding that first named the settings-row
+    # predicate read it as too BROAD; it is too NARROW where it matters, and
+    # the union is what makes the refusal cover the set the harm is measured
+    # on without giving up the set it was written for.
+    if clearing and is_loan_payment_or_standing(template, pass_ctx):
         flash(LOAN_PAYMENT_CANNOT_BE_ONE_TIME, "danger")
         return ctx.redirect.to_response()
     # The loan's standing payment's validity bounds are the app's -- the
@@ -488,7 +521,7 @@ def refuse_recurrence_update(
     # innocent rename on a stale echo.  The schema rule moved to CREATE instead
     # (``RecurrenceFormFieldsMixin.validate_recurrence_states_a_start``), which
     # is where the money it guards actually is.
-    if states_a_bound and standing_payment:
+    if states_a_bound and is_standing_loan_payment(template, pass_ctx):
         flash(LOAN_PAYMENT_BOUND_IS_DERIVED, "danger")
         return ctx.redirect.to_response()
     # **The SAME question ``edit_form_cadence`` renders unset on** (plan step
@@ -518,6 +551,7 @@ __all__ = [
     "UNREPAIRED_CADENCE_CANNOT_BE_CLEARED",
     "RecurrenceFormContext",
     "is_loan_payment",
+    "is_loan_payment_or_standing",
     "refuse_inverted_window",
     "refuse_recurrence_update",
 ]

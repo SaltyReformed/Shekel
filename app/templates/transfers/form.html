@@ -51,7 +51,19 @@
         </div>
         <div class="col">
           <label for="to_account_id" class="form-label">To Account</label>
-          <select id="to_account_id" name="to_account_id" class="form-select" required>
+          {# DISABLED for a definition ruling R-R76 pins to its loan -- the
+             loan's standing payment, or one carrying loan-payment settings --
+             with the refusal's own sentence as the help text (plan step
+             R7d-f-5, ruling R-R79).  ``loan_locks.pinned_reason`` is that
+             sentence, or none: the same value that carries the lock sets, so
+             a pinned form ships EMPTY sets by construction.  A disabled
+             control posts nothing; to_account_id is optional on the update
+             schema and an absent key means "not moving", so the form still
+             submits, and the door (_loan_destination.settle_destination_for_update)
+             still refuses a crafted move -- disabling is the affordance, the
+             refusal is the rule. #}
+          <select id="to_account_id" name="to_account_id" class="form-select" required
+                  {% if loan_locks.pinned_reason is not none %}disabled aria-describedby="to-account-help"{% endif %}>
             {% for acct in accounts %}
             <option value="{{ acct.id }}"
               {{ 'selected' if (template and template.to_account_id == acct.id) or (not template and prefill_to == acct.id) else '' }}>
@@ -59,6 +71,9 @@
             </option>
             {% endfor %}
           </select>
+          {% if loan_locks.pinned_reason is not none %}
+          <div id="to-account-help" class="form-text">{{ loan_locks.pinned_reason }}</div>
+          {% endif %}
         </div>
       </div>
 
@@ -83,41 +98,54 @@
            on" row the moment one is chosen (plan step R7c-b), and
            ``data-loan-account-ids-without-payment`` the subset whose CLOSING
            bound it derives as well -- the loans holding no active payment,
-           so the definition created into one IS that loan's payment and the
+           so the definition saved into one IS that loan's payment and the
            "Ends" row locks too (plan step R7d-f-3).  Both come off ONE value
-           (_loan_destination.LoanDestinationLocks) so neither can
-           be emitted without the other.  They are emitted on the CREATE form
-           ALONE: an EDIT form already knows whether THIS template is the
-           loan's standing payment and locks server-side through
-           recurrence.selected_start.locked and .selected_end.locked, and two
-           locks answering the same question is how they come to disagree.
+           (_loan_destination.LoanDestinationLocks) so neither can be emitted
+           without the other.
+
+           Emitted on BOTH forms since plan step R7d-f-5 (ruling R-R79), each
+           computed for ITS definition.  The create form's sets grade every
+           loan of the owner.  The edit form's are computed the way the update
+           door decides the same edit (_loan_destination.loan_destination_locks_for_edit):
+           a definition that already repeats leaves its stored destination out
+           (staying put derives nothing), one that does not repeat yet keeps
+           every loan in (adding a cadence derives for the loan it pays into),
+           and a definition R-R76 pins to its loan ships EMPTY sets beside the
+           disabled destination control above.  The server answers the STORED
+           identity -- recurrence.selected_start.locked and .selected_end.locked
+           lock the standing payment's rows, and the script never re-enables
+           a control the server locked -- while the script answers the CHOSEN
+           destination against sets the server graded; the two never answer
+           one question, which is what keeps them from disagreeing.
 
            The locks are affordances.  The enforcement is the route's --
-           _loan_destination.settle_first_occurrence derives the date
-           from the loan's contract whatever the payload says, and refuses a
-           stop stated for a loan whose payment this would be (ruling R-R60)
-           -- so a browser with JavaScript off, or a crafted POST, gets the
-           same stored value or the refusal, and no worse an outcome than a
+           _loan_destination.settle_first_occurrence at create and
+           settle_destination_for_update at update derive the date from the
+           loan's contract whatever the payload says, and refuse a stop stated
+           for a loan whose payment this would be (rulings R-R60, R-R77) -- so
+           a browser with JavaScript off, or a crafted POST, gets the same
+           stored value or the refusal, and no worse an outcome than a
            discarded input. #}
         <div id="recurrence-fields" class="d-none"
-             {% if template is none %}
              data-loan-account-ids="{{ loan_locks.start_derived_for|join(',') }}"
-             data-loan-account-ids-without-payment="{{ loan_locks.stop_derived_for|join(',') }}"
-             {% endif %}>
+             data-loan-account-ids-without-payment="{{ loan_locks.stop_derived_for|join(',') }}">
           {# Each validity bound's row carries its own lock (plan step R7d-f).
              Both read ONE identity -- the loan's standing payment -- but what
              each lock MEANS differs: the opening bound is WRITTEN by
              loan_recurrence_sync (the loan's first contractual installment),
              the closing bound is DERIVED (the loan's payoff, resolved through
              the composed door) and the locked row displays it. #}
+          {# ``swappable`` on both renders since plan step R7d-f-5: the edit
+             form's rows can lock without a reload too, as the destination
+             changes against the sets above. #}
           {{ recurrence_starts_on(recurrence.picker,
                                    recurrence.selected_start,
                                    recurrence.starts_on_min,
                                    recurrence.starts_on_max,
-                                   swappable=(template is none)) }}
+                                   swappable=true) }}
           {{ recurrence_detail_fields(template, include_due_day=false) }}
           {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end,
-                                  swappable=(template is none)) }}
+                                  swappable=true) }}
           {{ recurrence_preview(url_for('templates.preview_recurrence')) }}
         </div>
         {# The pay-period selector sits OUTSIDE #recurrence-fields because it

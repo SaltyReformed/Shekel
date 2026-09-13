@@ -76,10 +76,16 @@
   // exists for.
   var startsOnLocked = startsOn !== null && startsOn.disabled;
 
-  // A set of destination ids the CREATE form's container carries, or [] when
-  // the attribute is absent -- which is every EDIT form: it already knows
-  // whether THIS template is a loan payment and locks server-side, so an
-  // absent attribute leaves every behaviour below inert.
+  // A set of destination ids the transfer form's container carries, or []
+  // when the attribute is absent or empty -- absent on the transaction form,
+  // which has no destination; EMPTY on the edit form of a definition the
+  // server pins to its loan (plan step R7d-f-5, ruling R-R79: its
+  // destination control is disabled, so there is no choice to grade).  An
+  // empty set leaves every behaviour below inert.  The edit form's sets are
+  // computed for THAT definition by the server, the way its save door decides
+  // the same edit (_loan_destination.loan_destination_locks_for_edit); the
+  // standing payment's own rows arrive server-locked and are never
+  // re-enabled here (startsOnLocked / endBoundLocked).
   //
   // Ids as strings, because that is what a <select>'s value is; comparing a
   // parsed number against an option value is how an off-by-type bug hides.
@@ -327,19 +333,21 @@
   }
 
   // Whether the destination the user has CHOSEN is in ``ids``.  Always false
-  // when the list is absent, which is every EDIT form and every form that has
-  // no destination control at all (the transaction template's).
+  // when the list is empty -- a form with no destination control at all (the
+  // transaction template's), or the edit form of a definition the server
+  // pins to its loan.
   function destinationIsOneOf(ids) {
     if (!destinationSelect || ids.length === 0) return false;
     return ids.indexOf(destinationSelect.value) !== -1;
   }
 
   // Whether the chosen destination is one whose first occurrence the app
-  // derives (plan step R7c-b).  The create form's half of the rule an edit
-  // form gets from the server: this form offers every active account, so a
-  // recurring loan payment can be created here -- and asking the user for a
-  // date the route is going to replace is the defect
-  // LOAN_PAYMENT_BOUND_IS_DERIVED closes one path over.
+  // derives (plan step R7c-b).  The browser's half of a rule the server
+  // states: this form offers every active account, so a recurring loan
+  // payment can be created here or an existing transfer moved onto a loan
+  // (plan step R7d-f-5) -- and asking the user for a date the route is going
+  // to replace is the defect LOAN_PAYMENT_BOUND_IS_DERIVED closes one path
+  // over.
   function destinationDerivesTheStart() {
     return destinationIsOneOf(loanDestinations);
   }
@@ -658,15 +666,17 @@
   interval.addEventListener('change', toggleFields);
   placementSelect.addEventListener('change', toggleFields);
   // The DESTINATION re-links the "Starts on" row, and the "Ends" row for a
-  // loan whose payment this would be, and only on a create form: choosing a
-  // loan hands its first occurrence to the route, so the control stops being
-  // the user's to state, and a loan with no payment yet hands its stop over
-  // too.  ``toggleFields`` is what applies both, so the enable/disable rule
-  // stays in one function rather than two that agree.  The second list is a
-  // subset of the first, so the first alone decides whether to listen.
+  // loan whose payment this would be, wherever the server shipped a set to
+  // apply (both transfer forms since plan step R7d-f-5): choosing a loan
+  // hands its first occurrence to the route, so the control stops being the
+  // user's to state, and a loan with no payment yet hands its stop over too.
+  // ``toggleFields`` is what applies both, so the enable/disable rule stays
+  // in one function rather than two that agree.  The second list is a subset
+  // of the first, so the first alone decides whether to listen.
   //
-  // Where there is no lock to apply -- an edit form, or an owner with no
-  // loans -- the destination still drives the PREVIEW (plan step R7d-f-2):
+  // Where there is no lock to apply -- an owner with no loans, or a
+  // definition pinned to its loan -- the destination still drives the
+  // PREVIEW (plan step R7d-f-2):
   // the endpoint narrows the walk by the destination's derived stop, so
   // moving a transfer onto or off a loan changes the dates it lists.
   // ``toggleFields`` ends in ``fetchPreview``, so the two branches fetch

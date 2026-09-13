@@ -18,6 +18,7 @@ from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.schemas.validation import (
+    SAME_ACCOUNT_TRANSFER_MESSAGE,
     TransferTemplateCreateSchema,
     TransferTemplateUpdateSchema,
     TransferCreateSchema,
@@ -123,6 +124,48 @@ def _first_unowned_template_fk(data):
             continue
         if not _user_owns(model, value):
             return label
+    return None
+
+
+def _first_template_fk_refusal(template, data):
+    """Return the flash for the first unusable account reference in *data*, else None.
+
+    The two rules the transfer-template update route asks of its account
+    keys, in the one order they can be asked: OWNERSHIP first
+    (:func:`_first_unowned_template_fk`; an unowned id must be refused before
+    anything reads it), then the pair the write would LEAVE -- source and
+    destination, each the submitted value where present and the stored one
+    where absent -- may not be one account.
+
+    **The second rule grades the EFFECTIVE pair because the schema cannot**
+    (plan step R7d-f-5).  ``_reject_same_account_transfer`` runs only when a
+    submission carries BOTH keys, which a partial update need not -- and since
+    R7d-f-5 a definition pinned to its loan (ruling **R-R76**) renders its
+    destination control DISABLED, so its form posts no ``to_account_id`` at
+    all.  Choosing the destination loan as the SOURCE on that form then passed
+    the schema, reached ``ck_transfer_templates_different_accounts`` at the
+    flush, and surfaced through ``flush_template_or_namedup_redirect`` as the
+    name-collision flash: nothing written, and the owner told a reason that was
+    false.  Found by this step's adversarial review; the same rule, spelled
+    with the schema's own sentence, asked where the stored row is known.
+
+    Args:
+        template: The stored :class:`TransferTemplate`, owner-checked by the
+            route; read for the two account columns an absent key leaves alone.
+        data: The loaded TransferTemplateUpdateSchema output (partial update).
+
+    Returns:
+        ``"Invalid <label>."`` for the first unowned reference,
+        :data:`SAME_ACCOUNT_TRANSFER_MESSAGE` when the effective pair is one
+        account, else ``None``.
+    """
+    unowned = _first_unowned_template_fk(data)
+    if unowned is not None:
+        return f"Invalid {unowned}."
+    source = data.get("from_account_id", template.from_account_id)
+    destination = data.get("to_account_id", template.to_account_id)
+    if source == destination:
+        return SAME_ACCOUNT_TRANSFER_MESSAGE
     return None
 
 
