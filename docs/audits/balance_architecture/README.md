@@ -17,9 +17,9 @@ migration head are MEASUREMENTS, named by their command rather than copied.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-cf-3 -- the service suites take a definition's row from the ENGINE** (`641801a3`), the third leaf of `X-cf` (**R-BAL17**): a fixture that hand-builds `Transaction(template_id=...)` builds a shape no producer writes, so the suite has ONE builder, `generate_row_of`, that CALLS `recurrence_engine.generate_for_template` into one paycheck. Nine app mutations each went red against the converted fixtures. Its review found the same class of defect in the CONTROLS: two series-versus-scalar controls that passed under the mutation they name (`set_amount` re-syncs `default_amount` onto the newest version, so a "distinct scalar" is only real as a later-dated version), and a converted pair that had lost the undated index's atomicity teeth because a DATED pair is storable whatever the flag says. Read the remaining sites from **BAL-480**'s census command, not from a number | Section 5, X-cf |
+| **just landed** | **X-bv-2 -- the CHECK `template_id IS NULL OR due_date IS NOT NULL` binds on BOTH row tables** (`6fa17bac`, migration `4d7123cd9803`), closing **BAL-463**, after `X-cf` (`ccf88c01`) and `X-ch` (`28a6317e`) moved the suite's hand-built rows of a definition onto the engine's (**R-BAL17**, both tables) so it could bind on rows a producer wrote. Production read 0 of 636 and 0 of 177 undated on 2026-09-12. `_stated_amount`'s no-due-date refusal is deleted with it: a linked row's `due_date` is a `date` by construction now, so the refusal fenced a state the schema cannot hold | Section 5, X-bv-2 / X-cf / X-ch |
 | **in flight** | **X-f3c-2b-2c** (the account-10 repair), RE-RULED 2026-09-05 by **R-BAL3**: act 4b is DELETED rather than answered, both accounts open 2026-03-25 at their banks own closes, and the step waits on `pay_calendar:C18`. **X-f3c-2b-3** was MINTED by X-f3c-3 and sequenced behind THE FLIP: nothing bounds an assertion at its account's `opened_on` (**N-400**), and after X-f3c-5 an assertion stops resetting a PLAIN account, so what the bound should refuse is decided against what an assertion then IS. It legalises nothing -- zero rows sit below their books on either database. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 / X-f3c-2b-3 |
-| **what changed the plan** | **The acceptance act's evidence is weaker than it reads, and X-f3c-3 measured why.** Ruling **R-GY** gates X-f3c-4 on "a span an imported statement reconciles", and the app cannot say which days a statement READ: `statement_imports.period_start` / `period_end` are written as `min`/`max` of the FILE'S LINE DAYS, and no adapter records the period a file declares (**N-434**). So the count is CONSERVATIVE -- it refuses spans the bank has in fact accounted for, never the reverse, which is the safe direction for a money-moving gate -- and every surface says "the LINES of every statement" rather than "every statement". Standing since 2026-08-28: **R-HJ**, a data repair goes through the app's own DOORS and never through a migration writing money rows | Section 4, balance:R-GY / R-HJ |
+| **what changed the plan** | **Every plan item has exactly one definition (R-BAL20, 2026-09-12), and `X-bi-7` is the family that builds it**: a one-off becomes a rule-less definition plus one placed row, both flag cells leave `budget.transactions`, and `X-bi-5` deletes the DEFINITION's `is_envelope` rather than the row's. Ruled when the lane recommended a CHECK on a dead cell and the developer refused the premise. Four leaves (`recurs`, the doors, the fixtures, the cutover) and a transfer sibling `X-ci`, ranked in `../../plans/steps.md`; the argument and the ten traces are `../../design/from_scratch_architecture.md` section 10, the six fork rulings **R-BAL21** to **R-BAL26**. The cutover writes 26 due dates nobody stated; **R-BAL22** rules that it may, the question trace 8 asks of **R-HJ**, cost accepted | Section 5, X-bi-7 / X-ci; Section 4, balance:R-BAL20 to R-BAL26 |
 | **blocked on you** | **One OPERATOR act gates the money-moving leaves: import the account's own statement history.** Production holds 0 statement imports, 0 bank lines and 0 matches, while the SECU exports the shipped adapter reads sit on disk covering 2026-01-02 to 2026-07-19 -- and X-f3c's correctness is measurable only against them (**N-368**). Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md, N-368 |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it: the recurrence redesign (block 9) and the pay calendar (block 10). **The pay calendar's `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, so whoever builds it must satisfy all three specifications | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md` |
 | **the live lesson** | **A test that passes for the wrong reason is indistinguishable from one that works, and only a mutation separates them.** X-f3c-3's `unchecked` control asserted the right verdict for the wrong term -- its one compared day had no row against its bank line, so `disagreeing` was 1 and the mutation deleting `unchecked` SURVIVED. The same pass caught a page assertion that measured nothing (every money string it looked for was published independently by the balance-history card on that same page, so it passed with the new card's whole figure block deleted) and a query that manufactured its own confirmation (summing BOTH legs of the posted ledger and printing `$0.00`, because both ledger accounts carry the same `account_id`). Three instruments, three green answers, none of them measuring its subject | Section 5, X-f3c-3 |
@@ -387,6 +387,26 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     the one-consumer mixin dissolved, an id tie-break where `ORDER BY name` left a carried pair to the
     plan. Row set before and after on a production restore: 64 pages, 232 of 951, byte-identical.
     Closes **BAL-482**.
+  * [ ] **X-bi-7** the DECOMPOSED parent of the ONE-DEFINITION shape (**R-BAL20**; forks **R-BAL21**
+    to **R-BAL26**): every plan item has exactly one definition, so a one-off is a rule-less
+    definition plus its placed rows; argument: `../../design/from_scratch_architecture.md` section 10.
+    * [ ] **X-bi-7a** ONE accessor `recurs`, read by every "no cadence" site (section 10.5's first
+      class lists them; no one regex names them; the account-delete refusal counts recurring
+      definitions), plus a transaction twin of `propagate_to_unruled_template`. No production
+      row changes behaviour: no rule-less transaction definition exists.
+    * [ ] **X-bi-7b** ONE producer for a one-off and every link-less writer on it: a merchant answer
+      mints its definition once and names it thereafter (`bank_import:X-f6c`, one step with this),
+      `category_id` nullable for `mint_uncategorized` (**R-BAL24**); the popover's edits land on the
+      definition, its delete keys on `recurs` and refuses a standing merchant rule, *Does not
+      repeat* goes (**R-BAL23**); the row schemas' flag fields and **BAL-484**'s writer go.
+    * [ ] **X-bi-7c** the suite's one-off builder on 7b's producer; every link-less `Transaction(`
+      construction moved onto it (the marker is its `steps.md` row; which calls name no link is an
+      AST walk over their keywords, so no total is stated here).
+    * [ ] **X-bi-7d** the cutover migration (a definition per link-less row, a date for each undated
+      one -- 34 and 26 on the 2026-09-12 restore -- and that date in `occurs_on` (**R-BAL25**),
+      `TEMPLATE` declared, both columns dropped, the CHECK `= 1` with both `SET NULL` link keys
+      RESTRICT since a nulled link is a zero-link row; downgrade per 10.8), the accessors' branch
+      gone. Graded by the six-cell grid diff (10.4, trace 5). Closes **BAL-484**.
   * [ ] **X-bi-2** entries gain the full movement column set: a category, a type, `scenario_id` --
     which `cash_ledger/_amount_source.py` REFUSES a mismatch on -- and the settle-day basis pair.
     Additive; nothing reads them yet and the downgrade is a column drop.
@@ -400,8 +420,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     is an identity provable against the pre-state. **A per-kind cut was REJECTED**: the fold's
     predicate is kind-blind across 66 sites, so that cut would erect a discriminator only to delete
     it, and run two balance semantics live on one account meanwhile.
-  * [ ] **X-bi-5** delete `is_envelope`, `tracks_purchases`'s branch sites and the template sites,
-    which is the fence this family makes structurally unnecessary rather than merely unused.
+  * [ ] **X-bi-5** delete the DEFINITION's `is_envelope` (the row's cell is `X-bi-7d`'s),
+    `tracks_purchases`'s branch sites and the template sites, which is the fence this family makes
+    structurally unnecessary rather than merely unused.
   * [ ] **X-bi-6a** re-point every PROJECTED-shadow READER (**R-BAL13**). **The PRODUCER is
     `X-au-f-2`'s, not this step's** -- `16f83aa0` already states that leaf's two producers take a
     shadow
@@ -421,6 +442,8 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     repairer is `transfer_service._restore`, NOT `posting_service`**, which only skips and warns --
   deleting the latter removes a skip arm and leaves the repairer standing. **Still after X-bi-4:
     INVARIANT 5 IS WHY THE MIRROR EXISTS.** Closes **BAL-475**.
+* [ ] **X-ci** transfers take the one-definition shape their data holds (X-bi-7's 10.3): the ad-hoc
+  door closes, the discardable count and detaching move are fixed. Closes **BAL-492**, **BAL-493**.
 * [ ] **X-bk** the ONE-TIME manual reconcile of the imported bank history against the app's own
   rows, through the app's doors and into the post-restructure shape, so the whole history keeps its
   plan-versus-actual comparison. **MOVES MONEY**, and it is an OPERATOR act -- a rehearsed runbook

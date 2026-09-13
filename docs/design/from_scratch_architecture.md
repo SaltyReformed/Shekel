@@ -799,8 +799,8 @@ unwritable, which 10.5 classifies site by site.
 
 `budget.transfers` reached the one-definition shape without anyone naming it: production holds
 **0 ad-hoc transfers** (all 126 live ones are template-linked) and **2 one-time transfers**
-(definitions 7 and 10, both Paid), each a rule-less `TransferTemplate` plus one materialised
-`Transfer`. The code is the precedent for every question 10.4 asks:
+(definitions 7 and 10 of its 6 transfer definitions, both Paid), each a rule-less `TransferTemplate`
+plus one materialised `Transfer`. The code is the precedent for every question 10.4 asks:
 
 - **birth**: `routes/transfers/_instances._materialize_one_time_transfer` (`:81`) creates the one
   row through the service door, priced by its DEFINITION (`derived_ownership(TEMPLATE)`, plan step
@@ -994,7 +994,7 @@ the behaviour a rule-less definition's row should have -- the twin does NOT have
 Walked on one row: **Kayla's Kindle, `$162.25`, paid 2026-05-13, budgeted in the paycheck starting
 2026-05-07, undated, id 2459.**
 
-**A. Where a one-off's price lives.** RULED (a).
+**A. Where a one-off's price lives.** RULED (a), `R-BAL21`.
 
 - *(a) The definition prices it, and a one-off's series holds ONE version* -- recommended, and the
   from-scratch answer: the migration (or the create door) opens the definition's series with one
@@ -1028,7 +1028,8 @@ Walked on one row: **Kayla's Kindle, `$162.25`, paid 2026-05-13, budgeted in the
   a price being restated, and a NULL that means "ask the row" is `amount_source_id`'s deleted design
   (`R-IY`) one table over.
 
-**B. The one-off's due date.** RULED (a). Under A(a) and `X-bv-2` every one-off carries one.
+**B. The one-off's due date.** RULED (a), `R-BAL22`. Under A(a) and `X-bv-2` every one-off carries
+one.
 
 - *(a) The placed paycheck's start, unless the owner states otherwise* -- recommended: the ONE rule
   the app already states twice (`_leftover_due_date:615`, `_materialize_one_time_transfer`), and it
@@ -1057,7 +1058,7 @@ Walked on one row: **Kayla's Kindle, `$162.25`, paid 2026-05-13, budgeted in the
   on a hand task, and the app's own rule for a rule-less definition's date already exists, so it is
   not recommended.
 
-**C. Where a one-off's definition is edited and seen.** RULED (a).
+**C. Where a one-off's definition is edited and seen.** RULED (a), `R-BAL23`.
 
 - *(a) The grid popover is its whole lifecycle; the Recurring LIST shows definitions with a rule* --
   recommended: the owner creates it at the grid as today, the popover routes name / category / flags
@@ -1075,7 +1076,9 @@ Walked on one row: **Kayla's Kindle, `$162.25`, paid 2026-05-13, budgeted in the
   there* -- a second door for every act the popover already performs, and the transaction form's
   *Does not repeat* would need the period picker `R7b-4` removed from it.
 
-**D. The bank-import minters and the merchant-rule surfaces.** RULED, and NOT as recommended:
+**D. The bank-import minters and the merchant-rule surfaces.** RULED (`R-BAL24`), and NOT as
+recommended; **RE-RULED 2026-09-13** (10.11: the identity question was already
+`bank_import:X-f6c`'s, and `X-bi-7b` now builds that shape with `X-f6c` as its alias):
 **X-bi-7 builds it** -- balance makes the definition's `category_id` nullable and mints a definition
 per bank-minted row and per envelope; the merchant-rule picker lists one-off envelopes; N-327's
 cross-period identity question is left as it is. The recommendation had been that balance state the
@@ -1110,7 +1113,9 @@ constraint and bank_import rule the shape; 10.10 carries what the ruled answer c
   minters create no link-less row, the suggestion arm is re-keyed on the definition rather than on
   `template_id is None`, and a one-off's delete refuses (or re-points) a standing rule.
 
-**E. What the one-off's row records as its occurrence.** RULED (a).
+**E. What the one-off's row records as its occurrence.** RULED (a), `R-BAL25`;
+**RE-RULED (b) 2026-09-13** (10.11: `recurrence:R19-b` makes `occurs_on` NOT NULL and deletes the
+retain branch (a) relied on, so the row records its own date).
 
 - *(a) `occurs_on` NULL* -- recommended: the transfer twin's choice, consistent with `R2e-3` having
   retired the `Once` pattern (a one-off has no rule, so it answers no occurrence). The day the owner
@@ -1127,8 +1132,8 @@ constraint and bank_import rule the shape; 10.10 carries what the ruled answer c
   (`:711-715`). On the 34, one row (2878, Projected) is reachable by either arm; the other 33 are
   immutable and skipped under both.
 
-**F. Scope.** RULED: a sibling step after this family. The ruling is stated for every plan item;
-transfers already hold the shape in data (10.3). Whether the ad-hoc transfer door
+**F. Scope.** RULED (`R-BAL26`): a sibling step after this family. The ruling is stated for every
+plan item; transfers already hold the shape in data (10.3). Whether the ad-hoc transfer door
 (`routes/transfers/mutations.py:358`, 0 rows) and the twin's two unowned defects are leaves of this
 family or a sibling step is the developer's call; the recommendation is a sibling step ranked after
 this family, owning both, so this family's cutover stays one table wide (the twin's delete arm is
@@ -1151,34 +1156,35 @@ first draft had them the other way round, which would have hand-built the shape 
 1. **`X-bi-7a` -- `recurs`, and every "no cadence" site reads it.** The one accessor on both the row
    and the definition; the eleven sites of 10.5's first class re-keyed (a measurement-day count; the
    leaf re-runs the read); a transaction twin of `propagate_to_unruled_template` so a rule-less
-   definition's edit reaches its row; the two `count_discardable_items` arms load-then-count. No
-   production row changes behaviour (no rule-less transaction definition exists), and it is what
-   makes a rule-less definition's row BEHAVE as a one-off before any exists. Closes the transaction
-   half of defect 1 in 10.3 and, if fork F says so, the transfer half.
+   definition's edit reaches its row; `count_discardable_items`' transaction arm load-then-counts
+   (the transfer arm is `X-ci`'s, fork F). No production row changes behaviour (no rule-less
+   transaction definition exists), and it is what makes a rule-less definition's row BEHAVE as a
+   one-off before any exists. Closes the transaction half of defect 1 in 10.3; the transfer half is
+   `X-ci`'s.
 2. **`X-bi-7b` -- the doors.** ONE producer for a one-off (mint the rule-less definition, open its
    one-version series, place the row) that every writer in trace 1 calls (bank import's two per fork
    D); the popover's identity, flag and price edits route to the definition (forks A, C); the flag
    fields leave the three row schemas and `_apply_field_updates` stops writing them, so
    **`BAL-484`'s writer -- the crafted PATCH -- is gone** (the model setters stay for the fixtures
    until the fourth leaf drops the columns); the inline create dates the row (fork B); delete keys
-   on `recurs` and refuses a standing merchant rule; `offerable_templates` and `rule_naming` filter
-   on `recurs` unless bank_import has ruled fork D by then. **The transitional window, stated**:
-   from here until the fourth leaf, the legacy link-less rows still read their own cells with no
-   writer left, so their flags are frozen, and the popover's identity edits on such a row keep a
-   `template_id is None` branch the fourth leaf deletes.
+   on `recurs` and refuses a standing merchant rule; `offerable_templates` is not filtered and a
+   merchant answer mints its definition once and names it thereafter (`R-BAL24`, `X-f6c`).
+   **The transitional window, stated**: from here until the fourth leaf, the legacy link-less rows
+   still read their own cells with no writer left, so their flags are frozen, and the popover's
+   identity edits on such a row keep a `template_id is None` branch the fourth leaf deletes.
 3. **`X-bi-7c` -- the suite's one builder for a one-off, and the 268 sites moved onto it.**
    `one_off_row_of(...)` calls 7b's producer, as `X-cf-1`'s `generate_row_of`
    (`tests/_test_helpers.py:4162`) calls the engine. No app change.
 4. **`X-bi-7d` -- the cutover.** The migration of trace 8; the model setters and both columns go;
-   the accessors lose their branch; the CHECK reads `= 1` (or stays `<= 1` under fork D's third
-   answer, with the reason recorded); the key reads `RESTRICT`; the label fallback at
-   `grid_view_service:158` and `_stated_amount`'s `template is None` refusal
-   (`_definition_cash.py:143`) go with the `SET NULL` that made them reachable.
-   **Closes `BAL-484`** -- the cell is gone. Its grade is the stated six-cell grid DIFF of trace 5
-   on the production restore, the row set otherwise byte-identical, beside every migrated figure
-   reproduced to the cent through amount rule 3.
+   the accessors lose their branch; the CHECK reads `= 1` and both `SET NULL` link keys read
+   `RESTRICT` (a nulled link is a zero-link row); every minted row records its date in `occurs_on`
+   (`R-BAL25`); the label fallback at `grid_view_service:158` and `_stated_amount`'s
+   `template is None` refusal (`_definition_cash.py:143`) go with the `SET NULL` that made them
+   reachable. **Closes `BAL-484`** -- the cell is gone. Its grade is the stated six-cell grid DIFF
+   of trace 5 on the production restore, the row set otherwise byte-identical, beside every migrated
+   figure reproduced to the cent through amount rule 3.
 
-`R-BAL20`'s text says the family's FIRST leaf owns `BAL-484`. The finding is
+`R-BAL20` as first drafted said the family's FIRST leaf owns `BAL-484`. The finding is
 *a dead cell keeps a writer and no step deletes it*; the writer goes at 7b and the cell at 7d, so
 the row is owned by 7d and its `also` names 7b -- stated here rather than obeyed silently, because
 naming 7a would make rule 2 re-point the row twice for no reason. **RULED so** (developer,
@@ -1192,20 +1198,20 @@ into its restored cells and, under fork A, a figure as its own (OWN, `TEMPLATE` 
 `R-JC`'s two arms -- exact from `settled_amount` on the derived basis where the row settled that
 way, else the definition's scalar; the link is cleared; the definition and its series row are
 deleted. **Which definitions**: those with no rule and exactly one row -- soft-deleted rows counted,
-since a soft-deleted one-off is still the definition's -- whose `occurs_on` is NULL: the one-off's
-signature under fork E(a). **What it does NOT fold, stated**: a rule-less definition with ZERO rows
-(the "Does not repeat" form shape, which existed before this migration and is not its work); a
-rule-less definition holding several rows, which is a recurrence the owner CLEARED after it
-generated and a shape that existed before this migration; and a definition a standing merchant rule
-names (the rule would cascade away with it; such a definition is left linked, and the downgrade
-reports the count). **Where it is WRONG, stated**: a cleared-recurrence definition whose only
-surviving row is a carry-forward override (`_execute.py:665-683`, `occurs_on` NULL) matches the
-signature and would be folded as a one-off; and under fork D's from-scratch collapse a rule-less
-definition holds one row per paycheck and no one-row signature exists, so that ruling re-specifies
-this paragraph. The restore holds none of these shapes (40 of 40 definitions carry a rule), so on
-the data measured the downgrade is exact. The 26 dates the upgrade writes are NOT withdrawn on
-downgrade: a date is not a copy of anything, `X-bv-2`'s CHECK no longer binds on a link-less row,
-and withdrawing one would delete a fact the owner may since have corrected.
+since a soft-deleted one-off is still the definition's (`occurs_on` is that row's date since fork E
+was re-ruled, so it is no part of the signature). **What it does NOT fold, stated**: a rule-less
+definition with ZERO rows (the "Does not repeat" form shape, which existed before this migration and
+is not its work); a rule-less definition holding several rows, which is a recurrence the owner
+CLEARED after it generated and a shape that existed before this migration; and a definition a
+standing merchant rule names (the rule would cascade away with it; such a definition is left linked,
+and the downgrade reports the count). **Where it is WRONG, stated**: a cleared-recurrence definition
+whose only surviving row is a carry-forward override (`_execute.py:665-683`, `occurs_on` NULL)
+matches the signature and would be folded as a one-off; and under fork D's from-scratch collapse a
+rule-less definition holds one row per paycheck and no one-row signature exists, so that ruling
+re-specifies this paragraph. The restore holds none of these shapes (40 of 40 definitions carry a
+rule), so on the data measured the downgrade is exact. The 26 dates the upgrade writes are NOT
+withdrawn on downgrade: a date is not a copy of anything, `X-bv-2`'s CHECK no longer binds on a
+link-less row, and withdrawing one would delete a fact the owner may since have corrected.
 
 ### 10.9 What two adversarial passes over this section refuted, 2026-09-12
 
@@ -1239,39 +1245,70 @@ resyncs, a moved due date changes nothing); B(a)'s balance-neutrality; the leaf 
 
 Every plan item has exactly one definition. A one-off is a rule-less definition plus one row.
 
-1. **Price** (fork A): the definition's series prices the row through amount rule 3, and a one-off's
-   series holds ONE version, dated on the row's due date; a restatement corrects the version the
-   row's due date reads, in place, and never appends. The row states no figure.
-2. **Date** (fork B): a one-off is due on its placed paycheck's start unless the owner states a
-   date; the popover keeps the date editable and never clearable; the cutover migration writes that
-   date onto every undated link-less row. The developer accepted the cost stated in 10.6-B.
-3. **Home** (fork C): the grid is the one-off's whole lifecycle -- created at the grid, its name,
-   category, flags and price edited at the popover and landing on the definition, deleted with its
-   definition (refused while a standing merchant rule names it), *make this repeat* opening the
-   template edit form. The Recurring list shows definitions with a rule. The transaction template
-   form's *Does not repeat* option is removed. The account-delete refusal counts definitions with a
-   rule.
-4. **Bank import** (fork D, ruled against the recommendation): `transaction_templates.category_id`
-   becomes NULLABLE so `mint_uncategorized` can mint a definition for a category-less row;
-   `_create_envelope` mints a definition per envelope it creates; the merchant-rule picker is not
-   filtered, so a one-off envelope is a pickable answer; N-327's cross-period identity is not
-   re-designed here. **What that commits the doors leaf to, stated so nothing lands silently**: the
-   nullable-category change is a schema-only migration of the doors leaf whose downgrade re-adds
-   `NOT NULL` and REFUSES while a category-less definition exists (two shipped revisions already
-   refuse theirs; the cutover leaf's downgrade folds such definitions first, so an orderly downgrade
-   never meets the refusal); the cross-statement suggestion arm (`_placement.py:355`) is re-keyed
-   from `template_id is None` to
-   *a rule-less definition's row of that name and category in this period*, or N-327's
-   cross-statement half regresses; and `rule_naming:646` keeps answering NEW-ENVELOPE for a
-   destination whose definition has no rule, because today's rule on an ad-hoc envelope files that
+1. **Price** (fork A, `R-BAL21`): the definition's series prices the row through amount rule 3, and
+   a one-off's series holds ONE version, dated on the row's due date; a restatement corrects the
+   version the row's due date reads, in place, and never appends. The row states no figure.
+2. **Date** (fork B, `R-BAL22`): a one-off is due on its placed paycheck's start unless the owner
+   states a date; the popover keeps the date editable and never clearable; the cutover migration
+   writes that date onto every undated link-less row. The developer accepted the cost stated in
+   10.6-B.
+3. **Home** (fork C, `R-BAL23`): the grid is the one-off's whole lifecycle -- created at the grid,
+   its name, category, flags and price edited at the popover and landing on the definition, deleted
+   with its definition (refused while a standing merchant rule names it), *make this repeat* opening
+   the template edit form. The Recurring list shows definitions with a rule. The transaction
+   template form's *Does not repeat* option is removed. The account-delete refusal counts
+   definitions with a rule.
+4. **Bank import** (fork D, `R-BAL24`, ruled against the recommendation and RE-RULED 2026-09-13 to
+   `bank_import:X-f6c`'s shape -- a merchant answer mints one rule-less definition the first time
+   and names it thereafter, `X-bi-7b` builds it and `X-f6c` is its alias, so a one-off is a
+   definition plus its PLACED ROWS and 10.8 folds one-row definitions only):
+   `transaction_templates.category_id` becomes NULLABLE so `mint_uncategorized` can mint a
+   definition for a category-less row; `_create_envelope` mints a definition per envelope it
+   creates; the merchant-rule picker is not filtered, so a one-off envelope is a pickable answer;
+   N-327's cross-period identity is not re-designed here.
+   **What that commits the doors leaf to, stated so nothing lands silently**: the nullable-category
+   change is a schema-only migration of the doors leaf whose downgrade re-adds `NOT NULL` and
+   REFUSES while a category-less definition exists (two shipped revisions already refuse theirs; the
+   cutover leaf's downgrade folds such definitions first, so an orderly downgrade never meets the
+   refusal); the cross-statement suggestion arm (`_placement.py:355`) is re-keyed from
+   `template_id is None` to *a rule-less definition's row of that name and category in this period*,
+   or N-327's cross-statement half regresses; and `rule_naming:646` keeps answering NEW-ENVELOPE for
+   a destination whose definition has no rule, because today's rule on an ad-hoc envelope files that
    merchant into a fresh envelope in every later paycheck and a TEMPLATE answer naming a one-row
    definition would place nothing there -- the existing answer kinds keyed on the right predicate,
    not a new arm. **A rule the owner states BY PICKING a one-off definition from the unfiltered
    picker does name that one row and resolves UNRESOLVED in every other paycheck**; that is the cost
    the ruled option carries and it is bank_import's to revisit.
-5. **Occurrence** (fork E): the one-off's row answers no occurrence (`occurs_on` NULL), so a one-off
-   later made to repeat is retained, never deleted.
-6. **Scope** (fork F): transactions only; a sibling step ranked after this family closes the ad-hoc
-   transfer door and owns the twin's two unowned defects (10.3, items 1 and 2).
-7. **Owner and rank**: `BAL-484` is owned by `X-bi-7d` with `X-bi-7b` in its `also`; the four leaves
-   take the ranks directly after `X-bv-2`.
+5. **Occurrence** (fork E, `R-BAL25`, RE-RULED 2026-09-13): the one-off's row records its own due
+   date in `occurs_on`, so `recurrence:R19-b`'s NOT NULL binds on it; a one-off later made to repeat
+   is adopted when the rule names its date and otherwise treated as any projected row of a rule that
+   changed.
+6. **Scope** (fork F, `R-BAL26`): transactions only; a sibling step ranked after this family, `X-ci`
+   (minted 2026-09-13), closes the ad-hoc transfer door and owns the twin's two defects (10.3, items
+   1 and 2: `BAL-492`, `BAL-493`).
+7. **Owner and rank**: `BAL-484` is owned by `X-bi-7d` and by `X-bi-7b`, which deletes its writer
+   (the ledger's `also` column holds finding relations, so the owner cell names both; ruled so
+   2026-09-13); the four leaves take the ranks directly after `X-bv-2`.
+
+### 10.11 What three reviews of the registry text refuted, 2026-09-13
+
+Recorded for the reason 10.9 gives. The registry rows this section points at were reviewed by three
+neutral passes on 2026-09-13 (against this section, against the code on dev `f93ce4df`, and over the
+six fork rulings); every finding was fixed in the same commit, and these changed what this section
+says. **Refuted and corrected above**: *eight forks* (10.6 holds six; the owner and the rank of 10.7
+made eight rulings, never eight forks); the cross-period identity finding is **N-328**, not N-327,
+and it was already RULED by bank_import on 2026-08-20 and owned by `bank_import:X-f6c`, a `NOW` step
+this audit never saw, so fork D's *bank_import's to revisit* was false and the developer re-ruled D
+to that step's shape with `X-bi-7b` as its alias (`R-BAL24`); fork E(a)'s retain branch is the one
+`recurrence:R19-b` exists to delete, a step this audit never saw either, and its own spec named the
+row's date as the answer, so E was re-ruled (b) (`R-BAL25`); the `= 1` CHECK is violable by
+`credit_payback_for_id`'s `ON DELETE SET NULL` as well as `template_id`'s, so the cutover moves both
+keys to RESTRICT; the account-delete refusal (trace 6) is not a `template_id IS NULL` site but a
+count of definitions, re-keyed to recurring ones; the handoff's
+*268 link-less constructions in 69 files* read 263 in 69 on this tree by AST and 264 in 70 on dev,
+so the index carries a gate-run marker for the constructor total and no total for the link-less
+subset; `X-cf-1` is archived, so the index cites `X-cf`; and
+*`R-BAL20`'s text says the FIRST leaf owns `BAL-484`* described a draft the filed row does not
+match. **Attacked and not broken**: the 34 and every breakdown in 10.2; the four link-less writers;
+the twin's two defects and transfer 409; the engine trace; the three popover branches; the CHECK and
+the FK; the six-cell diff's composition; 10.8's fold rule; and every ruling cited for what it says.
