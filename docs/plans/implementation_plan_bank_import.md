@@ -164,11 +164,10 @@ what it leaves a LATER step is on that step's own entry.
       one read the act counts with), the delete door's prose and event still say "moves NO money"
       (false since **R-GG**), and the "not placed" badge blames the file for a release the app
       performed -- that wording is a design question for the developer.
-- [ ] **X-gs** `fix(auth): require_owner fails closed` -- **BI-486**. The helper's
-      `getattr(current_user, "role_id", owner_id)` is a fixture accommodation that treats an
-      anonymous principal as an owner wherever the login gate (**R-BI4**) is off. Read the attribute
-      outright; fixtures that lack a role set one. Minted by the developer 2026-09-11 from
-      `X-gi-4`'s review findings, beside `X-gr`.
+- [x] **X-gs** `eec1a2be` -- `require_owner` reads `current_user.role_id` outright; closed
+      **BI-486**. The fixture half was EMPTY, measured twice: a `User` always carries the mapped
+      attribute, so the `getattr` default only ever admitted `AnonymousUserMixin`, and no fixture,
+      mock or `LOGIN_DISABLED` throwaway app reaches a `@require_owner` view.
 - [ ] **X-gt** `refactor(import): the receipt value leaves _batch.py` -- **BI-491**. `_batch.py`
       sits at 998 of pylint's 1000 lines after `X-gi-5`; `BatchOutcome` and `_Tally` move to
       `_outcome.py` as a PURE move in its own commit, the cut ruled first (**R-PC71**'s shape),
