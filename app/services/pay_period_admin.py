@@ -593,12 +593,13 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     **The other direction is what R7d-c-2 makes load-bearing.**  The wipe
     CASCADE-deletes the loan's genesis entries, so the OLD order generated
     against an EMPTIED loan ledger and the new one generates against the
-    re-posted ledger.  Nothing on today's generation path reads a loan: its
-    reads off the schedule are FOUR of ``schedule.calendar`` and TWO of
-    ``schedule.write_period_ids``, which is the whole set, so the change is
-    invisible now.  From R7d-c-2 the pass folds the loan to bound a
-    payment, and then generating before the re-sync would fold a ledger the
-    wipe had emptied.  The new order is the one that survives that step.
+    re-posted ledger.  Before plan step R7d-c-2 nothing on the generation
+    path read a loan (its reads off the schedule were four of
+    ``schedule.calendar`` and two of ``schedule.write_period_ids``), so the
+    order was invisible; since R7d-c-2 the pass folds the loan through
+    ``schedule.ctx`` to bound a payment, and generating before the re-sync
+    would fold a ledger the wipe had emptied.  This order is the one that
+    survives it.
     The new rhythm is persisted by step 4's writer rather than by a line of
     this function's own (plan step C3-b): ``record_paydays`` applies the one
     rule -- a batch that RECORDED a payday on a rhythm no era covers mints an
