@@ -4,12 +4,16 @@ Shekel Budget App -- Recurrence Rule Model (budget schema)
 Defines the pattern by which transactions are auto-generated into
 future pay periods (every_period, monthly, annual, etc.).
 
-**This table states its recurrence in SIX columns and carries no second
+**This table states its recurrence in SEVEN columns and carries no second
 statement of any of them.**  ``interval_n`` / ``unit_id`` / ``placement_id`` /
-``shift_id`` / ``starts_on`` / ``nominal_day`` are what a caller AUTHORS and
-what every reader takes; beside them sit only ``due_day_of_month`` -- the
-servicer's date for a bill the cadence schedules elsewhere -- and the closing
-bound's exclusive arc.
+``shift_id`` / ``starts_on`` / ``nominal_day`` / ``max_per_month`` are what a
+caller AUTHORS and what every reader takes; beside them sit only
+``due_day_of_month`` -- the servicer's date for a bill the cadence schedules
+elsewhere -- and the closing bound's exclusive arc.  The seventh, the per-month
+ceiling, arrived at plan step **salary:R15-a** (ruling **R-SAL29**) as the
+cadence's third value: "every paycheck, at most 2 a month" is how a payroll
+benefit taken on a month's first two paychecks is stated, and neither axis
+could say it (ledger row **D59**).
 
 **Seven columns were DROPPED at plan step R7c-c** (migration
 ``d9f5c1a48b73``), each a derived encoding the write door maintained:
@@ -142,6 +146,20 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
             postgresql_where=db.text("transfer_template_id IS NOT NULL"),
         ),
         db.CheckConstraint("interval_n > 0", name="ck_recurrence_rules_positive_interval"),
+        # The per-month ceiling's floor (plan step salary:R15-a).  NULL is the
+        # one spelling of "no ceiling"; a zero would be a rule that never fires
+        # spelled as a cadence, the ``Once`` shape plan step R2e-3 deleted.
+        # There is deliberately no upper CHECK, for the reason ``interval_n``
+        # has none: a ceiling above what a month can hold is vacuous rather
+        # than wrong, and the ``smallint`` type is the top.  Which UNITS may
+        # carry one is held at the door and at construction
+        # (``recurrence._resolution._require_month_ceiling_pair``) rather than
+        # here, because ``unit_id`` names a ``ref`` row and a CHECK comparing
+        # it to a literal id would tie the table to a seed.
+        db.CheckConstraint(
+            "max_per_month IS NULL OR max_per_month > 0",
+            name="ck_recurrence_rules_positive_max_per_month",
+        ),
         # At most ONE closing bound -- the EXCLUSIVE ARC this pair of nullable
         # columns is.  A rule that both ends on a date and after N occurrences
         # has two answers to "when does this stop", and the engine would have
@@ -372,6 +390,24 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
     interval_n = db.Column(
         db.Integer, nullable=False, default=1, server_default=db.text("1"),
     )
+    # The most occurrences any one calendar month admits (plan step
+    # salary:R15-a, ruling R-SAL29, amended 2026-09-13): ``2`` on an
+    # every-paycheck rule is a month's first two paychecks ON THE OWNER'S
+    # CALENDAR whatever paycheck the rule started on -- the cadence eleven of
+    # the developer's twelve payroll deductions carry and his Health
+    # Insurance Allowance is paid on -- and on a week cadence the rule's own
+    # first N of the month, a weekly date being no payday.  Applied by the
+    # occurrence walk for every unit (``recurrence._occurrence._ceilinged``)
+    # and read by every count of "how often" (``recurrence.Cadence``), so a
+    # ceilinged rule prices at 24 a year and not 26 everywhere it is asked.
+    #
+    # NULLABLE because ``NULL`` IS the ordinary rule: no ceiling, which is
+    # every rule authored before this step and every calendar-month cadence,
+    # whose occurrences cannot repeat within a month and on which a value here
+    # is refused at construction.  Presence means the ceiling can bind, so
+    # the absence has one meaning -- the same discipline ``nominal_day`` keeps
+    # one column up.
+    max_per_month = db.Column(db.SmallInteger, nullable=True)
     # The bill's real due day, when the servicer's date differs from the day
     # the cadence schedules it on.  NOT a coordinate of the cadence -- the rule
     # fires on its own day and the row carries this one -- which is why it

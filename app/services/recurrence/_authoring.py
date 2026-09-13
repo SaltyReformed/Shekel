@@ -176,7 +176,8 @@ def _author(
     # ---- what the rule AUTHORS -------------------------------------------
     #
     # **The WHOLE table since plan step R7c-c**: six columns, every one of them
-    # a value a caller states, and no encoding beside them.  They are written
+    # a value a caller states, and no encoding beside them -- seven since plan
+    # step salary:R15-a added the per-month ceiling.  They are written
     # from the ONE ``resolve`` call above, whose cadence has already been
     # through
     # :func:`~app.services.recurrence._frequency.canonical_cadence` -- so
@@ -195,6 +196,10 @@ def _author(
     rule.shift_id = ref_cache.business_day_shift_id(resolved.shift)
     rule.starts_on = resolved.starts_on
     rule.nominal_day = resolved.nominal_day
+    # The cadence's third value (plan step salary:R15-a, ruling R-SAL29):
+    # off the resolved value like the two beside it, so the ceiling the walk
+    # applies and the ceiling the row holds come from one canonicalisation.
+    rule.max_per_month = resolved.max_per_month
     # The closing bound is ONE authored value and TWO columns under an
     # exclusive arc (``ck_recurrence_rules_single_end_bound``), so it is split
     # here and rejoined at the read door -- the only two places the pair is

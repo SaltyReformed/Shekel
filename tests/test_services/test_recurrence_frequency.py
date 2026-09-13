@@ -39,6 +39,7 @@ from app.services.recurrence import (
     RecurrenceFrequencyError,
     RecurrenceResolutionError,
     authorable_cadences,
+    can_repeat_within_month,
     canonical_cadence,
     emits_period_starts,
     fires_on_day_of_month,
@@ -50,7 +51,7 @@ from app.services.recurrence import (
 # states a TRANSITIONAL limit plan step R5 deletes.  Naming its definition site
 # is what lets the offer-set sweep below grade the SET against the thing that
 # withholds, rather than against a second list.
-from app.services.recurrence._frequency import (
+from app.services.recurrence._offer import (
     has_row_date_coordinate,
     require_row_date_coordinate,
 )
@@ -146,6 +147,118 @@ class TestUnitsPerYearIsExact:
             Cadence(
                 interval_n=1, unit=_Unlisted(),
             ).units_per_year(_BIWEEKLY)
+
+
+class TestThePerMonthCeilingCountsAndPrices:
+    """The cadence's third value reaches every "how often" (plan step salary:R15-a).
+
+    A rule that admits at most N occurrences a month fires at most
+    ``12 N`` times a year, and a monthly equivalent priced off the pair alone
+    would charge the developer's eleven "at most 2 a month" payroll lines
+    (``$517.21`` a paycheck between them) at ``26/12`` of their real monthly
+    cost.  Every figure below is hand-computed beside the assertion.
+    """
+
+    def test_a_ceiling_caps_the_yearly_rate(self):
+        """Every paycheck at most 2 a month is 24 a year on a biweekly owner."""
+        cadence = Cadence(
+            interval_n=1, unit=RecurrenceUnitEnum.PERIOD, max_per_month=2,
+        )
+
+        # min(26 / 1, 12 x 2) = 24.
+        assert cadence.occurrences_per_year(_BIWEEKLY) == Decimal("24")
+        # min(52 / 1, 12 x 2) = 24 on a weekly owner too.
+        assert cadence.occurrences_per_year(_WEEKLY) == Decimal("24")
+        # A monthly-paid owner has 12 paychecks; the ceiling never binds.
+        assert cadence.occurrences_per_year(_MONTHLY_PAID) == Decimal("12")
+
+    def test_a_ceiling_the_pair_never_reaches_does_not_bind(self):
+        """Weekly at most 5 a month stays 52: no month holds five weeks."""
+        cadence = Cadence(
+            interval_n=1, unit=RecurrenceUnitEnum.WEEK, max_per_month=5,
+        )
+
+        # 12 x 5 x 1 = 60 is not below 52, so the pair's rate stands.
+        assert not cadence.ceiling_binds(_WEEKLY)
+        assert cadence.occurrences_per_year(_WEEKLY) == Decimal("52")
+        # 12 x 4 x 1 = 48 IS below 52: the first four weeks of each month.
+        assert Cadence(
+            interval_n=1, unit=RecurrenceUnitEnum.WEEK, max_per_month=4,
+        ).ceiling_binds(_WEEKLY)
+
+    def test_no_ceiling_never_binds_and_leaves_the_rate_alone(self):
+        """``None`` is every rule authored before the step."""
+        cadence = Cadence(interval_n=3, unit=RecurrenceUnitEnum.PERIOD)
+
+        assert not cadence.ceiling_binds(_BIWEEKLY)
+        assert cadence.occurrences_per_year(_BIWEEKLY) == Decimal("26") / 3
+
+    def test_a_binding_ceiling_prices_exactly_amount_times_ceiling(self):
+        """$517.21 at most twice a month is $1,034.42 a month, exact."""
+        cadence = Cadence(
+            interval_n=1, unit=RecurrenceUnitEnum.PERIOD, max_per_month=2,
+        )
+
+        # 517.21 x 2 = 1,034.42 -- an integer multiply, no division at all.
+        assert cadence.monthly_equivalent(
+            Decimal("517.21"), _BIWEEKLY,
+        ) == Decimal("1034.42")
+
+    def test_an_unceilinged_rule_prices_by_the_one_division(self):
+        """The arm the aggregator spelled inline until this step, verbatim."""
+        cadence = Cadence(interval_n=3, unit=RecurrenceUnitEnum.PERIOD)
+
+        # 100 x 26 / (3 x 12) = 2600 / 36 = 72.222...
+        assert cadence.monthly_equivalent(
+            Decimal("100"), _BIWEEKLY,
+        ) == Decimal("100") * Decimal("26") / Decimal("36")
+
+    def test_a_non_binding_ceiling_prices_like_no_ceiling(self):
+        """Weekly at most 5 a month prices as weekly: the pair is the rate."""
+        ceilinged = Cadence(
+            interval_n=1, unit=RecurrenceUnitEnum.WEEK, max_per_month=5,
+        )
+        plain = Cadence(interval_n=1, unit=RecurrenceUnitEnum.WEEK)
+
+        assert ceilinged.monthly_equivalent(
+            Decimal("10"), _WEEKLY,
+        ) == plain.monthly_equivalent(Decimal("10"), _WEEKLY)
+
+    @pytest.mark.parametrize(
+        ("unit", "expected"),
+        [
+            (RecurrenceUnitEnum.PERIOD, True),
+            (RecurrenceUnitEnum.WEEK, True),
+            (RecurrenceUnitEnum.MONTH, False),
+            (RecurrenceUnitEnum.YEAR, False),
+        ],
+        ids=lambda value: str(value),
+    )
+    def test_which_units_can_repeat_within_a_month(self, unit, expected):
+        """Exactly the units WITHOUT a day-of-month coordinate: paychecks and weeks.
+
+        The EXTENSION written out beside the derivation, for the reason the
+        offer set's is: a predicate asserted only against its own source
+        agrees with any rule at all.
+        """
+        assert can_repeat_within_month(unit) is expected
+        assert can_repeat_within_month(unit) is (
+            not has_day_of_month_coordinate(unit)
+        )
+
+    def test_canonical_cadence_carries_the_ceiling(self):
+        """The rewrite that folds months into years never sees a ceiling; the rest carry it."""
+        assert canonical_cadence(
+            2, RecurrenceUnitEnum.PERIOD, 1,
+        ) == Cadence(
+            interval_n=2, unit=RecurrenceUnitEnum.PERIOD, max_per_month=1,
+        )
+        # The fold carries a ceiling through too -- the honest reading of a
+        # value ``ResolvedRecurrence`` then refuses beside a YEAR unit, which
+        # is that type's job and not this function's.
+        assert canonical_cadence(12, RecurrenceUnitEnum.MONTH, 3) == Cadence(
+            interval_n=1, unit=RecurrenceUnitEnum.YEAR, max_per_month=3,
+        )
 
 
 class TestTheOfferSetIsWhatTheAppCanHonour:

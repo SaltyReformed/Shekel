@@ -5887,6 +5887,7 @@ def _cadence_spec(
     nominal_day=None,
     due_day_of_month=None,
     end_date=None,
+    max_per_month=None,
 ):
     """Translate a stated CADENCE into the spec the write door takes.
 
@@ -5909,6 +5910,7 @@ def _cadence_spec(
         nominal_day: See :func:`make_cadence_rule`.
         due_day_of_month: See :func:`make_cadence_rule`.
         end_date: See :func:`make_cadence_rule`.
+        max_per_month: See :func:`make_cadence_rule`.
 
     Returns:
         The :class:`~app.services.recurrence.RecurrenceSpec`.
@@ -5966,6 +5968,7 @@ def _cadence_spec(
         end_bound=(
             NEVER_ENDS if end_date is None else EndsOnDate(end_date)
         ),
+        max_per_month=max_per_month,
     )
 
 
@@ -6026,6 +6029,8 @@ def make_cadence_rule(owner, cadence, **kwargs):
         due_day_of_month: Real bill due day, when it differs from the
             scheduling day.
         end_date: The rule's closing bound.  ``None`` never ends.
+        max_per_month: The per-month ceiling (plan step salary:R15-a), or
+            ``None`` for none.
 
     Returns:
         The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
@@ -7163,7 +7168,7 @@ def seed_tax_bracket_set(user_id, tax_year=2026):
 
 def validated_cadence(
     unit=None, interval_n=1, placement=None, starts_on=None, nominal_day=None,
-    states_a_start=True,
+    states_a_start=True, max_per_month=None,
 ):
     """Return one cadence as a SCHEMA hands it to a route helper.
 
@@ -7201,6 +7206,8 @@ def validated_cadence(
             it.  Absence and presence being distinguishable is the whole point
             of the ruling of 2026-08-15, so a helper that could only produce
             one of them could not exercise it.
+        max_per_month: The per-month ceiling (plan step salary:R15-a), or
+            ``None`` to leave the key out -- what a DISABLED control posts.
 
     Returns:
         A dict of deserialized payload values, ready to splat into the ``data``
@@ -7235,6 +7242,8 @@ def validated_cadence(
         )
     if nominal_day is not None:
         payload["nominal_day"] = nominal_day
+    if max_per_month is not None:
+        payload["max_per_month"] = max_per_month
     return payload
 
 
@@ -7270,7 +7279,7 @@ def end_bound_payload(bound=None):
 
 def cadence_payload(
     unit=None, interval_n=1, placement=None, starts_on=None, nominal_day=None,
-    states_a_start=True,
+    states_a_start=True, max_per_month=None,
 ):
     """Return the form keys that author one cadence, as a BROWSER posts them.
 
@@ -7294,6 +7303,10 @@ def cadence_payload(
             ``None``, matching the control's own conditional rendering.
         states_a_start: ``False`` omits ``starts_on``, which is what a locked
             (``disabled``) control posts; see :func:`validated_cadence`.
+        max_per_month: The per-month ceiling (plan step salary:R15-a).  Absent
+            from the returned dict when ``None``, which is what the control
+            posts DISABLED beside a calendar-month unit; a test modelling an
+            enabled, empty box adds ``"max_per_month": ""`` itself.
 
     Returns:
         A dict of form values -- strings, as an HTML form submits them -- ready
@@ -7304,6 +7317,7 @@ def cadence_payload(
 
     loaded = validated_cadence(
         unit, interval_n, placement, starts_on, nominal_day, states_a_start,
+        max_per_month,
     )
     payload = {
         "recurrence_unit": str(
@@ -7318,6 +7332,8 @@ def cadence_payload(
         payload["starts_on"] = loaded["starts_on"].isoformat()
     if "nominal_day" in loaded:
         payload["nominal_day"] = str(loaded["nominal_day"])
+    if "max_per_month" in loaded:
+        payload["max_per_month"] = str(loaded["max_per_month"])
     return payload
 
 

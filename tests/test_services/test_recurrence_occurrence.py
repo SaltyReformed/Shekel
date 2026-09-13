@@ -85,7 +85,7 @@ from app.services.recurrence import (
 # would leave ``occurrence_placements`` calling the real ones, making a control
 # that passes prove nothing -- the same reasoning
 # ``tests/oracles/recurrence_baseline.py`` records for the old engine.
-from app.services.recurrence import _months, _occurrence, _resolution
+from app.services.recurrence import _months, _occurrence, _placement, _resolution
 from app.services.recurrence import EndBound, EndsAfterOccurrences
 
 from tests._test_helpers import (
@@ -207,6 +207,7 @@ def resolved_value(
     end_bound: EndBound = NEVER_ENDS,
     derived: DerivedStop | None = None,
     nominal_day: int | None = None,
+    max_per_month: int | None = None,
 ) -> ResolvedRecurrence:
     """Return a two-axis value stated directly, bypassing ``resolve``.
 
@@ -238,6 +239,8 @@ def resolved_value(
             configured loan.
         nominal_day: The day the rule means when the first occurrence's
             month clamped it.
+        max_per_month: The per-month ceiling (plan step salary:R15-a), or
+            ``None`` for none.
 
     Returns:
         The :class:`~app.services.recurrence.ResolvedRecurrence`.
@@ -251,6 +254,7 @@ def resolved_value(
         shift=shift,
         closing=Closing(authored=end_bound, derived=derived),
         nominal_day=nominal_day,
+        max_per_month=max_per_month,
     )
 
 
@@ -883,7 +887,10 @@ class TestTheParallelRunFiringControls:
 
     Verification standard: "every guard gets a negative control that is shown
     to fire", and "ask of every harness: can it SEE the code under test?"
-    Both controls patch inside ``app.services.recurrence._occurrence``, which
+    Both controls patch inside ``app.services.recurrence._placement`` -- the
+    module that BINDS the two names ``_placements`` reads, since plan step
+    salary:R15-a moved the placement half there; a patch on ``_occurrence``
+    would leave this leaf's own binding untouched and fire nothing -- which
     is the only patch target that proves the composition resolves its parts at
     CALL time rather than having bound them at import.
     """
@@ -896,7 +903,7 @@ class TestTheParallelRunFiringControls:
         sighted, and a perturbation confined to the 12 declared divergences
         would satisfy it while the gate stayed green.
         """
-        real_search = _occurrence._placement_search
+        real_search = _placement._placement_search
 
         def shifted(calendar, placement):
             inner = real_search(calendar, placement)
@@ -915,7 +922,7 @@ class TestTheParallelRunFiringControls:
         # search ONCE per call rather than going through the public wrapper, so
         # patching ``place`` leaves the harness blind.  This control caught
         # exactly that when the eager-refusal restructure introduced it.
-        monkeypatch.setattr(_occurrence, "_placement_search", shifted)
+        monkeypatch.setattr(_placement, "_placement_search", shifted)
 
         with pytest.raises(AssertionError):
             TestTheParallelRun().\
@@ -923,13 +930,13 @@ class TestTheParallelRunFiringControls:
 
     def test_a_dropped_occurrence_turns_the_gate_red(self, monkeypatch):
         """Dropping the first occurrence of every rule FAILS the snapshot test."""
-        real_occurrences = _occurrence.occurrences
+        real_occurrences = _placement.occurrences
 
         def one_fewer(resolved, calendar, *, through):
             emitted = list(real_occurrences(resolved, calendar, through=through))
             return iter(emitted[1:])
 
-        monkeypatch.setattr(_occurrence, "occurrences", one_fewer)
+        monkeypatch.setattr(_placement, "occurrences", one_fewer)
 
         with pytest.raises(AssertionError):
             TestTheParallelRun().\
@@ -946,7 +953,7 @@ class TestTheParallelRunFiringControls:
         occurrence.  :meth:`TestTheParallelRun.test_no_occurrence_is_unplaceable_without_being_declared`
         is what closes it, and this is the control proving it fires.
         """
-        real_occurrences = _occurrence.occurrences
+        real_occurrences = _placement.occurrences
 
         def one_extra(resolved, calendar, *, through):
             emitted = list(real_occurrences(resolved, calendar, through=through))
@@ -954,7 +961,7 @@ class TestTheParallelRunFiringControls:
             # placeable by neither rule.
             return iter(emitted + [calendar.horizon()])
 
-        monkeypatch.setattr(_occurrence, "occurrences", one_extra)
+        monkeypatch.setattr(_placement, "occurrences", one_extra)
 
         with pytest.raises(AssertionError):
             TestTheParallelRun().\
@@ -1308,6 +1315,187 @@ class TestTheWeekUnit:
         ]
 
 
+class TestThePerMonthCeiling:
+    """The cadence's third value (plan step salary:R15-a, ruling R-SAL29).
+
+    On the developer's own schedule shape (first payday 2026-03-26, 14-day
+    cadence, 61 periods through 2028-07-13) a calendar month holds a THIRD
+    payday five times: 2026-07-30, 2026-12-31, 2027-07-29, 2027-12-30 and
+    2028-06-29 -- counted by an independent per-month tally of the paydays,
+    not by the engine.  A payroll benefit taken on a month's first two
+    paychecks skips exactly those five, and "every paycheck, at most 2 a
+    month" is how the vocabulary now says so.
+    """
+
+    #: The five third paydays of the default schedule, from the tally above.
+    _THIRD_PAYDAYS = (
+        date(2026, 7, 30), date(2026, 12, 31), date(2027, 7, 29),
+        date(2027, 12, 30), date(2028, 6, 29),
+    )
+
+    def test_at_most_two_a_month_skips_exactly_the_third_paychecks(self):
+        """Ceiling 2 on every-paycheck admits 56 of 61 and drops the five thirds.
+
+        The developer's eleven 24-per-year deductions and his Health
+        Insurance Allowance, stated as a rule: what the paycheck engine's
+        month-ordinal rule (``_deduction_applies_at``) skipped, this skips,
+        at every phase the schedule reaches.
+        """
+        calendar = build_calendar()
+        value = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 3, 26),
+            max_per_month=2,
+        )
+        every = dates_through(
+            resolved_value(
+                unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 3, 26),
+            ),
+            calendar, calendar.horizon(),
+        )
+
+        emitted = dates_through(value, calendar, calendar.horizon())
+
+        assert len(every) == 61
+        assert len(emitted) == 56
+        assert set(every) - set(emitted) == set(self._THIRD_PAYDAYS)
+        # Ascending and a strict subsequence: nothing re-ordered, nothing
+        # invented.
+        assert emitted == [day for day in every if day in set(emitted)]
+
+    def test_at_most_one_a_month_is_the_months_first_paycheck(self):
+        """Ceiling 1 on every-paycheck agrees with Monthly First on a biweekly owner.
+
+        The two spellings of "the first paycheck of each month" -- a paycheck
+        rule ceilinged at one, and a month rule on the 1st placed on the first
+        paycheck on or after it -- land on the same paychecks wherever every
+        month holds a payday, which a 14-day cadence guarantees.  Graded
+        against the placed periods, since a month rule's occurrences are
+        dates rather than paydays.
+        """
+        calendar = build_calendar()
+        ceilinged = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 3, 26),
+            max_per_month=1,
+        )
+        monthly_first = resolved_value(
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 3, 1),
+            placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+        )
+
+        assert placed_indices(ceilinged, calendar) == placed_indices(
+            monthly_first, calendar,
+        )
+        # 29 calendar months hold a payday between 2026-03-26 and 2028-07-13.
+        assert len(placed_indices(ceilinged, calendar)) == 29
+
+    def test_a_paycheck_rule_counts_the_CALENDARS_paydays_not_its_own(self):
+        """Every 2 paychecks at most 1 a month admits only in-phase MONTH-FIRST paydays.
+
+        The developer's amendment to R-SAL29 (2026-09-13), pinned in the
+        direction he ruled.  Phased on 2026-04-09, the in-phase paydays of
+        2026 and their calendar ordinals, tallied independently: 04-09 (1),
+        05-07 (1), 06-04 (1), 07-02 (1), 07-30 (3), 08-27 (2), 09-24 (2),
+        10-22 (2), 11-19 (2), 12-17 (2).  Counting the rule's OWN occurrences
+        would admit 08-27 and every later one -- each is the first the rule
+        names in its month; counting the CALENDAR's paydays reads each as its
+        month's second and drops it, so August through December get nothing.
+        That is the cost the ruling accepts for a composition nothing
+        authors, and 2026-08-27 is the payday that tells the two readings
+        apart.
+        """
+        calendar = build_calendar()
+        value = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 4, 9),
+            interval_n=2, offset_periods=1, max_per_month=1,
+        )
+
+        emitted = dates_through(value, calendar, date(2026, 12, 31))
+
+        assert date(2026, 8, 27) not in emitted
+        assert emitted == [
+            date(2026, 4, 9), date(2026, 5, 7), date(2026, 6, 4),
+            date(2026, 7, 2),
+        ]
+
+    def test_a_rule_started_on_a_months_second_payday_skips_that_months_third(self):
+        """A benefit started 2026-07-16 is not taken on 2026-07-30, July's third payday.
+
+        The case the adversarial review measured against the first build,
+        which counted the rule's own occurrences and would have admitted
+        2026-07-30 as the rule's second of July -- a ``$100.00`` allowance
+        row the employer does not pay, ledger row **D59**'s defect for one
+        month.  The employer's rule is the calendar's: July's first two
+        paydays are the 2nd and the 16th, whatever day the election began.
+        """
+        calendar = build_calendar()
+        value = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 7, 16),
+            max_per_month=2,
+        )
+
+        emitted = dates_through(value, calendar, date(2026, 8, 31))
+
+        assert emitted == [
+            date(2026, 7, 16), date(2026, 8, 13), date(2026, 8, 27),
+        ]
+
+    def test_the_ceiling_is_applied_BEFORE_the_count_bound(self):
+        """At most 2 a month FOR 12 occurrences runs six months, not five and a third.
+
+        A count bound counts occurrences the rule NAMES (ruling R-R6), and a
+        paycheck the ceiling drops is one the rule does not name.  Composed
+        the other way the twelfth occurrence would be the schedule's twelfth
+        payday, 2026-08-27, with the July third already spent against the
+        count; the twelfth ADMITTED payday is 2026-09-10.
+        """
+        calendar = build_calendar()
+        value = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 3, 26),
+            max_per_month=2, end_bound=EndsAfterOccurrences(count=12),
+        )
+
+        emitted = dates_through(value, calendar, calendar.horizon())
+
+        assert len(emitted) == 12
+        assert date(2026, 7, 30) not in emitted
+        assert emitted[-1] == date(2026, 9, 10)
+
+    def test_the_week_unit_takes_a_ceiling_too(self):
+        """The walk is total: weekly at most 2 a month keeps each month's first two.
+
+        Unreachable through the form until plan step R8-b opens the unit, and
+        implemented rather than refused for the reason the WEEK walk itself
+        is: a ceiling a unit silently ignored would be a wrong answer.
+        """
+        calendar = build_calendar()
+        value = resolved_value(
+            unit=RecurrenceUnitEnum.WEEK, starts_on=date(2026, 3, 26),
+            max_per_month=2,
+        )
+
+        assert dates_through(value, calendar, date(2026, 6, 30)) == [
+            date(2026, 3, 26),
+            date(2026, 4, 2), date(2026, 4, 9),
+            date(2026, 5, 7), date(2026, 5, 14),
+            date(2026, 6, 4), date(2026, 6, 11),
+        ]
+
+    def test_no_ceiling_admits_every_occurrence(self):
+        """``None`` is the rule every existing definition means: nothing dropped.
+
+        Stated beside the ceilinged cases rather than left to the parallel
+        run, so the filter's pass-through arm is graded where its dropping arm
+        is.
+        """
+        calendar = build_calendar()
+        value = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 3, 26),
+            max_per_month=None,
+        )
+
+        assert len(dates_through(value, calendar, calendar.horizon())) == 61
+
+
 @pytest.mark.usefixtures("app")
 class TestMonthEndClamping:
     """Ruling R-R3: the anchor's day must not decay as the walk advances."""
@@ -1657,10 +1845,10 @@ class TestProjectedPlacement:
         """
         calendar = build_calendar()
         for placement in PeriodPlacementEnum:
-            _occurrence._placement_search(calendar, placement)
-            _occurrence._span_search(calendar, placement)
+            _placement._placement_search(calendar, placement)
+            _placement._span_search(calendar, placement)
         with pytest.raises(RecurrenceGenerationError):
-            _occurrence._span_search(calendar, "not a placement")
+            _placement._span_search(calendar, "not a placement")
 
 
 @pytest.mark.usefixtures("app")

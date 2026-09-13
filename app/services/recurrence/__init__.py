@@ -87,17 +87,15 @@ What this package offers
 What lives where
 ----------------
 
-* ``_frequency`` -- what a cadence means with NO schedule: :class:`Cadence`,
-  the pattern table both readings share, the yearly counts every monthly
-  equivalent rests on, and (since plan step R8-a) the OFFER SET and the two
-  predicates it is derived from -- whether a unit's occurrences can be dated
-  onto a generated row, and whether the placement can change which paycheck
-  funds one.  That gate was a three-valued ``anchor_family`` router until R8-a,
-  selecting between first-occurrence derivations ruling **R-R16** had deleted.
-  Split out at plan
-  step R7a-2b because ``obligations_aggregator`` and the calendar's infrequent
-  badge ask "how often" and hold no calendar, so they could not use the
-  two-axis vocabulary at all while it was fused to the anchor derivation.
+* ``_frequency`` -- what a cadence means with NO schedule: :class:`Cadence`
+  (its interval, unit and per-month ceiling), the yearly counts and the
+  monthly equivalent every money conversion rests on, the unit facts
+  (:func:`has_day_of_month_coordinate`, :func:`can_repeat_within_month`),
+  the ``ref``-id-to-member readers and the canonical spelling.  Split out at
+  plan step R7a-2b because ``obligations_aggregator`` and the calendar's
+  infrequent badge ask "how often" and hold no calendar, so they could not
+  use the two-axis vocabulary at all while it was fused to the anchor
+  derivation.  It held the offer set too, from R8-a until salary:R15-a.
   ``_resolution`` reads this module's tables rather than holding its own, so
   the two cannot disagree.
 * ``_bounds`` -- WHEN a recurrence stops: :class:`EndBound` and its three
@@ -106,6 +104,15 @@ What lives where
   rather than a CHECK three layers have to restate -- and because the shape set
   is what the form offers, the schema accepts and the walk asks, so one closed
   table serves all three (plan step R7b-3).
+* ``_offer`` -- the OFFER SET and the two predicates it is derived from,
+  split out of ``_frequency`` at plan step salary:R15-a as a pure move when
+  the cadence's third value took that module past pylint's line ceiling; the
+  argument for deriving the offer from what a rule can DO stays in
+  ``_frequency``'s docstring.
+* ``_nominal_day`` -- the 0-or-1 day a short month clamped: its domain, the
+  join into the day a rule fires on, which days a date leaves open, and the
+  pair refusal both value types hold.  Split out of ``_resolution`` at the
+  same step, for the same reason, the same way.
 * ``_resolution`` -- :class:`RecurrenceSpec`, :class:`ResolvedRecurrence` and
   :func:`resolve`, the pure derivation of what a recurrence means AGAINST a
   schedule.  Since plan step R7c-b that derivation is TWO things -- the
@@ -124,6 +131,11 @@ What lives where
   differ from the value generating the rows.  ``resolve`` normalises the date
   itself now, so ``starts_on`` IS that first element by construction and there
   are no longer two functions to keep in step.
+* ``_placement`` -- the placement half of that model: :class:`OccurrencePlacement`,
+  :func:`place` and the two compositions every reader takes.  Split out of
+  ``_occurrence`` at plan step salary:R15-a as a pure move when the ceiling
+  took that module past pylint's line ceiling; the model's argument stays in
+  ``_occurrence``'s docstring.
 * ``_row_date`` -- the DATE a generated row carries, derived from its rule
   and the pay period it lands in (:func:`compute_due_date`).  Moved here from
   ``recurrence_engine._plan`` at plan step R16-b-2 (ruling **R-R69**) so the
@@ -181,16 +193,25 @@ from app.services.recurrence._bounds import (
     end_bound_from_token,
 )
 from app.services.recurrence._frequency import (
-    AuthorableCadence,
     Cadence,
     CadenceReading,
     RecurrenceFrequencyError,
     RecurrenceResolutionError,
-    authorable_cadences,
+    can_repeat_within_month,
     canonical_cadence,
-    emits_period_starts,
     has_day_of_month_coordinate,
+)
+from app.services.recurrence._offer import (
+    AuthorableCadence,
+    authorable_cadences,
+    emits_period_starts,
+    fires_on_day_of_month,
     is_authorable,
+)
+from app.services.recurrence._nominal_day import (
+    cadence_day_of_month,
+    is_offerable_nominal_day,
+    offerable_nominal_days,
 )
 from app.services.recurrence._closing import (
     DERIVED_STOP_KINDS,
@@ -208,10 +229,12 @@ from app.services.recurrence._describe import (
     describe,
 )
 from app.services.recurrence._occurrence import (
-    OccurrencePlacement,
     RecurrenceGenerationError,
-    occurrence_placements,
     occurrences,
+)
+from app.services.recurrence._placement import (
+    OccurrencePlacement,
+    occurrence_placements,
     place,
     projected_occurrence_placements,
 )
@@ -232,9 +255,6 @@ from app.services.recurrence._reading import (
 from app.services.recurrence._resolution import (
     RecurrenceSpec,
     ResolvedRecurrence,
-    cadence_day_of_month,
-    is_offerable_nominal_day,
-    offerable_nominal_days,
     resolve,
 )
 from app.services.recurrence._row_date import compute_due_date
@@ -245,7 +265,6 @@ from app.services.recurrence._picker import (
     SelectedCadence,
     cadence_options,
     end_bound_options,
-    fires_on_day_of_month,
     picker_model,
     selected_cadence,
 )
@@ -294,6 +313,7 @@ __all__ = [
     "author_rule",
     "authorable_cadences",
     "build_transient_rule",
+    "can_repeat_within_month",
     "cadence_day_of_month",
     "cadence_of",
     "cadence_options",

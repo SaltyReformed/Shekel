@@ -151,6 +151,7 @@ def _fake_template(
             due_day_of_month=None,
             end_date=end_date,
             max_occurrences=None,
+            max_per_month=None,
         ),
         default_amount=amount,
     )
@@ -748,3 +749,54 @@ class TestASpentCountLeavesTheObligationsTotal:
 
             assert row.next_date is None
             assert row.equivalent.monthly is None
+
+
+class TestACeilingedRulePricesAtItsCeiling:
+    """A per-month ceiling reaches the monthly equivalent (plan step salary:R15-a).
+
+    The developer's eleven "at most 2 a month" payroll lines come to $517.21 a
+    paycheck; as a recurring template that cadence costs exactly $1,034.42 a
+    month, and pricing it off the ``(interval, unit)`` pair alone -- 26/12 of
+    the amount -- would overstate it by $86.20 every month.
+    """
+
+    def test_every_paycheck_at_most_twice_a_month_is_amount_times_two(
+        self, app, seed_user,
+    ):
+        """$517.21 at most 2 a month -> $1,034.42, an exact multiply."""
+        as_of = date(2026, 5, 20)
+        with app.app_context():
+            # No cadence at creation: the ceilinged rule is authored below,
+            # and a template holds exactly one rule.
+            tmpl = _create_expense(
+                seed_user, None, Decimal("517.21"), name="Benefit Premiums",
+            )
+            make_cadence_rule(tmpl, EVERY_PERIOD, max_per_month=2)
+            db.session.commit()
+
+            result = obligations_aggregator.committed_monthly(
+                [tmpl], _pass(as_of),
+            )
+
+            # 517.21 x 2 = 1034.42; the uncapped reading would be
+            # 517.21 x 26 / 12 = 1120.62.
+            assert result == Decimal("1034.42")
+
+    def test_a_ceiling_the_cadence_never_reaches_prices_as_the_pair(
+        self, app, seed_user,
+    ):
+        """Every paycheck at most 3 a month on a biweekly owner is still 26/12."""
+        as_of = date(2026, 5, 20)
+        with app.app_context():
+            tmpl = _create_expense(
+                seed_user, None, Decimal("100.00"), name="Loose Ceiling",
+            )
+            make_cadence_rule(tmpl, EVERY_PERIOD, max_per_month=3)
+            db.session.commit()
+
+            result = obligations_aggregator.committed_monthly(
+                [tmpl], _pass(as_of),
+            )
+
+            # 12 x 3 = 36 is not below 26, so 100 x 26 / 12 = 216.67.
+            assert result == Decimal("216.67")

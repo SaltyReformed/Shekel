@@ -138,6 +138,27 @@ _MUST_BE_HEARD_WITH_A_CADENCE = (
             "nominal_day": "30",
         },
     ),
+    # The per-month ceiling's one authored refusal (plan step salary:R15-a):
+    # a ceiling beside a calendar-month unit, which fires at most once a
+    # month by construction.
+    (
+        "A monthly or yearly schedule already happens at most once a month, "
+        "so a per-month limit has nothing to limit. Clear it, or choose a "
+        "paycheck schedule.",
+        lambda: {
+            "recurrence_unit": str(
+                ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH),
+            ),
+            "recurrence_placement": str(
+                ref_cache.period_placement_id(
+                    PeriodPlacementEnum.CONTAINING_DATE,
+                ),
+            ),
+            "interval_n": "1",
+            "starts_on": "2026-04-15",
+            "max_per_month": "2",
+        },
+    ),
 )
 
 

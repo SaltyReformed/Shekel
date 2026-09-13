@@ -40,6 +40,14 @@
   var controls = document.getElementById('cadence-controls');
   var intervalWrap = document.getElementById('field-interval');
   var interval = document.getElementById('interval_n');
+  // The per-month CEILING, the cadence's third value (plan step salary:R15-a).
+  // Its row shows and its input is enabled only beside a unit whose
+  // occurrences can repeat within a month -- the wire's
+  // can_repeat_within_month, stated by the SERVER about the chosen offer --
+  // and disabled otherwise, because a hidden input still submits and a
+  // ceiling beside a monthly unit is the pair the write door refuses.
+  var ceilingWrap = document.getElementById('field-max-per-month');
+  var ceiling = document.getElementById('max_per_month');
   var placementWrap = document.getElementById('field-placement');
   var placementSelect = document.getElementById('recurrence_placement');
   var placementHelp = document.getElementById('placement-help');
@@ -473,6 +481,17 @@
     );
   }
 
+  // The value is NOT cleared with the row, for the reason the due day's is
+  // not: switching to a monthly unit and back should not lose a typed
+  // ceiling, and the update door reads an ABSENT key (a disabled control) as
+  // "leave the stored one alone" and drops a stored ceiling itself where the
+  // saved unit cannot hold it.
+  function syncCeiling(canRepeatWithinMonth) {
+    if (!ceilingWrap || !ceiling) return;
+    ceilingWrap.classList.toggle('d-none', !canRepeatWithinMonth);
+    ceiling.disabled = !canRepeatWithinMonth;
+  }
+
   function toggleFields() {
     var id = unitId();
 
@@ -495,6 +514,7 @@
       syncStartsOn(false);
       syncNominalDay(false);
       syncDueDom(false);
+      syncCeiling(false);
       fetchPreview();
       return;
     }
@@ -526,6 +546,7 @@
     var hasDayCoordinate =
       chosen !== null && chosen.has_day_of_month_coordinate;
     syncDueDom(schedulesOnDay);
+    syncCeiling(chosen !== null && chosen.can_repeat_within_month);
 
     syncStartPeriod(true);
     syncStartsOn(true);
@@ -596,6 +617,14 @@
     }
     if (statesAStartValue(nominalDay)) {
       params.set('nominal_day', nominalDay.value);
+    }
+
+    // The per-month ceiling, sent exactly when the save would carry it: an
+    // enabled control with a value.  A disabled one (a monthly unit) states
+    // nothing, and an empty one is "no ceiling", which the endpoint reads
+    // from the key's absence.
+    if (ceiling && !ceiling.disabled && ceiling.value) {
+      params.set('max_per_month', ceiling.value);
     }
 
     // The closing bound, as the SAME three controls the save posts: the mode
@@ -687,7 +716,7 @@
       loanDestinations.length > 0 ? toggleFields : fetchPreview
     );
   }
-  ['due_day_of_month', 'nominal_day', 'end_date',
+  ['due_day_of_month', 'nominal_day', 'max_per_month', 'end_date',
    'max_occurrences'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('change', fetchPreview);

@@ -76,6 +76,16 @@ RECURRENCE_NEEDS_A_START: dict[str, list[str]] = {
 # leaves that to the shape it composes into.
 _MAX_INTEGER_COLUMN = 2147483647
 
+# The largest value a Postgres ``smallint`` column holds -- ``max_per_month``'s
+# type (plan step salary:R15-a), and the same reasoning one column size down:
+# a bound AT the column's domain keeps an unstorable ceiling a designed 400
+# rather than a ``NumericValueOutOfRange`` 500.  A ``smallint`` because no
+# calendar month holds more occurrences than that at any cadence
+# ``budget.pay_schedule`` admits, and the type is the whole of the upper bound
+# for the reason ``interval_n`` states: a ceiling above what a month can hold
+# is vacuous, not wrong.
+_MAX_SMALLINT_COLUMN = 32767
+
 
 class RecurrenceUnitField(_RefEnumField):
     """A submitted ``ref.recurrence_units`` id, as its enum member.
@@ -296,6 +306,13 @@ def validate_authorable_cadence(data):
 #: ``update_recurrence_rule_from_form`` is where that rule is written.
 RECURRENCE_STARTS_ON_KEY: str = "starts_on"
 RECURRENCE_NOMINAL_DAY_KEY: str = "nominal_day"
+
+#: The per-month ceiling's key (plan step salary:R15-a), named for the same
+#: reason: the update door reads its PRESENCE.  The control is rendered only
+#: beside a unit whose occurrences can repeat within a month and DISABLED
+#: beside any other, so an absent key means "the form could not show it" and
+#: leaves the stored value alone, while a present ``None`` is a cleared box.
+RECURRENCE_MAX_PER_MONTH_KEY: str = "max_per_month"
 
 
 RECURRENCE_END_BOUND_KEY: str = "recurrence_end_mode"
@@ -555,6 +572,28 @@ class RecurrenceFormFieldsMixin:
         allow_none=True, validate=validate.Range(min=29, max=31),
     )
 
+    # The most occurrences any one calendar month admits -- a month's first N
+    # paydays for a paycheck cadence -- and ``None``, which is every ordinary
+    # rule, for no ceiling (plan step
+    # salary:R15-a, ruling **R-SAL29**).  "Every paycheck, at most 2 a month"
+    # is a payroll benefit taken on a month's first two paychecks, which the
+    # two axes could not say (ledger row **D59**).  The form renders the
+    # control ONLY beside a unit whose occurrences can repeat within a month
+    # (paychecks; weeks once plan step R8-b opens them); a calendar-month
+    # cadence fires at most once a month by construction, and
+    # :meth:`validate_ceiling_fits_the_unit` refuses the pair a hand-assembled
+    # POST could state.
+    #
+    # ``min=1`` mirrors ``ck_recurrence_rules_positive_max_per_month`` -- a
+    # zero would be a rule that never fires spelled as a cadence -- and ``max``
+    # is the column's own type; see :data:`_MAX_SMALLINT_COLUMN`.
+    # ``allow_none`` so a cleared box reaches the update door as a stated
+    # clear rather than a dropped key, exactly as ``nominal_day`` does.
+    max_per_month = fields.Integer(
+        allow_none=True,
+        validate=validate.Range(min=1, max=_MAX_SMALLINT_COLUMN),
+    )
+
     # The CLOSING BOUND, as three controls that compose into ONE value (plan
     # step R7b-3).  ``recurrence_end_mode`` names which of the bound's three
     # shapes the user chose and :meth:`build_end_bound` replaces it with the
@@ -677,6 +716,51 @@ class RecurrenceFormFieldsMixin:
                 "is nothing else for it to mean."
             ),
             field_name="nominal_day",
+        )
+
+    @validates_schema
+    def validate_ceiling_fits_the_unit(self, data, **kwargs):
+        """Reject a per-month ceiling on a unit that cannot repeat within a month.
+
+        **The submission's half of the ``(unit, max_per_month)`` pair** that
+        :class:`~app.services.recurrence.RecurrenceSpec` refuses at
+        construction (plan step salary:R15-a): a cadence measured in whole
+        months fires at most once a month by construction, so a ceiling
+        beside it is a value the walk applies and never reads -- and the pair
+        reaching the write door would be a ``RecurrenceResolutionError``
+        turned into a flash rather than a field error naming the control.
+        Asked through :func:`~app.services.recurrence.can_repeat_within_month`,
+        the same predicate the picker offers the control on, so the form, this
+        door and the write door cannot disagree about which units admit one.
+
+        Skipped unless the submission states both: a form that names no
+        cadence authors no rule, and a submission with no ceiling states no
+        pair to refuse.
+
+        Args:
+            data: The deserialized payload.
+            **kwargs: Marshmallow's hook contract.
+
+        Raises:
+            ValidationError: The pair contradicts itself.
+        """
+        # Pylint: ``import-outside-toplevel`` -- see
+        # :meth:`RecurrenceUnitField._member_for`.
+        from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
+            can_repeat_within_month,
+        )
+
+        unit = data.get("recurrence_unit")
+        max_per_month = data.get("max_per_month")
+        if unit is None or max_per_month is None:
+            return
+        if can_repeat_within_month(unit):
+            return
+        raise ValidationError(
+            "A monthly or yearly schedule already happens at most once a "
+            "month, so a per-month limit has nothing to limit. Clear it, or "
+            "choose a paycheck schedule.",
+            field_name="max_per_month",
         )
 
     @validates_schema
