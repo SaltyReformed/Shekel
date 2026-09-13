@@ -560,8 +560,13 @@ def _drive_month_ceiling(page, kind: str, url: str) -> None:
            page.inner_text("#recurrence-preview"))
 
     # --- months: hidden, disabled, the typed value is kept ---------------
-    page.locator("#recurrence_unit").select_option(units["months"])
+    # Cleared BEFORE the select, as ``_drive_preview_destination`` does: the
+    # fetch fires on the change event itself, so a clear after it discards
+    # the very request the next check reads.  The first run of this drive
+    # cleared after and reported "no preview request was made" on both
+    # forms -- an instrument fault, measured by the ordering alone.
     previews.clear()
+    page.locator("#recurrence_unit").select_option(units["months"])
     _settle(page)
     _check(f"{kind} C: the ceiling row is hidden for months",
            not _visible(page, "field-max-per-month"), "visible")
