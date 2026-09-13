@@ -61,9 +61,11 @@ from tests._test_helpers import (
     definition_firing_twice_in_a_paycheck,
     derived_span,
     generate_row_of,
+    generate_transfer_of,
     make_cadence_rule,
     make_expense_template,
     make_income_template,
+    make_transfer_template,
     moved_by_the_owner,
     populate_in_a_fresh_pass,
     repriced_by_the_owner,
@@ -1159,31 +1161,16 @@ class TestCarryForwardOverrideSibling:
 # ── Override-sibling Carry Forward Tests for Transfers ─────────────
 
 
-def _create_transfer_template(seed_user, savings_account,
-                              name="Recurring Transfer",
-                              amount="200.00",
-                              category_key="Rent"):
-    """Create a TransferTemplate without a recurrence rule.
-
-    Mirrors _create_template but for transfers.  Used by transfer
-    override-sibling tests that need a transfer_template_id link.
-    """
-    template = TransferTemplate(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=savings_account.id,
-        category_id=seed_user["categories"][category_key].id,
-        name=name,
-        default_amount=Decimal(amount),
-    )
-    db.session.add(template)
-    db.session.flush()
-    return template
-
-
 class TestCarryForwardOverrideSiblingTransfers:
     """Mirror TestCarryForwardOverrideSibling for transfers, exercising
     the relaxed idx_transfers_template_scenario_undated index.
+
+    The two transfers are the ENGINE's (:func:`generate_transfer_of`, plan
+    step balance:X-ch), one per paycheck, and the first case then clears
+    both parents' ``occurs_on`` for the reason the transaction twin's class
+    docstring gives: the index whose exemption it grades is the UNDATED one,
+    and a dated pair is storable by its two occurrences whatever the flag
+    says.
     """
 
     def test_carries_transfer_into_target_with_existing_rule_generated(
@@ -1192,43 +1179,18 @@ class TestCarryForwardOverrideSiblingTransfers:
         """Override-sibling transfer coexists with rule-generated parent."""
         with app.app_context():
             savings = _create_savings(seed_user)
-            template = _create_transfer_template(seed_user, savings)
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
+            template = make_transfer_template(db.session, seed_user, savings)
 
             # Rule-generated transfer in source period (period 0).
-            source_xfer = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount_ownership=AmountOwnership.own(template.default_amount),
-                    status_id=projected.id,
-                    category_id=template.category_id,
-                    name=template.name,
-                    transfer_template_id=template.id,
-                ),
-            )
+            source_xfer = generate_transfer_of(template, seed_periods[0])
             # Rule-generated transfer already in target period (period 1)
             # -- the recurrence engine has already produced this period's
             # instance.
-            target_xfer = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_periods[1].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount_ownership=AmountOwnership.own(template.default_amount),
-                    status_id=projected.id,
-                    category_id=template.category_id,
-                    name=template.name,
-                    transfer_template_id=template.id,
-                ),
-            )
+            target_xfer = generate_transfer_of(template, seed_periods[1])
+            # The pre-R17 shape, laid on bare: each parent claims its
+            # PAYCHECK rather than an occurrence (see the class docstring).
+            source_xfer.occurs_on = None
+            target_xfer.occurs_on = None
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(

@@ -28,7 +28,11 @@ from app.services.amount_ownership import (
     state_own_amount,
 )
 from app import ref_cache
-from tests._test_helpers import add_txn, create_transfer
+from tests._test_helpers import (
+    add_txn,
+    generate_transfer_of,
+    transfer_repriced_by_the_owner,
+)
 
 
 class TestEveryOwnedTableMapsThePairAsOneAttribute:
@@ -194,15 +198,16 @@ class TestTheTwoActs:
         """
         with app.app_context():
             td = seed_full_user_data
-            xfer = create_transfer(
-                td, db.session, td["account"], td["savings_account"],
-                td["periods"][0], amount=Decimal("250.00"),
-            )
             # ``ck_transfers_adhoc_owns_amount`` refuses a declaration on a
             # transfer no definition prices, so this has to be a GENERATED one
-            # to be a legal row at all.
-            xfer.transfer_template_id = td["transfer_template"].id
-            db.session.flush()
+            # to be a legal row at all: the engine's transfer of the fixture's
+            # definition (plan step balance:X-ch), taken for the OWNER through
+            # the transfer door so the declare below has a figure to release.
+            xfer = transfer_repriced_by_the_owner(
+                generate_transfer_of(td["transfer_template"], td["periods"][0]),
+                "250.00",
+            )
+            assert xfer.amount == Decimal("250.00")
 
             declare_derived(xfer, AmountSourceEnum.TEMPLATE)
             db.session.flush()

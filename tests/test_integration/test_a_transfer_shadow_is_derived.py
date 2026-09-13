@@ -49,6 +49,8 @@ from tests._test_helpers import (
     write_past_the_amount_seam,
     capture_sql_statements,
     create_transfer,
+    generate_transfer_of,
+    make_every_period_rule,
     shadow_amount,
 )
 from tests.test_integration.test_transfer_settle_freeze import (
@@ -192,13 +194,12 @@ def _generated_pair(seed_user, seed_periods, series="500.00"):
     template_amount_service.set_amount(
         template, Decimal(series), effective_on=date(2000, 1, 1),
     )
-    xfer = create_transfer(
-        seed_user, _db.session, seed_user["account"], savings,
-        seed_periods[0], amount=Decimal(series),
-        due_date=seed_periods[0].start_date,
-    )
-    xfer.transfer_template_id = template.id
-    _db.session.flush()
+    # The transfer is the ENGINE's (:func:`generate_transfer_of`, plan step
+    # balance:X-ch): derived, parent and both legs, on the definition's own
+    # date.  A hand-built one owned its figure and was linked afterwards, a
+    # shape no producer writes since X-au-f.
+    make_every_period_rule(_db.session, template)
+    xfer = generate_transfer_of(template, seed_periods[0])
     return xfer, _shadows(xfer.id)
 
 
