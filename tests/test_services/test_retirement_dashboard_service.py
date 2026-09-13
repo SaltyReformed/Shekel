@@ -43,6 +43,7 @@ from app.services import (
 from app.services.retirement_plan import load_retirement_inputs, picture_at
 from app.services.salary_raises import terms_of
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     all_periods,
     current_pay_period,
@@ -1653,7 +1654,7 @@ class TestTheProjectionAxisIsTheOwnersOwnCalendar:
             from app.services import pay_period_write
             user_id = seed_user["user"].id
             as_of = BalanceContext.build(user_id).as_of
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=user_id,
                 first_payday=as_of - timedelta(days=150),
                 num_periods=10,
@@ -1693,7 +1694,7 @@ class TestTheProjectionAxisIsTheOwnersOwnCalendar:
             from app.services import pay_period_write
             user_id = seed_user["user"].id
             as_of = BalanceContext.build(user_id).as_of
-            saved = pay_period_write.record_paydays(
+            saved = record_paydays_across_a_hole(
                 user_id=user_id,
                 first_payday=as_of - timedelta(days=60),
                 num_periods=4,

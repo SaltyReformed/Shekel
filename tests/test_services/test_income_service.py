@@ -53,9 +53,9 @@ from app.services.tax_config_service import (
     load_tax_configs,
     load_tax_configs_for_year,
 )
-from app.services.amount_ownership import state_own_amount
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    repriced_by_the_owner,
     all_periods,
     counting_calls,
     freeze_today,
@@ -209,8 +209,7 @@ def _make_txn(
     if template is not None:
         txn = generate_row_of(template, period)
         if owned_amount is not None:
-            state_own_amount(txn, Decimal(owned_amount))
-            txn.is_override = True
+            repriced_by_the_owner(txn, owned_amount)
         txn.status_id = status.id
         db.session.flush()
         return txn

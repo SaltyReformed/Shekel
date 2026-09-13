@@ -41,12 +41,12 @@ from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction_template import TransactionTemplate
 from tests._test_helpers import (
+    repriced_by_the_owner,
     capture_sql_statements,
     generate_row_of,
     make_every_period_rule,
 )
 from app.services import salary_profile_service, template_amount_service
-from app.services.amount_ownership import state_own_amount
 from app.services.cash_ledger import (
     amount_basis,
     amounts_by_id,
@@ -349,10 +349,9 @@ class TestArchivingFreezesWhatItWasPricing:
             profile, template = _salary_profile(seed_user)
             # The engine's row, re-priced by its owner: the re-price door's
             # two acts on the definition's own row.
-            owned = generate_row_of(template, seed_periods[0])
-            state_own_amount(owned, Decimal("1234.56"))
-            owned.is_override = True
-            db.session.flush()
+            owned = repriced_by_the_owner(
+                generate_row_of(template, seed_periods[0]), "1234.56",
+            )
 
             assert salary_profile_service.archive_profile(profile) == 0
             assert owned.estimated_amount == Decimal("1234.56")

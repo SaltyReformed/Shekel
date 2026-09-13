@@ -65,6 +65,7 @@ from app.services.pay_calendar import PayCalendarError
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     an_entered_day,
     append_only_guard_lifted,
@@ -2046,7 +2047,7 @@ class TestTheSharedFilingDoor:
         """
         with app.app_context():
             from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_second_user["user"].id,
                 first_payday=date(2025, 1, 1), num_periods=4, rhythm=rhythm_of(14),
             )

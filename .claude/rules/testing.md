@@ -45,8 +45,10 @@ this file has not loaded; a change here updates that mirror in the same commit.
   defect** -- the cores do not multiply. Measured 2026-09-05 on this 24-core host: one suite
   alone finished in 349 s, while with THREE running two of them reached ~38% in 13 minutes,
   at a run-queue of 32 and 28% iowait. **No test failed in either**; the slowest single test
-  is 2.58 s against `pytest.ini`'s 30 s per-test timeout, so the headroom is roughly 11x and
-  that measurement sat on it. So the wrapper REPORTS rather than serialises: it prints any
+  is 2.58 s against `pytest.ini`'s per-test timeout, so the headroom is roughly 11x and
+  that measurement sat on it (30 s then; 90 s since 2026-09-13, sized to CI's clock rather than
+  this host's -- the dated table is `docs/testing-standards.md`, Test Run Guidelines). So the
+  wrapper REPORTS rather than serialises: it prints any
   other live pytest with its worktree and proceeds. **Read the cwd, never the argv** -- every
   worktree here shares one venv, so a peer's command line names the main checkout whatever
   tree it is testing. Waiting is a courtesy you owe a peer's gating run, not a protocol.

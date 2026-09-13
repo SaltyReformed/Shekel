@@ -32,6 +32,7 @@ from app.services.row_valuation import settled_figure
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     write_past_the_amount_seam,
     add_anchor_history,
@@ -416,7 +417,7 @@ class TestCreateTransferValidation:
             # Create a period for the second user.
             from app.services import pay_period_service
             from datetime import date
-            other_periods = pay_period_write.record_paydays(
+            other_periods = record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=2,
@@ -648,7 +649,7 @@ class TestUpdateTransfer:
 
             from app.services import pay_period_service
             from datetime import date
-            other_periods = pay_period_write.record_paydays(
+            other_periods = record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 6, 1),
                 num_periods=2,

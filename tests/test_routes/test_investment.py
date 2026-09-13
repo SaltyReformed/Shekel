@@ -41,7 +41,9 @@ from app.utils.money import round_money
 from tests._test_helpers import (
     current_pay_period,
     era_of,
+    generate_row_of,
     last_covered_day,
+    make_expense_template,
     reassert_balance_on,
     settle_day_columns,
     settle_instant_on,
@@ -2340,55 +2342,31 @@ class TestWhatIfContributionCalculator:
 
 
 def _add_envelope_expense_with_cleared_entries_inv(
-    db_session, *, user_id, account, scenario, period, category_id,
-    estimated, cleared_amounts,
+    db_session, *, seed_user, account, period, estimated, cleared_amounts,
 ):
     """Create a Projected envelope expense with cleared debit entries.
 
     Same shape as the helper used in the savings / accounts / year-end
-    C8 tests; copied here so this file stays standalone.  These are
-    the entries that produce the F-009 / CRIT-01 silent-degrade gap
-    when the consuming query forgets to ``selectinload(entries)``.
+    C8 tests; copied here so this file stays standalone.  The row is the
+    engine's own, of a priced ``is_envelope=True`` definition on *account*
+    (:func:`generate_row_of`, plan step balance:X-cf-4) -- the engine puts
+    a row on its DEFINITION's account, so the account is stated there.
+    These are the entries that produce the F-009 / CRIT-01 silent-degrade
+    gap when the consuming query forgets to ``selectinload(entries)``.
     """
-    from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
     from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
-    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
-    from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-
-    template = TransactionTemplate(
-        user_id=user_id,
-        account_id=account.id,
-        category_id=category_id,
-        transaction_type_id=expense_type_id,
-        name="Investment-side expense",
-        default_amount=estimated,
-        is_envelope=True,
+    template = make_expense_template(
+        db_session, seed_user, amount=estimated,
+        name="Investment-side expense", category_key="Groceries",
+        is_envelope=True, account=account,
     )
-    db_session.add(template)
-    db_session.flush()
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=scenario.id,
-        account_id=account.id,
-        status_id=projected_id,
-        name="Investment-side expense",
-        category_id=category_id,
-        transaction_type_id=expense_type_id,
-        amount_ownership=AmountOwnership.own(estimated),
-    )
-    db_session.add(txn)
-    db_session.flush()
+    txn = generate_row_of(template, period)
 
     for amt in cleared_amounts:
         db_session.add(TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id,
-            user_id=user_id,
+            user_id=seed_user["user"].id,
             amount=amt,
             description="Cleared purchase",
             purchased_on=date(2026, 5, 15),
@@ -2441,7 +2419,6 @@ class TestInvestmentEntryAwareRouting:
 
         with app.app_context():
             user = seed_user["user"]
-            scenario = seed_user["scenario"]
             current_period = current_pay_period(user.id)
             assert current_period is not None
 
@@ -2458,11 +2435,9 @@ class TestInvestmentEntryAwareRouting:
             _create_investment_params(db.session, acct.id)
             _add_envelope_expense_with_cleared_entries_inv(
                 db.session,
-                user_id=user.id,
+                seed_user=seed_user,
                 account=acct,
-                scenario=scenario,
                 period=current_period,
-                category_id=seed_user["categories"]["Groceries"].id,
                 estimated=Decimal("500.00"),
                 cleared_amounts=(
                     Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
@@ -2532,7 +2507,6 @@ class TestInvestmentEntryAwareRouting:
         """
         with app.app_context():
             user = seed_user["user"]
-            scenario = seed_user["scenario"]
             current_period = current_pay_period(user.id)
             assert current_period is not None
 
@@ -2549,11 +2523,9 @@ class TestInvestmentEntryAwareRouting:
             _create_investment_params(db.session, acct.id)
             _add_envelope_expense_with_cleared_entries_inv(
                 db.session,
-                user_id=user.id,
+                seed_user=seed_user,
                 account=acct,
-                scenario=scenario,
                 period=current_period,
-                category_id=seed_user["categories"]["Groceries"].id,
                 estimated=Decimal("500.00"),
                 cleared_amounts=(
                     Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
