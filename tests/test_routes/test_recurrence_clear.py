@@ -65,14 +65,15 @@ from tests._test_helpers import (
     all_periods,
     create_loan_account,
     derived_span,
+    generate_row_of,
     make_cadence_rule,
+    repriced_by_the_owner,
     shadow_amount,
+    state_template_price,
+    transfer_amount,
 )
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
 from app.models.amount_ownership import AmountOwnership
-from app.services.amount_ownership import state_own_amount
-from tests._test_helpers import state_template_price
-from tests._test_helpers import transfer_amount
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -110,6 +111,10 @@ def _recurring_txn_template(seed_user, recurs=True):
     )
     db.session.add(template)
     db.session.flush()
+    # Priced, as the transfer twin below is: its rows are the engine's and
+    # DERIVED, and a derived row of an unpriced definition is the shape
+    # ``state_template_price`` says the application cannot build.
+    state_template_price(template)
     rule = _every_period_rule(template) if recurs else None
     if rule is not None:
         recurrence_engine.generate_for_template(
@@ -237,8 +242,7 @@ class TestClearingATransactionTemplatesRecurrence:
             .filter_by(template_id=template.id, pay_period_id=seed_periods[6].id)
             .one()
         )
-        overridden.is_override = True
-        state_own_amount(overridden, Decimal("17.99"))
+        repriced_by_the_owner(overridden, "17.99")
         overridden_id = overridden.id
         db.session.commit()
 
@@ -324,8 +328,7 @@ class TestClearingATransactionTemplatesRecurrence:
             .filter_by(template_id=template.id, pay_period_id=seed_periods[6].id)
             .one()
         )
-        overridden.is_override = True
-        state_own_amount(overridden, Decimal("17.99"))
+        repriced_by_the_owner(overridden, "17.99")
         overridden_id = overridden.id
         db.session.commit()
 
@@ -409,32 +412,23 @@ class TestATemplateThatNeverRecurredIsNotSwept:
     def test_renaming_a_rule_less_template_keeps_its_rows(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """A hand-placed row on a never-recurring template survives a rename.
+        """A row of a template with no rule survives a rename.
 
         The regeneration gate cannot be "the template has no rule -> sweep":
-        a template that never recurred can still own generated rows -- a
-        one-time transfer's single Transfer is exactly that shape -- and an
-        unrelated edit must not touch them.
+        a template with no cadence can still own generated rows -- a one-time
+        transfer's single Transfer is exactly that shape, and so is a
+        definition whose cadence was cleared -- and an unrelated edit must
+        not touch them.
         """
         template = _recurring_txn_template(seed_user, recurs=False)
-        assert template.recurrence_rule is None
-        manual = Transaction(
-            account_id=seed_user["account"].id,
-            template_id=template.id,
-            user_id=seed_periods[6].user_id,
-            pay_period_id=seed_periods[6].id,
-            scenario_id=seed_user["scenario"].id,
-            status_id=_projected_id(),
-            name="Streaming",
-            category_id=seed_user["categories"]["Rent"].id,
-            transaction_type_id=template.transaction_type_id,
-            amount_ownership=AmountOwnership.own(Decimal("15.99")),
-            is_override=False,
-            is_deleted=False,
-            due_date=seed_periods[6].start_date,
-        )
-        db.session.add(manual)
+        # A definition that no longer repeats still owns the rows its cadence
+        # wrote: the engine's row under a cadence, then the cadence cleared
+        # the way the edit door clears one (plan step balance:X-cf-4).
+        _every_period_rule(template)
+        manual = generate_row_of(template, seed_periods[6])
+        template.recurrence_rule = None
         db.session.commit()
+        assert template.recurrence_rule is None
         manual_id = manual.id
 
         resp = auth_client.post(f"/templates/{template.id}", data={

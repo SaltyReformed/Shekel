@@ -33,7 +33,6 @@ from app.utils import archive_helpers
 from app.services import (
     account_service,
     category_service,
-    loan_loaders,
     template_amount_service,
     transfer_recurrence,
     transfer_service,
@@ -75,6 +74,8 @@ from app.schemas.validation import RECURRENCE_END_BOUND_KEY
 from app.routes._transfer_creation_helpers import (
     flush_template_or_namedup_redirect,
     generate_transfers_for_all_periods,
+    loan_destination_locks,
+    settle_destination_for_update,
     settle_first_occurrence,
 )
 from app.routes.transfers._bp import transfers_bp
@@ -84,6 +85,7 @@ from app.routes.transfers._instances import (
 )
 from app.routes.transfers._helpers import (
     _create_schema,
+    _first_unowned_template_fk,
     _update_schema,
     _user_owns,
 )
@@ -170,15 +172,14 @@ def new_transfer_template():
         # twin).  A CREATE form locks nothing on the SERVER -- there is no
         # template yet to ask ``is_standing_loan_payment`` about -- but this
         # form offers every active account as a destination, so the definition
-        # it is about to create may be a loan payment.  Which accounts those
-        # are rides to the browser below and ``recurrence_form.js`` locks the
-        # "Starts on" row when one is chosen; the derivation itself is the
-        # route's (``settle_first_occurrence``), so the lock is an affordance
+        # it is about to create may be a loan payment.  Which accounts derive
+        # which bound rides to the browser below and ``recurrence_form.js``
+        # locks the "Starts on" row for any loan and the "Ends" row for a loan
+        # holding no payment yet; the derivation and the refusal are the
+        # route's (``settle_first_occurrence``), so the locks are affordances
         # rather than the enforcement.
         recurrence=create_form_recurrence_state(),
-        loan_account_ids=loan_loaders.load_loan_account_ids_for_user(
-            current_user.id,
-        ),
+        loan_locks=loan_destination_locks(current_user.id),
         periods=periods,
         current_period=current_period,
         prefill_from=prefill_from,
@@ -231,9 +232,10 @@ def _settle_create_references(data, start_period_id):
     3. **A loan destination's first occurrence is DERIVED**, and it must be
        settled before the rule is built so nothing is authored that
        ``bind_rule_to_loan`` then replaces (plan step R7c-b, developer ruling
-       2026-08-15).  It runs LAST because it reads the destination's loan
-       parameters, which step 1 has just proved are the owner's -- reading them
-       first would be an IDOR.
+       2026-08-15); and a stop stated for a loan holding no payment yet is
+       REFUSED there too (plan step R7d-f-3, ruling **R-R60**).  It runs LAST
+       because it reads the destination's loan parameters, which step 1 has
+       just proved are the owner's -- reading them first would be an IDOR.
 
     Args:
         data: The validated payload, mutated in place by step 3.
@@ -450,6 +452,18 @@ def update_transfer_template(template_id):
     e.g. by a concurrent transfer-template edit that races past
     the form-side check -- is caught and converted to the same
     flash + redirect.
+
+    **The destination is settled BEFORE the recurrence is resolved** (plan
+    step R7d-f-4, plan ledger row **REC-521**): an edit that makes this
+    definition a recurring transfer into a loan -- a cadence added to a
+    one-time transfer into one, or a repeating transfer moved onto one --
+    takes the create door's two loan-destination rules through
+    :func:`~app.routes._transfer_creation_helpers.settle_destination_for_update`,
+    which derives the first occurrence into the payload and decides the
+    closing bound the write states; and a loan's standing payment cannot be
+    moved off its loan at all (ruling **R-R76**).  The FK ownership check
+    therefore runs FIRST, because that settle reads the destination's loan
+    terms.
     """
     template = get_or_404(TransferTemplate, template_id)
     if template is None:
@@ -515,30 +529,12 @@ def update_transfer_template(template_id):
         had_recurrence_rule=template.recurrence_rule is not None,
     )
 
-    # Re-point, rebuild, or clear the recurrence rule from the update payload
-    # (F-24).  The helper dispatches the existing-rule (mutate in place)
-    # vs no-existing-rule (build + link) branches and pops every
-    # recurrence key from ``data``.  ``include_due_day_of_month=False``
-    # because the transfer-template schemas do not expose the field.  The pass
-    # is the PRE-WRITE one the refusals read (plan step R7d-f).
-    redirect_response = resolve_recurrence_rule_for_update(
-        template,
-        data,
-        ctx=RecurrenceFormContext(
-            end_bound=end_bound,
-            redirect=RedirectTarget(
-                "transfers.edit_transfer_template",
-                {"template_id": template_id},
-            ),
-            include_due_day_of_month=False,
-        ),
-        pass_ctx=BalanceContext.build(current_user.id),
-    )
-    if redirect_response is not None:
-        return redirect_response
-
-    # Route-boundary FK ownership (commit C-27 / F-043), asked BEFORE the field
-    # loop below writes anything.
+    # Route-boundary FK ownership (commit C-27 / F-043), asked BEFORE anything
+    # below reads or writes: the field loop writes the submitted FKs, and the
+    # destination settle just under this reads the submitted destination's
+    # loan terms, which read of a foreign loan would be an IDOR (it stood
+    # after the recurrence step until plan step R7d-f-4, when that step
+    # began reading the destination).
     #
     # **A second refusal stood here until plan step R10-b**: a template that
     # neither had nor has a recurrence rule could not change its source or
@@ -558,6 +554,42 @@ def update_transfer_template(template_id):
         return redirect(url_for(
             "transfers.edit_transfer_template", template_id=template_id,
         ))
+
+    # ONE read pass for the pre-write side (plan step R7d-f): the destination
+    # settle's standing-payment identity and the refusals' both read its
+    # loan-resolution memo.  Regeneration afterwards builds its own, as a
+    # writer must.
+    pass_ctx = BalanceContext.build(current_user.id)
+    edit_form = RedirectTarget(
+        "transfers.edit_transfer_template", {"template_id": template_id},
+    )
+    # The pre-write recurrence step, in two halves that share one refusal.
+    # FIRST what the destination the edit LEAVES decides about the rule's
+    # bounds (plan step R7d-f-4): the derived first occurrence is written
+    # into ``data`` for the second half to read, and the closing bound the
+    # write states comes back settled (rulings **R-R76**, **R-R77**).  THEN
+    # re-point, rebuild, or clear the recurrence rule from the update payload
+    # (F-24): the helper dispatches the existing-rule (mutate in place) vs
+    # no-existing-rule (build + link) branches and pops every recurrence key
+    # from ``data``.  ``include_due_day_of_month=False`` because the
+    # transfer-template schemas do not expose the field.
+    end_bound, refusal = settle_destination_for_update(
+        template, data,
+        end_bound=end_bound, pass_ctx=pass_ctx, redirect=edit_form,
+    )
+    if refusal is None:
+        refusal = resolve_recurrence_rule_for_update(
+            template,
+            data,
+            ctx=RecurrenceFormContext(
+                end_bound=end_bound,
+                redirect=edit_form,
+                include_due_day_of_month=False,
+            ),
+            pass_ctx=pass_ctx,
+        )
+    if refusal is not None:
+        return refusal
 
     for field, value in data.items():
         if field in _TEMPLATE_UPDATE_FIELDS:
@@ -865,39 +897,6 @@ def hard_delete_transfer_template(template_id):
 
 
 
-
-
-def _first_unowned_template_fk(data):
-    """Return the label of the first submitted FK the user does not own, else None.
-
-    Route-boundary FK ownership for the transfer-template update payload
-    (commit C-27 / F-043).  Each user-scoped FK is verified only when present
-    in the partial-update ``data`` (the loaded dict carries only keys the user
-    submitted -- BaseSchema's EXCLUDE meta drops stray form fields).
-    ``category_id`` accepts ``None`` per the schema; ``None`` clears the
-    category and skips the probe.
-
-    Args:
-        data: The loaded TransferTemplateUpdateSchema output (partial update).
-
-    Returns:
-        The human-readable label ("source account", "destination account" or
-        "category") of the first FK that is present, non-``None``, and not
-        owned by ``current_user``; ``None`` when every present FK is owned.
-    """
-    for field, model, label in (
-        ("from_account_id", Account, "source account"),
-        ("to_account_id", Account, "destination account"),
-        ("category_id", Category, "category"),
-    ):
-        if field not in data:
-            continue
-        value = data[field]
-        if value is None:
-            continue
-        if not _user_owns(model, value):
-            return label
-    return None
 
 
 def _regenerate_and_commit_template(

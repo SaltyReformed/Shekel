@@ -159,7 +159,7 @@ class SkippedLine:
         line: The bank's own record of the movement
             (:class:`~._offers.BankLine`) -- the merchant, the posted day and
             the amount.  **Carried even though the caller supplied its id**,
-            for the reason :attr:`~._batch.AppliedItem.line_ids` is: a batch
+            for the reason :attr:`~._outcome.AppliedItem.line_ids` is: a batch
             reports per-item outcomes and pairs each with what was submitted,
             and an outcome that could not say which line it was about would
             have to be paired by position.
@@ -237,7 +237,11 @@ def _line_on(
     This docstring argued ``FOR NO KEY UPDATE`` over a statement that
     rendered ``FOR UPDATE`` from plan step ``bank_import:X-gj-4a`` until
     then -- the SQLAlchemy flag was inverted -- which is why the mode is now
-    a helper both doors call rather than a flag each restates.
+    a helper both doors call rather than a flag each restates.  **So is the
+    REFRESH** (finding **BI-493**, plan step ``bank_import:X-gv``): the
+    instance this returns is the locked row as it stands, not the one the
+    pass's derivation hydrated before the lock, which is what lets
+    :func:`skip_line` read ``merchant_id`` off it for ruling **R-JI**.
 
     Args:
         line_id: The bank line.

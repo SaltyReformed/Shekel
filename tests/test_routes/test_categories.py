@@ -16,9 +16,7 @@ import pytest
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, TransactionType, Status
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
@@ -27,7 +25,7 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
-from app.services import account_service
+from app.services import account_service, transaction_service
 from app.utils.archive_helpers import (
     account_has_history,
     category_has_usage,
@@ -36,6 +34,8 @@ from app.utils.archive_helpers import (
 )
 from tests._test_helpers import (
     current_pay_period,
+    generate_row_of,
+    make_expense_template,
     select_option_values,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -1113,35 +1113,19 @@ class TestArchiveHelpers:
                 )
 
     def test_template_has_paid_history_true(self, app, db, seed_user, seed_periods_today):
-        """C-5A.5-2: template_has_paid_history returns True when a Paid transaction exists."""
+        """C-5A.5-2: template_has_paid_history returns True when a Paid transaction exists.
+
+        The definition's own row, settled the way Mark Paid settles it (plan
+        step balance:X-cf-4): the engine only ever writes Projected.
+        """
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            paid_status = db.session.query(Status).filter_by(name="Paid").one()
-
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
+            template = make_expense_template(
+                db.session, seed_user, amount="500.00",
                 name="Paid History Template",
-                default_amount=Decimal("500.00"),
             )
-            db.session.add(template)
-            db.session.flush()
-
-            txn = Transaction(
-                template_id=template.id,
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                name="Paid History Template",
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                status_id=paid_status.id,
+            transaction_service.settle_transaction(
+                generate_row_of(template, seed_periods_today[0]),
             )
-            db.session.add(txn)
             db.session.commit()
 
             result = template_has_paid_history(template.id)
@@ -1150,33 +1134,11 @@ class TestArchiveHelpers:
     def test_template_has_paid_history_false(self, app, db, seed_user, seed_periods_today):
         """C-5A.5-3: template_has_paid_history returns False when only Projected txns exist."""
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            projected_status = db.session.query(Status).filter_by(name="Projected").one()
-
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
+            template = make_expense_template(
+                db.session, seed_user, amount="500.00",
                 name="Projected Only Template",
-                default_amount=Decimal("500.00"),
             )
-            db.session.add(template)
-            db.session.flush()
-
-            txn = Transaction(
-                template_id=template.id,
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                name="Projected Only Template",
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                status_id=projected_status.id,
-            )
-            db.session.add(txn)
+            generate_row_of(template, seed_periods_today[0])
             db.session.commit()
 
             result = template_has_paid_history(template.id)
