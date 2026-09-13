@@ -38,8 +38,7 @@ Module map:
 * :mod:`app.services.savings_dashboard_service._goals` -- savings-goal
   progress, contributions, and trajectory.
 * :mod:`app.services.savings_dashboard_service._metrics` -- emergency-fund
-  expenses, the debt summary + DTI, and the canonical paycheck-breakdown
-  producer.
+  expenses, the debt summary + DTI, and the canonical current-pay producer.
 * :mod:`app.services.savings_dashboard_service._debt_line` -- the ONE
   derivation of "which loans still have a debt line" and "when does the last
   of them end" (plan step X-q), read by both ``_metrics``' debt summary and

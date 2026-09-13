@@ -316,12 +316,9 @@ their only live specimen from them, which both `_staging` docstrings predict and
 - [x] **C17-c -- the doors ask for the ERA.** `36c6b6af`. The DECOMPOSED parent, split 2026-09-11
       (**R-PC71**) into the pure-move split of `pay_period_write.py` and the door rewrite it made
       room for; ticked with `C17-c-2b`.
-- [x] **C17-c-1 -- `pay_period_write.py` leaves the ceiling.** `7d26ec2c`. A pure move of the batch
-      shape -- `PERIOD_BATCH_*`, `reject_out_of_range_batch_size`, `reject_undatable_payday`,
-      `requested_paydays`, `reject_backward_payday` and the record of R-PC1's two refusals -- into a
-      new `pay_period_batch.py` (**R-PC74**: the whole shape, not the refusals or the floor alone);
-      the writer 998 -> 663 lines, `$0.00`. `ddbbe87b` rides with it: the writer and admin
-      docstrings stop placing the gates in `pay_period_admin`. Closed **PC-507**.
+- [x] **C17-c-1 -- `pay_period_write.py` leaves the ceiling.** `7d26ec2c` (+ `ddbbe87b`). The batch
+      shape moved whole into `pay_period_batch.py` (**R-PC74**); the writer 998 -> 663, `$0.00`.
+      Closed **PC-507**.
 - [x] **C17-c-2 -- the doors.** `36c6b6af`. **R-PC64**, **R-PC67**; the DECOMPOSED parent, split
       2026-09-12 (**R-PC78**) into the `$0.00` leaf and the money leaf; ticked with `C17-c-2b`.
 - [x] **C17-c-2a -- a hole is refused, and the doors ask for the scheduled day.** `3d635e4a`. A
@@ -346,6 +343,9 @@ their only live specimen from them, which both `_staging` docstrings predict and
 - [ ] **C17-e -- coalesced nominal paydays are ONE paycheck** (**R-PC77**; closes **N-493**). Two
       nominal paydays a closed run displaces onto one cash day derive one paycheck wherever an era's
       grid is read; `reject_shift_on_short_cadence` is then a fence. `$0.00`, after `C17-d`.
+- [ ] **C19 -- the `PayCalendar` door splits by SHAPE** (**PC-512**, re-homed from salary:P77
+      2026-09-13): `searches` / `views` / `walks` as a PURE move graded by AST (**R-PC74**'s shape);
+      `_calendar.py` sits at 20 of 20 methods and 981 of 1000 lines. ~100 call sites; `$0.00`.
 - [ ] **C15 -- the retire-later solve runs only when an assumption moved** (ruling **R-PC52**;
       closes **P60**). The readiness card re-solves the retire-later binary search -- about nine
       projection walks of pure compute no query cost covers -- on every refresh, so a slider-only

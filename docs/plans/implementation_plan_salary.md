@@ -97,7 +97,8 @@ Every figure is dated and rests on the developer's own data; re-measure before c
    the gross, the taxable income, every deduction line, every earnings line and the net; the amount
    model reads a row's amount from it, the salary page and the cockpit render it, the contribution
    tier prices a deduction from ITS period's gross (**R-SAL2**), and the dashboards' "current
-   paycheck" is one entry of it (C12). A second walk is a cache with no column (**balance:R-IZ**).
+   paycheck" is one entry per PROFILE, summed (C12-b). A second walk is a cache with no column
+   (**balance:R-IZ**).
 2. **Every time-varying input is effective-dated, and the base is per paycheck.** The stored fact is
    what ONE paycheck pays, dated, with the annual figure derived beside it (**balance:R-HW(b)**,
    X-av); raises already are; a calibration applies forward from its stub's date (**R-SAL4**, S1)
@@ -227,17 +228,16 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       genuine multi-row deposit still needs. **Its own ruling first**: whether an allowance is
       taxable, and what becomes of the two live income templates and their rows. **MOVES MONEY** (it
       changes `net_pay`); migration; own review.
-- [ ] **C12 -- one current-paycheck producer** (the DECOMPOSED parent, split 2026-09-12 at the money
-      line, **R-SAL28**, once **R-SAL25**-**R-SAL27** ruled the design asked for from scratch;
-      findings **P62** less its `/retirement` site, which `S3-f-2a` took; **P63**; **P64**'s engine
-      half). The dashboards' "current paycheck" is one entry of the engine's breakdown map, moved
-      where every reader can reach it (**balance:R-IZ**); the container ships with `C12-b`.
+- [x] **C12** `945651c2` -- one current-paycheck producer (the DECOMPOSED parent, split 2026-09-12
+      at the money line, **R-SAL28**, once **R-SAL25**-**R-SAL27** ruled the design asked for from
+      scratch; findings **P62**, **P63**, **P64**'s engine half). Both leaves shipped; the container
+      ships with the last.
 - [x] **C12-a** `26a7b816` -- the engine package (**R-SAL28**), the basis over the pass's pricer
       (**R-SAL27**; the twelve pass-less sites are **balance:BAL-491**), the four byte-identical
       direct-engine sites; NO FIGURE MOVED. Closed **P63**, **P64**.
-- [ ] **C12-b** -- `/savings` through the pass's pricer, calibrated (**R-SAL25**), summed over
-      active profiles (**R-SAL26**). **MOVES MONEY** (the figures in R-SAL25's row); own PR, own
-      harness. Deletes the last direct engine site and the census test with it. Closes **P62**.
+- [x] **C12-b** `945651c2` -- `/savings` through the pass's pricer, calibrated (**R-SAL25**), summed
+      over active profiles (**R-SAL26**). MOVED MONEY (the figures in R-SAL25; the budget
+      dashboard's savings track shares the producer and moved with it). Closed **P62**.
 - [ ] **X-av -- the pay rate is a dated per-paycheck gross** (**balance:R-HW(b)**; findings
       **N-237**, **N-240**, **N-294**, **N-391**). The stored fact becomes what ONE paycheck pays,
       effective-dated, with `annual_salary` derived as `gross x periods_per_year` and shown beside

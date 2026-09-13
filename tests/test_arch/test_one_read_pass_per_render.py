@@ -1454,6 +1454,55 @@ class TestOnePaycheckProjectionPerProfilePerRender:
             "one calendar"
         )
 
+    def test_savings_prices_its_current_paycheck_through_the_pricer(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /savings builds the pricer even when the profile funds nothing.
+
+        The ``/savings`` twin of the ``/retirement`` case below, for plan step
+        salary:C12-b: with nothing funded the feed loader wires no profile and
+        builds nothing, so the ONE pricer this render builds is the one the
+        page's current pay is priced through.  On the tree before C12-b --
+        a direct ``calculate_paycheck`` in ``_metrics`` -- this count read 0.
+        The page prices the current pay on every full render, goal or not
+        (the build has no early return ahead of it), so the goal below does
+        not gate the count; it is what makes the page PUBLISH a figure off
+        that paycheck, so a wrong one is visible on the surface and not only
+        in this counter.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import GoalModeEnum, IncomeUnitEnum
+        from app.models.savings_goal import SavingsGoal
+
+        with app.app_context():
+            _seed_projecting_account(db, seed_user, seed_periods_today)
+            db.session.add(SavingsGoal(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                name="One paycheck",
+                goal_mode_id=ref_cache.goal_mode_id(
+                    GoalModeEnum.INCOME_RELATIVE,
+                ),
+                income_unit_id=ref_cache.income_unit_id(
+                    IncomeUnitEnum.PAYCHECKS,
+                ),
+                income_multiplier=Decimal("1.00"),
+                is_active=True,
+            ))
+            db.session.commit()
+
+        with counting_calls(_PROJECTION_DOOR) as counts:
+            resp = auth_client.get("/savings")
+
+        assert resp.status_code == 200
+        assert counts["ProfilePaychecks"] == 1, (
+            f"/savings built the owner's paycheck pricer "
+            f"{counts['ProfilePaychecks']} times for a profile that funds no "
+            "account; the page's current pay must be priced through the "
+            "pass's pricer (plan step salary:C12-b), which is the one "
+            "construction this render has left"
+        )
+
     def test_retirement_prices_its_current_paycheck_through_the_pricer(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
