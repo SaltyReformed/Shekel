@@ -389,7 +389,7 @@ def derive_periods(
     silently RENDERED on a different day, which is plan finding P10's shape
     reached through a door P10 does not cover.  ``_reject_overlapping_batch``
     blocked that write by comparing against the stored end; plan step **C3-b**
-    replaced it with ``pay_period_write._reject_backward_payday``, and **that
+    replaced it with ``pay_period_batch.reject_backward_payday``, and **that
     floor is what closes this example** -- corrected 2026-08-11, because this
     paragraph named C3-b's coverage rule until the floor's own correction made
     the citation wrong and the rule was then deleted.  The floor is the era
@@ -586,7 +586,7 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
                 f"the previous era's ({first_payday_of(earlier).isoformat()}"
                 f", from {earlier.effective_from.isoformat()}).  An era pays "
                 f"from its first payday to the next era's, so one of these "
-                f"would pay nothing; pay_period_write's floor keeps a minted "
+                f"would pay nothing; pay_period_batch's floor keeps a minted "
                 f"era's first payday past the previous era's next one."
             )
 

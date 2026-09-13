@@ -12,9 +12,7 @@ import pytest
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
-from app.extensions import db
-from app.models.account import Account
+from app.enums import StatusEnum
 from app.models.category import Category
 from app.models.ref import TransactionType
 from app.models.scenario import Scenario
@@ -260,15 +258,16 @@ class TestCompanionAccessibleRoutes:
 
 
 class TestDecoratorOrder:
-    """Verify @login_required fires before @require_owner."""
+    """Verify the login gate answers before @require_owner is consulted."""
 
     def test_unauthenticated_user_gets_login_redirect(self, client):
         """Unauthenticated user hitting a guarded route gets login redirect.
 
-        This proves @login_required runs before @require_owner.
-        If the order were reversed, the unauthenticated user would
-        get 404 (from require_owner failing to find current_user.role_id)
-        instead of a redirect to /login.
+        The login gate (``app/login_gate.py``) answers before any view or
+        decorator runs.  Without it, ``require_owner`` would raise on the
+        anonymous principal's missing ``role_id`` (plan step
+        ``bank_import:X-gs``), not redirect -- so the redirect is the proof
+        that the gate ran first.
         """
         resp = client.get("/grid")
         assert resp.status_code == 302
@@ -468,14 +467,20 @@ class TestMarkDoneCompanionAccess:
         db.session.flush()
 
         # A second period for the second owner, appended past their opening
-        # one through the writer, so it lands at index 1 because the writer
-        # DERIVED it rather than because this line typed it.  The transaction
-        # below lives in this period; its index is irrelevant to the
-        # companion-access assertion.
-        # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
+        # one, so it lands at index 1 because the derivation placed it rather
+        # than because this line typed it.  The transaction below lives in
+        # this period; its index is irrelevant to the companion-access
+        # assertion.  Two years past the opening payday is a hole the writer
+        # refuses (plan step pay_calendar:C17-c-2a, ruling R-PC67), so the
+        # row comes through the tree's helper for exactly that state.
         from datetime import date  # pylint: disable=import-outside-toplevel
-        from tests._test_helpers import open_owner_calendar as _open_calendar
-        period = _open_calendar(second_user.id, date(2026, 1, 2))[0]
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            record_paydays_across_a_hole,
+            rhythm_of,
+        )
+        period = record_paydays_across_a_hole(
+            second_user.id, date(2026, 1, 2), 1, rhythm_of(14),
+        )[0]
 
         expense_type = (
             db.session.query(TransactionType)

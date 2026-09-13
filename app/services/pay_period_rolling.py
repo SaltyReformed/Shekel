@@ -173,7 +173,7 @@ def top_up_rolling_window(user_id, as_of=None):
     # ``record_paydays`` recorded the NOMINAL grid day it was handed, a
     # forward convention put that day inside the paycheck the calendar derives
     # -- a refusal HERE, with no handler, on both of the app's main screens.
-    # ``C14-e-3`` closed it at the writer instead: ``_requested_paydays``
+    # ``C14-e-3`` closed it at the writer instead: ``requested_paydays``
     # records each element displaced, so the day offered and the floor are one
     # value again.  Graded by
     # ``test_a_FORWARD_convention_is_ACCEPTED_and_that_CLOSES_PC_497``.
@@ -189,6 +189,17 @@ def top_up_rolling_window(user_id, as_of=None):
     # writer needing a swallow was the clearest evidence the rule was wrong.
     # (The coverage rule, deleted 2026-08-11, was the other refusal that
     # reached here, and it WAS swallowed with a WARNING.)
+    # **The CEILING can reach this line until plan step ``C17-c-2b``** (plan
+    # step ``C17-c-2a``, ruling R-PC76; found by its adversarial review): the
+    # extend door restates the LATEST era from the horizon (ledger row
+    # PC-509), so an owner truncated below a later era of LONGER cadence is
+    # offered a payday that skips one of the kept rhythm's -- a batch that
+    # wrote P80's hole silently and is refused now, here, with no handler,
+    # on every render until a regenerate from inside the window (the
+    # message's "extend your current rhythm" is circular for an owner who
+    # reached it BY extending).  Not in production's data, two posts away
+    # for any owner; ``C17-c-2b`` makes the door materialise the plan's own
+    # paydays, which cannot skip, and the two deploy together.
     return pay_period_admin.extend_pay_periods(user_id, deficit)
 
 

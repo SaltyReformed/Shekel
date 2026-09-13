@@ -31,6 +31,7 @@ and ``transfer_service`` -- so the transfer invariants are unaffected by
 routing a call through this module.
 """
 import logging
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -42,6 +43,7 @@ from sqlalchemy.exc import IntegrityError
 from app.extensions import db
 from app.models.account import Account
 from app.models.transfer_template import TransferTemplate
+from app.routes._recurrence_form_refusals import LOAN_PAYMENT_BOUND_IS_DERIVED
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import (
     RECURRENCE_END_BOUND_KEY,
@@ -53,6 +55,10 @@ from app.schemas.validation import (
 from app.services import loan_loaders, loan_recurrence_sync, transfer_recurrence
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.recurrence import NEVER_ENDS
+from app.services.recurring_transfer_query import (
+    active_recurring_transfer_templates,
+)
 from app.utils.auth_helpers import get_or_404
 
 logger = logging.getLogger(__name__)
@@ -221,6 +227,20 @@ def settle_first_occurrence(
     schema's own message, exactly as
     ``_recurrence_form_helpers.resolve_recurrence_rule_for_update`` does.
 
+    **The CLOSING bound's create-side half lands here too** (plan step
+    R7d-f-3, ruling **R-R60**).  Where the destination loan holds no active
+    recurring payment, the definition being created IS the loan's payment the
+    moment it exists -- the oldest active transfer into the loan, which is the
+    identity :func:`~app.services.balance_at.is_standing_loan_payment` names
+    and the edit form locks both rows on -- and the loan's own payment carries
+    no authored stop (ruling **R-R59**).  So a stated stop is refused
+    (:func:`_refuse_stop_on_a_new_loan_payment`) rather than saved into the
+    column the chokepoints then overwrite with the payoff, which is the
+    closing-bound twin of the silently-replaced start this function was
+    written to close (plan ledger row **N-512**).  A loan that already holds
+    a payment makes this a SECOND transfer into it, whose stop is its owner's
+    and binds beside the derived one, so nothing is refused for it.
+
     A submission naming NO cadence authors no rule and is left alone: "does
     not repeat" needs no first occurrence.
 
@@ -234,8 +254,10 @@ def settle_first_occurrence(
         * ``None`` -- ``data`` now carries a first occurrence, or names no
           cadence at all; the caller continues.
         * :class:`Response` -- the refusal redirect, returned verbatim -- an
-          unstated first occurrence for a non-loan destination, or a closing
-          bound below the one just derived for a loan
+          unstated first occurrence for a non-loan destination, a stop stated
+          for a loan whose payment this would be
+          (:func:`_refuse_stop_on_a_new_loan_payment`), or a closing bound
+          below the one just derived for a loan
           (:func:`_refuse_bound_before_derived_start`).
     """
     if data.get("recurrence_unit") is None:
@@ -247,6 +269,13 @@ def settle_first_occurrence(
         )
         data[RECURRENCE_STARTS_ON_KEY] = cadence_start.starts_on
         data[RECURRENCE_NOMINAL_DAY_KEY] = cadence_start.nominal_day
+        # The stop that may not be stated at all is refused BEFORE the stop
+        # that merely inverts, in the order the edit door asks the same two
+        # rules: a user told "this ends before it starts" would move a date
+        # they cannot state here at all.
+        refusal = _refuse_stop_on_a_new_loan_payment(data, redirect=redirect)
+        if refusal is not None:
+            return refusal
         return _refuse_bound_before_derived_start(
             data, cadence_start.starts_on, redirect=redirect,
         )
@@ -254,6 +283,94 @@ def settle_first_occurrence(
         return None
     for message in RECURRENCE_NEEDS_A_START[RECURRENCE_STARTS_ON_KEY]:
         flash(message, "danger")
+    return redirect.to_response()
+
+
+def _loan_holds_no_active_payment(account_id: int, user_id: int) -> bool:
+    """Return whether the loan *account_id* holds no active recurring payment.
+
+    **The create-time reading of the standing-payment identity, spelled once
+    for its two readers here**: the door
+    (:func:`_refuse_stop_on_a_new_loan_payment`) and the form's affordance
+    (:func:`loan_destination_locks`).  The standing payment is the loan's
+    oldest ACTIVE recurring transfer -- the first of
+    :func:`~app.services.recurring_transfer_query.active_recurring_transfer_templates`,
+    the producer the read pass memoises for
+    :func:`~app.services.balance_at.is_standing_loan_payment`.  A definition
+    that does not exist yet cannot be asked that predicate, but a loan with
+    no such transfer makes whatever is created into it next the standing
+    payment by construction.  Asked as EMPTINESS of the set rather than as
+    ``None`` from the singular reader, so no oldest-first tie-break is
+    invoked for a question that has none (ruling **R-R35**).  Asked of the
+    producer directly rather than off a pass: a create resolves no loan
+    before it generates, so there is no memo to read and building a pass
+    here would fold the loan for one boolean.
+
+    Args:
+        account_id: A CONFIGURED loan's account.  The callers have already
+            established that (``load_loan_params`` for the door, the loan-id
+            loader for the affordance); asked of a savings account this would
+            answer ``True`` and mean nothing.
+        user_id: The owner, scoping the query as the producer requires.
+
+    Returns:
+        ``True`` when no active recurring transfer pays into the loan.
+    """
+    return not active_recurring_transfer_templates(account_id, user_id)
+
+
+def _refuse_stop_on_a_new_loan_payment(
+    data: dict[str, Any], *, redirect: RedirectTarget,
+) -> Response | None:
+    """Refuse a stated stop where the definition would be its loan's payment.
+
+    **The create door's half of ``LOAN_PAYMENT_BOUND_IS_DERIVED``** (plan step
+    R7d-f-3, ruling **R-R60**, developer 2026-09-05).  The edit door refuses
+    a stated bound for the loan's standing payment; the create door cannot
+    ask that identity of a definition that does not exist, so it asks the
+    same producer the other way round: a loan holding no active payment makes
+    this definition its payment (:func:`_loan_holds_no_active_payment`).
+
+    **What "stated" means HERE is a real stop -- a date or a count -- and not
+    the key's presence**, which is the one place this door reads the wire
+    differently from the edit door (developer ruling 2026-09-12, taken at
+    R7d-f-3).  The edit door's locked control is server-disabled, so any key
+    it receives is a crafted POST; this form's server render cannot know the
+    destination, so it emits the "Ends" select ENABLED with "Never"
+    preselected, and an ordinary browser posts ``never`` unless the script's
+    lock ran.  Refusing on presence would therefore make the script the
+    control -- the thing R-R60 demotes to an affordance -- and refuse an
+    owner who chose nothing on a page rendered before the loan lost its
+    payment.  A stated "Never" and an absent key author the same row here
+    (``recurrence_spec_for_create`` reads an absent bound as unbounded), the
+    unbounded rule the loan's payment carries, so accepting both refuses
+    nothing real.  The reason the edit door reads presence -- a posted START
+    could be a stale echo of a derived date -- has no counterpart for a stop
+    whose derived value is the constant ``NEVER_ENDS``.
+
+    Cheapest disqualifier first: the query runs only when a real stop was
+    stated, so an ordinary create of a loan payment costs no lookup here.
+
+    Args:
+        data: The validated payload, read for the composed closing bound
+            (``None`` when the form stated nothing; ``NEVER_ENDS`` when it
+            said "Never"); not mutated.  Its ``to_account_id`` is a
+            configured loan the caller has already ownership-checked.
+        redirect: Where to send the user when the submission is refused.
+
+    Returns:
+        * ``None`` -- no real stop was stated, or the loan already holds a
+          payment and this is a second transfer whose stop is its owner's.
+        * :class:`Response` -- the refusal redirect, returned verbatim.
+    """
+    bound = data.get(RECURRENCE_END_BOUND_KEY)
+    if bound is None or bound == NEVER_ENDS:
+        return None
+    if not _loan_holds_no_active_payment(
+        data["to_account_id"], current_user.id,
+    ):
+        return None
+    flash(LOAN_PAYMENT_BOUND_IS_DERIVED, "danger")
     return redirect.to_response()
 
 
@@ -269,9 +386,11 @@ def _refuse_bound_before_derived_start(
     produces, because the form's "Starts on" control is locked and posts
     nothing.  So any past "Ends on" passed every validator and the pair reached
     the write door with the derived start beside it, generating a rule that
-    names no occurrence at all.  The create form does not lock the "Ends"
-    control (the server cannot know the destination at render), so the form
-    invites exactly this.
+    names no occurrence at all.  The create form's server render cannot lock
+    the "Ends" control (it cannot know the destination), and where the loan
+    already holds a payment the row stays the owner's on purpose -- a second
+    transfer's stop binds beside the derived one -- so the form invites
+    exactly this.
 
     Worded through
     :func:`~app.schemas.validation.end_bound_before_start_message`, the same
@@ -297,6 +416,70 @@ def _refuse_bound_before_derived_start(
         return None
     flash(end_bound_before_start_message(end_date, starts_on), "danger")
     return redirect.to_response()
+
+
+@dataclass(frozen=True)
+class LoanDestinationLocks:
+    """Which destinations the CREATE form's script locks a bound row for.
+
+    The browser's half of two rules the door enforces, emitted by the server
+    from the same producers the door reads so the script computes no domain
+    fact -- it tests membership and nothing else.  Held as one value rather
+    than two context keys so the two sets cannot be passed one without the
+    other.  A CREATE form's server render cannot lock either row (the
+    destination is chosen in the form), which is why the sets ride to the
+    browser at all; an EDIT form knows its template and locks server-side
+    through :class:`~app.routes._recurrence_form_render.RecurrenceStart` and
+    :class:`~app.routes._recurrence_form_render.RecurrenceEnd`, and emits
+    neither set.
+
+    Attributes:
+        start_derived_for: Every configured loan of the owner.  A transfer
+            into any of them has its first occurrence derived from the loan's
+            contract (:func:`settle_first_occurrence`, plan step R7c-b) -- a
+            second transfer into a paid loan included (plan ledger row
+            **D50**) -- so the "Starts on" row locks the moment one is
+            chosen.
+        stop_derived_for: The subset holding no active recurring payment
+            (:func:`_loan_holds_no_active_payment`).  A transfer into one of
+            these IS the loan's payment once created, and the loan's own
+            payment carries no authored stop (ruling **R-R59**), so the
+            "Ends" row locks too and the door refuses a stop stated anyway
+            (ruling **R-R60**).  A loan already holding a payment is in the
+            first set and not this one: a second transfer's stop is its
+            owner's.
+    """
+
+    start_derived_for: tuple[int, ...]
+    stop_derived_for: tuple[int, ...]
+
+
+def loan_destination_locks(user_id: int) -> LoanDestinationLocks:
+    """Return which of *user_id*'s loan destinations lock which bound row.
+
+    One lookup per configured loan for the second set, through the producer
+    that states the "active recurring transfer into this account" filter once
+    (:func:`~app.services.recurring_transfer_query.active_recurring_transfer_templates`)
+    rather than a second query spelling the same filter without the account
+    clause.  The owner's loans are a handful; the cost is one query each on
+    a form GET, carrying that producer's two eager loads (the settings row
+    and the price series) for a boolean -- the price of one spelling.
+
+    Args:
+        user_id: The owner rendering the create form.
+
+    Returns:
+        The :class:`LoanDestinationLocks`, both sets ascending by account id
+        (the loan-id loader's order, preserved).
+    """
+    loan_ids = loan_loaders.load_loan_account_ids_for_user(user_id)
+    return LoanDestinationLocks(
+        start_derived_for=tuple(loan_ids),
+        stop_derived_for=tuple(
+            account_id for account_id in loan_ids
+            if _loan_holds_no_active_payment(account_id, user_id)
+        ),
+    )
 
 
 def flush_template_or_namedup_redirect(
@@ -388,6 +571,8 @@ def generate_transfers_for_all_periods(
 
 
 __all__ = [
+    "LoanDestinationLocks",
+    "loan_destination_locks",
     "settle_first_occurrence",
     "TRANSFER_NAME_DUP_MESSAGE",
     "validate_and_resolve_source_account",

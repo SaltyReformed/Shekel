@@ -230,6 +230,11 @@ class Earnings:
         take-home rate without Jinja-side division.  Returns ``None``
         when ``gross_biweekly`` is non-positive so the template can
         render a placeholder ``--`` without dividing by zero.
+
+        **FULL precision, never quantized here** (plan step salary:S3-f-2a):
+        ``retirement_dashboard_service.compute_gap_net_biweekly`` scales the
+        retirement income target by this ratio, so a display rounding added
+        here would move a money figure; the template rounds at its own edge.
         """
         if self.gross_biweekly <= ZERO:
             return None

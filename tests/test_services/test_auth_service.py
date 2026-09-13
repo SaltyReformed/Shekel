@@ -1035,6 +1035,40 @@ class TestRegistrationBuildsARealPayCalendar:
             assert periods[0].start_date == date(2026, 1, 5)
             assert last_covered_day(periods[0]) == date(2026, 1, 19)
 
+    def test_a_scheduled_payday_of_tomorrow_paid_today_under_prior_is_accepted(
+        self, app, db, monkeypatch,
+    ):
+        """The form asks for the SCHEDULED day, and that day may be tomorrow.
+
+        Plan step ``pay_calendar:C17-c-2a``, ledger row **PC-504**: the
+        writer reads the stated payday as a point on the nominal grid, so the
+        door asks for the scheduled day rather than the day the money moved.
+        Sign-up Friday 2026-01-02; the scheduled payday is Saturday 01-03 and
+        under ``prior`` payroll paid it on Friday.  The upper bound is "the
+        paycheck this day opens has started", which is true -- it opened
+        today -- so the registration goes through, the recorded payday is the
+        CASH day 01-02 and the era's phase is the scheduled 01-03.  Under
+        ``none`` the same answer is a paycheck that has not happened yet, the
+        control that shows the bound reads the convention.
+        """
+        freeze_today(monkeypatch, date(2026, 1, 2))
+        with app.app_context():
+            with pytest.raises(ValidationError, match="has not happened yet"):
+                registration_service.register_user(registration_spec(
+                    email="sat-none@example.com", display_name="Sat None",
+                    first_payday=date(2026, 1, 3), cadence_days=14,
+                    shift=BusinessDayShiftEnum.NONE,
+                ))
+            user = registration_service.register_user(registration_spec(
+                email="sat-prior@example.com", display_name="Sat Prior",
+                first_payday=date(2026, 1, 3), cadence_days=14,
+                num_periods=1, shift=BusinessDayShiftEnum.PRIOR,
+            ))
+            db.session.flush()
+            assert all_periods(user.id)[0].start_date == date(2026, 1, 2)
+            facts = pay_schedule_service.resolve_schedule(user.id)
+            assert facts.eras[0].effective_from == date(2026, 1, 3)
+
     def test_the_refusal_message_names_the_paycheck_not_the_owners_arithmetic(
         self, app, db,
     ):

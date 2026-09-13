@@ -70,7 +70,7 @@ the four was measured against this scanner:
   :func:`~app.services.paycheck_calculator.calculate_paycheck` loop calls
   ``project_salary`` nowhere, so THIS census cannot see it by construction.
   It was named here as unpinnable until plan step **salary:S3-d**;
-  :func:`test_the_direct_engine_callers_are_the_six_C12_owns` is the second
+  :func:`test_the_direct_engine_callers_are_the_ones_C12_owns` is the second
   census that pins it, over ``calculate_paycheck`` itself.
 
 **The second census has the SAME first four blind spots**, because it uses the
@@ -326,23 +326,39 @@ _PER_PERIOD = "calculate_paycheck"
 #: per-period entry directly, as ``{relative path: call count}``.
 #:
 #: **These are ledger rows P62 / P63 / P64 and plan step C12, enumerated
-#: rather than described.**  Each prices ONE period, resolving its tax configs
-#: through a different door from :class:`~app.services.income_service
-#: .ProfilePaychecks`, so routing them through the pass's pricer could move a
-#: figure ``/savings`` and ``/retirement`` publish -- which is why plan step
-#: salary:S3-d left them alone and why C12 is ruled to need its own decision
-#: first.  On ``/retirement`` the current period is priced at
-#: ``retirement_dashboard_service`` AND again inside the projection axis, so
-#: that one payday is priced twice today.
+#: rather than described.**  Each prices ONE period through
+#: ``load_tax_configs_for_year``, which is the SAME resolver body the pass's
+#: :class:`~app.services.income_service.ProfilePaychecks` reads
+#: (``_configs_from_series``), so the calibration is the only axis on which a
+#: pricer route can differ from these -- and it is not one axis for all five
+#: (read 2026-09-12): ``_helpers._regenerate_salary_transactions`` and
+#: ``cockpit.anatomy`` already pass ``calibration=profile.calibration``;
+#: ``_helpers._compute_total_pre_tax`` reads a pre-tax deductions total and
+#: ``profiles.create_profile`` prices a profile created in the same request,
+#: neither of which a calibration reaches;
+#: ``_metrics._get_current_paycheck_breakdown`` is the one that can MOVE a
+#: figure ``/savings`` publishes -- which is why plan step salary:S3-d left
+#: them alone and why C12 is ruled to need its own decision first.
+#:
+#: **``retirement_dashboard_service.py`` LEFT this map at plan step
+#: salary:S3-f-2a** (ruling **R-SAL21** as amended 2026-09-12).  Its one call,
+#: ``_compute_current_pay``, priced ``/retirement``'s current paycheck without
+#: the profile's calibration while the payroll feed on the same page priced
+#: the same payday with it: measured ``$31.29`` apart on one paycheck and
+#: ``+$41,562.00`` on the required savings the verdict states.  The page reads
+#: ``balance_ctx.paychecks().for_profile(profile).at(period)`` now, so that
+#: payday is priced ONCE per render where it was priced twice, and the move
+#: was its own money leaf with its own harness.  ``/savings``'
+#: ``_metrics.py`` still prices the same shape and is C12's.
 #:
 #: The census is by ENUMERATION and not by subtraction: every entry here was
-#: read and counted, so a SEVENTH site fails this test and C12 deleting one
-#: fails it too.  Both directions are the point.
+#: read and counted (five calls across four files since S3-f-2a), so a new
+#: site fails this test and C12 deleting one fails it too.  Both directions
+#: are the point.
 _DIRECT_ENGINE_CALLERS = {
     "app/routes/salary/_helpers.py": 2,
     "app/routes/salary/cockpit.py": 1,
     "app/routes/salary/profiles.py": 1,
-    "app/services/retirement_dashboard_service.py": 1,
     "app/services/savings_dashboard_service/_metrics.py": 1,
 }
 
@@ -399,8 +415,8 @@ def _per_period_census(root: Path) -> dict[str, int]:
     return counts
 
 
-def test_the_direct_engine_callers_are_the_six_C12_owns():
-    """Only the six enumerated sites price a paycheck outside the pricer.
+def test_the_direct_engine_callers_are_the_ones_C12_owns():
+    """Only the enumerated sites price a paycheck outside the pricer.
 
     The second census, added at plan step **salary:S3-d**, over the blind spot
     the first one names: a per-period ``calculate_paycheck`` loop is invisible
@@ -408,16 +424,22 @@ def test_the_direct_engine_callers_are_the_six_C12_owns():
     future author is most likely to write.
 
     It asserts the WHOLE map rather than "no new file has one", so both
-    directions fail: a seventh caller appearing anywhere, and one of these six
-    being deleted or moved without :data:`_DIRECT_ENGINE_CALLERS` being told.
-    The second is what makes this test C12's checklist rather than a fence C12
-    would have to remember to take down.
+    directions fail: a new caller appearing anywhere, and one of the
+    enumerated calls being deleted or moved without
+    :data:`_DIRECT_ENGINE_CALLERS` being told.  The second is what makes this
+    test C12's checklist rather than a fence C12 would have to remember to
+    take down -- and it fired that way once already, when plan step
+    salary:S3-f-2a folded ``retirement_dashboard_service``'s call in and the
+    map was told here.  (Its name counted the sites -- "the six" -- until
+    then; a count in a name is a claim that goes stale the first time the
+    map moves, so the name states the OWNER now and the constant's comment
+    carries the count with its date.)
     """
     census = _per_period_census(_repo_root())
     assert census == _DIRECT_ENGINE_CALLERS, (
         "The set of app/ sites calling paycheck_calculator.calculate_paycheck "
         f"directly has changed. Census: {census}; expected "
-        f"{_DIRECT_ENGINE_CALLERS}. A NEW entry is a seventh place that "
+        f"{_DIRECT_ENGINE_CALLERS}. A NEW entry is one more place that "
         "prices a paycheck outside the read pass's "
         "income_service.PaycheckPricing -- route it through "
         "ctx.paychecks().for_profile(profile).at(period) instead, unless it "

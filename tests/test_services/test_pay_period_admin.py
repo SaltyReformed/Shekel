@@ -47,6 +47,7 @@ from app.services.pay_period_locks import PeriodLockReason
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     add_txn,
     assert_pay_period_invariants,
@@ -68,7 +69,7 @@ def _make_future_periods(db_session, seed_user, count=5):
     Appended after the fixture's bootstrap period (index 0), so these
     take indices 1..count and all end after today.
     """
-    periods = pay_period_write.record_paydays(
+    periods = record_paydays_across_a_hole(
         user_id=seed_user["user"].id,
         first_payday=_FUTURE_START,
         num_periods=count,

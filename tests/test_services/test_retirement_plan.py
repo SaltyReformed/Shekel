@@ -24,6 +24,8 @@ from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
@@ -36,7 +38,7 @@ from app.services.retirement_plan import (
     load_retirement_inputs,
     picture_at,
 )
-from app.utils.dates import add_months
+from app.utils.dates import add_months, display_today
 
 
 class _FakeAccount:
@@ -433,3 +435,401 @@ class TestTheBatchIsHorizonIndependent:
             assert [
                 p["projected_balance"] for p in picture_at(inputs, far).projections
             ] == [p["projected_balance"] for p in own]
+
+
+# ── salary:S3-f-2b: the point BELIEVES a raise set, and a probe moves it ──
+
+
+def _seed_believed_plan(db, seed_user, *, effective_year):
+    """The :func:`_seed_plan` scenario plus ONE forever raise reaching every read.
+
+    A recurring 5% January raise from *effective_year* with no end year, on the
+    profile that the pension projects from, that the income target scales
+    from, that the current paycheck is priced from, AND that funds the 401(k)'s
+    5%-of-gross employer contribution -- so the four salary-path reads plan
+    step salary:S3-f-2b threads the believed set into all read the same raise,
+    and a probe that ends it early has to move every one of them.
+
+    Args:
+        db: The test database handle.
+        seed_user: The ``seed_user`` fixture dict.
+        effective_year: The year the raise first applies.
+
+    Returns:
+        ``(profile, raise_row, account)``.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import EmployerContributionTypeEnum
+    from app.models.investment_params import InvestmentParams
+    from tests._test_helpers import make_recurring_raise
+
+    account = _seed_plan(
+        db, seed_user,
+        balance=Decimal("100000.00"),
+        annual_return=Decimal("0.10500"),
+    )
+    profile = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=seed_user["user"].id)
+        .one()
+    )
+    raise_row = make_recurring_raise(
+        profile.id, db.session, effective_year=effective_year,
+    )
+    params = (
+        db.session.query(InvestmentParams)
+        .filter_by(account_id=account.id).one()
+    )
+    params.employer_contribution_type_id = (
+        ref_cache.employer_contribution_type_id(
+            EmployerContributionTypeEnum.FLAT_PERCENTAGE,
+        )
+    )
+    params.employer_flat_percentage = Decimal("0.0500")
+    params.salary_profile_id = profile.id
+    db.session.commit()
+    db.session.refresh(profile)
+    return profile, raise_row, account
+
+
+class TestThePointBelievesARaiseSet:
+    """``PlanPoint.raise_end_years`` is RESOLVED, CANONICAL and reaches every read.
+
+    Plan step **salary:S3-f-2b** (rulings **R-SAL20**, **R-SAL21**, **R-SAL13**).
+    The point carries one resolved end year per recurring raise on every active
+    profile; a probe equal to the stored year IS the stored plan (the memo-key
+    discipline ``swr`` already obeys, because every pre-filled rail row submits
+    its stored value on every refresh); and the set the point believes is what
+    the pension, the income target, the current paycheck and the payroll feeds
+    all price from -- one belief per picture, which is the two-beliefs-on-one-
+    verdict shape R-SAL20 rejected.
+    """
+
+    def test_the_stored_plan_carries_every_recurring_raises_stored_year(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """One ``(raise_id, terminal_year)`` per recurring raise; one-time excluded.
+
+        A one-time raise carries no end year at all
+        (``ck_salary_raises_terminal_year_only_on_a_recurring_raise``), so it
+        is not on the point -- and ``terms_for`` still answers it, with its own
+        stored ``None``, because the believed set is total over the profile's
+        rows.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app import ref_cache
+        from app.enums import RaiseTypeEnum
+        from app.models.salary_raise import SalaryRaise
+        from app.services.salary_raises import terms_of
+
+        with app.app_context():
+            year = display_today().year + 1
+            profile, raise_row, _ = _seed_believed_plan(
+                db, seed_user, effective_year=year,
+            )
+            one_time = SalaryRaise(
+                salary_profile_id=profile.id,
+                raise_type_id=ref_cache.raise_type_id(RaiseTypeEnum.COLA),
+                effective_month=6, effective_year=year,
+                flat_amount=Decimal("1500.00"), is_recurring=False,
+            )
+            db.session.add(one_time)
+            db.session.commit()
+            db.session.refresh(profile)
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
+
+            stored = inputs.stored_plan
+            assert stored.raise_end_years == ((raise_row.id, None),)
+            # At the stored point the believed set IS the rows' terms, by
+            # value -- which is what makes the pricer's memo answer the pricer
+            # the feed loader already built rather than a second one.
+            assert stored.terms_for(profile) == terms_of(profile.raises)
+            assert len(stored.terms_for(profile)) == 2
+
+    def test_a_probe_equal_to_the_stored_year_is_the_stored_plan(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Canonical: the pre-filled rail row's own answer resolves to no what-if.
+
+        The stored raise has NO end year, so the row submits ``("none",
+        None)`` -- and, because the mode is authoritative (R-SAL13), ``("none",
+        <any year>)`` is the same answer.  Both must be the stored point, and
+        the picture at either must be the SAME object as the stored picture,
+        or the what-if panel would derive one plan twice and report a delta
+        of zero (row P57's shape).
+        """
+        with app.app_context():
+            year = display_today().year + 1
+            _, raise_row, _ = _seed_believed_plan(
+                db, seed_user, effective_year=year,
+            )
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            stored = inputs.stored_plan
+
+            unchanged = inputs.plan_with(
+                raise_probes={raise_row.id: ("none", None)},
+            )
+            stale_year_box = inputs.plan_with(
+                raise_probes={raise_row.id: ("none", 2031)},
+            )
+            assert unchanged == stored
+            assert stale_year_box == stored
+            assert picture_at(inputs, unchanged) is picture_at(inputs, stored)
+
+            probed = inputs.plan_with(
+                raise_probes={raise_row.id: ("year", year)},
+            )
+            assert probed != stored
+            assert probed.raise_end_years == ((raise_row.id, year),)
+            assert picture_at(inputs, probed) is not picture_at(inputs, stored)
+            # And the retire-later lever's replace carries the belief through.
+            assert replace(probed, month_offset=12).raise_end_years == (
+                probed.raise_end_years
+            )
+
+    def test_a_probe_moves_the_pension_the_target_and_the_funded_account(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Ending the raise after its first year lowers every figure it feeds.
+
+        The salary path is exact and hand-checkable.  $80,000.00 with a 5%
+        January raise from year N+1 (N is the pass's year), evaluated each
+        December 1:
+
+          stored (no end year):   N+1 = 80,000 x 1.05   = 84,000.00
+                                  N+2 = 80,000 x 1.05^2 = 88,200.00
+          probed (ends after N+1): N+1 = 84,000.00, N+2 = 84,000.00 (it stops)
+
+        Every figure downstream of that path is then LOWER under the probe:
+        the pension's monthly benefit (its high-4 average is over smaller
+        salaries), the income target, and the 401(k)'s projected balance (its
+        5%-of-gross employer contribution is priced off a smaller gross from
+        N+2 on).  The REQUIRED savings fall too, but that is a fact about
+        these parameters rather than a law: the requirement is the gap
+        between target and pension scaled by the SWR, and the target falls
+        by roughly the take-home rate of the salary delta while the pension
+        falls by the benefit multiplier times years of service times the
+        high-4 delta -- here about 0.75 against about 0.55 of a comparable
+        delta, with the gap staying well above zero, so the target's drop
+        wins.  Asserted as inequalities against the same render's stored
+        picture, so the case cannot rot into a restatement of the tax
+        engine's arithmetic.
+        """
+        with app.app_context():
+            year = display_today().year + 1
+            _, raise_row, account = _seed_believed_plan(
+                db, seed_user, effective_year=year,
+            )
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            stored = picture_at(inputs, inputs.stored_plan)
+            probed = picture_at(inputs, inputs.plan_with(
+                raise_probes={raise_row.id: ("year", year)},
+            ))
+
+            stored_path = dict(stored.pension.salary_by_year)
+            probed_path = dict(probed.pension.salary_by_year)
+            assert stored_path[year] == Decimal("84000.00")
+            assert stored_path[year + 1] == Decimal("88200.00")
+            assert probed_path[year] == Decimal("84000.00")
+            assert probed_path[year + 1] == Decimal("84000.00"), (
+                "the probed end year did not reach the pension's salary path"
+            )
+
+            assert probed.pension.monthly_income < stored.pension.monthly_income
+            assert (
+                probed.net.pre_retirement_net_monthly
+                < stored.net.pre_retirement_net_monthly
+            ), "the probed end year did not reach the income target"
+            assert (
+                probed.net.required_retirement_savings
+                < stored.net.required_retirement_savings
+            )
+            by_account = {
+                p["account"].id: p["projected_balance"] for p in probed.projections
+            }
+            stored_by_account = {
+                p["account"].id: p["projected_balance"] for p in stored.projections
+            }
+            assert by_account[account.id] < stored_by_account[account.id], (
+                "the probed end year did not reach the payroll feed: the "
+                "employer contribution is still priced off the stored raises"
+            )
+
+    def test_a_probe_before_this_year_moves_the_current_paycheck(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """R-SAL21's case: an end year before this year re-prices TODAY's paycheck.
+
+        A 5% January raise effective the year BEFORE the current payday's,
+        believed forever, has applied twice by that payday; believed only
+        through its first year it applied once.  The current paycheck's
+        gross, biweekly, is then exact:
+
+          stored:  80,000 x 1.05^2 / 26 = 88,200 / 26 = 3,392.307... -> 3,392.31
+          probed:  80,000 x 1.05   / 26 = 84,000 / 26 = 3,230.769... -> 3,230.77
+
+        The years are taken off the CURRENT PAYDAY rather than off today: in
+        early January the period containing today can open in December, and
+        a raise pinned to today's year would then have applied once on both
+        sides (a fixture must hold on every day of the calendar).  Priced
+        through the pass's pricer under the point's set -- the same door the
+        payroll feed prices from -- so the income target's take-home rate and
+        the feed cannot believe two different raise sets.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.retirement_dashboard_service import (
+            compute_current_paycheck,
+        )
+
+        with app.app_context():
+            current_payday = max(
+                period.start_date for period in seed_periods_today
+                if period.start_date <= display_today()
+            )
+            last_year = current_payday.year - 1
+            _, raise_row, _ = _seed_believed_plan(
+                db, seed_user, effective_year=last_year,
+            )
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            probed = inputs.plan_with(
+                raise_probes={raise_row.id: ("year", last_year)},
+            )
+
+            def gross_at(point):
+                return compute_current_paycheck(
+                    inputs.balance_ctx, inputs.gap.salary_profiles,
+                    point.terms_for,
+                ).earnings.gross_biweekly
+
+            assert gross_at(inputs.stored_plan) == Decimal("3392.31")
+            assert gross_at(probed) == Decimal("3230.77")
+            assert (
+                picture_at(inputs, probed).net.pre_retirement_net_monthly
+                < picture_at(inputs, inputs.stored_plan)
+                .net.pre_retirement_net_monthly
+            )
+
+    def test_a_probe_is_refused_against_the_rows(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Unknown ids and rule-breaking years are refused, ALL of them, by name.
+
+        The ONE end-year rule (``salary_raises.end_year_of``) runs against the
+        ROW's effective year -- the same rule the salary form applies to its
+        payload -- so the rail cannot accept a year the form would refuse.  An
+        id that is not one of this owner's recurring raises is a stale
+        bookmark or a URL edit and is refused rather than resolved into an
+        unchanged plan; every failing probe is reported, the way a schema
+        reports every field.
+        """
+        with app.app_context():
+            year = display_today().year + 1
+            _, raise_row, _ = _seed_believed_plan(
+                db, seed_user, effective_year=year,
+            )
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            stale = raise_row.id + 999
+
+            with pytest.raises(retirement_plan.RaiseProbeError) as unknown:
+                inputs.plan_with(raise_probes={stale: ("none", None)})
+            assert set(unknown.value.errors) == {stale}
+
+            with pytest.raises(retirement_plan.RaiseProbeError) as early:
+                inputs.plan_with(
+                    raise_probes={raise_row.id: ("year", year - 1)},
+                )
+            assert early.value.errors == {
+                raise_row.id: (
+                    f"A raise cannot end before it starts: it takes effect "
+                    f"in {year}."
+                ),
+            }
+
+            with pytest.raises(retirement_plan.RaiseProbeError) as unanswered:
+                inputs.plan_with(raise_probes={raise_row.id: ("year", None)})
+            assert unanswered.value.errors == {
+                raise_row.id: (
+                    "Enter the last year this raise is believed to happen."
+                ),
+            }
+
+            # Both failing probes are reported together, and a valid probe
+            # beside them does not rescue the request.
+            with pytest.raises(retirement_plan.RaiseProbeError) as both:
+                inputs.plan_with(raise_probes={
+                    raise_row.id: ("year", year - 1),
+                    stale: ("year", year),
+                })
+            assert set(both.value.errors) == {raise_row.id, stale}
+
+    def test_a_probed_set_is_the_one_legitimate_second_pricer(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The stored point re-prices nothing; a probed set costs one pricer.
+
+        ``price_payroll_feeds`` rebuilds the feeds per point over the pass's
+        pricers.  At the STORED set that is a memo hit -- zero statements,
+        zero ``ProfilePaychecks`` -- because the point's ``terms_for`` equals
+        the rows' terms by value and ``for_profile`` keys on the canonical set.
+        A PROBED set is a pricer of its own: one construction, and the three
+        tax-series SELECTs that construction issues (measured here rather than
+        quoted), which is the whole query cost of a probe.
+        """
+        # pylint: disable=import-outside-toplevel
+        from sqlalchemy import event
+
+        from app.extensions import db as _db
+        from tests._test_helpers import counting_calls
+
+        with app.app_context():
+            year = display_today().year + 1
+            _, raise_row, _ = _seed_believed_plan(
+                db, seed_user, effective_year=year,
+            )
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            probed = inputs.plan_with(
+                raise_probes={raise_row.id: ("year", year)},
+            )
+            statements = []
+
+            def _count(*args):  # pylint: disable=unused-argument
+                statements.append(args[2])
+
+            door = ("app.services.income_service", "ProfilePaychecks")
+            event.listen(_db.engine, "before_cursor_execute", _count)
+            try:
+                with counting_calls(door) as stored_counts:
+                    retirement_plan._believed_batch(  # pylint: disable=protected-access
+                        inputs, inputs.stored_plan,
+                    )
+                stored_statements = len(statements)
+                with counting_calls(door) as probed_counts:
+                    retirement_plan._believed_batch(  # pylint: disable=protected-access
+                        inputs, probed,
+                    )
+            finally:
+                event.remove(_db.engine, "before_cursor_execute", _count)
+
+            assert stored_counts["ProfilePaychecks"] == 0
+            assert stored_statements == 0, (
+                "pricing the stored set issued a query; the point's terms "
+                "should have hit the pricer the batch loader built"
+            )
+            assert probed_counts["ProfilePaychecks"] == 1
+            assert len(statements) - stored_statements == 3, (
+                f"a probed set issued {len(statements) - stored_statements} "
+                "statements; a new pricer's whole cost is its tax series"
+            )

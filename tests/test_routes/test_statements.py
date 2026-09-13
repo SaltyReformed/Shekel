@@ -32,7 +32,10 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from app.services import auth_service, entry_service, statement_match
 from app.services.statement_match import NEW_ENVELOPE, Verb
-from app.utils.log_events import EVT_STATEMENT_IMPORT_DELETED
+from app.utils.log_events import (
+    EVT_STATEMENT_IMPORT_DELETED,
+    EVT_STATEMENT_IMPORTED,
+)
 from tests._test_helpers import create_settled_cash_transaction
 from tests.test_services.test_statement_import import _csv_builder as build
 from tests.test_services.test_statement_match._builders import (
@@ -99,6 +102,26 @@ def _delete_form(body):
         The delete form's markup, from its ``<form`` to its ``</form>``.
     """
     marker = body.index("/statements/delete")
+    start = body.rindex("<form", 0, marker)
+    return body[start:body.index("</form>", start)]
+
+
+def _delete_form_for(body, import_id):
+    """Return the delete form for ONE import, on a page rendering one per row.
+
+    :func:`_delete_form` returns the first delete form on the page, which on
+    a newest-first table is the LATEST import's.  A confirmation assertion
+    about a particular import has to read that import's own form, or it
+    grades the sentence the page prints for a different delete.
+
+    Args:
+        body: The rendered page.
+        import_id: The import whose delete form to return.
+
+    Returns:
+        That form's markup, from its ``<form`` to its ``</form>``.
+    """
+    marker = body.index(f'name="import_id" value="{import_id}"')
     start = body.rindex("<form", 0, marker)
     return body[start:body.index("</form>", start)]
 
@@ -1020,7 +1043,15 @@ class TestTheAccountPageLinksHere:
 
         assert len(toasts) == 1
         category, message = toasts[0]
-        assert "which its own lines do not reach" in message
+        # The words changed at plan step ``bank_import:X-gr`` (finding
+        # **BI-489**, developer ruling 2026-09-12): "which its own lines do
+        # not reach" named this file's cause and was printed on files whose
+        # lines reach fine while the recorded opening disagrees, so the
+        # sentence now states what the solve knows and no cause.
+        assert (
+            "which no day it covers reconciles with what was already recorded "
+            "before it" in message
+        )
         assert "no balance was recorded from it" in message
         assert category == "warning"
 
@@ -1062,6 +1093,69 @@ class TestTheAccountPageLinksHere:
         # Placed at its last line (03-03); the file states it as of 03-09.
         assert "placed at 2026-03-03" in message
         assert "states it as of 2026-03-09" in message
+
+    def test_the_receipt_says_how_many_PLACEMENTS_the_import_released(
+        self, auth_client, db, seed_user, caplog,
+    ):
+        """Plan step ``bank_import:X-gr``, finding **BI-488**.
+
+        A second export inserting a line into a day the first import's
+        placement had already priced means that placement was worked out
+        without it, so the door releases it -- and until this step the receipt
+        said nothing, leaving the owner to learn that an import had taken a
+        checked balance away from an earlier one from the imports table's
+        badge, if they looked.  The delete receipt has said it since
+        ``aa31bedf``; this is the import receipt's own sentence, with the
+        event carrying the same count -- BOTH imports' events are read, so
+        the first's zero is graded as a zero rather than as an absence.
+        """
+        with caplog.at_level(
+            logging.INFO, logger="app.routes.accounts.statements",
+        ):
+            _upload(auth_client, seed_user["account"].id, _payload())
+            first = db.session.query(StatementImport).one()
+            assert first.balance_effective_on == date(2026, 3, 3)
+            response = _upload(
+                auth_client, seed_user["account"].id,
+                build.build(build.chained("100.00", [
+                    _ENTRIES[0],
+                    (date(2026, 3, 2), "-5.00", "POINT OF SALE DEBIT L340 X"),
+                    _ENTRIES[1],
+                ])),
+                filename="inserted.csv",
+            )
+
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert any(
+            "1 other import(s) had placed a stated balance at or after the "
+            "earliest day this file adds a line on, so those placements were "
+            "released" in message
+            for _, message in toasts
+        )
+        db.session.expire_all()
+        assert first.balance_effective_on is None
+        imported = [
+            record for record in caplog.records
+            if getattr(record, "event", None) == EVT_STATEMENT_IMPORTED
+        ]
+        assert [record.anchors_released for record in imported] == [0, 1]
+
+    def test_the_receipt_says_NOTHING_about_placements_when_none_went(
+        self, auth_client, db, seed_user,
+    ):
+        """The clause is conditional: a first import undercuts nothing.
+
+        Paired with the case above for the reason the delete receipt's pairs
+        are: rendered unconditionally the receipt would read "0 other
+        import(s) had placed" on every import.
+        """
+        response = _upload(auth_client, seed_user["account"].id, _payload())
+
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert toasts, "the import should still have flashed its receipt"
+        assert not any(
+            "had placed a stated balance" in message for _, message in toasts
+        )
 
     def test_the_imports_table_shows_what_the_bank_said(
         self, auth_client, db, seed_user,
@@ -1161,6 +1255,48 @@ class TestTheAccountPageLinksHere:
         )
         assert badge is not None, "the imports table renders no evidence badge"
         assert badge.group(1) == "text-bg-secondary"
+
+    def test_the_NOT_PLACED_badge_blames_the_file_for_nothing(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step ``bank_import:X-gr``, finding **BI-489**, developer ruling 2026-09-12.
+
+        The badge renders for a figure never placed AND for a placement the
+        app itself released, and the table cannot tell them apart because the
+        release stores nothing.  Its title read "This file's lines stop at
+        ..., so they cannot reach the day it states this figure for", which on
+        a released placement blamed the file for a state the app produced.
+        The world here is the RELEASED case -- the second import records a
+        line beneath the first's placement -- because that is the case the old
+        sentence was false for; the title is read off the badge itself.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        first = db.session.query(StatementImport).one()
+        assert first.balance_effective_on == date(2026, 3, 3)
+        _upload(
+            auth_client, seed_user["account"].id,
+            build.build(build.chained("100.00", [
+                _ENTRIES[0],
+                (date(2026, 3, 2), "-5.00", "POINT OF SALE DEBIT L340 X"),
+                _ENTRIES[1],
+            ])),
+            filename="inserted.csv",
+        )
+        db.session.expire_all()
+        assert first.balance_effective_on is None
+
+        page = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        badge = re.search(
+            r'<span class="badge text-bg-warning"\s+title="([^"]*)">not placed</span>',
+            page,
+        )
+        assert badge is not None, "the released placement renders no badge"
+        assert badge.group(1).startswith("No day holds this figure.")
+        assert "released the placement" in badge.group(1)
+        assert "cannot reach the day" not in page
 
     def test_the_source_select_names_the_FORMAT_not_a_column_it_lacks(
         self, auth_client, seed_user,
@@ -1455,6 +1591,115 @@ class TestTheDeletePost:
         assert len(deleted) == 1
         assert deleted[0].anchors_released == 1
         assert deleted[0].merchants_forgotten == 0
+
+    def test_the_confirmation_previews_the_PLACEMENTS_the_delete_releases(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step ``bank_import:X-gr``, finding **BI-490**.
+
+        The developer ruled 2026-09-11 that the confirmation previews the two
+        figures the receipt reports.  Same world as the receipt case above:
+        deleting the FIRST import releases the later one's placement, so the
+        first's confirmation says so and the later's -- whose delete releases
+        nothing -- does not.  **Then the delete runs and the receipt is
+        graded against the number the confirmation promised**, which is what
+        *from the one read the act counts with* means in a browser.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        first = db.session.query(StatementImport).one()
+        _upload(
+            auth_client, seed_user["account"].id,
+            build.build(build.chained("1575.00", [
+                (date(2026, 3, 5), "-10.00", "POINT OF SALE DEBIT L340 X"),
+            ])),
+            filename="later.csv",
+        )
+        later = db.session.query(StatementImport).filter(
+            StatementImport.id != first.id,
+        ).one()
+
+        body = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        promised = (
+            "It also RELEASES the checked balance 1 other import(s) had placed "
+            "on these lines"
+        )
+        assert promised in _delete_form_for(body, first.id)
+        assert "RELEASES the checked balance" not in _delete_form_for(
+            body, later.id,
+        )
+
+        response = self._delete(
+            auth_client, seed_user["account"].id, first.id,
+        )
+
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert any(
+            "1 other import(s) had placed a stated balance on these lines"
+            in message
+            for _, message in toasts
+        )
+
+    def test_the_confirmation_previews_the_MERCHANTS_the_delete_forgets(
+        self, auth_client, db, seed_user,
+    ):
+        """The other figure, same ruling, same world as the receipt's case.
+
+        Two merchants named, one answered for: the confirmation says ONE, and
+        the receipt afterwards says the same one.  A confirmation counting the
+        merchants the file named would say two.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload([
+            (date(2026, 3, 2), "-25.00",
+             "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)"),
+            (date(2026, 3, 4), "-40.81",
+             "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)"),
+        ]))
+        recorded = db.session.query(StatementImport).one()
+        a_rule(seed_user, "Food Lion")
+        db.session.commit()
+
+        body = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        assert (
+            "It also forgets 1 merchant(s) nothing else names and you have "
+            "stated no rule for" in _delete_form_for(body, recorded.id)
+        )
+
+        response = self._delete(
+            auth_client, seed_user["account"].id, recorded.id,
+        )
+
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert any(
+            "1 merchant(s) were forgotten" in message for _, message in toasts
+        )
+
+    def test_the_confirmation_says_NOTHING_about_either_when_neither_would_go(
+        self, auth_client, db, seed_user,
+    ):
+        """Both clauses are conditional, paired with the two cases above.
+
+        One import naming no merchant: its delete releases no other
+        placement and forgets no merchant, so neither sentence is on its
+        confirmation -- rendered unconditionally each would promise a zero.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        recorded = db.session.query(StatementImport).one()
+        assert db.session.query(Merchant).count() == 0
+
+        body = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        form = _delete_form_for(body, recorded.id)
+        assert "This removes 2 bank line(s)" in form
+        assert "RELEASES the checked balance" not in form
+        assert "merchant(s) nothing else names" not in form
 
     def test_the_page_offers_the_control_with_what_it_would_remove(
         self, auth_client, db, seed_user,

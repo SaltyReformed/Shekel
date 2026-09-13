@@ -376,11 +376,13 @@ class PaycheckPricing:
 
         **Keyed on the raise set as well as the profile since plan step
         salary:S3-f-1** (ruling **R-SAL20**), because that is what a
-        profile's paychecks are a function of.  Every production caller asks
-        for the rows today; a what-if over one raise's end year (plan step
-        **salary:S3-f**) asks for its terms and gets a pricer of its own,
-        memoized under them, so ten probes at one raise set share one pricer
-        and never a payday priced under another set.
+        profile's paychecks are a function of.  The ``/retirement`` picture
+        asks for the set its plan point believes on every render since plan
+        step salary:S3-f-2b -- the rows' own terms at the stored plan, which
+        is this memo's hit, and a probed set's on the rail's what-if, which
+        gets a pricer of its own memoized under them, so ten probes at one
+        raise set share one pricer and never a payday priced under another
+        set; the salary pages and the balance seam still ask for the rows.
 
         **The key is CANONICAL, and it has to be.**  Whatever a caller spells
         the set with -- ``None``, the rows, a tuple of

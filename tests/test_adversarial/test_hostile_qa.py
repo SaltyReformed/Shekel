@@ -14,6 +14,7 @@ import pytest
 
 from app.enums import SettlementBasisEnum
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     default_settle_day,
     freeze_today,
@@ -1009,7 +1010,7 @@ class TestAuthEdgeCases:
         """
         with app.app_context():
             # Create a pay period for user 2.
-            periods2 = pay_period_write.record_paydays(
+            periods2 = record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=2,

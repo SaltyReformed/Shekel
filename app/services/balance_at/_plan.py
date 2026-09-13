@@ -199,7 +199,8 @@ from app.utils.amount_relationships import pricing_load_options
 from app.utils.dates import add_months
 from app.utils.money import round_money
 
-from ._context import BalanceContext, _memoize_once, require_scenario
+from ._context import BalanceContext
+from ._memoize import _memoize_once, require_scenario
 from ._plan_definitions import estimated_from_definitions
 from ._plan_records import _ONE_DAY, LoanForwardPlan, PlannedPayment
 from ._resolution import (
@@ -809,7 +810,7 @@ def memoized_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
     The seam's ONE funnel for the plan: it fills the read pass's per-loan plan
     cache (:attr:`~app.services.balance_at.BalanceContext.plans`) from
     :func:`loan_plan` through the shared store-once primitive
-    (``_context._memoize_once``), so a build happens at most once per account per
+    (``_memoize._memoize_once``), so a build happens at most once per account per
     pass and every later read replays it.  Every seam reader that folds a loan's
     future -- the balance (:func:`~app.services.balance_at.positions`), the derived
     payoff, the required-extra search, the projected interest, the equity chart's
