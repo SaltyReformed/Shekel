@@ -129,7 +129,7 @@ stops the user's stated bound being thrown away without a word.
 
 **The CREATE door states the same rule for a definition that does not exist
 yet** (plan step R7d-f-3, ruling **R-R60**):
-``_transfer_creation_helpers.settle_first_occurrence`` derives the opening
+``_loan_destination.settle_first_occurrence`` derives the opening
 bound for any loan destination and flashes THIS sentence for a stop stated
 where the loan holds no active payment -- the definition being created would
 be that payment.  It reads "stated" as a real stop rather than as the key's
@@ -139,7 +139,7 @@ presence, because that form's server render cannot lock the control and emits
 the two edits that make a definition a loan's recurring transfer** (plan step
 R7d-f-4, plan ledger row **REC-521**): a cadence added to a one-time transfer
 into a loan, or a repeating transfer moved onto one, through the same reading
-(``_transfer_creation_helpers.settle_destination_for_update``, rulings
+(``_loan_destination.settle_destination_for_update``, rulings
 **R-R76** and **R-R77**) -- ahead of :func:`refuse_recurrence_update`, whose
 presence rule below is the standing payment's alone.
 

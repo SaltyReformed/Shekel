@@ -100,7 +100,7 @@
   // runs to the payoff with no stop of its owner's.  A subset of the list
   // above -- a loan that already has a payment is in that one and not this,
   // because a SECOND transfer into it keeps its owner's stop.  Both sets are
-  // the server's (one value, _transfer_creation_helpers.LoanDestinationLocks);
+  // the server's (one value, _loan_destination.LoanDestinationLocks);
   // this file tests membership and decides nothing about loans.
   var loansWithoutPayment = destinationIds(
     'data-loan-account-ids-without-payment'

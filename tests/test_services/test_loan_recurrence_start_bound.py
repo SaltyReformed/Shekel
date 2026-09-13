@@ -618,7 +618,7 @@ class TestTheCreateFormNeverAsksForADateItDiscards:
     and the rule stores the first installment.
 
     Plan step R7c-b closes it at the door
-    (``_transfer_creation_helpers.settle_first_occurrence``): a loan
+    (``_loan_destination.settle_first_occurrence``): a loan
     destination's first occurrence is DERIVED before the rule is built, so
     nothing is authored and replaced, and the form's control is locked by
     ``recurrence_form.js`` rather than asked.  The two cases here are the two

@@ -97,7 +97,7 @@ template with no rule, so the authoring branch wrote the owner's start AND
 stop), and a bounded transfer whose destination is MOVED onto a payment-less
 loan (the identity was judged against the stored destination, then the
 column moved).  That leaf closed both at the door through the create door's
-own reading (``_transfer_creation_helpers.settle_destination_for_update``,
+own reading (``_loan_destination.settle_destination_for_update``,
 rulings **R-R76** and **R-R77**).  What the limit names now is the two above
 and a THIRD that leaf's adversarial review found and R7d-g owns (plan ledger
 row **REC-522**): an ARCHIVED recurring transfer into a loan is editable, is

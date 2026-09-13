@@ -85,7 +85,7 @@
            bound it derives as well -- the loans holding no active payment,
            so the definition created into one IS that loan's payment and the
            "Ends" row locks too (plan step R7d-f-3).  Both come off ONE value
-           (_transfer_creation_helpers.LoanDestinationLocks) so neither can
+           (_loan_destination.LoanDestinationLocks) so neither can
            be emitted without the other.  They are emitted on the CREATE form
            ALONE: an EDIT form already knows whether THIS template is the
            loan's standing payment and locks server-side through
@@ -93,7 +93,7 @@
            locks answering the same question is how they come to disagree.
 
            The locks are affordances.  The enforcement is the route's --
-           _transfer_creation_helpers.settle_first_occurrence derives the date
+           _loan_destination.settle_first_occurrence derives the date
            from the loan's contract whatever the payload says, and refuses a
            stop stated for a loan whose payment this would be (ruling R-R60)
            -- so a browser with JavaScript off, or a crafted POST, gets the

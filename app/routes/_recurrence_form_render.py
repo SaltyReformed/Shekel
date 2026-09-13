@@ -285,7 +285,7 @@ def create_form_recurrence_state() -> RecurrenceFormState:
     there is no definition yet to resolve: a create form takes no read pass,
     and the loan-destination locks it applies as the user picks an account
     are the browser's affordance over the two sets the transfer route emits
-    (:class:`~app.routes._transfer_creation_helpers.LoanDestinationLocks`:
+    (:class:`~app.routes._loan_destination.LoanDestinationLocks`:
     every loan derives the start, a loan holding no payment yet derives the
     stop as well), with the derivation and the refusal the route's
     (``settle_first_occurrence``, rulings **R-R60** and 2026-09-12's on what

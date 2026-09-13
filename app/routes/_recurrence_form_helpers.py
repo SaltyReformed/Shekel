@@ -827,7 +827,7 @@ def resolve_recurrence_rule_for_update(
     # ``schemas/validation/_helpers.RECURRENCE_NEEDS_A_START``.  A transfer
     # into a LOAN never reaches the refusal: the route's destination settle
     # has written the loan's own first occurrence into the payload by now
-    # (``_transfer_creation_helpers.settle_destination_for_update``, plan step
+    # (``_loan_destination.settle_destination_for_update``, plan step
     # R7d-f-4), the same way the create door fills the locked control's gap.
     if (
         data.get("recurrence_unit") is not None

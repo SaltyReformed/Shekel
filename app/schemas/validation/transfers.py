@@ -52,7 +52,7 @@ class TransferTemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     # renders locked.  A locked control posts nothing.
     #
     # The rule is not dropped, it MOVED to where the destination is known:
-    # ``_transfer_creation_helpers.settle_first_occurrence`` derives it for a
+    # ``_loan_destination.settle_first_occurrence`` derives it for a
     # loan and refuses a cadence without one for anything else, with this
     # module's own ``RECURRENCE_NEEDS_A_START``.  A schema never learns which
     # accounts are loans, which is the same reason the update path's one

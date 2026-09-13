@@ -71,12 +71,14 @@ from app.routes._recurrence_form_render import (
 from app.routes._form_errors import load_form_or_redirect
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import RECURRENCE_END_BOUND_KEY
-from app.routes._transfer_creation_helpers import (
-    flush_template_or_namedup_redirect,
-    generate_transfers_for_all_periods,
+from app.routes._loan_destination import (
     loan_destination_locks,
     settle_destination_for_update,
     settle_first_occurrence,
+)
+from app.routes._transfer_creation_helpers import (
+    flush_template_or_namedup_redirect,
+    generate_transfers_for_all_periods,
 )
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._instances import (
@@ -458,7 +460,7 @@ def update_transfer_template(template_id):
     definition a recurring transfer into a loan -- a cadence added to a
     one-time transfer into one, or a repeating transfer moved onto one --
     takes the create door's two loan-destination rules through
-    :func:`~app.routes._transfer_creation_helpers.settle_destination_for_update`,
+    :func:`~app.routes._loan_destination.settle_destination_for_update`,
     which derives the first occurrence into the payload and decides the
     closing bound the write states; and a loan's standing payment cannot be
     moved off its loan at all (ruling **R-R76**).  The FK ownership check

@@ -32,9 +32,7 @@ from app.models.ref import RecurrenceUnit
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.routes._recurrence_form_refusals import LOAN_PAYMENT_BOUND_IS_DERIVED
-from app.routes._transfer_creation_helpers import (
-    LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION,
-)
+from app.routes._loan_destination import LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION
 from app.schemas.validation import end_bound_before_start_message
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
