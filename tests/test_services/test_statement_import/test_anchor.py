@@ -43,6 +43,15 @@ from app.services.statement_import import (
     solve_effective_day,
     weaker_of,
 )
+# ``_anchor``'s partition of the release into a fetch and a predicate has no
+# importer outside the package, so exporting the pair from
+# ``statement_import.__init__`` would be the public surface ``CLAUDE.md``
+# rule 13 forbids.  Reaching into it from the module's own tests is the
+# allowance ``test_merchant_schema`` takes for ``_merchants``.
+from app.services.statement_import._anchor import (
+    anchored_imports,
+    resting_on,
+)
 
 _FILE_CHAIN = StatementBalanceEvidenceEnum.FILE_CHAIN
 _CORROBORATED = StatementBalanceEvidenceEnum.CORROBORATED
@@ -762,3 +771,86 @@ class TestTheDoorsThatChangeLinesReleaseTheAnchorsTheyUndercut:
             seed_user["account"].id, date(2026, 3, 1),
         ) == 0
         assert other.balance_effective_on == date(2026, 3, 3)
+
+
+class TestWhichPlacementsRestOnAChangedDay:
+    """``resting_on`` over ``anchored_imports``: THE predicate, stated once.
+
+    Plan step ``bank_import:X-gr``, finding **BI-490**.  The release door acts
+    on this list and the delete confirmation counts it, so what the pair
+    answers is graded on its own rather than only through the release -- the
+    cases above change a day strictly BEFORE a placement, and none of them
+    graded the boundary.
+    """
+
+    def test_a_placement_ON_the_changed_day_itself_rests_on_it(
+        self, app, db, seed_user,
+    ):
+        """The boundary is inclusive: a placement at *d* rests on *d*'s lines.
+
+        A placement is a conclusion drawn from the lines at or before its own
+        day, so a line recorded ON that day was not in its solve.  Written
+        ``>`` instead of ``>=`` this reads empty on the first assertion.
+        """
+        row = _seed_import(
+            db, seed_user["account"], stated="1085.00",
+            effective_on=date(2026, 3, 3), evidence=_FILE_CHAIN,
+            lines=[(date(2026, 3, 1), "100.00")],
+            period=(date(2026, 3, 1), date(2026, 3, 3)),
+        )
+        anchored = anchored_imports(seed_user["account"].id)
+
+        assert [one.id for one in resting_on(anchored, date(2026, 3, 3))] == [
+            row.id,
+        ]
+        assert resting_on(anchored, date(2026, 3, 4)) == []
+
+    def test_anchored_imports_holds_the_PLACED_ones_only(
+        self, app, db, seed_user,
+    ):
+        """A claim with no placement rests on nothing and is not fetched."""
+        placed = _seed_import(
+            db, seed_user["account"], stated="1085.00",
+            effective_on=date(2026, 3, 3), evidence=_FILE_CHAIN,
+            lines=[(date(2026, 3, 1), "100.00")],
+            period=(date(2026, 3, 1), date(2026, 3, 3)),
+        )
+        _seed_import(
+            db, seed_user["account"], stated="2459.60",
+            lines=[(date(2026, 3, 5), "10.00")],
+            period=(date(2026, 3, 5), date(2026, 3, 5)),
+            file_name="unplaced.csv",
+        )
+
+        assert [
+            one.id for one in anchored_imports(seed_user["account"].id)
+        ] == [placed.id]
+
+    def test_the_exclusion_leaves_the_named_import_and_no_other(
+        self, app, db, seed_user,
+    ):
+        """Two placements rest on the day; naming one leaves exactly the other."""
+        first = _seed_import(
+            db, seed_user["account"], stated="1085.00",
+            effective_on=date(2026, 3, 3), evidence=_FILE_CHAIN,
+            lines=[(date(2026, 3, 1), "100.00")],
+            period=(date(2026, 3, 1), date(2026, 3, 3)),
+        )
+        second = _seed_import(
+            db, seed_user["account"], stated="1095.00",
+            effective_on=date(2026, 3, 5), evidence=_FILE_CHAIN,
+            lines=[(date(2026, 3, 5), "10.00")],
+            period=(date(2026, 3, 5), date(2026, 3, 5)),
+            file_name="second.csv",
+        )
+        anchored = anchored_imports(seed_user["account"].id)
+
+        assert [
+            one.id for one in resting_on(anchored, date(2026, 3, 1), first.id)
+        ] == [second.id]
+        assert [
+            one.id for one in resting_on(anchored, date(2026, 3, 1), second.id)
+        ] == [first.id]
+        assert [
+            one.id for one in resting_on(anchored, date(2026, 3, 1))
+        ] == [first.id, second.id]

@@ -321,6 +321,49 @@ class TestItRecordsWhatTheBankSaid:
         assert first.balance_effective_on is None
         assert first.balance_evidence_id is None
 
+    def test_the_outcome_COUNTS_the_placements_it_released(
+        self, app, db, seed_user,
+    ):
+        """Plan step ``bank_import:X-gr``, finding **BI-488**.
+
+        The door called the release and dropped its return, so
+        ``ImportOutcome`` carried no count and the receipt could say nothing
+        about an import taking a checked balance away from an earlier one.
+        The world is the case above's: one placement released.
+        """
+        _record(seed_user, _file())
+
+        outcome = _record(
+            seed_user,
+            build.build(build.chained(
+                "100.00",
+                _ENTRIES[:2] + [
+                    (date(2026, 3, 3), "-5.00", "POINT OF SALE DEBIT L340 X"),
+                    _ENTRIES[2],
+                ],
+            )),
+            file_name="inserted.csv",
+        )
+
+        assert outcome.anchors_released == 1
+
+    def test_an_import_that_undercuts_nothing_counts_ZERO(
+        self, app, db, seed_user,
+    ):
+        """A first import has nothing to undercut; a re-import adds no line.
+
+        Both zeros are graded, because the second is the branch that skips
+        the release altogether -- a re-import of a held span records no fresh
+        line, and a line already recorded undercuts nothing.
+        """
+        first = _record(seed_user, _file())
+        assert first.anchors_released == 0
+
+        again = _record(seed_user, _file(), file_name="again.csv")
+
+        assert again.recorded_count == 0
+        assert again.anchors_released == 0
+
     def test_a_file_claiming_no_balance_records_NEITHER_column(
         self, app, db, seed_user,
     ):

@@ -26,6 +26,8 @@ from app.enums import (
     StatementBalanceEvidenceEnum,
     StatementSourceEnum,
 )
+from app.models.merchant import Merchant
+from app.models.merchant_rule import MerchantRule
 from app.models.ref import AccountType, StatementSource
 from app.ref_seeds import _REF_TABLE_SEEDS
 from app.services import account_service
@@ -36,6 +38,16 @@ from app.services.statement_import import (
     record_statement,
     recorded_span,
 )
+# The two reads the delete confirmation shares with the act have no importer
+# outside the package, so exporting them from ``statement_import.__init__``
+# would be the public surface ``CLAUDE.md`` rule 13 forbids.  Reaching into
+# the module from its own tests is the allowance ``test_merchant_schema``
+# takes for ``_merchants``.
+from app.services.statement_import._reads import (
+    OwnedLines,
+    lines_by_import,
+    orphan_merchants_by_import,
+)
 
 from . import _csv_builder as build
 
@@ -45,6 +57,16 @@ _ENTRIES = [
     (date(2026, 3, 2), "-25.00", "POINT OF SALE DEBIT L340 COFFEE"),
     (date(2026, 3, 3), "1500.00", "ACH DEPOSIT TOWN OF CLAYTON  PAYROLL"),
     (date(2026, 3, 4), "-40.81", "POINT OF SALE DEBIT L340 FOOD LION"),
+]
+
+#: The same shape with SECU's parenthesised merchant token on each line, for
+#: the cases about which merchants a delete would orphan.  ``_ENTRIES`` above
+#: deliberately names none, and the reads-are-scoped cases rely on that.
+_NAMED = [
+    (date(2026, 3, 2), "-25.00",
+     "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)"),
+    (date(2026, 3, 4), "-40.81",
+     "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)"),
 ]
 
 
@@ -152,6 +174,157 @@ class TestEveryReaderIsScopedToItsOwnAccount:
         assert [row.file_name for row in import_history(seed_user["user"].id, mine.id)] == [
             "mine.csv",
         ]
+
+
+class TestTheTwoReadsTheDeleteConfirmationSharesWithTheAct:
+    """Plan step ``bank_import:X-gr``, finding **BI-490**.
+
+    The receipt reports the placements a delete released and the merchants it
+    forgot; the confirmation previews both, and the developer ruled it does so
+    from the ONE read the act counts with.  These grade the reads on their own:
+    what each keys, what each leaves absent, and that each sees ITS OWN
+    account alone -- the scoping this file exists for.
+    """
+
+    def test_lines_by_import_keys_each_imports_COUNT_and_EARLIEST_day(
+        self, app, db, seed_user,
+    ):
+        """Three facts per import: it is keyed, counted and dated from its lines.
+
+        The re-import owns no line and is ABSENT rather than zero, which is
+        the reading the act gives it: nothing removed, so nothing released.
+        """
+        account = seed_user["account"]
+        first = _record(seed_user, account, _ENTRIES)
+        again = _record(seed_user, account, _ENTRIES, file_name="again.csv")
+        later = _record(
+            seed_user, account,
+            [(date(2026, 3, 9), "-99.00", "LATER")], file_name="later.csv",
+        )
+
+        owned = lines_by_import(account.id)
+
+        assert owned[first.import_id] == OwnedLines(
+            count=3, earliest=date(2026, 3, 2),
+        )
+        assert owned[later.import_id] == OwnedLines(
+            count=1, earliest=date(2026, 3, 9),
+        )
+        assert again.import_id not in owned
+
+    def test_lines_by_import_reads_only_ITS_OWN_account(
+        self, app, db, seed_user, two_accounts,
+    ):
+        """Another account's import is not in this account's map."""
+        mine, theirs = two_accounts
+        _record(seed_user, mine, _ENTRIES, file_name="mine.csv")
+        elsewhere = _record(
+            seed_user, theirs,
+            [(date(2026, 3, 9), "-99.00", "ELSEWHERE")],
+            number="******9999", name="Second Checking",
+            file_name="theirs.csv",
+        )
+
+        assert elsewhere.import_id not in lines_by_import(mine.id)
+
+    def test_orphan_merchants_attribute_a_merchant_to_its_SOLE_namer(
+        self, app, db, seed_user,
+    ):
+        """A merchant two imports name is nobody's to orphan.
+
+        Deleting either import leaves the other's line naming it, so it is
+        attributed to neither; the one only the first import names is the
+        first import's.
+        """
+        account = seed_user["account"]
+        first = _record(seed_user, account, _NAMED)
+        second = _record(
+            seed_user, account,
+            [(date(2026, 3, 9), "-12.00",
+              "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)")],
+            file_name="second.csv",
+        )
+        big_cheese = db.session.query(Merchant).filter(
+            Merchant.name == "Big Cheese Clayton",
+        ).one()
+
+        orphans = orphan_merchants_by_import(account.id)
+
+        assert orphans == {first.import_id: [big_cheese.id]}
+        assert second.import_id not in orphans
+
+    def test_an_ANSWERED_merchant_is_attributed_to_NO_import(
+        self, app, db, seed_user,
+    ):
+        """A stated rule keeps its merchant, so the delete would not forget it."""
+        account = seed_user["account"]
+        first = _record(seed_user, account, _NAMED)
+        food_lion = db.session.query(Merchant).filter(
+            Merchant.name == "Food Lion",
+        ).one()
+        db.session.add(MerchantRule(
+            user_id=seed_user["user"].id,
+            account_id=account.id,
+            merchant_id=food_lion.id,
+            never_a_purchase=True,
+        ))
+        db.session.flush()
+        big_cheese = db.session.query(Merchant).filter(
+            Merchant.name == "Big Cheese Clayton",
+        ).one()
+
+        assert orphan_merchants_by_import(account.id) == {
+            first.import_id: [big_cheese.id],
+        }
+
+    def test_orphan_merchants_reads_only_ITS_OWN_account(
+        self, app, db, seed_user, two_accounts,
+    ):
+        """Another account's import, naming its own merchant, is not in this map."""
+        mine, theirs = two_accounts
+        _record(seed_user, mine, _ENTRIES, file_name="mine.csv")
+        elsewhere = _record(
+            seed_user, theirs,
+            [(date(2026, 3, 9), "-99.00", "ELSEWHERE (Their Grocer)")],
+            number="******9999", name="Second Checking",
+            file_name="theirs.csv",
+        )
+        assert db.session.query(Merchant).filter(
+            Merchant.name == "Their Grocer",
+        ).count() == 1
+
+        assert elsewhere.import_id not in orphan_merchants_by_import(mine.id)
+
+    def test_import_history_previews_BOTH_figures_from_those_reads(
+        self, app, db, seed_user,
+    ):
+        """The page's row carries what deleting it would release and forget.
+
+        Two imports: the first names two merchants and is placed at 03-04;
+        the second adds a line on 03-09 and is placed there.  Deleting the
+        FIRST releases the second's placement (03-09 is at or after 03-02, the
+        earliest day the first's lines post on) and forgets both merchants;
+        deleting the SECOND releases nothing (03-04 is before 03-09) and
+        forgets nothing.  Both directions are asserted because either alone
+        is satisfied by a constant.
+        """
+        account = seed_user["account"]
+        first = _record(seed_user, account, _NAMED)
+        second = _record(
+            seed_user, account,
+            [(date(2026, 3, 9), "-12.00", "POINT OF SALE DEBIT L340 X")],
+            file_name="second.csv",
+        )
+
+        by_id = {
+            row.import_id: row
+            for row in import_history(seed_user["user"].id, account.id)
+        }
+
+        assert by_id[first.import_id].removes.anchors == 1
+        assert by_id[first.import_id].removes.merchants == 2
+        assert by_id[second.import_id].removes.anchors == 0
+        assert by_id[second.import_id].removes.merchants == 0
 
 
 class TestTheImportRowCarriesWhatTheBankSaid:
