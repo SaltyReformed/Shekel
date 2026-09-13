@@ -44,9 +44,8 @@ leaf, which memoizes the breakdown map, and C12 collapses the dashboards' reader
 document's.** `S2` is the arc's cheapest first act, because a derivation that moves `-$19.28` for no
 recorded reason is a baseline nobody can measure `S1` against until the input is named. The
 earnings-lines chain follows the bank_import production scope by `bank_import:R-JJ`, because `R18`
-is what makes one payroll deposit one app row; `S2` sits ahead of it as the arc's first act. `C12`
-and `balance:X-i1` decide for each other -- the merged producer is what gives `income_service`'s
-basis a threaded calendar -- and whichever lands first decides the shape for both.
+is what makes one payroll deposit one app row; `S2` sits ahead of it as the arc's first act. `C12-a`
+decided the shape `balance:X-i1` waited on (**R-SAL27**): the basis takes the pass's PRICER.
 
 ## 1. Root cause
 
@@ -98,7 +97,8 @@ Every figure is dated and rests on the developer's own data; re-measure before c
    the gross, the taxable income, every deduction line, every earnings line and the net; the amount
    model reads a row's amount from it, the salary page and the cockpit render it, the contribution
    tier prices a deduction from ITS period's gross (**R-SAL2**), and the dashboards' "current
-   paycheck" is one entry of it (C12). A second walk is a cache with no column (**balance:R-IZ**).
+   paycheck" is one entry per PROFILE, summed (C12-b). A second walk is a cache with no column
+   (**balance:R-IZ**).
 2. **Every time-varying input is effective-dated, and the base is per paycheck.** The stored fact is
    what ONE paycheck pays, dated, with the annual figure derived beside it (**balance:R-HW(b)**,
    X-av); raises already are; a calibration applies forward from its stub's date (**R-SAL4**, S1)
@@ -113,7 +113,7 @@ Every figure is dated and rests on the developer's own data; re-measure before c
    nothing in the engine reads the process clock (`pay_calendar:C10` moves the five salary-route
    reads; the engine itself has read the owner's calendar since `balance:X-bh-1`).
 5. **A substituted tax year says so, and a year can be completed** (X-at).
-6. **The engine is a package**, one private leaf per verb, the answer **P64** recorded (C12).
+6. **The engine is a package**, one private leaf per verb, the answer **P64** recorded at C12-a.
 
 **What becomes impossible rather than checked**: a calibration restating a paycheck received before
 its stub; a deduction priced off a profile not its own; a 24-of-26 benefit modelled as 26-of-26; two
@@ -228,23 +228,16 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       genuine multi-row deposit still needs. **Its own ruling first**: whether an allowance is
       taxable, and what becomes of the two live income templates and their rows. **MOVES MONEY** (it
       changes `net_pay`); migration; own review.
-- [ ] **C12 -- one current-paycheck producer** (findings **P62** less its `/retirement` site, which
-      `S3-f-2a` took under **R-SAL21** as amended; **P63**; **P64**'s engine half; **N-443** closes
-      at R14's first leaf, which this step builds on). The paycheck projection is spelled THREE
-      times over one calendar -- `income_service.SalaryPricing._net_by_period`,
-      `routes/salary/views.py` and `routes/salary/cockpit.py` each load the tax configs and run
-      `project_salary` -- and the two route sites keep the whole breakdown where the derivation
-      keeps only `net_pay`, so the shared leaf has to be the BREAKDOWN map, moved where every reader
-      can reach it (**balance:R-IZ**: where a layer puts the shared leaf out of reach, move the
-      leaf). The dashboards' "current paycheck" (`savings_dashboard_service/_metrics`,
-      `retirement_dashboard_service`) is one entry of that map. **It needs a RULING first** because
-      it changes what `/savings` and `/retirement` publish, and the merged producer gives
-      `income_service`'s basis a threaded calendar, so
-      **`balance:X-i1` and this step decide for each other**. It also owes the engine's package
-      split (**P64**): `recurrence:R-F16` took it from 1000 to 873 and the growth since has spent
-      almost all of that -- `wc -l app/services/paycheck_calculator.py` reads **992** after
-      `S3-f-1`, EIGHT lines under the ceiling, so this step splits the module before it adds to it
-      rather than after.
+- [x] **C12** `945651c2` -- one current-paycheck producer (the DECOMPOSED parent, split 2026-09-12
+      at the money line, **R-SAL28**, once **R-SAL25**-**R-SAL27** ruled the design asked for from
+      scratch; findings **P62**, **P63**, **P64**'s engine half). Both leaves shipped; the container
+      ships with the last.
+- [x] **C12-a** `26a7b816` -- the engine package (**R-SAL28**), the basis over the pass's pricer
+      (**R-SAL27**; the twelve pass-less sites are **balance:BAL-491**), the four byte-identical
+      direct-engine sites; NO FIGURE MOVED. Closed **P63**, **P64**.
+- [x] **C12-b** `945651c2` -- `/savings` through the pass's pricer, calibrated (**R-SAL25**), summed
+      over active profiles (**R-SAL26**). MOVED MONEY (the figures in R-SAL25; the budget
+      dashboard's savings track shares the producer and moved with it). Closed **P62**.
 - [ ] **X-av -- the pay rate is a dated per-paycheck gross** (**balance:R-HW(b)**; findings
       **N-237**, **N-240**, **N-294**, **N-391**). The stored fact becomes what ONE paycheck pays,
       effective-dated, with `annual_salary` derived as `gross x periods_per_year` and shown beside

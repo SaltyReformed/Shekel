@@ -105,7 +105,7 @@ class TestBillRowSingleBase:
         X-au-c2b): an entry-tracked row answers on ruling E-21's base rather
         than on its contribution, and the producer takes both.
         """
-        basis = cash_ledger.amount_basis(
+        basis = cash_ledger.derived_amount_basis(
             seed_user["user"].id, txn.scenario_id,
         )
         contributions = cash_ledger.contributions_by_id([txn], basis)

@@ -52,7 +52,7 @@ from app.routes._amount_version_actions import (
 )
 from app.routes._recurrence_preview import recurrence_preview_fragment
 from app.services.cash_ledger import (
-    amount_basis,
+    derived_amount_basis,
     resolve_transaction_amount,
 )
 from app.routes._recurrence_conflict_chooser import (
@@ -331,7 +331,7 @@ _TXN_TEMPLATE_KIND = RecurrenceConflictKind(
     # (plan step X-au-c2b).  The basis is built from the row's own pins, which
     # is safe because the chooser prices ONE row at a time.
     resolve_amount=lambda row: resolve_transaction_amount(
-        row, amount_basis(row.account.user_id, row.scenario_id),
+        row, derived_amount_basis(row.account.user_id, row.scenario_id),
     ),
     regenerate_fn=recurrence_engine.regenerate_for_template,
     resolve_fn=recurrence_engine.resolve_conflicts,

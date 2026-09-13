@@ -51,7 +51,7 @@ from app import ref_cache  # noqa: E402  pylint: disable=wrong-import-position
 from app.models import Transaction  # noqa: E402  pylint: disable=wrong-import-position
 from app.services.balance_at import BalanceContext  # noqa: E402  pylint: disable=wrong-import-position
 from app.services.cash_ledger import (  # noqa: E402  pylint: disable=wrong-import-position
-    amount_basis,
+    derived_amount_basis,
     amount_rule,
     resolve_transaction_amount,
 )
@@ -82,7 +82,7 @@ def main() -> int:
 
         cells: dict = defaultdict(lambda: {"same": 0, "differ": []})
         bases = {
-            uid: amount_basis(
+            uid: derived_amount_basis(
                 uid, BalanceContext.build(uid, as_of=date.today()).scenario_id,
             )
             for uid in owner

@@ -83,7 +83,7 @@ from tests._test_helpers import (
     settlement_columns,
 )
 from app.services.cash_ledger import (
-    amount_basis,
+    derived_amount_basis,
     resolve_transfer_amount,
     settled_cash_leg,
 )
@@ -899,7 +899,7 @@ class TestTheCheapAccessorRefusesAnUnsettledRow:
             ):
                 _ = resolve_transfer_amount(
                     xfer,
-                    amount_basis(
+                    derived_amount_basis(
                         seed_full_user_data["user"].id,
                         seed_full_user_data["scenario"].id,
                     ),

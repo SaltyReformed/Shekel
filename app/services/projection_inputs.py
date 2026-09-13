@@ -562,10 +562,12 @@ def load_payroll_feeds(
             calendar already names.  Two homes for one fact on the very
             function whose case against a separate calendar is that pairing
             them is a hazard -- so the ``user_id`` every query below is
-            scoped by is read off ``paychecks.calendar``, which cannot
-            disagree with the paydays.  *The calendar's PAYDAYS are not read
-            here any more* (plan step salary:S3-e-2): the owner is the only
-            thing this function takes off it.
+            scoped by is read off the pricer (``paychecks.user_id``, pinned
+            beside its calendar source and refused at the first derivation if
+            the two disagree, plan step salary:C12), which cannot disagree
+            with the paydays and costs no derivation to ask.  *The calendar's
+            PAYDAYS are not read here any more* (plan step salary:S3-e-2):
+            the owner is the only thing this function takes off it.
         account_ids: The accounts to price a feed for.  An empty list returns
             an empty map without issuing a query.
         params_by_account: ``{account_id: InvestmentParams}`` from
@@ -613,7 +615,7 @@ def load_payroll(
         :func:`load_payroll_feeds` documents, TOTAL over *account_ids*.
     """
     wiring = load_payroll_wiring(
-        paychecks.calendar.user_id, account_ids, params_by_account,
+        paychecks.user_id, account_ids, params_by_account,
     )
     return wiring, price_payroll_feeds(wiring, paychecks)
 

@@ -2979,7 +2979,7 @@ class TestNetBiweeklyMismatchFixes:
             from app.services import cash_ledger  # pylint: disable=import-outside-toplevel
             priced = cash_ledger.amounts_by_id(
                 [txn_2026, txn_2027],
-                cash_ledger.amount_basis(user.id, seed_user["scenario"].id),
+                cash_ledger.derived_amount_basis(user.id, seed_user["scenario"].id),
             )
             net_2026 = priced[txn_2026.id]
             net_2027 = priced[txn_2027.id]
