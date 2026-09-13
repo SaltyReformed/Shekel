@@ -29,7 +29,6 @@ from app import ref_cache
 from app.enums import RecurrenceUnitEnum, TxnTypeEnum
 from app.services import (
     account_service,
-    paycheck_calculator,
     recurrence_engine,
     salary_profile_service,
     template_amount_service,
@@ -39,8 +38,6 @@ from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCadence, cadence_for
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.services.generation_schedule import GenerationSchedule
-from app.services.payroll_basis import PayrollBasis
-from app.services.tax_config_service import load_tax_configs_for_year
 from app.routes._commit_helpers import (
     DbErrorContext,
     StaleConflictContext,
@@ -322,14 +319,13 @@ def create_profile():
             or (periods[0] if periods else None)
         )
         if ref_period:
-            # Resolved for the REFERENCE PERIOD's own tax year, matching the
-            # key every other paycheck for this profile is computed under.
-            tax_configs = load_tax_configs_for_year(
-                current_user.id, profile, ref_period.start_date.year,
-            )
-            init_breakdown = paycheck_calculator.calculate_paycheck(
-                PayrollBasis(profile, calendar), ref_period, tax_configs,
-            )
+            # The pass's pricer (plan step salary:C12, ledger row P62): the
+            # tax configs resolve for the reference period's own year, as they
+            # do for every other paycheck this profile prices.  It was a
+            # direct ``calculate_paycheck`` passing no calibration, and the
+            # figure is the same: a profile flushed in this request has no
+            # calibration row for the pricer to find.
+            init_breakdown = ctx.paychecks().for_profile(profile).at(ref_period)
             # Through the amount's one write door (plan step X-au-a).  The
             # profile above is already flushed and active, so the door sees a
             # salary-linked template: the column moves and NO version is

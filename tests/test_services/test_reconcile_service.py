@@ -37,7 +37,7 @@ from app.services import (
     status_seam,
     transfer_service,
 )
-from app.services.cash_ledger import amount_basis
+from app.services.cash_ledger import derived_amount_basis
 from app.services.pay_calendar import (
     PayCalendar,
     calendar_for,
@@ -48,6 +48,7 @@ from app.utils.log_events import (
     EVT_TRANSFERS_RECONCILED,
 )
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     an_entered_day,
     count_amount_bases,
@@ -471,7 +472,7 @@ class TestTheOutstandingSet:
         isolated by the test below, which is the only shape that can.
         """
         with app.app_context():
-            other_period = pay_period_write.record_paydays(
+            other_period = record_paydays_across_a_hole(
                 user_id=seed_second_user["user"].id,
                 first_payday=date(2026, 1, 2), num_periods=1, rhythm=rhythm_of(14),
             )[0]
@@ -1238,7 +1239,7 @@ class TestTheTransactionArm:
                 # (plan step X-au-j).  Built here rather than defaulted inside
                 # the arm: the parameter is required precisely so a producer
                 # cannot quietly rebuild its caller's derivations.
-                amount_basis(owner_id, seed_user["scenario"].id),
+                derived_amount_basis(owner_id, seed_user["scenario"].id),
             )
 
     def test_a_settled_row_is_neither_offered_nor_re_settled(
@@ -1534,7 +1535,7 @@ class TestTheScopeIsTheCALENDARsNotTheTables:
                 for period in whole.periods
                 if period.period_id != drop_period_id
             ],
-            whole.rhythm,
+            whole.eras,
             seed_user["user"].id,
             history_opens_on=None,
         )

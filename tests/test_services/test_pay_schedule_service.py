@@ -141,13 +141,15 @@ class TestTheEraDoors:
             assert facts.latest_era.rhythm.cadence_days == 7
             assert pay_schedule_service.resolve_cadence(user_id) == 7
 
-    def test_retire_eras_takes_after_a_day_or_everything(self, app, db, bare_user):
-        """``effective_after`` retires the eras past a payday; ``None`` all.
+    def test_retire_eras_keeps_the_standing_set_or_nothing(self, app, db, bare_user):
+        """``standing`` names the eras to KEEP; an empty tuple retires all.
 
-        Strictly after: the era taking effect ON the last surviving payday
-        still describes it and stays.  Re-read through ``reread_schedule``
-        after each delete, because the bulk delete synchronises nothing and
-        the collection is view-only (the module docstring's own warning).
+        Since plan step ``C17-b-2`` the door takes the standing set rather
+        than a boundary day, so the decision is made once, in cash days, by
+        ``pay_era_write.eras_describing``.  Re-read through
+        ``reread_schedule`` after each delete, because the bulk delete
+        synchronises nothing and the collection is view-only (the module
+        docstring's own warning).
         """
         user_id = bare_user["user"].id
         with app.app_context():
@@ -159,7 +161,9 @@ class TestTheEraDoors:
                 pay_era_write.mint_era(user_id, era_of(day, cadence))
             db.session.flush()
 
-            assert pay_era_write.retire_eras(user_id, date(2026, 2, 20)) == 1
+            assert pay_era_write.retire_eras(
+                user_id, (date(2026, 1, 2), date(2026, 2, 20)),
+            ) == 1
             assert [
                 e.effective_from
                 for e in pay_schedule_service.ScheduleFacts.of(
@@ -167,7 +171,7 @@ class TestTheEraDoors:
                 ).eras
             ] == [date(2026, 1, 2), date(2026, 2, 20)]
 
-            assert pay_era_write.retire_eras(user_id, None) == 2
+            assert pay_era_write.retire_eras(user_id, ()) == 2
             assert pay_schedule_service.ScheduleFacts.of(
                 pay_schedule_service.reread_schedule(user_id),
             ) is None
@@ -348,7 +352,7 @@ class TestResolveCadence:
             # The era is a SECOND child of the row since plan step C17-a
             # (``fk_pay_eras_schedule``); it goes first so the refusal graded
             # is the payday key's, which is this case's subject.
-            pay_era_write.retire_eras(user_id, None)
+            pay_era_write.retire_eras(user_id, ())
             db.session.flush()
 
             with pytest.raises(IntegrityError) as excinfo:
@@ -506,7 +510,7 @@ class TestResolveSchedule:
         with pytest.raises(PayCalendarError, match="must be a plain int"):
             PayCalendar.from_paydays(
                 paydays=[(1, date(2026, 1, 2))],
-                rhythm=impossible.rhythm,
+                eras=impossible.eras,
                 user_id=1,
                 history_opens_on=impossible.history_opens_on,
             )
@@ -1173,8 +1177,11 @@ class TestTheStoredConventionReachesTheCalendar:
             # the PAY CALENDAR, which is what ``C14-e-3``'s producer reads and
             # what ``extend_pay_periods`` takes its rhythm from now that
             # ``resolve_shift`` is gone.  One read answers both, so this is
-            # also the reconciler for the two doors.
-            assert calendar_for(user_id).rhythm == facts.rhythm
+            # also the reconciler for the two doors.  Since plan step
+            # ``C17-b-2`` the calendar carries the ERAS whole, so the pair
+            # reaches it as the era that holds it.
+            assert calendar_for(user_id).eras == facts.eras
+            assert calendar_for(user_id).eras[-1].rhythm == facts.rhythm
 
     def test_an_UNMODELLED_id_is_refused_rather_than_read_as_none(
         self, app, db, bare_user,

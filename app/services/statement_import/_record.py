@@ -80,6 +80,16 @@ class ImportOutcome:
         balance: What the file claimed the account held and what this import
             made of it, or ``None`` when the file states no balance.  The same
             value the row stores, so the receipt and the page say one thing.
+        anchors_released: Other imports whose placed balance rested on days
+            this import's fresh lines reach, and which
+            :func:`~._anchor.release_anchors_from` therefore released.  **On
+            the receipt since plan step ``bank_import:X-gr``** (finding
+            **BI-488**): the door counted them and dropped the count, so an
+            owner learned that an import had taken a checked balance away
+            from an earlier one only from the imports table's badge flipping
+            to *not placed*, and only if they looked.  Zero for an import
+            that recorded no fresh line, because a line already recorded
+            undercuts nothing.
     """
 
     import_id: int
@@ -88,6 +98,7 @@ class ImportOutcome:
     period_start: date
     period_end: date
     balance: ImportedBalance | None
+    anchors_released: int
 
     @property
     def already_known(self) -> int:
@@ -565,13 +576,19 @@ def record_statement(
     # that line, and an adversarial review reproduced one storing a day two
     # days early under a *corroborated* badge because of it.  This import's
     # OWN anchor is not among them: it was solved against its own complete
-    # line list, so it accounts for every line staged here.
-    if reconciled.fresh:
+    # line list, so it accounts for every line staged here.  **The count is
+    # KEPT** (plan step ``bank_import:X-gr``, finding **BI-488**): it is what
+    # tells the receipt that this file took a checked balance away from an
+    # earlier import, which until then the owner learned only from the imports
+    # table's badge.
+    anchors_released = (
         release_anchors_from(
             account_id,
             min(keyed.line.posted_on for keyed in reconciled.fresh),
             except_import_id=statement_import.id,
         )
+        if reconciled.fresh else 0
+    )
     db.session.flush()
 
     return ImportOutcome(
@@ -581,4 +598,5 @@ def record_statement(
         period_start=period_start,
         period_end=period_end,
         balance=balance,
+        anchors_released=anchors_released,
     )

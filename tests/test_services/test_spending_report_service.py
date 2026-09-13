@@ -35,7 +35,7 @@ from app.services import (
 )
 from app.services.pay_calendar import PayCalendar
 from app.utils.dates import display_today
-from app.services.cash_ledger import amount_basis
+from app.services.cash_ledger import derived_amount_basis
 from app.services.row_valuation import settled_contribution
 from app.services.spending_report_service import (
     Comparison,
@@ -66,21 +66,23 @@ from app.services.spending_report_service._window import (
     _spent_total,
 )
 from tests._test_helpers import (
-    rhythm_of,
+    record_paydays_across_a_hole,
     add_entry,
     create_envelope_txn,
     create_savings_account,
     create_settled_transfer,
     create_transfer,
-    generate_row_of,
-    make_expense_template,
-    state_template_price,
     default_settle_day,
+    eras_of,
+    generate_row_of,
     last_covered_day,
+    make_expense_template,
     pay_periods_hydrated,
+    rhythm_of,
     settle_day_columns,
     settlement_columns,
     settlement_if_settling,
+    state_template_price,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -565,7 +567,7 @@ def _calendar_scope(paydays, cadence_days=14, user_id=1):
     """
     return _ScopeIds(
         user_id=user_id, account_id=1, scenario_id=1,
-        calendar=PayCalendar.from_paydays(paydays, rhythm_of(cadence_days), user_id, history_opens_on=None),
+        calendar=PayCalendar.from_paydays(paydays, eras_of(paydays, cadence_days), user_id, history_opens_on=None),
     )
 
 
@@ -774,7 +776,7 @@ class TestTheChartReadsTheDerivedOrdinal:
         to NOBODY takes the same branch as one belonging to someone else.
         """
         with app.app_context():
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=10,
@@ -1219,7 +1221,7 @@ class TestDeltas:
             )
             surprises = _build_surprises(
                 rows,
-                amount_basis(
+                derived_amount_basis(
                     seed_user["user"].id, seed_user["scenario"].id,
                 ),
             )
@@ -1762,7 +1764,7 @@ class TestTheActualHalfAsksTheAmountModel:
                 "fall-through rather than the settlement arm"
             )
 
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
 
@@ -1806,7 +1808,7 @@ class TestTheActualHalfAsksTheAmountModel:
                 )
                 .one()
             )
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
 
@@ -1878,7 +1880,7 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
 
             surprises = _build_surprises(
                 [expense_leg],
-                amount_basis(seed_user["user"].id, seed_user["scenario"].id),
+                derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id),
             )
 
             assert len(surprises.rows) == 1, (
@@ -1998,7 +2000,7 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
 
             surprises = _build_surprises(
                 [txn],
-                amount_basis(seed_user["user"].id, seed_user["scenario"].id),
+                derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id),
             )
 
             assert len(surprises.rows) == 1

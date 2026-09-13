@@ -43,11 +43,11 @@ hand carries ``is_override`` and is held back as a conflict, exactly as it is
 for any other template edit.
 
 *The claim above is bounded, and the bound was MEASURED rather than reasoned:
-``routes/salary/_helpers._regenerate_salary_transactions`` regenerates with
-``effective_from=date.today()``, so a frozen row in a PAST period is outside
-the maintain window and stays frozen.  That is the right answer for it -- the
-paycheck it plans has already happened -- but a first draft of this paragraph
-said the round trip was total, and
+``salary_regeneration.regenerate_salary_transactions`` (a route helper until
+plan step salary:S3-f-3) regenerates with ``effective_from=date.today()``, so
+a frozen row in a PAST period is outside the maintain window and stays frozen.
+That is the right answer for it -- the paycheck it plans has already happened
+-- but a first draft of this paragraph said the round trip was total, and
 ``tests/test_services/test_archiving_a_salary_profile.py`` refuted it on its
 first run and now pins both halves.*
 
@@ -68,7 +68,7 @@ import logging
 
 from app.exceptions import AmountUnresolvable
 from app.services.amount_ownership import state_own_amount
-from app.services.cash_ledger import amount_basis, resolve_transaction_amount
+from app.services.cash_ledger import derived_amount_basis, resolve_transaction_amount
 from app.utils.log_events import BUSINESS, EVT_SALARY_ROWS_FROZEN, log_event
 
 logger = logging.getLogger(__name__)
@@ -120,7 +120,7 @@ def archive_profile(profile) -> int:
 
     # ONE basis per SCENARIO, not one per row.  A basis is pinned to an owner
     # and a scenario and holds the derivations lazily
-    # (``cash_ledger.amount_basis``), so a fresh one per row would run
+    # (``cash_ledger.derived_amount_basis``), so a fresh one per row would run
     # ``paycheck_calculator.project_salary`` over the owner's whole pay-period
     # set once per row -- 59 projections on production for one click, which is
     # findings **N-228** / **N-268** exactly.  A row states its own scenario in
@@ -132,7 +132,7 @@ def archive_profile(profile) -> int:
         if row.amount_source_id is None:
             continue
         if row.scenario_id not in bases:
-            bases[row.scenario_id] = amount_basis(
+            bases[row.scenario_id] = derived_amount_basis(
                 profile.user_id, row.scenario_id,
             )
         try:

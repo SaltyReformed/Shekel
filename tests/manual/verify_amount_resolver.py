@@ -289,7 +289,7 @@ from app.models.transfer import Transfer
 from app.services import template_amount_service
 from app.services.cash_ledger import (
     AmountRule,
-    amount_basis,
+    derived_amount_basis,
     amount_rule,
     resolve_transaction_amount,
 )
@@ -1068,7 +1068,7 @@ def _resolve_everything():
     answers = {}
     for (account_id, scenario_id), rows in _load_groups().items():
         account = db.session.get(Account, account_id)
-        basis = amount_basis(account.user_id, scenario_id)
+        basis = derived_amount_basis(account.user_id, scenario_id)
         for txn in rows:
             answers[txn.id] = _resolved_or_refusal(txn, basis)
     return answers
@@ -1093,7 +1093,7 @@ def _baseline_records():
     records = []
     for (account_id, scenario_id), rows in _load_groups().items():
         account = db.session.get(Account, account_id)
-        basis = amount_basis(account.user_id, scenario_id)
+        basis = derived_amount_basis(account.user_id, scenario_id)
         for txn in rows:
             rule = amount_rule(txn)
             resolved, refusal = _resolved_or_refusal(txn, basis)

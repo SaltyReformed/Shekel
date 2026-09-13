@@ -231,10 +231,10 @@ def _respace_paydays(db, user_id, cadence_days):
         first_payday=date(2026, 1, 2),
         num_periods=10,
         rhythm=rhythm_of(cadence_days),
-        replacing=pay_period_write.SpanReplacement(retiring_ids={
+        retiring_ids={
             pid for (pid,) in db.session.query(PayPeriod.id)
             .filter_by(user_id=user_id)
-        }),
+        },
     )
     db.session.commit()
 
@@ -2979,7 +2979,7 @@ class TestNetBiweeklyMismatchFixes:
             from app.services import cash_ledger  # pylint: disable=import-outside-toplevel
             priced = cash_ledger.amounts_by_id(
                 [txn_2026, txn_2027],
-                cash_ledger.amount_basis(user.id, seed_user["scenario"].id),
+                cash_ledger.derived_amount_basis(user.id, seed_user["scenario"].id),
             )
             net_2026 = priced[txn_2026.id]
             net_2027 = priced[txn_2027.id]

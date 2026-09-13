@@ -54,9 +54,9 @@ from app.services.statement_match import NewEnvelope, PurchaseCreation
 # module reaches into it, which is the allowance every sibling here takes.
 from app.services.statement_match import _create  # pylint: disable=protected-access
 from tests._test_helpers import (
+    eras_of,
     last_covered_day,
     open_books_before_the_first_assertion,
-    rhythm_of,
 )
 
 from ._builders import (
@@ -1165,8 +1165,7 @@ class TestTheSpanADestinationCarriesIsDERIVED:
             a_transaction(
                 seed_user, name="Groceries", amount="500.00", is_envelope=True,
             )
-            empty = pay_calendar.PayCalendar.from_paydays(
-                [], rhythm_of(14), seed_user["user"].id, history_opens_on=None,
+            empty = pay_calendar.PayCalendar.from_paydays([], eras_of([], 14), seed_user["user"].id, history_opens_on=None,
             )
 
             assert statement_match.destinations_for(

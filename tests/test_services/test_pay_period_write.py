@@ -40,6 +40,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 
 from app.exceptions import ValidationError
 from app import ref_cache
@@ -67,6 +68,7 @@ from tests._test_helpers import (
     capture_sql_statements,
     create_savings_account,
     freeze_today,
+    record_paydays_across_a_hole,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -439,10 +441,258 @@ _FLOOR_PER_CONVENTION = [
 ]
 
 
+class TestTheCeilingRefusesASkippedPaycheck:
+    """Rulings **R-PC67** and **R-PC76**: the floor's mirror, in the one writer.
+
+    Plan step ``pay_calendar:C17-c-2a``, closing ledger row **P80**.  A
+    batch whose earliest new payday falls at or past the SECOND payday the
+    owner's plan projects after their record leaves a whole paycheck
+    missing, and the derived calendar -- which has no way to say "no
+    paycheck here" -- files every day between into the paycheck before.
+    ``pay_period_batch.reject_skipped_paycheck`` refuses it from EVERY
+    batch that has a survivor, whichever door sent it: this class grades a
+    plain append with no ``retiring_ids`` at all, because the refusal it
+    replaced (``reject_unconfirmed_gap``) graded only a batch that retired
+    something and a stated append inherited nothing.
+    """
+
+    def _two_fortnightly_periods(self, user_id):
+        """Record 2026-01-02 and 2026-01-16; the plan's next paydays are 01-30 and 02-13."""
+        return pay_period_write.record_paydays(
+            user_id=user_id, first_payday=date(2026, 1, 2),
+            num_periods=2, rhythm=rhythm_of(14),
+        )
+
+    def test_a_plain_append_on_the_second_planned_payday_is_refused(
+        self, app, db, bare_user,
+    ):
+        """02-13 skips the 01-30 paycheck; refused, and nothing is written."""
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._two_fortnightly_periods(user_id)
+            db.session.commit()
+
+            with pytest.raises(ValidationError) as caught:
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=date(2026, 2, 13),
+                    num_periods=3, rhythm=rhythm_of(14),
+                )
+            db.session.rollback()
+            message = str(caught.value)
+            assert "before 2026-02-13" in message
+            assert "2026-01-30" in message
+            assert len(all_periods(user_id)) == 2
+
+    def test_the_window_is_the_floor_up_to_the_ceiling_exclusive(
+        self, app, db, bare_user,
+    ):
+        """01-30 (the floor) and 02-12 are accepted; 02-13 is not.
+
+        Both directions of the bound in one case, so a ceiling tightened to
+        any tolerance or loosened by a day fails here.  02-12 is a phase
+        correction: the 01-16 paycheck runs 27 days and the era's phase
+        moves to 02-12.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._two_fortnightly_periods(user_id)
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="before 2026-02-13"):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=date(2026, 2, 13),
+                    num_periods=1, rhythm=rhythm_of(14),
+                )
+            db.session.rollback()
+
+            created = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 2, 12),
+                num_periods=1, rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+            assert [p.start_date for p in created] == [date(2026, 2, 12)]
+            assert pay_schedule_service.resolve_schedule(
+                user_id,
+            ).eras[-1].effective_from == date(2026, 2, 12)
+
+    def test_it_reads_the_stored_plan_not_the_batchs_own_rhythm(
+        self, app, db, bare_user,
+    ):
+        """A weekly batch opening 02-13 still skips the fortnightly 01-30.
+
+        The ceiling is where the OWNER'S plan pays a second time, so a batch
+        stating a shorter cadence cannot buy itself a later window: the
+        paycheck skipped is one of the rhythm they have, not of the one they
+        are about to state.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._two_fortnightly_periods(user_id)
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="before 2026-02-13"):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=date(2026, 2, 13),
+                    num_periods=4, rhythm=rhythm_of(7),
+                )
+            db.session.rollback()
+            assert len(all_periods(user_id)) == 2
+
+    def test_a_batch_whose_first_day_the_record_holds_is_bounded_on_what_it_adds(
+        self, app, db, bare_user,
+    ):
+        """Re-running from 01-02 with a larger count adds 01-30 -- the plan's own next."""
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._two_fortnightly_periods(user_id)
+            db.session.commit()
+
+            created = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 2),
+                num_periods=4, rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+            assert [p.start_date for p in created] == [
+                date(2026, 1, 30), date(2026, 2, 13),
+            ]
+
+    def test_a_first_time_schedule_has_no_plan_to_skip(self, app, db, bare_user):
+        """No survivor, no ceiling: the opening batch may start anywhere."""
+        with app.app_context():
+            user_id = bare_user["user"].id
+            created = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2030, 7, 5),
+                num_periods=1, rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+            assert [p.start_date for p in created] == [date(2030, 7, 5)]
+
+    def test_the_ceiling_reads_the_piecewise_plan_across_a_seam(
+        self, app, db, bare_user,
+    ):
+        """After a cadence change the second planned payday is the NEW era's.
+
+        Paydays 01-02 and 01-16 at 14, then a regenerate to weekly from 01-30
+        (on the plan's next payday, so it mints an era there and retires
+        nothing).  The record now ends 01-30 in the weekly era: the plan's
+        next is 02-06 and the ceiling 02-13, and a batch opening 02-13 is
+        refused where the old fortnightly rhythm would have allowed it.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._two_fortnightly_periods(user_id)
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 30),
+                num_periods=1, rhythm=rhythm_of(7),
+            )
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="before 2026-02-13"):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=date(2026, 2, 13),
+                    num_periods=1, rhythm=rhythm_of(7),
+                )
+            db.session.rollback()
+            created = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 2, 12),
+                num_periods=1, rhythm=rhythm_of(7),
+            )
+            db.session.commit()
+            assert [p.start_date for p in created] == [date(2026, 2, 12)]
+
+    def test_it_reads_the_eras_the_batch_leaves_standing_not_the_stored_ones(
+        self, app, db, bare_user,
+    ):
+        """A rebuild that RETIRES an era is bounded by the kept rhythm's plan.
+
+        This step's adversarial review built the case.  Fortnightly from
+        01-02 (01-02, 01-16), then a legal 30-day era minted at 01-30 (01-30,
+        03-01).  A fortnightly rebuild retiring that era's two periods: from
+        02-20 it must be REFUSED -- against the stored plan the ceiling was
+        the 30-day era's 03-01 and the batch wrote a 35-day 01-16 paycheck
+        with 01-30 and 02-13 missing; the kept rhythm's own window is
+        ``[01-30, 02-13)``.  From 02-06 it must be ACCEPTED: a 7-day move of
+        the kept rhythm's next paycheck, which the stored plan would have
+        refused as skipping the 30-day era's own second payday.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._two_fortnightly_periods(user_id)
+            thirty = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 30),
+                num_periods=2, rhythm=rhythm_of(30),
+            )
+            db.session.commit()
+            assert [p.start_date for p in thirty] == [
+                date(2026, 1, 30), date(2026, 3, 1),
+            ]
+            retiring = {p.id for p in thirty}
+
+            with pytest.raises(ValidationError, match="before 2026-02-13"):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=date(2026, 2, 20),
+                    num_periods=2, rhythm=rhythm_of(14), retiring_ids=retiring,
+                )
+            db.session.rollback()
+
+            created = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 2, 6),
+                num_periods=2, rhythm=rhythm_of(14), retiring_ids=retiring,
+            )
+            db.session.commit()
+            assert [p.start_date for p in created] == [
+                date(2026, 2, 6), date(2026, 2, 20),
+            ]
+            eras = pay_schedule_service.resolve_schedule(user_id).eras
+            assert [(e.effective_from, e.rhythm.cadence_days) for e in eras] == [
+                (date(2026, 1, 2), 14), (date(2026, 2, 6), 14),
+            ]
+
+    def test_the_tree_helper_writes_the_hole_the_writer_refuses_and_only_that(
+        self, app, db, bare_user,
+    ):
+        """``record_paydays_across_a_hole`` is for the refused state alone.
+
+        It writes the rows the writer used to and mints the era the writer
+        would (a weekly block beside a fortnightly record), so a fixture
+        that needs a 2026 block beside a 2024 opening payday keeps every
+        observable it had -- and it REFUSES a batch the writer would accept,
+        so it cannot quietly become the default door.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._two_fortnightly_periods(user_id)
+            db.session.commit()
+
+            with pytest.raises(AssertionError, match="would accept"):
+                record_paydays_across_a_hole(
+                    user_id, date(2026, 1, 30), 1, rhythm_of(14),
+                )
+            with pytest.raises(ValidationError, match="on or after 2026-01-30"):
+                record_paydays_across_a_hole(
+                    user_id, date(2026, 1, 20), 1, rhythm_of(14),
+                )
+            created = record_paydays_across_a_hole(
+                user_id, date(2026, 7, 3), 2, rhythm_of(7),
+            )
+            db.session.commit()
+            assert [p.start_date for p in created] == [
+                date(2026, 7, 3), date(2026, 7, 10),
+            ]
+            eras = pay_schedule_service.resolve_schedule(user_id).eras
+            assert [(e.effective_from, e.rhythm.cadence_days) for e in eras] == [
+                (date(2026, 1, 2), 14), (date(2026, 7, 3), 7),
+            ]
+            assert [p.start_date for p in all_periods(user_id)] == [
+                date(2026, 1, 2), date(2026, 1, 16),
+                date(2026, 7, 3), date(2026, 7, 10),
+            ]
+
+
 class TestTheFloorFollowsTheProducer:
     """Plan step **C14-d**: the floor is where the last paycheck ENDS.
 
-    ``_reject_backward_payday`` open-coded ``latest_payday + cadence_days`` and
+    ``reject_backward_payday`` open-coded ``latest_payday + cadence_days`` and
     a sentence in its own docstring held that equal to the last saved period's
     derived end -- rule 14's tell, one value with two homes and a maintenance
     contract.  It calls
@@ -482,7 +732,7 @@ class TestTheFloorFollowsTheProducer:
         The two recorded days ARE the same under all three conventions, and
         since ``C14-e-3`` that is a fact about these two DAYS rather than about
         the writer: 2025-12-04 and 2025-12-18 are ordinary Thursdays, so each
-        is its own displacement.  ``_requested_paydays`` records the DISPLACED
+        is its own displacement.  ``requested_paydays`` records the DISPLACED
         day now (ledger row **PC-497** fault 1), and a fixture built on a
         closed day would record something else.
         """
@@ -611,7 +861,7 @@ class TestTheFloorFollowsTheProducer:
                     user_id=user_id, first_payday=date(2025, 12, 17),
                     num_periods=1,
                     rhythm=rhythm_of(14, BusinessDayShiftEnum.PRIOR),
-                    replacing=pay_period_write.SpanReplacement(retiring_ids=doomed),
+                    retiring_ids=doomed,
                 )
             db.session.rollback()
 
@@ -619,7 +869,7 @@ class TestTheFloorFollowsTheProducer:
                 user_id=user_id, first_payday=date(2025, 12, 18),
                 num_periods=1,
                 rhythm=rhythm_of(14, BusinessDayShiftEnum.PRIOR),
-                replacing=pay_period_write.SpanReplacement(retiring_ids=doomed),
+                retiring_ids=doomed,
             )
             db.session.commit()
             assert [period.start_date for period in all_periods(user_id)] == [
@@ -699,7 +949,7 @@ class TestTheFloorFollowsTheProducer:
 class TestTheFloorReadsTheSTOREDConventionAndNotTheBatchS:
     """The obligation ``C14-d`` wrote down, ``C14-e-1`` moved, and this step GRADES.
 
-    ``_reject_backward_payday`` asks how far the owner's EXISTING calendar
+    ``reject_backward_payday`` asks how far the owner's EXISTING calendar
     already reaches, so it must read the convention ``budget.pay_schedule``
     holds and not the one the incoming batch carries.  A batch that CHANGES the
     convention would otherwise compute its floor under the new one while
@@ -800,6 +1050,178 @@ class TestTheFloorReadsTheSTOREDConventionAndNotTheBatchS:
             assert [period.start_date for period in all_periods(user_id)] == [
                 self._ANCHOR,
             ]
+
+
+class TestTheFloorAnchorsOnTheEra:
+    """Plan step **C17-b-2** (rulings R-PC66, R-PC72): the floor is on the ERA's grid.
+
+    ``reject_backward_payday`` stepped one cadence from the last RECORDED
+    payday, which **R-PC47** says may fall off the cadence -- so an owner paid
+    a day early was bounded a day early, and a batch on the grid's own next
+    payday was admitted a day before the paycheck it stood for had run its
+    course (ledger row **N-495** at the writer).  It reads
+    :func:`~app.services.pay_calendar.payday_after` now: the record is
+    matched to the planned payday it stands for and the floor is the planned
+    payday after that, which is the same call
+    :func:`~app.services.pay_calendar.derive_periods` closes the last saved
+    period with.
+
+    The off-grid record is put there by SQL -- the doors record grid days
+    displaced under the convention, and an early payment payroll made for a
+    reason the convention does not model is the shape **R-PC47** says a
+    record may hold and the integrity sweep warns on.
+    """
+
+    def _paid_a_day_early(self, user_id):
+        """Three fortnightly paydays from 2026-01-02, the last paid 01-29 not 01-30."""
+        pay_period_write.record_paydays(
+            user_id=user_id, first_payday=date(2026, 1, 2),
+            num_periods=3, rhythm=rhythm_of(14),
+        )
+        db_session = pay_period_write.db.session
+        db_session.flush()
+        db_session.execute(text(
+            "UPDATE budget.pay_periods SET start_date = :early "
+            " WHERE user_id = :uid AND start_date = :planned"
+        ), {"early": date(2026, 1, 29), "planned": date(2026, 1, 30), "uid": user_id})
+        db_session.commit()
+        assert [p.start_date for p in all_periods(user_id)] == [
+            date(2026, 1, 2), date(2026, 1, 16), date(2026, 1, 29),
+        ]
+
+    def test_the_planned_payday_after_the_early_one_is_the_floor(
+        self, app, db, bare_user,
+    ):
+        """02-12 is refused and 02-13 accepted: the 01-29 record IS the 01-30 paycheck.
+
+        Stepped from the record the floor was 02-12, and a batch on 02-12
+        split nothing the OLD rule could see -- while the calendar, anchored
+        the same way, closed the 01-29 paycheck on 02-11.  Anchored on the
+        era the paycheck runs to 02-12 and the floor is 02-13, the grid's own
+        next payday, which the extend door offers.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._paid_a_day_early(user_id)
+
+            assert calendar_for(user_id).periods[-1].end_date == date(2026, 2, 12)
+            with pytest.raises(ValidationError, match="on or after 2026-02-13"):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=date(2026, 2, 12),
+                    num_periods=1, rhythm=rhythm_of(14),
+                )
+            db.session.rollback()
+            assert len(all_periods(user_id)) == 3
+
+            created = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 2, 13),
+                num_periods=1, rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+            assert [p.start_date for p in created] == [date(2026, 2, 13)]
+
+    def test_the_extend_door_offers_exactly_the_floor(self, app, db, bare_user):
+        """The horizon is on the grid, so the day extend hands the writer is admitted.
+
+        ``C14-c``'s premise restored (ledger row **N-495**): the horizon the
+        door asks against, the floor the writer applies and the grid day the
+        door offers are one anchor's arithmetic.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            self._paid_a_day_early(user_id)
+
+            appended = pay_period_admin.extend_pay_periods(user_id, 1)
+            db.session.commit()
+
+            assert [p.start_date for p in appended] == [date(2026, 2, 13)]
+            assert calendar_for(user_id).periods[-1].end_date == date(2026, 2, 26)
+
+    def test_a_minted_eras_first_payday_is_bounded_even_when_the_record_holds_it(
+        self, app, db, bare_user,
+    ):
+        """The seam the calendar refuses is unwritable: a mint below the floor is refused.
+
+        An adversarial review of this step drove this sequence through the
+        pure door functions and reached a stored era sequence whose first
+        paydays INVERT, which ``validate_eras`` then refused on every page.
+        Every ingredient is a legal input: a two-day cadence under ``none``
+        (below the collision floor, so legal only undisplaced), a rebuild
+        from Saturday 2026-01-17 at 14 days under ``next`` (paid Tuesday
+        01-20, Monday being Martin Luther King Day), a truncate back to 01-18,
+        then a rebuild from that Monday at 7 days under ``prior`` -- whose
+        first payday is Friday 01-16, a day the record ALREADY holds, so the
+        floor over the batch's new paydays (01-26 alone) never saw it.  The
+        floor now bounds a minting batch at its era's first payday as well
+        (ruling 2026-09-11): 01-16 is inside the paycheck opening 01-18, and
+        the batch is refused.  The control below is the same rebuild from the
+        floor itself, accepted.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 14),
+                num_periods=3, rhythm=rhythm_of(2),
+            )
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 17),
+                num_periods=1, rhythm=rhythm_of(14, BusinessDayShiftEnum.NEXT),
+            )
+            db.session.commit()
+            assert [p.start_date for p in all_periods(user_id)] == [
+                date(2026, 1, 14), date(2026, 1, 16), date(2026, 1, 18),
+                date(2026, 1, 20),
+            ]
+            doomed = {
+                p.id for p in all_periods(user_id)
+                if p.start_date == date(2026, 1, 20)
+            }
+            pay_period_write.retire_paydays(user_id, doomed)
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="on or after 2026-01-20"):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=date(2026, 1, 19),
+                    num_periods=2,
+                    rhythm=rhythm_of(7, BusinessDayShiftEnum.PRIOR),
+                )
+            db.session.rollback()
+            assert len(all_periods(user_id)) == 3
+            # And every page still derives: the stored sequence is in order.
+            assert [e.effective_from for e in calendar_for(user_id).eras] == [
+                date(2026, 1, 14), date(2026, 1, 17),
+            ]
+
+            created = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 20),
+                num_periods=2, rhythm=rhythm_of(7, BusinessDayShiftEnum.PRIOR),
+            )
+            db.session.commit()
+            assert [p.start_date for p in created] == [
+                date(2026, 1, 20), date(2026, 1, 27),
+            ]
+            assert calendar_for(user_id).periods[-1].start_date == date(2026, 1, 27)
+
+    def test_the_refusal_names_the_covering_eras_cadence(self, app, db, bare_user):
+        """A piecewise owner is told the cadence of the era their last paycheck runs at."""
+        with app.app_context():
+            user_id = bare_user["user"].id
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 2),
+                num_periods=2, rhythm=rhythm_of(14),
+            )
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 30),
+                num_periods=2, rhythm=rhythm_of(7),
+            )
+            db.session.commit()
+
+            with pytest.raises(ValidationError, match="at a 7-day cycle"):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=date(2026, 2, 10),
+                    num_periods=1, rhythm=rhythm_of(7),
+                )
+            db.session.rollback()
 
 
 class TestAWriteTouchesNoRowItDidNotName:
@@ -957,6 +1379,17 @@ class TestTheDerivedHorizonFollowsTheStoredCadence:
         the cadence projection, 2026-01-29.  An on-cadence fixture cannot see
         this at all, because ``lead(start) - 1`` and ``start + cadence - 1``
         coincide there.
+
+        **The off-grid successor is a DIRECT row since plan step
+        ``C17-c-2b``**, the shape the tree reserves for a row no door writes
+        (ruling **R-PC47**: payroll moved a payday for a reason the
+        convention does not model).  It was recorded through the writer,
+        which since ``C17-a`` mints a phase-corrected ERA at 02-11 -- and
+        under the seam rule **R-PC75** an era outlives the truncate and its
+        first payday replaces the old era's 01-30, so the survivor's
+        projected end would be 02-10 either way and the case would grade
+        nothing.  Off the plan and with one era, the fact (02-10) and the
+        projection (01-29) still part, which is this case's subject.
         """
         with app.app_context():
             user_id = bare_user["user"].id
@@ -964,10 +1397,7 @@ class TestTheDerivedHorizonFollowsTheStoredCadence:
                 user_id=user_id, first_payday=date(2026, 1, 2),
                 num_periods=2, rhythm=rhythm_of(14),
             )
-            pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 2, 11),
-                num_periods=1, rhythm=rhythm_of(14),
-            )
+            db.session.add(PayPeriod(user_id=user_id, start_date=date(2026, 2, 11)))
             db.session.commit()
             assert _paydays(user_id)[1] == (
                 date(2026, 1, 16), date(2026, 2, 10), 1,
@@ -1115,9 +1545,11 @@ class TestACoverageWithdrawalIsAccepted:
                 db.session, seed_user, seed_periods[-1], date(2026, 6, 15),
             )
             row_id, home_period_id = row.id, seed_periods[-1].id
-            pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 7, 1),
-                num_periods=1, rhythm=rhythm_of(14),
+            # Seven weeks past the 05-08 record: a hole the writer refuses
+            # (plan step C17-c-2a, ruling R-PC67), built through the tree's
+            # helper because the subject here is the TRUNCATE that follows.
+            record_paydays_across_a_hole(
+                user_id, date(2026, 7, 1), 1, rhythm_of(14),
             )
             db.session.commit()
             assert _paydays(user_id)[-2] == (
@@ -1157,9 +1589,11 @@ class TestACoverageWithdrawalIsAccepted:
             self._settled_row(
                 db.session, seed_user, seed_periods[-1], date(2026, 5, 20),
             )
-            pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 7, 1),
-                num_periods=1, rhythm=rhythm_of(14),
+            # Seven weeks past the 05-08 record: a hole the writer refuses
+            # (plan step C17-c-2a, ruling R-PC67), built through the tree's
+            # helper because the subject here is the TRUNCATE that follows.
+            record_paydays_across_a_hole(
+                user_id, date(2026, 7, 1), 1, rhythm_of(14),
             )
             db.session.commit()
 
@@ -1207,9 +1641,11 @@ class TestACoverageWithdrawalIsAccepted:
             db.session.query(Transaction).filter_by(
                 transfer_id=xfer_id,
             ).update({"settled_on": date(2026, 6, 15)}, synchronize_session=False)
-            pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 7, 1),
-                num_periods=1, rhythm=rhythm_of(14),
+            # Seven weeks past the 05-08 record: a hole the writer refuses
+            # (plan step C17-c-2a, ruling R-PC67), built through the tree's
+            # helper because the subject here is the TRUNCATE that follows.
+            record_paydays_across_a_hole(
+                user_id, date(2026, 7, 1), 1, rhythm_of(14),
             )
             db.session.commit()
 
@@ -1278,7 +1714,7 @@ class TestACoverageWithdrawalIsAccepted:
             ):
                 pay_period_admin.regenerate_pay_periods(
                     user_id, date(2026, 3, 27), 8, rhythm_of(14),
-                    confirms=pay_period_gates.Confirmations(discard=True),
+                    confirm_discard=True,
                 )
             db.session.commit()
 
@@ -1782,7 +2218,7 @@ class TestTheWriterTakesIdsAndScopesThemToTheOwner:
         """Three ids in, three periods gone, three reported."""
         with app.app_context():
             user_id = seed_user["user"].id
-            created = pay_period_write.record_paydays(
+            created = record_paydays_across_a_hole(
                 user_id, date(2026, 1, 2), 5, rhythm_of(14),
             )
             db.session.flush()
@@ -1838,13 +2274,13 @@ class TestTheWriterTakesIdsAndScopesThemToTheOwner:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_period_write.record_paydays(user_id, date(2026, 1, 2), 3, rhythm_of(14))
+            record_paydays_across_a_hole(user_id, date(2026, 1, 2), 3, rhythm_of(14))
             db.session.flush()
             foreign = seed_second_periods[4]
 
             pay_period_write.record_paydays(
-                user_id, date(2026, 3, 6), 2, rhythm_of(14),
-                replacing=pay_period_write.SpanReplacement(retiring_ids={foreign.id}),
+                user_id, date(2026, 2, 13), 2, rhythm_of(14),
+                retiring_ids={foreign.id},
             )
             db.session.flush()
             assert db.session.get(PayPeriod, foreign.id) is not None
@@ -1861,7 +2297,7 @@ class TestTheWriterTakesIdsAndScopesThemToTheOwner:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            created = pay_period_write.record_paydays(
+            created = record_paydays_across_a_hole(
                 user_id, date(2026, 1, 2), 4, rhythm_of(14),
             )
             db.session.flush()
@@ -1887,7 +2323,7 @@ class TestTheOwnerIdReader:
         """Two owners, two disjoint answers."""
         with app.app_context():
             user_id = seed_user["user"].id
-            created = pay_period_write.record_paydays(
+            created = record_paydays_across_a_hole(
                 user_id, date(2026, 1, 2), 4, rhythm_of(14),
             )
             db.session.flush()
@@ -1918,7 +2354,7 @@ class TestTheOwnerIdReader:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_period_write.record_paydays(user_id, date(2026, 1, 2), 3, rhythm_of(14))
+            record_paydays_across_a_hole(user_id, date(2026, 1, 2), 3, rhythm_of(14))
             db.session.flush()
 
             ids, statements = capture_sql_statements(
@@ -1943,7 +2379,7 @@ class TestTheRetiredCountIsTheIntersection:
         """Two of this owner's ids, one foreign and one stale -> 2."""
         with app.app_context():
             user_id = seed_user["user"].id
-            created = pay_period_write.record_paydays(
+            created = record_paydays_across_a_hole(
                 user_id, date(2026, 1, 2), 5, rhythm_of(14),
             )
             db.session.flush()
@@ -1978,23 +2414,20 @@ class TestTheRetiredCountIsTheIntersection:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            created = pay_period_write.record_paydays(
+            created = record_paydays_across_a_hole(
                 user_id, date(2026, 1, 2), 4, rhythm_of(14),
             )
             db.session.flush()
             mixed = {created[3].id, seed_second_periods[2].id}
 
             with caplog.at_level(logging.INFO):
+                # The tail reopens where it stood (02-13, retired and
+                # re-recorded); a day past 02-27 would skip a paycheck and be
+                # refused (plan step C17-c-2a).  The case is about the
+                # retired COUNT in the emitted event.
                 pay_period_write.record_paydays(
-                    user_id, date(2026, 3, 6), 2, rhythm_of(14),
-                    replacing=pay_period_write.SpanReplacement(
-                        retiring_ids=mixed,
-                        # This batch reopens the tail 35 days after the last
-                        # kept payday, which plan step C14-f's gate asks about.
-                        # The case is about the retired COUNT in the emitted
-                        # event, not about holes, so it answers and moves on.
-                        gap_confirmed=True,
-                    ),
+                    user_id, date(2026, 2, 13), 2, rhythm_of(14),
+                    retiring_ids=mixed,
                 )
             retired = [
                 record.retired for record in caplog.records

@@ -8,11 +8,11 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`S3-e-2` shipped 2026-09-11 (`a6af5b3c`): the payroll feed prices a payday on demand and the hold
-`R14-b` shipped as interim is gone**, closing **N-541** and the four false sentences about it
-(**N-542** to **N-546**) under **R-SAL15**, **R-SAL18** and **R-SAL19**; the `S3-e` container ships
-with it. Of `S3`'s leaves only `S3-f` is open, and it opens on a STOP. The shipped `R14` span is
-archived (`historical/salary_r14_as_built_2026-09-11.md`), as is `S3-e-2`'s own record
+**`S3-f-3` shipped 2026-09-13 (`a5ef1bdf`): each rail row SAVES a raise's end year and the salary
+regeneration is a service** (**R-SAL22**, **R-SAL24**). Of `S3`'s leaves only `S3-f-4` is open (the
+refused probe rendered, **SAL-548**); the shipped `S3-f` leaves are archived
+(`historical/salary_s3f_as_built_2026-09-13.md`), as are the `R14` span
+(`historical/salary_r14_as_built_2026-09-11.md`), `S3-e-2`'s record
 (`historical/salary_s3e2_as_built_2026-09-11.md`) and `S2`'s
 (`historical/salary_s2_as_built_2026-09-04.md`). Nine steps were re-filed or minted into this arc
 when it was created (**R-SAL1**), with their ledger rows and the four `balance:X-au-d` findings that
@@ -44,9 +44,8 @@ leaf, which memoizes the breakdown map, and C12 collapses the dashboards' reader
 document's.** `S2` is the arc's cheapest first act, because a derivation that moves `-$19.28` for no
 recorded reason is a baseline nobody can measure `S1` against until the input is named. The
 earnings-lines chain follows the bank_import production scope by `bank_import:R-JJ`, because `R18`
-is what makes one payroll deposit one app row; `S2` sits ahead of it as the arc's first act. `C12`
-and `balance:X-i1` decide for each other -- the merged producer is what gives `income_service`'s
-basis a threaded calendar -- and whichever lands first decides the shape for both.
+is what makes one payroll deposit one app row; `S2` sits ahead of it as the arc's first act. `C12-a`
+decided the shape `balance:X-i1` waited on (**R-SAL27**): the basis takes the pass's PRICER.
 
 ## 1. Root cause
 
@@ -98,7 +97,8 @@ Every figure is dated and rests on the developer's own data; re-measure before c
    the gross, the taxable income, every deduction line, every earnings line and the net; the amount
    model reads a row's amount from it, the salary page and the cockpit render it, the contribution
    tier prices a deduction from ITS period's gross (**R-SAL2**), and the dashboards' "current
-   paycheck" is one entry of it (C12). A second walk is a cache with no column (**balance:R-IZ**).
+   paycheck" is one entry per PROFILE, summed (C12-b). A second walk is a cache with no column
+   (**balance:R-IZ**).
 2. **Every time-varying input is effective-dated, and the base is per paycheck.** The stored fact is
    what ONE paycheck pays, dated, with the annual figure derived beside it (**balance:R-HW(b)**,
    X-av); raises already are; a calibration applies forward from its stub's date (**R-SAL4**, S1)
@@ -113,7 +113,7 @@ Every figure is dated and rests on the developer's own data; re-measure before c
    nothing in the engine reads the process clock (`pay_calendar:C10` moves the five salary-route
    reads; the engine itself has read the owner's calendar since `balance:X-bh-1`).
 5. **A substituted tax year says so, and a year can be completed** (X-at).
-6. **The engine is a package**, one private leaf per verb, the answer **P64** recorded (C12).
+6. **The engine is a package**, one private leaf per verb, the answer **P64** recorded at C12-a.
 
 **What becomes impossible rather than checked**: a calibration restating a paycheck received before
 its stub; a deduction priced off a profile not its own; a 24-of-26 benefit modelled as 26-of-26; two
@@ -149,54 +149,44 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
   - [x] **R14-b** `e0f0c05f` -- the contribution tier CONSUMES the engine's breakdown (**R-SAL2**),
         `+$452.42`; closed **D45**, **N-532**. Its interim hold went at `S3-e-2`. Archived with
         `R14`.
-- [ ] **S3 -- the engine prices the WHOLE horizon** (the DECOMPOSED parent, split into five leaves
-      2026-09-05 once **R-SAL11** ruled the raise model) (**R-SAL10**; closes **N-541**, carries
-      **N-540**). `AccountPayrollFeed` holds a figure past the saved calendar because nothing prices
-      a payday past it, and six rules over that fold were each measured wrong, so the remedy is to
-      DELETE the extrapolation rather than to find a seventh (**R-SAL10**). `income_service` prices
-      a paycheck PER PAYDAY on demand (**R-SAL14**, shipped at `S3-d`) rather than returning a list
-      somebody has to size, and the feed prices whichever period it is handed through that pricer
-      (**R-SAL15**, shipped at `S3-e-2`) -- the *lookup that RAISES past the horizon* this entry
-      first specified was refused there, and `_year_averages`, `_complete_years`, `_held_employee`,
-      `_held_gross` and `salary_basis(beyond=)` went with the hold. *A cost of `88` microseconds a
-      payday and `92` ms per profile per render stood here for `project_profile`, the producer
-      `S3-d` DELETED; it is struck rather than restated, because pricing on demand costs what the
-      caller reads and there is no longer one figure to quote. `S3-e` measures the ask it
-      introduces.* **AN OPEN DEVELOPER FORK BOUNDS THIS STEP'S CENSUS**: which RAISE MODEL the
-      engine applies past the saved calendar is unruled -- the paycheck engine compounds a recurring
-      merit raise forever and `/retirement` applies a merit horizon, and over 41 years the two
-      shipped functions diverge to `2.81x`, worth `$303,121.02` on a 5%-of-gross employer
-      contribution. The deletion census is AMENDED onto this entry once he rules the model; the
-      sentence above holds under every candidate. **MOVES MONEY**; own review pass, own harness.
-- [x] **S3-a** `e4491ee6` -- the merit horizon is a per-raise TERMINATION, not a split.
-- [x] **S3-b** `8a8dd51e` -- `terminal_year` and three CHECKs, migration `c9a4e17b53d8`, no backfill
-      and no reader. **A LATER LEAF MUST OBEY**: the column is LIVE to the engine the moment it
-      exists, `apply_raises` having probed it by `getattr` since S3-a, so what keeps figures unmoved
-      is that it is all-NULL.
-- [x] **S3-c** `62567d87` -- THE CUTOVER: the stored end year is a raise's only source of
-      termination, `_terminate_after_horizon` and `merit_raise_horizon_years` gone, migration
-      `d4e8b1c62f07` BACKFILLS (**R-SAL12**) and a new recurring raise is asked its span with no
-      default (**R-SAL13**). **A LATER STEP MUST OBEY**: the downgrade is state-lossy, so a lossless
-      rollback needs `UPDATE salary.salary_raises SET terminal_year = NULL` beside it; the deploy
-      script's own rollback is dump-and-restore.
-- [x] **S3-d** `62612c9a` -- the producer became a FUNCTION of the payday, with no horizon parameter
-      (**R-SAL14**); `PeriodInfo` gained the PAYDAY, `project_profile` is deleted, and NO FIGURE
-      MOVED. **A LATER LEAF MUST OBEY**: the capability is BUILT and not yet ASKED FOR -- every
-      caller still passes `calendar.saved()`, so the hold is still reached and
-      `TestThePricerAnswersPastTheSavedHORIZON` grades what `S3-e` needs. It did NOT close **P63**,
-      did not carry **N-540**, and opened **N-547**.
-- [ ] **S3-f** -- the PER-RAISE probe and its Save on the `/retirement` rail. **OPENS ON A STOP**:
-      the developer asked *"how would you design this from scratch"* and has not answered the lane's
-      reply, so the design is undecided. Its id was cited in four files `S3-c` shipped before this
-      row existed.
+- [ ] **S3 -- the engine prices the WHOLE horizon** (the DECOMPOSED parent, split 2026-09-05 into
+      five leaves once **R-SAL11** ruled the raise model; **R-SAL10**; closed **N-541**; **N-540**
+      went to `S4`): the extrapolation `AccountPayrollFeed` held past the saved calendar is DELETED
+      rather than repaired, `income_service` prices a paycheck PER PAYDAY on demand (**R-SAL14**,
+      `S3-d`) and the feed prices whichever period it is handed through that pricer (**R-SAL15**,
+      `S3-e-2`). Every leaf but `S3-f-4` has shipped; the container ships with it. Its full
+      argument, the struck cost figures and the raise-model fork R-SAL11 closed are archived with
+      the leaves.
+- [x] **S3-a** `e4491ee6` -- the merit horizon is a per-raise TERMINATION, not a split. Archived.
+- [x] **S3-b** `8a8dd51e` -- `terminal_year` and three CHECKs, migration `c9a4e17b53d8`, no reader;
+      its all-NULL obligation was discharged by `S3-c`'s backfill. Archived with `S3-a`.
+- [x] **S3-c** `62567d87` -- THE CUTOVER (**R-SAL12**, **R-SAL13**): the stored end year is a
+      raise's only termination. **Its downgrade is STATE-LOSSY**: a lossless rollback needs
+      `UPDATE salary.salary_raises SET terminal_year = NULL` beside it. Archived with `S3-a`.
+- [x] **S3-d** `62612c9a` -- the producer became a FUNCTION of the payday (**R-SAL14**), NO FIGURE
+      MOVED; its not-yet-asked-for obligation was discharged by `S3-e-2`; opened **N-547**.
+      Archived.
+- [ ] **S3-f -- the PER-RAISE probe and its Save on the `/retirement` rail**
+      (**R-SAL20**-**R-SAL24**; four leaves, the middle one split at the money line; only `S3-f-2a`
+      moved a figure); ships with `S3-f-4`. As built so far, with every shipped leaf's record:
+      `historical/salary_s3f_as_built_2026-09-13.md`.
+- [x] **S3-f-1** `c463dfbc` -- the engine seam (**R-SAL20**); NO FIGURE MOVED. Archived with `S3-f`.
+- [x] **S3-f-2** `587c20d5` -- the plan point and the probe, split at the money line. Archived with
+      `S3-f`.
+- [x] **S3-f-2a** `f3032c87` -- the calibrated current paycheck (**R-SAL21**); MOVED `+$41,562.00`.
+      Archived with `S3-f`.
+- [x] **S3-f-2b** `587c20d5` -- the point believes each raise's end year; the rail probes it.
+      Archived with `S3-f`.
+- [x] **S3-f-3** `a5ef1bdf` -- the rail SAVES it (**R-SAL22**); the regeneration is a service
+      (**R-SAL24**). Archived with `S3-f`.
+- [ ] **S3-f-4** -- the refused probe RENDERED: the readiness GET re-renders the rail with the
+      message on the raise's row in the one 422 shape the Save uses, and the schema's nested shape
+      goes. Minted 2026-09-13 from `S3-f-2b`'s reviews (**SAL-548**); the container ships with it.
 - [x] **S3-e** `a6af5b3c` -- the hold is DELETED (the DECOMPOSED parent, split 2026-09-06 into the
       NO-MONEY re-homing and the MONEY; **R-SAL16** carries the argument and **R-SAL15** the
       design). Both leaves shipped, so the container ships with the last of them.
-- [x] **S3-e-1** `b8ee429a` -- the two window-only questions re-homed and both members deleted: the
-      transfer-average boundary in `build_contribution_timeline` became the caller's `saved_through`
-      off `PayCalendar.horizon()`, and `_plan_for`'s gate became `is_payroll_linked` (**R-SAL17**).
-      **`prices()` was in NO census** and is why this leaf existed. NO FIGURE MOVED. **R-SAL18**
-      binds `S3-e-2` to `DerivedPeriod.is_projected`.
+- [x] **S3-e-1** `b8ee429a` -- the two window-only questions re-homed and deleted (**R-SAL17**,
+      **R-SAL18**); NO FIGURE MOVED. Archived with the S3 leaves.
 - [x] **S3-e-2** `a6af5b3c` -- the feed prices a payday ON DEMAND through the pass's pricer
       (**R-SAL15**), its resolvers take the PERIOD and carry both presence facts (**R-SAL19**), and
       the timeline asks the period whether it is projected (**R-SAL18**). MOVED `+$194,321.85` on
@@ -217,6 +207,12 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       migration re-expresses the three live values as. The count column moves no figure; APPLYING
       the frequency to the timeline does, at 2/26 of a 24-per-year deduction's annual total, latent
       until one names an investment account. A migration and a form change; own review pass.
+- [ ] **S4 -- a payroll deduction's `annual_cap` is a DATED figure** (finding **N-540**, re-pointed
+      here at `S3-f-3`'s tick, developer ruling 2026-09-12). The column is read raw and never
+      escalated, so a statutory limit that rises every year is modelled as fixed and understates
+      contributions over a long horizon; `tax_config_service` already prices an unconfigured year
+      from the latest configured one and says so, which is the shape a dated cap should take.
+      `$0.00` today (no live deduction's cap binds). Needs a RULING first.
 - [ ] **R18 -- a paycheck's EARNINGS side gets LINES, as its deductions side already has** (finding
       **D59**). `paycheck_calculator.Earnings` is four scalars and `net_pay` only ever SUBTRACTS, so
       there is no way to add a dollar to a paycheck that is not an annual-salary raise; a negative
@@ -232,21 +228,16 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       genuine multi-row deposit still needs. **Its own ruling first**: whether an allowance is
       taxable, and what becomes of the two live income templates and their rows. **MOVES MONEY** (it
       changes `net_pay`); migration; own review.
-- [ ] **C12 -- one current-paycheck producer** (findings **P62**, **P63**, **P64**'s engine half;
-      **N-443** closes at R14's first leaf, which this step builds on). The paycheck projection is
-      spelled THREE times over one calendar -- `income_service.SalaryPricing._net_by_period`,
-      `routes/salary/views.py` and `routes/salary/cockpit.py` each load the tax configs and run
-      `project_salary` -- and the two route sites keep the whole breakdown where the derivation
-      keeps only `net_pay`, so the shared leaf has to be the BREAKDOWN map, moved where every reader
-      can reach it (**balance:R-IZ**: where a layer puts the shared leaf out of reach, move the
-      leaf). The dashboards' "current paycheck" (`savings_dashboard_service/_metrics`,
-      `retirement_dashboard_service`) is one entry of that map. **It needs a RULING first** because
-      it changes what `/savings` and `/retirement` publish, and the merged producer gives
-      `income_service`'s basis a threaded calendar, so
-      **`balance:X-i1` and this step decide for each other**. It also owes the engine's package
-      split (**P64**): `recurrence:R-F16` took it from 1000 to 873 and the growth since has spent
-      almost all of that -- `wc -l app/services/paycheck_calculator.py` reads **994**, SIX lines
-      under the ceiling, so this step splits the module before it adds to it rather than after.
+- [x] **C12** `945651c2` -- one current-paycheck producer (the DECOMPOSED parent, split 2026-09-12
+      at the money line, **R-SAL28**, once **R-SAL25**-**R-SAL27** ruled the design asked for from
+      scratch; findings **P62**, **P63**, **P64**'s engine half). Both leaves shipped; the container
+      ships with the last.
+- [x] **C12-a** `26a7b816` -- the engine package (**R-SAL28**), the basis over the pass's pricer
+      (**R-SAL27**; the twelve pass-less sites are **balance:BAL-491**), the four byte-identical
+      direct-engine sites; NO FIGURE MOVED. Closed **P63**, **P64**.
+- [x] **C12-b** `945651c2` -- `/savings` through the pass's pricer, calibrated (**R-SAL25**), summed
+      over active profiles (**R-SAL26**). MOVED MONEY (the figures in R-SAL25; the budget
+      dashboard's savings track shares the producer and moved with it). Closed **P62**.
 - [ ] **X-av -- the pay rate is a dated per-paycheck gross** (**balance:R-HW(b)**; findings
       **N-237**, **N-240**, **N-294**, **N-391**). The stored fact becomes what ONE paycheck pays,
       effective-dated, with `annual_salary` derived as `gross x periods_per_year` and shown beside

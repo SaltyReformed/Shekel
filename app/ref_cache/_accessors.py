@@ -431,6 +431,39 @@ def raise_type_id(member):
     return cache().enum_ids[RaiseTypeEnum][member]
 
 
+def raise_type_member(type_id):
+    """Return the ``RaiseTypeEnum`` member a raise-type PK names, or ``None``.
+
+    The inverse of :func:`raise_type_id`, added at plan step salary:S3-f-1 for
+    :attr:`app.models.salary_raise.SalaryRaise.raise_type_name`: the display
+    name of a raise's type resolved from the FACT the row carries
+    (``raise_type_id``) rather than from the ``raise_type`` relationship,
+    which is ``None`` on a row that has never been flushed -- SQLAlchemy does
+    not lazy-load a relationship on a pending instance -- and an adversarial
+    review of that step measured the X-bl invariance control
+    (``tests/manual/verify_amount_resolver.py``) pricing exactly such a row.
+    The enum's values match ``ref.raise_types.name`` by construction (see
+    :class:`~app.enums.RaiseTypeEnum`), so ``member.value`` IS the name.
+
+    **It answers ``None`` rather than raising**, for the reason
+    :func:`acct_category_member` does: ``init`` requires the three enum rows
+    to exist and does not forbid others, so a hand-inserted fourth row is a
+    state the schema permits, and the caller reads that row's own ``name``.
+
+    Args:
+        type_id: The integer primary key of a ``ref.raise_types`` row.
+
+    Returns:
+        The :class:`~app.enums.RaiseTypeEnum` member for *type_id*, or ``None``
+        when no member names it.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+    """
+    require_init()
+    return cache().enum_members[RaiseTypeEnum].get(type_id)
+
+
 def goal_mode_id(member):
     """Return the integer primary key for a GoalModeEnum member.
 

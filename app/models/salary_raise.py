@@ -5,6 +5,7 @@ Tracks scheduled salary raises (merit, COLA, custom) that apply at
 a specific month/year to adjust the annual salary for paycheck calculation.
 """
 
+from app import ref_cache
 from app.extensions import db
 from app.models.mixins import (
     CreatedAtMixin,
@@ -179,6 +180,37 @@ class SalaryRaise(SalaryProfileScopedMixin, OptimisticLockMixin, CreatedAtMixin,
     # Relationships
     salary_profile = db.relationship("SalaryProfile", back_populates="raises")
     raise_type = db.relationship("RaiseType", lazy="joined")
+
+    @property
+    def raise_type_name(self) -> str:
+        """The display name of this raise's type (``"merit"``, ``"cola"``, ...).
+
+        The one attribute the paycheck engine reads of a raise's type, so a
+        row and a :class:`~app.services.salary_raises.RaiseTerms` value expose
+        it under one name (plan step salary:S3-f-1).  For DISPLAY only, as
+        every ``ref`` name is; logic compares ``raise_type_id``.
+
+        **Resolved from ``raise_type_id`` through the ref cache, not from the
+        ``raise_type`` relationship**, and an adversarial review of that step
+        is why.  The relationship is joined and the column is ``NOT NULL``,
+        which makes it total for every PERSISTED row -- but SQLAlchemy does
+        not lazy-load a relationship on a pending instance, so a row built
+        with only its FK set and never flushed reads ``raise_type`` as
+        ``None``.  The X-bl invariance control
+        (``tests/manual/verify_amount_resolver.py``) prices exactly such a
+        row, by design never flushed, and the cache answers it from the FK.
+        The relationship is read only for a row whose type the enum does not
+        name -- a hand-inserted ``ref.raise_types`` row, which the schema
+        permits and nothing in the application writes -- and that row's own
+        ``name`` is the honest answer for it.
+
+        Returns:
+            The type's name.
+        """
+        member = ref_cache.raise_type_member(self.raise_type_id)
+        if member is not None:
+            return member.value
+        return self.raise_type.name
 
     def __repr__(self):
         amt = f"{self.percentage}%" if self.percentage else f"${self.flat_amount}"

@@ -33,7 +33,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.utils.dates import add_months
 from app.services.cash_ledger import (
-    amount_basis,
+    derived_amount_basis,
     contribution_of,
     resolve_transfer_amount,
 )
@@ -366,7 +366,7 @@ class TestTransferAmountResolves:
             )
             assert resolve_transfer_amount(
                 xfer,
-                amount_basis(
+                derived_amount_basis(
                     seed_user["user"].id, seed_user["scenario"].id,
                 ),
             ) == Decimal("500.00")
@@ -381,7 +381,7 @@ class TestTransferAmountResolves:
             )
             assert resolve_transfer_amount(
                 xfer,
-                amount_basis(
+                derived_amount_basis(
                     seed_user["user"].id, seed_user["scenario"].id,
                 ),
             ) == Decimal("500.00")
@@ -405,7 +405,7 @@ class TestTransferAmountResolves:
             )
             assert resolve_transfer_amount(
                 xfer,
-                amount_basis(
+                derived_amount_basis(
                     seed_user["user"].id, seed_user["scenario"].id,
                 ),
             ) == Decimal("500.00")

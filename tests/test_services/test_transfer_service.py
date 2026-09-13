@@ -32,11 +32,13 @@ from app.services.row_valuation import settled_figure
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     write_past_the_amount_seam,
     add_anchor_history,
     an_entered_day,
     create_loan_account,
+    generate_transfer_of,
     settlement_basis_id,
     settlement_columns,
     shadow_amount,
@@ -216,22 +218,15 @@ class TestCreateTransfer:
             assert income.category_id == rent_cat.id
 
     def test_with_template_id(self, app, db, transfer_data):
-        """Template-linked transfer has template_id; shadows have template_id=None."""
+        """Template-linked transfer has template_id; shadows have template_id=None.
+
+        The linked transfer is the ENGINE's (:func:`generate_transfer_of`,
+        plan step balance:X-ch), which reaches ``create_transfer`` with the
+        link in its spec the way the application does.
+        """
         with app.app_context():
             td = transfer_data
-            xfer = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=td["user"].id,
-                    from_account_id=td["account"].id,
-                    to_account_id=td["savings_account"].id,
-                    pay_period_id=td["periods"][0].id,
-                    scenario_id=td["scenario"].id,
-                    amount_ownership=AmountOwnership.own(Decimal("200.00")),
-                    status_id=td["projected_status"].id,
-                    category_id=td["categories"]["Rent"].id,
-                    transfer_template_id=td["transfer_template"].id,
-                ),
-            )
+            xfer = generate_transfer_of(td["transfer_template"], td["periods"][0])
 
             assert xfer.transfer_template_id == td["transfer_template"].id
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
@@ -416,7 +411,7 @@ class TestCreateTransferValidation:
             # Create a period for the second user.
             from app.services import pay_period_service
             from datetime import date
-            other_periods = pay_period_write.record_paydays(
+            other_periods = record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=2,
@@ -648,7 +643,7 @@ class TestUpdateTransfer:
 
             from app.services import pay_period_service
             from datetime import date
-            other_periods = pay_period_write.record_paydays(
+            other_periods = record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 6, 1),
                 num_periods=2,

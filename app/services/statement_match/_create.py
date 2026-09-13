@@ -108,6 +108,7 @@ from ._creations import (
     PurchaseCreation,
 )
 from ._offers import CandidateRow, RowKind, merchant_label
+from ._outcome import FiledMerchant
 from ._reads import as_bank_line
 from ._rules import LinePipeline, is_inflow, pipeline_for
 from ._scope import ReviewScope, reject_impossible_days
@@ -591,6 +592,17 @@ def create_purchase_from_line(
         # own sign -- the rule ``_panel.AddAct`` states for the card and
         # ``_cards.creatable_card`` already follows.
         records_a_refund=is_inflow(line.amount),
+        # **The MERCHANT, off the row this door holds locked** (plan step
+        # ``bank_import:X-gx``, finding **BI-495**).  ``merchant_name`` is
+        # ``None`` exactly when ``merchant_id`` is, so the pair is one fact;
+        # the receipt's standing-rule offer reads it from here rather than
+        # from the page's derivation, which hydrated the line before the lock.
+        merchant=(
+            None if line.merchant_id is None
+            else FiledMerchant(
+                merchant_id=line.merchant_id, name=line.merchant_name,
+            )
+        ),
     )
     log_event(
         _logger, logging.INFO, EVT_STATEMENT_LINE_RECORDED, BUSINESS,

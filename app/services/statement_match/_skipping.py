@@ -81,6 +81,7 @@ from app.utils.log_events import (
 
 from ._accepted_view import REGISTER_LIMIT
 from ._reads import as_bank_line
+from ._resolve import locked_for_write
 from ._undisposed import answered_by_a_match
 from ._verbs import SKIP_SHUT_PAYS_AN_ACCOUNT
 from ._vocabulary import account_payment_merchants
@@ -158,7 +159,7 @@ class SkippedLine:
         line: The bank's own record of the movement
             (:class:`~._offers.BankLine`) -- the merchant, the posted day and
             the amount.  **Carried even though the caller supplied its id**,
-            for the reason :attr:`~._batch.AppliedItem.line_ids` is: a batch
+            for the reason :attr:`~._outcome.AppliedItem.line_ids` is: a batch
             reports per-item outcomes and pairs each with what was submitted,
             and an outcome that could not say which line it was about would
             have to be paired by position.
@@ -231,12 +232,16 @@ def _line_on(
     BEFORE it reads the other table, serialises them on the one row they have
     in common.
 
-    ``FOR NO KEY UPDATE`` and not ``FOR KEY SHARE``: the weaker mode is what
-    an ordinary foreign-key insert already takes implicitly, and two of those
-    are compatible with each other, so it would serialise nothing.  It is also
-    not ``FOR UPDATE``, which would block the FK checks of unrelated writers
-    against the same line for no benefit.  Named by adversarial security
-    review 2026-09-02.
+    **The lock's MODE is :func:`~._resolve.locked_for_write`'s, stated there
+    once** (ruling **bank_import:R-BI5**, plan step ``bank_import:X-gi-5``).
+    This docstring argued ``FOR NO KEY UPDATE`` over a statement that
+    rendered ``FOR UPDATE`` from plan step ``bank_import:X-gj-4a`` until
+    then -- the SQLAlchemy flag was inverted -- which is why the mode is now
+    a helper both doors call rather than a flag each restates.  **So is the
+    REFRESH** (finding **BI-493**, plan step ``bank_import:X-gv``): the
+    instance this returns is the locked row as it stands, not the one the
+    pass's derivation hydrated before the lock, which is what lets
+    :func:`skip_line` read ``merchant_id`` off it for ruling **R-JI**.
 
     Args:
         line_id: The bank line.
@@ -247,7 +252,7 @@ def _line_on(
         The :class:`~app.models.statement_import.BankStatementLine`, locked
         for this transaction, or ``None``.
     """
-    return (
+    return locked_for_write(
         db.session.query(BankStatementLine)
         .join(
             Account,
@@ -260,9 +265,7 @@ def _line_on(
             BankStatementLine.id == line_id,
             BankStatementLine.account_id == account_id,
         )
-        .with_for_update(of=BankStatementLine, key_share=False)
-        .one_or_none()
-    )
+    ).one_or_none()
 
 
 def _standing_skip(

@@ -69,15 +69,17 @@ from tests.oracles.recurrence_baseline import (
     ANNUAL,
 )
 from tests._test_helpers import (
-    rhythm_of,
+    record_paydays_across_a_hole,
     all_periods,
     an_entered_day,
     derived_span,
+    eras_of,
     last_covered_day,
     make_cadence_rule,
     make_every_period_rule,
     rebuild_calendar_from_spans,
     resolved_amount,
+    rhythm_of,
     settlement_basis_id,
     settlement_if_settling,
     state_template_price,
@@ -526,9 +528,10 @@ def _calendar(periods, cadence_days=_CADENCE_DAYS):
         The :class:`~app.services.pay_calendar.PayCalendar` for
         :data:`_MATCH_USER_ID`.
     """
+    paydays = [(period.id, period.start_date) for period in periods]
     return PayCalendar.from_paydays(
-        paydays=[(period.id, period.start_date) for period in periods],
-        rhythm=rhythm_of(cadence_days),
+        paydays=paydays,
+        eras=eras_of(paydays, cadence_days),
         user_id=_MATCH_USER_ID,
         history_opens_on=None,
     )
@@ -1602,7 +1605,7 @@ class TestALegacyScheduleHole:
         """
         last_covered = self._horizon(seed_user)
         later_start = last_covered + timedelta(days=self._GAP_DAYS)
-        later = pay_period_write.record_paydays(
+        later = record_paydays_across_a_hole(
             user_id=seed_user["user"].id,
             first_payday=later_start,
             num_periods=6,
@@ -1661,7 +1664,7 @@ class TestALegacyScheduleHole:
         with app.app_context():
             last_covered = self._horizon(seed_user)
             later_start = last_covered + timedelta(days=self._GAP_DAYS)
-            later = pay_period_write.record_paydays(
+            later = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=later_start,
                 num_periods=6,
@@ -3370,7 +3373,7 @@ class TestResolveConflicts:
             # Create template and transaction for user B (second_user).
             # second_user needs their own periods and template.
             from app.services import pay_period_service
-            periods_b = pay_period_write.record_paydays(
+            periods_b = record_paydays_across_a_hole(
                 user_id=second_user["user"].id,
                 first_payday=seed_periods[0].start_date,
                 num_periods=10, rhythm=rhythm_of(14),
@@ -5458,7 +5461,7 @@ class TestARowRecordsItsOccurrence:
         second write is an unhandled ``IntegrityError`` that rolls the whole
         regeneration back.
 
-        The live door is the salary one: ``routes/salary/_helpers`` regenerates
+        The live door is the salary one: ``salary_regeneration`` regenerates
         with ``effective_from=date.today()`` on every profile save, so an owner
         who moved a paycheck row back one period reaches this by saving a
         salary profile.

@@ -44,7 +44,10 @@ from app.services.pay_calendar import (
 from app.services import pay_schedule_service
 from app.utils.dates import add_months
 from app.utils.money import MONTHS_PER_YEAR, round_money
-from tests._test_helpers import restate_fixture_era, rhythm_of
+from tests._test_helpers import (
+    eras_of,
+    restate_fixture_era,
+)
 
 
 class TestThePaycheckCountIsDerivedFromTheCadence:
@@ -494,7 +497,7 @@ class TestBothDoorsReachOneDerivation:
     def test_the_calendar_answers_its_own_cadence(self):
         """``PayCalendar.cadence`` is built from the calendar's own days."""
         calendar = PayCalendar.from_paydays(
-            paydays=(), rhythm=rhythm_of(7), user_id=1,
+            paydays=(), eras=eras_of((), 7), user_id=1,
             history_opens_on=None,
         )
         assert calendar.cadence == PayCadence(cadence_days=7)
@@ -563,7 +566,7 @@ class TestAnAbsentCadenceIsRefusedRatherThanDefaulted:
         against a producer reading somebody else's schedule.
         """
         empty = PayCalendar.from_paydays(
-            paydays=(), rhythm=rhythm_of(7), user_id=42,
+            paydays=(), eras=eras_of((), 7), user_id=42,
             history_opens_on=None,
         )
 

@@ -120,24 +120,29 @@ except ImportError:  # pragma: no cover - taken only on the HEAD side
 # midnight names its own cause instead of reading as a defect.
 _CAPTURED_ON = date.today()
 
-# The what-if the readiness fragment is exercised at.
+# The what-if the readiness fragment is exercised at, when the tree has no
+# salary-path what-if -- see :func:`_raise_probe` for the one it prefers.
 #
 # **It was a merit horizon until plan step salary:S3-c**, chosen because that
 # axis moved the SALARY PATH and so made the override arm recompute the
 # pension, the income target and the projection -- the widest of the three
 # what-ifs.  Ruling **R-SAL11** deleted the setting behind it, and the axis
 # with it, so this harness would name a keyword neither tree accepts.  The SWR
-# is the widest of what remains AND, unlike the return rate, it exists on
+# is the widest of what remained AND, unlike the return rate, it exists on
 # every tree this instrument still has to run on -- which is the property that
 # matters here, because a harness that compiles on only one side of a cutover
 # proves nothing.
 #
-# **What this costs, stated rather than left to be discovered**: the override
-# arm no longer recomputes the salary path, so a diff taken across a step that
-# moves a salary figure will show it in the BASELINE block and not in the
-# what-if delta.  Plan step salary:S3-f restores a salary-path what-if (a
-# per-raise end-year probe on the plan point), and this constant should move
-# back onto it then.
+# **Plan step salary:S3-f-2b restored a salary-path what-if** -- the per-raise
+# end-year probe on the plan point -- and the what-if moved back onto it: on a
+# tree whose ``PlanPoint`` carries ``raise_end_years`` and whose owner has a
+# recurring raise, the override arm ends the FIRST recurring raise after its
+# own effective year, which recomputes the pension, the income target, the
+# current paycheck and the payroll feeds.  This SWR constant is the fallback
+# for every older tree and for an owner with no recurring raise.  A diff taken
+# ACROSS that step therefore moves the ``whatif_override`` and
+# ``levers_at_whatif`` blocks for that reason alone; every other block must be
+# byte-identical.
 _SWR_WHATIF = Decimal("0.0300")
 
 # The pre-C2-f2d-2 ``compute_readiness_whatif`` took its what-ifs as keyword
@@ -396,7 +401,43 @@ def _figures_after(source):
         "whatif_override": _plain(_guard("whatif_override", lambda: (
             _whatif_override(source())
         ))),
+        # WHICH point the what-if blocks above were taken at, so a diff that
+        # moves them across a step that changed the what-if (salary:S3-f-2b)
+        # names its own cause on the line beside them.
+        "whatif_point": _plain(_guard("whatif_point", lambda: (
+            _whatif_at(source())
+        ))),
     }
+
+
+def _raise_probe(inputs):
+    """The per-raise end-year what-if, or ``None`` where the tree or owner has none.
+
+    Ends the owner's FIRST recurring raise (lowest id, the point's own order)
+    after its effective year -- the tightest end year the column permits, and
+    the probe that moves the most of the salary path.  A raise already stored
+    as ending in its effective year makes this the stored plan, which is
+    recorded rather than avoided: the dump then shows a zero delta, and that
+    is a fact about the owner's data.
+
+    Args:
+        inputs: The render's ``RetirementInputs``.
+
+    Returns:
+        ``{raise_id: ("year", effective_year)}``, or ``None`` on a tree before
+        plan step salary:S3-f-2b or for an owner with no recurring raise.
+    """
+    end_years = getattr(inputs.stored_plan, "raise_end_years", None)
+    if not end_years:
+        return None
+    raise_id = end_years[0][0]
+    row = next(
+        raise_obj
+        for profile in inputs.gap.salary_profiles
+        for raise_obj in profile.raises
+        if raise_obj.id == raise_id
+    )
+    return {raise_id: ("year", row.effective_year)}
 
 
 def _whatif_at(inputs):
@@ -404,7 +445,8 @@ def _whatif_at(inputs):
 
     The C2-f2d-2 tree took three keyword overrides; C2-f2d-4 resolves them
     against the owner's settings through ``plan_with``, so the point is built
-    where the settings are.
+    where the settings are; S3-f-2b resolves a per-raise probe there too, and
+    it is the what-if this prefers (see :func:`_raise_probe`).
 
     Args:
         inputs: The render's ``RetirementInputs``.
@@ -415,6 +457,9 @@ def _whatif_at(inputs):
     builder = getattr(inputs, "plan_with", None)
     if builder is None:
         return None
+    probe = _raise_probe(inputs)
+    if probe is not None:
+        return builder(raise_probes=probe)
     return builder(swr_override=_SWR_WHATIF)
 
 

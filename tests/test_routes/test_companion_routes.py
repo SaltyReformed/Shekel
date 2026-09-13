@@ -20,90 +20,46 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
 from app.services import status_seam
-from app.models.ref import TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
+    generate_row_of,
+    make_expense_template,
     open_owner_calendar,
     settlement_if_settling,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _make_template(seed_user, *, companion_visible, track=False, name="Item"):
-    """Create a transaction template for the seed_user owner.
+def _make_template(
+    seed_user, *, companion_visible, track=False, name="Item", amount="500.00",
+):
+    """Create a priced, every-paycheck expense definition for the seed_user owner.
+
+    A case's row is the definition's own (:func:`generate_row_of`, plan step
+    balance:X-cf-4), so the name and the figure a case wants on its row are
+    stated HERE -- the definition is what names and prices a generated row.
 
     Args:
         seed_user: The seed_user fixture dict.
         companion_visible: Whether the template is companion-visible.
         track: Whether to enable is_envelope.
         name: Template name.
+        amount: The definition's stated price, as a string.
 
     Returns:
         The created TransactionTemplate object (flushed, ID available).
     """
-    expense_type = (
-        db.session.query(TransactionType)
-        .filter_by(name="Expense").one()
+    return make_expense_template(
+        db.session, seed_user, amount=amount, name=name,
+        category_key=next(iter(seed_user["categories"])),
+        is_envelope=track, companion_visible=companion_visible,
     )
-    category = list(seed_user["categories"].values())[0]
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        name=name,
-        default_amount=Decimal("500.00"),
-        transaction_type_id=expense_type.id,
-        account_id=seed_user["account"].id,
-        category_id=category.id,
-        companion_visible=companion_visible,
-        is_envelope=track,
-    )
-    db.session.add(template)
-    db.session.flush()
-    return template
-
-
-def _make_txn(seed_user, period, template, *, name=None, amount=None):
-    """Create a transaction from a template in a specific period.
-
-    Args:
-        seed_user: The seed_user fixture dict.
-        period: The PayPeriod to assign.
-        template: The TransactionTemplate.
-        name: Override name (defaults to template.name).
-        amount: Override estimated_amount (defaults to template.default_amount).
-
-    Returns:
-        The created Transaction object (flushed, ID available).
-    """
-    expense_type = (
-        db.session.query(TransactionType)
-        .filter_by(name="Expense").one()
-    )
-    category = list(seed_user["categories"].values())[0]
-
-    txn = Transaction(
-        name=name or template.name,
-        amount_ownership=AmountOwnership.own(amount or template.default_amount),
-        transaction_type_id=expense_type.id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        account_id=seed_user["account"].id,
-        category_id=category.id,
-        scenario_id=seed_user["scenario"].id,
-        template_id=template.id,
-    )
-    db.session.add(txn)
-    db.session.flush()
-    return txn
 
 
 def _login_companion(app):
@@ -144,8 +100,8 @@ class TestRouteAccess:
         """
         t_vis = _make_template(seed_user, companion_visible=True, name="Groceries")
         t_hid = _make_template(seed_user, companion_visible=False, name="Mortgage")
-        _make_txn(seed_user, seed_periods_today[0], t_vis, name="Groceries")
-        _make_txn(seed_user, seed_periods_today[0], t_hid, name="Mortgage")
+        generate_row_of(t_vis, seed_periods_today[0])
+        generate_row_of(t_hid, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -198,8 +154,8 @@ class TestPeriodNavigation:
 
         Shows the correct period's transactions.
         """
-        template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods_today[1], template, name="Groceries P1")
+        template = _make_template(seed_user, companion_visible=True, name="Groceries P1")
+        generate_row_of(template, seed_periods_today[1])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -246,7 +202,7 @@ class TestPeriodNavigation:
         Viewing period[1] (middle period) should show both arrows.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods_today[1], template, name="Groceries")
+        generate_row_of(template, seed_periods_today[1])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -266,7 +222,7 @@ class TestPeriodNavigation:
         Viewing period[0] should not contain a link to a previous period.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -290,7 +246,7 @@ class TestPeriodNavigation:
         """
         last_period = seed_periods_today[-1]
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
-        _make_txn(seed_user, last_period, template, name="Groceries")
+        generate_row_of(template, last_period)
         db.session.commit()
 
         comp = _login_companion(app)
@@ -326,7 +282,7 @@ class TestEntryIntegration:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -356,7 +312,7 @@ class TestEntryIntegration:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         companion = seed_companion["user"]
@@ -380,7 +336,7 @@ class TestEntryIntegration:
         template = _make_template(
             seed_user, companion_visible=False, track=True, name="Hidden",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Hidden")
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -410,13 +366,13 @@ class TestEntryIntegration:
         template = _make_template(
             seed_user, companion_visible=False, track=True, name="Hidden",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Hidden")
+        txn = generate_row_of(template, seed_periods_today[0])
         # The positive control: a row the companion MAY see, in the same
         # period, so an empty page cannot pass the absence check below.
         shown = _make_template(
             seed_user, companion_visible=True, name="Shown",
         )
-        _make_txn(seed_user, seed_periods_today[0], shown, name="Shown")
+        generate_row_of(shown, seed_periods_today[0])
         db.session.commit()
         txn_id = txn.id
 
@@ -468,7 +424,7 @@ class TestEntryIntegration:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = generate_row_of(template, seed_periods_today[0])
         entry = TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_companion["user"].id,
@@ -495,7 +451,7 @@ class TestEntryIntegration:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = generate_row_of(template, seed_periods_today[0])
         entry = TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_companion["user"].id,
@@ -541,7 +497,7 @@ class TestMarkDoneIntegration:
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -559,7 +515,7 @@ class TestMarkDoneIntegration:
         template = _make_template(
             seed_user, companion_visible=False, name="Mortgage",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Mortgage")
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -581,7 +537,7 @@ class TestMarkDoneIntegration:
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.commit()
         txn_id = txn.id
 
@@ -612,7 +568,7 @@ class TestMarkDoneIntegration:
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -642,10 +598,7 @@ class TestMarkDoneIntegration:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(
-            seed_user, seed_periods_today[0], template,
-            name="Groceries", amount=Decimal("500.00"),
-        )
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("100.00"), description="Kroger",
@@ -683,10 +636,7 @@ class TestEntryDataInHTML:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(
-            seed_user, seed_periods_today[0], template,
-            name="Groceries", amount=Decimal("500.00"),
-        )
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("200.00"), description="Kroger",
@@ -711,10 +661,7 @@ class TestEntryDataInHTML:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        _make_txn(
-            seed_user, seed_periods_today[0], template,
-            name="Groceries", amount=Decimal("500.00"),
-        )
+        generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -731,11 +678,9 @@ class TestEntryDataInHTML:
         """Visible non-tracked transaction shows estimated amount."""
         template = _make_template(
             seed_user, companion_visible=True, track=False, name="Birthday Gift",
+            amount="100.00",
         )
-        _make_txn(
-            seed_user, seed_periods_today[0], template,
-            name="Birthday Gift", amount=Decimal("100.00"),
-        )
+        generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -755,11 +700,9 @@ class TestEntryDataInHTML:
         """
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Gas",
+            amount="100.00",
         )
-        txn = _make_txn(
-            seed_user, seed_periods_today[0], template,
-            name="Gas", amount=Decimal("100.00"),
-        )
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("120.00"), description="Shell",
@@ -793,11 +736,9 @@ class TestEntryDataInHTML:
         """
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
+            amount="100.00",
         )
-        txn = _make_txn(
-            seed_user, seed_periods_today[0], template,
-            name="Groceries", amount=Decimal("100.00"),
-        )
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("55.50"), description="Kroger",
@@ -845,7 +786,7 @@ class TestEmptyStates:
         template = _make_template(
             seed_user, companion_visible=False, name="Mortgage",
         )
-        _make_txn(seed_user, seed_periods_today[0], template, name="Mortgage")
+        generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -889,7 +830,7 @@ class TestMarkPaidButtonVisibility:
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -915,7 +856,7 @@ class TestMarkPaidButtonVisibility:
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = generate_row_of(template, seed_periods_today[0])
         status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE), settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)))
         db.session.commit()
 
@@ -945,7 +886,7 @@ class TestMarkPaidButtonVisibility:
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = generate_row_of(template, seed_periods_today[0])
         txn.status_id = ref_cache.status_id(StatusEnum.CREDIT)
         db.session.commit()
 
@@ -997,7 +938,7 @@ class TestEntryListInlineRendering:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -1028,7 +969,7 @@ class TestEntryListInlineRendering:
         template = _make_template(
             seed_user, companion_visible=True, track=False, name="Birthday",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Birthday")
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -1075,7 +1016,7 @@ class TestCardTapToExpand:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        txn = generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -1096,7 +1037,7 @@ class TestCardTapToExpand:
         template = _make_template(
             seed_user, companion_visible=True, name="Groceries",
         )
-        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         comp = _login_companion(app)
@@ -1161,7 +1102,7 @@ class TestTheCompanionAddPurchaseFormReadsTheUsersClock:
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
         )
-        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        generate_row_of(template, seed_periods_today[0])
         db.session.commit()
 
         # The premise: the sentinel is not what any real clock answers, so a

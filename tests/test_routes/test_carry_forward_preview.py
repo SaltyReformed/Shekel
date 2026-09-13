@@ -33,32 +33,25 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum, RoleEnum
+from app.enums import StatusEnum
 from app.extensions import db
-from app.models.account import Account
-from app.models.category import Category
 from app.models.pay_period import PayPeriod
-from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import (
-    AccountType, Status, TransactionType,
-)
+from app.models.ref import AccountType, Status
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
-from app.models.user import User, UserSettings
 from app.services import pay_period_write, transfer_service
 from app.services.pay_calendar import calendar_for
-from app.services.auth_service import hash_password
 from app.services.row_valuation import settled_figure
 from app.utils.dates import display_today
 from app.services import account_service
 from tests._test_helpers import (
     current_pay_period,
+    generate_row_of,
     last_covered_day,
-    make_every_period_rule,
+    make_expense_template,
+    moved_by_the_owner,
     resolved_amount,
-    state_template_price,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -70,52 +63,15 @@ def _make_envelope_template(
     seed_user, *, name="Envelope Spending", default_amount="100.00",
     category_key="Groceries",
 ):
-    """Create an envelope expense template with an EVERY_PERIOD rule."""
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="Expense").one()
-    )
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"][category_key].id,
-        transaction_type_id=expense_type.id,
-        name=name,
-        default_amount=Decimal(default_amount),
-        is_envelope=True,
-    )
-    db.session.add(template)
-    db.session.flush()
-    state_template_price(template)
-    # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_every_period_rule(db.session, template)
-    return template
+    """Create a priced envelope expense definition on an every-paycheck rule.
 
-
-def _make_envelope_txn(
-    seed_user, period, template, *,
-    estimated_amount=None, status_name="Projected", is_override=False,
-):
-    """Create one envelope transaction in *period*."""
-    status = db.session.query(Status).filter_by(name=status_name).one()
-    txn = Transaction(
-        template_id=template.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=status.id,
-        name=template.name,
-        category_id=template.category_id,
-        transaction_type_id=template.transaction_type_id,
-        amount_ownership=AmountOwnership.own(Decimal(
-            estimated_amount if estimated_amount is not None
-            else str(template.default_amount)
-        )),
-        is_override=is_override,
+    Its rows come from the engine (:func:`generate_row_of`, plan step
+    balance:X-cf-4), which is what the preview under test walks.
+    """
+    return make_expense_template(
+        db.session, seed_user, amount=default_amount, name=name,
+        category_key=category_key, is_envelope=True,
     )
-    db.session.add(txn)
-    db.session.flush()
-    return txn
 
 
 def _add_entry(txn, seed_user, amount):
@@ -132,44 +88,15 @@ def _add_entry(txn, seed_user, amount):
 
 def _make_discrete_template(seed_user, *, name="Recurring Bill",
                             amount="500.00", category_key="Rent"):
-    """Create a discrete (is_envelope=False) expense template."""
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="Expense").one()
-    )
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"][category_key].id,
-        transaction_type_id=expense_type.id,
-        name=name,
-        default_amount=Decimal(amount),
-    )
-    db.session.add(template)
-    db.session.flush()
-    state_template_price(template)
-    return template
+    """Create a priced discrete (is_envelope=False) expense definition.
 
-
-def _make_discrete_txn(seed_user, period, template):
-    """Create one discrete transaction in *period*."""
-    projected = (
-        db.session.query(Status).filter_by(name="Projected").one()
+    Every-paycheck like the envelope one: the preview sorts a row into the
+    discrete bucket on ``tracks_purchases`` alone, never on its cadence.
+    """
+    return make_expense_template(
+        db.session, seed_user, amount=amount, name=name,
+        category_key=category_key,
     )
-    txn = Transaction(
-        template_id=template.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
-        name=template.name,
-        category_id=template.category_id,
-        transaction_type_id=template.transaction_type_id,
-        amount_ownership=AmountOwnership.own(template.default_amount),
-    )
-    db.session.add(txn)
-    db.session.flush()
-    return txn
 
 
 def _make_savings_account(seed_user):
@@ -236,10 +163,8 @@ class TestCarryForwardPreviewSuccess:
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
-            source = _make_envelope_txn(
-                seed_user, seed_periods_today[0], template,
-            )
-            _make_envelope_txn(seed_user, seed_periods_today[1], template)
+            source = generate_row_of(template, seed_periods_today[0])
+            generate_row_of(template, seed_periods_today[1])
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
@@ -270,10 +195,8 @@ class TestCarryForwardPreviewSuccess:
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
-            source = _make_envelope_txn(
-                seed_user, seed_periods_today[0], template,
-            )
-            _make_envelope_txn(seed_user, seed_periods_today[1], template)
+            source = generate_row_of(template, seed_periods_today[0])
+            generate_row_of(template, seed_periods_today[1])
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
@@ -291,7 +214,7 @@ class TestCarryForwardPreviewSuccess:
         """Discrete source row gets the 'Discrete' badge."""
         with app.app_context():
             template = _make_discrete_template(seed_user)
-            _make_discrete_txn(seed_user, seed_periods_today[0], template)
+            generate_row_of(template, seed_periods_today[0])
             db.session.commit()
 
             resp = auth_client.get(
@@ -327,14 +250,12 @@ class TestCarryForwardPreviewSuccess:
             envelope_t = _make_envelope_template(
                 seed_user, category_key="Groceries",
             )
-            envelope_source = _make_envelope_txn(
-                seed_user, seed_periods_today[0], envelope_t,
-            )
-            _make_envelope_txn(seed_user, seed_periods_today[1], envelope_t)
+            envelope_source = generate_row_of(envelope_t, seed_periods_today[0])
+            generate_row_of(envelope_t, seed_periods_today[1])
             _add_entry(envelope_source, seed_user, "20.00")
 
             discrete_t = _make_discrete_template(seed_user)
-            _make_discrete_txn(seed_user, seed_periods_today[0], discrete_t)
+            generate_row_of(discrete_t, seed_periods_today[0])
 
             _make_transfer(seed_user, seed_periods_today[0])
             db.session.commit()
@@ -369,10 +290,8 @@ class TestCarryForwardPreviewConfirmGating:
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
-            source = _make_envelope_txn(
-                seed_user, seed_periods_today[0], template,
-            )
-            _make_envelope_txn(seed_user, seed_periods_today[1], template)
+            source = generate_row_of(template, seed_periods_today[0])
+            generate_row_of(template, seed_periods_today[1])
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
@@ -390,11 +309,14 @@ class TestCarryForwardPreviewConfirmGating:
     ):
         """Ambiguous doubled-row target -> Confirm is disabled.
 
-        The only remaining block is the corrupt doubled-row state (two
-        mutable rows for one template+period).  Blocked rows propagate
-        to the Confirm button so the user must resolve them manually
-        before retrying; the disabled attribute prevents HTMX from
-        posting the mutation that would just refuse anyway.
+        The only remaining block is a target holding two mutable rows for
+        one template+period that the leftover cannot be handed to honestly
+        -- here the paycheck's own canonical beside a sibling the owner
+        moved in, which ``_leftover_recipient`` refuses on its
+        ``is_override`` rule.  Blocked rows propagate to the Confirm button
+        so the user must resolve them manually before retrying; the
+        disabled attribute prevents HTMX from posting the mutation that
+        would just refuse anyway.
 
         The target rows must live in the period the route resolves as
         ``current_period`` -- the paycheck CONTAINING the owner's day --
@@ -404,21 +326,21 @@ class TestCarryForwardPreviewConfirmGating:
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
-            source = _make_envelope_txn(
-                seed_user, seed_periods_today[0], template,
-            )
+            source = generate_row_of(template, seed_periods_today[0])
             current_period = current_pay_period(
                 seed_user["user"].id,
             )
             assert current_period is not None
-            # Two mutable rows in the target -> AMBIGUOUS.
-            _make_envelope_txn(
-                seed_user, current_period, template,
-                is_override=False,
+            # Two mutable rows in the target -> AMBIGUOUS: the paycheck's own
+            # canonical, and a sibling the owner moved in from the paycheck
+            # after it -- the way an override comes to stand beside one.
+            generate_row_of(template, current_period)
+            following = next(
+                p for p in seed_periods_today
+                if p.start_date > current_period.start_date
             )
-            _make_envelope_txn(
-                seed_user, current_period, template,
-                is_override=True,
+            moved_by_the_owner(
+                generate_row_of(template, following), into=current_period,
             )
             _add_entry(source, seed_user, "40.00")
             db.session.commit()
@@ -608,12 +530,8 @@ class TestCarryForwardPreviewReadOnly:
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
-            source = _make_envelope_txn(
-                seed_user, seed_periods_today[0], template,
-            )
-            target = _make_envelope_txn(
-                seed_user, seed_periods_today[1], template,
-            )
+            source = generate_row_of(template, seed_periods_today[0])
+            target = generate_row_of(template, seed_periods_today[1])
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 
@@ -656,9 +574,7 @@ class TestCarryForwardPreviewReadOnly:
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
-            source = _make_envelope_txn(
-                seed_user, seed_periods_today[0], template,
-            )
+            source = generate_row_of(template, seed_periods_today[0])
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
 
@@ -716,9 +632,7 @@ class TestCarryForwardPreviewEndToEnd:
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
-            source = _make_envelope_txn(
-                seed_user, seed_periods_today[0], template,
-            )
+            source = generate_row_of(template, seed_periods_today[0])
             _add_entry(source, seed_user, "65.00")
             db.session.commit()
 

@@ -41,7 +41,7 @@ from app.models.transfer import Transfer
 from app.services import loan_ledger, transfer_service
 from app.services.amount_ownership import owns_its_amount
 from app.services.cash_ledger import (
-    amount_basis,
+    derived_amount_basis,
     amounts_by_id,
     pricing_load_options,
 )
@@ -49,6 +49,8 @@ from tests._test_helpers import (
     write_past_the_amount_seam,
     capture_sql_statements,
     create_transfer,
+    generate_transfer_of,
+    make_every_period_rule,
     shadow_amount,
 )
 from tests.test_integration.test_transfer_settle_freeze import (
@@ -192,13 +194,12 @@ def _generated_pair(seed_user, seed_periods, series="500.00"):
     template_amount_service.set_amount(
         template, Decimal(series), effective_on=date(2000, 1, 1),
     )
-    xfer = create_transfer(
-        seed_user, _db.session, seed_user["account"], savings,
-        seed_periods[0], amount=Decimal(series),
-        due_date=seed_periods[0].start_date,
-    )
-    xfer.transfer_template_id = template.id
-    _db.session.flush()
+    # The transfer is the ENGINE's (:func:`generate_transfer_of`, plan step
+    # balance:X-ch): derived, parent and both legs, on the definition's own
+    # date.  A hand-built one owned its figure and was linked afterwards, a
+    # shape no producer writes since X-au-f.
+    make_every_period_rule(_db.session, template)
+    xfer = generate_transfer_of(template, seed_periods[0])
     return xfer, _shadows(xfer.id)
 
 
@@ -774,7 +775,7 @@ class TestALoanPaymentsLegsReadTheLoan:
         with app.app_context():
             xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
             legs = _shadows(xfer.id)
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
 
@@ -859,7 +860,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
         with app.app_context():
             xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
             legs = _shadows(xfer.id)
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
             assert set(amounts_by_id(legs, basis).values()) == {
@@ -872,7 +873,7 @@ class TestAnOwnerTypedFigureShowsBeforeItSettles:
             )
             db.session.commit()
 
-            fresh = amount_basis(
+            fresh = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
             shown = amounts_by_id(_shadows(xfer.id), fresh)
@@ -971,7 +972,7 @@ class TestTheAmountModelsOwnEagerLoad:
                 .all()
             )
             assert len(legs) >= 2
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
             # The LOAN resolve is a query and is not what this measures, so it
@@ -1012,7 +1013,7 @@ class TestTheAmountModelsOwnEagerLoad:
                 )
                 .all()
             )
-            basis = amount_basis(
+            basis = derived_amount_basis(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
             amounts_by_id(legs[:1], basis)

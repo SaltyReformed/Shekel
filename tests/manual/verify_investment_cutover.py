@@ -259,7 +259,7 @@ def _readers(user_id):
     derived_current = calendar.period_containing(ctx.as_of)
     return {
         "as_of": ctx.as_of.isoformat(),
-        "cadence_days": calendar.rhythm.cadence_days,
+        "cadence_days": calendar.eras[-1].rhythm.cadence_days,
         "opening_bound": _plain(calendar.opening_bound()),
         "horizon": _plain(calendar.horizon()),
         "stored_all_periods": db.session.query(PayPeriod).filter_by(

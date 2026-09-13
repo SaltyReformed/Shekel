@@ -31,7 +31,9 @@ reuse a value, nothing does.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
+
+from app.enums import BusinessDayShiftEnum
 
 # Imported from the package's PUBLIC surface, which is what every consumer
 # depends on.  Reaching into ``pay_calendar._derive`` would test a path no
@@ -43,7 +45,49 @@ from app.services.pay_calendar import (
 )
 
 
-from tests._test_helpers import rhythm_of
+from app.utils.business_days import shift_to_business_day
+from tests._test_helpers import eras_of
+
+
+def next_grid_payday_after(
+    phase: date, cadence_days: int, shift, record: date,
+) -> date:
+    """Return the era grid's payday after the one *record* stands for, by inspection.
+
+    **The brute-force reference for
+    :func:`~app.services.pay_calendar.payday_after`** (plan step ``C17-b-2``,
+    ruled 2026-09-11): a recorded payday stands for the planned payday
+    NEAREST to it -- a tie exactly half a cadence off going to the LATER one
+    -- and the calendar's last period runs to the day before the following
+    planned payday.  Shares no body with the producer: the grid is LISTED
+    from *phase* across the record, every grid day is displaced under the
+    convention, the nearest is picked by inspection and the next one
+    returned.  :func:`cadence_control` and the derivation suite's displaced
+    sweep both read it, so the matching rule is stated once on the test side
+    too.
+
+    Args:
+        phase: The era's first nominal payday, the grid's phase.
+        cadence_days: Days between paydays.
+        shift: The era's convention (:class:`~app.enums.BusinessDayShiftEnum`).
+        record: The last recorded payday.
+
+    Returns:
+        The next projected payday, displaced.
+    """
+    around = (record - phase).days // cadence_days
+    steps = range(around - 3, around + 4)
+    grid = [
+        shift_to_business_day(phase + timedelta(days=cadence_days * n), shift)
+        for n in steps
+    ]
+    distances = [abs((payday - record).days) for payday in grid]
+    nearest = max(
+        index for index, distance in enumerate(distances)
+        if distance == min(distances)
+    )
+    return grid[nearest + 1]
+
 
 @dataclass(frozen=True)
 class CadenceControl:
@@ -53,10 +97,16 @@ class CadenceControl:
         applicable: Whether the control could run at all.  ``False`` only for
             an empty payday set, where there is no end to move.
         probe_cadence: The cadence the schedule was re-derived at.
-        expected_shift_days: How far the last end should move -- ``+1`` for a
-            probe one day longer, ``-1`` when the real cadence is already at
-            :data:`~app.services.pay_calendar.MAX_CADENCE_DAYS` and the probe
-            has to go the other way.
+        expected_shift_days: How far the last end should move: to the day
+            before the PROBE grid's payday after the one the last record
+            stands for, from the real grid's -- both listed by
+            :func:`next_grid_payday_after`, never read from the producer.
+            *It was a literal ``+1`` / ``-1`` until plan step ``C17-b-2``:
+            with the last end anchored on the recorded day, a probe one day
+            longer moved it exactly one day.  Anchored on the era's grid the
+            move is the re-phased grid's step -- five days for five
+            fortnightly paydays probed at 15 -- and the literal was the old
+            anchor's arithmetic rather than the property.*
         moved: ``(payday, days its derived end moved)`` for every row whose
             derived end changed, in ``start_date`` order.
     """
@@ -134,12 +184,22 @@ def cadence_control(
         cadence_days - 1 if cadence_days >= MAX_CADENCE_DAYS
         else cadence_days + 1
     )
-    baseline = derive_periods(paydays, rhythm_of(cadence_days))
-    probed = derive_periods(paydays, rhythm_of(probe))
+    baseline = derive_periods(paydays, eras_of(paydays, cadence_days))
+    probed = derive_periods(paydays, eras_of(paydays, probe))
+    expected_shift = 0
+    if baseline:
+        # Both grids are phased on the FIRST payday, as ``eras_of`` phases
+        # the era, and the expectation is read off a LISTING of each.
+        phase, record = baseline[0].start_date, baseline[-1].start_date
+        shift = BusinessDayShiftEnum.NONE
+        expected_shift = (
+            next_grid_payday_after(phase, probe, shift, record)
+            - next_grid_payday_after(phase, cadence_days, shift, record)
+        ).days
     return CadenceControl(
         applicable=bool(baseline),
         probe_cadence=probe,
-        expected_shift_days=probe - cadence_days,
+        expected_shift_days=expected_shift,
         moved=tuple(
             (before.start_date, (after.end_date - before.end_date).days)
             for before, after in zip(baseline, probed)
@@ -465,7 +525,9 @@ IRREGULAR_SHAPES: "tuple[IrregularShape, ...]" = (
             "predicate was p2.start_date < p1.end_date, so a day covered "
             "twice passed the weekly check.  Derived, the first period ends "
             "the day before the second opens and there is no shared day to "
-            "miss."
+            "miss.  Since plan step C17-b-2 it is also the one catalogue "
+            "shape whose last record is OFF its era's grid, so it is the "
+            "shape that pins the matching rule."
         ),
         cadence_days=14,
         paydays=(
@@ -481,11 +543,17 @@ IRREGULAR_SHAPES: "tuple[IrregularShape, ...]" = (
                 end_date=date(2026, 1, 14),
                 end_is_projected=False,
             ),
+            # The era's grid from 2026-01-02 at 14 is 01-16, 01-30 ...; the
+            # 01-15 record is the 01-16 paycheck paid a day early, so the next
+            # is 01-30 and the period ends 01-29 (plan step C17-b-2, ruled
+            # 2026-09-11: a recorded payday stands for its NEAREST planned
+            # one).  It was 01-28 -- the record plus one cadence -- while the
+            # last end anchored on the recorded day.
             DerivedPeriod(
                 period_id=2,
                 period_index=1,
                 start_date=date(2026, 1, 15),
-                end_date=date(2026, 1, 28),
+                end_date=date(2026, 1, 29),
                 end_is_projected=True,
             ),
         ),

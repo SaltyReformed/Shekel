@@ -56,6 +56,7 @@ from app.services.pay_calendar import (
     calendar_for,
 )
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     all_periods,
     era_of,
     restate_fixture_era,
@@ -102,7 +103,7 @@ def _schedule_with_a_payday_jump(db_session, user_id):
     Returns:
         The generated :class:`~app.models.pay_period.PayPeriod` rows.
     """
-    periods = pay_period_write.record_paydays(
+    periods = record_paydays_across_a_hole(
         user_id=user_id,
         first_payday=FIRST_PAYDAY,
         num_periods=PERIOD_COUNT,
@@ -158,7 +159,7 @@ class TestItLoadsTheOwnersWholeSchedule:
         """
         with app.app_context():
             second = seed_second_user["user"].id
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=second,
                 first_payday=FIRST_PAYDAY + timedelta(days=7),
                 num_periods=3,
@@ -248,7 +249,7 @@ class TestItLoadsTheOwnersWholeSchedule:
             calendar = calendar_for(user_id)
 
             assert calendar.periods == ()
-            assert calendar.rhythm.cadence_days == CADENCE + 7
+            assert calendar.eras[-1].rhythm.cadence_days == CADENCE + 7
             assert calendar.cadence.cadence_days == CADENCE + 7
             assert calendar.horizon() is None
             assert calendar.opening_bound() is None
@@ -338,7 +339,7 @@ class TestTheCadenceComesFromTheScheduleService:
             restate_fixture_era(user_id, date(2026, 1, 2), CADENCE + 7)
             db.session.commit()
 
-            assert calendar_for(user_id).rhythm.cadence_days == CADENCE + 7
+            assert calendar_for(user_id).eras[-1].rhythm.cadence_days == CADENCE + 7
 
     # ``test_it_infers_the_cadence_when_no_schedule_row_exists`` stood here
     # until plan step **C4-b-2** and was DELETED with its subject, not with
@@ -485,7 +486,7 @@ class TestThePartialSetHazardIsRealAndTheDoorIsWhatClosesIt:
 
             sliced = PayCalendar.from_paydays(
                 [(period.period_id, period.start_date) for period in tail],
-                rhythm_of(CADENCE),
+                whole.eras,
                 seed_user["user"].id,
                 history_opens_on=None,
             )

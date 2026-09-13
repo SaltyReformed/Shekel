@@ -222,7 +222,9 @@ def _grade_profile(profile, cards):
     # single-year collapse, which is a no-op for these rows.
     door = {
         b.period.period_id: b.earnings.net_pay
-        for b in income_service.paycheck_pricing(calendar).for_profile(
+        for b in income_service.paycheck_pricing(
+            calendar.user_id, lambda: calendar,
+        ).for_profile(
             profile,
         ).over(periods)
     }

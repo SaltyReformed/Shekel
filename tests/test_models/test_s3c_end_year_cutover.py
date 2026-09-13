@@ -510,7 +510,7 @@ class TestARaiseStopsBadgingAfterItsEndYear:
 
             for year in (2027, 2029, 2031):
                 assert get_raise_event(
-                    profile, self._Period(date(year, 1, 15)),
+                    profile.raises, self._Period(date(year, 1, 15)),
                 ), f"no raise event badged in {year}, which is within its run"
 
     def test_a_recurring_raise_stops_badging_after_its_end_year(
@@ -529,7 +529,7 @@ class TestARaiseStopsBadgingAfterItsEndYear:
             db.session.refresh(profile)
 
             assert get_raise_event(
-                profile, self._Period(date(2032, 1, 15)),
+                profile.raises, self._Period(date(2032, 1, 15)),
             ) == "", (
                 "get_raise_event badged a raise in 2032 whose last believed "
                 "year is 2031; apply_raises stopped applying it, so the "
@@ -549,7 +549,7 @@ class TestARaiseStopsBadgingAfterItsEndYear:
             _raise(profile, effective_year=2027, terminal_year=None)
             db.session.refresh(profile)
 
-            assert get_raise_event(profile, self._Period(date(2040, 1, 15)))
+            assert get_raise_event(profile.raises, self._Period(date(2040, 1, 15)))
 
 
 #: The tightest end year ``ck_salary_raises_terminal_year_not_before_
@@ -583,4 +583,4 @@ def test_a_raise_believed_only_in_its_first_year_still_badges_there(
 
             start_date = date(_BOUNDARY_YEAR, 1, 15)
 
-        assert get_raise_event(profile, _Period())
+        assert get_raise_event(profile.raises, _Period())

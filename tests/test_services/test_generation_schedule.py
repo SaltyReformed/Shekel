@@ -700,7 +700,7 @@ class TestThePaycheckSeesTheWholeSchedule:
             assert created[0].estimated_amount is None
             priced = cash_ledger.amounts_by_id(
                 created,
-                cash_ledger.amount_basis(seed_user["user"].id, scenario_id),
+                cash_ledger.derived_amount_basis(seed_user["user"].id, scenario_id),
             )
             assert priced[created[0].id] == whole
             assert whole != windowed, (
@@ -773,7 +773,7 @@ class TestThePaycheckSeesTheWholeSchedule:
 
             priced = cash_ledger.amounts_by_id(
                 created,
-                cash_ledger.amount_basis(seed_user["user"].id, scenario_id),
+                cash_ledger.derived_amount_basis(seed_user["user"].id, scenario_id),
             )
             by_start = {
                 row.pay_period.start_date: priced[row.id] for row in created
@@ -944,7 +944,7 @@ class TestAWindowMustBelongToTheOwner:
             narrowed_ctx._calendars[seed_user["user"].id] = (
                 PayCalendar.from_paydays(
                     paydays=[(target.id, target.start_date)],
-                    rhythm=calendar.rhythm,
+                    eras=calendar.eras,
                     user_id=seed_user["user"].id,
                     history_opens_on=None,
                 )

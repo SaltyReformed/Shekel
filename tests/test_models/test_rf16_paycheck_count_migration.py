@@ -286,7 +286,7 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
             profile = _profile(db, seed_user, name="Legacy weekly")
             # The era is a second child of the row since plan step C17-a
             # (``fk_pay_eras_schedule``); it goes before the parent too.
-            pay_era_write.retire_eras(user_id, None)
+            pay_era_write.retire_eras(user_id, ())
             db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
             # A 7-day period: its stored end is start + (cadence - 1).
             db.session.execute(
@@ -334,7 +334,7 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
             )
             # The era is a second child of the row since plan step C17-a
             # (``fk_pay_eras_schedule``); it goes before the parent too.
-            pay_era_write.retire_eras(user_id, None)
+            pay_era_write.retire_eras(user_id, ())
             db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
             profile = _profile(db, seed_user, name="No schedule")
             db.session.commit()

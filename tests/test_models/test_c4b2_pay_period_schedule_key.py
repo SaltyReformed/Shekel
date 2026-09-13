@@ -283,7 +283,7 @@ class TestTheForbiddenOwnerIsUnstorable:
             # The era key (``fk_pay_eras_schedule``, plan step C17-a) would
             # refuse the same delete for its own reason; the eras go first so
             # the refusal graded here is THIS key's.
-            pay_era_write.retire_eras(user.id, None)
+            pay_era_write.retire_eras(user.id, ())
             db.session.commit()
             with pytest.raises(IntegrityError) as excinfo:
                 db.session.query(PaySchedule).filter_by(
@@ -320,7 +320,7 @@ class TestTheForbiddenOwnerIsUnstorable:
             # The era is a SECOND child of the row since plan step C17-a
             # (``fk_pay_eras_schedule``); it goes first so both halves below
             # are decided by the key under test and not by that one.
-            pay_era_write.retire_eras(user.id, None)
+            pay_era_write.retire_eras(user.id, ())
             db.session.commit()
             # Parent first: refused, and nothing moves.
             with pytest.raises(IntegrityError) as excinfo:
@@ -518,7 +518,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
             # The era goes before the parent row it hangs off (plan step
             # C17-a, ``fk_pay_eras_schedule``), as the paydays' key already
             # required of them.
-            pay_era_write.retire_eras(user.id, None)
+            pay_era_write.retire_eras(user.id, ())
             db.session.query(PaySchedule).filter_by(
                 user_id=user.id,
             ).delete(synchronize_session=False)
@@ -557,7 +557,7 @@ class TestTheRevisionRoundTripsAndTheChainOrderHolds:
             restore_pay_period_derived_columns(db.session)
             relax_pay_schedule_shift_not_null(db.session)
             _run(_M_C4B2.downgrade, db.session)
-            pay_era_write.retire_eras(user.id, None)
+            pay_era_write.retire_eras(user.id, ())
             db.session.query(PaySchedule).filter_by(
                 user_id=user.id,
             ).delete(synchronize_session=False)
