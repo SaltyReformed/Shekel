@@ -37,17 +37,27 @@ an estimate is priced through those arms now
 
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import joinedload
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
+
+if TYPE_CHECKING:
+    # Type-only, both: a ``TransactionTemplate`` names only
+    # ``destination_account``'s parameter here (it carries no
+    # ``to_account_id`` at all, which is what the ``getattr`` there is for),
+    # and ``recurring_definition`` reaches this module at runtime through
+    # ``loan_recurrence_sync``, so the edge back is a forward reference and
+    # nothing more.
+    from app.models.transaction_template import TransactionTemplate
+    from app.services.recurring_definition import UnsavedDefinition
 
 
 def destination_account(
-    template: TransferTemplate | TransactionTemplate,
+    template: "TransferTemplate | TransactionTemplate | UnsavedDefinition",
 ) -> Account | None:
     """Return the account *template* pays into, or ``None`` when it pays into none.
 

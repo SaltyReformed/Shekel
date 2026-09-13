@@ -555,13 +555,17 @@ class TestTheMerchantsOutliveTheirLinesONLYWhileTheyAreANSWERED:
     def test_it_sweeps_THIS_account_alone(
         self, app, db, seed_user, seed_second_user,
     ):
-        """The scope clause, which a destructive statement may not be without.
+        """Another account's merchant no line names is not this delete's to take.
 
-        Drop ``Merchant.account_id == account_id`` and one owner's import
-        delete takes every unanswered merchant in the database, across every
-        account -- which is the worst shape a missing scope filter can take,
-        because the door is destructive and its receipt would report the count
-        as its own work.
+        *Until plan step ``bank_import:X-gr`` this docstring said dropping
+        ``Merchant.account_id == account_id`` from the sweep would take every
+        unanswered merchant in the database.*  The act deletes the list
+        :func:`~app.services.statement_import._reads.orphan_merchants_by_import`
+        names since that step -- merchants this import's lines alone name --
+        so a merchant NO line names is in it on no account, and this case
+        fires on no scope clause: the cross-account twin of the case below.
+        The read's own scope is graded where a foreign line DOES name a
+        merchant, ``test_reads.test_orphan_merchants_reads_only_ITS_OWN_account``.
         """
         theirs = Merchant(
             account_id=seed_second_user["account"].id, name="Theirs Alone",
@@ -575,6 +579,36 @@ class TestTheMerchantsOutliveTheirLinesONLYWhileTheyAreANSWERED:
         assert removal.merchants_forgotten == 2
         assert [row.name for row in db.session.query(Merchant).all()] == [
             "Theirs Alone",
+        ]
+
+    def test_a_merchant_NO_line_named_before_the_delete_is_not_its_work(
+        self, app, db, seed_user,
+    ):
+        """The act deletes the list the confirmation previewed, not a sweep.
+
+        Plan step ``bank_import:X-gr``, finding **BI-490**.  The act swept
+        *whatever is orphaned now* after the rows were gone until that step,
+        which would have reported a merchant this delete never touched as its
+        own work and counted differently from the confirmation that previewed
+        it.  No door produces a merchant no line names
+        (:func:`~app.services.statement_import._merchants.resolve_merchants`
+        writes every row it creates onto a line in the same pass; measured 0
+        of 67 on the developer's database 2026-09-12), so it is PLANTED, and
+        the receipt is graded against the read rather than the sweep.
+        """
+        planted = Merchant(
+            account_id=seed_user["account"].id, name="Nobody Named Me",
+        )
+        db.session.add(planted)
+        db.session.flush()
+        outcome = _import(seed_user)
+        assert db.session.query(Merchant).count() == 3
+
+        removal = _undo(seed_user, outcome.import_id)
+
+        assert removal.merchants_forgotten == 2
+        assert [row.name for row in db.session.query(Merchant).all()] == [
+            "Nobody Named Me",
         ]
 
 

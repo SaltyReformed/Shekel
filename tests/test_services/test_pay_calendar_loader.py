@@ -56,6 +56,7 @@ from app.services.pay_calendar import (
     calendar_for,
 )
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     all_periods,
     era_of,
     restate_fixture_era,
@@ -102,7 +103,7 @@ def _schedule_with_a_payday_jump(db_session, user_id):
     Returns:
         The generated :class:`~app.models.pay_period.PayPeriod` rows.
     """
-    periods = pay_period_write.record_paydays(
+    periods = record_paydays_across_a_hole(
         user_id=user_id,
         first_payday=FIRST_PAYDAY,
         num_periods=PERIOD_COUNT,
@@ -158,7 +159,7 @@ class TestItLoadsTheOwnersWholeSchedule:
         """
         with app.app_context():
             second = seed_second_user["user"].id
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=second,
                 first_payday=FIRST_PAYDAY + timedelta(days=7),
                 num_periods=3,

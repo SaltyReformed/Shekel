@@ -53,9 +53,9 @@ from app.services.tax_config_service import (
     load_tax_configs,
     load_tax_configs_for_year,
 )
-from app.services.amount_ownership import state_own_amount
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    repriced_by_the_owner,
     all_periods,
     counting_calls,
     freeze_today,
@@ -209,8 +209,7 @@ def _make_txn(
     if template is not None:
         txn = generate_row_of(template, period)
         if owned_amount is not None:
-            state_own_amount(txn, Decimal(owned_amount))
-            txn.is_override = True
+            repriced_by_the_owner(txn, owned_amount)
         txn.status_id = status.id
         db.session.flush()
         return txn
@@ -1380,8 +1379,9 @@ class TestThePricerIsKeyedOnTheRaiseSet:
         pricer of its own -- the two-derivations-of-one-figure shape
         ``PlanPoint`` refuses one tier up, and one the pricer-count gate
         cannot see on a probe request, where a second pricer is also the
-        legitimate outcome.  The fourth spelling is the one S3-f-2's rail
-        will actually send: a probe carrying the stored end year unchanged.
+        legitimate outcome.  The fourth spelling is the one S3-f-2b's rail
+        actually sends on every refresh: a probe carrying the stored end year
+        unchanged.
         """
         with app.app_context():
             profile, row = self._profile_with_a_forever_raise(seed_user)

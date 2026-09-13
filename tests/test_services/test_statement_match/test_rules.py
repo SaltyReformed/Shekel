@@ -71,7 +71,7 @@ from app.services.statement_match._stating import (  # pylint: disable=protected
     _refuse_unknown_merchants,
 )
 
-from tests._test_helpers import generate_row_of
+from tests._test_helpers import generate_row_of, moved_by_the_owner
 from ._builders import (
     a_bank_line,
     a_later_period,
@@ -294,10 +294,10 @@ class TestWhatARuleResolvesTo:
         # by the two acts the move door performs (plan step balance:X-cf).
         # Hand-linking a second engine row to this template would give two
         # rows ONE occurrence, which the occurrence index refuses.
-        second = generate_row_of(first.template, seed_periods[1])
-        second.pay_period_id = seed_periods[0].id
-        second.is_override = True
-        db.session.flush()
+        second = moved_by_the_owner(
+            generate_row_of(first.template, seed_periods[1]),
+            into=seed_periods[0],
+        )
         rule = StandingRule(
             merchant_id=_MERCHANT, merchant="Amazon", answer=RuleAnswer.TEMPLATE,
             template_id=first.template_id,

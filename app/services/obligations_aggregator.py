@@ -209,9 +209,10 @@ def monthly_or_none(
             already holds.
         ctx: The read pass.  Its ``as_of`` is the day the expired filter asks
             about; its ``calendar()`` supplies the cadence the conversion
-            needs and the horizon the filter needs -- ONE schedule, so a
-            paycheck-space template's monthly equivalent is measured against
-            the same rhythm its stop was judged against.
+            needs.  The horizon the filter needs rides on *reading* itself
+            since plan step R7d-f-2 (plan ledger row **N-514**), so the
+            schedule a definition was walked against and the one its stop is
+            judged against are one value rather than two arguments that agree.
 
     Returns:
         The full-precision Decimal monthly equivalent, or ``None`` if the
@@ -231,8 +232,7 @@ def monthly_or_none(
         return None
 
     rule = template_rule(template)
-    calendar = ctx.calendar()
-    if has_ended(rule, reading, calendar, on=ctx.as_of):
+    if has_ended(rule, reading, on=ctx.as_of):
         return None
 
     # ONE division, and the denominator is an exact integer: a monthly
@@ -244,7 +244,7 @@ def monthly_or_none(
     # 52,000,000-case sweep, wrongly (see ``Cadence.units_per_year``).
     cadence = cadence_of(rule)
     return (
-        amount * cadence.units_per_year(calendar.cadence)
+        amount * cadence.units_per_year(ctx.calendar().cadence)
         / (cadence.interval_n * MONTHS_PER_YEAR)
     )
 

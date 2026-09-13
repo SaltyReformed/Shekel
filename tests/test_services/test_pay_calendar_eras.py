@@ -33,6 +33,7 @@ from one by explicit arithmetic, so these pass identically under
 
 import random
 from datetime import date, timedelta
+from itertools import islice
 
 import pytest
 
@@ -44,6 +45,7 @@ from app.services.pay_calendar import (
     derive_periods,
     era_index_at,
     payday_after,
+    planned_paydays_after,
     projected_payday,
 )
 # Package-PRIVATE on purpose: the producers below have no caller outside the
@@ -276,6 +278,23 @@ class TestTheNextPaydayAfterTheRecord:
     def test_it_stays_on_the_covering_eras_grid_while_that_grid_reaches(self):
         assert horizon_step((ERA_A, ERA_B), date(2026, 3, 13)) == (0, 6)
         assert payday_after((ERA_A, ERA_B), date(2026, 3, 13)) == date(2026, 3, 27)
+
+    def test_the_planned_paydays_after_the_record_are_one_sequence(self):
+        """``payday_after`` is the FIRST of ``planned_paydays_after``; the batch ceiling is the second.
+
+        Plan step ``pay_calendar:C17-c-2a``: the floor and its mirror read
+        one sequence, so they cannot come apart.  Worked on the ruled
+        example with the record ending 03-13 (A's 06-19 is the last of A's
+        paydays either way, so the sequence crosses the seam at 07-01).
+        """
+        eras = (ERA_A, ERA_B)
+        planned = planned_paydays_after(eras, date(2026, 3, 13))
+        first = next(planned)
+        assert first == payday_after(eras, date(2026, 3, 13)) == date(2026, 3, 27)
+        assert next(planned) == date(2026, 4, 10)
+        assert list(islice(planned_paydays_after(eras, date(2026, 6, 5)), 3)) == [
+            date(2026, 6, 19), date(2026, 7, 1), date(2026, 7, 8),
+        ]
 
     def test_an_eras_last_step_is_the_one_before_the_next_eras_first_payday(self):
         """``A`` pays 06-19 as its last; 07-03 would be its next but B pays 07-01."""
