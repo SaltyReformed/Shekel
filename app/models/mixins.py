@@ -340,42 +340,6 @@ class SoftDeleteOverridableMixin:
     )
 
 
-class TrackingVisibilityMixin:
-    """Purchase-tracking and companion-visibility flags.
-
-    Adds two columns -- both ``BOOLEAN NOT NULL DEFAULT FALSE``:
-
-      ``is_envelope``       -- enables individual purchase entries
-                               (the "envelope" budgeting mode where a
-                               row accumulates per-purchase line items).
-      ``companion_visible`` -- exposes the row in the linked companion's
-                               read-only view.
-
-    Used by both :class:`TransactionTemplate` and :class:`Transaction`.
-    The flags mean the same thing on each, but resolve differently: a
-    template-generated transaction inherits the template's flags (the
-    template is the source of truth for every instance it generates),
-    while an ad-hoc transaction -- which has no template -- carries its
-    own.  ``Transaction.tracks_purchases`` and
-    ``Transaction.visible_to_companion`` encode that resolution.
-
-    Unlike :class:`SoftDeleteOverridableMixin`, this mixin IS safe on
-    the template table: the columns already exist there with identical
-    semantics, so applying the mixin is a pure refactor (single
-    canonical definition), not a schema change.  Columns are declared at
-    class level (NOT via ``@declared_attr``) so the SQLAlchemy DDL is
-    byte-identical to the prior inline declarations; an autogenerate
-    diff against a migrated schema must be empty.
-    """
-
-    is_envelope = db.Column(
-        db.Boolean, nullable=False, default=False, server_default="false",
-    )
-    companion_visible = db.Column(
-        db.Boolean, nullable=False, default=False, server_default="false",
-    )
-
-
 class OptimisticLockMixin:
     """Optimistic-locking version counter for concurrently-edited rows.
 
@@ -506,7 +470,10 @@ class SettleDatedMixin:
     block past pylint's ``duplicate-code`` threshold, which is the gate saying
     what was already true -- these are the same three columns recording the same
     fact about two kinds of row.  Extracting them is the same cleanup
-    :class:`SoftDeleteOverridableMixin` and :class:`TrackingVisibilityMixin` are.
+    :class:`SoftDeleteOverridableMixin` is.  (``TrackingVisibilityMixin`` was
+    another until plan steps ``balance:X-bi-1`` and ``X-bi-1b`` sealed both of
+    its columns on ``Transaction``: the two tables stopped treating them alike,
+    so each declares its own, and a mixin with one consumer dissolved.)
 
     **The ``datetime`` refusal is now on BOTH tables, and that is a widening
     rather than a move** (finding **N-179**).  It was a ``@validates`` on

@@ -23,7 +23,7 @@ from unittest.mock import patch
 from sqlalchemy import event
 
 from app import ref_cache
-from app.enums import AmountSourceEnum, StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
@@ -34,6 +34,7 @@ from app.services import (
     status_seam,
 )
 from app.services.pay_calendar import PayCalendar
+from app.utils.dates import display_today
 from app.services.cash_ledger import amount_basis
 from app.services.row_valuation import settled_contribution
 from app.services.spending_report_service import (
@@ -65,20 +66,22 @@ from app.services.spending_report_service._window import (
     _spent_total,
 )
 from tests._test_helpers import (
-    rhythm_of,
     add_entry,
     create_envelope_txn,
     create_savings_account,
     create_settled_transfer,
     create_transfer,
-    make_expense_template,
-    state_template_price,
     default_settle_day,
+    eras_of,
+    generate_row_of,
     last_covered_day,
+    make_expense_template,
     pay_periods_hydrated,
+    rhythm_of,
     settle_day_columns,
     settlement_columns,
     settlement_if_settling,
+    state_template_price,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -563,7 +566,7 @@ def _calendar_scope(paydays, cadence_days=14, user_id=1):
     """
     return _ScopeIds(
         user_id=user_id, account_id=1, scenario_id=1,
-        calendar=PayCalendar.from_paydays(paydays, rhythm_of(cadence_days), user_id, history_opens_on=None),
+        calendar=PayCalendar.from_paydays(paydays, eras_of(paydays, cadence_days), user_id, history_opens_on=None),
     )
 
 
@@ -1949,11 +1952,20 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
         after this row's due date, so a resolver reading the latest version
         would answer ``$200.00`` and make the delta ``-$50.00`` instead of
         ``+$25.00``.
+
+        **The ``$200.00`` version is dated TOMORROW, not sixty days after the
+        row, and plan step balance:X-cf-3 measured why.**  ``make_expense_template``
+        states the ``$100.00`` price effective TODAY, so a version sixty days
+        after a January 2026 row stopped being the newest the day the suite
+        ran past March 2026, and a resolver mutated to read the newest
+        version -- ``default_amount``, which ``set_amount`` re-syncs onto it
+        -- answered ``$100.00`` and passed.  Tomorrow is newest on every
+        clock.  Red with that mutation, green without.
         """
         with app.app_context():
             period = seed_periods[0]
             template = make_expense_template(
-                db.session, seed_user, amount="100.00",
+                db.session, seed_user, amount="100.00", name="Series Priced",
             )
             db.session.flush()
             state_template_price(
@@ -1962,29 +1974,27 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
             )
             state_template_price(
                 template, Decimal("200.00"),
-                effective_on=period.start_date + timedelta(days=60),
+                effective_on=display_today() + timedelta(days=1),
             )
             db.session.flush()
+            assert template.default_amount == Decimal("200.00"), (
+                "the newest version must be the one the row's date does NOT "
+                "select, or the mutation this case guards against passes"
+            )
 
-            due = period.start_date
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=period.user_id,
-                pay_period_id=period.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-                name="Series Priced",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                template_id=template.id,
-                due_date=due,
-                amount_ownership=AmountOwnership.derived(
-                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-                ),
+            # The engine's row, due on the paycheck's own start (what
+            # ``compute_due_date`` derives for an every-paycheck definition),
+            # then SETTLED on that day at $125.00 -- the record laid on bare,
+            # through the one door a bare-built settlement goes through.
+            txn = generate_row_of(template, period)
+            due = txn.due_date
+            assert due == period.start_date
+            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            for column, value in {
                 **settle_day_columns(due),
                 **settlement_columns(due, Decimal("125.00")),
-            )
-            db.session.add(txn)
+            }.items():
+                setattr(txn, column, value)
             db.session.commit()
 
             surprises = _build_surprises(

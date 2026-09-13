@@ -7,9 +7,10 @@ bound.  Each pair is imported from whoever OWNS the rule rather than restated
 here -- the cadence pair from the model carrying the matching CHECK constraint
 (:data:`~app.models.pay_era.CADENCE_DAYS_MIN` /
 :data:`~app.models.pay_era.CADENCE_DAYS_MAX`), the batch pair from the
-writer whose transaction does the work
-(:data:`~app.services.pay_period_write.PERIOD_BATCH_MIN` /
-:data:`~app.services.pay_period_write.PERIOD_BATCH_MAX`), and, since plan step
+module that says what one batch may be, which the writer asks before its
+transaction does the work
+(:data:`~app.services.pay_period_batch.PERIOD_BATCH_MIN` /
+:data:`~app.services.pay_period_batch.PERIOD_BATCH_MAX`), and, since plan step
 **balance:X-bh-2**, the pay-history window from :mod:`app.utils.dates` --
 which is not a column's bound at all but how far this application's calendar
 reaches, mirrored onto ``ck_pay_schedule_history_opens_range`` for the writers
@@ -42,7 +43,7 @@ from app.schemas.validation._helpers import (
     _normalize_empty_inputs,
 )
 from app.services import pay_rhythm, pay_schedule_service
-from app.services.pay_period_write import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
+from app.services.pay_period_batch import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
 
@@ -176,10 +177,12 @@ def validate_derivable_rhythm(data):
     **The import is top-level, and a first draft deferred it on a rationale
     that measured false.**  That draft said deferring kept "the service layer"
     out of this module's import, which the auth schema pulls in at startup.
-    It was already there: line 44 imports ``pay_period_write``, and that module
-    imports ``pay_schedule_service`` itself, so
-    ``app.services.pay_schedule_service`` is in ``sys.modules`` the moment this
-    module finishes importing -- measured, not argued.  A ``pylint`` disable
+    It was already there: the batch pair is imported from
+    ``pay_period_batch`` (``pay_period_write`` until plan step ``C17-c-1``),
+    which imports ``pay_calendar``, whose loader imports
+    ``pay_schedule_service`` itself, so ``app.services.pay_schedule_service``
+    is in ``sys.modules`` the moment this module finishes importing --
+    measured, not argued (re-measured at the move, 2026-09-12).  A ``pylint`` disable
     whose stated reason is false is worse than none, because
     ``shekel-disable-rationale`` then certifies a sentence nobody re-checked.
 

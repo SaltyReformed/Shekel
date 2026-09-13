@@ -53,7 +53,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from flask import abort, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app import ref_cache
 from app.enums import CompoundingFrequencyEnum
@@ -500,7 +500,6 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
 
 
 @accounts_bp.route("/accounts/<int:account_id>/details")
-@login_required
 @require_owner
 def cash_detail(account_id):
     """Unified cash-account detail page (checking / interest / plain cash).
@@ -555,7 +554,6 @@ def cash_detail(account_id):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/details/band")
-@login_required
 @require_owner
 def cash_band(account_id):
     """HTMX partial: re-render the cash detail band (D14 click-to-edit port).
@@ -583,7 +581,6 @@ def cash_band(account_id):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/details/balance-hero")
-@login_required
 @require_owner
 def cash_balance_hero(account_id):
     """HTMX partial: the cash balance hero cell (D14 click-to-edit port).
@@ -640,7 +637,6 @@ def _redirect_to_cash_detail(account_id):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/checking")
-@login_required
 @require_owner
 def checking_detail(account_id):
     """Deprecated alias: redirect to the unified :func:`cash_detail` page.
@@ -657,7 +653,6 @@ def checking_detail(account_id):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/interest")
-@login_required
 @require_owner
 def interest_detail(account_id):
     """Deprecated alias: redirect to the unified :func:`cash_detail` page.
@@ -671,7 +666,6 @@ def interest_detail(account_id):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/interest/params", methods=["POST"])
-@login_required
 @require_owner
 def update_interest_params(account_id):
     """Update interest parameters (APY, compounding frequency).
@@ -830,7 +824,6 @@ def _property_chart_context(
 
 
 @accounts_bp.route("/accounts/<int:account_id>/property")
-@login_required
 @require_owner
 def property_detail(account_id):
     """Property detail page: market value, appreciation rate, equity, LTV.
@@ -892,7 +885,6 @@ def property_detail(account_id):
 
 
 @accounts_bp.route("/accounts/<int:account_id>/property/params", methods=["POST"])
-@login_required
 @require_owner
 def update_appreciation_params(account_id):
     """Update a Property's annual appreciation rate."""

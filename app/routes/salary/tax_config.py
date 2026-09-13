@@ -10,7 +10,7 @@ import logging
 from decimal import Decimal
 
 from flask import flash, redirect, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.utils.auth_helpers import require_owner
 from app.extensions import db
@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 
 @salary_bp.route("/salary/tax-config")
-@login_required
 @require_owner
 def tax_config():
     """Redirect to settings dashboard tax configuration section."""
@@ -37,7 +36,6 @@ def tax_config():
 
 
 @salary_bp.route("/salary/tax-config", methods=["POST"])
-@login_required
 @require_owner
 def update_tax_config():
     """Update state tax flat rate."""
@@ -114,7 +112,6 @@ def update_tax_config():
 
 
 @salary_bp.route("/salary/fica-config", methods=["POST"])
-@login_required
 @require_owner
 def update_fica_config():
     """Update FICA configuration."""

@@ -2881,6 +2881,43 @@ def era_of(effective_from, cadence_days, shift=BusinessDayShiftEnum.NONE):
     )
 
 
+#: The phase :func:`eras_of` gives an EMPTY payday set's era.  An empty
+#: calendar reads no phase -- there is no last period to close and nothing to
+#: project past -- so the day is arbitrary, and it is named rather than drawn
+#: from a clock so the value is the same on every run.
+EMPTY_CALENDAR_PHASE = _real_date(2026, 1, 2)
+
+
+def eras_of(paydays, cadence_days, shift=BusinessDayShiftEnum.NONE):
+    """Return ONE era phased on the earliest of *paydays*, as a sequence.
+
+    The pure calendar's era argument since plan step ``pay_calendar:C17-b-2``
+    (:meth:`PayCalendar.from_paydays` takes the owner's eras where it took a
+    :class:`~app.services.pay_rhythm.Rhythm`).  A test that states paydays and
+    a cadence means "this owner has been paid every *cadence_days* since
+    their first payday", which is exactly the era the migration backfilled
+    for every existing owner -- so phasing the era on the earliest payday
+    keeps every regular fixture's derivation what it was, and moves exactly
+    the last end of a fixture whose last payday is OFF that grid, which is
+    what that step does to a real owner.  A test ABOUT eras states them
+    outright with :func:`era_of`.
+
+    Args:
+        paydays: The ``(period_id, payday)`` pairs the calendar is built
+            from, in any order; may be empty, in which case the era's phase
+            is :data:`EMPTY_CALENDAR_PHASE`.
+        cadence_days: Days between the paydays.
+        shift: The convention, defaulting to
+            :attr:`~app.enums.BusinessDayShiftEnum.NONE` for
+            :func:`rhythm_of`'s reason.
+
+    Returns:
+        A one-element tuple holding the era.
+    """
+    days = [payday for _period_id, payday in paydays]
+    return (era_of(min(days) if days else EMPTY_CALENDAR_PHASE, cadence_days, shift),)
+
+
 def mint_fixture_era(user_id, effective_from, cadence_days,
                      shift=BusinessDayShiftEnum.NONE):
     """Give *user_id* a schedule row and ONE era, without recording a payday.
@@ -2897,9 +2934,11 @@ def mint_fixture_era(user_id, effective_from, cadence_days,
     and it takes the era's day because an era has one.  The extend door steps
     from that day and the era rule tests a batch's first payday against its
     grid, so a fixture that later EXTENDS or RECORDS through the writer must
-    state a day on the grid it means; the derivation itself still anchors on
-    the recorded paydays at this leaf, so a hand-built schedule that is only
-    read never notices the day.
+    state a day on the grid it means -- and since plan step ``C17-b-2`` so
+    must a fixture that is only READ: the derivation closes the last period
+    and projects past it on the era's grid, so a hand-built schedule whose
+    paydays are off the day stated here derives a last end on the grid, not
+    one cadence past its last row.
 
     Args:
         user_id: The owner.
@@ -2937,7 +2976,7 @@ def restate_fixture_era(user_id, effective_from, cadence_days,
         The minted :class:`~app.models.pay_era.PayEra` row, flushed.
     """
     pay_schedule_service.ensure_schedule_row(user_id)
-    pay_era_write.retire_eras(user_id, None)
+    pay_era_write.retire_eras(user_id, ())
     return pay_era_write.mint_era(
         user_id, era_of(effective_from, cadence_days, shift),
     )
@@ -5751,7 +5790,7 @@ def make_cadence_rule(owner, cadence, **kwargs):
 def make_expense_template(
     db_session, seed_user, amount="1200.00", is_active=True, *,
     name="Rent", category_key="Rent", is_envelope=False,
-    companion_visible=False,
+    companion_visible=False, account=None,
 ):
     """Create and flush an every-period expense template on the seed account.
 
@@ -5780,6 +5819,12 @@ def make_expense_template(
             definition (``Transaction.visible_to_companion``), widened here
             for the same reason as ``is_envelope`` and defaulting to the
             column's own default.
+        account: The :class:`~app.models.account.Account` the definition
+            moves money through; the seed user's checking account when
+            omitted.  Widened at plan step balance:X-cf-3 for the fixtures
+            whose row lives on an HYSA or a 401(k): the engine puts a row on
+            its DEFINITION's account (``DerivedRowFields.account_id``), so
+            that is the only place a fixture can say where the row goes.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5793,14 +5838,14 @@ def make_expense_template(
     return _priced_repeating_template(
         db_session, seed_user, TxnTypeEnum.EXPENSE, amount, is_active,
         name=name, category_key=category_key, is_envelope=is_envelope,
-        companion_visible=companion_visible,
+        companion_visible=companion_visible, account=account,
     )
 
 
 def make_income_template(
     db_session, seed_user, amount="2000.00", is_active=True, *,
     name="Paycheck", category_key="Salary", is_envelope=False,
-    companion_visible=False,
+    companion_visible=False, account=None,
 ):
     """Create and flush an every-period INCOME template on the seed account.
 
@@ -5819,6 +5864,8 @@ def make_income_template(
         category_key: A key into ``seed_user["categories"]``.
         is_envelope: Whether the definition's rows track purchases.
         companion_visible: Whether a companion of the owner may see its rows.
+        account: The account the definition pays into; the seed user's
+            checking account when omitted.  See :func:`make_expense_template`.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5832,13 +5879,13 @@ def make_income_template(
     return _priced_repeating_template(
         db_session, seed_user, TxnTypeEnum.INCOME, amount, is_active,
         name=name, category_key=category_key, is_envelope=is_envelope,
-        companion_visible=companion_visible,
+        companion_visible=companion_visible, account=account,
     )
 
 
 def _priced_repeating_template(
     db_session, seed_user, txn_type, amount, is_active, *,
-    name, category_key, is_envelope, companion_visible,
+    name, category_key, is_envelope, companion_visible, account,
 ):
     """The one body behind :func:`make_expense_template` and its income twin.
 
@@ -5853,6 +5900,8 @@ def _priced_repeating_template(
         category_key: A key into ``seed_user["categories"]``.
         is_envelope: Whether the definition's rows track purchases.
         companion_visible: Whether a companion of the owner may see its rows.
+        account: The account the definition is on, or ``None`` for
+            ``seed_user["account"]``.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5866,7 +5915,7 @@ def _priced_repeating_template(
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
+        account_id=(seed_user["account"] if account is None else account).id,
         category_id=seed_user["categories"][category_key].id,
         transaction_type_id=ref_cache.txn_type_id(txn_type),
         name=name,
@@ -7071,9 +7120,10 @@ def derived_calendar(
         PayCalendar,
     )
 
+    pairs = [(index + 1, payday) for index, payday in enumerate(sorted(paydays))]
     return PayCalendar.from_paydays(
-        [(index + 1, payday) for index, payday in enumerate(sorted(paydays))],
-        rhythm_of(cadence_days),
+        pairs,
+        eras_of(pairs, cadence_days),
         user_id=user_id,
         history_opens_on=history_opens_on,
     )
@@ -7091,7 +7141,8 @@ def derived_window(paydays, cadence_days):
     **It derives; it does not assemble.**  The window comes out of a real
     :class:`~app.services.pay_calendar.PayCalendar`, so its ends are the ones
     the derivation computes (each period ends the day before the next payday,
-    and the last ends ``payday + cadence_days - 1``), its ordinals run in
+    and the last the day before the next payday of a grid phased on the
+    FIRST payday at *cadence_days* -- :func:`eras_of`), its ordinals run in
     payday order, and its periods TILE.  A test therefore cannot hand the
     growth engine a shape production could not produce -- a gap between two
     periods, an ordinal out of date order, an end below its own start -- which
@@ -7102,7 +7153,8 @@ def derived_window(paydays, cadence_days):
             wants a plain biweekly run passes ``[d, d + 14, d + 28, ...]``.
         cadence_days: Days between paydays, 1..365.  It sets the LAST period's
             end and nothing else, so a run of evenly spaced paydays should
-            pass its own spacing.
+            pass its own spacing; off it, the last end lands on the grid
+            rather than one cadence past the last payday.
 
     Returns:
         The :class:`~app.services.pay_calendar.PeriodWindow` over every derived
@@ -7118,12 +7170,12 @@ def derived_window(paydays, cadence_days):
         PeriodWindow,
     )
 
+    pairs = [
+        (index + 1, payday) for index, payday in enumerate(sorted(paydays))
+    ]
     calendar = PayCalendar.from_paydays(
-        [
-            (index + 1, payday)
-            for index, payday in enumerate(sorted(paydays))
-        ],
-        rhythm_of(cadence_days),
+        pairs,
+        eras_of(pairs, cadence_days),
         user_id=1,
         history_opens_on=None,
     )
@@ -7389,12 +7441,12 @@ def read_pass_over_paydays(
         PayCalendar,
     )
 
+    pairs = [
+        (index + 1, payday) for index, payday in enumerate(sorted(paydays))
+    ]
     calendar = PayCalendar.from_paydays(
-        [
-            (index + 1, payday)
-            for index, payday in enumerate(sorted(paydays))
-        ],
-        rhythm_of(cadence_days),
+        pairs,
+        eras_of(pairs, cadence_days),
         user_id=user_id,
         history_opens_on=history_opens_on,
     )
@@ -7992,7 +8044,7 @@ def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
     # ``pay_calendar:C4-b-1`` nothing else does.**  Two accidental protections
     # went when ``conftest._drop_seed_user_bootstrap`` did, and an adversarial
     # review of that step found both: the hand-rolled version APPENDED beside
-    # the owner's existing paydays, so ``_reject_backward_payday`` refused any
+    # the owner's existing paydays, so ``reject_backward_payday`` refused any
     # first payday earlier than one cadence after the latest -- and where that
     # let something through, a backward-only restatement moved the books to
     # meet it.  The reset door retires every surviving payday in the SAME call
@@ -8078,7 +8130,7 @@ def rebuild_calendar_from_spans(user_id, spans):
     Raises:
         ValidationError: Two spans open closer together than the last span's
             length, which is the forward-only rule
-            ``pay_period_write._reject_backward_payday`` states.
+            ``pay_period_batch.reject_backward_payday`` states.
     """
     from app.extensions import db  # pylint: disable=import-outside-toplevel
     from app.services import (  # pylint: disable=import-outside-toplevel

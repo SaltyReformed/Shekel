@@ -148,7 +148,7 @@ class TestTheExtendAnchorIsTheNOMINALGrid:
         builds and deleted that function with its duplicate query.*
         The recorded row is 2030-11-14 under every convention, because that day
         is an ordinary Thursday and so is its own displacement -- which is what
-        keeps this one fixture now that ``_requested_paydays`` DISPLACES what
+        keeps this one fixture now that ``requested_paydays`` DISPLACES what
         it records (``C14-e-3``).
         """
         pay_period_write.record_paydays(
@@ -289,7 +289,7 @@ class TestTheExtendAnchorIsTheNOMINALGrid:
         refusal, and said in its own docstring that what would make it fail is
         ``C14-e`` landing without the writer's half.
 
-        **The remedy it named is what shipped**: ``_requested_paydays`` runs
+        **The remedy it named is what shipped**: ``requested_paydays`` runs
         the progression on the grid and records each element DISPLACED, which
         lands 2030-11-29 -- exactly the floor -- and is accepted.  So this
         asserts the ACCEPTANCE and the three recorded days, and the ``$0.00``
@@ -491,7 +491,7 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
         with app.app_context():
             user_id = bare_user["user"].id
             self._owner_anchored_at(db.session, user_id, BusinessDayShiftEnum.NONE)
-            pay_era_write.retire_eras(user_id, None)
+            pay_era_write.retire_eras(user_id, ())
             db.session.commit()
 
             with pytest.raises(PayCalendarError, match="has no pay calendar"):
@@ -512,26 +512,27 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
 
         Asked against the last recorded PAYDAY the door answers 2030-01-18,
         which falls inside the paycheck the owner still holds and which
-        ``_reject_backward_payday`` refuses -- permanently, and on a read path
+        ``reject_backward_payday`` refuses -- permanently, and on a read path
         with no handler, because ``top_up_rolling_window`` reaches this door
         from ``/grid`` and ``/dashboard``.  Asked against the paycheck's END,
-        which is the floor's own subject, it answers 2030-01-25 and the write
-        is accepted.  **The case is the discriminator**: the two answers differ
-        and only one of them is a day this app can record.
+        which is the floor's own subject, it answers a day past the floor and
+        the write is accepted.  **The case is the discriminator**: the two
+        answers differ and only one of them is a day this app can record.
 
-        **2030-01-25 is EIGHT days on and not seven, and that is the intended
-        behaviour rather than an arbitrary date** (adversarial review, second
-        pass).  The stored grid runs through 2030-02-22 at a 7-day cadence, so
-        its days near the horizon are 01-18 and 01-25; the first is below the
-        floor, so the door SKIPS that slot and the owner gets one long
-        paycheck.  It is bounded strictly below two cadences, always accepted,
-        and :func:`~app.services.pay_calendar.derive_periods` closes it with no
-        gap and no overlap -- which is what "the LATEST era's rhythm is the
-        one the extend continues and older rows are history" means.  Since
-        plan step ``C17-a`` the truncate leaves both eras standing and the
-        extend's batch, stated at 7 days on a day the 14-day era covers,
-        mints a third from 2030-01-25 and retires the 02-22 one it
-        supersedes; the day recorded is the same either way.
+        **Which end, and which day, is plan step ``C17-b-2``'s (ruling
+        R-PC72).**  The surviving last payday 2030-01-17 is the 14-day era's,
+        so the calendar closes its paycheck on that era's grid -- 01-30, the
+        day before 01-31 -- and the floor is 01-31.  This door still restates
+        the LATEST era from the horizon: the 7-day grid through 02-22 has
+        01-25 and 02-01 near it, 01-25 is below the floor, so it records
+        02-01, mints a third era there and retires the 02-22 one.  The
+        calendar projected 01-31 (the 14-day era governs until the 7-day one
+        begins) and the door recorded 02-01: that one-day disagreement is the
+        interim door's, owned by ``C17-c-2`` (ledger row **N-494**'s
+        surviving path is this owner's top-up), and this case pins BOTH days
+        so the door's rewrite has to face it.  *Until ``C17-b-2`` the horizon
+        stepped one 7-day cadence from the recorded 01-17, the floor was
+        01-24 and the day recorded 01-25.*
         """
         with app.app_context():
             user_id = bare_user["user"].id
@@ -552,11 +553,17 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
             )
             pay_period_admin.truncate_pay_periods(user_id, keep.period_id)
             db.session.commit()
+            # The calendar's own answer for the surviving 14-day paycheck.
+            calendar = calendar_for(user_id)
+            assert calendar.periods[-1].end_date == date(2030, 1, 30)
+            assert calendar.span_containing(date(2030, 1, 31)).start_date == (
+                date(2030, 1, 31)
+            )
 
             new_periods = pay_period_admin.extend_pay_periods(user_id, 1)
             db.session.commit()
 
-            assert [p.start_date for p in new_periods] == [date(2030, 1, 25)]
+            assert [p.start_date for p in new_periods] == [date(2030, 2, 1)]
 
     def test_it_is_ZERO_DOLLARS_while_nothing_displaces(
         self, app, db, bare_user,

@@ -149,6 +149,13 @@ def era_covering(eras: "tuple[Era, ...]", day: date) -> Era:
     below the record (bounded there by the owner's stated history, which is
     the calendar's question and not this function's).
 
+    **Read in NOMINAL days, which is the writer's coordinate**: a batch states
+    its first payday on the grid, and the era-mint decision asks which era's
+    ``effective_from`` bounds that day.  The calendar's readers ask the same
+    rule of a CASH day -- a recorded payday, a day to project for -- through
+    ``pay_calendar.era_index_at``, whose bound is each era's first payday
+    DISPLACED; the two part only where an era's first payday moved.
+
     A linear scan rather than a bisection: an owner holds a handful of eras,
     and this is asked once per batch and never per row.
 

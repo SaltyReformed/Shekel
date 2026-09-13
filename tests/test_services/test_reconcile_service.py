@@ -51,13 +51,20 @@ from tests._test_helpers import (
     rhythm_of,
     an_entered_day,
     count_amount_bases,
+    generate_row_of,
     last_covered_day,
+    make_cadence_rule,
+    make_expense_template,
+    make_income_template,
     open_books_before_the_first_assertion,
+    resolved_amount,
     settle_day_columns,
     settlement_basis_id,
     settlement_if_settling,
+    state_template_price,
 )
 from tests._test_helpers import create_transfer
+from tests.oracles.recurrence_baseline import MONTHLY
 from app.services.row_valuation import settled_contribution, settled_figure
 from app.services.settle_day import record_settle_day
 from app.models.amount_ownership import AmountOwnership
@@ -713,37 +720,14 @@ class TestTheSetIsGroupedByItsParent:
         Two blocks are the minimum that can be grouped wrongly: with one, every
         grouping rule agrees.
 
-        The type comes from ``ref_cache`` rather than a ``filter_by(name=...)``
-        lookup: reference tables are IDs for logic and strings for display, and
-        a test fixture is not an exception the checker simply cannot see.
+        The envelope is the engine's own row of a priced, every-paycheck
+        definition (:func:`generate_row_of`, plan step balance:X-cf).
         """
-        expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-        template = TransactionTemplate(
-            user_id=seed_user["user"].id,
-            account_id=seed_user["account"].id,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=expense_type_id,
-            name=name,
-            default_amount=Decimal("80.00"),
-            is_envelope=True,
+        template = make_expense_template(
+            db.session, seed_user, amount="80.00",
+            name=name, category_key="Groceries", is_envelope=True,
         )
-        db.session.add(template)
-        db.session.flush()
-        txn = Transaction(
-            template_id=template.id,
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            name=name,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=template.transaction_type_id,
-            amount_ownership=AmountOwnership.own(Decimal("80.00")),
-        )
-        db.session.add(txn)
-        db.session.flush()
-        return txn
+        return generate_row_of(template, seed_periods[0])
 
     @staticmethod
     def _resolve(seed_user, observed_on=_OBSERVED_ON):
@@ -829,20 +813,10 @@ class TestTheSetIsGroupedByItsParent:
         """
         with app.app_context():
             first = seed_entry_template["transaction"]
-            second = Transaction(
-                template_id=first.template_id,
-                user_id=seed_periods[1].user_id,
-                pay_period_id=seed_periods[1].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name=first.name,
-                category_id=first.category_id,
-                transaction_type_id=first.transaction_type_id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+            # The same definition's row in the NEXT paycheck, from the engine.
+            second = generate_row_of(
+                seed_entry_template["template"], seed_periods[1],
             )
-            db.session.add(second)
-            db.session.flush()
             _outstanding_debit(first, seed_user, amount="40.00")
             _outstanding_debit(second, seed_user, amount="60.00")
             db.session.commit()
@@ -1027,38 +1001,51 @@ class TestTheTransactionArm:
 
     @staticmethod
     def _bill(seed_user, period, *, name="Electricity", amount="180.00",
-              due_date=None, income=False):
-        """Create a projected NON-envelope row -- a bill, or a deposit."""
-        type_id = ref_cache.txn_type_id(
-            TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE,
-        )
-        template = TransactionTemplate(
-            user_id=seed_user["user"].id,
-            account_id=seed_user["account"].id,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=type_id,
-            name=name,
-            default_amount=Decimal(amount),
-            is_envelope=False,
-        )
-        db.session.add(template)
-        db.session.flush()
-        txn = Transaction(
-            template_id=template.id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            name=name,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=type_id,
-            amount_ownership=AmountOwnership.own(Decimal(amount)),
-            due_date=due_date,
-        )
-        db.session.add(txn)
-        db.session.flush()
-        return txn
+              fires_on_day=None, income=False):
+        """Create a projected NON-envelope row -- a bill, or a deposit.
+
+        The engine's own row of a priced definition (:func:`generate_row_of`,
+        plan step balance:X-cf).  A bill that names no day of the month
+        repeats every paycheck and is dated on the paycheck's own start;
+        one that names *fires_on_day* is a MONTHLY bill on that day, which
+        is how a row comes to be due on the 8th or the 14th -- the engine
+        dates it there (``compute_due_date``), and it lands in *period*
+        because that paycheck covers the day.
+
+        Args:
+            seed_user: The seeded owner bundle.
+            period: The paycheck the row is funded in.  For a monthly bill
+                it must be the one covering the day it fires on.
+            name: The definition's name.
+            amount: Its stated price.
+            fires_on_day: The day of the month a monthly bill falls due, or
+                ``None`` for an every-paycheck one.
+            income: Build a deposit rather than a bill.
+        """
+        builder = make_income_template if income else make_expense_template
+        if fires_on_day is None:
+            template = builder(
+                db.session, seed_user, amount=amount,
+                name=name, category_key="Groceries",
+            )
+        else:
+            type_id = ref_cache.txn_type_id(
+                TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE,
+            )
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=type_id,
+                name=name,
+                default_amount=Decimal(amount),
+                is_envelope=False,
+            )
+            db.session.add(template)
+            db.session.flush()
+            state_template_price(template)
+            make_cadence_rule(template, MONTHLY, fires_on_day=fires_on_day)
+        return generate_row_of(template, period)
 
     @staticmethod
     def _offered(seed_user, observed_on=_OBSERVED_ON):
@@ -1175,12 +1162,10 @@ class TestTheTransactionArm:
         """
         with app.app_context():
             later = self._bill(
-                seed_user, seed_periods[0], name="Rent",
-                due_date=date(2026, 1, 14),
+                seed_user, seed_periods[0], name="Rent", fires_on_day=14,
             )
             earlier = self._bill(
-                seed_user, seed_periods[0], name="Water",
-                due_date=date(2026, 1, 8),
+                seed_user, seed_periods[0], name="Water", fires_on_day=8,
             )
             db.session.commit()
 
@@ -1515,35 +1500,16 @@ class TestTheScopeIsTheCALENDARsNotTheTables:
 
     @staticmethod
     def _bill(seed_user, period, name="Electricity"):
-        """Create one projected bill in *period*, due on its payday."""
-        type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-        template = TransactionTemplate(
-            user_id=seed_user["user"].id,
-            account_id=seed_user["account"].id,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=type_id,
-            name=name,
-            default_amount=Decimal("180.00"),
-            is_envelope=False,
+        """Create one projected bill in *period*, due on its payday.
+
+        The engine's row of an every-paycheck definition, which
+        ``compute_due_date`` dates on the paycheck's own start.
+        """
+        template = make_expense_template(
+            db.session, seed_user, amount="180.00",
+            name=name, category_key="Groceries",
         )
-        db.session.add(template)
-        db.session.flush()
-        txn = Transaction(
-            template_id=template.id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            name=name,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=type_id,
-            amount_ownership=AmountOwnership.own(Decimal("180.00")),
-            due_date=period.start_date,
-        )
-        db.session.add(txn)
-        db.session.flush()
-        return txn
+        return generate_row_of(template, period)
 
     @staticmethod
     def _short_calendar(seed_user, drop_period_id):
@@ -1568,7 +1534,7 @@ class TestTheScopeIsTheCALENDARsNotTheTables:
                 for period in whole.periods
                 if period.period_id != drop_period_id
             ],
-            whole.rhythm,
+            whole.eras,
             seed_user["user"].id,
             history_opens_on=None,
         )
@@ -2135,7 +2101,10 @@ class TestWhatATickBooks:
             db.session.expire_all()
             reloaded = db.session.get(Transaction, bill.id)
             assert reloaded.settled_amount == Decimal("245.32")
-            assert reloaded.estimated_amount == Decimal("300.00")
+            # The correction is recorded BESIDE the plan, never into it: the
+            # bill is the engine's derived row, so its plan is what the amount
+            # model answers, and that is still the definition's $300.00.
+            assert resolved_amount(reloaded) == Decimal("300.00")
 
     def test_a_correction_on_a_DERIVED_row_is_ignored_not_applied(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -2535,12 +2504,11 @@ class TestTheSectionsAndTheOrder:
         """
         with app.app_context():
             late_bill = self._bill(
-                seed_user, seed_periods[0], name="Water",
-                due_date=date(2026, 1, 9),
+                seed_user, seed_periods[0], name="Water", fires_on_day=9,
             )
             early_bill = self._bill(
                 seed_user, seed_periods[0], name="Electricity",
-                due_date=date(2026, 1, 3),
+                fires_on_day=3,
             )
             deposit = self._bill(
                 seed_user, seed_periods[0], name="Refund",
@@ -2570,9 +2538,9 @@ class TestTheSectionsAndTheOrder:
         """
         with app.app_context():
             self._bill(seed_user, seed_periods[0], name="Electricity",
-                       due_date=date(2026, 1, 3))
+                       fires_on_day=3)
             self._bill(seed_user, seed_periods[0], name="Water",
-                       due_date=date(2026, 1, 9))
+                       fires_on_day=9)
             self._bill(seed_user, seed_periods[0], name="Refund",
                        amount="20.00", income=True)
             db.session.commit()

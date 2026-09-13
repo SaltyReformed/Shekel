@@ -463,7 +463,9 @@ defect this arc exists to remove, shipped on purpose.
 1. **`tracks_purchases` DERIVES through one accessor from the template's flag** -- ruled
    `balance:R-JQ` on 2026-09-03, correcting this list's *stored column, template-derived backfill*,
    which was the cache `R-IY` deletes. Green, no fold change -- and it makes Section 4.3's 30-row
-   error unconstructible.
+   error unwritable in the application (Python, Jinja, the ORM); raw SQL naming the column is what
+   remains until leaf 5 deletes it. SHIPPED `18f9efac`, sealing the cell rather than pinning the
+   move.
 2. **Entries gain the full movement column set, `scenario_id` included**, backfilled from their
    parent. Additive; downgrade is a column drop.
 3. **`settle_from_entries` becomes the ONLY settle path.** The MANUAL branch writes a single

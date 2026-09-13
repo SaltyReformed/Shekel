@@ -70,7 +70,9 @@ from app.services.pay_calendar import (
     PeriodWindow,
     derive_periods,
     nominal_payday_after,
+    payday_after,
     projected_payday,
+    schedule_for,
 )
 
 # Package-PRIVATE on purpose, and this is the one import in the suite that
@@ -87,7 +89,7 @@ from app.services.pay_calendar import (
 #
 # ``projected_payday`` was in this list until plan step ``C14-d``, which gave
 # it the application caller the list is drawn on:
-# ``pay_period_write._reject_backward_payday`` asks it where the last paycheck
+# ``pay_period_batch.reject_backward_payday`` asks it where the last paycheck
 # ends rather than restating the arithmetic.  It is imported publicly above,
 # and the entry is corrected rather than dropped because the sentence it used
 # to carry -- *no application caller* -- was a measurement that expired.
@@ -99,13 +101,21 @@ from app.utils.business_days import (
 )
 from tests._test_helpers import (
     all_periods,
+    era_of,
+    eras_of,
     rhythm_of,
 )
 from tests.oracles.pay_calendar_derivation import (
     IRREGULAR_SHAPES,
     cadence_control,
+    next_grid_payday_after,
     shape,
 )
+
+#: The phase the refusal cases give their one era: every payday they state
+#: opens on it, so the era is on the record's grid and only the value under
+#: test is wrong.
+_OPENING = date(2026, 1, 2)
 
 #: Production's own schedule, measured on ``shekel-prod-db`` 2026-09-01: 63
 #: paydays from 2026-03-26 at a 14-day cadence, the last on 2028-08-10 running
@@ -157,7 +167,7 @@ class TestDerivationRefusals:
         could have produced.
         """
         with pytest.raises(PayCalendarError, match="at least 1 day and at most 365"):
-            derive_periods([(1, date(2026, 1, 2))], rhythm_of(cadence_days))
+            derive_periods([(1, date(2026, 1, 2))], (era_of(_OPENING, cadence_days),))
 
     @pytest.mark.parametrize(
         "cadence_days", [True, False, 14.0, 14.9, "14"],
@@ -177,7 +187,7 @@ class TestDerivationRefusals:
         both directions of that rule.
         """
         with pytest.raises(PayCalendarError, match="must be a plain int"):
-            derive_periods([(1, date(2026, 1, 2))], rhythm_of(cadence_days))
+            derive_periods([(1, date(2026, 1, 2))], (era_of(_OPENING, cadence_days),))
 
     def test_the_cadence_is_validated_before_the_paydays_are_read(self):
         """An unusable cadence is refused even for an empty payday set.
@@ -188,7 +198,7 @@ class TestDerivationRefusals:
         until the day the user records their first payday.
         """
         with pytest.raises(PayCalendarError, match="at least 1 day and at most 365"):
-            derive_periods([], rhythm_of(0))
+            derive_periods([], (era_of(_OPENING, 0),))
 
     def test_a_repeated_payday_is_refused(self):
         """Two periods cannot share an opening day.
@@ -206,7 +216,7 @@ class TestDerivationRefusals:
                     (2, date(2026, 1, 16)),
                     (3, date(2026, 1, 2)),
                 ],
-                rhythm_of(14),
+                (era_of(_OPENING, 14),),
             )
 
     def test_a_datetime_is_refused(self):
@@ -217,13 +227,13 @@ class TestDerivationRefusals:
         process timezone rather than the app's civil day.
         """
         with pytest.raises(PayCalendarError, match="must be a datetime.date"):
-            derive_periods([(1, datetime(2026, 1, 2, 9, 30))], rhythm_of(14))
+            derive_periods([(1, datetime(2026, 1, 2, 9, 30))], (era_of(_OPENING, 14),))
 
     @pytest.mark.parametrize("payday", ["2026-01-02", 20260102, None])
     def test_a_value_that_is_not_a_date_is_refused(self, payday):
         """An ISO string, an integer and ``None`` are all refused by type."""
         with pytest.raises(PayCalendarError, match="must be a datetime.date"):
-            derive_periods([(1, payday)], rhythm_of(14))
+            derive_periods([(1, payday)], (era_of(_OPENING, 14),))
 
     @pytest.mark.parametrize("period_id", ["41", 41.0, True, date(2026, 1, 2)])
     def test_a_period_id_that_is_not_an_int_or_none_is_refused(
@@ -238,7 +248,7 @@ class TestDerivationRefusals:
         would pass as row 1.
         """
         with pytest.raises(PayCalendarError, match="must be an int or None"):
-            derive_periods([(period_id, date(2026, 1, 2))], rhythm_of(14))
+            derive_periods([(period_id, date(2026, 1, 2))], (era_of(_OPENING, 14),))
 
     def test_a_period_id_of_none_is_accepted(self):
         """``None`` is how a period that is not materialised says so.
@@ -246,7 +256,7 @@ class TestDerivationRefusals:
         A projection past the owner's horizon has no row for a foreign key to
         point at, and plan step C2 has to be able to build one.
         """
-        derived = derive_periods([(None, date(2026, 1, 2))], rhythm_of(14))
+        derived = derive_periods([(None, date(2026, 1, 2))], (era_of(_OPENING, 14),))
         assert derived[0].period_id is None
 
 
@@ -284,7 +294,7 @@ class TestTheCadenceIsRequired:
         owner with no periods so the Recurring surface still renders; raising
         here would take that page to a 500 for the one owner it is written for.
         """
-        assert derive_periods([], rhythm_of(14)) == ()
+        assert derive_periods([], (era_of(_OPENING, 14),)) == ()
 
     def test_an_absent_cadence_is_refused_beside_a_payday(self):
         """P8's state: a payday exists and its period's end cannot be derived.
@@ -296,7 +306,7 @@ class TestTheCadenceIsRequired:
         refusal of its own.
         """
         with pytest.raises(PayCalendarError, match="must be a plain int") as excinfo:
-            derive_periods([(1, date(2026, 1, 2))], rhythm_of(None))
+            derive_periods([(1, date(2026, 1, 2))], (era_of(_OPENING, None),))
 
         # The message NAMES what it refused, which is this project's
         # error-message rule and which the deleted refusal used to carry (it
@@ -308,14 +318,14 @@ class TestTheCadenceIsRequired:
     def test_an_absent_cadence_is_refused_with_NO_paydays_TOO(self):
         """The refusal stopped depending on the payday set, which IS the step.
 
-        ``derive_periods([], rhythm_of(None))`` was LEGAL before plan step C4-d, and it is
+        ``derive_periods([], (era_of(_OPENING, None),))`` was LEGAL before plan step C4-d, and it is
         the exact pair that made ``cadence_days`` optional at five tiers.
         Asserted beside the case above rather than instead of it: what changed
         is that one rule now covers both payday shapes, and a test of only the
         non-empty shape would pass identically against the old conditional.
         """
         with pytest.raises(PayCalendarError, match="must be a plain int"):
-            derive_periods([], rhythm_of(None))
+            derive_periods([], (era_of(_OPENING, None),))
 
     def test_the_cadence_is_graded_BEFORE_the_payday_set(self):
         """Order of refusals, INVERTED by plan step C4-d and pinned as such.
@@ -331,7 +341,8 @@ class TestTheCadenceIsRequired:
         """
         with pytest.raises(PayCalendarError, match="must be a plain int"):
             derive_periods(
-                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], rhythm_of(None),
+                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))],
+                (era_of(_OPENING, None),),
             )
 
     def test_a_duplicate_payday_is_still_refused_beside_a_GOOD_cadence(self):
@@ -344,7 +355,8 @@ class TestTheCadenceIsRequired:
         """
         with pytest.raises(PayCalendarError, match="appears twice"):
             derive_periods(
-                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], rhythm_of(14),
+                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))],
+                (era_of(_OPENING, 14),),
             )
 
     def test_a_present_cadence_is_still_graded_beside_an_empty_set(self):
@@ -355,7 +367,7 @@ class TestTheCadenceIsRequired:
         no excuse for it.
         """
         with pytest.raises(PayCalendarError, match="at least 1 day and at most 365"):
-            derive_periods([], rhythm_of(0))
+            derive_periods([], (era_of(_OPENING, 0),))
 
     def test_an_empty_calendar_answers_every_question_it_has_an_answer_for(self):
         """An empty calendar is ordinary, and every search still answers ``None``.
@@ -373,7 +385,7 @@ class TestTheCadenceIsRequired:
         ``PayCalendar.cadence`` having become total.
         """
         calendar = PayCalendar.from_paydays(
-            paydays=[], rhythm=rhythm_of(14), user_id=1,
+            paydays=[], eras=eras_of([], 14), user_id=1,
             history_opens_on=None,
         )
         day = date(2026, 1, 2)
@@ -415,7 +427,7 @@ class TestIrregularShapeSweep:
         than agreeing with whatever the code produced.
         """
         assert derive_periods(
-            irregular.paydays, rhythm_of(irregular.cadence_days),
+            irregular.paydays, eras_of(irregular.paydays, irregular.cadence_days),
         ) == irregular.expected
 
     @pytest.mark.parametrize(
@@ -433,7 +445,7 @@ class TestIrregularShapeSweep:
         anomalies and the four ``_pp_assert_structure`` invariants that
         policed those states: none of them is expressible.
         """
-        derived = derive_periods(irregular.paydays, rhythm_of(irregular.cadence_days))
+        derived = derive_periods(irregular.paydays, eras_of(irregular.paydays, irregular.cadence_days))
         for earlier, later in zip(derived, derived[1:]):
             assert earlier.end_date + timedelta(days=1) == later.start_date
             assert earlier.period_index + 1 == later.period_index
@@ -449,7 +461,7 @@ class TestIrregularShapeSweep:
         period of a non-empty calendar and for no other -- and for none at all
         when the calendar is empty.
         """
-        derived = derive_periods(irregular.paydays, rhythm_of(irregular.cadence_days))
+        derived = derive_periods(irregular.paydays, eras_of(irregular.paydays, irregular.cadence_days))
         projected = [
             period for period in derived if period.end_is_projected
         ]
@@ -468,9 +480,9 @@ class TestIrregularShapeSweep:
             (2, date(2026, 1, 16)),
             (3, date(2026, 1, 30)),
         ]
-        assert derive_periods(reversed(paydays), rhythm_of(14)) == derive_periods(
-            paydays, rhythm_of(14),
-        )
+        assert derive_periods(
+            reversed(paydays), eras_of(paydays, 14),
+        ) == derive_periods(paydays, eras_of(paydays, 14))
 
     def test_a_single_payday_derives_one_wholly_projected_period(self):
         """The state registration leaves a new owner in, spelled out.
@@ -479,7 +491,7 @@ class TestIrregularShapeSweep:
         every new account's first calendar: one period, its end projected off
         the cadence because there is no second payday to close it.
         """
-        assert derive_periods([(7, date(2026, 3, 26))], rhythm_of(14)) == (
+        assert derive_periods([(7, date(2026, 3, 26))], (era_of(date(2026, 3, 26), 14),)) == (
             # 2026-03-26 + (14 - 1) days = 2026-04-08.
             DerivedPeriod(
                 period_id=7,
@@ -496,7 +508,7 @@ class TestIrregularShapeSweep:
         Measured on production 2026-08-08: user 2 is a companion with zero
         paydays, so no step may assume every user row has a schedule.
         """
-        assert derive_periods([], rhythm_of(14)) == ()
+        assert derive_periods([], (era_of(_OPENING, 14),)) == ()
 
 
 # ---------------------------------------------------------------------------
@@ -531,7 +543,7 @@ class TestReDerivationStability:
         Returns:
             The derived ``end_date``.
         """
-        derived = derive_periods(paydays, rhythm_of(14))
+        derived = derive_periods(paydays, eras_of(paydays, 14))
         return next(
             period.end_date for period in derived
             if period.start_date == payday
@@ -547,11 +559,11 @@ class TestReDerivationStability:
         is then ``lead - 1``, the same day the projection gave it -- so nothing
         moves and only the FLAG changes.
         """
-        before = derive_periods(self._PAYDAYS, rhythm_of(14))
+        before = derive_periods(self._PAYDAYS, eras_of(self._PAYDAYS, 14))
         assert before[-1].end_date == date(2026, 1, 29)
         assert before[-1].end_is_projected is True
 
-        after = derive_periods([*self._PAYDAYS, (3, date(2026, 1, 30))], rhythm_of(14))
+        after = derive_periods([*self._PAYDAYS, (3, date(2026, 1, 30))], eras_of([*self._PAYDAYS, (3, date(2026, 1, 30))], 14))
         assert after[1].start_date == date(2026, 1, 16)
         # lead - 1 = 2026-01-30 - 1 = 2026-01-29, the day the projection gave.
         assert after[1].end_date == date(2026, 1, 29)
@@ -645,7 +657,7 @@ class TestTheWritersOwnScheduleDerives:
 
             derived = derive_periods(
                 [(period.id, period.start_date) for period in periods],
-                rhythm_of(_LIVE_CADENCE_DAYS),
+                schedule_for(bare_user["user"].id).eras,
             )
             assert len(derived) == _LIVE_PERIOD_COUNT
             assert derived[-1].end_date == _LIVE_LAST_END
@@ -688,7 +700,7 @@ class TestTheWritersOwnScheduleDerives:
 
             derived = derive_periods(
                 [(period.id, period.start_date) for period in periods],
-                rhythm_of(cadence_days),
+                schedule_for(bare_user["user"].id).eras,
             )
             assert derived[0].end_date == first_end
             assert derived[0].end_is_projected is False
@@ -729,7 +741,7 @@ class TestTheWritersOwnScheduleDerives:
                     (period.id, period.start_date)
                     for period in all_periods(user_id)
                 ],
-                rhythm_of(14),
+                schedule_for(user_id).eras,
             )
             assert [period.start_date for period in derived] == [
                 date(2026, 1, 2) + timedelta(days=14 * step)
@@ -752,21 +764,30 @@ class TestTheWritersOwnScheduleDerives:
 class TestTheCadenceControl:
     """The control that separates the two end branches.
 
-    On a regular schedule ``lead(start) - 1`` and ``start + cadence - 1`` agree
+    On a regular schedule ``lead(start) - 1`` and the grid's next payday agree
     on every row, so a run over one cannot say which branch produced an end --
     production's 63 paydays are exactly that shape.  Re-deriving at a
-    neighbouring cadence separates them: exactly one end may move, and by
-    exactly one day.
+    neighbouring cadence separates them: exactly one end may move, and it
+    moves to the day before the PROBE grid's next payday.  *That was "by
+    exactly one day" until plan step ``C17-b-2`` anchored the last end on the
+    era's grid (ruled 2026-09-11): the literal was the recorded anchor's
+    arithmetic, and the expected day is read off a listing of the grid now.*
     """
 
-    def test_exactly_one_end_moves_by_exactly_one_day(self):
-        """The correct outcome, on the ordinary schedule."""
+    def test_exactly_one_end_moves_to_the_probe_grids_next_payday(self):
+        """The correct outcome, on the ordinary schedule.
+
+        Hand-computed.  The grid from 2026-01-02 at 15 days is 01-17, 02-01,
+        02-16, 03-03, 03-18; the last record 02-27 is four days from 03-03 and
+        eleven from 02-16, so it stands for 03-03 and the probe closes the
+        period on 03-17.  At 14 days it closes on 03-12: five days.
+        """
         control = cadence_control(shape("biweekly_five").paydays, 14)
         assert control.applicable is True
         assert control.probe_cadence == 15
-        assert control.expected_shift_days == 1
+        assert control.expected_shift_days == 5
         # Only the last period reads the cadence, so only its end moves.
-        assert control.moved == ((date(2026, 2, 27), 1),)
+        assert control.moved == ((date(2026, 2, 27), 5),)
         assert control.fired is True
 
     def test_it_probes_downward_at_the_top_of_the_stored_range(self):
@@ -779,8 +800,11 @@ class TestTheCadenceControl:
             [(1, date(2026, 1, 2)), (2, date(2027, 1, 2))], MAX_CADENCE_DAYS,
         )
         assert control.probe_cadence == MAX_CADENCE_DAYS - 1
-        assert control.expected_shift_days == -1
-        assert control.moved == ((date(2027, 1, 2), -1),)
+        # Hand-computed: the 364-day grid from 2026-01-02 pays 2027-01-01 and
+        # 2027-12-31; the 2027-01-02 record stands for 2027-01-01, so the
+        # probe closes on 2027-12-30 where 365 closes on 2028-01-01.
+        assert control.expected_shift_days == -2
+        assert control.moved == ((date(2027, 1, 2), -2),)
         assert control.fired is True
 
     def test_it_is_inapplicable_to_an_empty_calendar(self):
@@ -820,17 +844,40 @@ _THANKSGIVING_STEPS = 60
 _THANKSGIVING_NOMINAL = date(2030, 11, 28)
 
 
-def _saved(anchor: date, cadence_days: int) -> "tuple[DerivedPeriod, ...]":
-    """Return a one-period saved calendar ending on *anchor*.
+def _eras(
+    anchor: date, cadence_days: int, shift=BusinessDayShiftEnum.NONE,
+) -> "tuple":
+    """Return ONE era phased on *anchor*, as the calendar's era sequence.
 
     Args:
-        anchor: The last recorded payday.
+        anchor: The era's first nominal payday -- the grid's phase.
         cadence_days: Days between paydays.
+        shift: The convention.
+
+    Returns:
+        A one-element tuple, as ``derive_periods`` and
+        ``project_period_after`` take it.
+    """
+    return (era_of(anchor, cadence_days, shift),)
+
+
+def _saved(
+    anchor: date, cadence_days: int, shift=BusinessDayShiftEnum.NONE,
+) -> "tuple[DerivedPeriod, ...]":
+    """Return a one-period saved calendar opening on *anchor*.
+
+    Derived under the SAME era the projection cases then pass, so the saved
+    period's end and the first projected payday are one seam.
+
+    Args:
+        anchor: The last recorded payday, which is also the era's phase.
+        cadence_days: Days between paydays.
+        shift: The convention.
 
     Returns:
         The derived periods, as ``project_period_after`` takes them.
     """
-    return derive_periods([(1, anchor)], rhythm_of(cadence_days))
+    return derive_periods([(1, anchor)], _eras(anchor, cadence_days, shift))
 
 
 #: A LEGAL shape whose last end really moves, which the shared catalogue has
@@ -918,11 +965,22 @@ class TestTheProjectedPaydayHasOneProducer:
         independent oracle for the nominal case
         (``test_the_shape_derives_its_hand_computed_values``); this is the
         oracle for the moved one.
+
+        **The reference is a brute-force MATCH, not the producer** (plan step
+        ``C17-b-2``).  The last end is the day before the era grid's next
+        payday after the one the last record STANDS FOR -- its nearest grid
+        payday, a tie to the later -- and the reference below lists the grid
+        explicitly, picks that payday by inspection and displaces the next,
+        so it shares no body with :func:`~app.services.pay_calendar._eras.matched_step`.
+        Until ``C17-b-2`` the expected value was the record displaced one
+        cadence on; the two agree wherever the last record is on the grid,
+        which is every catalogue shape but ``thirteen_day_period``.
         """
         shapes = (*IRREGULAR_SHAPES, _THANKSGIVING_SHAPE)
         nominal = {
             irregular.label: derive_periods(
-                irregular.paydays, rhythm_of(irregular.cadence_days),
+                irregular.paydays,
+                eras_of(irregular.paydays, irregular.cadence_days),
             )
             for irregular in shapes
         }
@@ -945,18 +1003,20 @@ class TestTheProjectedPaydayHasOneProducer:
                 else BusinessDayShiftEnum.NONE
             )
             derived = derive_periods(
-                irregular.paydays, rhythm_of(irregular.cadence_days, legal),
+                irregular.paydays,
+                eras_of(irregular.paydays, irregular.cadence_days, legal),
             )
             if not derived:
                 continue
             last = derived[-1]
-            assert last.end_date == shift_to_business_day(
-                last.start_date + timedelta(days=irregular.cadence_days), legal,
+            assert last.end_date == next_grid_payday_after(
+                derived[0].start_date, irregular.cadence_days, legal,
+                last.start_date,
             ) - timedelta(days=1), irregular.label
-            # No period closes before it opens.  A legal pairing cannot produce
-            # one, the displacement being shorter than a cadence; that the
-            # derivation does not itself REFUSE the reversal is ledger row
-            # **PC-505**, reachable only through **N-493**'s reported hole.
+            # No period closes before it opens.  The next payday is found
+            # STRICTLY after the record it follows, so a reversed period is
+            # unrepresentable here whatever the pairing -- ledger row
+            # **PC-505**, closed at ``C17-b-2``; asserted rather than argued.
             assert all(
                 period.end_date >= period.start_date for period in derived
             ), irregular.label
@@ -998,7 +1058,7 @@ class TestTheGridIsNotTheProjection:
         equality whose two sides share one body.
 
         What is asserted now is the pair of bindings the two doors actually
-        call: ``pay_period_write._reject_backward_payday`` reaches
+        call: ``pay_period_batch.reject_backward_payday`` reaches
         ``pay_calendar.projected_payday`` and ``extend_pay_periods`` reaches
         ``pay_period_admin.nominal_payday_after``.  If ``C14-e`` displaces the
         second of those, the extend door starts recording cash dates again and
@@ -1047,7 +1107,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         step 2 is the answer, running to the day before 2028-09-21.
         """
         found = _projection.project_period_after(
-            _saved(_HORIZON, 14), rhythm_of(14), date(2028, 9, 10),
+            _saved(_HORIZON, 14), _eras(_HORIZON, 14), date(2028, 9, 10),
         )
 
         assert found.start_date == date(2028, 9, 7)
@@ -1070,7 +1130,8 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         day = date(2030, 11, 27)
 
         found = _projection.project_period_after(
-            _saved(_HORIZON, 14), rhythm_of(14, BusinessDayShiftEnum.PRIOR), day,
+            _saved(_HORIZON, 14, BusinessDayShiftEnum.PRIOR),
+            _eras(_HORIZON, 14, BusinessDayShiftEnum.PRIOR), day,
         )
 
         assert (day - _HORIZON).days // 14 == _THANKSGIVING_STEPS - 1
@@ -1091,7 +1152,8 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         day = _THANKSGIVING_NOMINAL
 
         found = _projection.project_period_after(
-            _saved(_HORIZON, 14), rhythm_of(14, BusinessDayShiftEnum.NEXT), day,
+            _saved(_HORIZON, 14, BusinessDayShiftEnum.NEXT),
+            _eras(_HORIZON, 14, BusinessDayShiftEnum.NEXT), day,
         )
 
         assert (day - _HORIZON).days // 14 == _THANKSGIVING_STEPS
@@ -1111,8 +1173,8 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         and an overlap.
         """
         for shift in (BusinessDayShiftEnum.PRIOR, BusinessDayShiftEnum.NEXT):
-            displacing = rhythm_of(14, shift)
-            saved = _saved(_HORIZON, 14)
+            displacing = _eras(_HORIZON, 14, shift)
+            saved = _saved(_HORIZON, 14, shift)
             walked, opens_at = [], saved[-1].end_date + timedelta(days=1)
             while len(walked) < 80:
                 period = _projection.project_period_after(saved, displacing, opens_at)
@@ -1156,8 +1218,8 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         it a day early and leaves 2030-11-28 in no period.  Both arms end at
         ``PeriodWindow``, which refuses a hole and an overlap alike.
         """
-        displacing = rhythm_of(14, shift)
-        saved = _saved(_HORIZON, 14)
+        displacing = _eras(_HORIZON, 14, shift)
+        saved = _saved(_HORIZON, 14, shift)
         opening = _projection.project_period_after(
             saved, displacing, date(2030, 11, 14),
         )
@@ -1196,7 +1258,7 @@ class TestTheCoveringProbeToleratesAMovedBoundary:
         """
         derived = derive_periods(
             [(1, date(2030, 11, 14))],
-            rhythm_of(14, BusinessDayShiftEnum.PRIOR),
+            _eras(date(2030, 11, 14), 14, BusinessDayShiftEnum.PRIOR),
         )
 
         assert derived[-1].end_is_projected is True
@@ -1231,7 +1293,8 @@ class TestOneNeighbourEitherSideIsEnough:
     #: Anchors spanning a leap year, a Monday, a Saturday, and both sides of
     #: the Juneteenth addition ``business_days.JUNETEENTH_FIRST_YEAR`` records.
     #: A NON-business anchor is deliberate: a recorded payday need not be one
-    #: (**R-PC47**), and the projection anchors on a recorded day.
+    #: (**R-PC47**), and here it is also the era's phase, so the era's first
+    #: payday and the record it stands for are one displacement apart.
     _ANCHORS = (
         date(2020, 1, 2), date(2024, 2, 29), date(2028, 8, 10),
         date(2026, 5, 16),
@@ -1272,14 +1335,14 @@ class TestOneNeighbourEitherSideIsEnough:
             )
             for anchor in self._ANCHORS:
                 for cadence in cadences:
-                    saved = _saved(anchor, cadence)
+                    saved = _saved(anchor, cadence, shift)
                     for steps in range(-3, 8):
                         opens = payday(anchor, cadence, steps)
                         closes = payday(anchor, cadence, steps + 1)
                         for day in (opens, opens + (closes - opens) // 2,
                                     closes - timedelta(days=1)):
                             found = _projection.project_period_after(
-                                saved, rhythm_of(cadence, shift), day,
+                                saved, _eras(anchor, cadence, shift), day,
                             )
                             where = (shift, anchor, cadence, steps, day)
                             assert found.covers(day), where
@@ -1336,7 +1399,7 @@ class TestTheGridDayAfterAHorizonIsTotal:
     construction -- the one value that cannot fail.  The defect the review
     found was exactly there: asked against the last recorded PAYDAY rather than
     against the paycheck's END, the producer answered a grid day BELOW
-    ``pay_period_write._reject_backward_payday``'s floor on 13 of the 14
+    ``pay_period_batch.reject_backward_payday``'s floor on 13 of the 14
     residues, and the extend door refused its own answer permanently, on a read
     path with no handler.
 
@@ -1349,10 +1412,10 @@ class TestTheGridDayAfterAHorizonIsTotal:
     def test_the_answer_is_never_below_the_floor(self, cadence):
         """EVERY residue at EVERY cadence, against the floor the writer applies.
 
-        The floor is ``projected_payday(latest, rhythm, 1)`` -- the day the
-        last paycheck opens after the last recorded one -- and it is read from
-        that producer rather than restated, so the case cannot drift from the
-        fence it grades.
+        The floor is ``payday_after(eras, latest)`` -- the era grid's next
+        payday after the one the last record stands for (plan step
+        ``C17-b-2``) -- and it is read from that producer rather than
+        restated, so the case cannot drift from the fence it grades.
 
         **Both axes are varied**, because the theorem is cadence-independent
         and a sweep at one cadence cannot say so: the estimate satisfies
@@ -1363,7 +1426,7 @@ class TestTheGridDayAfterAHorizonIsTotal:
         latest = date(2026, 5, 11)
         for residue in range(cadence):
             anchor = latest - timedelta(days=residue)
-            horizon = projected_payday(latest, rhythm, 1) - timedelta(days=1)
+            horizon = payday_after(_eras(anchor, cadence), latest) - timedelta(days=1)
 
             answer = nominal_payday_after(anchor, rhythm, horizon)
 
@@ -1380,22 +1443,22 @@ class TestTheGridDayAfterAHorizonIsTotal:
         """The seam the whole pairing rests on, pinned so a split would fire.
 
         ``extend_pay_periods`` asks against the last paycheck's END and
-        ``pay_period_write._reject_backward_payday`` bounds the batch at
-        ``projected_payday(latest, rhythm, 1)``.  Those are the same value one
-        day apart ONLY because :func:`derive_periods` closes the last saved
-        period with that same producer -- so if ``C14-e-3`` ever moved one side
-        and not the other, every other case here would stay green and only one
-        door case would notice.  An adversarial review of ``C14-e-2`` named
-        that hole; this is the assertion that fills it.
+        ``pay_period_batch.reject_backward_payday`` bounds the batch at
+        ``payday_after(eras, latest)``.  Those are the same value one day
+        apart ONLY because :func:`derive_periods` closes the last saved period
+        with that same producer -- so if a step ever moved one side and not
+        the other, every other case here would stay green and only one door
+        case would notice.  An adversarial review of ``C14-e-2`` named that
+        hole; this is the assertion that fills it.
         """
-        rhythm = rhythm_of(14)
+        eras = _eras(date(2026, 4, 27), 14)
         latest = date(2026, 5, 11)
 
-        derived = derive_periods([(1, date(2026, 4, 27)), (2, latest)], rhythm)
+        derived = derive_periods([(1, date(2026, 4, 27)), (2, latest)], eras)
 
-        assert derived[-1].end_date == projected_payday(
-            latest, rhythm, 1,
-        ) - timedelta(days=1)
+        assert derived[-1].end_date == payday_after(eras, latest) - timedelta(
+            days=1,
+        )
 
     @pytest.mark.parametrize("residue", range(14))
     def test_it_answers_the_SAME_day_the_deleted_expression_did_at_residue_0(
@@ -1412,7 +1475,7 @@ class TestTheGridDayAfterAHorizonIsTotal:
         rhythm = rhythm_of(14)
         latest = date(2026, 5, 11)
         anchor = latest - timedelta(days=residue)
-        horizon = projected_payday(latest, rhythm, 1) - timedelta(days=1)
+        horizon = payday_after(_eras(anchor, 14), latest) - timedelta(days=1)
 
         answer = nominal_payday_after(anchor, rhythm, horizon)
 

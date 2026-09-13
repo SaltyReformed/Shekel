@@ -20,7 +20,7 @@ an idempotent GET refresh must leave a live DOM alone.
 from typing import NamedTuple
 
 from flask import render_template, request
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.models.account import Account
 from app.services.account_resolver import resolve_grid_account
@@ -173,7 +173,6 @@ def _resolve_partial_window(user_id):
 
 
 @grid_bp.route("/grid/balance-row")
-@login_required
 @require_owner
 def balance_row():
     """HTMX partial: recalculate and return the balance summary row.
@@ -215,7 +214,6 @@ def balance_row():
 
 
 @grid_bp.route("/grid/subtotal-rows")
-@login_required
 @require_owner
 def subtotal_rows():
     """HTMX partial: recompute and return both summary subtotal ``<tbody>``.
@@ -242,7 +240,7 @@ def subtotal_rows():
     by being the SAME rows, not by two producers agreeing (ruling R-K).
 
     Mirrors :func:`balance_row`'s auth, ownership, and param handling:
-    ``@login_required`` + ``@require_owner``, the same
+    the login gate + ``@require_owner``, the same
     ``account_id`` / ``periods`` / ``offset`` parse, and the same 204
     No Content no-op (rather than 404) when the user has no current pay
     period -- an idempotent GET refresh that leaves the existing summary DOM
@@ -284,7 +282,6 @@ def subtotal_rows():
 
 
 @grid_bp.route("/grid/this-period-summary")
-@login_required
 @require_owner
 def mobile_this_period_summary():
     """HTMX partial: the mobile "This Period" money summary for one period.

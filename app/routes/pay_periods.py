@@ -11,7 +11,7 @@ the settings "pay-periods" section.
 import logging
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required
+from flask_login import current_user
 
 from app.utils.auth_helpers import require_owner
 
@@ -176,7 +176,6 @@ def _append_periods(num_periods):
 
 
 @pay_periods_bp.route("/pay-periods/generate", methods=["GET"])
-@login_required
 @require_owner
 def generate_form():
     """Redirect to settings dashboard pay periods section."""
@@ -184,7 +183,6 @@ def generate_form():
 
 
 @pay_periods_bp.route("/pay-periods/generate", methods=["POST"])
-@login_required
 @require_owner
 def generate():
     """Generate pay periods from the submitted form data."""
@@ -210,7 +208,7 @@ def generate():
     # *A first draft of this comment claimed P80 became UNWRITABLE, and this
     # step's own adversarial review measured that FALSE.*  ``regenerate``
     # renders a "Corrected first payday" with no ceiling -- only
-    # ``pay_period_write._reject_backward_payday``'s FLOOR -- so the same
+    # ``pay_period_batch.reject_backward_payday``'s FLOOR -- so the same
     # irregular set is still writable in three form fields.  MEASURED through
     # the real route on a clean owner: paydays
     # ``[2026-01-02 .. 2026-03-13, 2026-07-31, ...]``, a **140-day gap**, HTTP
@@ -297,7 +295,7 @@ def generate():
         # enumeration above inverted rather than shrank** (found by this step's
         # adversarial review).  The dispatch means this branch runs only for an
         # owner holding ZERO paydays, so ``record_paydays`` computes an empty
-        # ``surviving_paydays`` and ``_reject_backward_payday`` has nothing to
+        # ``surviving_paydays`` and ``reject_backward_payday`` has nothing to
         # bound against.  What can still raise here is ``populate_new_periods``
         # below -- whose message this then renders under the date box, which is
         # exactly the misattribution the paragraph above warns about.  Narrowing
@@ -341,7 +339,6 @@ def generate():
 
 
 @pay_periods_bp.route("/pay-periods/extend", methods=["POST"])
-@login_required
 @require_owner
 def extend():
     """Append pay periods to the end of the schedule."""
@@ -358,7 +355,6 @@ def extend():
 
 
 @pay_periods_bp.route("/pay-periods/truncate", methods=["POST"])
-@login_required
 @require_owner
 def truncate():
     """Delete the schedule tail beyond the chosen period."""
@@ -431,7 +427,6 @@ def truncate():
 
 
 @pay_periods_bp.route("/pay-periods/regenerate", methods=["POST"])
-@login_required
 @require_owner
 def regenerate():
     """Rebuild the not-yet-started future tail from a corrected start."""
@@ -522,7 +517,6 @@ def regenerate():
 
 
 @pay_periods_bp.route("/pay-periods/reset", methods=["POST"])
-@login_required
 @require_owner
 def reset():
     """Wipe and rebuild the entire schedule (first-time-setup correction).
@@ -573,7 +567,6 @@ def reset():
 
 
 @pay_periods_bp.route("/pay-periods/history", methods=["POST"])
-@login_required
 @require_owner
 def history():
     """Save how far back the owner's paychecks reach.
@@ -614,7 +607,6 @@ def history():
 
 
 @pay_periods_bp.route("/pay-periods/schedule", methods=["POST"])
-@login_required
 @require_owner
 def schedule():
     """Save the continuous-rolling-window configuration."""
