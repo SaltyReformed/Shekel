@@ -8,9 +8,11 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`S3-f-3` shipped 2026-09-13 (`a5ef1bdf`): each rail row SAVES a raise's end year and the salary
-regeneration is a service** (**R-SAL22**, **R-SAL24**). Of `S3`'s leaves only `S3-f-4` is open (the
-refused probe rendered, **SAL-548**); the shipped `S3-f` leaves are archived
+**`R15-a` shipped 2026-09-13 (`bdd77055`): a recurrence rule's cadence has a per-month CEILING**
+(**R-SAL29**), the vocabulary `R15-b` migrates every 24 / 12 deduction onto. Before it `S3-f-3`
+(`a5ef1bdf`): each rail row SAVES a raise's end year and the salary regeneration is a service
+(**R-SAL22**, **R-SAL24**). Of `S3`'s leaves only `S3-f-4` is open (the refused probe rendered,
+**SAL-548**); the shipped `S3-f` leaves are archived
 (`historical/salary_s3f_as_built_2026-09-13.md`), as are the `R14` span
 (`historical/salary_r14_as_built_2026-09-11.md`), `S3-e-2`'s record
 (`historical/salary_s3e2_as_built_2026-09-11.md`) and `S2`'s
@@ -194,19 +196,28 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       2026-09-11. Closed **N-541**-**N-546**. As built:
       `historical/salary_s3e2_as_built_2026-09-11.md`.
 - [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (**R-SAL3**; findings **F-21**,
-      **N-395**). `salary.paycheck_deductions.deductions_per_year` server-defaults to 26 and the
-      form offers 26 / 24 / 12; it is never multiplied or divided, only compared, so it is a
-      three-valued MODE wearing a biweekly count, and a third reader ignores it altogether -- the
-      investment contribution timeline pays every deduction on every payday, 26 times against the 24
-      the engine takes (**N-395**). At a weekly cadence "every paycheck" is 52 and "skip the 3rd
-      paycheck" names nothing; 11 of the developer's 12 live deductions carry 24. **The ruling**: a
-      line's cadence is a RECURRENCE RULE against the pay calendar, `NULL` meaning every paycheck,
-      placed by the engine that already places recurring rows -- one cadence engine in the app, and
-      `_deduction_applies_at` is deleted. **Its first act is a trace**: how
-      `resolve_generation_plan` couples to a template, since a paycheck line has none, and what the
-      migration re-expresses the three live values as. The count column moves no figure; APPLYING
-      the frequency to the timeline does, at 2/26 of a 24-per-year deduction's annual total, latent
-      until one names an investment account. A migration and a form change; own review pass.
+      **SAL-549**; **N-395** left at R15-a's tick, its fix having shipped at `R14-b` `e0f0c05f`).
+      `deductions_per_year` stores 26 / 24 / 12 as a three-valued MODE the engine only compares
+      against; 11 of the developer's 12 live deductions carry 24, a cadence the recurrence
+      vocabulary could not say. The DECOMPOSED parent, split into THREE leaves 2026-09-13 once its
+      four forks were ruled (**R-SAL29**-**R-SAL32**); ships with `R15-c`.
+- [x] **R15-a** `bdd77055` -- the per-month CEILING as the cadence's third value (**R-SAL29** as
+      amended: a paycheck cadence counts the month's paydays on the OWNER'S calendar; a week cadence
+      its own first N): `budget.recurrence_rules.max_per_month` + CHECK (migration `ef32dfe4cd8e`),
+      `_ceilinged` between the walk and the bound, `monthly_equivalent` off the aggregator, the
+      template form end to end; three pure moves for the line ceiling. NO FIGURE MOVED; the browser
+      drive was run by the developer.
+- [ ] **R15-b** -- the third owning arm `paycheck_deduction_id` (an exactly-one-of-three CHECK),
+      `PayrollBasis` resolving each line's rule ONCE and the engine asking it whether a payday is an
+      admitted occurrence, and the migration writing one rule per 24 / 12 line (`starts_on` = the
+      owner's opening payday, **R-SAL30**) then DROPPING `deductions_per_year` and
+      `_deduction_applies_at`; graded byte-identical over the 63 saved paychecks. **How a NEW
+      deduction states its cadence between this leaf and `R15-c` -- or whether the two ship in one
+      PR -- is a question for the developer before it is built.** Closes **F-21**, **SAL-549**. A
+      migration; own review.
+- [ ] **R15-c** -- the deduction form takes `_recurrence_fields.html` (**R-SAL31**), the end-bound
+      and due-day rows off by flag and the ceiling on, replacing the 26 / 24 / 12 select and
+      `app.js`'s prefill.
 - [ ] **S4 -- a payroll deduction's `annual_cap` is a DATED figure** (finding **N-540**, re-pointed
       here at `S3-f-3`'s tick, developer ruling 2026-09-12). The column is read raw and never
       escalated, so a statutory limit that rises every year is modelled as fixed and understates
@@ -266,8 +277,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 **Rows in `ledger.md` whose `arc` reads `salary`.** A finding is not arc-local; the rows that moved
 here on 2026-09-03 keep their bare ids (**D45**, **F-21**, **N-395**, **D59**, **P62**, **P63**,
 **P64**, **N-235**, **N-236**, **N-237**, **N-240**, **N-294**, **N-391**, **N-441**, **N-442**,
-**N-443**) because commit messages already cite them, and one was minted here from `balance:N-243`'s
-dissolved census (**N-530**).
+**N-443**) because commit messages already cite them, one was minted here from `balance:N-243`'s
+dissolved census (**N-530**), and `recurrence:D43` re-homed here as **SAL-549** (**R-SAL32**).
 
 ## 6. Alternatives considered and rejected
 
