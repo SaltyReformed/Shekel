@@ -14,9 +14,11 @@ Three things are pinned here that the derivation and value suites cannot see:
 * **the matching rule** -- a recorded payday stands for the planned payday
   NEAREST to it, a tie exactly half a cadence off going to the LATER one --
   against a brute-force listing of the grid rather than the producer's loop;
-* **the seam** -- an era's projected paydays stop where the next era's first
-  payday begins, measured in CASH days, so a day is never paid twice and never
-  left in no paycheck where two conventions meet;
+* **the seam** -- the next era's first payday REPLACES the old era's last
+  planned payday at or before it (ruling **R-PC75**, plan step ``C17-c-2b``,
+  revising R-PC72's clause), measured in CASH days, so a day is never paid
+  twice and never left in no paycheck where two conventions meet, and the
+  projection reproduces what the regenerate that minted the later era wrote;
 * **the ordinal** -- a projected ``period_index`` continues the saved sequence
   across the seam by exactly the number of paydays between.
 
@@ -79,6 +81,10 @@ PRIOR, NEXT, NONE = (
 #: Friday 2026-01-02; ``B`` pays every 7 days from Wednesday 2026-07-01, a day
 #: OFF ``A``'s grid (its nearest are 06-19 and 07-03).  Truncated back to
 #: 03-13 the owner holds both eras and a record that ends inside ``A``.
+#: **Under R-PC75 (``C17-c-2b``) ``A``'s last paycheck is 06-05, not 06-19**:
+#: 07-01 replaces the 06-19 the regenerate that minted ``B`` deleted, so the
+#: 06-05 paycheck runs 26 days to 06-30.  The developer confirmed the pinned
+#: dates move (CLAUDE.md rule 5's exception), and every 06-19 below moved.
 ERA_A = era_of(date(2026, 1, 2), 14)
 ERA_B = era_of(date(2026, 7, 1), 7)
 TRUNCATED_RECORD = [(1, date(2026, 1, 2)), (2, date(2026, 3, 13))]
@@ -271,9 +277,28 @@ class TestTheNextPaydayAfterTheRecord:
         assert derived[-1].end_date == date(2030, 11, 18)
 
     def test_it_rolls_into_the_next_era_when_the_covering_eras_grid_is_spent(self):
-        """The last A payday before B is 06-19; the payday after it is B's first."""
-        assert horizon_step((ERA_A, ERA_B), date(2026, 6, 19)) == (1, 0)
-        assert payday_after((ERA_A, ERA_B), date(2026, 6, 19)) == date(2026, 7, 1)
+        """A's last planned payday is 06-05; the payday after it is B's first.
+
+        *A record ending 06-19 is unreachable under R-PC75 -- the regenerate
+        that minted B deleted that payday -- so this case moved to the record
+        the regenerate leaves.*
+        """
+        assert horizon_step((ERA_A, ERA_B), date(2026, 6, 5)) == (1, 0)
+        assert payday_after((ERA_A, ERA_B), date(2026, 6, 5)) == date(2026, 7, 1)
+
+    def test_a_record_on_the_payday_the_seam_replaced_is_read_as_the_next_eras_first(
+        self,
+    ):
+        """06-19 is not a planned payday of A any more, so a record there stands for B's 07-01.
+
+        The state no door leaves (the regenerate that minted B deleted
+        06-19), pinned so the degradation is a stated one rather than a
+        surprise: matched within A's grid it is step 12, past A's last step
+        11, and over the planned list the nearer of A's 06-05 (14 days) and
+        B's 07-01 (12 days) is B's first paycheck, paid early.
+        """
+        assert horizon_step((ERA_A, ERA_B), date(2026, 6, 19)) == (1, 1)
+        assert payday_after((ERA_A, ERA_B), date(2026, 6, 19)) == date(2026, 7, 8)
 
     def test_it_stays_on_the_covering_eras_grid_while_that_grid_reaches(self):
         assert horizon_step((ERA_A, ERA_B), date(2026, 3, 13)) == (0, 6)
@@ -283,9 +308,12 @@ class TestTheNextPaydayAfterTheRecord:
         """``payday_after`` is the FIRST of ``planned_paydays_after``; the batch ceiling is the second.
 
         Plan step ``pay_calendar:C17-c-2a``: the floor and its mirror read
-        one sequence, so they cannot come apart.  Worked on the ruled
-        example with the record ending 03-13 (A's 06-19 is the last of A's
-        paydays either way, so the sequence crosses the seam at 07-01).
+        one sequence, so they cannot come apart -- and since ``C17-c-2b``
+        the continue door (``pay_period_write.continue_paydays``) records a
+        prefix of the same sequence, so what it writes cannot come apart
+        from either.  Worked on the ruled example with the record ending
+        03-13, and again from A's last planned payday 06-05, where the
+        sequence crosses the seam at 07-01 (R-PC75: 06-19 is not A's).
         """
         eras = (ERA_A, ERA_B)
         planned = planned_paydays_after(eras, date(2026, 3, 13))
@@ -293,14 +321,30 @@ class TestTheNextPaydayAfterTheRecord:
         assert first == payday_after(eras, date(2026, 3, 13)) == date(2026, 3, 27)
         assert next(planned) == date(2026, 4, 10)
         assert list(islice(planned_paydays_after(eras, date(2026, 6, 5)), 3)) == [
-            date(2026, 6, 19), date(2026, 7, 1), date(2026, 7, 8),
+            date(2026, 7, 1), date(2026, 7, 8), date(2026, 7, 15),
         ]
 
-    def test_an_eras_last_step_is_the_one_before_the_next_eras_first_payday(self):
-        """``A`` pays 06-19 as its last; 07-03 would be its next but B pays 07-01."""
-        assert last_step_of((ERA_A, ERA_B), 0) == 12
+    def test_an_eras_last_step_is_the_one_before_the_payday_the_seam_replaces(self):
+        """``A`` pays 06-05 as its last: B's 07-01 REPLACES A's 06-19 (R-PC75).
+
+        The step before the last of A's planned paydays at or before 07-01
+        -- 06-19 is step 12, so the answer is 11.  *It was 12 under R-PC72's
+        literal seam, which put 06-19 back after any truncate below 07-01.*
+        """
+        assert last_step_of((ERA_A, ERA_B), 0) == 11
+        assert projected_payday(ERA_A.effective_from, ERA_A.rhythm, 11) == date(2026, 6, 5)
         assert projected_payday(ERA_A.effective_from, ERA_A.rhythm, 12) == date(2026, 6, 19)
         assert last_step_of((ERA_A, ERA_B), 1) is None
+
+    def test_a_first_payday_ON_the_old_grid_replaces_that_payday_and_no_other(self):
+        """B opening exactly on A's 06-19 leaves A paying through 06-05, as with 07-01.
+
+        The ``at or before`` half: 06-19 is at or before itself, so it is the
+        payday the seam replaces, and the one before it is A's last.
+        """
+        on_grid = era_of(date(2026, 6, 19), 7)
+        assert last_step_of((ERA_A, on_grid), 0) == 11
+        assert payday_after((ERA_A, on_grid), date(2026, 6, 5)) == date(2026, 6, 19)
 
     def test_a_record_is_matched_over_the_PLANNED_list_across_the_seam(self):
         """The 02-02 paycheck paid a day early stands for the NEXT era's first, not the old era's last.
@@ -358,13 +402,32 @@ class TestTheEraSequenceIsValidated:
         out of this state is the writer's question (the floor bounds the
         batch's NEW paydays, not the era's first, and an adversarial review
         of this step drove a sequence through the pure door functions that
-        reaches it -- see the ledger row the tick files).
+        reaches it -- see the ledger row the tick files).  *Since R-PC75 the
+        refusal is the seam rule's own -- the earlier era's last step is
+        below zero -- and its message says so.*
         """
         saturday, sunday = date(2026, 11, 28), date(2026, 11, 29)
         crossed = (era_of(saturday, 14, NEXT), era_of(sunday, 7, PRIOR))
         assert first_payday_of(crossed[0]) > first_payday_of(crossed[1])
-        with pytest.raises(PayCalendarError, match="does not fall after"):
+        with pytest.raises(PayCalendarError, match="would pay nothing"):
             derive_periods([], crossed)
+
+    def test_an_era_within_one_cadence_of_the_previous_ones_first_payday_is_refused(self):
+        """R-PC75's own refusal: the first payday would replace the ONLY payday before it.
+
+        A 7-day era from 01-09 after a 14-day era from 01-02: 01-09 is at or
+        before no planned payday of the first era but its 01-02, which it
+        replaces, so the first era pays nothing.  First paydays ascend here,
+        which is what the check this replaced accepted; from 01-16 -- the
+        first era's second planned payday, on which it pays exactly its first
+        -- the sequence is legal.
+        """
+        first = era_of(date(2026, 1, 2), 14)
+        with pytest.raises(PayCalendarError, match="would pay nothing"):
+            derive_periods([], (first, era_of(date(2026, 1, 9), 7)))
+        legal = (first, era_of(date(2026, 1, 16), 7))
+        derive_periods([], legal)
+        assert last_step_of(legal, 0) == 0
 
     def test_every_eras_cadence_is_validated(self):
         with pytest.raises(PayCalendarError, match="at least 1 day"):
@@ -394,18 +457,19 @@ class TestTheProjectionIsPiecewise:
         assert [p.start_date for p in projected] == [
             date(2026, 3, 27), date(2026, 4, 10), date(2026, 4, 24),
             date(2026, 5, 8), date(2026, 5, 22), date(2026, 6, 5),
-            date(2026, 6, 19),
             date(2026, 7, 1), date(2026, 7, 8), date(2026, 7, 15),
             date(2026, 7, 22),
         ]
 
     def test_the_seam_closes_As_last_paycheck_the_day_before_B_opens(self):
+        """A's last paycheck opens 06-05 and runs 26 days to 06-30 (R-PC75)."""
         calendar = _calendar(TRUNCATED_RECORD, (ERA_A, ERA_B))
         last_of_a = calendar.span_containing(date(2026, 6, 30))
         first_of_b = calendar.span_containing(date(2026, 7, 1))
         assert (last_of_a.start_date, last_of_a.end_date) == (
-            date(2026, 6, 19), date(2026, 6, 30),
+            date(2026, 6, 5), date(2026, 6, 30),
         )
+        assert calendar.span_containing(date(2026, 6, 19)) == last_of_a
         assert (first_of_b.start_date, first_of_b.end_date) == (
             date(2026, 7, 1), date(2026, 7, 7),
         )
@@ -414,9 +478,10 @@ class TestTheProjectionIsPiecewise:
         calendar = _calendar(TRUNCATED_RECORD, (ERA_A, ERA_B))
         assert calendar.periods[-1].period_index == 1
         assert calendar.span_containing(date(2026, 3, 27)).period_index == 2
-        assert calendar.span_containing(date(2026, 6, 19)).period_index == 8
-        assert calendar.span_containing(date(2026, 7, 1)).period_index == 9
-        assert calendar.span_containing(date(2026, 7, 8)).period_index == 10
+        assert calendar.span_containing(date(2026, 6, 5)).period_index == 7
+        assert calendar.span_containing(date(2026, 6, 19)).period_index == 7
+        assert calendar.span_containing(date(2026, 7, 1)).period_index == 8
+        assert calendar.span_containing(date(2026, 7, 8)).period_index == 9
 
     def test_the_axis_tiles_across_the_seam(self):
         """``PeriodWindow`` refuses a hole and an overlap; the seam produces neither."""
@@ -446,24 +511,34 @@ class TestTheProjectionIsPiecewise:
         """The seam and the ordinal, swept rather than argued.
 
         The reference LISTS each era's cash paydays -- its grid displaced
-        under its own convention, from its first payday up to the day before
-        the next era's first -- and concatenates the eras; the producer walks
+        under its own convention, from its first payday while the planned
+        payday AFTER each is at or before the next era's first, which is
+        the one the next era's first payday replaces (ruling **R-PC75**) --
+        and concatenates the eras; the producer walks
         :func:`~app.services.pay_calendar._views.projected_paychecks` from the
         record.  Starts, ends and ordinals must agree period for period.
 
-        The sequences are built the way the doors build them: each later
-        era's first payday lands at or after the previous era's NEXT payday
-        past the record it left (the floor) and before the one after that
-        (the gap rule, R-PC67), and the record ends somewhere inside an era
-        that is not the last -- so every case crosses at least one seam.
+        The sequences are built the way the doors build them, on the
+        nominal grid: each later era's phase lands at or after the previous
+        era's NEXT payday past the record it left (the floor) and within one
+        of its cadences (the gap rule, R-PC67 -- approximately, since a
+        displaced phase can land its cash day at the ceiling the writer
+        would refuse; the reference reads R-PC75 either way), and the record
+        is a prefix of the earliest
+        era's planned paydays under that same rule -- the record a
+        regenerate leaves and a truncate exposes -- ending inside an era
+        that is not the last, so every case crosses at least one seam.
         Cadences run from the collision floor to 40, both displacing
         conventions and ``none`` are drawn, and the counters below assert
-        that a seam was actually displaced and that a case rolled straight
-        into the next era from the record.
+        that a seam was actually displaced, that a case rolled straight into
+        the next era from the record, and that a case's record ended inside
+        a seam paycheck longer than its era's cadence (the state R-PC72's
+        literal seam projected a phantom payday into).
         """
         rng = random.Random(4471)
         floor = shortest_collision_free_cadence()
         mismatches, displaced_seams, rolled_at_record = [], 0, 0
+        long_seam_paychecks = 0
 
         for _ in range(600):
             eras = [era_of(
@@ -484,52 +559,64 @@ class TestTheProjectionIsPiecewise:
                 )
                 candidate_shift = rng.choice([PRIOR, NEXT, NONE])
                 candidate_cadence = rng.randint(floor, 40)
-                phase = None
-                for offset in range(previous.rhythm.cadence_days):
-                    nominal = lower + timedelta(days=offset)
-                    if nominal <= previous.effective_from:
-                        continue
-                    if shift_to_business_day(nominal, candidate_shift) >= lower:
-                        phase = nominal
-                        break
-                if phase is None:
+                # Every phase inside the window the writer admits, drawn
+                # at random rather than the first that fits: a first-fit
+                # draw put F on the floor itself nearly every time, and the
+                # second half of the window is where R-PC75's rule and the
+                # rejected NEAREST rule part.
+                phases = [
+                    nominal
+                    for offset in range(previous.rhythm.cadence_days)
+                    for nominal in (lower + timedelta(days=offset),)
+                    if nominal > previous.effective_from
+                    and shift_to_business_day(nominal, candidate_shift) >= lower
+                ]
+                if not phases:
                     break
-                eras.append(era_of(phase, candidate_cadence, candidate_shift))
+                eras.append(era_of(rng.choice(phases), candidate_cadence, candidate_shift))
             if len(eras) < 2:
                 continue
             eras = tuple(eras)
-            # The record: the earliest era's first payday and a few more of
-            # its paydays, so the horizon sits inside an era that is not the
-            # last.
-            recorded_era = eras[0]
-            recorded = [
-                projected_payday(recorded_era.effective_from, recorded_era.rhythm, n)
-                for n in range(rng.randint(1, 3))
-            ]
-            recorded = [d for d in recorded if d < first_payday_of(eras[1])]
             try:
-                calendar = _calendar(
-                    [(i + 1, d) for i, d in enumerate(recorded)], eras,
-                )
+                derive_periods([], eras)
             except PayCalendarError:
                 # A generated sequence the calendar refuses (first paydays
-                # crossing at a seam two conventions share) is a sequence no
-                # door writes; the reference has nothing to say about it.
+                # crossing at a seam two conventions share, or an era the
+                # seam leaves no payday) is a sequence no door writes; the
+                # reference has nothing to say about it.
                 continue
 
-            reference = []
+            # The reference, per era: the grid displaced under the era's own
+            # convention, while the planned payday AFTER each is at or
+            # before the next era's first payday (R-PC75).  The latest era
+            # runs to the end of the sweep's window.
+            planned = []
             for index, era in enumerate(eras):
                 bound = (
                     first_payday_of(eras[index + 1])
                     if index + 1 < len(eras) else date(2028, 12, 31)
                 )
-                steps = 0
+                paydays, steps = [], 0
                 while True:
                     payday = projected_payday(era.effective_from, era.rhythm, steps)
-                    if payday >= bound:
+                    following = projected_payday(
+                        era.effective_from, era.rhythm, steps + 1,
+                    )
+                    if following > bound:
                         break
-                    reference.append(payday)
+                    paydays.append(payday)
                     steps += 1
+                planned.append(paydays)
+            assert planned[0], "a validated non-latest era pays at least one payday"
+            # The record: a prefix of the earliest era's planned paydays --
+            # what the regenerate that minted the next era left and a
+            # truncate exposes -- so the horizon sits inside an era that is
+            # not the last.
+            recorded = planned[0][:rng.randint(1, 3)]
+            calendar = _calendar(
+                [(i + 1, d) for i, d in enumerate(recorded)], eras,
+            )
+            reference = [d for era_paydays in planned for d in era_paydays]
             reference = [d for d in reference if d > recorded[-1]]
             reference = reference[:40]
             walked = []
@@ -543,11 +630,18 @@ class TestTheProjectionIsPiecewise:
                 following - timedelta(days=1)
                 for following in reference[1:]
             ]
+            # The walk asks the arithmetic jump only at each payday; the
+            # LAST DAY of every period is where the estimate overshoots the
+            # seam (``project_period_after``'s clamp), so it is asked there
+            # too, through the calendar's own door.
             if (
                 [p.start_date for p in walked] != reference
                 or [p.end_date for p in walked[:-1]] != expected_ends
                 or [p.period_index for p in walked] != list(
                     range(len(recorded), len(recorded) + len(walked)),
+                )
+                or any(
+                    calendar.span_containing(p.end_date) != p for p in walked
                 )
             ):
                 mismatches.append((where, recorded))
@@ -555,10 +649,18 @@ class TestTheProjectionIsPiecewise:
                 not is_business_day(e.effective_from) for e in eras[1:]
             )
             rolled_at_record += horizon_step(eras, recorded[-1])[0] > 0
+            long_seam_paychecks += (
+                recorded[-1] == planned[0][-1]
+                and (first_payday_of(eras[1]) - recorded[-1]).days
+                > eras[0].rhythm.cadence_days
+            )
 
         assert not mismatches, mismatches[:3]
         assert displaced_seams > 0, "no seam fell on a closed day"
         assert rolled_at_record > 0, "no record ended on an era's last payday"
+        assert long_seam_paychecks > 0, (
+            "no record ended on a seam paycheck longer than its cadence"
+        )
 
     def test_a_projected_period_is_never_offered_a_step_outside_its_era(self):
         """A day just past the seam is B's step 0, not A's step 13 or B's step -1."""
@@ -566,3 +668,153 @@ class TestTheProjectionIsPiecewise:
         found = project_period_after(calendar.periods, calendar.eras, date(2026, 7, 2))
         assert found.start_date == date(2026, 7, 1)
         assert found.end_date == date(2026, 7, 7)
+
+
+# ---------------------------------------------------------------------------
+# The seam is where the door drew it (R-PC75)
+# ---------------------------------------------------------------------------
+
+
+class TestTheSeamIsWhereTheDoorDrewIt:
+    """Ruling **R-PC75** (plan step ``C17-c-2b``), on the cases it was ruled on.
+
+    A regenerate that mints a later era keeps the record through ``P0``,
+    retires the tail, and states a first payday ``F`` in ``[P1, P2)`` -- the
+    writer's floor and ceiling -- so it DELETES ``P1`` and the old era's last
+    paycheck runs ``[P0, F - 1]``.  The projection must reproduce that after
+    a truncate exposes the seam, because the continue door materialises it.
+    Each case here is driven through the real producers, with the record cut
+    below the later era.
+    """
+
+    def test_a_truncate_below_the_seam_does_not_re_invent_the_deleted_payday(self):
+        """PC-509's shape: 14 days from 2030-01-03, 7 from 02-22, record cut to 01-17.
+
+        The regenerate that minted the 7-day era wrote 01-31 and then 02-22
+        -- a 22-day paycheck -- and deleted 02-14.  R-PC72's literal seam
+        projected 01-31, **02-14**, 02-22 after the truncate; this projects
+        what the door wrote.
+        """
+        eras = (era_of(date(2030, 1, 3), 14), era_of(date(2030, 2, 22), 7))
+        assert list(islice(planned_paydays_after(eras, date(2030, 1, 17)), 4)) == [
+            date(2030, 1, 31), date(2030, 2, 22), date(2030, 3, 1), date(2030, 3, 8),
+        ]
+        calendar = _calendar([(1, date(2030, 1, 3)), (2, date(2030, 1, 17))], eras)
+        seam_paycheck = calendar.span_containing(date(2030, 2, 14))
+        assert (seam_paycheck.start_date, seam_paycheck.end_date) == (
+            date(2030, 1, 31), date(2030, 2, 21),
+        )
+        assert seam_paycheck.period_index == 2
+        assert calendar.span_containing(date(2030, 2, 22)).period_index == 3
+
+    def test_a_first_payday_the_day_after_a_planned_one_projects_no_one_day_paycheck(self):
+        """19 days from 01-19, 10 from 02-08, record cut to 01-19: 02-08 next, not 02-07..02-07.
+
+        The old era's next planned payday is 02-07; the 10-day era opened
+        the day after it, replacing it.  The literal seam projected a
+        one-day paycheck 02-07..02-07 and then 02-08.
+        """
+        eras = (era_of(date(2030, 1, 19), 19), era_of(date(2030, 2, 8), 10))
+        assert list(islice(planned_paydays_after(eras, date(2030, 1, 19)), 3)) == [
+            date(2030, 2, 8), date(2030, 2, 18), date(2030, 2, 28),
+        ]
+        calendar = _calendar([(1, date(2030, 1, 19))], eras)
+        assert calendar.periods[-1].end_date == date(2030, 2, 7)
+        assert calendar.span_containing(date(2030, 2, 7)) == calendar.periods[-1]
+
+    def test_the_seam_holds_in_the_second_half_of_the_window(self):
+        """14 days from 2030-01-03, 7 from 02-24: F is nearer P2 than P1, and still replaces P1.
+
+        The NEAREST rule the developer rejected would match 02-24 to 02-28
+        and re-invent 02-14; the door deleted 02-14 whichever half F fell in.
+        """
+        eras = (era_of(date(2030, 1, 3), 14), era_of(date(2030, 2, 24), 7))
+        assert list(islice(planned_paydays_after(eras, date(2030, 1, 17)), 3)) == [
+            date(2030, 1, 31), date(2030, 2, 24), date(2030, 3, 3),
+        ]
+
+    def test_a_day_late_in_the_seam_paycheck_is_projected_when_the_estimate_overshoots(self):
+        """The candidate window is CLAMPED to the era's last step.
+
+        An old 14-day era from Saturday 2030-03-02 under ``next`` pays
+        Mondays 03-04, 03-18, 04-01, 04-15; a 7-day era under ``none`` opens
+        Sunday 04-14, inside ``[04-01, 04-15)``, so the old era's last
+        planned payday is 03-18 and its last paycheck runs to 04-13.  For
+        Saturday 04-13 the arithmetic estimate is step 3 (three whole
+        cadences from 03-02), two past the era's last step of 1, and
+        neither neighbour of 3 is inside the era's window either -- so
+        without the clamp no candidate covers the day and the projection
+        refuses a legal sequence on a read path.
+        """
+        old = era_of(date(2030, 3, 2), 14, NEXT)
+        new = era_of(date(2030, 4, 14), 7)
+        assert first_payday_of(old) == date(2030, 3, 4)
+        assert last_step_of((old, new), 0) == 1
+        calendar = _calendar([(1, date(2030, 3, 4))], (old, new))
+
+        found = calendar.span_containing(date(2030, 4, 13))
+
+        assert (found.start_date, found.end_date) == (
+            date(2030, 3, 18), date(2030, 4, 13),
+        )
+        assert found.period_index == 1
+        assert calendar.span_containing(date(2030, 4, 14)).start_date == date(2030, 4, 14)
+
+    def test_every_seam_paycheck_whose_estimate_overshoots_is_covered_to_its_last_day(self):
+        """The clamp, enumerated over every shape that can overshoot.
+
+        The overshoot needs two consecutive nominal paydays of the old era
+        on closed days -- a cadence that is a multiple of seven, anchored on
+        a Saturday, under ``next`` -- and a ``none`` era opening on one of
+        those closed days past the second nominal one.  The randomised sweep
+        above draws that shape too rarely to grade (the adversarial review
+        of this step measured it blind to a deleted clamp), so it is
+        enumerated: every Saturday anchor of early 2030, every such cadence,
+        every legal opening day of the new era inside the old era's window,
+        and the calendar must answer every day of the seam paycheck --
+        its LAST day is where the estimate names a step two past the era's
+        last.  The counter asserts the overshoot was actually reached.
+        """
+        overshoots, cases = 0, 0
+        for anchor_offset in range(0, 28, 7):
+            anchor = date(2030, 3, 2) + timedelta(days=anchor_offset)
+            assert anchor.weekday() == 5, "the old era must be anchored on a Saturday"
+            for cadence in (7, 14, 21, 28, 35):
+                old = era_of(anchor, cadence, NEXT)
+                # The record is the old era's FIRST payday alone, so the seam
+                # paycheck is PROJECTED rather than derived from the record
+                # (a saved last period is closed by ``payday_after`` and never
+                # reaches the arithmetic jump).  The new era opens anywhere
+                # from the old era's third payday to the day before its
+                # fourth -- the window a regenerate keeping the second
+                # payday would be bounded to -- and under ``none`` every
+                # closed day in it is a legal opening day.
+                record = [projected_payday(anchor, old.rhythm, 0)]
+                floor_day = projected_payday(anchor, old.rhythm, 2)
+                ceiling = projected_payday(anchor, old.rhythm, 3)
+                opening = floor_day
+                while opening < ceiling:
+                    new = era_of(opening, 7)
+                    eras = (old, new)
+                    last = last_step_of(eras, 0)
+                    calendar = _calendar(
+                        [(i + 1, d) for i, d in enumerate(record)], eras,
+                    )
+                    seam_start = projected_payday(anchor, old.rhythm, last)
+                    assert calendar.periods[-1].end_date < seam_start, (
+                        "the seam paycheck must be projected, not saved"
+                    )
+                    day = seam_start
+                    while day < opening:
+                        found = calendar.span_containing(day)
+                        assert (found.start_date, found.end_date) == (
+                            seam_start, opening - timedelta(days=1),
+                        ), (anchor, cadence, opening, day)
+                        overshoots += (
+                            (day - anchor).days // cadence > last + 1
+                        )
+                        day += timedelta(days=1)
+                    cases += 1
+                    opening += timedelta(days=1)
+        assert cases > 100
+        assert overshoots > 0, "no enumerated day overshot the era's last step by two"

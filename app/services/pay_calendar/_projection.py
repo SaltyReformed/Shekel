@@ -12,7 +12,9 @@ either function changed in the move; the docstrings carry their history.
 **Plan step ``C17-b-2`` then made the projection PIECEWISE** (rulings
 **R-PC66**, **R-PC72**): it anchors on the phase of the era covering the day
 it is asked about rather than on the last recorded payday, and an era's
-projected paydays stop where the next era's begin.
+projected paydays stop where the next era's begin -- at the seam
+:func:`~._eras.last_step_of` draws, which since ruling **R-PC75** (plan step
+``C17-c-2b``) is the one the door that minted the later era drew.
 
 Placed between :mod:`._derive` and :mod:`._searches` in the package's one-way
 chain: it imports the derivation's values and producer and nothing above it,
@@ -145,10 +147,12 @@ def project_period_after(
     Thanksgiving under ``prior``, projected a next payday of 12-11 where the
     grid says 12-12, one paycheck and every boundary after it a day early.
     And the projection is PIECEWISE: an era's paydays run from its first
-    (:func:`~._eras.first_payday_of`) to the day before the next era's, so a
-    day past the record but before a later era's first payday is projected on
-    the era that covers it, and that era's last projected period closes on
-    the seam.  The owner's eras are read in CASH days there
+    (:func:`~._eras.first_payday_of`) to its last planned one under the
+    seam rule (:func:`~._eras.last_step_of`: the next era's first payday
+    replaces the one at or before it, ruling **R-PC75**), so a day past the
+    record but before a later era's first payday is projected on the era
+    that covers it, and that era's last projected period closes on the
+    seam.  The owner's eras are read in CASH days there
     (:func:`~._eras.era_index_at`, :func:`~._eras.last_step_of`), because
     where two conventions meet a nominal seam can pay one day twice.
 
@@ -189,14 +193,27 @@ def project_period_after(
     steps either side of the anchor -- driving THIS function, not a second
     copy of its arithmetic -- and, for the seam, in
     ``tests/test_services/test_pay_calendar_eras.py`` against a brute-force
-    walk over randomised era sequences.
+    walk over randomised era sequences, asked at every period's last day
+    too, and an enumeration of every shape whose estimate overshoots the
+    seam (the clamp below).
 
-    **A neighbour outside the era's window is not offered.**  Below its first
-    step a non-earliest era has no payday -- the previous era's last period
-    reaches to the seam -- and above :func:`~._eras.last_step_of` the next era
-    pays; the candidates that remain are one to three, and one of them covers
+    **A neighbour outside the era's window is not offered, and the estimate
+    is CLAMPED to the era's last step first.**  Below its first step a
+    non-earliest era has no payday -- the previous era's last period reaches
+    to the seam -- and above :func:`~._eras.last_step_of` the next era pays;
+    the candidates that remain are one to three, and one of them covers
     *day* because the era's first payday is at or below it and its last
-    period closes the day before the next era's first.
+    period closes the day before the next era's first.  The clamp is ruling
+    **R-PC75**'s (plan step ``C17-c-2b``): the era's last paycheck runs from
+    its last planned payday ``L`` to the day before the next era's first
+    ``F``, and ``F < payday(L + 2) < nominal(L + 3)``, so the arithmetic
+    estimate for a day late in it can name a step TWO past the era's last
+    and never three -- an old era under
+    ``next`` whose nominal payday falls on a Saturday, and a new era under
+    ``none`` opening the Sunday after it, leaves that Saturday with no
+    candidate inside the window at all.  Clamping the estimate puts the last
+    step itself in the window, and it covers every such day: the day is
+    below the seam and above that step's own payday.
 
     **The precondition below is NOT structural, and a first cut of this step
     filtered on the belief that it was.**  Candidates at step ``0`` and below
@@ -242,6 +259,8 @@ def project_period_after(
     era = eras[index]
     top = last_step_of(eras, index)
     estimate = cadence_steps_to(era.effective_from, era.rhythm.cadence_days, day)
+    if top is not None:
+        estimate = min(estimate, top)
     horizon = horizon_step(eras, last.start_date)
     return covering_projection(
         (

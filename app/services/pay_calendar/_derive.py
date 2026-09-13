@@ -92,7 +92,9 @@ from app.utils.dates import pay_period_label, pay_period_range_label
 from ._eras import (
     PayCalendarError,
     first_payday_of,
+    last_step_of,
     payday_after,
+    projected_payday,
     validate_cadence,
 )
 
@@ -467,7 +469,8 @@ def derive_periods(
     Raises:
         PayCalendarError: Anything :func:`validate_eras` refuses -- no era, an
             era whose cadence is not an ``int`` (``None`` included) or falls
-            outside 1..365, or eras out of order; a ``period_id`` is neither
+            outside 1..365, eras out of order, or an era the seam rule leaves
+            no payday; a ``period_id`` is neither
             an ``int`` nor ``None``; a payday is not a ``datetime.date``, or
             is a ``datetime.datetime`` (which is a ``date`` subclass and would
             silently give every derived end a time component); or a payday
@@ -528,10 +531,10 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
     Plan step ``pay_calendar:C17-b-2``.  Held to :func:`~._eras.validate_cadence`'s
     standard, and for the same reason: every reader below walks the sequence
     without re-checking it, so a bad one refused here is refused once rather
-    than answered wrongly four ways.  Three things are refused, and each is a
-    state the storage already makes impossible for a STORED sequence -- so
-    reaching this means a caller assembled the tuple by hand and got it wrong,
-    and failing loud is the only safe disposition.
+    than answered wrongly four ways.  Four things are refused, and each is a
+    state the storage or the write door already keeps a STORED sequence out
+    of -- so reaching this means a caller assembled the tuple by hand and got
+    it wrong, and failing loud is the only safe disposition.
 
     * **No era at all.**  An owner with a ``budget.pay_schedule`` row and no
       era has stated no rhythm, and :func:`~._loader.calendar_for` refuses
@@ -539,25 +542,37 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
       travels here for a reader to remember to test.
     * **A cadence outside the column's bound**, per era, through
       :func:`~._eras.validate_cadence`.
-    * **Eras out of order, in either coordinate.**  ``effective_from`` must
-      strictly ascend (``uq_pay_eras_user_effective_from`` and the loader's
-      ``ORDER BY`` hold that for a stored sequence), and so must each era's
-      FIRST PAYDAY -- its ``effective_from`` displaced under its own
-      convention (:func:`first_payday_of`) -- because every reader here
-      partitions the calendar on those days.  Two eras whose first paydays
-      coincided or crossed would give one of them no payday at all; the write
-      door's floor bounds a MINTING batch at its era's first payday (ruling
-      2026-09-11, after an adversarial review of ``C17-b-2`` drove a legal
-      sequence past a floor that saw only the batch's NEW paydays), which is
-      what makes the second bound a property of the doors.
+    * **Eras out of order.**  ``effective_from`` must strictly ascend;
+      ``uq_pay_eras_user_effective_from`` and the loader's ``ORDER BY`` hold
+      that for a stored sequence.
+    * **An era that pays NOTHING** (ruling **R-PC75**, plan step
+      ``pay_calendar:C17-c-2b``).  A later era's first payday REPLACES the
+      earlier era's last planned payday at or before it
+      (:func:`~._eras.last_step_of`), so a first payday that falls before
+      the earlier era's SECOND planned payday leaves that era no payday of
+      its own -- its last step is below ``0`` -- and every reader here
+      partitions the calendar on the eras' paydays.  This subsumes the
+      check it replaced, that each era's FIRST PAYDAY (its
+      ``effective_from`` displaced under its own convention,
+      :func:`first_payday_of`) strictly ascends: first paydays that coincide
+      or cross are the same state one cadence earlier.  The write door
+      keeps a stored sequence out of it because its floor bounds a MINTING
+      batch at the plan's next payday after the kept record, which is at or
+      past the covering era's second payday whenever the record holds that
+      era's first (ruling 2026-09-11, after an adversarial review of
+      ``C17-b-2`` drove a legal sequence past a floor that saw only the
+      batch's NEW paydays); a record BELOW the earliest era's phase is
+      ``C18``'s to admit, and this check is what its door must keep a
+      minting batch clear of.
 
     Args:
         eras: The candidate sequence.
 
     Raises:
         PayCalendarError: The tuple is empty; an era's cadence is refused by
-            :func:`~._eras.validate_cadence`; or two consecutive eras are out of order
-            by ``effective_from`` or by first payday.
+            :func:`~._eras.validate_cadence`; two consecutive eras are out of
+            order by ``effective_from``; or a non-latest era would pay no
+            payday under the seam rule.
     """
     if not eras:
         raise PayCalendarError(
@@ -579,15 +594,21 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
                 f"hold that for a stored sequence, so this one was assembled "
                 f"by hand."
             )
-        if first_payday_of(later) <= first_payday_of(earlier):
+    for index, era in enumerate(eras[:-1]):
+        if last_step_of(eras, index) < 0:
+            following = eras[index + 1]
             raise PayCalendarError(
-                f"pay era {later.effective_from.isoformat()}'s first payday "
-                f"({first_payday_of(later).isoformat()}) does not fall after "
-                f"the previous era's ({first_payday_of(earlier).isoformat()}"
-                f", from {earlier.effective_from.isoformat()}).  An era pays "
-                f"from its first payday to the next era's, so one of these "
-                f"would pay nothing; pay_period_batch's floor keeps a minted "
-                f"era's first payday past the previous era's next one."
+                f"pay era {following.effective_from.isoformat()}'s first "
+                f"payday ({first_payday_of(following).isoformat()}) falls "
+                f"before the previous era's second planned payday "
+                f"({projected_payday(era.effective_from, era.rhythm, 1).isoformat()}"
+                f", from {era.effective_from.isoformat()} at a "
+                f"{era.rhythm.cadence_days}-day cadence), so that era would "
+                f"pay nothing: a later era's first payday replaces the "
+                f"earlier era's last planned payday at or before it (ruling "
+                f"R-PC75).  pay_period_batch's floor keeps a minted era's "
+                f"first payday at or past the plan's next payday after the "
+                f"kept record, so this sequence was assembled by hand."
             )
 
 
