@@ -68,7 +68,6 @@ import pytest
 from app.models.transfer import Transfer
 from app.services import (
     pay_period_admin,
-    pay_period_gates,
     recurrence_engine,
     transfer_recurrence,
 )
@@ -897,7 +896,7 @@ class TestThePopulationDoor:
             # goes with it.
             rebuilt = pay_period_admin.regenerate_pay_periods(
                 user_id, date(2026, 2, 13), 8, rhythm_of(14),
-                confirms=pay_period_gates.Confirmations(discard=True),
+                confirm_discard=True,
             )
             db.session.flush()
             assert _occurrences_stored(template) == [], (
