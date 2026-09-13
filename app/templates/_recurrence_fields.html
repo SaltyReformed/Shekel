@@ -244,7 +244,13 @@
    not submit, so the payload carries the one input the chosen shape needs and
    no other.  On a locked row both stay hidden and disabled: the phrase carries
    the value. #}
-{% macro recurrence_end_bound(picker, end) %}
+{# ``swappable`` carries both help sentences on the row as data attributes,
+   for the one form where the row can lock without a reload -- the transfer
+   CREATE form, whose destination is chosen in the form -- exactly as
+   recurrence_starts_on does for its own row; see that macro for why the
+   script reads them rather than carrying a copy of either sentence, and why
+   every other form passes FALSE. #}
+{% macro recurrence_end_bound(picker, end, swappable=false) %}
 <div class="mb-3 d-none" id="field-end-bound">
   <label for="recurrence_end_mode" class="form-label">Ends</label>
   <div class="row g-2 align-items-center">
@@ -297,12 +303,15 @@
       </div>
     </div>
   </div>
-  <div id="end-bound-help" class="form-text">
-    {%- if end.locked -%}
-      Set from the loan's projected payoff, and updated when the loan changes.
-    {%- else -%}
-      Entries won't be generated past this.
-    {%- endif -%}
+  {% set end_bound_locked_help =
+       "Set from the loan's projected payoff, and updated when the loan changes." %}
+  {% set end_bound_open_help = "Entries won't be generated past this." %}
+  <div id="end-bound-help" class="form-text"
+       {% if swappable %}
+       data-locked-text="{{ end_bound_locked_help }}"
+       data-open-text="{{ end_bound_open_help }}"
+       {% endif %}>
+    {{- end_bound_locked_help if end.locked else end_bound_open_help -}}
   </div>
 </div>
 {% endmacro %}

@@ -478,6 +478,15 @@ def _drive_loan_destination_lock(page) -> None:
     cannot know at render which destination will be chosen, so the server ships
     the SET of loan accounts and ``recurrence_form.js`` applies it.
 
+    **Plan step R7d-f-3 added the "Ends" row's half** (:func:`_drive_ends_lock`,
+    driven from here on the same page): a loan holding no active payment makes
+    the definition being created its payment, whose stop the app derives, so
+    the server ships that SUBSET too and the script locks the "Ends" row for
+    it -- blank, disabled, posting nothing -- and hands it back, selection
+    restored, when the loan is deselected.  The door refuses a stop stated for
+    such a loan whatever the script does (ruling R-R60); this checks the
+    affordance the suite cannot see.
+
     Only a real ``FormData`` says whether the control is disabled, and only a
     real render says whether the help text swapped -- both are exactly the
     difference this file exists for.
@@ -547,6 +556,103 @@ def _drive_loan_destination_lock(page) -> None:
     _settle(page)
     _check("transfer M: Starts on is handed back when the loan is deselected",
            not page.locator("#starts_on").is_disabled(), "still disabled")
+
+    _drive_ends_lock(page, loan_ids, non_loan)
+
+
+def _drive_ends_lock(page, loan_ids: list[str], non_loan: str) -> None:
+    """Check a payment-less loan destination locks "Ends" on the CREATE form.
+
+    Plan step R7d-f-3.  Reads ``data-loan-account-ids-without-payment`` --
+    the loans the server found holding no active recurring payment -- and
+    drives one of them, one loan that DOES hold a payment (if the owner has
+    one), and the way back.  The row must post nothing while locked (a real
+    ``FormData``, the only thing that can say so), show a BLANK box under the
+    locked help sentence, and come back with the shape the user had chosen.
+
+    Skipped with a printed note when every loan already holds a payment --
+    the dev clone's do -- because a check that passes on an empty set is
+    worse than one that says it did not run.
+
+    Args:
+        page: The Playwright page, on ``/transfers/new`` with a MONTH cadence
+            chosen and *non_loan* selected as the destination.
+        loan_ids: Every loan destination the form emitted.
+        non_loan: A destination that is not a loan.
+    """
+    print("\n=== transfer loan-destination Ends lock: /transfers/new ===")
+    without_payment = page.evaluate(
+        """() => (document.getElementById('recurrence-fields')
+              .getAttribute('data-loan-account-ids-without-payment') || '')
+              .split(',').filter(Boolean)"""
+    )
+    _check("transfer E: the payment-less set is a subset of the loan set",
+           all(loan_id in loan_ids for loan_id in without_payment),
+           f"{without_payment} not within {loan_ids}")
+    # The loader behind both sets includes INACTIVE loans; the <select> offers
+    # active accounts only, so drive an id the control can actually take.
+    offered = page.evaluate(
+        """() => Array.from(
+              document.getElementById('to_account_id').options
+           ).map(o => o.value)"""
+    )
+    without_payment = [lid for lid in without_payment if lid in offered]
+    loan_ids = [lid for lid in loan_ids if lid in offered]
+    if not without_payment:
+        print("   SKIPPED: every offered loan of this owner already holds a payment")
+        return
+
+    # A shape chosen BEFORE the lock, so the restore has something to show.
+    _select_end_mode(page, "on_date")
+    _check("transfer E: On a date is chosen for a non-loan destination",
+           _posted_bound(page)["recurrence_end_mode"] == ["on_date"],
+           str(_posted_bound(page)))
+
+    # --- a loan with NO payment: the app derives the stop -----------------
+    page.select_option("#to_account_id", without_payment[0])
+    _settle(page)
+    _check("transfer E: Ends is DISABLED for a payment-less loan",
+           page.locator("#recurrence_end_mode").is_disabled(), "enabled")
+    _check("transfer E: it posts NOTHING for a payment-less loan",
+           all(v == [] for v in _posted_bound(page).values()),
+           str(_posted_bound(page)))
+    _check("transfer E: the box is blank while locked",
+           page.evaluate(
+               "() => document.getElementById('recurrence_end_mode')"
+               ".selectedIndex === -1"
+           ), "a shape is still selected")
+    _check("transfer E: the help text says the loan sets it",
+           "projected payoff" in page.inner_text("#end-bound-help"),
+           page.inner_text("#end-bound-help"))
+    _check("transfer E: the date box is hidden while locked",
+           not _visible(page, "field-end-date"), "shown")
+
+    # --- a loan WITH a payment: a second transfer keeps its owner's stop ---
+    paid = next((lid for lid in loan_ids if lid not in without_payment), None)
+    if paid is None:
+        print("   SKIPPED (paid-loan arm): no loan of this owner holds a payment")
+    else:
+        page.select_option("#to_account_id", paid)
+        _settle(page)
+        _check("transfer E: Ends is the user's for a loan that holds a payment",
+               not page.locator("#recurrence_end_mode").is_disabled(),
+               "disabled")
+        _check("transfer E: Starts on is still locked for that loan",
+               page.locator("#starts_on").is_disabled(), "enabled")
+
+    # --- and BACK: the shape chosen before the lock is restored -----------
+    page.select_option("#to_account_id", non_loan)
+    _settle(page)
+    _check("transfer E: Ends is handed back when the loan is deselected",
+           not page.locator("#recurrence_end_mode").is_disabled(),
+           "still disabled")
+    _check("transfer E: the shape chosen before the lock is restored",
+           _posted_bound(page)["recurrence_end_mode"] == ["on_date"],
+           str(_posted_bound(page)))
+    _check("transfer E: the help text is the user's again",
+           "generated past" in page.inner_text("#end-bound-help"),
+           page.inner_text("#end-bound-help"))
+    _select_end_mode(page, "never")
 
 
 def _select_end_mode(page, token: str) -> None:

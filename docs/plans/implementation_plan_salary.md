@@ -178,13 +178,12 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 - [ ] **S3-f-2 -- the plan point and the probe** (the DECOMPOSED parent, split 2026-09-12 when
       **R-SAL21** was MEASURED to move the stored verdict: `/retirement`'s current-pay door prices
       with no calibration, so one calibrated producer is a money leaf and the probe follows it).
-- [ ] **S3-f-2a** -- `/retirement` prices its current paycheck through the pass's pricer,
-      calibrated, as every other surface does (**R-SAL21** as amended): `_compute_current_pay`'s
-      direct `calculate_paycheck` door goes (the arch census of direct engine callers shrinks by one
-      and says why), the snapshot becomes a per-point derivation, and `C12`'s `/retirement` half is
-      taken. **MOVES MONEY**: on the developer's data the 2026-09-10 net `$2,541.49 -> $2,572.78`
-      and required savings `$1,120,707.00 -> $1,162,269.00` (`+$41,562.00`); **OWN PR**, own
-      before/after harness on a prod-dump clone, own review.
+- [x] **S3-f-2a** `f3032c87` -- `/retirement` prices its current paycheck through the pass's pricer,
+      calibrated (**R-SAL21** as amended): `_compute_current_pay` and `_CurrentPay` went, the
+      paycheck is derived per plan point and the gap scales by the engine's own take-home rate.
+      MOVED the 2026-09-10 net `$2,541.49 -> $2,572.78` and required savings
+      `$1,120,707.00 -> $1,162,269.00` on the developer's data; `/savings` and `/investment` did not
+      move. Closed **N-547** (the payday priced 2 -> 1 times) and **P62**'s `/retirement` half.
 - [ ] **S3-f-2b** -- the point and the probe: `PlanPoint.raise_end_years`, one resolved
       `(raise_id, year-or-None)` per recurring raise on every active profile, canonical through
       `plan_with`; the batch carries the `PayrollWiring` and `_derive_picture` builds the feeds per
@@ -195,6 +194,9 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 - [ ] **S3-f-3** -- the Save (**R-SAL22**): a write-through arm of `retirement.update_settings`, the
       ownership 404, the ONE end-year rule shared with `RaiseCreateSchema` against the row's
       effective year, the ORM write and the rail re-render with the error on its row.
+- [ ] **S3-f-4** -- the refused probe RENDERED: the readiness GET re-renders the rail with the
+      message on the raise's row in the one 422 shape the Save uses, and the schema's nested shape
+      goes. Minted 2026-09-13 from `S3-f-2b`'s reviews (**SAL-548**); the container ships with it.
 - [x] **S3-e** `a6af5b3c` -- the hold is DELETED (the DECOMPOSED parent, split 2026-09-06 into the
       NO-MONEY re-homing and the MONEY; **R-SAL16** carries the argument and **R-SAL15** the
       design). Both leaves shipped, so the container ships with the last of them.
@@ -236,7 +238,7 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       taxable, and what becomes of the two live income templates and their rows. **MOVES MONEY** (it
       changes `net_pay`); migration; own review.
 - [ ] **C12 -- one current-paycheck producer** (findings **P62** less its `/retirement` site, which
-      `S3-f-2a` takes under **R-SAL21** as amended; **P63**; **P64**'s engine half; **N-443** closes
+      `S3-f-2a` took under **R-SAL21** as amended; **P63**; **P64**'s engine half; **N-443** closes
       at R14's first leaf, which this step builds on). The paycheck projection is spelled THREE
       times over one calendar -- `income_service.SalaryPricing._net_by_period`,
       `routes/salary/views.py` and `routes/salary/cockpit.py` each load the tax configs and run

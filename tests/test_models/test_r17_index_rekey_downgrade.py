@@ -26,6 +26,7 @@ suite can run, against real rows.
 from app.extensions import db
 from app.models.transaction import Transaction
 from tests._test_helpers import (
+    moved_by_the_owner,
     definition_firing_twice_in_a_paycheck,
     generate_row_of,
     load_migration_module,
@@ -76,7 +77,7 @@ class TestTheDowngradeRefusesAnUnrestorablePair:
         docstring describes, rather than a hand-built copy of it.
         """
         with app.app_context():
-            template, period = definition_firing_twice_in_a_paycheck(
+            template, _first, period = definition_firing_twice_in_a_paycheck(
                 db.session, seed_user, name="R17 downgrade guard",
             )
             populate_in_a_fresh_pass(seed_user["user"].id, [period.id])
@@ -124,9 +125,8 @@ class TestTheDowngradeRefusesAnUnrestorablePair:
                 db.session, seed_user, name="R17 downgrade override",
             )
             generate_row_of(template, seed_periods[0])
-            moved = generate_row_of(template, seed_periods[1])
-            moved.pay_period_id = seed_periods[0].id
-            moved.is_override = True
-            db.session.flush()
+            moved_by_the_owner(
+                generate_row_of(template, seed_periods[1]), into=seed_periods[0],
+            )
 
             assert _count_colliding("transactions", "template_id") == 0

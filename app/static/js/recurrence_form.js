@@ -76,19 +76,35 @@
   // exists for.
   var startsOnLocked = startsOn !== null && startsOn.disabled;
 
-  // The destinations whose first occurrence the app DERIVES, for the CREATE
-  // form (plan step R7c-b).  An edit form emits no such list -- it already
-  // knows whether THIS template is a loan payment and locks server-side --
-  // so an absent attribute leaves every behaviour below inert.
+  // A set of destination ids the CREATE form's container carries, or [] when
+  // the attribute is absent -- which is every EDIT form: it already knows
+  // whether THIS template is a loan payment and locks server-side, so an
+  // absent attribute leaves every behaviour below inert.
   //
   // Ids as strings, because that is what a <select>'s value is; comparing a
   // parsed number against an option value is how an off-by-type bug hides.
-  var loanDestinations = (function() {
+  function destinationIds(attribute) {
     if (!container) return [];
-    var raw = container.getAttribute('data-loan-account-ids');
+    var raw = container.getAttribute(attribute);
     if (!raw) return [];
     return raw.split(',').filter(function(id) { return id !== ''; });
-  })();
+  }
+
+  // The destinations whose first occurrence the app DERIVES (plan step
+  // R7c-b): every configured loan.
+  var loanDestinations = destinationIds('data-loan-account-ids');
+
+  // The destinations whose CLOSING bound the app derives as well (plan step
+  // R7d-f-3): the loans holding no active payment, so the definition being
+  // created IS that loan's payment the moment it exists, and a loan payment
+  // runs to the payoff with no stop of its owner's.  A subset of the list
+  // above -- a loan that already has a payment is in that one and not this,
+  // because a SECOND transfer into it keeps its owner's stop.  Both sets are
+  // the server's (one value, _transfer_creation_helpers.LoanDestinationLocks);
+  // this file tests membership and decides nothing about loans.
+  var loansWithoutPayment = destinationIds(
+    'data-loan-account-ids-without-payment'
+  );
   var destinationSelect = document.getElementById('to_account_id');
 
   // The one question ``starts_on`` cannot answer: a date that is its own
@@ -117,7 +133,7 @@
   var options = [];
   try {
     options = JSON.parse(controls.getAttribute('data-cadence-options') || '[]');
-  } catch (err) {
+  } catch (_err) {
     options = [];
   }
 
@@ -147,7 +163,7 @@
   // validation.
   function currentInterval() {
     var n = parseInt(interval.value, 10);
-    return isNaN(n) ? null : n;
+    return Number.isNaN(n) ? null : n;
   }
 
   // The offer chosen right now: the (unit, placement) pair whose server-stated
@@ -230,8 +246,21 @@
   // overwrites.
   var endBoundLocked = endMode !== null && endMode.disabled;
 
+  // The mode the user had chosen before a loan destination locked the row on
+  // the CREATE form, so deselecting the loan hands the control back where it
+  // was; null while the row is the user's.  A locked row shows a BLANK box
+  // under the locked help sentence -- the same render an edit form's locked
+  // row has when nothing is derived yet, and nothing is: the payment does
+  // not exist.  Leaving "Never" showing beside "set from the loan's projected
+  // payoff" would contradict itself (developer, 2026-09-12).
+  var endModeBeforeLock = null;
+
   // Show and enable only the input the chosen "Ends" shape needs, and disable
-  // the whole control when the definition does not repeat.
+  // the whole control when the definition does not repeat -- or when the
+  // chosen destination is a loan whose payment this would be (plan step
+  // R7d-f-3), where the app derives the stop and the door refuses one stated
+  // anyway.  Disabled, so a locked row posts NOTHING: the door reads an
+  // absent bound as the unbounded rule a loan payment carries.
   //
   // Disabling rather than only hiding, because a hidden control still SUBMITS
   // -- the defect class plan step R7b-2 shipped twice and the browser pass
@@ -240,9 +269,17 @@
   // that does not name it.
   function syncEndBound(repeating) {
     if (!endMode || endBoundLocked) return;
-    endMode.disabled = !repeating;
+    var derived = repeating && destinationDerivesTheStop();
+    if (derived && endModeBeforeLock === null) {
+      endModeBeforeLock = endMode.selectedIndex;
+      endMode.selectedIndex = -1;
+    } else if (!derived && endModeBeforeLock !== null) {
+      endMode.selectedIndex = endModeBeforeLock;
+      endModeBeforeLock = null;
+    }
+    endMode.disabled = !repeating || derived;
     var chosen = endMode.options[endMode.selectedIndex];
-    var needs = repeating && chosen
+    var needs = repeating && !derived && chosen
       ? chosen.getAttribute('data-needs')
       : '';
     endValueWraps.forEach(function(wrap) {
@@ -289,18 +326,30 @@
     startsOn.disabled = !repeating || destinationDerivesTheStart();
   }
 
-  // Whether the destination the user has CHOSEN is one whose first occurrence
-  // the app derives (plan step R7c-b).  The create form's half of the rule an
-  // edit form gets from the server: this form offers every active account, so
-  // a recurring loan payment can be created here -- and asking the user for a
+  // Whether the destination the user has CHOSEN is in ``ids``.  Always false
+  // when the list is absent, which is every EDIT form and every form that has
+  // no destination control at all (the transaction template's).
+  function destinationIsOneOf(ids) {
+    if (!destinationSelect || ids.length === 0) return false;
+    return ids.indexOf(destinationSelect.value) !== -1;
+  }
+
+  // Whether the chosen destination is one whose first occurrence the app
+  // derives (plan step R7c-b).  The create form's half of the rule an edit
+  // form gets from the server: this form offers every active account, so a
+  // recurring loan payment can be created here -- and asking the user for a
   // date the route is going to replace is the defect
   // LOAN_PAYMENT_BOUND_IS_DERIVED closes one path over.
-  //
-  // Always false when the list is absent, which is every EDIT form and every
-  // form that has no destination control at all (the transaction template's).
   function destinationDerivesTheStart() {
-    if (!destinationSelect || loanDestinations.length === 0) return false;
-    return loanDestinations.indexOf(destinationSelect.value) !== -1;
+    return destinationIsOneOf(loanDestinations);
+  }
+
+  // Whether the chosen destination is one whose CLOSING bound the app derives
+  // too (plan step R7d-f-3): a loan holding no payment yet, so this would be
+  // it.  The same rule's other half, and the door refuses a stop stated for
+  // such a loan whatever this file does (ruling R-R60).
+  function destinationDerivesTheStop() {
+    return destinationIsOneOf(loansWithoutPayment);
   }
 
   // Word the "Starts on" help for whichever of the two the row is saying.
@@ -313,6 +362,19 @@
     var help = document.getElementById('starts-on-help');
     if (!help || startsOnLocked) return;
     var derived = destinationDerivesTheStart();
+    var text = help.getAttribute(
+      derived ? 'data-locked-text' : 'data-open-text'
+    );
+    if (text) help.textContent = text;
+  }
+
+  // Word the "Ends" help the same way, for the same reason: both sentences
+  // are the template's, carried on the row, and the server renders the same
+  // two for a locked and an unlocked edit form.
+  function syncEndBoundHelp() {
+    var help = document.getElementById('end-bound-help');
+    if (!help || endBoundLocked) return;
+    var derived = destinationDerivesTheStop();
     var text = help.getAttribute(
       derived ? 'data-locked-text' : 'data-open-text'
     );
@@ -367,7 +429,7 @@
     var any = false;
     Array.prototype.forEach.call(nominalDay.options, function(opt) {
       var day = parseInt(opt.getAttribute('data-day') || '', 10);
-      if (isNaN(day)) return;
+      if (Number.isNaN(day)) return;
       var mine = open && day > chosenDay;
       opt.hidden = !mine;
       opt.disabled = !mine;
@@ -469,6 +531,7 @@
       endBoundWrap.classList.remove('d-none');
     }
     syncEndBound(true);
+    syncEndBoundHelp();
 
     fetchPreview();
   }
@@ -581,10 +644,13 @@
   unitSelect.addEventListener('change', toggleFields);
   interval.addEventListener('change', toggleFields);
   placementSelect.addEventListener('change', toggleFields);
-  // The DESTINATION re-links the "Starts on" row, and only on a create form:
-  // choosing a loan hands its first occurrence to the route, so the control
-  // stops being the user's to state.  ``toggleFields`` is what applies it, so
-  // the enable/disable rule stays in one function rather than two that agree.
+  // The DESTINATION re-links the "Starts on" row, and the "Ends" row for a
+  // loan whose payment this would be, and only on a create form: choosing a
+  // loan hands its first occurrence to the route, so the control stops being
+  // the user's to state, and a loan with no payment yet hands its stop over
+  // too.  ``toggleFields`` is what applies both, so the enable/disable rule
+  // stays in one function rather than two that agree.  The second list is a
+  // subset of the first, so the first alone decides whether to listen.
   if (destinationSelect && loanDestinations.length > 0) {
     destinationSelect.addEventListener('change', toggleFields);
   }

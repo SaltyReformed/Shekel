@@ -50,11 +50,16 @@ have shown them.
 **A merchant SURVIVES the lines that named it, and that is the whole property
 the union above rests on** -- a stated answer has to stay readable and
 restatable after its lines are gone.  **It is not immortal, and the difference
-is the answer.**  Deleting an IMPORT sweeps this account's merchants that no
-surviving line names AND no stated answer is about
-(``statement_import._undo._forget_orphan_merchants``), because such a row
-preserves nothing: no rule is keyed on it, the section does not render it, and
-nothing else can reach it.  Without that sweep the table had no ceiling at all
+is the answer.**  Deleting an IMPORT removes the merchants its lines alone
+named AND no stated answer is about
+(``statement_import._reads.orphan_merchants_by_import`` decides,
+``_undo._forget_merchants`` deletes), because such a row preserves nothing:
+no rule is keyed on it, the section does not render it, and nothing else can
+reach it.  That leaves no merchant named by no line ONLY because no door
+creates one: ``resolve_merchants`` writes every row it mints onto a line in
+the same pass, and a rule is never withdrawn (measured 0 of 67 on the
+developer's database, 2026-09-12).  Without that removal the table had no
+ceiling at all
 -- an owner could upload a file naming any number of unseen merchants, delete
 the import, and keep the merchants permanently, once per upload.  That is the
 hazard ``_stating._refuse_unknown_merchants`` was written for, which MOVED here

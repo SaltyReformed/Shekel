@@ -4241,10 +4241,10 @@ def generate_row_of(template, period):
 
     A fixture wanting the OWNER's row -- a figure the human authored -- takes
     ownership of the generated row the way the re-price door does
-    (``routes/transactions/mutations``: :func:`~app.services.amount_ownership.
-    state_own_amount` and ``is_override = True``), rather than building one.
-    A fixture wanting a SETTLED row settles this one, as the app does; the
-    engine only ever writes Projected.
+    (:func:`repriced_by_the_owner`), and one wanting a row the owner MOVED
+    moves this one the way the move door does (:func:`moved_by_the_owner`),
+    rather than building one.  A fixture wanting a SETTLED row settles this
+    one, as the app does; the engine only ever writes Projected.
 
     The row is generated into the owner's BASELINE scenario, which is what
     every door that generates passes; a fixture for another scenario is a
@@ -4307,17 +4307,88 @@ def generate_row_of(template, period):
     return created[0]
 
 
+def repriced_by_the_owner(row, figure):
+    """Re-price *row* the way the edit door does, and hand it back.
+
+    **The OWNER's row, stated once** (plan step balance:X-cf-3b, ruling
+    R-BAL17): a fixture wanting a row a human re-priced takes the engine's
+    row (:func:`generate_row_of`) and performs the two acts
+    ``routes/transactions/mutations`` performs on a typed figure -- the
+    figure through ``amount_ownership.state_own_amount``, which stores it and
+    releases the relation that priced the row in one attribute, and
+    ``is_override = True`` beside it, because the row is the owner's now
+    rather than the rule's.  The pair was spelled at every site that wanted
+    it before this helper, which is rule 14's tell; a site that performs one
+    act without the other builds a row the write doors cannot produce.
+
+    Args:
+        row: The flushed :class:`~app.models.transaction.Transaction`, the
+            engine's.
+        figure: The figure the owner typed (str or Decimal-coercible).
+
+    Returns:
+        *row*, flushed, owning *figure*.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.extensions import db
+    from app.services.amount_ownership import state_own_amount
+
+    state_own_amount(row, Decimal(str(figure)))
+    row.is_override = True
+    db.session.flush()
+    return row
+
+
+def moved_by_the_owner(row, *, into):
+    """Move *row* into the paycheck *into* the way the move door does.
+
+    The other of the edit door's two acts on a row of a definition (plan
+    step balance:X-cf-3b): the period, and ``is_override = True`` beside it
+    -- a moved row is the owner's, and the flag is what keeps the maintain
+    pass and the generate pass off it.  The row keeps the occurrence it was
+    generated for, so it never collides with the target paycheck's own
+    canonical on the occurrence index; it is one of the two ways the
+    application puts an override beside a canonical, the other being
+    carry-forward.  A fixture wanting "an override sibling in paycheck N"
+    generates the definition's row in ANOTHER paycheck and moves it here.
+
+    Args:
+        row: The flushed :class:`~app.models.transaction.Transaction`, the
+            engine's.
+        into: The :class:`~app.models.pay_period.PayPeriod` the owner moved
+            it into.
+
+    Returns:
+        *row*, flushed, in *into*.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.extensions import db
+
+    row.pay_period_id = into.id
+    row.is_override = True
+    db.session.flush()
+    return row
+
+
 def definition_firing_twice_in_a_paycheck(db_session, seed_user, *, name):
-    """Pin a 60-day calendar and author a MONTHLY definition that names TWO
-    occurrences in its second paycheck; return ``(template, that period)``.
+    """Pin a 60-day calendar and author a MONTHLY definition that names ONE
+    occurrence in its first paycheck and TWO in its second; return
+    ``(template, first paycheck, second paycheck)``.
 
     The one fixture for "a paycheck holding two rows of one definition" -- the
     state plan step R17 made storable -- so the cases that need it (the
     builder's 2+ refusal in ``test_fixture_validation``, the R17 downgrade
-    guard, DC-06's acceptance of the pair) state it once and the calendar
-    arithmetic is argued once.  :func:`generate_row_of` REFUSES this
-    definition in this paycheck by design; the cases that want the pair
-    written take it from :func:`populate_in_a_fresh_pass`.
+    guard, DC-06's acceptance of the pair, carry-forward's earliest-occurrence
+    tie-break) state it once and the calendar arithmetic is argued once.
+    :func:`generate_row_of` REFUSES this definition in the second paycheck by
+    design; the cases that want the pair written take it from
+    :func:`populate_in_a_fresh_pass`.  In the FIRST paycheck it answers the
+    definition's one row there, which is what a case rolling a leftover INTO
+    the pair needs as its source (plan step balance:X-cf-3b).
 
     **The calendar is pinned to a stated date rather than derived from today,
     and the reason was measured, not argued.**  A 60-day paycheck that opens
@@ -4328,10 +4399,12 @@ def definition_firing_twice_in_a_paycheck(db_session, seed_user, *, name):
     June into early September (2026-06-29..08-30, 2027-07-05..08-29,
     2029-07-02..09-02, 2030-07-01..09-01; none in 2028).  Found by
     adversarial review 2026-09-11 under ``SHEKEL_FAKE_TODAY=2026-07-15``,
-    which is the way to see it.  The second paycheck here opens 2026-05-01
-    and closes 2026-06-29:
-    May and June are 61 days, so it holds the 1st of May and the 1st of June
-    and no third, on every clock.
+    which is the way to see it.  The first paycheck here opens 2026-03-02 and
+    closes 2026-04-30, the second opens 2026-05-01 and closes 2026-06-29:
+    the rule's first occurrence is 2026-04-01, so the first paycheck holds
+    that one and no other (the 1st of March precedes the rule); May and June
+    are 61 days, so the second holds the 1st of May and the 1st of June and no
+    third, on every clock.
 
     Args:
         db_session: The test session.
@@ -4339,10 +4412,10 @@ def definition_firing_twice_in_a_paycheck(db_session, seed_user, *, name):
         name: The definition's name.
 
     Returns:
-        ``(template, period)``: the flushed
+        ``(template, first, second)``: the flushed
         :class:`~app.models.transaction_template.TransactionTemplate` carrying
-        the monthly rule, and the :class:`~app.models.pay_period.PayPeriod`
-        it fires twice in.
+        the monthly rule, the :class:`~app.models.pay_period.PayPeriod` it
+        fires once in, and the one it fires twice in.
     """
     # Pylint: ``import-outside-toplevel`` -- a tests-package import kept
     # local so this module's import graph stays as it was.
@@ -4353,8 +4426,8 @@ def definition_firing_twice_in_a_paycheck(db_session, seed_user, *, name):
         seed_user["user"].id, _real_date(2026, 3, 2), 6, 60,
     )
     template = bare_expense_template(db_session, seed_user, name=name)
-    make_cadence_rule(template, MONTHLY, starts_on=periods[1].start_date)
-    return template, periods[1]
+    make_cadence_rule(template, MONTHLY, starts_on=_real_date(2026, 4, 1))
+    return template, periods[0], periods[1]
 
 
 def require_assertion_instant(at):

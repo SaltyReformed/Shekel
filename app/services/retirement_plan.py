@@ -51,6 +51,7 @@ from app.services.pay_calendar import PayCadence, PeriodWindow
 from app.services.retirement_dashboard_service import (
     GapInputs,
     PensionSummary,
+    compute_current_paycheck,
     compute_gap_net_biweekly,
     compute_pension_summary,
     load_gap_inputs,
@@ -166,8 +167,13 @@ class RetirementInputs:
     **Nothing here is re-read per plan**, which is what makes one load serve
     every candidate: the retire-later search probes up to ten dates and none of
     them queries.  What DOES vary with the point -- the salary path, the
-    pension benefit, the employer salary basis, the projection axis and the
-    per-account walk -- is derived in :func:`picture_at` from these.
+    pension benefit, the projection axis and the per-account walk (the employer
+    salary basis too, until salary:S3-e-2) -- is derived in :func:`picture_at`
+    from these.  So is the current paycheck since plan step salary:S3-f-2a,
+    derived per point off the pass's pricer and varying with the point only
+    from S3-f-2b's raise set; for a profile that funds no account, the FIRST
+    derivation is where that profile's tax series loads (three queries the
+    loader issued itself before), and every later point is the memo's.
 
     **The precise invariant, because "point-independent" is not quite true of
     ``base_ctx`` and an earlier draft of this paragraph claimed it was**
@@ -196,8 +202,9 @@ class RetirementInputs:
             baseline scenario, the pinned clock, and the memos that resolve each
             loan and derive the pay calendar once for the whole render.
         gap: The :class:`~app.services.retirement_dashboard_service.GapInputs`
-            bundle: settings, active pensions, active salary profiles, the
-            current-pay snapshot and the owner's pay cadence.
+            bundle: settings, active pensions, active salary profiles and the
+            owner's pay cadence.  (The current paycheck left it at plan step
+            salary:S3-f-2a: it is a function of the point, derived below.)
         base_date: The STORED plan's resolved retirement date (a pension's beats
             the settings', latest pension wins), or ``None`` when neither
             supplies one -- the page's no-horizon state.
@@ -605,7 +612,12 @@ def _derive_picture(
     is.  *The employer salary basis left this list at plan step
     salary:S3-e-2*: the payroll feed prices every period's gross through the
     engine, so a later date extends the axis and nothing else has to be
-    rebuilt for it.
+    rebuilt for it.  *The current paycheck JOINED it at plan step
+    salary:S3-f-2a* (ruling **R-SAL21**): it is priced off the pass's pricer
+    per point rather than loaded once, because the raise set a point is
+    believed under (plan step S3-f-2b) can move this year's paycheck; at the
+    stored set every point prices the same payday and the pricer's memo
+    answers after the first.
 
     Args:
         inputs: The render's loaded inputs.
@@ -630,6 +642,14 @@ def _derive_picture(
     pension = compute_pension_summary(
         gap.pensions, as_of, point.month_offset,
     )
+    # The current paycheck off the PASS's pricer -- the same
+    # ``ProfilePaychecks`` the payroll feed below prices from, so the income
+    # target and the feed cannot price one payday two ways (plan step
+    # salary:S3-f-2a; they did, by ``$31.29``, when this was a load-time
+    # snapshot priced by a direct engine call with no calibration).
+    current_paycheck = compute_current_paycheck(
+        inputs.balance_ctx, gap.salary_profiles,
+    )
     # Every point-dependent field replaced together, from a context the render
     # built once: the account query and the period calendar do not move with a
     # candidate date, so this re-queries nothing.
@@ -642,7 +662,8 @@ def _derive_picture(
     projections = project_accounts_with_batch(ctx, inputs.batch, axis)
     net = calculate_gap(
         net_biweekly_pay=compute_gap_net_biweekly(
-            gap, retirement_date, pension.salary_by_year, as_of,
+            gap, current_paycheck, retirement_date, pension.salary_by_year,
+            as_of,
         ),
         pay_cadence=gap.pay_cadence,
         monthly_pension_income=pension.monthly_income,

@@ -1342,6 +1342,42 @@ class TestOnePaycheckProjectionPerProfilePerRender:
             "pricer"
         )
 
+    def test_retirement_prices_its_current_paycheck_through_the_pricer(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /retirement builds the pricer even when the profile funds nothing.
+
+        **The case above cannot see plan step salary:S3-f-2a, and this one
+        exists because it cannot.**  There the profile FUNDS the account, so
+        the feed loader builds its pricer and the count reads 1 whether the
+        verdict's current paycheck comes off that pricer or off a direct
+        engine call beside it -- the direct call (``_compute_current_pay``,
+        the door that priced without the calibration) constructed no
+        ``ProfilePaychecks`` at all.  Here nothing funds the account, so the
+        feed loader wires no profile and builds nothing: the ONE pricer this
+        render builds is the one the current paycheck is priced through.  On
+        the tree before S3-f-2a this count read 0.
+
+        It is still within the budget the class states -- one per active
+        profile -- and it is the direction the case above is blind to: a
+        regression re-pricing the current paycheck outside the pass reads 0
+        here and 1 there.
+        """
+        with app.app_context():
+            _seed_projecting_account(db, seed_user, seed_periods_today)
+
+        with counting_calls(_PROJECTION_DOOR) as counts:
+            resp = auth_client.get("/retirement")
+
+        assert resp.status_code == 200
+        assert counts["ProfilePaychecks"] == 1, (
+            f"/retirement built the owner's paycheck pricer "
+            f"{counts['ProfilePaychecks']} times for a profile that funds no "
+            "account; the verdict's current paycheck must be priced through "
+            "the pass's pricer (plan step salary:S3-f-2a), which is the one "
+            "construction this render has left"
+        )
+
     def test_investment_projects_each_profile_once(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
