@@ -21,7 +21,6 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
-    AmountSourceEnum,
     SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
@@ -30,11 +29,9 @@ from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.journal_entry import JournalEntry
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.transaction_template import TransactionTemplate
 from app.services import posting_service, status_seam, transaction_service
 # The leaf, imported for ONE control that spies on a private name the package
 # does not re-export -- see
@@ -42,17 +39,24 @@ from app.services import posting_service, status_seam, transaction_service
 # the package attribute would grade nothing.
 from app.services.transaction_service import _settle
 from app.services.row_valuation import settled_contribution, settled_figure
-from app.services.cash_ledger import amount_basis, amounts_by_id
+from app.services.cash_ledger import (
+    amount_basis,
+    amounts_by_id,
+    resolve_transaction_amount,
+)
 from tests._test_helpers import (
     amount_basis_for,
     an_entered_day,
-    make_every_period_rule,
+    generate_row_of,
+    make_expense_template,
+    make_income_template,
     net_posted_by_day,
+    repriced_by_the_owner,
     settlement_basis_id,
     settlement_if_settling,
 )
 from app.models.amount_ownership import AmountOwnership
-from app.services.amount_ownership import declare_derived, state_own_amount
+from app.services.amount_ownership import state_own_amount
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -83,55 +87,46 @@ def _make_entry(txn_id, user_id, amount, description, *,
     return entry
 
 
-def _make_envelope_template(seed_user, *, txn_type_name="Expense",
-                            default_amount="500.00"):
-    """Create an envelope-tracked template of the requested type.
+def _make_template(
+    seed_user, *, income=False, default_amount="500.00", is_envelope=True,
+):
+    """Create a PRICED, every-paycheck definition of the requested kind.
 
-    Mirrors the seed_entry_template fixture but parameterizes the
-    transaction type so the income-side branch can be exercised.
+    The shared builders (:func:`make_expense_template` and its income twin),
+    so the definition is one the engine can generate from and its rows are
+    the engine's own (:func:`generate_row_of`, plan step balance:X-cf-3b).
+    It was ``_make_envelope_template`` -- a hand-built, UNPRICED envelope
+    template that half its callers then flipped to ``is_envelope = False`` --
+    until that step; a case states the definition it means here instead.
+
+    Args:
+        seed_user: The seed user fixture dict.
+        income: Build an income definition rather than an expense one.
+            The income-side envelope branch is reachable only this way:
+            Phase 2 rejects ``is_envelope=True`` on income at the schema
+            layer, and the helper under test must stay correct for a row
+            that reached that state by direct write.
+        default_amount: The definition's stated price.
+        is_envelope: Whether its rows track purchases.
     """
-    txn_type = (
-        db.session.query(TransactionType)
-        .filter_by(name=txn_type_name).one()
+    builder = make_income_template if income else make_expense_template
+    return builder(
+        db.session, seed_user, amount=default_amount,
+        name=f"Tracked {'Income' if income else 'Expense'}",
+        category_key="Groceries", is_envelope=is_envelope,
     )
 
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=txn_type.id,
-        name=f"Tracked {txn_type_name}",
-        default_amount=Decimal(default_amount),
-        is_envelope=True,
-    )
-    db.session.add(template)
-    db.session.flush()
-    # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_every_period_rule(db.session, template)
-    return template
 
+def _plan_of(txn):
+    """Return what *txn* PLANS -- its amount as the amount model resolves it.
 
-def _make_projected_txn(seed_user, period, *, template,
-                        estimated_amount="500.00"):
-    """Create a Projected transaction tied to the supplied template."""
-    projected_status = (
-        db.session.query(Status).filter_by(name="Projected").one()
-    )
-    txn = Transaction(
-        template_id=template.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected_status.id,
-        name=template.name,
-        category_id=template.category_id,
-        transaction_type_id=template.transaction_type_id,
-        amount_ownership=AmountOwnership.own(Decimal(estimated_amount)),
-    )
-    db.session.add(txn)
-    db.session.flush()
-    return txn
+    A row of a definition stores no figure (plan step X-au-e), so "the plan is
+    untouched" is a question to the resolver rather than to the
+    ``estimated_amount`` column, which reads ``None`` on such a row before and
+    after every settle.  A row the owner re-priced owns its figure and the
+    column is that figure; the cases that grade a re-price read it there.
+    """
+    return resolve_transaction_amount(txn, amount_basis_for(txn))
 
 
 # ── Happy-Path Tests ─────────────────────────────────────────────────
@@ -149,10 +144,8 @@ class TestSettleFromEntriesExpense:
         Expected: status_id == DONE, actual_amount == 400.00, day recorded.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             user_id = seed_user["user"].id
 
             _make_entry(txn.id, user_id, "150.00", "Kroger")
@@ -181,10 +174,8 @@ class TestSettleFromEntriesExpense:
         Expected: actual_amount == 400.00.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             user_id = seed_user["user"].id
 
             _make_entry(txn.id, user_id, "300.00", "Kroger")
@@ -213,18 +204,17 @@ class TestSettleFromEntriesExpense:
         to roll into the next period's canonical row.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="100.00",
-            )
+            template = _make_template(seed_user, default_amount="100.00")
+            txn = generate_row_of(template, seed_periods[0])
 
             transaction_service.settle_from_entries(txn)
             db.session.commit()
 
             db.session.refresh(txn)
             assert settled_figure(txn) == Decimal("0.00")
-            assert txn.estimated_amount == Decimal("100.00")
+            # The PLAN is untouched: still the definition's, still $100.00.
+            assert txn.estimated_amount is None
+            assert _plan_of(txn) == Decimal("100.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
             assert txn.settled_on is not None
 
@@ -243,13 +233,10 @@ class TestSettleFromEntriesExpense:
         Expected: actual_amount == 120.00, estimated stays 100.00.
         """
         with app.app_context():
-            template = _make_envelope_template(
+            template = _make_template(
                 seed_user, default_amount="100.00",
             )
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="100.00",
-            )
+            txn = generate_row_of(template, seed_periods[0])
             user_id = seed_user["user"].id
 
             _make_entry(txn.id, user_id, "80.00", "Kroger")
@@ -262,7 +249,8 @@ class TestSettleFromEntriesExpense:
             db.session.refresh(txn)
             # 80 + 40 = 120 -- exceeds the 100 estimate, intentionally.
             assert settled_figure(txn) == Decimal("120.00")
-            assert txn.estimated_amount == Decimal("100.00")
+            assert txn.estimated_amount is None
+            assert _plan_of(txn) == Decimal("100.00")
 
 
 class TestSettleFromEntriesIncome:
@@ -284,13 +272,10 @@ class TestSettleFromEntriesIncome:
     ):
         """Income + entries: status=RECEIVED, actual=sum, day recorded."""
         with app.app_context():
-            template = _make_envelope_template(
-                seed_user, txn_type_name="Income", default_amount="2500.00",
+            template = _make_template(
+                seed_user, income=True, default_amount="2500.00",
             )
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="2500.00",
-            )
+            txn = generate_row_of(template, seed_periods[0])
             user_id = seed_user["user"].id
 
             _make_entry(txn.id, user_id, "1000.00", "Direct deposit 1")
@@ -340,10 +325,8 @@ class TestSettleFromEntriesSettleDay:
         absorbed it.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             user_id = seed_user["user"].id
             _make_entry(txn.id, user_id, "10.00", "Test")
             db.session.flush()
@@ -375,10 +358,8 @@ class TestSettleFromEntriesPreconditions:
     ):
         """Soft-deleted transactions cannot be resurrected via settle."""
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             txn.is_deleted = True
             db.session.commit()
             txn_id = txn.id
@@ -438,28 +419,9 @@ class TestSettleFromEntriesPreconditions:
     ):
         """Templates with is_envelope=False are not entry-tracked."""
         with app.app_context():
-            expense_type = (
-                db.session.query(TransactionType)
-                .filter_by(name="Expense").one()
-            )
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                name="Rent",
-                default_amount=Decimal("1200.00"),
-                is_envelope=False,
-            )
-            db.session.add(template)
-            db.session.flush()
-            # The definition first, then the cadence onto it (plan step R-F6).
-            rule = make_every_period_rule(db.session, template)
-
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="1200.00",
-            )
+            # A plain $1,200.00 Rent bill: the shared builder's own default.
+            template = make_expense_template(db.session, seed_user)
+            txn = generate_row_of(template, seed_periods[0])
 
             with pytest.raises(ValidationError) as exc_info:
                 transaction_service.settle_from_entries(txn)
@@ -480,10 +442,8 @@ class TestSettleFromEntriesPreconditions:
         the picture in production callers.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
 
             with db.session.no_autoflush:
@@ -511,10 +471,8 @@ class TestSettleFromEntriesPreconditions:
         row, which is meaningless and indicates a caller bug.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             user_id = seed_user["user"].id
             _make_entry(txn.id, user_id, "100.00", "Kroger")
             db.session.flush()
@@ -539,10 +497,8 @@ class TestSettleFromEntriesPreconditions:
         no-op.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             cancelled_status = (
                 db.session.query(Status).filter_by(name="Cancelled").one()
             )
@@ -570,10 +526,8 @@ class TestSettleFromEntriesSessionContract:
     ):
         """Mutations are visible only after the caller commits."""
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             user_id = seed_user["user"].id
             _make_entry(txn.id, user_id, "75.00", "Pharmacy")
             # Persist setup so a rollback after the helper call only
@@ -628,9 +582,8 @@ class TestSettleTransactionTheVerb:
         Shown to FIRE: deleting the ``transfer_id`` guard settles the row.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(seed_user, seed_periods[0],
-                                      template=template)
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             # Make it a shadow the cheap way -- the verb reads exactly one
             # field to decide, and a real transfer pair would grade the
             # transfer service rather than this guard.
@@ -667,10 +620,8 @@ class TestSettleTransactionTheVerb:
         had no guard.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            template.is_envelope = False
-            txn = _make_projected_txn(seed_user, seed_periods[0],
-                                      template=template)
+            template = _make_template(seed_user, is_envelope=False)
+            txn = generate_row_of(template, seed_periods[0])
             txn.is_deleted = True
             db.session.flush()
 
@@ -693,10 +644,8 @@ class TestSettleTransactionTheVerb:
         missing beside it.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            template.is_envelope = False
-            txn = _make_projected_txn(seed_user, seed_periods[0],
-                                      template=template)
+            template = _make_template(seed_user, is_envelope=False)
+            txn = generate_row_of(template, seed_periods[0])
             txn.is_deleted = True
             db.session.flush()
 
@@ -716,9 +665,8 @@ class TestSettleTransactionTheVerb:
         supplied $999.99 settles at $90.00.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(seed_user, seed_periods[0],
-                                      template=template)
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             db.session.flush()
             _make_entry(txn.id, seed_user["user"].id,
                         Decimal("40.00"), "Walmart")
@@ -744,10 +692,8 @@ class TestSettleTransactionTheVerb:
         against a $500.00 estimate books $250.00.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            template.is_envelope = False
-            txn = _make_projected_txn(seed_user, seed_periods[0],
-                                      template=template)
+            template = _make_template(seed_user, is_envelope=False)
+            txn = generate_row_of(template, seed_periods[0])
             db.session.flush()
 
             transaction_service.settle_transaction(
@@ -772,10 +718,8 @@ class TestSettleTransactionTheVerb:
         fall-back answered, so no balance moves.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            template.is_envelope = False
-            txn = _make_projected_txn(seed_user, seed_periods[0],
-                                      template=template)
+            template = _make_template(seed_user, is_envelope=False)
+            txn = generate_row_of(template, seed_periods[0])
             db.session.flush()
 
             transaction_service.settle_transaction(txn)
@@ -790,7 +734,8 @@ class TestSettleTransactionTheVerb:
             # correction.
             assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
             assert settled_figure(txn) == Decimal("500.00")
-            assert txn.estimated_amount == Decimal("500.00")
+            assert txn.estimated_amount is None
+            assert _plan_of(txn) == Decimal("500.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
 
     def test_an_illegal_transition_raises_and_leaves_the_row_alone(
@@ -803,10 +748,8 @@ class TestSettleTransactionTheVerb:
         caller knows what it must catch.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            template.is_envelope = False
-            txn = _make_projected_txn(seed_user, seed_periods[0],
-                                      template=template)
+            template = _make_template(seed_user, is_envelope=False)
+            txn = generate_row_of(template, seed_periods[0])
             txn.status_id = ref_cache.status_id(StatusEnum.CANCELLED)
             db.session.flush()
 
@@ -827,16 +770,12 @@ class TestSettleTransactionTheVerb:
         spelling has something to fail against.
         """
         with app.app_context():
-            expense_tpl = _make_envelope_template(seed_user)
-            expense_tpl.is_envelope = False
-            expense = _make_projected_txn(seed_user, seed_periods[0],
-                                          template=expense_tpl)
-            income_tpl = _make_envelope_template(
-                seed_user, txn_type_name="Income",
+            expense_tpl = _make_template(seed_user, is_envelope=False)
+            expense = generate_row_of(expense_tpl, seed_periods[0])
+            income_tpl = _make_template(
+                seed_user, income=True, is_envelope=False,
             )
-            income_tpl.is_envelope = False
-            income = _make_projected_txn(seed_user, seed_periods[0],
-                                         template=income_tpl)
+            income = generate_row_of(income_tpl, seed_periods[0])
             db.session.flush()
 
             assert transaction_service.settled_status_id(expense) == (
@@ -879,21 +818,29 @@ class TestASettleBooksTheFreshestFigure:
     """
 
     @staticmethod
-    def _salary_row(seed_user, period, *, estimated="1.00", is_override=False):
+    def _salary_row(seed_user, period, *, repriced_to=None):
         """Return a Projected income row whose template IS a salary profile.
 
-        **The row's OWNERSHIP follows its override flag, which is the shape the
-        app produces after plan step X-au-d**: a paycheck nobody has re-priced
-        DECLARES its definition and stores nothing, and one a human re-priced
-        OWNS the figure they typed (the edit door states both together through
-        ``amount_ownership.state_own_amount``, and raises the flag beside it).
-        Building the two independently would let a test assert against a state
-        ``ck_transactions_amount_ownership`` and the write doors between them
-        cannot produce.
+        The engine's own row (:func:`generate_row_of`, plan step
+        balance:X-cf-3b): a paycheck nobody has re-priced DECLARES its
+        definition and stores nothing, which is the shape the app produces
+        after plan step X-au-d.  **The row's OWNERSHIP follows its override
+        flag**: pass *repriced_to* for one a human re-priced, and it takes
+        ownership the way the edit door does (:func:`repriced_by_the_owner`).
+        Building the two acts independently would let a test assert against
+        a state ``ck_transactions_amount_ownership`` and the write doors
+        between them cannot produce.
+
+        The definition is linked to the profile AFTER the shared builder
+        states its price, so it holds a one-version series nothing reads:
+        once linked, ``owns_its_amount`` is False and the row is priced by
+        rule 2 whatever that series says (production's salary template holds
+        no series at all; the difference is unread either way).
         """
-        # pylint: disable=import-outside-toplevel  -- the salary models are not
+        # Pylint: ``import-outside-toplevel`` -- the salary models are not
         # part of this module's subject and importing them at the top would put
         # the paycheck stack on every transaction-service test's load path.
+        # pylint: disable=import-outside-toplevel
         from app.models.ref import FilingStatus
         from app.models.salary_profile import SalaryProfile
 
@@ -910,18 +857,18 @@ class TestASettleBooksTheFreshestFigure:
         db.session.add(profile)
         db.session.flush()
 
-        template = _make_envelope_template(seed_user, txn_type_name="Income")
-        template.is_envelope = False
-        profile.template_id = template.id
+        template = _make_template(
+            seed_user, income=True, is_envelope=False,
+        )
+        # The RELATIONSHIP rather than the key, so ``template.salary_profiles``
+        # -- which the shared builder's ``set_amount`` already loaded as empty
+        # -- is current in this session without waiting for a commit.
+        profile.template = template
         db.session.flush()
 
-        txn = _make_projected_txn(
-            seed_user, period, template=template, estimated_amount=estimated,
-        )
-        txn.is_override = is_override
-        if not is_override:
-            declare_derived(txn, AmountSourceEnum.TEMPLATE)
-        db.session.flush()
+        txn = generate_row_of(template, period)
+        if repriced_to is not None:
+            repriced_by_the_owner(txn, repriced_to)
         return txn
 
     def test_a_declared_paycheck_settles_at_what_its_PROFILE_pays(
@@ -1018,8 +965,7 @@ class TestASettleBooksTheFreshestFigure:
         """
         with app.app_context():
             txn = self._salary_row(
-                seed_user, seed_periods[0],
-                estimated="1234.56", is_override=True,
+                seed_user, seed_periods[0], repriced_to="1234.56",
             )
             db.session.commit()
 
@@ -1059,10 +1005,8 @@ class TestASettleBooksTheFreshestFigure:
         the settle is byte-identical to its pre-X-aq behaviour.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            template.is_envelope = False
-            txn = _make_projected_txn(seed_user, seed_periods[0],
-                                      template=template)
+            template = _make_template(seed_user, is_envelope=False)
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
 
             transaction_service.settle_transaction(txn)
@@ -1090,10 +1034,8 @@ class TestASettleBooksTheFreshestFigure:
         a recompute of what it was expected to be.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user,
-                                               txn_type_name="Income")
-            txn = _make_projected_txn(seed_user, seed_periods[0],
-                                      template=template)
+            template = _make_template(seed_user, income=True)
+            txn = generate_row_of(template, seed_periods[0])
             db.session.flush()
             _make_entry(txn.id, seed_user["user"].id,
                         Decimal("12.34"), "Refund")
@@ -1134,10 +1076,8 @@ class TestASettleBooksTheFreshestFigure:
         `$500.00` supplied against a `$500.00` estimate leaves the column NULL.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            template.is_envelope = False
-            txn = _make_projected_txn(seed_user, seed_periods[0],
-                                      template=template)
+            template = _make_template(seed_user, is_envelope=False)
+            txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
 
             transaction_service.settle_transaction(
@@ -1168,10 +1108,8 @@ class TestASettleBooksTheFreshestFigure:
         (``reject_unsettleable``), three doors.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            template.is_envelope = False
-            txn = _make_projected_txn(seed_user, seed_periods[0],
-                                      template=template)
+            template = _make_template(seed_user, is_envelope=False)
+            txn = generate_row_of(template, seed_periods[0])
             txn.transfer_id = 1
 
             # The basis comes from the SEEDED bundle, not from the row:
@@ -1268,16 +1206,16 @@ class TestApplyRequestedStatusTheDoorVerb:
     """
 
     @staticmethod
-    def _plain_row(seed_user, period, *, estimated_amount="100.00"):
-        """Return a Projected, NON-envelope row: the verb's manual branch."""
-        template = _make_envelope_template(seed_user)
-        template.is_envelope = False
-        txn = _make_projected_txn(
-            seed_user, period, template=template,
-            estimated_amount=estimated_amount,
+    def _plain_row(seed_user, period):
+        """Return a Projected, NON-envelope $100.00 row: the verb's manual branch.
+
+        The engine's row of a $100.00 definition (plan step balance:X-cf-3b);
+        the figure is stated on the definition, which is what prices the row.
+        """
+        template = _make_template(
+            seed_user, default_amount="100.00", is_envelope=False,
         )
-        db.session.flush()
-        return txn
+        return generate_row_of(template, period)
 
     def test_a_status_change_reconciles_the_ledger(
         self, app, db, seed_user, seed_periods,
@@ -1403,11 +1341,8 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
         data, because the popover tells them to revert in order to edit.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="500.00",
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             self._settle(txn, submitted=Decimal("245.32"))
             db.session.flush()
             assert txn.settled_on is not None
@@ -1454,11 +1389,8 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
         rule would get wrong in the direction that loses the user's number.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="500.00",
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             self._settle(txn, submitted=Decimal("245.32"))
             db.session.flush()
 
@@ -1490,11 +1422,8 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
         typing ``$500.00`` was read as an echo of a figure never shown.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="500.00",
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             self._settle(txn, submitted=Decimal("245.32"))
             db.session.flush()
             self._revert(txn)
@@ -1520,11 +1449,8 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
         retained DERIVED record whose plan has since MOVED can tell them apart.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="500.00",
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             self._settle(txn)
             db.session.flush()
             assert txn.settled_amount == Decimal("500.00")
@@ -1557,11 +1483,8 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
         purchases must close at what it now holds.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="500.00",
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             _make_entry(txn.id, seed_user["user"].id, "40.00", "Store A")
             db.session.flush()
 
@@ -1604,11 +1527,8 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
         those two arms load-bearing rather than incidental.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="500.00",
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             self._settle(txn, submitted=Decimal("245.32"))
             db.session.flush()
             self._revert(txn)
@@ -1647,10 +1567,8 @@ class TestAReplayedSettleIsANoOp:
         raises ``ValidationError`` here instead of answering ``False``.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             _make_entry(txn.id, seed_user["user"].id, "40.00", "Store A")
             db.session.flush()
 
@@ -1682,10 +1600,8 @@ class TestAReplayedSettleIsANoOp:
         Without it this guard's narrowness would be unfalsifiable.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             _make_entry(txn.id, seed_user["user"].id, "40.00", "Store A")
             db.session.flush()
             # An INCOME row, so its type-correct settle target is Received and
@@ -1732,11 +1648,8 @@ class TestTheRetainedMapAnswersOnlyWhereTheGapIsREAL:
         shape a one-sided assertion would admit.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="500.00",
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             transaction_service.settle_transaction(
                 txn, submitted=Decimal("245.32"),
             )
@@ -1796,14 +1709,15 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
     _SETTLED_DAY_OFFSET = timedelta(days=3)
 
     @classmethod
-    def _settled_row(cls, seed_user, period, *, amount="100.00"):
-        """Return a row settled at *amount*, on a PAST day, through the real verb."""
-        template = _make_envelope_template(seed_user)
-        template.is_envelope = False
-        txn = _make_projected_txn(
-            seed_user, period, template=template, estimated_amount=amount,
+    def _settled_row(cls, seed_user, period):
+        """Return a $100.00 row settled at its plan, on a PAST day, through the real verb.
+
+        The engine's row of a $100.00 definition (plan step balance:X-cf-3b).
+        """
+        template = _make_template(
+            seed_user, default_amount="100.00", is_envelope=False,
         )
-        db.session.flush()
+        txn = generate_row_of(template, period)
         transaction_service.apply_requested_status(
             txn, ref_cache.status_id(StatusEnum.DONE),
             settle_day=an_entered_day(display_today() - cls._SETTLED_DAY_OFFSET),
@@ -1940,11 +1854,8 @@ class TestTheRetainedMapAnswersOnlyARetainedCORRECTION:
         under a sentence that is false for this row.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="400.00",
-            )
+            template = _make_template(seed_user, default_amount="400.00")
+            txn = generate_row_of(template, seed_periods[0])
             _make_entry(txn.id, seed_user["user"].id, "25.00", "Milk")
             db.session.flush()
 
@@ -1964,12 +1875,8 @@ class TestTheRetainedMapAnswersOnlyARetainedCORRECTION:
         surface.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            template.is_envelope = False
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="500.00",
-            )
+            template = _make_template(seed_user, is_envelope=False)
+            txn = generate_row_of(template, seed_periods[0])
             db.session.flush()
             transaction_service.apply_requested_status(
                 txn, ref_cache.status_id(StatusEnum.DONE),
@@ -1993,12 +1900,8 @@ class TestTheRetainedMapAnswersOnlyARetainedCORRECTION:
         tick books and the badge would state a difference that does not exist.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            template.is_envelope = False
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-                estimated_amount="500.00",
-            )
+            template = _make_template(seed_user, is_envelope=False)
+            txn = generate_row_of(template, seed_periods[0])
             db.session.flush()
             transaction_service.apply_requested_status(
                 txn, ref_cache.status_id(StatusEnum.DONE),
@@ -2041,10 +1944,8 @@ class TestTheDeleteDoorReconcilesItsOwnerArgument:
     ):
         """A caller naming another user as the owner gets the 404 shape."""
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            txn = generate_row_of(template, seed_periods[0])
             db.session.flush()
 
             with pytest.raises(NotFoundError) as exc:
@@ -2072,10 +1973,8 @@ class TestTheDeleteDoorReconcilesItsOwnerArgument:
         that refused everything.
         """
         with app.app_context():
-            template = _make_envelope_template(seed_user)
-            source = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
+            template = _make_template(seed_user)
+            source = generate_row_of(template, seed_periods[0])
             # Built directly: a payback carries no template, because
             # ``ck_transactions_one_pricing_link`` allows a row exactly one
             # pricing parent.

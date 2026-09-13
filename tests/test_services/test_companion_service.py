@@ -32,6 +32,7 @@ from app.services.auth_service import hash_password
 from app.services.pay_calendar import PayCalendarError, calendar_for
 from tests._test_helpers import (
     capture_sql_statements,
+    moved_by_the_owner,
     generate_row_of,
     make_expense_template,
     open_owner_calendar,
@@ -435,9 +436,9 @@ class TestVisibilityFiltering:
         # one moved -- the shape itself, not a hand-built copy of it.  (Each
         # answers its own occurrence, which is what lets the pair be stored;
         # the flag is what keeps the maintain pass off the carried row.)
-        carried = _make_txn(seed_periods_today[0], template)
-        carried.pay_period_id = target.id
-        carried.is_override = True
+        carried = moved_by_the_owner(
+            _make_txn(seed_periods_today[0], template), into=target,
+        )
         db.session.commit()
 
         companion = seed_companion["user"]

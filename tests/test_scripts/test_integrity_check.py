@@ -15,6 +15,7 @@ from app.services.auth_service import hash_password
 from app.services import account_service
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    moved_by_the_owner,
     account_never_asserted,
     add_txn,
     definition_firing_twice_in_a_paycheck,
@@ -726,9 +727,7 @@ class TestDataConsistency:
         generated.occurs_on = None
         override_sibling = generate_row_of(template, seed_periods[1])
         override_sibling.occurs_on = None
-        override_sibling.pay_period_id = generated.pay_period_id
-        override_sibling.is_override = True
-        db.session.flush()
+        moved_by_the_owner(override_sibling, into=seed_periods[0])
 
         results = check_data_consistency(db.session)
         dc06 = next(r for r in results if r.check_id == "DC-06")
@@ -816,7 +815,7 @@ class TestDataConsistency:
         (:func:`definition_firing_twice_in_a_paycheck`) and the generate pass
         writes both.
         """
-        template, period = definition_firing_twice_in_a_paycheck(
+        template, _first, period = definition_firing_twice_in_a_paycheck(
             db.session, seed_user, name="DC06 Template",
         )
         populate_in_a_fresh_pass(seed_user["user"].id, [period.id])

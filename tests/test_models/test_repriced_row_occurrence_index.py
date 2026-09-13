@@ -22,7 +22,6 @@ DROPS the index to plant an otherwise-unrepresentable row cannot leak.
 """
 
 import importlib.util
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -30,9 +29,12 @@ import sqlalchemy.exc
 from sqlalchemy import text
 
 from app.extensions import db as _db
-from app.services.amount_ownership import state_own_amount
 
-from tests._test_helpers import generate_row_of, make_expense_template
+from tests._test_helpers import (
+    generate_row_of,
+    make_expense_template,
+    repriced_by_the_owner,
+)
 
 
 _MIGRATION = (
@@ -125,10 +127,9 @@ class TestTheGuaranteeItBought:
         with app.app_context():
             template = make_expense_template(db.session, seed_user)
             own = generate_row_of(template, seed_periods_today[0])
-            sibling = generate_row_of(template, seed_periods_today[1])
-            state_own_amount(sibling, Decimal("12.00"))
-            sibling.is_override = True
-            db.session.flush()
+            sibling = repriced_by_the_owner(
+                generate_row_of(template, seed_periods_today[1]), "12.00",
+            )
 
             sibling.occurs_on = own.occurs_on
             with pytest.raises(
@@ -160,9 +161,9 @@ class TestTheMigrationsPreFlight:
             ))
             template = make_expense_template(db.session, seed_user)
             own = generate_row_of(template, seed_periods_today[0])
-            sibling = generate_row_of(template, seed_periods_today[1])
-            state_own_amount(sibling, Decimal("12.00"))
-            sibling.is_override = True
+            sibling = repriced_by_the_owner(
+                generate_row_of(template, seed_periods_today[1]), "12.00",
+            )
             sibling.occurs_on = own.occurs_on
             db.session.flush()
 
@@ -189,10 +190,9 @@ class TestTheMigrationsPreFlight:
         """
         with app.app_context():
             template = make_expense_template(db.session, seed_user)
-            own = generate_row_of(template, seed_periods_today[0])
-            state_own_amount(own, Decimal("10.00"))
-            own.is_override = True
-            db.session.flush()
+            own = repriced_by_the_owner(
+                generate_row_of(template, seed_periods_today[0]), "10.00",
+            )
 
             sql = _migration_module().COLLIDING_OCCURRENCES_SQL.format(
                 table="transactions", fk="template_id",
