@@ -208,7 +208,7 @@ def generate():
     # *A first draft of this comment claimed P80 became UNWRITABLE, and this
     # step's own adversarial review measured that FALSE.*  ``regenerate``
     # renders a "Corrected first payday" with no ceiling -- only
-    # ``pay_period_write._reject_backward_payday``'s FLOOR -- so the same
+    # ``pay_period_batch.reject_backward_payday``'s FLOOR -- so the same
     # irregular set is still writable in three form fields.  MEASURED through
     # the real route on a clean owner: paydays
     # ``[2026-01-02 .. 2026-03-13, 2026-07-31, ...]``, a **140-day gap**, HTTP
@@ -295,7 +295,7 @@ def generate():
         # enumeration above inverted rather than shrank** (found by this step's
         # adversarial review).  The dispatch means this branch runs only for an
         # owner holding ZERO paydays, so ``record_paydays`` computes an empty
-        # ``surviving_paydays`` and ``_reject_backward_payday`` has nothing to
+        # ``surviving_paydays`` and ``reject_backward_payday`` has nothing to
         # bound against.  What can still raise here is ``populate_new_periods``
         # below -- whose message this then renders under the date box, which is
         # exactly the misattribution the paragraph above warns about.  Narrowing
