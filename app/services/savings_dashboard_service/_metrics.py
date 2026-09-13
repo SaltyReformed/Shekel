@@ -3,8 +3,9 @@ Shekel Budget App -- Savings Dashboard: emergency-fund and debt metrics.
 
 Average monthly expenses (the higher of recent settled expenses and the
 committed-template floor), the aggregate debt summary and its DTI band,
-the canonical current-period paycheck breakdown producer, and the liquid
-balance sum that feeds the emergency fund.  No Flask imports.
+the canonical current-pay producer (the owner's active profiles' net and
+gross for the current period, summed), and the liquid balance sum that feeds
+the emergency fund.  No Flask imports.
 """
 
 from dataclasses import dataclass
@@ -23,10 +24,8 @@ from app.models.transfer_template import TransferTemplate
 from app.services import (
     escrow_calculator,
     obligations_aggregator,
-    paycheck_calculator,
 )
 from app.services.balance_at import BalanceContext
-from app.services.payroll_basis import PayrollBasis
 from app.services.savings_dashboard_service._debt_line import (
     LoanPayoffOutlook,
     debt_without_payoff_model,
@@ -38,13 +37,37 @@ from app.services.savings_dashboard_service._types import (
     AccountProjection,
     _DashboardCoreData,
 )
-from app.services.tax_config_service import load_tax_configs_for_year
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import round_money
 
 _RATE_PLACES = Decimal("0.00001")
 _DTI_HEALTHY_THRESHOLD = Decimal("36")
 _DTI_HIGH_THRESHOLD = Decimal("43")
+
+
+@dataclass(frozen=True)
+class CurrentPay:
+    """What the owner's ACTIVE salary profiles pay this period, summed.
+
+    The two figures this page reads off a paycheck and nothing else (plan step
+    **salary:C12-b**): the net an income-relative goal is stated in multiples
+    of, and the gross the debt-to-income denominator is a month of.  A
+    :class:`~app.services.paycheck_calculator.PaycheckBreakdown` was carried
+    here until C12-b, one profile's, chosen by an unordered ``.first()``; a
+    two-job owner's "current paycheck" is the SUM over their profiles
+    (ruling **R-SAL<b>**), and two breakdowns do not add, so the value is the
+    two totals the page consumes.  Absent as a whole (``None`` from
+    :func:`_current_pay`) when there is no current period or no active
+    profile -- absence of an income source is not a ``$0.00`` income (E-12).
+
+    Attributes:
+        net_biweekly: The summed net pay for one paycheck, off the pass's
+            pricer, each profile's own calibration applied.
+        gross_biweekly: The summed gross for the same paycheck.
+    """
+
+    net_biweekly: Decimal
+    gross_biweekly: Decimal
 
 
 @dataclass(frozen=True)
@@ -229,90 +252,88 @@ def _sum_liquid_balances(account_data: list[AccountProjection]) -> Decimal:
     return total_savings
 
 
-def _get_current_paycheck_breakdown(balance_ctx, current_period):
-    """Compute the canonical paycheck breakdown for the current period.
+def _current_pay(balance_ctx, current_period):
+    """Return what the owner's active profiles pay for the current period.
 
     The single income producer this module uses for any engine-derived
-    income figure (MED-06 / F-032).
+    income figure (MED-06 / F-032): both consumers -- the savings-goal
+    trajectory's net biweekly pay and the DTI denominator's gross monthly
+    income -- route through here so the page cannot silently disagree with
+    the paycheck engine on the same period.  Pre-Commit-26 the DTI
+    denominator read an off-engine ``annual_salary / pay_periods`` recompute
+    that dropped applicable ``SalaryRaise`` rows.
 
-    **A dead ``duplicate-code`` suppression sat on the body of this function
-    and is deleted** (pay-calendar plan step C2-f2d-3).  It justified itself by
-    naming ``dashboard_service`` as running the same resolve-profile ->
-    load-configs -> ``calculate_paycheck`` sequence; that module has neither a
-    ``SalaryProfile`` query nor a ``load_tax_configs_for_year`` call, so the
-    rationale described code that no longer exists and the disable suppressed
-    NOTHING -- measured by deleting it and re-running ``pylint app/``, which
-    stays at 10.00/10 with no ``duplicate-code`` message.  It survived every
-    gate because ``useless-suppression`` cannot see a stale ``duplicate-code``
-    disable, which is finding **N-154**; this is a measured instance of it.
-    **The sequence was written TWICE until plan step salary:S3-f-2a moved
-    the ``/retirement`` copy onto the read pass's pricer** (ruling
-    **R-SAL21** as amended): that copy and the pricer priced ONE payday
-    ``$31.29`` apart on the developer's data, because this shape passes no
-    ``calibration=`` where the pricer passes the profile's.  This is the last
-    spelling of the three, it prices the same way, and it is ledger row
-    **P62**'s, owned by plan step **C12**: collapsing it changes what
-    ``/savings`` publishes, which is a ruling and not a reader's to take.
-    *A THIRD spelling, ``income_service.get_current_gross_biweekly``, was
-    deleted at plan step salary:R14-b: its consumers read the paycheck
-    engine's own per-period breakdown now, so its scalar had no caller
-    left.*  Both consumers -- the savings-goal
-    trajectory's net biweekly pay and the DTI denominator's gross
-    monthly income -- route through this helper so the page cannot
-    silently disagree with the paycheck engine on the same period.
-    Pre-Commit-26 the DTI denominator read the off-engine
-    ``annual_salary / pay_periods`` recompute, which dropped applicable
-    ``SalaryRaise`` rows; the engine applies raises period-by-period
-    via ``apply_raises`` and is therefore the only correct source for
-    a raise-aware monthly gross.
+    **Priced through the PASS's pricer, CALIBRATED, since plan step
+    salary:C12-b** (ruling **R-SAL<a>**; ledger row **P62**'s last site).
+    It was a direct ``calculate_paycheck`` that loaded the tax configs itself
+    and passed NO ``calibration=`` -- the door **R-SAL21** measured on
+    ``/retirement`` -- while every other surface priced the same payday with
+    the profile's calibration: on the developer's 2026-09-10 paycheck net
+    ``$2,541.49`` by this door against ``$2,572.78`` by the pricer, and a
+    3-months-of-salary goal target of ``$16,519.69`` against ``$16,723.07``.
+    The DTI denominator is gross-based and did not move.  Ledger row P62 had
+    recorded the implementations as agreeing; that was never measured across
+    the calibration.
+
+    **SUMMED over the owner's active profiles** (ruling **R-SAL<b>**), where
+    it priced ONE profile chosen by an unordered ``.first()`` -- the shape
+    ``recurrence:R-F16``'s adversarial review measured at a 39% swing between
+    renders on a two-job owner, and which C12-b's own control caught picking
+    the SECOND of two.  A goal stated in months of salary and a debt-to-income
+    ratio are about total income, as the grid counts both templates' rows for
+    two profiles on two templates.  Two edges, both inherited and both ruled
+    here: two active profiles naming ONE template (ledger row **N-294**) are
+    summed where the amount model prices that template by its last writer,
+    and a profile whose template is gone (``SET NULL`` on delete) has no grid
+    rows and is summed.  Ordered by id so the walk is deterministic; the sum
+    makes the order immaterial.  ``$0.00`` on the developer's data.
+
+    **The query is scenario-blind, as the old door's was** (and as
+    ``retirement_dashboard_service.load_gap_inputs`` is).  Reported rather
+    than changed: ``projection_inputs.load_active_salary_profiles`` is the
+    scenario-scoped home, and moving onto it decides what a non-baseline
+    profile means to this page, a state no scenario writer today produces.
 
     **It takes the read PASS rather than an owner id** (plan step R-F16, on
-    the ruling ``pay_calendar:C2-f2d-1`` set).  The engine needs the owner's
-    paycheck COUNT as well as their profile, that count comes off the pay
-    calendar the pass already memoizes, and a producer holding a bare id could
-    only have derived a second one.  Dropping the id also makes a mismatched
-    (owner, pass) pair unrepresentable here.
+    the ruling ``pay_calendar:C2-f2d-1`` set): the pricer is the pass's, so
+    the paydays a paycheck is counted over and the paydays the rest of the
+    render measures against are one derivation.  A profile the pricer has
+    already priced for this payday -- the payroll feed's funding profile --
+    costs no second engine run.
 
     Args:
         balance_ctx: The read pass.  Its ``user_id`` scopes the profile query
-            and its memoized calendar is what the engine prices against -- the
-            cadence it divides by and the payday set its 3rd-paycheck
-            detection and FICA wage-base cumulative are counted over.  That
-            second half arrived here as an ``all_periods`` window until plan
-            step **balance:X-bh-1**, threaded from three call sites in the
-            orchestrator, each of them spelling ``reported_periods()`` for a
-            producer that now reads the same calendar the pass already holds.
+            and its pricer prices the period.
         current_period: The current
             :class:`~app.services.pay_calendar.DerivedPeriod`, or ``None``.
 
     Returns:
-        :class:`PaycheckBreakdown` for the current period under the
-        user's active salary profile, or ``None`` if ``current_period``
-        is ``None`` or no active profile exists.  Callers treat
-        ``None`` as "no income data on the page" rather than as a zero
-        amount, since absence of an income source is structurally
-        different from a real zero (E-12).
+        The :class:`CurrentPay` for the current period under the owner's
+        active salary profiles, or ``None`` if ``current_period`` is ``None``
+        or no active profile exists.  Callers treat ``None`` as "no income
+        data on the page" rather than as a zero amount, since absence of an
+        income source is structurally different from a real zero (E-12).
     """
     if current_period is None:
         return None
 
-    profile = (
+    profiles = (
         db.session.query(SalaryProfile)
         .filter_by(user_id=balance_ctx.user_id, is_active=True)
-        .first()
+        .order_by(SalaryProfile.id)
+        .all()
     )
-    if profile is None:
+    if not profiles:
         return None
 
-    # The CURRENT PERIOD's own tax year, not the clock's -- the same key
-    # every other paycheck for this profile is computed under.
-    tax_configs = load_tax_configs_for_year(
-        balance_ctx.user_id, profile, current_period.start_date.year,
-    )
-    return paycheck_calculator.calculate_paycheck(
-        PayrollBasis(profile, balance_ctx.calendar()),
-        current_period, tax_configs,
-    )
+    paychecks = balance_ctx.paychecks()
+    net = Decimal("0.00")
+    gross = Decimal("0.00")
+    for profile in profiles:
+        earnings = paychecks.for_profile(profile).at(current_period).earnings
+        net += earnings.net_pay
+        gross += earnings.gross_biweekly
+    return CurrentPay(net_biweekly=net, gross_biweekly=gross)
 
 
 def _checking_account_ids(accounts):

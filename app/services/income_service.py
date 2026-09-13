@@ -356,14 +356,16 @@ class PaycheckPricing:
     the two are one value at both doors, and the first derivation refuses a
     source that answers another owner's.
 
-    **More sites price a single period outside any pricer**, by calling
-    :func:`~app.services.paycheck_calculator.calculate_paycheck` directly.
-    They belong to the same finding as the second source above, and they are
-    ENUMERATED WITH THEIR COUNTS in exactly one place -- ``tests/test_arch/
-    test_the_calendar_wide_projection_has_one_spelling.py``, whose census
-    fails both when a new one appears and when **C12** deletes one.  A copy
-    of that list here would be a second home for it, which is the shape rule
-    14 names; this paragraph replaced two verbatim copies of it.
+    **No site prices a single period outside a pricer since plan step
+    salary:C12-b**: six once called
+    :func:`~app.services.paycheck_calculator.calculate_paycheck` directly,
+    each resolving its own tax configs, and the two that dropped the
+    profile's calibration that way -- ``/retirement`` (S3-f-2a) and
+    ``/savings`` (C12-b) -- each published a different paycheck from every
+    other page until they were folded in.  The census that enumerated them,
+    in exactly one place -- ``tests/test_arch/
+    test_the_calendar_wide_projection_has_one_spelling.py`` -- is kept as an
+    EMPTY-MAP guard, and says there what it can and cannot see.
     """
 
     def __init__(

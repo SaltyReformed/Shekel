@@ -59,10 +59,11 @@ from app.services.savings_dashboard_service._goals import (
     _load_active_goals,
 )
 from app.services.savings_dashboard_service._metrics import (
+    CurrentPay,
     DebtSummary,
     _compute_avg_monthly_expenses,
     _compute_debt_summary,
-    _get_current_paycheck_breakdown,
+    _current_pay,
     _sum_liquid_balances,
 )
 from app.services.savings_dashboard_service._projections import (
@@ -77,7 +78,6 @@ from app.utils.period_projections import horizon_offsets
 
 if TYPE_CHECKING:
     from app.services.pay_calendar import PayCalendar
-    from app.services.paycheck_calculator import PaycheckBreakdown
     from app.services.savings_dashboard_service._types import (
         _AccountParams,
         _DashboardCoreData,
@@ -149,7 +149,7 @@ def _build_projection_context(
 def _debt_summary_with_dti(
     account_data: list[AccountProjection],
     escrow_map: dict[int, list],
-    current_breakdown: PaycheckBreakdown | None,
+    current_pay: CurrentPay | None,
     balance_ctx: BalanceContext,
 ) -> DebtSummary | None:
     """Resolve the engine gross and build the debt summary from it.
@@ -159,7 +159,7 @@ def _debt_summary_with_dti(
     producer so the /savings page and the budget dashboard's debt card
     cannot drift onto different figures.
 
-    Its remaining job is the BREAKDOWN -> gross unwrapping (plan step X-s3):
+    Its remaining job is the CURRENT-PAY -> gross unwrapping (plan step X-s3):
     the DTI block is no longer applied to a finished summary but built with it
     inside :func:`~.._metrics._compute_debt_summary`, which is what makes the
     summary a value constructed in one place rather than a dict mutated across
@@ -170,8 +170,9 @@ def _debt_summary_with_dti(
             ``_compute_account_projections`` (any mix -- the debt
             summary reads only the entries carrying a ``loan`` detail).
         escrow_map: account_id -> list of EscrowLine with versions (PITI).
-        current_breakdown: The engine ``PaycheckBreakdown`` for the
-            current period, or ``None`` with no salary configured.
+        current_pay: The :class:`~.._metrics.CurrentPay` for the current
+            period -- the owner's active profiles summed, off the pass's
+            pricer -- or ``None`` with no salary configured.
         balance_ctx: The render's read pass.  Its ``user_id`` resolves the
             owner's pay cadence, and only when there is a gross to convert;
             see the comment below for why this takes the pass rather than a
@@ -186,12 +187,13 @@ def _debt_summary_with_dti(
         accounts with params exist.
     """
     # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine output for
-    # the current period (``calculate_paycheck`` ->
-    # ``PaycheckBreakdown.earnings.gross_biweekly``), NOT the off-engine
+    # the current period (the pass's pricer ->
+    # ``PaycheckBreakdown.earnings.gross_biweekly``, summed over the owner's
+    # profiles since plan step salary:C12-b), NOT the off-engine
     # ``annual_salary / pay_periods`` recompute the DTI block read
     # pre-Commit-26.
     gross_biweekly = (
-        current_breakdown.earnings.gross_biweekly if current_breakdown is not None
+        current_pay.gross_biweekly if current_pay is not None
         else Decimal("0.00")
     )
     # The paycheck -> monthly conversion happens HERE, at the owner's own
@@ -266,8 +268,8 @@ def compute_debt_summary(balance_ctx: BalanceContext) -> DebtSummary | None:
         when the user has no loan accounts with params (the early
         return mirrors ``_compute_debt_summary``'s no-loan ``None``
         inside the full build, and additionally skips the per-account
-        projections and the breakdown's paycheck-engine call -- the
-        debt summary needs neither).
+        projections and the current pay's pricer read -- the debt
+        summary needs neither).
 
     Raises:
         PayCalendarError: The owner has no resolvable pay cadence -- no
@@ -299,11 +301,9 @@ def compute_debt_summary(balance_ctx: BalanceContext) -> DebtSummary | None:
     ctx = _build_projection_context(core, params)
     account_data = _compute_account_projections(debt_accounts, ctx)
 
-    current_breakdown = _get_current_paycheck_breakdown(
-        core.balance_ctx, core.current_period,
-    )
+    current_pay = _current_pay(core.balance_ctx, core.current_period)
     return _debt_summary_with_dti(
-        account_data, params.escrow_map, current_breakdown, core.balance_ctx,
+        account_data, params.escrow_map, current_pay, core.balance_ctx,
     )
 
 
@@ -365,11 +365,9 @@ def compute_goal_progress(balance_ctx: BalanceContext) -> list[GoalProgress]:
     ctx = _build_projection_context(core, params)
     account_data = _compute_account_projections(goal_accounts, ctx)
 
-    current_breakdown = _get_current_paycheck_breakdown(
-        core.balance_ctx, core.current_period,
-    )
+    current_pay = _current_pay(core.balance_ctx, core.current_period)
     net_biweekly_pay = (
-        current_breakdown.earnings.net_pay if current_breakdown is not None
+        current_pay.net_biweekly if current_pay is not None
         else Decimal("0.00")
     )
 
@@ -775,21 +773,19 @@ def compute_dashboard_data(balance_ctx: BalanceContext):
     ctx = _build_projection_context(core, params)
     account_data = _compute_account_projections(core.accounts, ctx)
 
-    # ── Canonical paycheck breakdown (MED-06 / F-032) ──────────
+    # ── Canonical current pay (MED-06 / F-032) ─────────────────
     # One income producer feeds every income-derived figure on the
     # page: the income-relative-goal trajectory's net biweekly pay AND
     # the DTI denominator's gross monthly income.  Both route through
-    # ``calculate_paycheck`` for the current period so the engine is the
+    # the pass's pricer for the current period so the engine is the
     # single source of truth.  Pre-Commit-26 the DTI path used an
     # off-engine raw ``annual_salary / pay_periods`` recompute that
     # silently dropped any applicable ``SalaryRaise`` rows, so a user with
     # a 3% recurring raise saw a DTI denominator ~$260/mo too low (audit
     # worked example: $8,666.67 vs $8,926.67, 27.7% vs 26.9%).
-    current_breakdown = _get_current_paycheck_breakdown(
-        core.balance_ctx, core.current_period,
-    )
+    current_pay = _current_pay(core.balance_ctx, core.current_period)
     net_biweekly_pay = (
-        current_breakdown.earnings.net_pay if current_breakdown is not None
+        current_pay.net_biweekly if current_pay is not None
         else Decimal("0.00")
     )
 
@@ -818,7 +814,7 @@ def compute_dashboard_data(balance_ctx: BalanceContext):
 
     # ── Debt summary and DTI ───────────────────────────────────
     debt_summary = _debt_summary_with_dti(
-        account_data, params.escrow_map, current_breakdown, core.balance_ctx,
+        account_data, params.escrow_map, current_pay, core.balance_ctx,
     )
 
     # ── Net-worth cockpit region + per-account sparklines ──────

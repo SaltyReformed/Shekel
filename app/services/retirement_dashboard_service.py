@@ -383,8 +383,8 @@ def compute_current_paycheck(
     :meth:`~app.services.balance_at.BalanceContext.paychecks` WITH the
     profile's calibration -- the pricer the payroll feeds, the grid's salary
     rows and the salary pages' projections read.  (``/savings``' own
-    current-paycheck door still prices the way this one did; it is ledger row
-    **P62**'s remaining site, owned by **C12**.)  Measured on the developer's data
+    current-paycheck door priced the way this one did until plan step
+    salary:C12-b took it, ledger row **P62**'s last site.)  Measured on the developer's data
     on 2026-09-12: one 2026-09-10 paycheck at net ``$2,541.49`` by this door
     and ``$2,572.78`` by the pricer (taxes ``$355.14`` against ``$323.85``,
     the gross ``$3,631.74`` identical), and through the income target that is

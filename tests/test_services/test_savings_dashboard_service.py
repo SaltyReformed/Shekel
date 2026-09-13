@@ -25,6 +25,7 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.account import Account
+from app.models.calibration_override import CalibrationOverride
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
@@ -41,7 +42,9 @@ from tests._test_helpers import (
     current_pay_period,
     derived_span,
     last_covered_day,
+    make_salary_profile,
     open_books_before_the_first_assertion,
+    seed_fica_config,
     settle_day_columns,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
@@ -2488,8 +2491,13 @@ class TestDTIRaiseAware:
            home of the debt/DTI rule behind both
            ``compute_dashboard_data`` and the narrow #82
            ``compute_debt_summary``) reads
-           ``current_breakdown.earnings.gross_biweekly`` (the engine-derived
-           value introduced by Commit 26), and NONE of the three
+           ``current_pay.gross_biweekly`` (the engine-derived value
+           introduced by Commit 26 as
+           ``current_breakdown.earnings.gross_biweekly``; plan step
+           salary:C12-b summed it over the owner's profiles into
+           :class:`~app.services.savings_dashboard_service._metrics
+           .CurrentPay`, whose ``gross_biweekly`` is the engine's gross and
+           nothing else), and NONE of the three
            functions subscripts ``params`` with the
            ``"salary_gross_biweekly"`` key (the off-engine value still
            used by the investment-projection path -- F-20 follow-up).
@@ -2525,9 +2533,9 @@ class TestDTIRaiseAware:
         # expression out of compute_dashboard_data into the single
         # helper both entry points route through).
         source = inspect.getsource(_orchestrator._debt_summary_with_dti)
-        assert "current_breakdown.earnings.gross_biweekly" in source, (
+        assert "current_pay.gross_biweekly" in source, (
             "DTI block must read gross_biweekly from the paycheck "
-            "engine breakdown (MED-06 / F-032)."
+            "engine's current pay (MED-06 / F-032; salary:C12-b)."
         )
 
         # Guard 1b: negative lock -- neither entry point nor the shared
@@ -6646,3 +6654,175 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
                 savings_dashboard_service.compute_account_balance_cell(
                     BalanceContext.build(user_id), seed_user["account"].id,
                 )
+
+
+# ── salary:C12-b: /savings' current pay is the pass's pricer's, calibrated, summed ──
+
+
+class TestTheCurrentPayIsThePassPricersCalibratedAndSummed:
+    """``/savings``' current pay is the pass's pricer's, CALIBRATED, SUMMED.
+
+    Plan step **salary:C12-b**, rulings **R-SAL<a>** and **R-SAL<b>**, ledger
+    row **P62**'s last site.  ``_metrics._get_current_paycheck_breakdown``
+    priced ONE profile -- an unordered ``.first()`` -- through a direct engine
+    call with NO calibration, while every other surface priced the same payday
+    through :meth:`~app.services.balance_at.BalanceContext.paychecks` with the
+    profile's calibration: measured ``$31.29`` apart on the developer's
+    2026-09-10 paycheck, ``$203.38`` on his Emergency Fund target.  Every case
+    here goes through the page's own narrow producers and asserts a
+    HAND-COMPUTED figure at the surface the page publishes, so neither side of
+    the equality is the producer under test.
+
+    The owner is ``TestTheCurrentPaycheckIsThePassPricers``'s
+    (``test_retirement_dashboard_service``): a raise-free ``$52,000.00``
+    profile on a 14-day cadence, no deductions, FICA seeded for 2026 and no
+    bracket set or state config, so every line is arithmetic::
+
+        gross per paycheck   52,000.00 / 26            = 2,000.00
+        Social Security      2,000.00 x 6.20%          =   124.00
+        Medicare             2,000.00 x 1.45%          =    29.00
+
+    With no calibration the bracket path withholds no federal or state (no
+    config seeded), so net is ``2,000.00 - 153.00 = 1,847.00``.  With an
+    ACTIVE calibration at 10% federal, 5% state, 6.2% SS and 1.45% Medicare,
+    net is ``2,000.00 - 453.00 = 1,547.00``.  An income-relative goal of
+    THREE PAYCHECKS is ``3 x net``, so the page publishes ``$4,641.00``
+    calibrated against ``$5,541.00`` not; the calibrated case failed on the
+    tree before this step (``5541.00`` where ``4641.00`` is asserted).
+
+    A SECOND profile of ``$26,000.00`` -- gross ``1,000.00``, SS ``62.00``,
+    Medicare ``14.50``, net ``923.50`` -- makes the sum case: one paycheck of
+    salary is ``1,847.00 + 923.50 = 2,770.50``, and the DTI denominator is a
+    month of the summed gross, ``3,000.00 x 26 / 12 = 6,500.00``.  **Fired on
+    the tree before this step, the sum case read ``923.50``**: the old door's
+    unordered ``.first()`` returned the SECOND profile, which is
+    ``recurrence:R-F16``'s 39% swing observed live rather than cited.  A
+    deterministic first-by-id door (the remedy R-SAL5 rejected) would have
+    read ``1,847.00`` and a denominator of ``4,333.33``; the DTI case asserts
+    that figure as its negative control.
+    """
+
+    @staticmethod
+    def _seed_owner(db, seed_user, *, calibrated, second_profile=False,
+                    multiplier=Decimal("3.00")):
+        """The owner above, with the calibration row and the second profile as asked."""
+        profile = make_salary_profile(
+            seed_user, db.session, annual_salary=Decimal("52000.00"),
+        )
+        db.session.flush()
+        seed_fica_config(seed_user["user"].id)
+        if calibrated:
+            db.session.add(CalibrationOverride(
+                salary_profile_id=profile.id,
+                actual_gross_pay=Decimal("2000.00"),
+                actual_federal_tax=Decimal("200.00"),
+                actual_state_tax=Decimal("100.00"),
+                actual_social_security=Decimal("124.00"),
+                actual_medicare=Decimal("29.00"),
+                effective_federal_rate=Decimal("0.1000000000"),
+                effective_state_rate=Decimal("0.0500000000"),
+                effective_ss_rate=Decimal("0.0620000000"),
+                effective_medicare_rate=Decimal("0.0145000000"),
+                pay_stub_date=date(2026, 1, 16),
+                is_active=True,
+            ))
+        if second_profile:
+            make_salary_profile(
+                seed_user, db.session, name="Second Job",
+                annual_salary=Decimal("26000.00"),
+            )
+        db.session.add(SavingsGoal(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            name="Paychecks of salary",
+            goal_mode_id=ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE),
+            income_unit_id=ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS),
+            income_multiplier=multiplier,
+            is_active=True,
+        ))
+        db.session.commit()
+
+    @staticmethod
+    def _goal_target(seed_user):
+        """The one goal's resolved target, through the page's narrow producer."""
+        goals = savings_dashboard_service.compute_goal_progress(
+            BalanceContext.build(seed_user["user"].id),
+        )
+        assert len(goals) == 1
+        return goals[0].resolved_target
+
+    def test_the_calibrated_net_is_what_the_goal_is_stated_in(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An active calibration reaches the goal: three paychecks of $1,547.00."""
+        with app.app_context():
+            self._seed_owner(db, seed_user, calibrated=True)
+            assert self._goal_target(seed_user) == Decimal("4641.00")
+
+    def test_without_a_calibration_the_bracket_net_is_what_it_is_stated_in(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The same owner with no calibration row: three paychecks of $1,847.00.
+
+        The pair is the control: one row toggled, one figure moved, by the
+        calibration's ``$300.00`` of federal and state and nothing else.
+        """
+        with app.app_context():
+            self._seed_owner(db, seed_user, calibrated=False)
+            assert self._goal_target(seed_user) == Decimal("5541.00")
+
+    def test_two_active_profiles_are_summed_into_one_paycheck(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Two jobs, one paycheck of salary: ``1,847.00 + 923.50``."""
+        with app.app_context():
+            self._seed_owner(
+                db, seed_user, calibrated=False, second_profile=True,
+                multiplier=Decimal("1.00"),
+            )
+            assert self._goal_target(seed_user) == Decimal("2770.50")
+
+    def test_the_dti_denominator_is_a_month_of_the_summed_gross(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """DTI reads the summed GROSS, so it is calibration-blind and job-total.
+
+        The denominator is ``3,000.00 x 26 / 12 = 6,500.00`` a month with both
+        profiles; under the first-by-id door it was ``4,333.33``.  The
+        numerator is the debt summary's own PITI total (not under test), so
+        the ratio is asserted as that total over ``6,500.00``, the way this
+        file's existing DTI cases pin the denominator; and it is asserted
+        EQUAL with the first profile's calibration on and off, which is the
+        other half of the ruling: the calibration reaches the withholding
+        lines and the gross is upstream of them.
+        """
+        def _summary():
+            return savings_dashboard_service.compute_debt_summary(
+                BalanceContext.build(seed_user["user"].id),
+            )
+
+        with app.app_context():
+            self._seed_owner(
+                db, seed_user, calibrated=True, second_profile=True,
+            )
+            _create_small_loan(seed_user, db.session)
+            db.session.commit()
+            calibrated = _summary()
+            assert calibrated is not None and calibrated.dti is not None
+            assert calibrated.dti.ratio == (
+                calibrated.total_monthly_payments / Decimal("6500.00")
+                * Decimal("100")
+            ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            # The first-by-id denominator, 4,333.33, would read differently
+            # for any positive payment; assert the two are distinguishable so
+            # the equality above graded the denominator and not a zero.
+            assert calibrated.total_monthly_payments > Decimal("0.00")
+            assert calibrated.dti.ratio != (
+                calibrated.total_monthly_payments / Decimal("4333.33")
+                * Decimal("100")
+            ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+
+            # Off: same owner, calibration row deleted.
+            db.session.query(CalibrationOverride).delete()
+            db.session.commit()
+            assert _summary().dti.ratio == calibrated.dti.ratio

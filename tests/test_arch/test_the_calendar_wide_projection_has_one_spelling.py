@@ -70,7 +70,7 @@ the four was measured against this scanner:
   :func:`~app.services.paycheck_calculator.calculate_paycheck` loop calls
   ``project_salary`` nowhere, so THIS census cannot see it by construction.
   It was named here as unpinnable until plan step **salary:S3-d**;
-  :func:`test_the_direct_engine_callers_are_the_ones_C12_owns` is the second
+  :func:`test_no_app_site_prices_a_paycheck_outside_the_pricer` is the second
   census that pins it, over ``calculate_paycheck`` itself.
 
 **The second census has the SAME first four blind spots**, because it uses the
@@ -330,45 +330,53 @@ def test_the_blind_spots_are_the_ones_named():
 _PER_PERIOD = "calculate_paycheck"
 
 #: Every ``app/`` site that prices a paycheck by calling the engine's
-#: per-period entry directly, as ``{relative path: call count}``.
+#: per-period entry directly, as ``{relative path: call count}`` -- and it is
+#: EMPTY, which is the rule this census now keeps.
 #:
-#: **This is ledger row P62's LAST site and plan step C12's money leaf,
-#: enumerated rather than described.**  It prices ONE period through
-#: ``load_tax_configs_for_year``, which is the SAME resolver body the pass's
-#: :class:`~app.services.income_service.ProfilePaychecks` reads
-#: (``_configs_from_series``), so the calibration is the only axis on which
-#: a pricer route can differ from it -- and it passes none, so
-#: ``_metrics._get_current_paycheck_breakdown`` is the one site left that
-#: MOVES a figure ``/savings`` publishes (measured on the developer's data
-#: 2026-09-12: net ``$2,541.49`` by this door against ``$2,572.78`` by the
-#: pricer, and through the Emergency Fund goal a target of ``$16,519.69``
-#: against ``$16,723.07``).  That is why plan step salary:S3-d left it alone,
-#: why C12 was ruled to need its own decision first, and why it ships as
-#: C12's own money leaf rather than with the four below.
+#: **It held six sites when plan step salary:S3-d wrote it, and every one has
+#: left through a leaf that said why.**  ``retirement_dashboard_service`` at
+#: S3-f-2a (ruling **R-SAL21** as amended 2026-09-12: its door priced the
+#: current paycheck without the calibration while the payroll feed on the
+#: same page priced the same payday with it, ``$31.29`` apart on one paycheck
+#: and ``+$41,562.00`` on the required savings; its own money leaf).  FOUR at
+#: C12-a, each byte-identical through the pass's pricer:
+#: ``salary_regeneration`` and ``cockpit.anatomy`` already passed
+#: ``calibration=profile.calibration``, ``_helpers._compute_total_pre_tax``
+#: reads a deductions total a calibration never reaches (``$713.29`` by both
+#: doors), and ``profiles.create_profile`` prices a profile flushed in the
+#: same request with no calibration row.  The LAST, ``/savings``'
+#: ``_metrics._get_current_paycheck_breakdown``, at C12-b (ruling
+#: **R-SAL<a>**): it passed no calibration either, and it was the one that
+#: MOVED a figure -- net ``$2,541.49`` by its door against ``$2,572.78`` by
+#: the pricer on the developer's 2026-09-10 paycheck, the Emergency Fund
+#: target ``$16,519.69 -> $16,723.07`` -- so it shipped as its own money leaf.
+#: Ledger row **P62** closed with it.
 #:
-#: **FOUR sites LEFT this map at plan step salary:C12's first leaf**, each
-#: byte-identical through the pass's pricer and each saying why at its own
-#: site: ``salary_regeneration.regenerate_salary_transactions`` and
-#: ``cockpit.anatomy`` already passed ``calibration=profile.calibration``;
-#: ``_helpers._compute_total_pre_tax`` reads a pre-tax deductions total a
-#: calibration never reaches (``$713.29`` by both doors); and
-#: ``profiles.create_profile`` prices a profile flushed in the same request,
-#: which has no calibration row for the pricer to find.
-#: **``retirement_dashboard_service.py`` LEFT it at plan step salary:S3-f-2a**
-#: (ruling **R-SAL21** as amended 2026-09-12): its ``_compute_current_pay``
-#: priced ``/retirement``'s current paycheck without the calibration while
-#: the payroll feed on the same page priced the same payday with it, measured
-#: ``$31.29`` apart on one paycheck and ``+$41,562.00`` on the required
-#: savings the verdict states; that move was its own money leaf with its own
-#: harness.
+#: **Kept empty rather than deleted, against the plan its own first draft
+#: stated** ("when the map empties delete this test with the finding it
+#: tracks"), and the reason is what the OTHER gate cannot see: a direct
+#: ``calculate_paycheck`` call builds no
+#: :class:`~app.services.income_service.ProfilePaychecks`, so
+#: ``TestOnePaycheckProjectionPerProfilePerRender`` sees a new one only where
+#: it REPLACES the pricer on a render that built nothing else (its two
+#: unfunded-profile cases read 1 -> 0 there) and never one added beside a
+#: pricer, nor one on a path that is not a render.  **The structural lever
+#: exists and is deferred**: ``calculate_paycheck`` is public only because
+#: the package re-exports it, and no ``app/`` site imports it now, so
+#: leaving it on the ``_pricing`` leaf would put every future per-period call
+#: behind the fail-closed ``shekel-private-module-import`` gate.  That is a
+#: rule-8 fork for the developer (about ten test modules import it from the
+#: package), not this leaf's; until it is taken this census is the control.
 #:
-#: The census is by ENUMERATION and not by subtraction: every entry here was
-#: read and counted (one call in one file since C12's first leaf), so a new
-#: site fails this test and C12's money leaf deleting the last one fails it
-#: too.  Both directions are the point.
-_DIRECT_ENGINE_CALLERS = {
-    "app/services/savings_dashboard_service/_metrics.py": 1,
-}
+#: **What it cannot see, stated because an unstated limit reads as none**:
+#: ``project_salary(basis, [period], tax_configs)`` is P62's shape in one
+#: line -- one payday priced outside the pricer, calibration dropped -- and
+#: NEITHER census matches it: the first reads ``configs_by_year=`` only, this
+#: one reads ``calculate_paycheck`` by name.  De-exporting the per-period
+#: entry would not close that door either; the two single-year callers
+#: (``tax_withholding_service``, ``tax_report_service``) are why it stays
+#: open, and a reviewer catches a third by eye.
+_DIRECT_ENGINE_CALLERS: dict[str, int] = {}
 
 
 def _per_period_calls(tree: ast.AST) -> int:
@@ -426,39 +434,28 @@ def _per_period_census(root: Path) -> dict[str, int]:
     return counts
 
 
-def test_the_direct_engine_callers_are_the_ones_C12_owns():
-    """Only the enumerated sites price a paycheck outside the pricer.
+def test_no_app_site_prices_a_paycheck_outside_the_pricer():
+    """No ``app/`` site calls ``calculate_paycheck`` outside the engine package.
 
     The second census, added at plan step **salary:S3-d**, over the blind spot
     the first one names: a per-period ``calculate_paycheck`` loop is invisible
     to a ``project_salary`` scanner by construction, and it is the shape a
-    future author is most likely to write.
-
-    It asserts the WHOLE map rather than "no new file has one", so both
-    directions fail: a new caller appearing anywhere, and one of the
-    enumerated calls being deleted or moved without
-    :data:`_DIRECT_ENGINE_CALLERS` being told.  The second is what makes this
-    test C12's checklist rather than a fence C12 would have to remember to
-    take down -- and it fired that way once already, when plan step
-    salary:S3-f-2a folded ``retirement_dashboard_service``'s call in and the
-    map was told here.  (Its name counted the sites -- "the six" -- until
-    then; a count in a name is a claim that goes stale the first time the
-    map moves, so the name states the OWNER now and the constant's comment
-    carries the count with its date.)
+    future author is most likely to write.  It enumerated six sites and was
+    C12's checklist until C12-b emptied it (the constant's comment carries
+    each departure); it asserts the WHOLE map still, so the map staying empty
+    is the claim and a single new call anywhere fails it.
     """
     census = _per_period_census(_repo_root())
     assert census == _DIRECT_ENGINE_CALLERS, (
-        "The set of app/ sites calling paycheck_calculator.calculate_paycheck "
-        f"directly has changed. Census: {census}; expected "
-        f"{_DIRECT_ENGINE_CALLERS}. A NEW entry is one more place that "
-        "prices a paycheck outside the read pass's "
-        "income_service.PaycheckPricing -- route it through "
-        "ctx.paychecks().for_profile(profile).at(period) instead, unless it "
-        "genuinely needs a tax-config door of its own, in which case say so "
-        "here. A MISSING entry means plan step C12-b has folded the last one "
-        "in: delete it from _DIRECT_ENGINE_CALLERS, and when the map empties "
-        "delete this test with the finding it tracks (ledger row P62; P63 and "
-        "P64 closed at C12-a)."
+        "An app/ site calls paycheck_calculator.calculate_paycheck directly: "
+        f"{census}. No per-period call exists outside the engine package "
+        "since plan step salary:C12 (ledger row P62): a single period is "
+        "priced through the read pass's income_service.PaycheckPricing -- "
+        "ctx.paychecks().for_profile(profile).at(period) -- because a direct "
+        "call resolves its own tax configs and can drop the profile's "
+        "calibration, which is how /retirement and /savings came to publish "
+        "a different paycheck from every other page. Route it through the "
+        "pricer."
     )
 
 
