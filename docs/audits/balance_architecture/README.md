@@ -1031,8 +1031,8 @@ section 4, under their unchanged ids.*
   two-term form needs NO guard: nothing can reach the state. **RE-SPECIFIED 2026-09-11 (R-BAL17)**
   and sequenced behind `X-cf`: it binds only once the suite's rows of a definition are the engine's.
   Deletes `_stated_amount`'s `on_date is None` arm with its test and the two tests grading frozen
-  migrations' `due_date IS NULL` arms; tightens `DerivedRowFields.due_date` to `date`. The transaction
-  half is PARKED at `0341a568`; its `down_revision` is re-pointed at dev's head (`flask db heads`).
+  migrations' `due_date IS NULL` arms; tightens `DerivedRowFields.due_date` to `date`. Its re-cut on
+  BOTH tables, PARKED at `d73ec289`; `down_revision` is re-pointed at dev's head (`flask db heads`).
 * [ ] **X-cf** -- the DECOMPOSED parent of the suite's ONE builder for a row of a definition
   (**R-BAL17**), split 2026-09-11 into five leaves; carries **BAL-480**, whose row holds the census.
 * [x] **X-cf-3b** `699bd05d` -- the three plan-figure builders (164 sites) take the engine's row; the owner's re-price and move gained ONE spelling each (`repriced_by_the_owner`, `moved_by_the_owner`, beside `generate_row_of`).
