@@ -58,6 +58,7 @@ from app.services import (
     account_service,
     auth_service,
     pay_calendar,
+    pay_period_batch,
     pay_period_write,
     pay_rhythm,
     pay_schedule_service,
@@ -179,7 +180,7 @@ def _reject_impossible_first_payday(
     ``[today - cadence_days + 1, today]`` -- one of the spellings
     :func:`~app.services.pay_calendar.projected_payday`'s census names, agreeing
     with the derivation only while no payday could move.  Same repair ``C14-d``
-    made to ``pay_period_write._reject_backward_payday``.  What the old
+    made to ``pay_period_batch.reject_backward_payday``.  What the old
     spelling cost is measured in that step's own entry.
 
     **The lower refusal's message is deliberately about the paycheck, not about
@@ -192,7 +193,7 @@ def _reject_impossible_first_payday(
     Args:
         first_payday: The stated most recent payday, read as a day on the
             owner's NOMINAL grid -- the same reading
-            ``pay_period_write._requested_paydays`` gives it, since this value
+            ``pay_period_batch.requested_paydays`` gives it, since this value
             becomes both the batch's phase and the first era's
             ``effective_from`` (plan step ``pay_calendar:C17-a``).
         rhythm: The stated cadence and payday convention
@@ -253,7 +254,8 @@ class RegistrationSpec:
     no pay period -- and that invented payday is what then blocked the owner's
     real one: the forward-only batch guard of the day
     (``pay_period_service._reject_overlapping_batch``, replaced at plan step
-    C3-b by ``pay_period_write._reject_backward_payday``) refused any batch
+    C3-b by ``pay_period_write._reject_backward_payday``, now
+    ``pay_period_batch.reject_backward_payday``) refused any batch
     starting on or before the latest existing ``end_date``, so ``today + 1``
     through ``today + 13`` were REFUSED outright and every date from
     ``today + 14`` on left a permanent hole in the calendar (finding
@@ -395,7 +397,7 @@ def register_user(spec: RegistrationSpec):
     today = display_today()
     # Both write doors' preconditions, asked HERE rather than where they fire,
     # so the claim above is true: the schedule's own bounds (what
-    # ``budget.pay_schedule`` may store) and the writer's (how much of one
+    # ``budget.pay_schedule`` may store) and the batch's (how much of one
     # schedule ``record_paydays`` will materialise in a single call), then this
     # module's own question about the day.  Asking them late would let a bad
     # cadence or a zero horizon refuse several statements after the ``User``
@@ -409,7 +411,7 @@ def register_user(spec: RegistrationSpec):
     pay_schedule_service.reject_out_of_range_history_opening(
         spec.history_opens_on,
     )
-    pay_period_write.reject_out_of_range_batch_size(spec.num_periods)
+    pay_period_batch.reject_out_of_range_batch_size(spec.num_periods)
     opening_payday = _reject_impossible_first_payday(
         spec.first_payday, spec.rhythm, today,
     )
