@@ -18,7 +18,6 @@ from app.enums import (
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry
-from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
@@ -46,6 +45,7 @@ from tests._test_helpers import (
     create_loan_account,
     field_is_disabled,
     last_covered_day,
+    generate_transfer_of,
     make_every_period_rule,
     make_transfer_template,
     net_posted_by_day,
@@ -53,6 +53,8 @@ from tests._test_helpers import (
     override_anchor,
     settlement_basis_id,
     shadow_amount,
+    state_template_price,
+    transfer_repriced_by_the_owner,
 )
 from app.services.row_valuation import settled_contribution
 from app.services.settle_day import (
@@ -87,7 +89,12 @@ def _create_savings_account(seed_user):
 
 
 def _create_template(seed_user, savings_acct, with_rule=True):
-    """Helper: create a transfer template with optional recurrence rule."""
+    """Helper: create a transfer template with optional recurrence rule.
+
+    The definition STATES its price, as every app-side create door does: a
+    transfer the engine writes from it is derived and priced by this series
+    on its own due date (plan step balance:X-ch).
+    """
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
@@ -97,6 +104,7 @@ def _create_template(seed_user, savings_acct, with_rule=True):
     )
     db.session.add(template)
     db.session.flush()
+    state_template_price(template)
     if with_rule:
         # The definition first, then the cadence onto it (plan step R-F6).
         make_every_period_rule(db.session, template)
@@ -108,14 +116,22 @@ def _create_transfer(
     seed_user, seed_periods_today, savings_acct,
     template=None, amount=Decimal("200.00"), name="Monthly Savings",
 ):
-    """Helper: create a transfer with shadow transactions via the service.
+    """Helper: create a transfer with shadow transactions, in the first paycheck.
 
-    ``amount`` and ``name`` are parameterised so callers that need
-    multiple ad-hoc transfers in the same period can distinguish
-    them and avoid the F-050 / C-22 partial unique index
-    ``uq_transfers_adhoc_dedupe`` (which legitimately rejects two
-    active ad-hoc rows with identical parameters).
+    Two arms (plan step balance:X-ch).  With a *template* the transfer is the
+    ENGINE's transfer of that definition (:func:`generate_transfer_of`):
+    derived, dated, priced by the definition's series, so ``amount`` and
+    ``name`` do not apply -- both are the definition's.  Without one it is an
+    AD-HOC transfer through the service, owning ``amount``; ``amount`` and
+    ``name`` are parameterised so callers that need multiple ad-hoc transfers
+    in the same period can distinguish them and avoid the F-050 / C-22
+    partial unique index ``uq_transfers_adhoc_dedupe`` (which legitimately
+    rejects two active ad-hoc rows with identical parameters).
     """
+    if template is not None:
+        xfer = generate_transfer_of(template, seed_periods_today[0])
+        db.session.commit()
+        return xfer
     projected = db.session.query(Status).filter_by(name="Projected").one()
     xfer = transfer_service.create_transfer(
         transfer_service.TransferSpec(
@@ -127,11 +143,36 @@ def _create_transfer(
             amount_ownership=AmountOwnership.own(amount),
             status_id=projected.id,
             category_id=seed_user["categories"]["Rent"].id,
-            transfer_template_id=template.id if template else None,
             name=name,
         ),
     )
     db.session.commit()
+    return xfer
+
+
+def _received_transfer_of(template, period, seed_user, figure):
+    """Return the engine's transfer of *template* in *period*, RECEIVED, owning *figure*.
+
+    The specimen the CRIT-05 hard-delete cases are about, and one no door
+    writes: ``Received`` is not a transfer status at all (the state machine
+    settles a transfer with ``Done``; ``Received`` is a display convention for
+    income rows), so the cases are a defence-in-depth grade of the route's
+    ``is_settled`` filter over a state the application cannot produce.  The
+    transfer is the ENGINE's (plan step balance:X-ch), re-priced by the owner
+    through the transfer door so the figure SURVIVES the hard delete's
+    ``ON DELETE SET NULL`` on the link -- a derived transfer whose definition
+    is gone can be priced by nothing -- and the status is then laid on BARE,
+    on the parent and both legs alike (Transfer Invariant 3, by hand, because
+    the one door that keeps it refuses this status).
+    """
+    xfer = transfer_repriced_by_the_owner(
+        generate_transfer_of(template, period), figure,
+    )
+    received = db.session.query(Status).filter_by(name="Received").one()
+    xfer.status_id = received.id
+    for shadow in db.session.query(Transaction).filter_by(transfer_id=xfer.id):
+        shadow.status_id = received.id
+    db.session.flush()
     return xfer
 
 
@@ -190,23 +231,6 @@ def _create_other_user_with_template():
     db.session.add(scenario)
     db.session.flush()
 
-    category = Category(
-        user_id=other_user.id,
-        group_name="Home",
-        item_name="Rent",
-    )
-    db.session.add(category)
-
-    template = TransferTemplate(
-        user_id=other_user.id,
-        from_account_id=checking.id,
-        to_account_id=savings.id,
-        name="Other Transfer",
-        default_amount=Decimal("100.00"),
-    )
-    db.session.add(template)
-    db.session.flush()
-
     from datetime import date
     periods = pay_period_write.record_paydays(
         user_id=other_user.id,
@@ -216,21 +240,15 @@ def _create_other_user_with_template():
     )
     db.session.flush()
 
-    projected = db.session.query(Status).filter_by(name="Projected").one()
-    xfer = transfer_service.create_transfer(
-        transfer_service.TransferSpec(
-            user_id=other_user.id,
-            from_account_id=checking.id,
-            to_account_id=savings.id,
-            pay_period_id=periods[0].id,
-            scenario_id=scenario.id,
-            amount_ownership=AmountOwnership.own(Decimal("100.00")),
-            status_id=projected.id,
-            category_id=category.id,
-            transfer_template_id=template.id,
-            name="Other Transfer",
-        ),
+    # The other owner's definition, priced and with a cadence, and its
+    # transfer is the ENGINE's (plan step balance:X-ch); the builder reads
+    # only the owner and the source account off the seed-shaped dict.
+    template = make_transfer_template(
+        db.session, {"user": other_user, "account": checking}, savings,
+        amount="100.00",
     )
+    template.name = "Other Transfer"
+    xfer = generate_transfer_of(template, periods[0])
     db.session.commit()
 
     return {
@@ -1750,7 +1768,7 @@ class TestTransferInstance:
         """DELETE /transfers/instance/<id> soft-deletes a template transfer."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
             xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
 
             response = auth_client.delete(f"/transfers/instance/{xfer.id}")
@@ -1766,7 +1784,7 @@ class TestTransferInstance:
         """Updating amount on a template transfer sets is_override=True."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
             xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
             assert xfer.is_override is False
 
@@ -3264,7 +3282,7 @@ class TestUnarchiveUsesService:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
             xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
             xfer_id = xfer.id
 
@@ -4109,7 +4127,7 @@ class TestTransferTemplateHardDelete:
         """C-5A.5-17: Template with only Projected transfers is permanently deleted."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
             xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
 
             template_id = template.id
@@ -4163,28 +4181,15 @@ class TestTransferTemplateHardDelete:
         """C-5A.5-18: Template with Paid transfer is blocked and archived instead."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
 
-            # Create two transfers: one Projected, one Paid.
+            # Two transfers of the definition, the engine's: one Projected,
+            # one settled through the transfer service's named verb.
             xfer_projected = _create_transfer(
                 seed_user, seed_periods_today, savings, template,
             )
-
-            paid_status = db.session.query(Status).filter_by(name="Paid").one()
-            xfer_paid = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_periods_today[1].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount_ownership=AmountOwnership.own(Decimal("200.00")),
-                    status_id=paid_status.id,
-                    category_id=seed_user["categories"]["Rent"].id,
-                    transfer_template_id=template.id,
-                    name="Monthly Savings",
-                ),
-            )
+            xfer_paid = generate_transfer_of(template, seed_periods_today[1])
+            transfer_service.settle_transfer(xfer_paid.id, seed_user["user"].id)
             db.session.commit()
 
             resp = auth_client.post(
@@ -4219,23 +4224,10 @@ class TestTransferTemplateHardDelete:
         """Already-archived template with Paid history stays archived without re-archiving."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
 
-            paid_status = db.session.query(Status).filter_by(name="Paid").one()
-            transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_periods_today[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount_ownership=AmountOwnership.own(Decimal("200.00")),
-                    status_id=paid_status.id,
-                    category_id=seed_user["categories"]["Rent"].id,
-                    transfer_template_id=template.id,
-                    name="Monthly Savings",
-                ),
-            )
+            xfer_paid = generate_transfer_of(template, seed_periods_today[0])
+            transfer_service.settle_transfer(xfer_paid.id, seed_user["user"].id)
 
             # Pre-archive.
             template.is_active = False
@@ -4269,22 +4261,11 @@ class TestTransferTemplateHardDelete:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
 
             received_status = db.session.query(Status).filter_by(name="Received").one()
-            xfer_received = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_periods_today[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
-                    status_id=received_status.id,
-                    category_id=seed_user["categories"]["Rent"].id,
-                    transfer_template_id=template.id,
-                    name="Monthly Savings",
-                ),
+            xfer_received = _received_transfer_of(
+                template, seed_periods_today[0], seed_user, "250.00",
             )
             db.session.commit()
 
@@ -4358,41 +4339,16 @@ class TestTransferTemplateHardDelete:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
 
             received_status = db.session.query(Status).filter_by(name="Received").one()
-            projected_status = db.session.query(Status).filter_by(name="Projected").one()
 
             # RECEIVED transfer in period 0 (must survive).
-            xfer_received = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_periods_today[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
-                    status_id=received_status.id,
-                    category_id=seed_user["categories"]["Rent"].id,
-                    transfer_template_id=template.id,
-                    name="Past Transfer",
-                ),
+            xfer_received = _received_transfer_of(
+                template, seed_periods_today[0], seed_user, "250.00",
             )
-            # PROJECTED transfer in period 1 (must be deleted).
-            xfer_projected = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_periods_today[1].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount_ownership=AmountOwnership.own(Decimal("250.00")),
-                    status_id=projected_status.id,
-                    category_id=seed_user["categories"]["Rent"].id,
-                    transfer_template_id=template.id,
-                    name="Future Transfer",
-                ),
-            )
+            # PROJECTED transfer in period 1 (must be deleted): the engine's.
+            xfer_projected = generate_transfer_of(template, seed_periods_today[1])
             db.session.commit()
 
             template_id = template.id
@@ -4461,28 +4417,13 @@ class TestTransferTemplateHardDelete:
         """C-5A.5-19: No orphaned shadows remain after hard-deleting a template's transfers."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
 
-            # Create multiple transfers via the service.
-            xfer_ids = []
-            for i in range(3):
-                xfer = transfer_service.create_transfer(
-                    transfer_service.TransferSpec(
-                        user_id=seed_user["user"].id,
-                        from_account_id=seed_user["account"].id,
-                        to_account_id=savings.id,
-                        pay_period_id=seed_periods_today[i].id,
-                        scenario_id=seed_user["scenario"].id,
-                        amount_ownership=AmountOwnership.own(Decimal("200.00")),
-                        status_id=db.session.query(Status).filter_by(
-                        name="Projected"
-                    ).one().id,
-                        category_id=seed_user["categories"]["Rent"].id,
-                        transfer_template_id=template.id,
-                        name="Monthly Savings",
-                    ),
-                )
-                xfer_ids.append(xfer.id)
+            # Three transfers of the definition, the engine's, one per paycheck.
+            xfer_ids = [
+                generate_transfer_of(template, seed_periods_today[i]).id
+                for i in range(3)
+            ]
             db.session.commit()
 
             # Verify 3 transfers, 6 shadows (2 per transfer) before deletion.
@@ -4584,7 +4525,7 @@ class TestTransferTemplateHardDelete:
         """Archive flash message says 'archived' not 'deactivated'."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
             _create_transfer(seed_user, seed_periods_today, savings, template)
 
             resp = auth_client.post(
@@ -4601,7 +4542,7 @@ class TestTransferTemplateHardDelete:
         """Soft-deleted transfers and their shadows are permanently removed on hard-delete."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
             xfer = _create_transfer(seed_user, seed_periods_today, savings, template)
             xfer_id = xfer.id
 
@@ -5504,7 +5445,7 @@ class TestTransferDoorsResolveOwnershipStructurally:
         with app.app_context():
             other = _create_other_user_with_template()
             savings = _create_savings_account(seed_user)
-            template = _create_template(seed_user, savings, with_rule=False)
+            template = _create_template(seed_user, savings)
             xfer = _create_transfer(
                 seed_user, seed_periods_today, savings, template=template,
             )

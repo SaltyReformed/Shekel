@@ -49,6 +49,7 @@ app today, and these tests are what prove they behave as designed when plan
 steps X-au-d..X-au-i make them reachable.
 """
 
+import re
 from datetime import date
 from decimal import Decimal
 
@@ -74,6 +75,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from tests._test_helpers import (
     generate_row_of,
+    generate_transfer_of,
     repriced_by_the_owner,
     load_migration_module,
     make_every_period_rule,
@@ -328,29 +330,46 @@ def _insert_transfer_row(data, *, figure, source_id, **overrides):
 
 
 def _make_transfer(data, **overrides):
-    """Return an unflushed Projected GENERATED transfer, with *overrides* applied.
+    """Return a Projected transfer, with *overrides* applied.
 
-    It carries the fixture's transfer template by default, and that default is
-    load-bearing rather than convenient: ``ck_transfers_adhoc_owns_amount`` refuses
-    a declaration on a transfer no definition prices, so a test that declares a
-    source has to build a generated transfer to be talking about a legal row at
-    all.  The two ad-hoc controls below pass ``transfer_template_id=None``
-    explicitly and say why.
+    Two arms, decided by whether the transfer names a definition -- and it
+    does by DEFAULT, the fixture's transfer template, because
+    ``ck_transfers_adhoc_owns_amount`` refuses a declaration on a transfer no
+    definition prices, so a test that declares a source has to be talking
+    about a generated transfer to be talking about a legal row at all:
+
+    * **A transfer of a DEFINITION** (``transfer_template_id`` left at its
+      default or set) is the ENGINE's transfer of that template in the named
+      paycheck (:func:`generate_transfer_of`, plan step balance:X-ch): flushed,
+      with its two shadow legs, with every OTHER override then laid onto the
+      PARENT bare.  It arrives derived, dated and answering an occurrence, so
+      an override restating that is a no-op and one stating an OWN figure, a
+      status, a date or ``is_override`` is a pre-cutover shape laid onto the
+      engine's transfer for a frozen migration's probe -- the legs are not
+      touched, which is what the probes over the SHADOW cutover need.
+      ``pay_period_id`` picks the paycheck and is not restated afterwards.
+    * **An AD-HOC transfer** (``transfer_template_id=None``) is constructed
+      bare and returned UNFLUSHED, as before, with no legs; the two ad-hoc
+      controls below pass it explicitly and say why.
 
     Args:
         data: The ``seed_full_user_data`` fixture payload (it carries the second
             account a transfer needs -- ``ck_transfers_different_accounts`` -- and
-            the transfer template).
+            the transfer template, which carries a cadence).
         **overrides: Column values to set or replace.
 
     Returns:
-        The unflushed :class:`~app.models.transfer.Transfer`.
+        The :class:`~app.models.transfer.Transfer`: flushed on the definition
+        arm, unflushed on the ad-hoc one.
     """
+    template_id = overrides.pop("transfer_template_id", data["transfer_template"].id)
+    if template_id is not None:
+        return _transfer_of_definition(data, template_id, overrides)
     fields = {
         "user_id": data["user"].id,
         "from_account_id": data["account"].id,
         "to_account_id": data["savings_account"].id,
-        "transfer_template_id": data["transfer_template"].id,
+        "transfer_template_id": None,
         "pay_period_id": data["periods"][0].id,
         "scenario_id": data["scenario"].id,
         "status_id": ref_cache.status_id(StatusEnum.PROJECTED),
@@ -359,6 +378,40 @@ def _make_transfer(data, **overrides):
     }
     fields.update(overrides)
     return Transfer(**fields)
+
+
+def _transfer_of_definition(data, template_id, overrides):
+    """The definition arm of :func:`_make_transfer`: the engine's transfer.
+
+    Args:
+        data: The ``seed_full_user_data`` fixture payload.
+        template_id: The definition whose transfer is wanted.
+        overrides: The caller's remaining column values, laid onto the
+            generated PARENT bare after ``pay_period_id`` has chosen the
+            paycheck.
+
+    Returns:
+        The flushed :class:`~app.models.transfer.Transfer`.
+    """
+    period_id = overrides.pop("pay_period_id", data["periods"][0].id)
+    period = next(p for p in data["periods"] if p.id == period_id)
+    xfer = generate_transfer_of(db.session.get(TransferTemplate, template_id), period)
+    for column, value in overrides.items():
+        setattr(xfer, column, value)
+    db.session.flush()
+    return xfer
+
+
+def _legs_of(xfer):
+    """Return ``(expense leg, income leg)`` of the engine's transfer *xfer*."""
+    legs = {
+        leg.transaction_type_id: leg
+        for leg in db.session.query(Transaction).filter_by(transfer_id=xfer.id)
+    }
+    return (
+        legs[ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)],
+        legs[ref_cache.txn_type_id(TxnTypeEnum.INCOME)],
+    )
 
 
 class TestTransactionAmountOwnership:
@@ -500,7 +553,6 @@ class TestTransferAmountOwnership:
                 seed_full_user_data,
                 amount_ownership=AmountOwnership.derived(template_source),
             )
-            db.session.add(xfer)
             db.session.flush()
 
             assert xfer.amount is None
@@ -587,7 +639,6 @@ class TestOnePricingLink:
         with app.app_context():
             data = seed_full_user_data
             xfer = _make_transfer(data)
-            db.session.add(xfer)
             db.session.flush()
 
             # Period 1, not 0, and it is REQUIRED rather than a precaution:
@@ -806,12 +857,9 @@ class TestTheCheapAccessorRefusesAnUnsettledRow:
     def test_a_derived_transfer_refuses(self, app, db, seed_full_user_data):
         """The transfer twin refuses on the same shape.
 
-        It carries a ``due_date`` so the refusal is the one this case is about
-        -- its definition states no price for that day -- rather than the
-        no-date arm, which is a different defect (and has its own control in
-        ``test_services/test_amount_source.py``).  Without the date the row
-        refuses for the wrong reason and the test would pass while proving
-        nothing about the missing FIGURE.
+        The transfer is the engine's, so it carries the date its definition
+        derives and the refusal is the one this case is about -- its
+        definition states no price for that day -- rather than any other.
 
         **It builds its OWN definition since plan step X-au-f**, and that is
         this case being kept alive rather than tidied.  X-au-f gave the shared
@@ -832,16 +880,12 @@ class TestTheCheapAccessorRefusesAnUnsettledRow:
             )
             db.session.add(template)
             db.session.flush()
+            # A cadence and no price: the engine writes its transfer (derived,
+            # on its own date) and nothing can then answer for it.
+            make_every_period_rule(db.session, template)
             xfer = _make_transfer(
-                seed_full_user_data,
-                transfer_template_id=template.id,
-                due_date=date(2026, 3, 15),
-                amount_ownership=AmountOwnership.derived(
-                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-                ),
+                seed_full_user_data, transfer_template_id=template.id,
             )
-            db.session.add(xfer)
-            db.session.flush()
 
             with pytest.raises(
                 AmountUnresolvable, match="price series is EMPTY",
@@ -1010,13 +1054,14 @@ class TestTheDowngradeRefusesToInventAFigure:
                 Transaction, seed_full_user_data["transaction"].id,
             )
             repriced_by_the_owner(fixture_row, "1200.00")
-            xfer = _make_transfer(
-                seed_full_user_data,
-                amount_ownership=AmountOwnership.derived(
-                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-                ),
-            )
-            db.session.add(xfer)
+            # The engine's transfer is derived already; its two LEGS are too
+            # (they declare their parent), and the guard reads transactions
+            # first -- so each leg is given a figure of its own, bare, the
+            # pre-X-au-g-2c-2 shape, leaving the parent as the ONE row with no
+            # figure.
+            xfer = _make_transfer(seed_full_user_data)
+            for leg in _legs_of(xfer):
+                leg.amount_ownership = AmountOwnership.own(Decimal("100.00"))
             db.session.flush()
 
             with pytest.raises(RuntimeError, match="budget.transfers.amount"):
@@ -1047,23 +1092,15 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
         """The state the chain leaves: every parent owns an amount.
 
         Returns ``None`` rather than raising, so the negative controls below
-        are what give this meaning.
+        are what give this meaning.  The engine's transfer has two DECLARED
+        legs, exactly what this cutover writes; its parent is given a figure
+        of its own bare, the pre-X-au-f world the probe was written for.
         """
         with app.app_context():
             td = seed_full_user_data
-            xfer = _make_transfer(td)
-            db.session.add(xfer)
-            db.session.flush()
-            txn = _make_transaction(
-                td, td["periods"],
-                amount_ownership=AmountOwnership.derived(
-                    ref_cache.amount_source_id(AmountSourceEnum.PARENT_TRANSFER),
-                ),
-                transfer_id=xfer.id,
-                template_id=None,
+            _make_transfer(
+                td, amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
-            db.session.add(txn)
-            db.session.flush()
 
             assert _SHADOW_CUTOVER.refuse_a_shadow_whose_parent_states_no_figure(
                 db.session.connection(),
@@ -1080,24 +1117,9 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
         """
         with app.app_context():
             td = seed_full_user_data
-            xfer = _make_transfer(
-                td,
-                amount_ownership=AmountOwnership.derived(
-                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-                ),
-            )
-            db.session.add(xfer)
-            db.session.flush()
-            txn = _make_transaction(
-                td, td["periods"],
-                amount_ownership=AmountOwnership.derived(
-                    ref_cache.amount_source_id(AmountSourceEnum.PARENT_TRANSFER),
-                ),
-                transfer_id=xfer.id,
-                template_id=None,
-            )
-            db.session.add(txn)
-            db.session.flush()
+            # The engine's transfer IS this state: a derived parent with two
+            # declared legs.  Both legs must be named.
+            expense, income = _legs_of(_make_transfer(td))
 
             # Anchored on the ids LIST rather than the bare digits.  The
             # message also carries the revision id ``c9a4e7b21d58``, whose
@@ -1105,12 +1127,14 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
             # is ``re.search`` over a string that already contains most small
             # ids, and would pass on a guard that named the TRANSFER instead of
             # the shadow.  That is the exact property this case exists for.
-            with pytest.raises(
-                RuntimeError, match=rf"\(ids [^)]*\b{txn.id}\b",
-            ):
+            with pytest.raises(RuntimeError) as raised:
                 _SHADOW_CUTOVER.refuse_a_shadow_whose_parent_states_no_figure(
                     db.session.connection(),
                 )
+            for leg in (expense, income):
+                assert re.search(
+                    rf"\(ids [^)]*\b{leg.id}\b", str(raised.value),
+                ), f"leg {leg.id} not named in: {raised.value}"
 
     def test_a_derived_parent_with_no_declared_shadow_does_not_refuse(
         self, app, db, seed_full_user_data,
@@ -1124,21 +1148,10 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
         """
         with app.app_context():
             td = seed_full_user_data
-            xfer = _make_transfer(
-                td,
-                amount_ownership=AmountOwnership.derived(
-                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-                ),
-            )
-            db.session.add(xfer)
-            db.session.flush()
-            txn = _make_transaction(
-                td, td["periods"],
-                amount_ownership=AmountOwnership.own(Decimal("25.00")),
-                transfer_id=xfer.id,
-                template_id=None,
-            )
-            db.session.add(txn)
+            # The engine's parent is derived; both legs are given a figure of
+            # their own, bare, so NO leg is declared.
+            for leg in _legs_of(_make_transfer(td)):
+                leg.amount_ownership = AmountOwnership.own(Decimal("25.00"))
             db.session.flush()
 
             assert _SHADOW_CUTOVER.refuse_a_shadow_whose_parent_states_no_figure(
@@ -1723,7 +1736,6 @@ class TestTheTransferCutoverRefusesRatherThanStrandingARow:
                 data, due_date=date(2026, 3, 1),
                 amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
-            db.session.add(xfer)
             db.session.commit()
 
             assert _TRANSFER_CUTOVER.rows_the_declare_would_strand(
@@ -1746,7 +1758,6 @@ class TestTheTransferCutoverRefusesRatherThanStrandingARow:
                 data, due_date=date(2026, 3, 1),
                 amount_ownership=AmountOwnership.own(Decimal("250.00")),
             )
-            db.session.add(xfer)
             db.session.commit()
 
             stranded = _TRANSFER_CUTOVER.rows_the_declare_would_strand(
@@ -1793,7 +1804,6 @@ class TestTheTransferCutoverRefusesRatherThanStrandingARow:
                 data, due_date=date(2026, 3, 1),
                 amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
-            db.session.add(xfer)
             db.session.commit()
 
             assert _TRANSFER_CUTOVER.rows_the_declare_would_strand(
@@ -1825,7 +1835,6 @@ class TestTheTransferCutoverRefusesRatherThanStrandingARow:
                 data, due_date=date(2026, 3, 1),
                 amount_ownership=AmountOwnership.own(Decimal("999.99")),
             )
-            db.session.add(xfer)
             db.session.commit()
 
             stranded = _TRANSFER_CUTOVER.rows_the_declare_would_strand(
@@ -1850,7 +1859,6 @@ class TestTheTransferCutoverRefusesRatherThanStrandingARow:
                 data, due_date=date(2026, 3, 1), is_override=True,
                 amount_ownership=AmountOwnership.own(Decimal("250.00")),
             )
-            db.session.add(xfer)
             db.session.commit()
 
             assert _TRANSFER_CUTOVER.rows_the_declare_would_strand(
@@ -1890,36 +1898,26 @@ class TestTheTransferCutoverRestoresEachRowFromTheRightPlace:
         with app.app_context():
             data = seed_full_user_data
             _state_series(data, Decimal("100.00"))
+            # The engine's transfer, derived, with the settled shape laid on
+            # bare: Paid on the parent and on its EXPENSE leg, which carries
+            # the record the exact arm reads.  Its income leg stays Projected
+            # with no record, so a restore that read the PARENT (nothing
+            # there) or the INCOME leg (no record) comes back at the
+            # definition's $100.00 and fails on the figure.  The expense leg
+            # is also the lower id, so this cannot tell "by type" from
+            # "lowest id"; the migration selects by type.
             xfer = _make_transfer(
                 data,
                 due_date=date(2026, 3, 1),
                 status_id=ref_cache.status_id(StatusEnum.DONE),
-                amount_ownership=AmountOwnership.derived(
-                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-                ),
             )
-            db.session.add(xfer)
-            db.session.flush()
-            db.session.add(Transaction(
-                user_id=data["user"].id,
-                account_id=data["account"].id,
-                pay_period_id=data["periods"][0].id,
-                scenario_id=data["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                transfer_id=xfer.id,
-                name="Expense leg",
-                due_date=date(2026, 3, 1),
-                settled_amount=Decimal("137.42"),
-                settled_basis_id=ref_cache.settlement_basis_id(
-                    SettlementBasisEnum.DERIVED,
-                ),
-                amount_ownership=AmountOwnership.derived(
-                    ref_cache.amount_source_id(
-                        AmountSourceEnum.PARENT_TRANSFER,
-                    ),
-                ),
-            ))
+            expense, _income = _legs_of(xfer)
+            expense.status_id = ref_cache.status_id(StatusEnum.DONE)
+            expense.due_date = date(2026, 3, 1)
+            expense.settled_amount = Decimal("137.42")
+            expense.settled_basis_id = ref_cache.settlement_basis_id(
+                SettlementBasisEnum.DERIVED,
+            )
             db.session.commit()
 
             _TRANSFER_CUTOVER.downgrade_rows(db.session.connection())
@@ -1942,7 +1940,6 @@ class TestTheTransferCutoverRestoresEachRowFromTheRightPlace:
                     ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
             )
-            db.session.add(xfer)
             db.session.commit()
 
             _TRANSFER_CUTOVER.downgrade_rows(db.session.connection())
