@@ -40,8 +40,21 @@ from app.enums import PayCadenceKindEnum
 from app.extensions import db
 from app.models.pay_era import PayEra
 from app.services import pay_schedule_service
-from app.services.pay_calendar import first_payday_of
-from app.services.pay_rhythm import Era, Rhythm, era_covering
+from app.services.pay_calendar import (
+    cadence_steps_to,
+    first_payday_of,
+    nominal_payday,
+)
+from app.services.pay_rhythm import Era, FixedDays, Rhythm, era_covering
+
+#: The ``ref.pay_cadence_kinds`` member each cadence KIND is stored as.
+#:
+#: The kind is the cadence value's type since plan step ``C17-d-1``; the
+#: column still names it until ``C17-d-2`` drops it (ruling **R-PC80**), so
+#: this is the one place a type becomes a stored kind, keyed by class so a
+#: kind this leaf does not store is refused by the lookup rather than written
+#: as the wrong one.
+_KIND_OF = {FixedDays: PayCadenceKindEnum.FIXED_DAYS}
 
 
 def mint_era(user_id: int, era: Era) -> PayEra:
@@ -105,7 +118,7 @@ def mint_era(user_id: int, era: Era) -> PayEra:
             A 400 rather than a 500: every door in front of this one takes
             the values from a form.
     """
-    pay_schedule_service.reject_out_of_range_cadence(era.rhythm.cadence_days)
+    pay_schedule_service.reject_out_of_range_cadence(era.rhythm.cadence)
     pay_schedule_service.reject_shift_on_short_cadence(era.rhythm)
     # The one place a rhythm's convention and kind become ids, which is the
     # storage boundary and nowhere else -- ``recurrence._authoring`` resolves
@@ -113,8 +126,8 @@ def mint_era(user_id: int, era: Era) -> PayEra:
     row = PayEra(
         user_id=user_id,
         effective_from=era.effective_from,
-        kind_id=ref_cache.pay_cadence_kind_id(era.kind),
-        cadence_days=era.rhythm.cadence_days,
+        kind_id=ref_cache.pay_cadence_kind_id(_KIND_OF[type(era.rhythm.cadence)]),
+        cadence_days=era.rhythm.cadence.days,
         shift_id=ref_cache.business_day_shift_id(era.rhythm.shift),
     )
     db.session.add(row)
@@ -214,9 +227,22 @@ def era_to_mint(
     from the day the extend continued (ledger row **PC-509**); the door that
     replaced it materialises the plan of the era COVERING the record.*
 
-    **The grid test is arithmetic on the NOMINAL day, which is what
-    *first_payday* is** (the writer's own reading of it).  ``C17-d`` branches
-    it on the era's kind.
+    **The grid test is the GRID's own round trip on the NOMINAL day, which
+    is what *first_payday* is** (the writer's own reading of it): a day is
+    on the covering era's grid exactly when
+    :func:`~app.services.pay_calendar.nominal_payday` at
+    :func:`~app.services.pay_calendar.cadence_steps_to`'s answer lands back
+    on it.  Until plan step ``C17-d-1`` this was spelled here a second time
+    as ``(first_payday - effective_from).days % cadence_days == 0`` -- the
+    same arithmetic under another name, and one that only a fixed-days grid
+    can be asked in.  Asking the grid is what lets the day-of-month kinds
+    inherit the test at ``C17-d-2`` with nothing written here.  The two
+    spellings agree on every integer input (Python's ``//`` and ``%`` share
+    one divmod identity, brute-forced over a million pairs at the review);
+    what differs is the edge of the ``date`` type itself -- a first payday
+    within a cadence of ``date.min`` overflows the grid's ``timedelta`` add
+    where the modulo answered ``False`` -- which no door reaches, every
+    payday field being bounded at ``CALENDAR_DATE_MIN``.
 
     Args:
         eras: The eras the batch LEAVES STANDING, ``effective_from``
@@ -231,21 +257,17 @@ def era_to_mint(
         The :class:`~app.services.pay_rhythm.Era` to mint, or ``None``.
     """
     if not eras:
-        return Era(
-            effective_from=first_payday, kind=PayCadenceKindEnum.FIXED_DAYS,
-            rhythm=rhythm,
-        )
+        return Era(effective_from=first_payday, rhythm=rhythm)
     covering = era_covering(eras, first_payday)
-    on_grid = (
-        (first_payday - covering.effective_from).days
-        % covering.rhythm.cadence_days == 0
+    on_grid = first_payday == nominal_payday(
+        covering.effective_from, covering.rhythm.cadence,
+        cadence_steps_to(
+            covering.effective_from, covering.rhythm.cadence, first_payday,
+        ),
     )
     if covering.rhythm == rhythm and on_grid:
         return None
-    return Era(
-        effective_from=first_payday, kind=PayCadenceKindEnum.FIXED_DAYS,
-        rhythm=rhythm,
-    )
+    return Era(effective_from=first_payday, rhythm=rhythm)
 
 
 def retire_eras(user_id: int, standing: "tuple[date, ...]") -> int:

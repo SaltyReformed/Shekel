@@ -55,6 +55,7 @@ from app.services.pay_calendar import (
     PayCalendarError,
     calendar_for,
 )
+from app.services.pay_rhythm import FixedDays
 from app.services.recurrence import (
     EndsOnDate,
     RecurrenceResolutionError,
@@ -73,7 +74,7 @@ from app.services.recurrence import compute_due_date
 #: hand-computed at: 14 days between paydays, 26 a year.  An explicit input
 #: since plan step R7a-2a, where the per-paycheck column read a hardcoded
 #: ``MONTHS_PER_YEAR / PAY_PERIODS_PER_YEAR`` ratio.
-_BIWEEKLY = PayCadence(cadence_days=14)
+_BIWEEKLY = PayCadence(FixedDays(14))
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

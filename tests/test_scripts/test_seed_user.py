@@ -43,6 +43,7 @@ from app.models.tax_config import (
 )
 from app.models.user import User, UserSettings
 from app.services import pay_schedule_service
+from app.services.pay_rhythm import FixedDays
 from app.services.registration_service import DEFAULT_CATEGORIES
 from app.services.tax_seed_data import (
     DEFAULT_FEDERAL_BRACKETS,
@@ -540,7 +541,7 @@ class TestSeedUserProvisioning:
             db.session.query(PaySchedule).filter_by(user_id=user.id).one()
             assert pay_schedule_service.resolve_cadence(
                 user.id,
-            ) == BaseConfig.DEFAULT_PAY_CADENCE_DAYS
+            ) == FixedDays(BaseConfig.DEFAULT_PAY_CADENCE_DAYS)
 
             account = (
                 db.session.query(Account).filter_by(user_id=user.id).one()

@@ -17,6 +17,7 @@ from decimal import Decimal
 import pytest
 
 from app.enums import BusinessDayShiftEnum, StatusEnum
+from app.services.pay_rhythm import FixedDays
 from app.utils.dates import display_today
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
@@ -426,7 +427,7 @@ class TestGenerateRoute:
             assert schedule is not None
             assert pay_schedule_service.resolve_cadence(
                 bare_user["user"].id,
-            ) == 10
+            ) == FixedDays(10)
 
 
 class TestScheduleRoute:

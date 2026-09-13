@@ -86,7 +86,8 @@ part of it:
 **One more value landed here at the recurrence arc's plan step R7a-2a**, and it
 is in this package because the fact it derives from is:
 :class:`~._cadence.PayCadence` answers "how many paychecks does this owner
-receive in a year", which is the latest era's ``budget.pay_eras.cadence_days``
+receive in a year", which is the latest era's cadence -- a value of one of the
+kinds :mod:`app.services.pay_rhythm` declares, since plan step ``C17-d-1`` --
 and nothing else.  It replaced ``app.utils.money.PAY_PERIODS_PER_YEAR``, a hardcoded
 ``Decimal("26")`` read by nine files while the cadence it stood for is
 user-selectable 1..365 -- so every monthly-equivalent figure on

@@ -59,6 +59,7 @@ from tests.oracles.recurrence_baseline import (
 from app.services.balance_at import BalanceContext
 from app.services.balance_at import _context as resolution_context
 from app.services.calendar_infrequency import is_infrequent as _is_infrequent
+from app.services.pay_rhythm import FixedDays
 from app.services.payroll_basis import PayrollBasis
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.calendar_service import (
@@ -78,11 +79,11 @@ from app.models.amount_ownership import AmountOwnership
 #: An explicit input to the infrequent badge since plan step R7a-2b, where the
 #: predicate was an enumerated set of pattern names that could not vary by
 #: owner at all.
-_BIWEEKLY = PayCadence(cadence_days=14)
+_BIWEEKLY = PayCadence(FixedDays(14))
 
 #: A monthly-paid owner: 30 days between paydays, 12 a year.  The cadence that
 #: makes "every 2 paychecks" a DIFFERENT answer from the biweekly one.
-_MONTHLY_PAID = PayCadence(cadence_days=30)
+_MONTHLY_PAID = PayCadence(FixedDays(30))
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -968,7 +969,7 @@ class TestInfrequencyIsDerivedNotEnumerated:
             )
             txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
-            for cadence in (_BIWEEKLY, _MONTHLY_PAID, PayCadence(cadence_days=7)):
+            for cadence in (_BIWEEKLY, _MONTHLY_PAID, PayCadence(FixedDays(7))):
                 assert _is_infrequent(txn, cadence) is False
 
 

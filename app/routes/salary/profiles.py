@@ -91,10 +91,10 @@ def _paychecks_per_year() -> "int | None":
     Returns:
         The paycheck count as an ``int``, or ``None``.
     """
-    cadence_days = pay_schedule_service.resolve_cadence(current_user.id)
-    if cadence_days is None:
+    cadence = pay_schedule_service.resolve_cadence(current_user.id)
+    if cadence is None:
         return None
-    return int(PayCadence(cadence_days=cadence_days).periods_per_year)
+    return int(PayCadence(cadence).periods_per_year)
 
 
 @salary_bp.route("/salary/new")

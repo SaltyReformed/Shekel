@@ -560,10 +560,10 @@ class TestTheProjectionIsPiecewise:
                 # few of its own paychecks; the next era opens between the
                 # following payday and the one after it.
                 left = previous.effective_from + timedelta(
-                    days=previous.rhythm.cadence_days * rng.randint(1, 4),
+                    days=previous.rhythm.cadence.days * rng.randint(1, 4),
                 )
                 lower = next_grid_payday_after(
-                    previous.effective_from, previous.rhythm.cadence_days,
+                    previous.effective_from, previous.rhythm.cadence.days,
                     previous.rhythm.shift, left,
                 )
                 candidate_shift = rng.choice([PRIOR, NEXT, NONE])
@@ -575,7 +575,7 @@ class TestTheProjectionIsPiecewise:
                 # rejected NEAREST rule part.
                 phases = [
                     nominal
-                    for offset in range(previous.rhythm.cadence_days)
+                    for offset in range(previous.rhythm.cadence.days)
                     for nominal in (lower + timedelta(days=offset),)
                     if nominal > previous.effective_from
                     and shift_to_business_day(nominal, candidate_shift) >= lower
@@ -634,7 +634,7 @@ class TestTheProjectionIsPiecewise:
                     break
                 walked.append(period)
 
-            where = tuple((e.effective_from, e.rhythm.cadence_days, e.rhythm.shift.name) for e in eras)
+            where = tuple((e.effective_from, e.rhythm.cadence.days, e.rhythm.shift.name) for e in eras)
             expected_ends = [
                 following - timedelta(days=1)
                 for following in reference[1:]
@@ -661,7 +661,7 @@ class TestTheProjectionIsPiecewise:
             long_seam_paychecks += (
                 recorded[-1] == planned[0][-1]
                 and (first_payday_of(eras[1]) - recorded[-1]).days
-                > eras[0].rhythm.cadence_days
+                > eras[0].rhythm.cadence.days
             )
 
         assert not mismatches, mismatches[:3]

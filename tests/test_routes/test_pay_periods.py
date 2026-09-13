@@ -15,6 +15,7 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import pay_period_write, pay_schedule_service
+from app.services.pay_rhythm import FixedDays
 from tests._test_helpers import (
     record_paydays_across_a_hole,
     shift_form_value,
@@ -284,7 +285,7 @@ class TestPayPeriodGenerate:
             assert [start for start, _end in _spans(db.session, user_id)] == [
                 date(2027, 3, 4), date(2027, 3, 11),
             ]
-            assert pay_schedule_service.resolve_cadence(user_id) == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(7)
 
 
 # ── Negative Path Tests ─────────────────────────────────────────────
@@ -543,4 +544,4 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
             assert after_horizon == date(2027, 6, 25)
             assert after_horizon > before_horizon
             # The submitted cadence of 1 never reached the schedule.
-            assert pay_schedule_service.resolve_cadence(user_id) == 180
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(180)

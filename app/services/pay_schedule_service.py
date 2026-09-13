@@ -71,7 +71,7 @@ from app.extensions import db
 from app.models.pay_era import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN, PayEra
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
-from app.services.pay_rhythm import Era, Rhythm
+from app.services.pay_rhythm import Era, FixedDays, Rhythm
 from app.utils.business_days import shortest_collision_free_cadence
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
@@ -205,9 +205,11 @@ class ScheduleFacts:
 def _era_of(row: PayEra) -> Era:
     """Return the :class:`~app.services.pay_rhythm.Era` a stored *row* states.
 
-    The storage boundary in the READ direction: two ``ref`` ids become their
-    members here and nowhere else, which is IDs-for-logic as the project means
-    it -- no ``name`` string is ever compared.
+    The storage boundary in the READ direction: the shift id becomes its
+    member here and nowhere else, which is IDs-for-logic as the project means
+    it -- no ``name`` string is ever compared -- and the kind id is checked
+    against the seeded set and not carried, since plan step ``C17-d-1``: the
+    kind is the cadence value's type (``FixedDays`` until ``C17-d-2``).
 
     Args:
         row: A ``budget.pay_eras`` row.
@@ -235,8 +237,13 @@ def _era_of(row: PayEra) -> Era:
             f"fk_pay_eras_shift_id admits only seeded ids, so reaching this "
             f"means ref.business_day_shifts was changed under the application."
         )
-    kind = ref_cache.pay_cadence_kind_member(row.kind_id)
-    if kind is None:
+    # The kind is the cadence VALUE's type since plan step ``C17-d-1``, and
+    # ``kind_id`` is read here only to refuse an id the one seeded member
+    # does not answer to: every stored era is a fixed-days one until
+    # ``C17-d-2`` lands the day-of-month kinds and DROPS the column (ruling
+    # **R-PC80**, the kind being readable off which parameter columns a row
+    # carries).
+    if ref_cache.pay_cadence_kind_member(row.kind_id) is None:
         raise ValidationError(
             f"user {row.user_id}'s pay era from "
             f"{row.effective_from.isoformat()} names cadence kind "
@@ -247,8 +254,7 @@ def _era_of(row: PayEra) -> Era:
         )
     return Era(
         effective_from=row.effective_from,
-        kind=kind,
-        rhythm=Rhythm(cadence_days=row.cadence_days, shift=shift),
+        rhythm=Rhythm(cadence=FixedDays(row.cadence_days), shift=shift),
     )
 
 
@@ -351,7 +357,7 @@ def reread_schedule(user_id: int) -> PaySchedule:
     return schedule
 
 
-def reject_out_of_range_cadence(cadence_days: int) -> None:
+def reject_out_of_range_cadence(cadence: FixedDays) -> None:
     """Refuse a cadence ``ck_pay_eras_cadence_range`` would refuse.
 
     **One implementation of the bound, two callers, and the second is why it
@@ -368,20 +374,25 @@ def reject_out_of_range_cadence(cadence_days: int) -> None:
     of a range are two chances for the schema tier, the service tier and the
     column to disagree.
 
+    **It takes the cadence VALUE since plan step ``C17-d-1``**, so the
+    day-of-month kinds ``C17-d-2`` adds bring their own bounds to this one
+    door rather than to a second one beside it; at this leaf the one kind is
+    :class:`~app.services.pay_rhythm.FixedDays` and the bound is the column's.
+
     Args:
-        cadence_days: The candidate days-between-paydays value.
+        cadence: The candidate cadence.
 
     Raises:
-        ValidationError: *cadence_days* falls outside
+        ValidationError: The day count falls outside
             :data:`~app.models.pay_era.CADENCE_DAYS_MIN` ..
             :data:`~app.models.pay_era.CADENCE_DAYS_MAX`.  The message
             names the offending value and both bounds, so a surface can render
             it verbatim.
     """
-    if not CADENCE_DAYS_MIN <= cadence_days <= CADENCE_DAYS_MAX:
+    if not CADENCE_DAYS_MIN <= cadence.days <= CADENCE_DAYS_MAX:
         raise ValidationError(
             f"Days between paydays must be between {CADENCE_DAYS_MIN} and "
-            f"{CADENCE_DAYS_MAX}; got {cadence_days}."
+            f"{CADENCE_DAYS_MAX}; got {cadence.days}."
         )
 
 
@@ -463,11 +474,11 @@ def reject_shift_on_short_cadence(rhythm: Rhythm) -> None:
     if rhythm.shift is BusinessDayShiftEnum.NONE:
         return
     floor = shortest_collision_free_cadence()
-    if rhythm.cadence_days < floor:
+    if rhythm.cadence.days < floor:
         raise ValidationError(
             f"Days between paydays must be at least {floor} when payroll "
             f"moves a payday off a weekend or holiday; got "
-            f"{rhythm.cadence_days}.  A shorter cadence would land two "
+            f"{rhythm.cadence.days}.  A shorter cadence would land two "
             f"paychecks on one day."
         )
 
@@ -795,7 +806,7 @@ def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
     return ScheduleFacts.of(schedule)
 
 
-def resolve_cadence(user_id: int) -> int | None:
+def resolve_cadence(user_id: int) -> FixedDays | None:
     """Resolve the cadence to continue the user's schedule with.
 
     :func:`resolve_schedule`'s cadence half, for the callers that need only
@@ -820,11 +831,11 @@ def resolve_cadence(user_id: int) -> int | None:
     held; a reader that wants a PAST day's cadence is ``C17-b``'s.
 
     Returns:
-        The STORED cadence in days, or ``None`` when the user has no
-        ``budget.pay_schedule`` row -- since plan step C4-b-2 the same
-        statement as "no pay periods" (``fk_pay_periods_schedule``) -- or no
-        era.  The extend path treats ``None`` as "generate your first schedule
-        first".
+        The STORED cadence as a value of its kind (plan step ``C17-d-1``),
+        or ``None`` when the user has no ``budget.pay_schedule`` row -- since
+        plan step C4-b-2 the same statement as "no pay periods"
+        (``fk_pay_periods_schedule``) -- or no era.  The extend path treats
+        ``None`` as "generate your first schedule first".
     """
     facts = resolve_schedule(user_id)
-    return None if facts is None else facts.rhythm.cadence_days
+    return None if facts is None else facts.rhythm.cadence
