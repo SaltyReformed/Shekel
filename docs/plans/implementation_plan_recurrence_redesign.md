@@ -400,31 +400,20 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
 - [x] **R7d-b** `0462dc38` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R7d-c -- the DECOMPOSED parent of "generation takes the resolver."** Split into TWO leaves
-      2026-08-27 (**R-R38**): the pass has to REACH generation first, and WHO opens it is a question
-      about the three write doors, each of which did a write and then a read-dependent write in ONE
-      call so no caller could get between them.
+- [x] **R7d-c** `b8509c1e` -- the DECOMPOSED parent of "generation takes the resolver", split into
+      TWO leaves 2026-08-27 (**R-R38**): the pass had to REACH generation first (R7d-c-1), and who
+      opens it was a question about the three write doors, each of which did a write and then a
+      read-dependent write in ONE call. Both leaves shipped; the container ships with the last.
 
 - [x] **R7d-c-1** `61d81c7f` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R7d-c-2 -- GENERATION takes the resolver.** Both engines' `resolve_generation_plan` applies
-      `loan_payment_window`'s answer over the rule's own bound. **MOVES MONEY**: `$0.00` today
-      (production and dev both store `2029-02-22` on rule 48, equal to the derivation, measured
-      2026-09-11), and the `$531.94` installment the stale column once dropped is the MECHANISM.
-      **D46** closed at `R16-b-2` (**R-R64**).
-
-**A second build is HELD at `de8d1a56`** (`feat/r7d-c-2`, pushed, no PR), superseding `9aff7ab9`:
-`resolve_generation_plan` reads `recurring_definition.read_definition` over the pass the schedule
-carries, with the harness `tests/manual/verify_loan_bound_at_generation.py` (five doors on a stamped
-production clone). It ships AFTER R16-b-2 (**R-R65**): alone it regressed the reset door, the
-mechanism ruled at **R-R64**. **RE-CUT on R16-b-2's tree at `e5404ac1`** (merge of `8c654712`, the
-re-cut `a01839aa`, merge of the memo `7e2e6413`): the `$50` second-definition fixture, three
-controls (the reset door in its hole, D46; two full definitions, D47; the `$3,000` cent, REC-517),
-and the harness re-measured with R16-b-2's tree as the base -- live doors byte-identical, and the
-planted second definition 35/65 -> 32/32 rows to `2028-11-22`: the sum reaches the ROWS only through
-generation taking the door. Full suite 13335, exit 0. The 2026-08-31 measurement `balance:X-au-f`
-rests on (rows raised to `$900.00` -> `2028-02-22`, halved -> `2030-04-22`) stands.
+- [x] **R7d-c-2** `b8509c1e` -- generation resolves a loan payment's stop through the composed door
+      (`read_definition` over the pass the schedule carries), so a stale `end_date` binds nothing
+      either way (**R-R56**) and R16-b-2's summed payoff reaches the ROWS. `$0.00` live on the
+      clone; the planted `$50` definition 35/65 -> 32/32 rows at `2028-11-22` (measured 2026-09-11
+      on R16-b-2's tree; not re-run on the era calendar). Held behind R16-b-2 (**R-R65**), re-cut at
+      `a01839aa`, its first review found the id-keyed memo (**R-R73**). Closed **D46** via R16-b-2.
 
 - [x] **R7d-h** `83dd4b8a` -- a loan gets ONE closing date, past AND future: `loan_closing_date`
       answers the forward crossing while the loan owes and the day it LAST became closed once it
