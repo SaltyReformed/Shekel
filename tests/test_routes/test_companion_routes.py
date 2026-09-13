@@ -11,18 +11,16 @@ arrows, entry CRUD through the entries blueprint, entry data
 computation in response HTML, and empty state rendering.
 """
 
-import pytest
 from datetime import date
 from decimal import Decimal
 
+from flask import g
+
 from app import ref_cache
-from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum
 from app.extensions import db
 from app.services import status_seam
-from app.models.account import Account
-from app.models.category import Category
-from app.models.ref import AccountType, TransactionType
-from app.models.scenario import Scenario
+from app.models.ref import TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
@@ -391,6 +389,64 @@ class TestEntryIntegration:
             "description": "Test",
             "purchased_on": "2026-01-05",
         })
+        assert resp.status_code == 404
+
+    def test_a_crafted_patch_on_a_generated_rows_cell_shows_nothing(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+        seed_companion,
+    ):
+        """The owner sets a generated row's own ``companion_visible``; nothing changes.
+
+        The popover renders no visibility control for a template-generated
+        row, so only a crafted PATCH reaches its cell -- and the write lands
+        (the inert write plan step ``balance:X-bi-1`` left unrefused).  The
+        row's template is hidden, so the row stays off the companion page
+        and its entries door stays 404: both surfaces decide by the one
+        accessor, ``visible_to_companion``, and the dead cell they no longer
+        have a public name to read says nothing (plan step ``X-bi-1b``,
+        finding **BAL-482**).  Through the application's own doors, end to
+        end, which is what the model-level seal tests cannot see.
+        """
+        template = _make_template(
+            seed_user, companion_visible=False, track=True, name="Hidden",
+        )
+        txn = _make_txn(seed_user, seed_periods_today[0], template, name="Hidden")
+        # The positive control: a row the companion MAY see, in the same
+        # period, so an empty page cannot pass the absence check below.
+        shown = _make_template(
+            seed_user, companion_visible=True, name="Shown",
+        )
+        _make_txn(seed_user, seed_periods_today[0], shown, name="Shown")
+        db.session.commit()
+        txn_id = txn.id
+
+        resp = auth_client.patch(f"/transactions/{txn_id}", data={
+            "companion_visible": "true",
+            "version_id": txn.version_id,
+        })
+        assert resp.status_code == 200
+        db.session.expire_all()
+        # The cell took the write: the row would be shown by a reader of it.
+        cell = db.session.execute(
+            Transaction.__table__.select()
+            .with_only_columns(Transaction.__table__.c.companion_visible)
+            .where(Transaction.__table__.c.id == txn_id)
+        ).scalar_one()
+        assert cell is True
+        assert db.session.get(Transaction, txn_id).visible_to_companion is False
+
+        # The owner's request above cached the owner on ``g._login_user``,
+        # and the ``db`` fixture holds ONE app context for the whole test,
+        # so the companion's requests below would be answered as the owner
+        # without this -- the trap ``test_adversarial/test_session_invalidation``
+        # names and resets the same way.
+        g.pop("_login_user", None)
+        comp = _login_companion(app)
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
+        assert resp.status_code == 200
+        assert b"Shown" in resp.data
+        assert b"Hidden" not in resp.data
+        resp = comp.get(f"/transactions/{txn_id}/entries")
         assert resp.status_code == 404
 
     def test_companion_cannot_guess_txn_id(

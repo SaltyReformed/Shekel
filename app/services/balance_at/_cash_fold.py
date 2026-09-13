@@ -44,7 +44,7 @@ so an account and the pass's own derivations were independent arguments that
 agreed only because each call site named one ``ctx`` three times -- finding
 **N-354**.  Now :func:`assembled_fold` is the ONE door: it memoizes the fold on
 the pass and refuses an account the pass does not own
-(:func:`~._context._memoize_once`), and every reader below takes the assembled
+(:func:`~._memoize._memoize_once`), and every reader below takes the assembled
 record and carries no account and no clock at all.  There is nothing left to
 pair wrongly.
 
@@ -124,7 +124,8 @@ from app.services.cash_ledger import (
 from app.services.pay_calendar import FiledRow, PayCalendar, PeriodWindow
 
 from ._assertions import CashAnchorCorrection, assertion_corrections
-from ._context import BalanceContext, _memoize_once
+from ._context import BalanceContext
+from ._memoize import _memoize_once
 from ._fold import sample_cumulative
 
 _ZERO_MONEY = Decimal("0.00")
@@ -192,7 +193,7 @@ class AssembledCashFold:  # pylint: disable=too-many-instance-attributes
             the account's own modelled rule, its latest assertion and its
             contribution feed onto these steps -- could be handed the two for
             different accounts.  The pass refuses a foreign account where it
-            MEMOIZES (``_context._memoize_once``); that reader memoizes nothing,
+            MEMOIZES (``_memoize._memoize_once``); that reader memoizes nothing,
             so the pairing is bound HERE, on the value, rather than by a rule
             its caller has to keep.  An adversarial review of X-i4's first build
             measured the gap it closes: an account of one owner resolved onto a
@@ -251,7 +252,7 @@ class AssembledCashFold:  # pylint: disable=too-many-instance-attributes
         ``Account``** -- which :func:`~._asset_fold.resolve` does, folding the
         account's own modelled rule, its latest assertion and its contribution
         feed onto these steps.  The pass refuses a foreign account where it
-        MEMOIZES (:func:`~._context._memoize_once`); such a reader memoizes
+        MEMOIZES (:func:`~._memoize._memoize_once`); such a reader memoizes
         nothing, so the rule lives on the VALUE instead and every reader that
         needs it asks the same one rather than writing its own.
 
@@ -287,7 +288,7 @@ def assembled_fold(
     ``ctx.amounts(), ctx.as_of`` by hand -- values that agreed only because one
     ``ctx`` happened to be named two or three times, with nothing checking the
     account against the ``user_id`` that pass pins (finding **N-354**).  The
-    refusal is :func:`~._context._memoize_once`'s rather than this function's,
+    refusal is :func:`~._memoize._memoize_once`'s rather than this function's,
     because creating per-account state on a pass is the thing that must be
     bound and that is the only way to create it.
 

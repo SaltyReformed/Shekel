@@ -5,7 +5,7 @@
  * no money math; every figure this page shows is computed server-side.
  *
  *   1. What-if debounce: edits to ``.js-whatif-input`` fields (SWR /
- *      assumed return / merit horizon) dispatch a debounced
+ *      assumed return / each recurring raise's end-year pair) dispatch a debounced
  *      ``shekel:readiness-whatif`` event; edits to ``.js-lever-input``
  *      stepper fields dispatch ``shekel:lever-refresh``.  ONE hidden
  *      trigger element in dashboard.html listens for both (``from:body``)

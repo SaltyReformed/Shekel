@@ -35,6 +35,133 @@ from decimal import Decimal
 
 from app.utils.money import round_money
 
+#: The two answers to "how long is this recurring raise believed?" (plan step
+#: **salary:S3-c**, ruling **R-SAL13**).  A MODE rather than a bare year,
+#: because a form cannot tell an unanswered number input from a deliberate "no
+#: end year", and the developer ruled on 2026-09-05 that a recurring raise is
+#: ASKED rather than defaulted -- a default is a global belief in per-raise
+#: clothing, which is the shape the deleted ``merit_raise_horizon_years`` had.
+#: The mode is AUTHORITATIVE: "no end year" resolves to ``None`` whatever the
+#: year box holds, so the two controls cannot disagree and no rule has to hold
+#: them in step (rule 14: delete a home rather than keep two in step).
+#:
+#: **They live here, in the SERVICE tier, since plan step salary:S3-f-2b**,
+#: where they were private constants of the salary schema.  Two doors answer
+#: the question now -- the salary form (``RaiseCreateSchema``) and the
+#: ``/retirement`` rail's per-raise probe -- and the rule that grades an
+#: answer needs the ROW's effective year, which only the service holding the
+#: rows has.  The schemas import the vocabulary from here; no service imports a
+#: schema (the direction seven schema modules already take).
+RAISE_END_MODE_YEAR = "year"
+RAISE_END_MODE_NONE = "none"
+RAISE_END_MODES = (RAISE_END_MODE_YEAR, RAISE_END_MODE_NONE)
+
+#: The window a raise's YEAR -- effective or terminal -- may fall in: the ONE
+#: home of the numbers ``ck_salary_raises_valid_effective_year`` and
+#: ``ck_salary_raises_valid_terminal_year`` bound the columns by.  The schemas
+#: build their per-control ``Range`` from these (the early message on the
+#: control); :func:`end_year_of` states the ceiling as a clause of the rule,
+#: because ruling **R-SAL22** spells the rule as *not before the effective year
+#: and not past 2100* and a service door resolving through the rule alone must
+#: refuse what the column would.
+RAISE_YEAR_MIN = 2000
+RAISE_YEAR_MAX = 2100
+
+
+class EndYearError(ValueError):
+    """A recurring raise's end-year answer breaks :func:`end_year_of`'s rule.
+
+    Carries WHICH half of the answer is wrong so a form can render the message
+    on the right control: the salary schema maps ``"mode"`` to its
+    ``raise_end_mode`` field and ``"year"`` to ``terminal_year``; the rail's
+    probe reports it against the raise's row.
+
+    Attributes:
+        field: ``"mode"`` or ``"year"``.
+        message: The sentence the owner reads.
+    """
+
+    def __init__(self, field: str, message: str) -> None:
+        """Record which half failed and why.
+
+        Args:
+            field: ``"mode"`` or ``"year"``.
+            message: The sentence the owner reads.
+        """
+        super().__init__(message)
+        self.field = field
+        self.message = message
+
+
+def end_year_of(mode: "str | None", year: "int | None", effective_year: int) -> "int | None":
+    """Resolve a recurring raise's end-year answer through the ONE rule.
+
+    **The one statement of what a valid answer is** (ruling **R-SAL22**: ONE
+    end-year rule, spelled once and shared).  Until plan step salary:S3-f-2b it
+    lived inside ``RaiseCreateSchema.validate_end_year`` against the payload's
+    own effective year; the ``/retirement`` rail's per-raise probe asks the
+    same question of the STORED row, and S3-f-3's Save will ask it a third
+    time, so the rule moved to where all three can reach it.  It mirrors the
+    two CHECKs that bound the column and the ruling that the answer is asked:
+
+    * the mode must be answered (``R-SAL13``: an unanswered end year would
+      silently mean *indefinitely*, so it is REFUSED rather than believed);
+    * under :data:`RAISE_END_MODE_NONE` the year box is IGNORED -- the mode is
+      authoritative, so there is no value left to contradict anything;
+    * under :data:`RAISE_END_MODE_YEAR` a year is required, it cannot precede
+      the raise's effective year
+      (``ck_salary_raises_terminal_year_not_before_effective``), and it cannot
+      pass :data:`RAISE_YEAR_MAX` (``ck_salary_raises_valid_terminal_year``).
+
+    The schemas ALSO state the window as a ``Range`` on their year controls,
+    built from the same two constants, so the owner reads the refusal on the
+    control before this runs; on a schema path the ceiling clause here cannot
+    fire, and it is kept because the rule is the rule wherever it is asked
+    (an adversarial review of this step: a door resolving through this
+    function alone would otherwise store 2101 and die on the CHECK).  Whether
+    the raise is recurring at all is the caller's question: a one-time raise
+    has no end-year answer to resolve
+    (``ck_salary_raises_terminal_year_only_on_a_recurring_raise``).
+
+    Args:
+        mode: The answer's kind -- one of :data:`RAISE_END_MODES`, or anything
+            else (``None`` included) for *unanswered*.
+        year: The year box's value, or ``None`` for empty.
+        effective_year: The year the raise first applies -- the payload's on
+            the salary form, the ROW's on the rail.
+
+    Returns:
+        The resolved terminal year: ``None`` for *no end year*, else *year*.
+
+    Raises:
+        EndYearError: The mode is unanswered, the year is missing where the
+            mode demands one, the year precedes *effective_year*, or the year
+            is past :data:`RAISE_YEAR_MAX`.
+    """
+    if mode not in RAISE_END_MODES:
+        raise EndYearError(
+            "mode",
+            "Say how long this recurring raise is believed: pick an end "
+            "year, or say it has none.",
+        )
+    if mode == RAISE_END_MODE_NONE:
+        return None
+    if year is None:
+        raise EndYearError(
+            "year", "Enter the last year this raise is believed to happen.",
+        )
+    if year < effective_year:
+        raise EndYearError(
+            "year",
+            f"A raise cannot end before it starts: it takes effect in "
+            f"{effective_year}.",
+        )
+    if year > RAISE_YEAR_MAX:
+        raise EndYearError(
+            "year", f"A raise cannot be believed past {RAISE_YEAR_MAX}.",
+        )
+    return year
+
 
 @dataclass(frozen=True)
 class RaiseTerms:
@@ -386,4 +513,16 @@ def get_raise_event(raises, period):
 
     return ", ".join(events)
 
-__all__ = ["RaiseTerms", "apply_raises", "get_raise_event", "terms_of"]
+__all__ = [
+    "EndYearError",
+    "RAISE_END_MODES",
+    "RAISE_END_MODE_NONE",
+    "RAISE_END_MODE_YEAR",
+    "RAISE_YEAR_MAX",
+    "RAISE_YEAR_MIN",
+    "RaiseTerms",
+    "apply_raises",
+    "end_year_of",
+    "get_raise_event",
+    "terms_of",
+]

@@ -71,7 +71,8 @@ from app.services.recurring_transfer_query import (
 )
 
 from ._confirmed_view import confirmed_view
-from ._context import BalanceContext, _memoize_once
+from ._context import BalanceContext
+from ._memoize import _memoize_once
 
 
 @dataclass(frozen=True)
@@ -159,7 +160,7 @@ def resolved_loan(
     The seam's ONE funnel for a whole-loan read: it fills the read pass's per-loan
     resolution cache (:attr:`~app.services.balance_at.BalanceContext.loans`) from
     :func:`resolve_loan_bundle` through the shared store-once primitive
-    (``_context._memoize_once``), so a loan is loaded and resolved at most once per
+    (``_memoize._memoize_once``), so a loan is loaded and resolved at most once per
     pass however many surfaces ask.  Every seam consumer that wants a loan's
     schedule, payment, rate, payment feed, or standing extra goes through here, so
     the loan tile's figures, the net-worth hero, the liability band, and the debt
@@ -426,10 +427,13 @@ def is_standing_loan_payment(
       NO authored stop: archiving is the door to stop it early (ruling
       **R-R59**, developer 2026-09-05, taken at R7d-f).  Its "Ends" control
       renders the composed door's derived answer, locked; a stated bound is
-      refused; and the column the chokepoints cache the payoff into is read as
-      that cache rather than as the owner's word (ruling **R-R56**,
-      :func:`authored_closing`) until R7d-g NULLs it.  A second transfer's
-      authored stop is its owner's and binds beside the derived one.
+      refused -- at create as well, where the identity is asked the other way
+      round, a loan holding no active payment making the new definition its
+      payment (``settle_first_occurrence``, ruling **R-R60**); and the column
+      the chokepoints cache the payoff into is read as that cache rather than
+      as the owner's word (ruling **R-R56**, :func:`authored_closing`) until
+      R7d-g NULLs it.  A second transfer's authored stop is its owner's and
+      binds beside the derived one.
 
     **"Standing" is the seam's own word**
     (:func:`~app.services.recurring_transfer_query.standing_payment`): the
@@ -455,7 +459,7 @@ def is_standing_loan_payment(
             :func:`~app.services.loan_recurrence_sync.loan_payment_window` is.
             **Must belong to ``ctx.user_id``**: the pass refuses to memoise a
             foreign loan (``ForeignAccountError`` from its store-once
-            primitive, ``_context._memoize_once``) rather than answering
+            primitive, ``_memoize._memoize_once``) rather than answering
             about it.
         ctx: The read pass.  Its per-loan resolution memo is where the
             standing payment is read from, so a render or a refusal that has

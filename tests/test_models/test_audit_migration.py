@@ -32,14 +32,12 @@ import pytest
 from sqlalchemy.exc import ProgrammingError
 
 from app.audit_infrastructure import (
-    AUDITED_TABLES,
     EXPECTED_TRIGGER_COUNT,
     apply_audit_infrastructure,
     remove_audit_infrastructure,
 )
 from app.enums import PostingKindEnum, PostingSourceEnum
 from app.extensions import db
-from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
@@ -104,7 +102,7 @@ _DEFAULT_ADMIN_URL = "postgresql:///postgres"
 #: separates them is price: the prefix cost a live environment read in three
 #: files that had to agree, while this lock is one advisory acquisition on a
 #: connection the fixture opens anyway, and it fails with a sentence naming the
-#: cause instead of a bare 30-second timeout.  Deleting it is a reasonable
+#: cause instead of a bare per-test timeout.  Deleting it is a reasonable
 #: follow-up; do not read its presence as evidence the hazard is live.
 #:
 #: Reproduced deterministically: two prefixed runs of this one module in
@@ -148,8 +146,8 @@ def _take_the_role_lock(timeout_seconds: int = 30):
     statement can be skipped by an exception.
 
     **It polls with a deadline rather than blocking**, so a peer that holds the
-    lock produces a sentence naming the cause instead of the suite's 30-second
-    per-test timeout naming nothing.
+    lock produces a sentence naming the cause instead of the suite's per-test
+    timeout naming nothing.
 
     Args:
         timeout_seconds: How long to wait before giving up.

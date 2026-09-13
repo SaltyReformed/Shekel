@@ -12,9 +12,7 @@ import pytest
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
-from app.extensions import db
-from app.models.account import Account
+from app.enums import StatusEnum
 from app.models.category import Category
 from app.models.ref import TransactionType
 from app.models.scenario import Scenario
@@ -260,15 +258,16 @@ class TestCompanionAccessibleRoutes:
 
 
 class TestDecoratorOrder:
-    """Verify @login_required fires before @require_owner."""
+    """Verify the login gate answers before @require_owner is consulted."""
 
     def test_unauthenticated_user_gets_login_redirect(self, client):
         """Unauthenticated user hitting a guarded route gets login redirect.
 
-        This proves @login_required runs before @require_owner.
-        If the order were reversed, the unauthenticated user would
-        get 404 (from require_owner failing to find current_user.role_id)
-        instead of a redirect to /login.
+        The login gate (``app/login_gate.py``) answers before any view or
+        decorator runs.  Without it, ``require_owner`` would raise on the
+        anonymous principal's missing ``role_id`` (plan step
+        ``bank_import:X-gs``), not redirect -- so the redirect is the proof
+        that the gate ran first.
         """
         resp = client.get("/grid")
         assert resp.status_code == 302

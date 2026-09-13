@@ -34,8 +34,19 @@ directly, so a row belonging to another user, another account, a
 non-contributing row, a card purchase or a row another match has claimed is
 not a candidate and cannot be reached by crafting a request.
 
+**The row lock every DOOR of this package takes on a bank line lives here
+too**, since plan step ``bank_import:X-gi-5``: its MODE is stated once in
+:func:`locked_for_write` (ruling **bank_import:R-BI5**) and its ORDER once in
+the query :func:`load_lines` and :func:`lock_lines` share, so a door's own
+locked read and the pass's up-front one cannot come to take the same rows in
+two orders (finding **N-471**).  The writers OUTSIDE the package -- a
+re-import's UPDATE of a recorded line, an import delete's cascade -- are
+named on :func:`_lines_on` and :func:`lock_lines`, one composed with and one
+not.
+
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
-frozen dataclasses out, no Flask import.  It READS and never writes.
+frozen dataclasses out, no Flask import.  It READS and never writes; a lock is
+a read's claim on the row, not a write.
 """
 
 from __future__ import annotations
@@ -49,6 +60,188 @@ from ._offers import CandidateRow, RowKind
 from ._scope import ReviewScope
 from ._submission import MatchSubmission, ReviewedRow
 from ._undisposed import skipped_among
+
+
+def locked_for_write(query):
+    """Return *query* reading its bank lines under the lock a WRITER holds.
+
+    **``FOR NO KEY UPDATE``, and the mode is stated here ONCE** (ruling
+    **bank_import:R-BI5**, plan step ``bank_import:X-gi-5``).  Both halves of
+    ruling **R-HP**'s *exactly one verb* are app-tier reads across two tables
+    -- :func:`load_lines` asks whether a SKIP answers the line, and
+    :func:`~._skipping.skip_line` asks whether a MATCH does -- and write
+    transactions run at ``READ COMMITTED`` (:mod:`app.db_transaction`), so
+    two tabs otherwise interleave into a line carrying BOTH answers with
+    nothing raising.  No key can catch it, because the pair spans two tables.
+    What both writers share is the bank line row itself, which both of their
+    foreign keys reference, so each locks it BEFORE reading the other table
+    and the two serialise on the one row they have in common.
+
+    **Why this mode and not its neighbours.**  Not ``FOR KEY SHARE``: that is
+    what an ordinary foreign-key insert already takes implicitly, and two of
+    those are compatible with each other, so it would serialise nothing.  Not
+    ``FOR UPDATE``: it also blocks the ``FOR KEY SHARE`` a foreign-key check
+    takes, so it would hold up an unrelated writer referencing the same line
+    for no benefit, and it is the strength
+    :mod:`app.services.credit_workflow` argues would deadlock against exactly
+    those checks.  ``FOR NO KEY UPDATE`` conflicts with itself, which is the
+    whole of what the exclusivity needs.  Named by adversarial security
+    review 2026-09-02.
+
+    **The flag is ``key_share=True``, and stating it is the point of this
+    function.**  SQLAlchemy renders ``with_for_update(key_share=True)`` as
+    ``FOR NO KEY UPDATE`` and ``key_share=False`` -- the default, and what
+    BOTH sites passed from plan step ``bank_import:X-gj-4a`` until this one --
+    as the stronger ``FOR UPDATE``, so the two docstrings that argued the
+    paragraph above each sat over a statement doing the other thing, and no
+    test read the emitted text.  The compiled statement is what
+    ``tests/test_services/test_statement_match/test_lock_order.py`` grades.
+    One helper rather than a flag at each site is what stops the inversion
+    coming back at the next site: :func:`load_lines`, :func:`lock_lines` and
+    :func:`~._skipping._line_on` all take the lock through here, and nothing
+    in this package spells ``with_for_update`` on a bank line itself.
+
+    Args:
+        query: A query whose FROM list holds
+            :class:`~app.models.statement_import.BankStatementLine`.
+
+    Returns:
+        The same query, locking the bank line rows it returns for the rest of
+        this transaction.
+    """
+    return query.with_for_update(of=BankStatementLine, key_share=True)
+
+
+def _lines_on(account_id: int, line_ids: "frozenset[int]"):
+    """Return the query for *line_ids* on *account_id*, in THE lock order.
+
+    **One spelling of the order every locked read of bank lines takes**
+    (plan step ``bank_import:X-gi-5``): ascending by ``id``.
+    :func:`load_lines` reads through it per act and :func:`lock_lines` reads
+    through it once per PASS, and sharing the query rather than the sentence
+    is what makes the two orders one.  Two spellings that agree today are
+    still two spellings (``CLAUDE.md`` rule 14).
+
+    **``id`` and not ``(posted_on, id)``, which this read ordered by until
+    that step, because the order has to compose with the other ORDERED
+    writer of these rows and only ``id`` does.**  A re-import fills what a later export
+    states and the recorded line does not
+    (``statement_import._record._absorb_gained_facts``: running balance,
+    transaction day, merchant), and the ORM flushes a mapper's UPDATEs sorted
+    by PRIMARY KEY (``sqlalchemy.orm.persistence._sort_states``), so that
+    transaction takes its row locks in id order.  Ids are not monotone in
+    posted day across imports -- a fresher export inserts a finalized swipe
+    into an earlier day's block -- so a pass ordered by day held a later-id
+    line while wanting an earlier one that the re-import held: the cycle one
+    order over.  Named by adversarial design review 2026-09-12.  ``id`` also
+    rests on nothing that can move; a day order held only while no writer
+    ever changed ``posted_on``.  Nothing reads the returned list's order:
+    every consumer sums it, takes its ``max`` or ``min``, or iterates to
+    insert.
+
+    **The ORDER BY is what orders the LOCKS, and that is PostgreSQL's
+    documented behaviour rather than an assumption**: a locking ``SELECT``
+    applies ``ORDER BY`` first and then takes each row's lock as the ordered
+    rows are returned -- the plan is ``LockRows`` above the ordering node,
+    re-measured by ``test_lock_order`` on every run -- so two transactions
+    running it over overlapping sets wait on the first row they share and
+    never cross.
+
+    Args:
+        account_id: The account whose lines may be reached.  A FILTER rather
+            than a check on fetched rows: an id naming another account's line
+            returns nothing, so a crafted body can neither read nor lock a
+            row that is not this pass's to touch.
+        line_ids: The ids to read.
+
+    Returns:
+        The unlocked query; callers that write wrap it in
+        :func:`locked_for_write`.
+    """
+    return (
+        db.session.query(BankStatementLine)
+        .filter(
+            BankStatementLine.account_id == account_id,
+            BankStatementLine.id.in_(line_ids),
+        )
+        .order_by(BankStatementLine.id)
+    )
+
+
+def lock_lines(account_id: int, line_ids: "frozenset[int]") -> None:
+    """Take every bank-line lock a PASS will need, in one order, up front.
+
+    Plan step ``bank_import:X-gi-5``, finding **N-471**.  Each door locks the
+    line it writes through :func:`load_lines` or
+    :func:`~._skipping._line_on`, and each of those reads is ordered -- but
+    :func:`~._batch.apply_reviewed` runs a door per ITEM across four arms, so
+    a pass took its locks in the order the SUBMISSION listed them, one
+    ordered read at a time.  Two concurrent presses naming the same lines in
+    different arms took them in opposite orders, PostgreSQL detected the
+    cycle and aborted one mid-batch: the loser's whole press rolled back and
+    was answered with the generic *Something went wrong* sentence
+    (:func:`~app.routes.accounts._statement_doors.run_statement_fragment_door`
+    catches the database error) over an ERROR-level traceback.
+    **Reproduced 2026-09-12** with a forced interleave: press A recording a
+    LATE line then skipping an EARLY one, press B the reverse, each paused
+    after its first lock -- A died ``DeadlockDetected`` and B landed both.
+
+    **This reads every line the batch names ONCE, in :func:`_lines_on`'s
+    order, before any arm runs.**  A row lock is held by the TRANSACTION --
+    outside every item's savepoint, so a refused item's rollback releases
+    the door's re-take and not this -- and a door's own locked read a moment
+    later re-takes a lock it already holds and blocks on nothing; the order
+    two presses take their line locks in is therefore this read's, which is
+    the same for both, and they queue on the first line they share instead
+    of crossing.  The doors keep their own locks: each is still safe called
+    on its own, and a pass carrying a line this read could not lock -- one
+    another account holds -- reaches the door's own refusal for it, one
+    item, with the rest still landing.
+
+    **It changes no item's order and no savepoint's** -- a solo press's
+    receipt is byte-identical, which the ledger row's remedy sentence had
+    wrong (*it changes which savepoint runs first*): that would be true of
+    SORTING the items, which is not the remedy.  What moves is WHEN a press
+    that must wait does so: before its first item rather than part-way
+    through, so every line the batch names is held for the whole pass, and a
+    pair that would have deadlocked on a SHARED LINE now ends as one press
+    landing and the other's items on that line landing as repeats or
+    refusing as already answered.
+
+    **What it does not remove is every other lock a pass takes**, and the
+    claim above is scoped to the lines on purpose.  An item that settles a
+    row locks ``budget.transactions`` and, through the posting sync, takes
+    the per-user advisory lock, which is then held to commit -- so two presses
+    of one owner sharing NO line, or a press against a concurrent settle,
+    can still cross on those (finding **N-193**'s class, owner
+    ``balance:X-bn``), and an import DELETE cascades through these rows in
+    the referential trigger's own scan order, which no ``ORDER BY`` of ours
+    composes with.  This read closes the cycle on the BANK LINES, which is
+    the one this door created by locking per item.
+
+    **It takes the lock under the account FILTER**, so ids the pass has no
+    business with lock nothing, and it returns nothing: what a door needs to
+    know about a line it reads for itself under the same lock.  An empty set
+    emits no statement at all, which is the ordinary untouched-form press.
+
+    **The per-user advisory lock is not taken here, and when
+    ``balance:X-bn`` brings it to this door it goes ABOVE this read**: that
+    step's invariant is that the advisory lock is a transaction's FIRST lock,
+    and this is the pass's first ROW lock.  Taking the advisory lock at one
+    door ahead of that step would put this door's order against every door
+    it has not reached yet, which is the cycle finding **N-193** records.
+
+    Args:
+        account_id: The pass's account, which is the ONE statement of whose
+            lines may be locked.
+        line_ids: Every bank line the batch names, across all of its arms
+            (:attr:`~._batch.ReviewedBatch.line_ids`).
+    """
+    if not line_ids:
+        return
+    locked_for_write(
+        _lines_on(account_id, line_ids).with_entities(BankStatementLine.id)
+    ).all()
 
 
 def load_lines(
@@ -138,7 +331,7 @@ def load_lines(
             longer open.
 
     Returns:
-        The lines, ascending by posted day then id.
+        The lines, ascending by id (:func:`_lines_on`).
 
     Raises:
         ValidationError: When an id names no line on this account, names one
@@ -159,35 +352,25 @@ def load_lines(
             "changed."
         )
     # **A WRITING CALLER READS THE LINES LOCKED, AND BEFORE THE SKIP TEST
-    # BELOW.**  Both halves of ruling R-HP's exclusivity are app-tier reads
-    # across two tables -- this asks whether a skip answers the line, and
-    # :func:`~._skipping.skip_line` asks whether a match does -- so under
-    # ``READ COMMITTED`` two tabs otherwise interleave into a line carrying
-    # BOTH answers, which no key can catch.  Locking the bank line, which both
-    # writers' foreign keys reference, is what serialises them.
-    # ``FOR NO KEY UPDATE`` for the reason :func:`~._skipping._line_on`
-    # states: ``FOR KEY SHARE`` is what an ordinary foreign-key insert already
-    # takes, and two of those are compatible with each other.
+    # BELOW.**  Which lock, and why it has to precede that test, is
+    # :func:`locked_for_write`'s docstring: this door asks whether a skip
+    # answers the line and :func:`~._skipping.skip_line` asks whether a match
+    # does, and the row lock is what keeps two tabs from interleaving into a
+    # line carrying both answers.
     #
-    # **The ORDER BY gives every caller here one lock order, which bounds the
-    # deadlock risk WITHIN one call and not across a batch.**
-    # :func:`~._batch.apply_reviewed` loops its items and calls a door per
-    # item, so a bulk apply takes N separately-ordered reads in SUBMISSION
-    # order; two concurrent presses whose items name the same lines in
-    # opposite order can still deadlock. That is finding **N-471** and is not
-    # narrowed here, because the remedy is an ordering decision in the batch
-    # and would change which item's savepoint runs first on a money door.
-    # Named by adversarial design review 2026-09-02.
-    query = (
-        db.session.query(BankStatementLine)
-        .filter(
-            BankStatementLine.account_id == account_id,
-            BankStatementLine.id.in_(line_ids),
-        )
-        .order_by(BankStatementLine.posted_on, BankStatementLine.id)
-    )
+    # **The ORDER is :func:`_lines_on`'s, shared with the read the PASS takes
+    # before its arms.**  Until plan step ``bank_import:X-gi-5`` the order
+    # here bounded the deadlock risk WITHIN one call only:
+    # :func:`~._batch.apply_reviewed` calls a door per item, so a bulk apply
+    # took N separately-ordered reads in SUBMISSION order and two concurrent
+    # presses naming the same lines in opposite order deadlocked (finding
+    # **N-471**, named by adversarial design review 2026-09-02).
+    # :func:`lock_lines` now takes every one of a pass's locks first, through
+    # the same query, so this read re-takes locks its transaction already
+    # holds and the order across a batch is that read's.
+    query = _lines_on(account_id, line_ids)
     if for_write:
-        query = query.with_for_update(of=BankStatementLine, key_share=False)
+        query = locked_for_write(query)
     lines = query.all()
     if len(lines) != len(line_ids):
         raise ValidationError(

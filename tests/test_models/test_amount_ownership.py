@@ -74,6 +74,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from tests._test_helpers import (
     generate_row_of,
+    repriced_by_the_owner,
     load_migration_module,
     make_every_period_rule,
     settle_day_columns,
@@ -87,7 +88,6 @@ from app.services.cash_ledger import (
 from app.utils.balance_predicates import is_balance_contributing
 from app.services.row_valuation import settled_contribution
 from app.models.loan_payment_settings import LoanPaymentSettings
-from app.services.amount_ownership import state_own_amount
 from app.models.transfer_template import TransferTemplate
 
 _MIGRATION = load_migration_module("b3f7c2a9d514_amount_ownership.py")
@@ -1009,9 +1009,7 @@ class TestTheDowngradeRefusesToInventAFigure:
             fixture_row = db.session.get(
                 Transaction, seed_full_user_data["transaction"].id,
             )
-            state_own_amount(fixture_row, Decimal("1200.00"))
-            fixture_row.is_override = True
-            db.session.flush()
+            repriced_by_the_owner(fixture_row, "1200.00")
             xfer = _make_transfer(
                 seed_full_user_data,
                 amount_ownership=AmountOwnership.derived(
