@@ -41,6 +41,7 @@ from app.services import (
     retirement_projection,
 )
 from app.services.retirement_plan import load_retirement_inputs, picture_at
+from app.services.salary_raises import terms_of
 from tests._test_helpers import (
     rhythm_of,
     all_periods,
@@ -222,17 +223,40 @@ def _gap_inputs(profile, cadence_days=14):
     )
 
 
+def _stored_terms(profile):
+    """The raise set a profile is believed under when nothing is probed: its rows.
+
+    What :meth:`~app.services.retirement_plan.PlanPoint.terms_for` answers at
+    the stored plan, spelled directly so these pure cases need no plan point.
+    """
+    return terms_of(profile.raises)
+
+
+def _believed(pay):
+    """The believed payroll ``compute_gap_net_biweekly`` takes, at the stored set.
+
+    Since plan step salary:S3-f-2b the producer takes the current paycheck
+    and the believed raise set together as one
+    :class:`~app.services.retirement_dashboard_service.BelievedPayroll`; these
+    cases hand in the paycheck each names under the rows' own terms.
+    """
+    return retirement_dashboard_service.BelievedPayroll(
+        terms_for=_stored_terms, current_paycheck=pay,
+    )
+
+
 def _current_paycheck(net_pay, gross_biweekly, annual_salary):
     """The engine's breakdown for one current paycheck, with hand-set figures.
 
     ``compute_gap_net_biweekly`` takes the current paycheck as the engine's own
     :class:`~app.services.paycheck_calculator.PaycheckBreakdown` since plan
-    step salary:S3-f-2a, and reads three things off it: ``net_pay``, the
-    ``take_home_rate_pct`` the earnings derive from net over gross, and --
-    through that rate's ``None`` -- whether the gross is positive.  These
-    cases are pure unit cases over the scaling arithmetic, so the breakdown
-    is built here with the figures each case names rather than priced by the
-    engine, which is what keeps the asserted numbers hand-checkable.
+    step salary:S3-f-2a (inside :func:`_believed` since S3-f-2b), and reads
+    three things off it: ``net_pay``, the ``take_home_rate_pct`` the earnings
+    derive from net over gross, and -- through that rate's ``None`` -- whether
+    the gross is positive.  These cases are pure unit cases over the scaling
+    arithmetic, so the breakdown is built here with the figures each case
+    names rather than priced by the engine, which is what keeps the asserted
+    numbers hand-checkable.
 
     Args:
         net_pay: The paycheck's net, as the case states it.
@@ -302,8 +326,8 @@ class TestComputeGapNetBiweekly:
         # salary_by_year is supplied, so the helper never recomputes it (the
         # ``None`` branch is the only one that opens a salary path).
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            _gap_inputs(profile), pay, date(2055, 1, 1), salary_by_year,
-            _AS_OF,
+            _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
+            salary_by_year, _AS_OF,
         )
         assert result == Decimal("4030.77")
 
@@ -333,8 +357,8 @@ class TestComputeGapNetBiweekly:
             (2055, Decimal("65000.00")),
         ]
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            _gap_inputs(profile), pay, date(2055, 1, 1), salary_by_year,
-            _AS_OF,
+            _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
+            salary_by_year, _AS_OF,
         )
         assert result == Decimal("1666.67")
 
@@ -351,7 +375,7 @@ class TestComputeGapNetBiweekly:
             Decimal("1800.00"), Decimal("2250.00"), Decimal("58500.00"),
         )
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            _gap_inputs(profile), pay, None,
+            _gap_inputs(profile), _believed(pay), None,
             [(2026, Decimal("120000.00"))], _AS_OF,
         )
         assert result == Decimal("1800.00")
@@ -367,7 +391,7 @@ class TestComputeGapNetBiweekly:
         plan step salary:S3-f-2a made the breakdown the argument.
         """
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            _gap_inputs(SalaryProfile()), None, date(2055, 1, 1),
+            _gap_inputs(SalaryProfile()), _believed(None), date(2055, 1, 1),
             [(2055, Decimal("131000.00"))], _AS_OF,
         )
         assert result == Decimal("0")
@@ -385,7 +409,7 @@ class TestComputeGapNetBiweekly:
         profile = SalaryProfile()
         pay = _current_paycheck(Decimal("1500.00"), Decimal("0"), Decimal("0"))
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            _gap_inputs(profile), pay, date(2055, 1, 1),
+            _gap_inputs(profile), _believed(pay), date(2055, 1, 1),
             [(2055, Decimal("131000.00"))], _AS_OF,
         )
         assert result == Decimal("1500.00")
@@ -442,10 +466,10 @@ class TestTheRenderDayOpensTheSalaryPath:
         )
 
         early = retirement_dashboard_service.compute_pension_summary(
-            [pension], date(2027, 3, 20),
+            [pension], date(2027, 3, 20), _stored_terms,
         )
         late = retirement_dashboard_service.compute_pension_summary(
-            [pension], date(2028, 3, 20),
+            [pension], date(2028, 3, 20), _stored_terms,
         )
 
         assert [year for year, _ in early.salary_by_year] == [
@@ -475,7 +499,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         # gross ($100,000.00 / 26 = $3,846.15) is scaled by the take-home rate
         # (2000 / 2500 = 0.80) -> $3,076.92.
         before = retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, pay, date(2030, 6, 30), None, date(2027, 3, 20),
+            gap, _believed(pay), date(2030, 6, 30), None, date(2027, 3, 20),
         )
         assert before == Decimal("3076.92")
 
@@ -483,7 +507,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         # to the current net.  A producer reading its own clock would answer
         # the line above for both.
         after = retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, pay, date(2030, 6, 30), None, date(2032, 3, 20),
+            gap, _believed(pay), date(2030, 6, 30), None, date(2032, 3, 20),
         )
         assert after == Decimal("2000.00")
 
@@ -507,7 +531,7 @@ class TestTheRenderDayOpensTheSalaryPath:
         # $100,000 / 52 = $1,923.0769 -> $1,923.08; x 0.80 -> $1,538.464 ->
         # $1,538.46.
         assert retirement_dashboard_service.compute_gap_net_biweekly(
-            gap, pay, date(2030, 6, 30), None, date(2027, 3, 20),
+            gap, _believed(pay), date(2030, 6, 30), None, date(2027, 3, 20),
         ) == Decimal("1538.46")
 
     def test_the_RENDER_threads_its_own_day_into_the_salary_path(

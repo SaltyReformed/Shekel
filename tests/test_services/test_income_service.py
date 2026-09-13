@@ -1379,8 +1379,9 @@ class TestThePricerIsKeyedOnTheRaiseSet:
         pricer of its own -- the two-derivations-of-one-figure shape
         ``PlanPoint`` refuses one tier up, and one the pricer-count gate
         cannot see on a probe request, where a second pricer is also the
-        legitimate outcome.  The fourth spelling is the one S3-f-2's rail
-        will actually send: a probe carrying the stored end year unchanged.
+        legitimate outcome.  The fourth spelling is the one S3-f-2b's rail
+        actually sends on every refresh: a probe carrying the stored end year
+        unchanged.
         """
         with app.app_context():
             profile, row = self._profile_with_a_forever_raise(seed_user)

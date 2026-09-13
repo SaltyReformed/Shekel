@@ -23,10 +23,12 @@ rather than reconciling it.
 **The two values that make it one producer.**
 
 * :class:`PlanPoint` -- WHICH plan, RESOLVED: the withdrawal rate this plan is
-  solved at, whether it came from the settings or from a what-if slider, plus
-  the assumed return and the retire-later lever's month offset.  It is frozen and
-  hashable because it is the memo key, and resolved because a memo key must be
-  CANONICAL -- two spellings of one plan are the two derivations this module
+  solved at, whether it came from the settings or from a what-if slider, the
+  assumed return, the retire-later lever's month offset, and -- since plan step
+  salary:S3-f-2b -- the end year each recurring raise is BELIEVED through,
+  whether it came from the raise's row or from the rail's probe.  It is frozen
+  and hashable because it is the memo key, and resolved because a memo key must
+  be CANONICAL -- two spellings of one plan are the two derivations this module
   exists to remove.  Built through :attr:`RetirementInputs.stored_plan` and
   :meth:`RetirementInputs.plan_with`.
 * :class:`RetirementInputs` -- everything a render loads, loaded ONCE, and
@@ -48,13 +50,16 @@ from decimal import Decimal
 
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCadence, PeriodWindow
+from app.services.projection_inputs import price_payroll_feeds
 from app.services.retirement_dashboard_service import (
+    BelievedPayroll,
     GapInputs,
     PensionSummary,
     compute_current_paycheck,
     compute_gap_net_biweekly,
     compute_pension_summary,
     load_gap_inputs,
+    recurring_raises,
     resolve_estimated_tax_rate,
     resolve_planned_retirement_date,
     resolve_retirement_date_provenance,
@@ -73,6 +78,7 @@ from app.services.retirement_projection import (
     project_accounts_with_batch,
     resolve_projection_axis,
 )
+from app.services.salary_raises import EndYearError, RaiseTerms, end_year_of
 from app.utils.dates import add_months
 
 #: Percentage scaler, PUBLIC because the display boundary needs it: the blended
@@ -103,6 +109,39 @@ _UNSET_TAX_RATE = Decimal("0")
 
 # Funded means the quantized funded ratio reaches at least this value.
 _FULLY_FUNDED = Decimal("1")
+
+
+class RaiseProbeError(ValueError):
+    """A rail probe named a raise this owner has no recurring row for, or broke
+    the end-year rule against the row it named.
+
+    Raised by :meth:`RetirementInputs.plan_with` (plan step salary:S3-f-2b) so
+    the readiness route can answer a designed 422 rather than resolve a stale
+    bookmark or a URL edit into a silently unchanged plan.  Every probe that
+    failed is reported, not just the first, the way a schema reports every
+    field.
+
+    Attributes:
+        errors: ``{raise_id: message}`` -- one sentence per refused probe.
+    """
+
+    def __init__(self, errors: "dict[int, str]") -> None:
+        """Record every refused probe.
+
+        Args:
+            errors: ``{raise_id: message}``.
+        """
+        super().__init__(
+            "; ".join(f"raise {rid}: {msg}" for rid, msg in errors.items()),
+        )
+        self.errors = errors
+
+
+#: What a rail probe names a raise's end year as: :func:`~app.services
+#: .salary_raises.end_year_of`'s ``(mode, year)`` pair, keyed by raise id.  The
+#: readiness schema gathers it off the wire; :meth:`RetirementInputs.plan_with`
+#: resolves it against the rows.
+RaiseProbes = dict[int, tuple[str, int | None]]
 
 
 @dataclass(frozen=True)
@@ -153,11 +192,59 @@ class PlanPoint:
             stored number.  It means "each account grows at its own stored
             rate", which no single rate expresses.  Its input renders empty for
             the same reason (see ``dashboard.html``'s assumed-return row).
+        raise_end_years: One ``(raise_id, terminal_year)`` per RECURRING raise
+            on every ACTIVE profile -- the set the assumptions rail lists
+            (:func:`~app.services.retirement_dashboard_service.recurring_raises`)
+            -- sorted by raise id, each year RESOLVED: the row's own unless the
+            rail probed it, ``None`` for *no end year* (plan step
+            salary:S3-f-2b, rulings **R-SAL20** and **R-SAL21**).  The same
+            canonical-value discipline as ``swr``: a probe carrying the stored
+            year unchanged -- which every pre-filled rail row submits on every
+            refresh -- IS the stored plan, so the memo cannot hold two keys
+            for one belief.  Read through :meth:`terms_for`, never indexed by
+            a consumer.
     """
 
     month_offset: int
     swr: Decimal
     return_rate_override: Decimal | None
+    raise_end_years: tuple[tuple[int, int | None], ...]
+
+    def terms_for(self, profile) -> tuple[RaiseTerms, ...]:
+        """The raise set this point believes *profile* under.
+
+        Every row's terms, with each recurring raise's end year read off this
+        point where the point names the row.  A row the point does not name
+        -- a one-time raise, which carries no end year, or a raise on a
+        profile the rail does not list (an archived profile a pension still
+        points at) -- keeps its own stored year, so the answer is total over
+        any profile a reader hands it.
+
+        **This is the one producer of a believed set**, and every salary-path
+        reader on the picture takes one: the pension summary, the income
+        target, the current paycheck and the payroll feeds
+        (:func:`_derive_picture`).  At the stored point it equals
+        :func:`~app.services.salary_raises.terms_of` over the rows by VALUE,
+        which is what makes
+        :meth:`~app.services.income_service.PaycheckPricing.for_profile`
+        answer the pricer the rows already built rather than a second one.
+
+        Args:
+            profile: A :class:`~app.models.salary_profile.SalaryProfile`,
+                read for its ``raises``.
+
+        Returns:
+            The tuple of :class:`~app.services.salary_raises.RaiseTerms`, in
+            the rows' order.
+        """
+        believed = dict(self.raise_end_years)
+        return tuple(
+            replace(
+                RaiseTerms.of(row),
+                terminal_year=believed.get(row.id, row.terminal_year),
+            )
+            for row in profile.raises
+        )
 
 
 @dataclass(frozen=True)
@@ -170,10 +257,11 @@ class RetirementInputs:
     pension benefit, the projection axis and the per-account walk (the employer
     salary basis too, until salary:S3-e-2) -- is derived in :func:`picture_at`
     from these.  So is the current paycheck since plan step salary:S3-f-2a,
-    derived per point off the pass's pricer and varying with the point only
-    from S3-f-2b's raise set; for a profile that funds no account, the FIRST
-    derivation is where that profile's tax series loads (three queries the
-    loader issued itself before), and every later point is the memo's.
+    derived per point off the pass's pricer, and so are the payroll feeds
+    since salary:S3-f-2b; both vary with the point only through its raise
+    set.  For a profile that funds no account, the FIRST derivation at a set
+    is where that profile's tax series loads (three queries the loader issued
+    itself before), and every later point at that set is the memo's.
 
     **The precise invariant, because "point-independent" is not quite true of
     ``base_ctx`` and an earlier draft of this paragraph claimed it was**
@@ -214,10 +302,14 @@ class RetirementInputs:
             including the stored one -- so the employer salary basis is left
             ``None`` here rather than built and thrown away, which is what an
             earlier draft did once per render for nothing.
-        batch: The date-independent projection batch (deductions, contributions,
-            params, balances) loaded once from *base_ctx*.  Shared across every
-            point, which is what makes its seed memo a hit rather than a second
-            fold -- the single largest cost this step removes.
+        batch: The date-independent projection batch (payroll wiring and its
+            stored-set feeds, contributions, params, balances) loaded once from
+            *base_ctx*.  Shared across every point, which is what makes its
+            seed memo a hit rather than a second fold -- the single largest
+            cost this step removes.  Its FEEDS are the one part a point
+            re-derives (:func:`_believed_batch`, plan step salary:S3-f-2b):
+            priced from the same wiring under the point's raise set, on a copy
+            that shares this batch's memo.
         picture_memo: ``{PlanPoint: RetirementPicture}``.  Not a field a caller
             reads: it is :func:`picture_at`'s store, held here because the
             memo's LIFETIME is the render's.  Excluded from ``repr`` and from
@@ -250,23 +342,42 @@ class RetirementInputs:
 
     def plan_with(
         self, *, swr_override=None, return_rate_override=None,
+        raise_probes: RaiseProbes | None = None,
     ) -> PlanPoint:
-        """Resolve a what-if against this owner's stored settings.
+        """Resolve a what-if against this owner's stored settings and rows.
 
         **The canonicalising door.**  An override that equals the stored value
         resolves to the same :class:`PlanPoint` as no override at all, so the
         memo cannot hold two keys for one plan -- which matters because a
         saveable rail input is pre-filled with the stored value and therefore
-        submits it on every single fragment request.
+        submits it on every single fragment request.  The rail's per-raise
+        probe (plan step salary:S3-f-2b) is resolved HERE too, because
+        grading an end-year answer needs the raise's ROW -- its effective
+        year, and whether this owner has such a recurring raise at all -- and
+        the rows are what these inputs hold.  One door for every probe means
+        one place that refuses a stale bookmark, rather than a resolver that
+        refuses it and a point-builder that would have to refuse it again.
 
         Args:
             swr_override: A fractional safe-withdrawal rate, or ``None`` for the
                 stored one.
             return_rate_override: A uniform fractional annual return, or
                 ``None`` to leave each account on its own stored rate.
+            raise_probes: ``{raise_id: (mode, year)}`` -- each named raise's
+                end-year answer in :func:`~app.services.salary_raises
+                .end_year_of`'s vocabulary (ruling **R-SAL13**: the mode is
+                authoritative), or ``None`` for every raise's stored year.  A
+                probe equal to the stored year is the stored plan.
 
         Returns:
             The resolved :class:`PlanPoint`, at no delay.
+
+        Raises:
+            RaiseProbeError: A probe names a raise that is not one of this
+                owner's recurring raises on an active profile (a stale
+                bookmark, or a URL edit), or its answer breaks the ONE
+                end-year rule against that raise's row.  Every failing probe is
+                reported.
         """
         return PlanPoint(
             month_offset=0,
@@ -275,7 +386,51 @@ class RetirementInputs:
                 else resolve_swr_fraction(self.gap.settings)
             ),
             return_rate_override=return_rate_override,
+            raise_end_years=self._believed_end_years(raise_probes),
         )
+
+    def _believed_end_years(
+        self, raise_probes: RaiseProbes | None,
+    ) -> tuple[tuple[int, int | None], ...]:
+        """Resolve *raise_probes* against the rows into the point's field.
+
+        The rows are the membership: a probe on an id
+        :func:`~app.services.retirement_dashboard_service.recurring_raises`
+        does not list is refused by name, and an answer on a row it does list
+        goes through :func:`~app.services.salary_raises.end_year_of` against
+        THAT row's effective year -- the same rule the salary form applies to
+        its payload, so the rail cannot accept a year the form would refuse.
+
+        Args:
+            raise_probes: See :meth:`plan_with`.
+
+        Returns:
+            The resolved ``(raise_id, terminal_year)`` tuple, sorted by id.
+
+        Raises:
+            RaiseProbeError: See :meth:`plan_with`.
+        """
+        rows = recurring_raises(self.gap.salary_profiles)
+        by_id = {row.id: row for row in rows}
+        believed: dict[int, int | None] = {}
+        errors: dict[int, str] = {}
+        for raise_id, (mode, year) in (raise_probes or {}).items():
+            row = by_id.get(raise_id)
+            if row is None:
+                errors[raise_id] = (
+                    "Not one of your recurring raises; reload the page."
+                )
+                continue
+            try:
+                believed[raise_id] = end_year_of(mode, year, row.effective_year)
+            except EndYearError as exc:
+                errors[raise_id] = exc.message
+        if errors:
+            raise RaiseProbeError(errors)
+        return tuple(sorted(
+            ((row.id, believed.get(row.id, row.terminal_year)) for row in rows),
+            key=lambda pair: pair[0],
+        ))
 
     @property
     def date_provenance(self) -> dict:
@@ -571,6 +726,42 @@ def _stored_blend_percent(projections, params_by_account) -> Decimal:
     return _DEFAULT_RETURN_PCT
 
 
+def _believed_batch(
+    inputs: RetirementInputs, point: PlanPoint,
+) -> ProjectionBatch:
+    """The render's batch with its payroll feeds priced under *point*'s set.
+
+    The batch is loaded once and is point-independent; what a point changes
+    about it is WHICH raise set the payroll feeds price from (plan step
+    salary:S3-f-2b).  So the wiring the batch carries is priced again here
+    through the pass's pricer under :meth:`PlanPoint.terms_for` -- the
+    resolvers rebuilt, no row re-read -- and the feeds are replaced on a copy.
+    ``dataclasses.replace`` hands the copy the SAME ``seed_memo`` dict, so the
+    forward seed a probe already resolved for an axis is still a hit.
+
+    **What it costs depends on the set.**  At the stored set the pricers are
+    the ones the loader built (the memo key is the canonical set): zero
+    statements, zero constructions, and the copy's feeds price exactly what
+    ``inputs.batch.feeds`` price -- rebuilt anyway rather than special-cased,
+    because two paths to one feed is the shape this module removes.  At a
+    PROBED set the first pricer for each profile the probe names is built here,
+    and that construction loads the profile's tax series: three statements per
+    profile per distinct set, measured by
+    ``TestThePointBelievesARaiseSet.test_a_probed_set_is_the_one_legitimate_second_pricer``.
+
+    Args:
+        inputs: The render's loaded inputs.
+        point: The plan point whose raise set the feeds price under.
+
+    Returns:
+        A :class:`~app.services.retirement_projection.ProjectionBatch`
+        sharing every field of ``inputs.batch`` but ``feeds``.
+    """
+    return replace(inputs.batch, feeds=price_payroll_feeds(
+        inputs.batch.payroll, inputs.balance_ctx.paychecks(), point.terms_for,
+    ))
+
+
 def picture_at(
     inputs: RetirementInputs, point: PlanPoint,
 ) -> RetirementPicture:
@@ -615,9 +806,15 @@ def _derive_picture(
     rebuilt for it.  *The current paycheck JOINED it at plan step
     salary:S3-f-2a* (ruling **R-SAL21**): it is priced off the pass's pricer
     per point rather than loaded once, because the raise set a point is
-    believed under (plan step S3-f-2b) can move this year's paycheck; at the
-    stored set every point prices the same payday and the pricer's memo
-    answers after the first.
+    believed under can move this year's paycheck.  *And the RAISE SET became
+    the point's at plan step salary:S3-f-2b* (ruling **R-SAL20**): the
+    pension's salary path, the income target's, the current paycheck and the
+    payroll feeds all read :meth:`PlanPoint.terms_for`, so a probe over one
+    raise's end year moves every figure that raise feeds and no figure twice
+    -- one belief per picture.  At the stored set every read resolves to the
+    pricer the batch loader built and the pricer's memo answers after the
+    first; a probed set builds ONE pricer per profile it names, which is
+    where that profile's tax series loads (three queries per distinct set).
 
     Args:
         inputs: The render's loaded inputs.
@@ -640,15 +837,19 @@ def _derive_picture(
     # and the lever card's from N+1.
     as_of = inputs.balance_ctx.as_of
     pension = compute_pension_summary(
-        gap.pensions, as_of, point.month_offset,
+        gap.pensions, as_of, point.terms_for, point.month_offset,
     )
     # The current paycheck off the PASS's pricer -- the same
     # ``ProfilePaychecks`` the payroll feed below prices from, so the income
     # target and the feed cannot price one payday two ways (plan step
     # salary:S3-f-2a; they did, by ``$31.29``, when this was a load-time
-    # snapshot priced by a direct engine call with no calibration).
-    current_paycheck = compute_current_paycheck(
-        inputs.balance_ctx, gap.salary_profiles,
+    # snapshot priced by a direct engine call with no calibration) -- under
+    # the set THIS point believes, beside that set, as one argument.
+    payroll = BelievedPayroll(
+        terms_for=point.terms_for,
+        current_paycheck=compute_current_paycheck(
+            inputs.balance_ctx, gap.salary_profiles, point.terms_for,
+        ),
     )
     # Every point-dependent field replaced together, from a context the render
     # built once: the account query and the period calendar do not move with a
@@ -659,11 +860,12 @@ def _derive_picture(
         return_rate_override=point.return_rate_override,
     )
     axis = resolve_projection_axis(ctx)
-    projections = project_accounts_with_batch(ctx, inputs.batch, axis)
+    projections = project_accounts_with_batch(
+        ctx, _believed_batch(inputs, point), axis,
+    )
     net = calculate_gap(
         net_biweekly_pay=compute_gap_net_biweekly(
-            gap, current_paycheck, retirement_date, pension.salary_by_year,
-            as_of,
+            gap, payroll, retirement_date, pension.salary_by_year, as_of,
         ),
         pay_cadence=gap.pay_cadence,
         monthly_pension_income=pension.monthly_income,
