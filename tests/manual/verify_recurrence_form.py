@@ -50,6 +50,12 @@ class arrived with it, one on each side of the swap:
   use for.  It has to be DISABLED, and only a real ``FormData`` says whether
   it is.
 
+**Plan step R7d-f-5 drives the EDIT form's locks** (:func:`_drive_edit_form_locks`):
+the same two lists reach the edit form, computed for the definition being
+edited, and a definition pinned to its loan (ruling R-R76) renders its
+destination control disabled -- a disabled control posts nothing, which only a
+real ``FormData`` can say.
+
 **It writes nothing.**  Every check reads the form's own DOM; the crafted POSTs
 in the refusal pass are all expected to be REFUSED, and the pass asserts that
 no template and no recurrence rule was persisted by any of them.  Run it
@@ -703,6 +709,234 @@ def _drive_ends_lock(page, loan_ids: list[str], non_loan: str) -> None:
     _select_end_mode(page, "never")
 
 
+def _edit_form_ids() -> dict[str, str | None]:
+    """Return the ids of the three EDIT-form shapes this pass drives, or None each.
+
+    Read off the database THE APP IS POINTED AT (:data:`DEV_DATABASE`), for the
+    owner the saved session belongs to: the loan-payment table's oldest
+    active recurring transfer into a loan (the standing payment, pinned), an
+    active repeating transfer whose destination is NOT a loan (free to move),
+    and an active transfer into a loan that does not repeat yet (about to
+    author).  The third seldom exists on a clone -- the recipe creates one
+    through the create form -- so its arm prints SKIPPED rather than passing
+    on nothing.
+
+    Returns:
+        ``{"pinned": id, "repeating": id, "one_off": id}``, each ``None`` when
+        the copy holds no such definition.
+    """
+    owner = _sql(
+        "SELECT user_id FROM budget.transfer_templates WHERE is_active "
+        "ORDER BY id LIMIT 1"
+    )
+    if not owner:
+        return {"pinned": None, "repeating": None, "one_off": None}
+    loans = "(SELECT account_id FROM budget.loan_params)"
+    # ``IS NOT NULL``, because a transaction template's rule leaves this column
+    # NULL and ``x NOT IN (..., NULL)`` is never true: without it the one-off
+    # arm SKIPPED on a copy that held its definition (found by running this).
+    rules = ("(SELECT transfer_template_id FROM budget.recurrence_rules "
+             "WHERE transfer_template_id IS NOT NULL)")
+    base = (f"SELECT id FROM budget.transfer_templates WHERE is_active "
+            f"AND user_id = {owner[0]} ")
+    pinned = _sql(base + f"AND to_account_id IN {loans} AND id IN {rules} "
+                  "ORDER BY id LIMIT 1")
+    repeating = _sql(base + f"AND to_account_id NOT IN {loans} AND id IN {rules} "
+                     "ORDER BY id LIMIT 1")
+    one_off = _sql(base + f"AND to_account_id IN {loans} AND id NOT IN {rules} "
+                   "ORDER BY id LIMIT 1")
+    return {
+        "pinned": pinned[0] if pinned else None,
+        "repeating": repeating[0] if repeating else None,
+        "one_off": one_off[0] if one_off else None,
+    }
+
+
+def _lock_sets(page) -> tuple[list[str], list[str]]:
+    """Return the two lock sets the page's container carries, as the script reads them."""
+    return page.evaluate(
+        """() => ['data-loan-account-ids', 'data-loan-account-ids-without-payment']
+              .map(a => (document.getElementById('recurrence-fields')
+                           .getAttribute(a) || '').split(',').filter(Boolean))"""
+    )
+
+
+def _posted_destination(page) -> list[str]:
+    """Return every value the form would post under ``to_account_id``."""
+    return page.evaluate(
+        """() => new FormData(document.getElementById('recurrence_unit').form)
+                 .getAll('to_account_id')"""
+    )
+
+
+def _drive_edit_form_locks(page) -> None:
+    """Check the EDIT form's lock affordance, computed for THIS edit (plan step R7d-f-5).
+
+    The create form's two lists reach the edit form since R7d-f-5 (ruling
+    R-R79), computed the way the update door decides the same edit, and a
+    definition R-R76 pins to its loan ships EMPTY lists beside a DISABLED
+    destination control.  Three forms, one per shape the producer
+    distinguishes (:func:`_edit_form_ids`):
+
+    * a REPEATING transfer into savings: both rows the owner's on load; a
+      payment-less loan locks both (posting nothing, help swapped, "Ends"
+      blank), a paid loan locks the start alone, and the original destination
+      hands both back with the stored "Ends" shape restored;
+    * the STANDING payment: empty lists, the destination select disabled and
+      posting nothing, the R-R76 sentence as its help, both bound rows still
+      server-locked;
+    * a ONE-TIME transfer into a loan: choosing a cadence locks "Starts on"
+      for its own stored loan, the "Ends" row too where the loan holds no
+      payment.
+
+    Only a real ``FormData`` says what a disabled control posts, and only a
+    real render says whether the help text swapped -- the difference this
+    file exists for.  It writes nothing.
+
+    Args:
+        page: The Playwright page.
+    """
+    ids = _edit_form_ids()
+
+    print("\n=== transfer edit-form locks: a repeating savings transfer ===")
+    if ids["repeating"] is None:
+        print("   SKIPPED: this owner has no active repeating transfer into a non-loan")
+    else:
+        page.goto(f"{DEV_BASE_URL}/transfers/{ids['repeating']}/edit",
+                  wait_until="domcontentloaded")
+        page.wait_for_selector("#recurrence_unit")
+        loan_ids, without_payment = _lock_sets(page)
+        _check("edit R: the form ships a loan set", bool(loan_ids), "empty")
+        _check("edit R: the payment-less set is a subset of the loan set",
+               all(lid in loan_ids for lid in without_payment),
+               f"{without_payment} not within {loan_ids}")
+        original = page.evaluate("() => document.getElementById('to_account_id').value")
+        # A precondition of the hand-back below, not a test of the producer's
+        # exclusion: a savings destination is never a loan.  The exclusion (a
+        # repeating SECOND transfer into a paid loan) is graded by the suite,
+        # tests/test_routes/test_transfer_edit_form_locks.py.
+        _check("edit R: precondition -- the stored (savings) destination is not a loan",
+               original not in loan_ids, f"{original} in {loan_ids}")
+        _check("edit R: the destination is the owner's",
+               not page.locator("#to_account_id").is_disabled(), "disabled")
+        _check("edit R: Starts on is the owner's on load",
+               not page.locator("#starts_on").is_disabled(), "disabled")
+        _check("edit R: Ends is the owner's on load",
+               not page.locator("#recurrence_end_mode").is_disabled(), "disabled")
+        stored_mode = _posted_bound(page)["recurrence_end_mode"]
+        _check("edit R: the stored Ends shape is posted on load",
+               len(stored_mode) == 1, str(stored_mode))
+        offered = page.evaluate(
+            "() => Array.from(document.getElementById('to_account_id').options)"
+            ".map(o => o.value)")
+        unpaid = next((lid for lid in without_payment if lid in offered), None)
+        paid = next((lid for lid in loan_ids
+                     if lid not in without_payment and lid in offered), None)
+        if unpaid is None:
+            print("   SKIPPED (payment-less arm): every offered loan holds a payment")
+        else:
+            page.select_option("#to_account_id", unpaid)
+            _settle(page)
+            _check("edit R: a payment-less loan locks Starts on",
+                   page.locator("#starts_on").is_disabled(), "enabled")
+            _check("edit R: it posts NOTHING for the start",
+                   _posted_opening(page)["starts_on"] == [],
+                   str(_posted_opening(page)["starts_on"]))
+            _check("edit R: the Starts on help says the loan sets it",
+                   "loan's first payment" in page.inner_text("#starts-on-help"),
+                   page.inner_text("#starts-on-help"))
+            _check("edit R: a payment-less loan locks Ends too",
+                   page.locator("#recurrence_end_mode").is_disabled(), "enabled")
+            _check("edit R: it posts NOTHING for the stop",
+                   all(v == [] for v in _posted_bound(page).values()),
+                   str(_posted_bound(page)))
+            _check("edit R: the Ends box is blank while locked",
+                   page.evaluate("() => document.getElementById('recurrence_end_mode')"
+                                 ".selectedIndex === -1"), "a shape is still selected")
+            _check("edit R: the Ends help says the loan sets it",
+                   "projected payoff" in page.inner_text("#end-bound-help"),
+                   page.inner_text("#end-bound-help"))
+        if paid is None:
+            print("   SKIPPED (paid-loan arm): no offered loan of this owner holds a payment")
+        else:
+            page.select_option("#to_account_id", paid)
+            _settle(page)
+            _check("edit R: a paid loan locks Starts on",
+                   page.locator("#starts_on").is_disabled(), "enabled")
+            _check("edit R: a paid loan leaves Ends the owner's",
+                   not page.locator("#recurrence_end_mode").is_disabled(), "disabled")
+        page.select_option("#to_account_id", original)
+        _settle(page)
+        _check("edit R: the original destination hands Starts on back",
+               not page.locator("#starts_on").is_disabled(), "still disabled")
+        _check("edit R: the original destination hands Ends back",
+               not page.locator("#recurrence_end_mode").is_disabled(), "still disabled")
+        _check("edit R: the stored Ends shape is restored",
+               _posted_bound(page)["recurrence_end_mode"] == stored_mode,
+               str(_posted_bound(page)["recurrence_end_mode"]))
+        _check("edit R: the Ends help is the owner's again",
+               "generated past" in page.inner_text("#end-bound-help"),
+               page.inner_text("#end-bound-help"))
+
+    print("\n=== transfer edit-form locks: the loan's standing payment (pinned) ===")
+    if ids["pinned"] is None:
+        print("   SKIPPED: this owner has no active recurring transfer into a loan")
+    else:
+        page.goto(f"{DEV_BASE_URL}/transfers/{ids['pinned']}/edit",
+                  wait_until="domcontentloaded")
+        page.wait_for_selector("#recurrence_unit")
+        loan_ids, without_payment = _lock_sets(page)
+        _check("edit P: both lists are EMPTY", loan_ids == [] and without_payment == [],
+               f"{loan_ids} / {without_payment}")
+        _check("edit P: the destination select is DISABLED",
+               page.locator("#to_account_id").is_disabled(), "enabled")
+        _check("edit P: it posts NOTHING for the destination",
+               _posted_destination(page) == [], str(_posted_destination(page)))
+        _check("edit P: the help carries the R-R76 sentence",
+               "pays the loan it was set up for" in page.inner_text("#to-account-help"),
+               page.inner_text("#to-account-help"))
+        _check("edit P: Starts on is still server-locked",
+               page.locator("#starts_on").is_disabled(), "enabled")
+        _check("edit P: Ends is still server-locked",
+               page.locator("#recurrence_end_mode").is_disabled(), "enabled")
+
+    print("\n=== transfer edit-form locks: a one-time transfer into a loan ===")
+    if ids["one_off"] is None:
+        print("   SKIPPED: this owner has no active one-time transfer into a loan "
+              "(the recipe creates one through /transfers/new)")
+        return
+    page.goto(f"{DEV_BASE_URL}/transfers/{ids['one_off']}/edit",
+              wait_until="domcontentloaded")
+    page.wait_for_selector("#recurrence_unit")
+    loan_ids, without_payment = _lock_sets(page)
+    stored = page.evaluate("() => document.getElementById('to_account_id').value")
+    _check("edit O: the stored loan is IN the loan set", stored in loan_ids,
+           f"{stored} not in {loan_ids}")
+    _check("edit O: the destination is the owner's",
+           not page.locator("#to_account_id").is_disabled(), "disabled")
+    page.locator("#recurrence_unit").select_option(_unit_ids(page)["months"])
+    _settle(page)
+    _check("edit O: choosing a cadence locks Starts on for its own loan",
+           page.locator("#starts_on").is_disabled(), "enabled")
+    _check("edit O: it posts NOTHING for the start",
+           _posted_opening(page)["starts_on"] == [],
+           str(_posted_opening(page)["starts_on"]))
+    _check("edit O: the Starts on help says the loan sets it",
+           "loan's first payment" in page.inner_text("#starts-on-help"),
+           page.inner_text("#starts-on-help"))
+    if stored in without_payment:
+        _check("edit O: its payment-less loan locks Ends too",
+               page.locator("#recurrence_end_mode").is_disabled(), "enabled")
+        _check("edit O: it posts NOTHING for the stop",
+               all(v == [] for v in _posted_bound(page).values()),
+               str(_posted_bound(page)))
+    else:
+        _check("edit O: its paid loan leaves Ends the owner's",
+               not page.locator("#recurrence_end_mode").is_disabled(), "disabled")
+    page.locator("#recurrence_unit").select_option("")
+    _settle(page)
+
+
 def _select_end_mode(page, token: str) -> None:
     """Choose one "Ends" shape and let the script re-link the value inputs.
 
@@ -1211,6 +1445,7 @@ def main() -> int:
         # Transfer-only: the transaction form has no destination account, so
         # its definition can never be a loan payment.
         _drive_loan_destination_lock(page)
+        _drive_edit_form_locks(page)
         _drive_refusals(context, page)
 
         # A blocked inline style is a console error and nothing else, which is

@@ -32,9 +32,7 @@ from app.models.ref import RecurrenceUnit
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.routes._recurrence_form_refusals import LOAN_PAYMENT_BOUND_IS_DERIVED
-from app.routes._transfer_creation_helpers import (
-    LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION,
-)
+from app.routes._loan_destination import LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION
 from app.schemas.validation import end_bound_before_start_message
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
@@ -981,7 +979,15 @@ class TestTheStandingPaymentCannotChangeDestination:
     def test_an_edit_that_keeps_the_destination_is_not_a_move(
         self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """CONTROL: the destination posted unchanged is what every rename posts."""
+        """CONTROL: a destination posted UNCHANGED is not a move.
+
+        What every rename posted until plan step R7d-f-5; since then the
+        standing payment's form renders its destination control disabled and
+        posts NO key, and that payload is
+        ``test_transfer_edit_form_locks.py``'s.  This case keeps the
+        posted-unchanged shape: an API client, or a form rendered before the
+        control locked.
+        """
         loan = _mortgage(seed_user)
         template, stored_start = self._standing_payment(seed_user, loan)
         renamed = f"{template.name}, renamed"

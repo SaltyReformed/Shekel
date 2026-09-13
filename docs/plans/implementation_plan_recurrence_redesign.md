@@ -436,44 +436,47 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
       callers take the read pass. `$0.00` on dev, `$200.00`/mo both ways in its tests. Opened
       **N-513**, **N-514**, both closed at R7d-f-2. As built: PR #253.
 
-- [ ] **R7d-f -- the FORM's "Ends" control, its refusals and its preview.**
-
-The DECOMPOSED parent, split into three leaves 2026-09-05 (**R-R61**).
-**Its own text above was inexact and `R7d-f-1` measured it**: `owns_validity_window` splits no
-SET -- one renamed identity serves both rows -- and the live preview never read the column at all,
-so **R-R34**'s census of `_recurrence_preview` as a sixth reader is inexact too.
-**`update_recurrence_rule_from_form` READS THE BOUND AND WRITES IT BACK** on every unrelated edit of
-the template (`_recurrence_form_helpers.py:617` into `reauthor_rule`) -- invisible to any
-NULL-the-column census, because the difference is in what the next save persists.
+- [x] **R7d-f** `48e78700` -- the FORM's "Ends" control, its refusals and its preview: the
+      DECOMPOSED parent, split into three leaves 2026-09-05 (**R-R61**), grown to five 2026-09-12.
+      `R7d-f-1` measured its text inexact (`owns_validity_window` splits no SET; the preview never
+      read the column, so **R-R34**'s sixth reader was inexact too);
+      `update_recurrence_rule_from_form` READS THE BOUND AND WRITES IT BACK on every unrelated edit
+      (`reauthor_rule`). Every leaf shipped; the container ships with the last.
 
 - [x] **R7d-f-1** `6af50d53` -- the locked *Ends* row reads the RESOLVER and the locks read the
       pass, through one renamed identity and per-ROW lock flags. Closed **N-511**, opened
       **REC-515** (closed at R7d-f-2). **A LATER LEAF MUST OBEY**: the identity serves the form's
       locks and the door's **R-R56** arm ONLY, never the resolver (**R-R35** stands). Its browser
       pass RAN with R7d-f-3's (154 checks).
+
 - [x] **R7d-f-2** `1d1f466f` -- the horizon rides ON `RuleReading` and `has_ended` takes no calendar
       (**N-514**); the occurrence WALK is the pass's memo keyed by the COMPOSED value
       (`placements_of`, R-R73's shape; a /savings render walks a goal transfer once, **N-513**); the
       preview resolves an `UnsavedDefinition` through `resolved_submission`, destination
       owner-checked (**REC-515**; R-R34's preview census now wholly corrected). Prerequisite:
       `_context.py` split (**R-R75**, closes balance:BAL-483). Browser pass RAN (158 checks).
+
 - [x] **R7d-f-3** `e3661f6f` -- a stated stop is REFUSED at create where the destination loan holds
       no active payment (**R-R60**), "stated" meaning a real stop and never the key's presence
       (**R-R74**); the server emits which loans derive the stop and the script locks the "Ends" row
       as an affordance. Closed **N-512**; the update door's twin, **REC-521**, closed at R7d-f-4.
       **R7d-g MUST OBEY**: `recurring_definition` limit (1) names three producers of an owner's
       bound that outlive the two doors' refusals. Browser pass RAN (154 checks), R7d-f-1's too.
+
 - [x] **R7d-f-4** `e0c67c0b` -- the UPDATE door settles the destination the edit LEAVES ahead of the
       recurrence step (`settle_destination_for_update`): the first occurrence derived, a real stop
       refused where the loan holds no active payment, "Never" or nothing writing the unbounded rule
       even over a stored stop (**R-R77**); a loan's payment (standing or settings-carrying, the
       twin's union) cannot change destination (**R-R76**). Closed **REC-521**; opened **REC-522**
       (R7d-g: an archived transfer edited and unarchived, a THIRD producer).
-- [ ] **R7d-f-5** -- the transfer EDIT form gets the create form's lock affordance: the server emits
-      `LoanDestinationLocks` computed for THIS edit (every configured loan when the template has no
-      rule, every loan but the stored destination when it has one, per **D50**; the payment-less
-      subset for the "Ends" row), the script unchanged; reverses two tests' premises by ruling; OWES
-      the browser pass (`tests/manual/verify_recurrence_form.py`, already past the 1000-line cap).
+
+- [x] **R7d-f-5** `48e78700` -- the edit form emits `LoanDestinationLocks` computed for THIS edit
+      (`_loan_destination.loan_destination_locks_for_edit`, the door's own order: pinned -> empty
+      sets and the R-R76 sentence on a DISABLED destination control; repeats -> stored destination
+      out; no rule -> every loan in; the payment-less subset for "Ends"; **R-R79**); the R-R76 union
+      one predicate; the loan-destination half moved to `_loan_destination.py` first (**R-R78**,
+      `cd22baa6`). Browser pass RAN (191 checks).
+
 - [ ] **R7d-g -- the column stops being WRITTEN, and the CHECK lands.**
 
 Nine of the ten call sites go, `end_date` goes NULL for every loan payment in a migration, and
