@@ -21,19 +21,19 @@ ID enumeration in the production source.
 from decimal import Decimal
 from pathlib import Path
 
-from app.models.ref import AccountType, Status
-from app.models.transfer import Transfer
-from app.models.transfer_template import TransferTemplate
-from app.services import account_service
+from app.models.ref import Status
+from app.services import transfer_service
 from app.utils.archive_helpers import (
     template_has_paid_history,
     transfer_template_has_paid_history,
 )
-from app.models.amount_ownership import AmountOwnership
 from tests._test_helpers import (
+    create_savings_account,
     generate_row_of,
+    generate_transfer_of,
     make_expense_template,
     make_income_template,
+    make_transfer_template,
 )
 
 
@@ -82,47 +82,29 @@ def _make_income_template_with_status_txn(app, db_, seed_user, period, status_na
 
 
 def _make_transfer_template_with_status(app, db_, seed_user, period, status_name):
-    """Create a transfer template plus one transfer with the given status.
+    """Create a transfer template plus its engine-generated transfer at a status.
 
-    The shadow-transaction pair the transfer service normally
-    materialises is not needed here -- the predicate queries
-    ``budget.transfers`` directly via ``transfer_template_id``.
+    The transfer is the definition's own, written by the transfer engine
+    with its two shadow legs (:func:`generate_transfer_of`, plan step
+    balance:X-ch), and the status under test is then laid on it through
+    ``transfer_service.update_transfer`` -- the one door that keeps the three
+    rows equal (Transfer Invariant 3), and for a settled status the settle
+    itself, which records the definition's figure on the ``derived`` basis.
+    Resolves Status by name (test scaffolding only -- production code uses
+    cached IDs per CLAUDE.md rule 4 / E-15).
     """
     status = db_.session.query(Status).filter_by(name=status_name).one()
-    savings_type = db_.session.query(AccountType).filter_by(name="Savings").one()
-
-    savings_account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name=f"Savings-{status_name}",
-            anchor_balance=Decimal("0.00"),
-        ),
+    savings_account = create_savings_account(
+        seed_user, db_.session, f"Savings-{status_name}", Decimal("0.00"),
     )
-    db_.session.flush()
-
-    xfer_template = TransferTemplate(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=savings_account.id,
-        name=f"XferTemplate-{status_name}",
-        default_amount=Decimal("100.00"),
+    xfer_template = make_transfer_template(
+        db_.session, seed_user, savings_account, amount="100.00",
     )
-    db_.session.add(xfer_template)
-    db_.session.flush()
-
-    xfer = Transfer(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=savings_account.id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=status.id,
-        transfer_template_id=xfer_template.id,
-        name=f"Transfer-{status_name}",
-        amount_ownership=AmountOwnership.own(Decimal("100.00")),
-    )
-    db_.session.add(xfer)
+    xfer = generate_transfer_of(xfer_template, period)
+    if xfer.status_id != status.id:
+        transfer_service.update_transfer(
+            xfer.id, seed_user["user"].id, status_id=status.id,
+        )
     db_.session.commit()
     return xfer_template, xfer
 
@@ -298,11 +280,22 @@ class TestTransferTemplateHasPaidHistorySemanticIsSettled:
         Even though transfers are structurally always expense/income
         pairs, the predicate must protect any settled-status row --
         ``RECEIVED`` included.
+
+        **The status is laid on the engine's transfer BARE here**, unlike the
+        cases beside it: ``transfer_service`` refuses Projected -> Received
+        on a transfer (an income status on a pair that is always one expense
+        and one income), so this is a row no door writes, and the case is a
+        defence-in-depth grade of the predicate over the ``is_settled``
+        column rather than over a state the application produces.
         """
         with app.app_context():
-            xfer_template, _ = _make_transfer_template_with_status(
-                app, db, seed_user, seed_periods_today[0], "Received",
+            xfer_template, xfer = _make_transfer_template_with_status(
+                app, db, seed_user, seed_periods_today[0], "Projected",
             )
+            xfer.status_id = (
+                db.session.query(Status).filter_by(name="Received").one().id
+            )
+            db.session.commit()
             assert transfer_template_has_paid_history(xfer_template.id) is True
 
     def test_paid_returns_true(self, app, db, seed_user, seed_periods_today):

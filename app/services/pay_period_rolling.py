@@ -173,7 +173,7 @@ def top_up_rolling_window(user_id, as_of=None):
     # ``record_paydays`` recorded the NOMINAL grid day it was handed, a
     # forward convention put that day inside the paycheck the calendar derives
     # -- a refusal HERE, with no handler, on both of the app's main screens.
-    # ``C14-e-3`` closed it at the writer instead: ``_requested_paydays``
+    # ``C14-e-3`` closed it at the writer instead: ``requested_paydays``
     # records each element displaced, so the day offered and the floor are one
     # value again.  Graded by
     # ``test_a_FORWARD_convention_is_ACCEPTED_and_that_CLOSES_PC_497``.
@@ -189,6 +189,17 @@ def top_up_rolling_window(user_id, as_of=None):
     # writer needing a swallow was the clearest evidence the rule was wrong.
     # (The coverage rule, deleted 2026-08-11, was the other refusal that
     # reached here, and it WAS swallowed with a WARNING.)
+    # **Neither the floor nor the CEILING is asked of this batch at all
+    # since plan step ``C17-c-2b``** (rulings R-PC75, R-PC78): the door
+    # records a prefix of ``pay_calendar.planned_paydays_after``, the one
+    # sequence both fences read, so the first day recorded IS the floor and
+    # falls before the ceiling by construction.  Between ``C17-c-2a`` and
+    # this step the ceiling COULD reach this line (ruling R-PC76's stated
+    # transitional hazard): the extend door restated the LATEST era from the
+    # horizon (ledger row PC-509), so an owner truncated below a later era
+    # of LONGER cadence was offered a payday that skipped one of the kept
+    # rhythm's, refused here with no handler on every render.  The two steps
+    # deployed together so no owner met it.
     return pay_period_admin.extend_pay_periods(user_id, deficit)
 
 

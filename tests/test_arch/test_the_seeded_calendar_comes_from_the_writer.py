@@ -260,8 +260,8 @@ class TestACalendarMayNotOpenAtOrBeforeTheBooks:
 
     **An adversarial review of this step found that it had removed a guard and
     its compensator in one commit.**  While the periods fixtures APPENDED
-    beside the owner's opening payday, ``pay_period_write.
-    _reject_backward_payday`` refused any first payday earlier than one cadence
+    beside the owner's opening payday, ``pay_period_batch.
+    reject_backward_payday`` refused any first payday earlier than one cadence
     after it; and the books restatement :func:`_reset_seed_calendar` argues
     against carrying over would have moved the books back to meet an earlier
     one anyway.  The reset door retires every surviving payday in the same call

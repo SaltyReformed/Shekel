@@ -49,11 +49,10 @@ from app import ref_cache
 from app.enums import AcctTypeEnum, AmountSourceEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
-from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.services import income_service, template_amount_service
+from app.services import income_service, status_seam, template_amount_service
 from app.services.amount_ownership import declare_derived, state_own_amount
 from app.services.cash_ledger import (
     AmountRule,
@@ -85,9 +84,20 @@ from tests._test_helpers import (
     create_loan_account,
     create_savings_account,
     create_transfer,
+    current_pay_period,
+    generate_row_of,
+    generate_transfer_of,
     loan_params_for,
+    make_cadence_rule,
+    make_every_period_rule,
+    make_loan_payment_template,
     make_salary_profile,
+    rebuild_calendar,
+    repriced_by_the_owner,
+    settlement_if_settling,
+    transfer_repriced_by_the_owner,
 )
+from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY
 from app.services.balance_at import BalanceContext
 from app.services.row_valuation import settled_contribution
 from app.services.transfer_service import _settle as transfer_settle
@@ -105,11 +115,39 @@ _NEW_PRICE = Decimal("165.30")
 _PRICE_ROSE_ON = date(2026, 1, 1)
 _PRICE_FELL_ON = date(2026, 3, 1)
 _DUE_UNDER_OLD_PRICE = date(2026, 2, 14)
-_DUE_UNDER_NEW_PRICE = date(2026, 4, 14)
-_DUE_BEFORE_THE_SERIES = date(2025, 11, 30)
 
-# The figure every fixture stores on the row itself.  No rule may answer it, so
-# any test that returns it has caught a resolver reading the column.
+# A TRANSACTION row's date is the ENGINE's (plan step balance:X-cf-3b): an
+# every-paycheck definition dates its row on the paycheck's own start
+# (``compute_due_date``), so WHICH paycheck a row is generated in is what
+# selects its price.  The seeded calendar runs biweekly from 2026-01-02, so
+# its first paycheck opens under the old price and its sixth (2026-03-13)
+# under the new one; the date tests assert the window each row lands in.  A
+# row older than the series needs a paycheck before 2026-01-01, which that
+# calendar does not hold -- its one case rebuilds the calendar to open in
+# 2025.  A TRANSFER's date is the engine's too since plan step balance:X-ch
+# (the twin builder :func:`_generated_transfer`), so the same two paychecks
+# select a transfer's price; ``_DUE_UNDER_OLD_PRICE`` is what one case asks
+# the DEFINITION's series directly with.
+#
+# **Under the every-paycheck cadence a row's due date IS its paycheck's
+# start**, so a case whose subject is "the due date, not the period start"
+# cannot be built on it: the mutation it exists to catch reads the same day.
+# Such a case takes a MONTHLY cadence on the 1st and the paycheck that covers
+# the 1st but does not start on it (``_PAYCHECK_STRADDLING_THE_PRICE_FALL``,
+# 2026-02-27..03-12, whose row the engine dates 2026-03-01).
+_PAYCHECK_UNDER_OLD_PRICE = 0
+_PAYCHECK_UNDER_NEW_PRICE = 5
+_PAYCHECK_STRADDLING_THE_PRICE_FALL = 4
+#: The first contractual installment of :func:`_mortgage` (originated
+#: 2026-01-01, paid on the 1st), which is the occurrence its MONTHLY payment
+#: rule first names; :func:`_loan_payment` generates in the paycheck covering it
+#: (:func:`current_pay_period`, the calendar's own placement).
+_FIRST_INSTALLMENT = date(2026, 2, 1)
+_CALENDAR_OPENING_BEFORE_THE_SERIES = date(2025, 12, 5)
+
+# The figure every OWN fixture stores on the row itself, and every settled one
+# records as what moved.  No rule may answer it, so any test that returns it
+# has caught a resolver reading a column.
 _NOT_AN_ANSWER = "999.99"
 
 
@@ -142,9 +180,11 @@ def _declare_derived(txn, relation=AmountSourceEnum.TEMPLATE):
 
     The two writes are one act because ``ck_transactions_amount_ownership`` makes
     them one: a row states either a figure it owns or the relation that prices
-    it, never both.  Every derived fixture in this file goes through here, so no
-    test can accidentally grade a row the schema would refuse -- which is the
-    shape plan step X-au-c1's own build met (finding **N-260**).
+    it, never both.  Every derived TRANSFER fixture in this file goes through
+    here (a transaction row of a definition is born derived by the engine,
+    :func:`_template_row`), so no test can accidentally grade a row the schema
+    would refuse -- which is the shape plan step X-au-c1's own build met
+    (finding **N-260**).
 
     **It calls the application's own writer since plan step X-au-g-2c-2**, where
     it spelled the two assignments itself.  A fixture that restates a production
@@ -175,8 +215,15 @@ def _resolve(seed_user, txn):
     return resolve_transaction_amount(txn, _basis_for(seed_user))
 
 
-def _priced_template(seed_user, name="Geico", txn_type=TxnTypeEnum.EXPENSE):
-    """A transaction template whose series states two prices, two months apart."""
+def _priced_template(
+    seed_user, name="Geico", txn_type=TxnTypeEnum.EXPENSE, *,
+    cadence=EVERY_PERIOD, fires_on_day=None,
+):
+    """A transaction template whose series states two prices, two months apart.
+
+    Every-paycheck by default; a case whose subject is the row's OWN date
+    against its period's start states a MONTHLY *cadence* and the day.
+    """
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
@@ -193,12 +240,20 @@ def _priced_template(seed_user, name="Geico", txn_type=TxnTypeEnum.EXPENSE):
     template_amount_service.set_amount(
         template, _NEW_PRICE, effective_on=_PRICE_FELL_ON,
     )
+    # The definition first, then the cadence onto it (plan step R-F6): a
+    # definition with rows is one that repeats, and the engine writes them.
+    make_cadence_rule(template, cadence, fires_on_day=fires_on_day)
     db.session.flush()
     return template
 
 
 def _seriesless_template(seed_user, name="Never Stated"):
-    """A transaction template created around the write door, so its series is empty."""
+    """A transaction template created around the write door, so its series is empty.
+
+    It repeats every paycheck all the same: the engine writes rows from a
+    cadence, not from a price, which is exactly what leaves this row with a
+    definition that states nothing.
+    """
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
@@ -209,6 +264,7 @@ def _seriesless_template(seed_user, name="Never Stated"):
     )
     db.session.add(template)
     db.session.flush()
+    make_every_period_rule(db.session, template)
     return template
 
 
@@ -223,23 +279,24 @@ def _salary_template(seed_user, txn_type=TxnTypeEnum.INCOME):
     return template, profile
 
 
-def _template_row(seed_user, period, template, *, owns=False, **kwargs):
-    """A generated row on *template*, due under the OLD price unless told otherwise.
+def _template_row(period, template, *, owns=False):
+    """The ENGINE's row of *template* in *period* (plan step balance:X-cf-3b).
 
-    DECLARED as priced by its definition by default, which is the state the
-    template cutover (plan step X-au-e) puts every non-override row in.  Pass
-    ``owns=True`` for the other half of the model -- a row generated by a
-    definition that has since taken its figure back, which is what a hand
-    re-price and the freeze both produce -- where the stored ``_NOT_AN_ANSWER``
-    IS the answer.
+    DERIVED -- declaring its definition and storing no figure -- which is the
+    state the template cutover (plan step X-au-e) puts every non-override row
+    in, and it is dated by the engine: on the paycheck's start, for the
+    every-paycheck cadence every definition here carries.  Pass ``owns=True``
+    for the other half of the model -- a row the OWNER re-priced, taken the
+    way the edit door takes it (:func:`repriced_by_the_owner`) -- where the
+    stored ``_NOT_AN_ANSWER`` IS the answer.
+
+    It built the row by hand and then linked it until X-cf-3b, which is the
+    shape the census in ledger row BAL-480 could not see (date first, link
+    second); the one axis its callers set on it, the DUE DATE, is now which
+    paycheck they generate in.
     """
-    kwargs.setdefault("due_date", _DUE_UNDER_OLD_PRICE)
-    txn = add_txn(
-        db.session, seed_user, period, template.name, _NOT_AN_ANSWER, **kwargs,
-    )
-    txn.template_id = template.id
-    db.session.flush()
-    return txn if owns else _declare_derived(txn)
+    txn = generate_row_of(template, period)
+    return repriced_by_the_owner(txn, _NOT_AN_ANSWER) if owns else txn
 
 
 def _shadow_of(xfer, *, income=False):
@@ -254,25 +311,34 @@ def _shadow_of(xfer, *, income=False):
 
 
 def _generated_transfer(
-    seed_user, period, to_account, *, due_date,
+    seed_user, period, to_account, *,
     series=_OLD_PRICE, later=_NEW_PRICE, stored=Decimal("111.11"),
-    owns=False,
+    owns=False, cadence=EVERY_PERIOD, fires_on_day=None,
 ):
-    """A transfer carrying a template whose series states TWO prices.
+    """The ENGINE's transfer, in *period*, of a template whose series states TWO prices.
 
-    DECLARED derived by default, parent and both shadows: the parent names its
-    definition and each shadow names the parent, which is the state plan step
-    X-au-f puts every generated transfer in.  Their amount columns are therefore
-    EMPTY, so a resolver reading any of the three answers ``None`` against an
-    asserted ``Decimal``.
+    The twin of :func:`_template_row` (plan step balance:X-ch): DERIVED,
+    parent and both legs -- the parent names its definition and each leg
+    names the parent, the state plan step X-au-f puts every generated
+    transfer in -- so their amount columns are EMPTY and a resolver reading
+    any of the three answers ``None`` against an asserted ``Decimal``.  It is
+    dated by the engine: on the paycheck's start under the every-paycheck
+    *cadence* it carries by default, so WHICH paycheck selects the price
+    (``_PAYCHECK_UNDER_OLD_PRICE`` / ``_PAYCHECK_UNDER_NEW_PRICE``), or on
+    the day a MONTHLY *cadence* names inside the paycheck, for the one case
+    whose subject is the date being the row's OWN and not its period's.  It
+    built the transfer through the ad-hoc door, dated it by hand and linked
+    it afterwards until X-ch -- date first, link second, the shape ledger
+    row BAL-488's census could not see.
 
     Pass ``owns=True`` for the shape where a HUMAN authored the figure --
-    parent and shadows all holding ``stored``, a figure no derived rule may
-    answer.  That was the PRE-CUTOVER shape until plan step X-au-g-2c-2; it is
-    now the post-cutover shape of a pair an owner re-priced, which ruling
-    **R-IO** says must keep the figure they typed.  Either way the fixture has
-    to WRITE it: ``create_transfer`` births both shadows DERIVED since that
-    step, so a shadow holding a figure is a state a test must ask for.
+    parent and legs all holding ``stored``, a figure no derived rule may
+    answer -- taken the way the transfer edit door takes it
+    (:func:`transfer_repriced_by_the_owner`), which ruling **R-IO** says
+    must keep the figure they typed.
+
+    The price is stated through ``template_amount_service.set_amount``, the
+    one write door, at the two dates the module's constants name.
     """
     template = TransferTemplate(
         user_id=seed_user["user"].id,
@@ -290,21 +356,11 @@ def _generated_transfer(
         template_amount_service.set_amount(
             template, later, effective_on=_PRICE_FELL_ON,
         )
-    xfer = create_transfer(
-        seed_user, db.session, seed_user["account"], to_account, period,
-        amount=stored, due_date=due_date,
-    )
-    xfer.transfer_template_id = template.id
-    db.session.flush()
+    make_cadence_rule(template, cadence, fires_on_day=fires_on_day)
+    xfer = generate_transfer_of(template, period)
     if owns:
-        for shadow in xfer.shadow_transactions:
-            _state_own_amount(shadow, stored)
-        return xfer, template
-    # The shadows need no declaration: ``_create._build_shadow`` births them
-    # naming ``PARENT_TRANSFER`` with no figure (plan step X-au-g-2c-2), which
-    # is the whole of what that step made structural.  Only the PARENT is
-    # declared here, and plan step X-au-f is what makes that structural too.
-    return _declare_transfer_derived(xfer), template
+        transfer_repriced_by_the_owner(xfer, stored)
+    return xfer, template
 
 
 def _mortgage(seed_user, escrow_annual=Decimal("3600.00")):
@@ -327,16 +383,24 @@ def _mortgage(seed_user, escrow_annual=Decimal("3600.00")):
 
 
 def _loan_payment(
-    seed_user, period, *, derive, extra=None, to_account=None,
+    seed_user, *, derive, extra=None, to_account=None,
     series=Decimal("1300.00"), stored=Decimal("1250.00"), owns=False,
 ):
     """A mortgage payment transfer in one of its two modes, and its rows.
 
-    TWO DISTINCT figures -- the definition states ``$1,300.00`` and the parent
-    transfer's column holds ``$1,250.00`` -- so a manual-mode assertion names
-    which of the two it means.  The review that built this fixture found an
-    earlier one setting every figure to one number, which made the test pass
-    for any implementation.
+    The ENGINE's transfer of the loan's own definition
+    (:func:`make_loan_payment_template` -- a MONTHLY rule on the loan's
+    payment day, bound to its first contractual installment, with the
+    ``loan_payment_settings`` row that carries the MODE), generated in the
+    paycheck covering ``_FIRST_INSTALLMENT`` and dated on it.  A hand-built
+    one sat in whichever paycheck the caller named and carried that date by
+    hand (plan step balance:X-ch).
+
+    TWO DISTINCT figures -- the definition states ``$1,300.00`` and, with
+    ``owns=True``, the parent transfer's column holds ``$1,250.00`` -- so a
+    manual-mode assertion names which of the two it means.  The review that
+    built this fixture found an earlier one setting every figure to one
+    number, which made the test pass for any implementation.
 
     **There were THREE until plan step X-au-g-2c-2, and the third is now
     UNREPRESENTABLE rather than merely unused.**  Each shadow held ``$1,200.00``
@@ -348,23 +412,26 @@ def _loan_payment(
     it here raises ``CheckViolation`` at the flush, which is the constraint
     saying so.
 
-    ``owns=True`` leaves the parent OWNING ``stored`` and takes each shadow's
-    figure back to ``$1,200.00`` -- production's shape, where nothing is
-    declared and ``budget.loan_payment_settings`` is empty -- and is what the
-    one test that must watch the PRODUCER read the column uses.
+    ``owns=True`` takes the pair for the OWNER at ``stored`` through the
+    transfer door (:func:`transfer_repriced_by_the_owner`) and then takes each
+    shadow's figure back to ``$1,200.00`` -- production's shape, where nothing
+    is declared and ``budget.loan_payment_settings`` is empty -- and is what
+    the one test that must watch the PRODUCER read the column uses.
 
     Returns ``(shadow, rows)``: the checking-side expense shadow, and both
     shadows, which is what a basis is built over.
     """
     loan = _mortgage(seed_user) if to_account is None else to_account
-    xfer, template = _generated_transfer(
-        seed_user, period, loan, due_date=date(2026, 2, 1),
-        series=series, later=None, stored=stored, owns=owns,
+    template = make_loan_payment_template(
+        db.session, seed_user, loan, amount=series,
+        derive_from_loan=derive,
+        extra_principal="0.00" if extra is None else extra,
     )
-    settings = LoanPaymentSettings(derive_from_loan=derive)
-    if extra is not None:
-        settings.extra_principal = extra
-    template.settings = settings
+    xfer = generate_transfer_of(
+        template, current_pay_period(seed_user["user"].id, _FIRST_INSTALLMENT),
+    )
+    if owns:
+        transfer_repriced_by_the_owner(xfer, stored)
     shadows = list(xfer.shadow_transactions)
     if owns:
         for shadow in shadows:
@@ -519,7 +586,7 @@ class TestWhichRulePricesARow:
     ):
         """A generated row's price comes from the template's series."""
         template = _priced_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template)
+        txn = _template_row(seed_periods[0], template)
         assert amount_rule(txn) is AmountRule.TEMPLATE
 
     def test_a_salary_row_beats_the_template_rule(
@@ -533,7 +600,7 @@ class TestWhichRulePricesARow:
         nobody ever stated.
         """
         template, _profile = _salary_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template, is_income=True)
+        txn = _template_row(seed_periods[0], template)
         assert amount_rule(txn) is AmountRule.SALARY
 
     def test_a_loan_payment_SHADOW_is_priced_by_its_parent_like_any_other(
@@ -555,7 +622,7 @@ class TestWhichRulePricesARow:
         would break, and it is a derive-mode payment -- the shape that DID take
         it.
         """
-        shadow, _rows = _loan_payment(seed_user, seed_periods[0], derive=True)
+        shadow, _rows = _loan_payment(seed_user, derive=True)
         assert amount_rule(shadow) is AmountRule.TRANSFER
 
     def test_a_loan_payment_TRANSFER_beats_the_series_rule(
@@ -573,7 +640,7 @@ class TestWhichRulePricesARow:
         reachable: a transfer carrying its own figure takes rule 1 first,
         whatever its template says (**R-IO**).
         """
-        _shadow, rows = _loan_payment(seed_user, seed_periods[0], derive=True)
+        _shadow, rows = _loan_payment(seed_user, derive=True)
         assert transfer_amount_rule(rows[0].transfer) is (
             AmountRule.LOAN_PAYMENT
         )
@@ -586,7 +653,7 @@ class TestWhichRulePricesARow:
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _ = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
         )
         assert amount_rule(_shadow_of(xfer)) is AmountRule.TRANSFER
 
@@ -602,7 +669,7 @@ class TestWhichRulePricesARow:
         finding **N-262** was about.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template, owns=True)
+        txn = _template_row(seed_periods[0], template, owns=True)
         assert amount_rule(txn) is AmountRule.OWN
         assert _resolve(seed_user, txn) == Decimal(_NOT_AN_ANSWER)
 
@@ -614,7 +681,7 @@ class TestWhichRulePricesARow:
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _ = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
             owns=True,
         )
         shadow = _shadow_of(xfer)
@@ -634,9 +701,9 @@ class TestWhichRulePricesARow:
         shadows are soft-deleted, so the arm is ordinary rather than theoretical.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(
-            seed_user, seed_periods[0], template, is_deleted=True,
-        )
+        txn = _template_row(seed_periods[0], template)
+        txn.is_deleted = True
+        db.session.flush()
         assert amount_rule(txn) is AmountRule.TEMPLATE
         assert _resolve(seed_user, txn) == _OLD_PRICE
 
@@ -668,13 +735,22 @@ class TestTheDeclarationDecides:
         ``_own_figure`` raised on its empty column -- and production carries 7
         Cancelled and 2 Credit template-linked rows against a grid route that
         loads every row in the window with no status predicate
-        (``routes/grid/page.py``'s ``_load_grid_transactions``), so the first bucket to derive would have taken
-        out the whole screen.
+        (``routes/grid/page.py``'s ``_load_grid_transactions``), so the first
+        bucket to derive would have taken out the whole screen.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(
-            seed_user, seed_periods[0], template, status_enum=status,
+        txn = _template_row(seed_periods[0], template)
+        status_id = ref_cache.status_id(status)
+        # Through the seam, and the two settling arms record a figure no rule
+        # may answer: a resolver that read the settlement record instead of
+        # the series would answer 999.99 here rather than the old price.
+        status_seam.apply_status_change(
+            txn, status_id,
+            settlement=settlement_if_settling(
+                txn, status_id, submitted=Decimal(_NOT_AN_ANSWER),
+            ),
         )
+        db.session.flush()
         assert amount_rule(txn) is AmountRule.TEMPLATE
         assert _resolve(seed_user, txn) == _OLD_PRICE
 
@@ -689,7 +765,7 @@ class TestTheDeclarationDecides:
         has its definition's price, and a rule reading the flag would refuse it.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template)
+        txn = _template_row(seed_periods[0], template)
         txn.is_override = True
         db.session.flush()
         assert amount_rule(txn) is AmountRule.TEMPLATE
@@ -707,7 +783,7 @@ class TestTheDeclarationDecides:
         exactly as it did before.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template)
+        txn = _template_row(seed_periods[0], template)
         (
             db.session.query(Transaction)
             .filter(Transaction.id == txn.id)
@@ -731,7 +807,7 @@ class TestTheDeclarationDecides:
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _ = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
         )
         # RE-declared: ``_generated_transfer`` already returns a derived
         # transfer naming its TEMPLATE, so this swaps the relation and empties
@@ -792,41 +868,61 @@ class TestWhatEachRuleAnswers:
     ):
         """The series is resolved on the ROW's own due date, not on today.
 
-        Due 2026-02-14 falls between the 2026-01-01 version (``$178.00``) and the
-        2026-03-01 one (``$165.30``), so the answer is the older price -- which
+        Due 2026-01-02 -- its paycheck's start -- falls between the 2026-01-01
+        version (``$178.00``) and the 2026-03-01 one (``$165.30``), so the
+        answer is the older price -- which
         is also the answer the ``default_amount`` scalar CANNOT give, since
         ``set_amount`` keeps that column at the newest stated figure.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template)
+        txn = _template_row(seed_periods[_PAYCHECK_UNDER_OLD_PRICE], template)
+        assert _PRICE_ROSE_ON <= txn.due_date < _PRICE_FELL_ON
         assert template.default_amount == _NEW_PRICE
         assert _resolve(seed_user, txn) == _OLD_PRICE
 
     def test_a_later_row_of_the_same_template_answers_the_later_price(
         self, app, db, seed_user, seed_periods,
     ):
-        """One definition, two rows, two prices -- which is what a series is for."""
-        template = _priced_template(seed_user)
+        """One definition, two rows, two prices -- which is what a series is for.
+
+        The row is DATED on a day its paycheck does not START on: the
+        definition is MONTHLY on the 1st, its price falls on 2026-03-01, and
+        the engine's row in the paycheck 2026-02-27..03-12 is due 2026-03-01
+        -- so this case fails a resolver that substitutes the period's start
+        for the row's due date, the mutation the transfer twin below was
+        written against.  **It could not, from plan step X-cf-3b until
+        X-ch**: under the every-paycheck cadence the engine dates a row on
+        its paycheck's start, so both readings named one day, and the only
+        thing in this file that caught the substitution on the transaction
+        arm was the no-due-date refusal, which plan step X-bv-2 deletes.  The
+        adversarial review of X-ch measured it on the transfer twin and the
+        same mutation was run here.
+        """
+        template = _priced_template(seed_user, cadence=MONTHLY, fires_on_day=1)
         txn = _template_row(
-            seed_user, seed_periods[0], template,
-            due_date=_DUE_UNDER_NEW_PRICE,
+            seed_periods[_PAYCHECK_STRADDLING_THE_PRICE_FALL], template,
         )
+        assert txn.pay_period.start_date < _PRICE_FELL_ON <= txn.due_date
         assert _resolve(seed_user, txn) == _NEW_PRICE
 
     def test_a_row_older_than_the_series_holds_at_the_earliest_price(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user,
     ):
         """Before the first version the series holds FLAT (ruling R-I's shape).
 
         The arm that makes the resolver total for a row generated into a
         historical period; 23 rows on the production clone are due before their
-        template's earliest version.
+        template's earliest version.  The seeded calendar opens the day after
+        the series does, so the row's paycheck comes from a calendar rebuilt
+        to open in 2025 -- BEFORE the definition is built, because an
+        every-paycheck rule's first occurrence is the calendar's opening day.
         """
-        template = _priced_template(seed_user)
-        txn = _template_row(
-            seed_user, seed_periods[0], template,
-            due_date=_DUE_BEFORE_THE_SERIES,
+        periods = rebuild_calendar(
+            seed_user["user"].id, _CALENDAR_OPENING_BEFORE_THE_SERIES, 4, 14,
         )
+        template = _priced_template(seed_user)
+        txn = _template_row(periods[0], template)
+        assert txn.due_date < _PRICE_ROSE_ON
         assert _resolve(seed_user, txn) == _OLD_PRICE
 
     def test_a_salary_row_answers_its_PROFILE_and_stores_no_figure(
@@ -845,7 +941,7 @@ class TestWhatEachRuleAnswers:
         graded by its own suites.
         """
         template, profile = _salary_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template, is_income=True)
+        txn = _template_row(seed_periods[0], template)
         assert txn.estimated_amount is None
         before = _resolve(seed_user, txn)
         # PINNED, not merely positive: this suite seeds no tax configs, so the
@@ -886,7 +982,7 @@ class TestWhatEachRuleAnswers:
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _ = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
         )
         shadow = _shadow_of(xfer)
         assert shadow.estimated_amount is None
@@ -907,10 +1003,9 @@ class TestWhatEachRuleAnswers:
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _ = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
         )
         expense_leg, income_leg = _shadow_of(xfer), _shadow_of(xfer, income=True)
-        rows = list(xfer.shadow_transactions)
         basis = _basis_for(seed_user)
         assert resolve_transaction_amount(expense_leg, basis) == _OLD_PRICE
         assert resolve_transaction_amount(income_leg, basis) == _OLD_PRICE
@@ -962,7 +1057,7 @@ class TestTheTransferRule:
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _ = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
         )
         assert xfer.amount is None
         assert resolve_transfer_amount(xfer, _basis_for(seed_user)) == _OLD_PRICE
@@ -976,17 +1071,24 @@ class TestTheTransferRule:
         proved it was missing: substituting the pay period's START for the due
         date -- exactly what ``_stated_amount``'s docstring argues against, since
         a period begins up to two weeks before the installment it funds -- moved
-        no test and no production row.  Here the period starts 2026-01-02, before
-        the 2026-03-01 version, while the transfer is due 2026-04-14 after it, so
-        the two dates select different prices.
+        no test and no production row.  Here the definition is MONTHLY on the
+        1st and the transfer is the engine's in the paycheck that covers
+        2026-03-01 without starting on it: the period starts 2026-02-27,
+        before the 2026-03-01 version, while the transfer is due 2026-03-01,
+        on it -- so the two dates select different prices.  **An
+        every-paycheck cadence cannot build this case**, because the engine
+        dates such a row on its paycheck's start and the substitution reads
+        the same day; the adversarial review of plan step balance:X-ch caught
+        the conversion disarming it exactly that way.
         """
         savings = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _ = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_NEW_PRICE,
+            seed_user, seed_periods[_PAYCHECK_STRADDLING_THE_PRICE_FALL], savings,
+            cadence=MONTHLY, fires_on_day=1,
         )
-        assert seed_periods[0].start_date < _PRICE_FELL_ON < xfer.due_date
+        assert xfer.pay_period.start_date < _PRICE_FELL_ON <= xfer.due_date
         assert resolve_transfer_amount(xfer, _basis_for(seed_user)) == _NEW_PRICE
 
     def test_a_generated_transfer_that_carries_a_figure_owns_it(
@@ -1004,7 +1106,7 @@ class TestTheTransferRule:
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, template = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
             owns=True,
         )
         assert template_amount_service.amount_as_of(
@@ -1030,7 +1132,7 @@ class TestTheTransferRule:
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _ = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
         )
         xfer.status_id = ref_cache.status_id(status)
         db.session.flush()
@@ -1046,10 +1148,15 @@ class TestEveryRefusalFires:
         """There is no date to resolve the price on, and a period is not one.
 
         Reachable: ``due_date`` is nullable and both edit forms accept an empty
-        value on it (finding N-246, X-au-a's set of 2026-08-11).
+        value on it (finding N-246, X-au-a's set of 2026-08-11) -- so the empty
+        box is laid on the engine's row here.  **Plan step balance:X-bv-2
+        deletes this case with the arm it grades**: its CHECK makes the state
+        unrepresentable, and the constraint is the refusal's successor.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template, due_date=None)
+        txn = _template_row(seed_periods[0], template)
+        txn.due_date = None
+        db.session.flush()
         with pytest.raises(AmountUnresolvable, match="no due_date"):
             _resolve(seed_user, txn)
 
@@ -1063,7 +1170,7 @@ class TestEveryRefusalFires:
         says today.
         """
         template = _seriesless_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template)
+        txn = _template_row(seed_periods[0], template)
         with pytest.raises(AmountUnresolvable, match="series is EMPTY"):
             _resolve(seed_user, txn)
 
@@ -1078,7 +1185,7 @@ class TestEveryRefusalFires:
         raising a bare ``AttributeError`` out of the salary predicate instead.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template)
+        txn = _template_row(seed_periods[0], template)
         basis = _basis_for(seed_user)
         txn.template = None
         with pytest.raises(AmountUnresolvable, match="could not be loaded"):
@@ -1099,7 +1206,7 @@ class TestEveryRefusalFires:
         template, _profile = _salary_template(
             seed_user, txn_type=TxnTypeEnum.EXPENSE,
         )
-        txn = _template_row(seed_user, seed_periods[0], template)
+        txn = _template_row(seed_periods[0], template)
         assert amount_rule(txn) is AmountRule.SALARY
         with pytest.raises(AmountUnresolvable, match="live recompute answered nothing"):
             _resolve(seed_user, txn)
@@ -1117,7 +1224,7 @@ class TestEveryRefusalFires:
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _ = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
         )
         shadow = _shadow_of(xfer)
         basis = _basis_for(seed_user)
@@ -1141,14 +1248,10 @@ class TestEveryRefusalFires:
         )
         db.session.add(template)
         db.session.flush()
-        xfer = create_transfer(
-            seed_user, db.session, seed_user["account"], savings,
-            seed_periods[0], amount=Decimal("250.00"),
-            due_date=_DUE_UNDER_OLD_PRICE,
-        )
-        xfer.transfer_template_id = template.id
-        db.session.flush()
-        _declare_transfer_derived(xfer)
+        # A cadence and no price: the engine's transfer is derived and dated,
+        # and nothing can then answer for it.
+        make_every_period_rule(db.session, template)
+        xfer = generate_transfer_of(template, seed_periods[0])
         with pytest.raises(AmountUnresolvable, match="series is EMPTY"):
             resolve_transfer_amount(xfer, _basis_for(seed_user))
 
@@ -1218,7 +1321,7 @@ class TestTheLoanPaymentRule:
         The definition says ``$1,300.00``, the parent's column ``$1,250.00`` and
         the shadow's ``$1,200.00`` -- three figures the loan's own answer is not.
         """
-        shadow, rows = _loan_payment(seed_user, seed_periods[0], derive=True)
+        shadow, _rows = _loan_payment(seed_user, derive=True)
         basis = _basis_for(seed_user)
         assert resolve_transaction_amount(shadow, basis) == Decimal("1499.10")
 
@@ -1233,7 +1336,7 @@ class TestTheLoanPaymentRule:
         candidate implementation -- and the loan's own P&I of ``$1,199.10`` must
         not appear either.
         """
-        shadow, rows = _loan_payment(seed_user, seed_periods[0], derive=False)
+        shadow, _rows = _loan_payment(seed_user, derive=False)
         basis = _basis_for(seed_user)
         assert transfer_amount_rule(shadow.transfer) is AmountRule.LOAN_PAYMENT
         assert resolve_transaction_amount(shadow, basis) == Decimal("1300.00")
@@ -1261,8 +1364,8 @@ class TestTheLoanPaymentRule:
         still holds one, and then contradicted by the resolver once the shadow
         is derived.  The discrimination is the same and one producer shorter.
         """
-        shadow, rows = _loan_payment(
-            seed_user, seed_periods[0], derive=False, extra=Decimal("150.00"),
+        shadow, _rows = _loan_payment(
+            seed_user, derive=False, extra=Decimal("150.00"),
             owns=True,
         )
         basis = _basis_for(seed_user)
@@ -1291,8 +1394,8 @@ class TestTheLoanPaymentRule:
         savings = create_savings_account(
             seed_user, db.session, "Not A Loan", Decimal("5000.00"),
         )
-        shadow, rows = _loan_payment(
-            seed_user, seed_periods[0], derive=True, to_account=savings,
+        shadow, _rows = _loan_payment(
+            seed_user, derive=True, to_account=savings,
         )
         basis = _basis_for(seed_user)
         with pytest.raises(AmountUnresolvable, match="would not resolve"):
@@ -1330,7 +1433,7 @@ class TestTheDefinitionPriceIsTheRowsOwnRule:
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _template = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=date(2026, 2, 1),
+            seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
         )
         basis = _basis_for(seed_user)
         row = _row_of(xfer)
@@ -1345,7 +1448,7 @@ class TestTheDefinitionPriceIsTheRowsOwnRule:
         self, app, db, seed_user, seed_periods,
     ):
         """Rule 4, derive arm: P&I $1,199.10 + escrow $300.00 = $1,499.10."""
-        shadow, _rows = _loan_payment(seed_user, seed_periods[0], derive=True)
+        shadow, _rows = _loan_payment(seed_user, derive=True)
         basis = _basis_for(seed_user)
         row = _row_of(shadow.transfer)
 
@@ -1360,7 +1463,7 @@ class TestTheDefinitionPriceIsTheRowsOwnRule:
     ):
         """Rule 4, manual arm: the stated $1,300.00 plus the standing $150.00."""
         shadow, _rows = _loan_payment(
-            seed_user, seed_periods[0], derive=False, extra=Decimal("150.00"),
+            seed_user, derive=False, extra=Decimal("150.00"),
         )
         basis = _basis_for(seed_user)
         row = _row_of(shadow.transfer)
@@ -1411,7 +1514,7 @@ class TestTheDefinitionPriceIsTheRowsOwnRule:
             seed_user, db.session, "Not A Loan", Decimal("5000.00"),
         )
         shadow, _rows = _loan_payment(
-            seed_user, seed_periods[0], derive=True, to_account=savings,
+            seed_user, derive=True, to_account=savings,
         )
         basis = _basis_for(seed_user)
 
@@ -1444,7 +1547,7 @@ class TestAShadowWithNoParentRefuses:
             seed_user, db.session, "Sinking", Decimal("500.00"),
         )
         shadow, _rows = _loan_payment(
-            seed_user, seed_periods[0], derive=False, to_account=savings,
+            seed_user, derive=False, to_account=savings,
         )
         basis = _basis_for(seed_user)
         assert resolve_transaction_amount(shadow, basis) == Decimal("1300.00")
@@ -1468,9 +1571,9 @@ class TestTheBatchTier:
         """
         template, _profile = _salary_template(seed_user)
         paycheck = _template_row(
-            seed_user, seed_periods[0], template, is_income=True,
+            seed_periods[0], template,
         )
-        shadow, _rows = _loan_payment(seed_user, seed_periods[0], derive=True)
+        shadow, _rows = _loan_payment(seed_user, derive=True)
         basis = _basis_for(seed_user)
 
         # WHICH RULE prices each row is decided by the row, and the two rows
@@ -1507,7 +1610,7 @@ class TestTheBatchTier:
         """
         stale = _basis_for(seed_user)
         shadow, _rows = _loan_payment(
-            seed_user, seed_periods[0], derive=False, extra=Decimal("150.00"),
+            seed_user, derive=False, extra=Decimal("150.00"),
         )
         # Built before this payment existed, and it prices it: the definition's
         # $1,300.00 plus the standing $150.00.  The review's failing figure was
@@ -1541,13 +1644,13 @@ class TestTheBatchTier:
         """
         template, _profile = _salary_template(seed_user)
         paycheck = _template_row(
-            seed_user, seed_periods[0], template, is_income=True,
+            seed_periods[0], template,
         )
         repriced = _template_row(
-            seed_user, seed_periods[1], template, is_income=True, owns=True,
+            seed_periods[1], template, owns=True,
         )
         _shadow, loan_rows = _loan_payment(
-            seed_user, seed_periods[0], derive=True,
+            seed_user, derive=True,
         )
         rows = [paycheck, repriced, *loan_rows]
         basis = _basis_for(seed_user)
@@ -1597,7 +1700,7 @@ class TestTheRulesDoNotReadTheColumnTheyReplace:
         is what X-au-k bought.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template)
+        txn = _template_row(seed_periods[0], template)
         basis = _basis_for(seed_user)
         before = resolve_transaction_amount(txn, basis)
         with db.session.no_autoflush:
@@ -1620,7 +1723,7 @@ class TestTheRulesDoNotReadTheColumnTheyReplace:
         database.  Both tiers are graded, one per test.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template)
+        txn = _template_row(seed_periods[0], template)
         write_past_the_amount_seam(txn, Decimal("1000.00"))
         with pytest.raises(IntegrityError, match="ck_transactions_amount_ownership"):
             db.session.flush()
@@ -1634,7 +1737,7 @@ class TestTheRulesDoNotReadTheColumnTheyReplace:
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, template = _generated_transfer(
-            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            seed_user, seed_periods[_PAYCHECK_UNDER_OLD_PRICE], savings,
         )
         shadow = _shadow_of(xfer)
         basis = _basis_for(seed_user)
@@ -1756,10 +1859,10 @@ class TestTheBasisIsOneDerivationPerReadPass:
         # no statement and this control would measure nothing (plan step
         # X-au-d, where the map became ``amounts_by_id``).
         first = _template_row(
-            seed_user, seed_periods[0], template, is_income=True,
+            seed_periods[0], template,
         )
         second = _template_row(
-            seed_user, seed_periods[1], template, is_income=True,
+            seed_periods[1], template,
         )
         db.session.commit()
         basis = _basis_for(seed_user)
@@ -1803,7 +1906,7 @@ class TestTheBasisIsOneDerivationPerReadPass:
         Both legs are ``_touch``-ed first, so the relationship loads are not
         what the count measures.
         """
-        _shadow, rows = _loan_payment(seed_user, seed_periods[0], derive=True)
+        _shadow, rows = _loan_payment(seed_user, derive=True)
         first, second = rows
         db.session.commit()
         basis = _basis_for(seed_user)
@@ -1846,7 +1949,7 @@ class TestTheBasisIsOneDerivationPerReadPass:
         publishes (``amounts_by_id``) and what a tick would book
         (``transfer_service.settle_amount``) must be the same figure.
         """
-        shadow, rows = _loan_payment(seed_user, seed_periods[0], derive=True)
+        shadow, rows = _loan_payment(seed_user, derive=True)
         db.session.commit()
         basis = _basis_for(seed_user)
         _touch(*rows)
@@ -1972,12 +2075,12 @@ class TestABudgetIsNotAContribution:
         column; it would not -- ``_declare_derived`` EMPTIES the column, so such
         a producer refuses and the second assertion fails, which is exactly what
         a mutation of rule 3 measured.  What ``estimated_amount is None`` guards
-        is the FIXTURE: a later change to ``_template_row`` or
-        ``_declare_derived`` that left a figure on the row would keep the second
-        assertion green while it graded nothing at all.
+        is the FIXTURE: a later change to ``_template_row`` or to the engine's
+        row that left a figure on the row would keep the second assertion green
+        while it graded nothing at all.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template)
+        txn = _template_row(seed_periods[0], template)
 
         assert txn.estimated_amount is None
         assert amounts_by_id(
@@ -2062,7 +2165,7 @@ class TestOneRowHasOneDisplayedFigure:
         """
         template, _profile = _salary_template(seed_user)
         paycheck = _template_row(
-            seed_user, seed_periods[0], template, is_income=True,
+            seed_periods[0], template,
         )
         basis = _basis_for(seed_user)
 
@@ -2083,7 +2186,7 @@ class TestOneRowHasOneDisplayedFigure:
         """
         template, _profile = _salary_template(seed_user)
         paycheck = _template_row(
-            seed_user, seed_periods[0], template, is_income=True, owns=True,
+            seed_periods[0], template, owns=True,
         )
         basis = _basis_for(seed_user)
 
@@ -2132,10 +2235,10 @@ class TestPricingReadsNoSTATUS:
         """Rule 2 answers the live net for a row no repair would touch."""
         template, _profile = _salary_template(seed_user)
         projected = _template_row(
-            seed_user, seed_periods[0], template, is_income=True,
+            seed_periods[0], template,
         )
         moved = _template_row(
-            seed_user, seed_periods[1], template, is_income=True,
+            seed_periods[1], template,
         )
         moved.status_id = ref_cache.status_id(status_enum)
         db.session.flush()
@@ -2168,7 +2271,7 @@ class TestPricingReadsNoSTATUS:
         because either alone would pass on a rule that had started reading
         status.
         """
-        shadow, _rows = _loan_payment(seed_user, seed_periods[0], derive=True)
+        shadow, _rows = _loan_payment(seed_user, derive=True)
         shadow.status_id = ref_cache.status_id(status_enum)
         db.session.flush()
         # The status RELATIONSHIP, not just the column: ``fixed_contribution``

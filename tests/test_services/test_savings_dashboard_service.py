@@ -41,6 +41,7 @@ from tests._test_helpers import (
     current_pay_period,
     derived_span,
     last_covered_day,
+    make_projected_envelope_expense,
     open_books_before_the_first_assertion,
     settle_day_columns,
 )
@@ -2813,30 +2814,6 @@ def _override_anchor(db_session, account, pay_period, anchor_balance):
     db_session.commit()
 
 
-def _make_projected_envelope_expense(
-    db_session, *, seed_user, pay_period, estimated, account=None,
-    name="Groceries",
-):
-    """Create a Projected envelope expense in ``pay_period``.
-
-    The engine's own row of a priced, every-paycheck ``is_envelope=True``
-    definition (:func:`generate_row_of`, plan step balance:X-cf), which is
-    what entries attach to.  Uses the user's Groceries category so the row
-    is consistent with the symptom #1 worked example.  ``account`` defaults
-    to the seed user's checking account; pass the account when the row
-    should live elsewhere -- the engine puts a row on its DEFINITION's
-    account, so that is where the choice is made.
-    """
-    # pylint: disable=import-outside-toplevel
-    from tests._test_helpers import generate_row_of, make_expense_template
-
-    template = make_expense_template(
-        db_session, seed_user, amount=estimated,
-        name=name, category_key="Groceries", is_envelope=True,
-        account=account,
-    )
-    return generate_row_of(template, pay_period)
-
 
 #: The civil day every purchase :func:`_add_entry` writes is bought and settled
 #: on.  Named because the account's BOOKS must precede it (ruling **R-HG**,
@@ -2927,7 +2904,7 @@ class TestCanonicalProducerRouting:
                 Decimal("614.29"),
             )
 
-            txn = _make_projected_envelope_expense(
+            txn = make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
@@ -3041,7 +3018,7 @@ class TestCanonicalProducerRouting:
             ))
             db.session.commit()
 
-            txn = _make_projected_envelope_expense(
+            txn = make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
@@ -3112,7 +3089,7 @@ class TestCanonicalProducerRouting:
                 Decimal("614.29"),
             )
 
-            _make_projected_envelope_expense(
+            make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
@@ -6621,7 +6598,7 @@ class TestTheTileHorizonsFollowTheOwnersCadence:
             current = current_pay_period(seed_user["user"].id)
             by_index = {derived_span(p).period_index: p for p in periods}
             for offset, amount in ((10, "100.00"), (20, "200.00"), (40, "300.00")):
-                _make_projected_envelope_expense(
+                make_projected_envelope_expense(
                     db.session, seed_user=seed_user,
                     pay_period=by_index[derived_span(current).period_index + offset],
                     estimated=Decimal(amount), name=f"Bill +{offset}",

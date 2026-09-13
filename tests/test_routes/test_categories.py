@@ -13,21 +13,19 @@ from decimal import Decimal
 
 import pytest
 
+from app import ref_cache
+from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
-from app.models.ref import AccountType, TransactionType, Status
-from app.models.scenario import Scenario
+from app.models.ref import TransactionType, Status
 from app.models.transaction import Transaction
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
 from app.models.transaction_template import TransactionTemplate
-from app.models.transfer import Transfer
-from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
-from app.services import account_service
+from app.services import transaction_service, transfer_service
 from app.utils.archive_helpers import (
     account_has_history,
     category_has_usage,
@@ -35,7 +33,12 @@ from app.utils.archive_helpers import (
     transfer_template_has_paid_history,
 )
 from tests._test_helpers import (
+    create_savings_account,
     current_pay_period,
+    generate_row_of,
+    generate_transfer_of,
+    make_expense_template,
+    make_transfer_template,
     select_option_values,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -1113,35 +1116,19 @@ class TestArchiveHelpers:
                 )
 
     def test_template_has_paid_history_true(self, app, db, seed_user, seed_periods_today):
-        """C-5A.5-2: template_has_paid_history returns True when a Paid transaction exists."""
+        """C-5A.5-2: template_has_paid_history returns True when a Paid transaction exists.
+
+        The definition's own row, settled the way Mark Paid settles it (plan
+        step balance:X-cf-4): the engine only ever writes Projected.
+        """
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            paid_status = db.session.query(Status).filter_by(name="Paid").one()
-
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
+            template = make_expense_template(
+                db.session, seed_user, amount="500.00",
                 name="Paid History Template",
-                default_amount=Decimal("500.00"),
             )
-            db.session.add(template)
-            db.session.flush()
-
-            txn = Transaction(
-                template_id=template.id,
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                name="Paid History Template",
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                status_id=paid_status.id,
+            transaction_service.settle_transaction(
+                generate_row_of(template, seed_periods_today[0]),
             )
-            db.session.add(txn)
             db.session.commit()
 
             result = template_has_paid_history(template.id)
@@ -1150,33 +1137,11 @@ class TestArchiveHelpers:
     def test_template_has_paid_history_false(self, app, db, seed_user, seed_periods_today):
         """C-5A.5-3: template_has_paid_history returns False when only Projected txns exist."""
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            projected_status = db.session.query(Status).filter_by(name="Projected").one()
-
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
+            template = make_expense_template(
+                db.session, seed_user, amount="500.00",
                 name="Projected Only Template",
-                default_amount=Decimal("500.00"),
             )
-            db.session.add(template)
-            db.session.flush()
-
-            txn = Transaction(
-                template_id=template.id,
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                name="Projected Only Template",
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                status_id=projected_status.id,
-            )
-            db.session.add(txn)
+            generate_row_of(template, seed_periods_today[0])
             db.session.commit()
 
             result = template_has_paid_history(template.id)
@@ -1185,44 +1150,25 @@ class TestArchiveHelpers:
     def test_transfer_template_has_paid_history_true(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """C-5A.5-4: transfer_template_has_paid_history returns True when Paid transfer exists."""
+        """C-5A.5-4: transfer_template_has_paid_history returns True when Paid transfer exists.
+
+        The transfer is the engine's (:func:`generate_transfer_of`, plan step
+        balance:X-ch) and is SETTLED through ``transfer_service`` -- the door
+        that moves all three rows -- rather than born Paid by hand.
+        """
         with app.app_context():
-            paid_status = db.session.query(Status).filter_by(name="Paid").one()
-            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-
-            savings_account = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=savings_type.id,
-                    name="Savings for Transfer Test",
-                    anchor_balance=Decimal("0.00"),
-                ),
+            savings_account = create_savings_account(
+                seed_user, db.session, "Savings for Transfer Test",
+                Decimal("0.00"),
             )
-            db.session.add(savings_account)
-            db.session.flush()
-
-            xfer_template = TransferTemplate(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings_account.id,
-                name="Paid Transfer Template",
-                default_amount=Decimal("200.00"),
+            xfer_template = make_transfer_template(
+                db.session, seed_user, savings_account, amount="200.00",
             )
-            db.session.add(xfer_template)
-            db.session.flush()
-
-            xfer = Transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings_account.id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=paid_status.id,
-                transfer_template_id=xfer_template.id,
-                name="Paid Transfer",
-                amount_ownership=AmountOwnership.own(Decimal("200.00")),
+            xfer = generate_transfer_of(xfer_template, seed_periods_today[0])
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
             )
-            db.session.add(xfer)
             db.session.commit()
 
             result = transfer_template_has_paid_history(xfer_template.id)
@@ -1233,42 +1179,14 @@ class TestArchiveHelpers:
     ):
         """C-5A.5-5: transfer_template_has_paid_history returns False when only Projected."""
         with app.app_context():
-            projected_status = db.session.query(Status).filter_by(name="Projected").one()
-            savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-
-            savings_account = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=savings_type.id,
-                    name="Savings for Projected Transfer",
-                    anchor_balance=Decimal("0.00"),
-                ),
+            savings_account = create_savings_account(
+                seed_user, db.session, "Savings for Projected Transfer",
+                Decimal("0.00"),
             )
-            db.session.add(savings_account)
-            db.session.flush()
-
-            xfer_template = TransferTemplate(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings_account.id,
-                name="Projected Transfer Template",
-                default_amount=Decimal("150.00"),
+            xfer_template = make_transfer_template(
+                db.session, seed_user, savings_account, amount="150.00",
             )
-            db.session.add(xfer_template)
-            db.session.flush()
-
-            xfer = Transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings_account.id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=projected_status.id,
-                transfer_template_id=xfer_template.id,
-                name="Projected Transfer",
-                amount_ownership=AmountOwnership.own(Decimal("150.00")),
-            )
-            db.session.add(xfer)
+            generate_transfer_of(xfer_template, seed_periods_today[0])
             db.session.commit()
 
             result = transfer_template_has_paid_history(xfer_template.id)

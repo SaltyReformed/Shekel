@@ -84,7 +84,7 @@ def mint_era(user_id: int, era: Era) -> PayEra:
             (``uq_pay_eras_user_effective_from``).  The writer holds that
             two ways before calling here: it retires every era whose first
             payday falls after the last surviving payday, and it bounds a
-            minting batch at its era's first payday (``pay_period_write``'s
+            minting batch at its era's first payday (``pay_period_batch``'s
             floor, since plan step ``C17-b-2``) -- so an era restated from a
             day the record already holds is REFUSED at the door rather than
             colliding on the key.  *Until then this sentence claimed the
@@ -133,8 +133,9 @@ def eras_describing(
     (:func:`~app.services.pay_calendar.first_payday_of`, its
     ``effective_from`` displaced under its own convention), so one whose
     first payday falls after the last surviving payday describes nothing the
-    batch keeps; the batch's new paydays all fall past that day
-    (``pay_period_write``'s floor) and take their era from the mint decision.
+    batch keeps -- the earliest era excepted, which runs backward; the
+    batch's new paydays all fall past that day (``pay_period_batch``'s floor)
+    and take their era from the mint decision.
     ``retire_eras`` is handed this set, so what is judged against and what
     survives are one set.
 
@@ -149,18 +150,36 @@ def eras_describing(
     readers place a payday in cash days (:func:`~app.services.pay_calendar.era_index_at`),
     and the writer now agrees with them.
 
+    **The EARLIEST era stands whenever any payday does, since plan step
+    ``C17-c-2a``** (its adversarial review), and that is the readers' rule
+    too: ruling **R-PC66** has the earliest era run BACKWARD below the
+    record, so a surviving payday before its first payday is one it
+    describes, and :func:`~app.services.pay_calendar.era_index_at` places
+    such a day in it.  The state is a migrated one: ``C17-a``'s backfill
+    minted an owner's era at their opening payday less the anchor gap under
+    the convention the row held THEN, and an owner who opened on a closed
+    day under ``none`` and later corrected to ``next`` holds an era whose
+    first payday falls two days after their first record.  Truncated to
+    that opening period they stood with NO era on the first-payday test:
+    the next batch retired their only era and re-minted it from the day it
+    continued, and the ceiling (``pay_period_batch.reject_skipped_paycheck``)
+    had no plan to read.  They continue their era now, as every other owner.
+
     Args:
         stored: The owner's schedule facts before the batch, or ``None``.
         surviving_paydays: The paydays the batch leaves standing.
 
     Returns:
         The surviving eras, ``effective_from`` ascending; empty when nothing
-        survives or the owner holds no era.
+        survives or the owner holds no era, NON-EMPTY otherwise.
     """
     if stored is None or not surviving_paydays:
         return ()
     latest = max(surviving_paydays)
-    return tuple(e for e in stored.eras if first_payday_of(e) <= latest)
+    return tuple(
+        era for index, era in enumerate(stored.eras)
+        if index == 0 or first_payday_of(era) <= latest
+    )
 
 
 def era_to_mint(
@@ -185,16 +204,15 @@ def era_to_mint(
        the same cadence.
 
     A batch whose first payday sits on the covering era's grid at that era's
-    rhythm CONTINUES it and mints nothing.  That is every extend and rolling
-    top-up for an owner whose latest era covers the horizon -- every owner
-    the migration backfills: their first payday comes from
-    :func:`~app.services.pay_calendar.nominal_payday_after`, stepped from the
-    latest era's own ``effective_from``, so it is on that grid by
-    construction and the rhythm is the one read off the calendar.  *An owner
-    who truncated below their latest era's day is the exception, and an
-    adversarial review of C17-a named it: that era describes no surviving
-    payday, the batch retires it, and the extend restates its rhythm as an
-    era from the day it continues -- and is judged like any stated era.*
+    rhythm CONTINUES it and mints nothing.  **Extend and the rolling top-up
+    do not reach this question at all since plan step ``C17-c-2b``**: they
+    state no rhythm, so they go through
+    ``pay_period_write.continue_paydays``, which records the paydays the
+    stored eras already plan and mints and retires nothing.  *Until then the
+    extend door restated the LATEST era from the horizon as a stated batch,
+    and an owner truncated below that era's day had it retired and re-minted
+    from the day the extend continued (ledger row **PC-509**); the door that
+    replaced it materialises the plan of the era COVERING the record.*
 
     **The grid test is arithmetic on the NOMINAL day, which is what
     *first_payday* is** (the writer's own reading of it).  ``C17-d`` branches
@@ -245,9 +263,9 @@ def retire_eras(user_id: int, standing: "tuple[date, ...]") -> int:
 
     An era is never retired by a batch that records nothing: truncating a
     schedule's tail shortens the record and leaves the owner's declared
-    rhythm as it was, so the next extend continues the era they stated --
-    restating it from the day it continues, when the truncate cut below
-    that era's own day.
+    rhythm as it was, so the next extend continues the plan they stated --
+    the era covering the record first, then the later era from its own
+    first payday (ruling **R-PC75**), and mints nothing on the way.
 
     Args:
         user_id: The owning user's id.

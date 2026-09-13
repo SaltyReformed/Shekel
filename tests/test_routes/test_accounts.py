@@ -27,8 +27,6 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
-    rhythm_of,
-    strip_owner_schedule,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -37,12 +35,19 @@ from tests._test_helpers import (
     create_transfer,
     current_pay_period,
     derived_span,
+    generate_row_of,
+    make_expense_template,
+    make_projected_envelope_expense,
     open_books_before_the_first_assertion,
     open_owner_calendar,
+    record_paydays_across_a_hole,
+    resolved_amount,
+    rhythm_of,
     settle_day_columns,
     settle_instant_on,
     settlement_basis_id,
     settlement_if_settling,
+    strip_owner_schedule,
 )
 from app.models.interest_params import InterestParams
 from app.models.pay_period import PayPeriod
@@ -1771,43 +1776,17 @@ class TestTheReconcileRoute:
                 distinguishable blocks in one panel.
 
         Returns:
-            The Transaction object.
+            The Transaction object -- the engine's row of a priced envelope
+            definition on *account* (:func:`generate_row_of`, plan step
+            balance:X-cf-4).
         """
         from app.models.transaction_entry import TransactionEntry
-        from app.models.transaction_template import TransactionTemplate
 
-        account = account if account is not None else seed_user["account"]
-        projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense_type = db.session.query(TransactionType).filter_by(
-            name="Expense",
-        ).one()
-
-        template = TransactionTemplate(
-            user_id=seed_user["user"].id,
-            account_id=account.id,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=expense_type.id,
-            name=name,
-            default_amount=Decimal("500.00"),
-            is_envelope=True,
+        template = make_expense_template(
+            db.session, seed_user, amount="500.00", name=name,
+            category_key="Groceries", is_envelope=True, account=account,
         )
-        db.session.add(template)
-        db.session.flush()
-
-        txn = Transaction(
-            template_id=template.id,
-            user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=account.id,
-            status_id=projected.id,
-            name=name,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("500.00")),
-        )
-        db.session.add(txn)
-        db.session.flush()
+        txn = generate_row_of(template, seed_periods_today[0])
 
         for amount, purchased_on, is_credit, settled_on in entries:
             db.session.add(TransactionEntry(
@@ -2967,7 +2946,9 @@ class TestTheReconcileRoute:
             db.session.expire_all()
             settled = db.session.get(Transaction, txn.id)
             assert settled.settled_amount == Decimal("412.09")
-            assert settled.estimated_amount == Decimal("500.00")
+            # The correction is the RECORD's; the plan the row derives from
+            # its definition is untouched by it.
+            assert resolved_amount(settled) == Decimal("500.00")
 
     def test_a_malformed_amount_refuses_and_commits_NOTHING(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3145,39 +3126,17 @@ class TestTheReconcileRoutesUngradedBranches:
 
     @staticmethod
     def _bill(seed_user, period, *, name="Electricity", amount="180.00"):
-        """Create a projected NON-envelope row -- correctable, so it draws a box."""
-        from app.models.transaction_template import TransactionTemplate
+        """Create a projected NON-envelope row -- correctable, so it draws a box.
 
-        projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense_type = db.session.query(TransactionType).filter_by(
-            name="Expense",
-        ).one()
-        template = TransactionTemplate(
-            user_id=seed_user["user"].id,
-            account_id=seed_user["account"].id,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=expense_type.id,
-            name=name,
-            default_amount=Decimal(amount),
-            is_envelope=False,
+        The engine's row of a priced definition (:func:`generate_row_of`,
+        plan step balance:X-cf-4), so the figure the box prefills is what
+        the row RESOLVES to.
+        """
+        template = make_expense_template(
+            db.session, seed_user, amount=amount, name=name,
+            category_key="Groceries",
         )
-        db.session.add(template)
-        db.session.flush()
-        txn = Transaction(
-            template_id=template.id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=projected.id,
-            name=name,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal(amount)),
-        )
-        db.session.add(txn)
-        db.session.flush()
-        return txn
+        return generate_row_of(template, period)
 
     def test_a_PARTLY_landed_submission_says_so(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -5243,7 +5202,7 @@ class TestCheckingDetail:
     def test_checking_detail_page_renders(self, app, auth_client, seed_user):
         """GET /accounts/<id>/checking renders the detail page with account name and balance."""
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -5269,7 +5228,7 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Salary"]
 
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=27, rhythm=rhythm_of(14),
@@ -5337,7 +5296,7 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Salary"]
 
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=27, rhythm=rhythm_of(14),
@@ -5424,7 +5383,7 @@ class TestCheckingDetail:
     ):
         """Checking detail with no transactions shows flat balance at anchor amount."""
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=27, rhythm=rhythm_of(14),
@@ -5443,7 +5402,7 @@ class TestCheckingDetail:
     ):
         """Short horizon: 3-month projection available, 12-month projection missing."""
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -5472,7 +5431,7 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Rent"]
 
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -5527,7 +5486,7 @@ class TestCheckingDetail:
         # test convention.
         from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -5585,51 +5544,6 @@ def _override_account_anchor(db_session, account, pay_period, anchor_balance):
     )
     db_session.commit()
 
-
-def _make_projected_envelope_expense(
-    db_session, *, seed_user, pay_period, account_id, estimated,
-    name="Groceries",
-):
-    """Create a Projected envelope expense + its template in ``pay_period``.
-
-    Mirrors the helper in ``test_savings_dashboard_service.py``.  Uses
-    the seed user's Groceries category so the row matches the symptom
-    #1 / #5 worked example.
-    """
-    from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
-
-    projected = db_session.query(Status).filter_by(name="Projected").one()
-    expense_type = (
-        db_session.query(TransactionType).filter_by(name="Expense").one()
-    )
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=account_id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        name=name,
-        default_amount=estimated,
-        is_envelope=True,
-    )
-    db_session.add(template)
-    db_session.flush()
-
-    txn = Transaction(
-        template_id=template.id,
-        user_id=pay_period.user_id,
-        pay_period_id=pay_period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=account_id,
-        status_id=projected.id,
-        name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(estimated),
-    )
-    db_session.add(txn)
-    db_session.flush()
-    return txn
 
 
 #: The civil day :func:`_add_cleared_debit_entry` buys and settles on.  Named
@@ -5719,11 +5633,11 @@ class TestCheckingDetailCanonicalProducer:
                 db.session, account, current_period, Decimal("614.29"),
             )
 
-            txn = _make_projected_envelope_expense(
+            txn = make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
-                account_id=account.id,
+                account=account,
                 estimated=Decimal("500.00"),
             )
             for amt in (Decimal("20.00"), Decimal("15.71"), Decimal("10.00")):
@@ -5868,11 +5782,11 @@ class TestCheckingDetailCanonicalProducer:
                 db.session, account_b, also_before=_CLEARED_PURCHASE_DAY,
             )
 
-            txn_a = _make_projected_envelope_expense(
+            txn_a = make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
-                account_id=account_a.id,
+                account=account_a,
                 estimated=Decimal("500.00"),
                 name="Groceries A",
             )
@@ -5884,11 +5798,11 @@ class TestCheckingDetailCanonicalProducer:
                     amount=amt,
                 )
 
-            txn_b = _make_projected_envelope_expense(
+            txn_b = make_projected_envelope_expense(
                 db.session,
                 seed_user=seed_user,
                 pay_period=current_period,
-                account_id=account_b.id,
+                account=account_b,
                 estimated=Decimal("300.00"),
                 name="Groceries B",
             )
@@ -5945,7 +5859,7 @@ class TestCheckingDetailCanonicalProducer:
             # The CALL is the setup: it creates the ten periods this
             # page projects across.  The return value is unused since
             # the anchor no longer names a period.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -6086,7 +6000,7 @@ class TestCheckingDashboardLink:
         with app.app_context():
             # The CALL is the setup: the dashboard can only compute a
             # balance for the seed account across periods that exist.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -6115,7 +6029,7 @@ class TestCheckingDashboardLink:
         with app.app_context():
             # The CALL is the setup: the dashboard can only compute a
             # balance for either card across periods that exist.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),
@@ -6217,7 +6131,7 @@ class TestCashDetailContext:
         26 they replaced are the same numbers and no case could tell them
         apart.
         """
-        periods = pay_period_write.record_paydays(
+        periods = record_paydays_across_a_hole(
             user_id=seed_user["user"].id,
             first_payday=display_today(),
             num_periods=num_periods, rhythm=rhythm_of(cadence_days),
@@ -6638,7 +6552,7 @@ class TestCashDetailContext:
         with app.app_context():
             # The CALL is the setup: the next-year window needs a year
             # of periods to sum interest across.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=30, rhythm=rhythm_of(14),
@@ -6681,7 +6595,7 @@ class TestCashDetailContext:
         # test convention.
         from app.services.balance_at import _kernel as net_worth_kernel  # pylint: disable=import-outside-toplevel
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=33, rhythm=rhythm_of(14),
@@ -6754,7 +6668,7 @@ class TestCashDetailContext:
         from app.services.balance_at import _kernel as net_worth_kernel  # pylint: disable=import-outside-toplevel
         from app.services.balance_at import BalanceContext  # pylint: disable=import-outside-toplevel
         with app.app_context():
-            periods = pay_period_write.record_paydays(
+            periods = record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=60, rhythm=rhythm_of(7),
@@ -7807,7 +7721,7 @@ class TestCashDetailClickToEditHero:
         with app.app_context():
             # The CALL is the setup: it creates the ten periods the
             # band's horizon chips read across.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=seed_user["user"].id,
                 first_payday=display_today(),
                 num_periods=10, rhythm=rhythm_of(14),

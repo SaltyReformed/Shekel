@@ -56,6 +56,7 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     add_txn,
     all_periods,
@@ -78,7 +79,7 @@ from app.models.amount_ownership import AmountOwnership
 
 def _future_periods(db_session, seed_user, count=6, start=date(2026, 7, 3)):
     """Generate `count` biweekly FUTURE periods (indices 1..count)."""
-    periods = pay_period_write.record_paydays(
+    periods = record_paydays_across_a_hole(
         user_id=seed_user["user"].id,
         first_payday=start,
         num_periods=count,
@@ -433,7 +434,7 @@ class TestTruncateHardLocks:
         with app.app_context():
             user_id = seed_user["user"].id
             # Spanning past->future: early indices have already ended.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=user_id,
                 first_payday=date(2026, 1, 2), num_periods=14, rhythm=rhythm_of(14),
             )

@@ -34,8 +34,11 @@ The public surface, and what each piece is for:
   It is what finding **N-302** says a refusal owes (plan step
   ``bank_import:X-f6a-4``): a restated line, or a first import that named the
   wrong Shekel account, used to end that account's ability to import for good.
-  It is BALANCE-NEUTRAL -- it removes what the BANK said, and a settle day an
-  accepted match wrote is the app's own record and stays.
+  It removes what the BANK said, and a settle day an accepted match wrote is
+  the app's own record and stays -- but it MOVES MONEY where the review had
+  CREATED a row from one of those lines (ruling **R-GG**): the row goes with
+  the line, and the receipt says how many and how much.  *It said
+  BALANCE-NEUTRAL until plan step ``bank_import:X-gr`` (finding **BI-487**).*
 
 **What the recorded lines are FOR is the steps after this one**, named here
 because the schema was designed for all four rather than for the first: the

@@ -16,6 +16,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import pay_period_write, pay_schedule_service
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     shift_form_value,
     rhythm_of,
     add_txn,
@@ -450,7 +451,7 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
                 db.session, seed_user, seed_periods[-1], date(2026, 6, 15),
             )
             row_id = row.id
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=user_id, first_payday=date(2026, 7, 1),
                 num_periods=1, rhythm=rhythm_of(14),
             )
@@ -514,7 +515,7 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
         freeze_today(monkeypatch, date(2025, 12, 1))
         with app.app_context():
             user_id = seed_user["user"].id
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=user_id, first_payday=date(2026, 7, 1),
                 num_periods=1, rhythm=rhythm_of(180),
             )

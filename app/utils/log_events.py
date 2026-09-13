@@ -513,9 +513,13 @@ EVT_STATEMENT_IMPORT_DELETED = _register(
     "An owner deleted a recorded import: the lines it FIRST recorded are gone, "
     "every match naming one of them was released, and the source-account "
     "pairing went with it if that was the account's last import from that "
-    "source.  It moves NO money -- a settle day an accepted match wrote is the "
-    "app's own record and stays -- but it destroys what the BANK said, which "
-    "is the fact this whole arc exists to hold.",
+    "source.  It MOVES MONEY where the review had CREATED a row from one of "
+    "those lines (ruling R-GG): the row goes with the line, and rows_removed "
+    "and cash_removed say how many and how much.  A settle day an accepted "
+    "match wrote is the app's own record and stays.  It destroys what the "
+    "BANK said, which is the fact this whole arc exists to hold; "
+    "anchors_released counts the other imports whose placed balance rested "
+    "on those lines and was released with them.",
 )
 
 EVT_STATEMENT_LINE_RECORDED = _register(
