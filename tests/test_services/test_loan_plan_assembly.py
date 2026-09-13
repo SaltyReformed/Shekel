@@ -30,7 +30,7 @@ from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
 from app.services.balance_at import BalanceContext
-from app.services.balance_at._context import _memoize_once
+from app.services.balance_at._memoize import _memoize_once
 from app.exceptions import AmountUnresolvable, ForeignAccountError
 from app.models.account import Account
 from tests._test_helpers import (
@@ -565,7 +565,7 @@ def test_the_cache_stores_on_membership_not_truthiness():
     **The empty PLAN stopped being the second example at plan step R16-a**, and
     the docstring said otherwise until an adversarial merge review found it one
     site over from where it had already been corrected
-    (``_context._memoize_once``).  ``loan_plan`` answered ``[]``; it now answers
+    (``_memoize._memoize_once``).  ``loan_plan`` answered ``[]``; it now answers
     a ``LoanForwardPlan(payments=[], charges=[])``, which is unconditionally
     TRUTHY.  This test is unaffected -- the primitive is generic and its
     ``_build_empty`` below returns a real ``[]`` -- but the CLAIM about the plan

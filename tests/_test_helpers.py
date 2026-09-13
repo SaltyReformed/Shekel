@@ -3535,6 +3535,49 @@ def make_salary_profile(
     return profile
 
 
+def make_recurring_raise(
+    profile_id, db_session, *, effective_year, effective_month=1,
+    percentage=None, terminal_year=None,
+):
+    """Build and add ONE recurring percentage raise on a profile (uncommitted).
+
+    The shared raise builder for the cases that grade a recurring raise's END
+    YEAR reaching a figure (plan step salary:S3-f-2b): the plan point, the
+    ``/retirement`` rail's probe and the pricer-count gate each seed the same
+    row, and three inline ``SalaryRaise(...)`` blocks were an adversarial
+    review's finding.  The caller commits.
+
+    Args:
+        profile_id: The :class:`~app.models.salary_profile.SalaryProfile` id.
+        db_session: The test ``db.session``.
+        effective_year: The year the raise first applies.
+        effective_month: The month within that year (default January).
+        percentage: The fractional raise (Decimal); defaults to
+            ``Decimal("0.0500")``, a 5% merit raise.
+        terminal_year: The last year it is believed, ``None`` for no end.
+
+    Returns:
+        The added :class:`~app.models.salary_raise.SalaryRaise`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app import ref_cache
+    from app.enums import RaiseTypeEnum
+    from app.models.salary_raise import SalaryRaise
+
+    row = SalaryRaise(
+        salary_profile_id=profile_id,
+        raise_type_id=ref_cache.raise_type_id(RaiseTypeEnum.MERIT),
+        effective_month=effective_month,
+        effective_year=effective_year,
+        percentage=Decimal("0.0500") if percentage is None else percentage,
+        is_recurring=True,
+        terminal_year=terminal_year,
+    )
+    db_session.add(row)
+    return row
+
+
 def create_envelope_txn(seed_user, db_session, period, name, estimated):
     """Create an entry-tracked (is_envelope) projected expense (flushed).
 
@@ -4241,10 +4284,10 @@ def generate_row_of(template, period):
 
     A fixture wanting the OWNER's row -- a figure the human authored -- takes
     ownership of the generated row the way the re-price door does
-    (``routes/transactions/mutations``: :func:`~app.services.amount_ownership.
-    state_own_amount` and ``is_override = True``), rather than building one.
-    A fixture wanting a SETTLED row settles this one, as the app does; the
-    engine only ever writes Projected.
+    (:func:`repriced_by_the_owner`), and one wanting a row the owner MOVED
+    moves this one the way the move door does (:func:`moved_by_the_owner`),
+    rather than building one.  A fixture wanting a SETTLED row settles this
+    one, as the app does; the engine only ever writes Projected.
 
     The row is generated into the owner's BASELINE scenario, which is what
     every door that generates passes; a fixture for another scenario is a
@@ -4307,17 +4350,88 @@ def generate_row_of(template, period):
     return created[0]
 
 
+def repriced_by_the_owner(row, figure):
+    """Re-price *row* the way the edit door does, and hand it back.
+
+    **The OWNER's row, stated once** (plan step balance:X-cf-3b, ruling
+    R-BAL17): a fixture wanting a row a human re-priced takes the engine's
+    row (:func:`generate_row_of`) and performs the two acts
+    ``routes/transactions/mutations`` performs on a typed figure -- the
+    figure through ``amount_ownership.state_own_amount``, which stores it and
+    releases the relation that priced the row in one attribute, and
+    ``is_override = True`` beside it, because the row is the owner's now
+    rather than the rule's.  The pair was spelled at every site that wanted
+    it before this helper, which is rule 14's tell; a site that performs one
+    act without the other builds a row the write doors cannot produce.
+
+    Args:
+        row: The flushed :class:`~app.models.transaction.Transaction`, the
+            engine's.
+        figure: The figure the owner typed (str or Decimal-coercible).
+
+    Returns:
+        *row*, flushed, owning *figure*.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.extensions import db
+    from app.services.amount_ownership import state_own_amount
+
+    state_own_amount(row, Decimal(str(figure)))
+    row.is_override = True
+    db.session.flush()
+    return row
+
+
+def moved_by_the_owner(row, *, into):
+    """Move *row* into the paycheck *into* the way the move door does.
+
+    The other of the edit door's two acts on a row of a definition (plan
+    step balance:X-cf-3b): the period, and ``is_override = True`` beside it
+    -- a moved row is the owner's, and the flag is what keeps the maintain
+    pass and the generate pass off it.  The row keeps the occurrence it was
+    generated for, so it never collides with the target paycheck's own
+    canonical on the occurrence index; it is one of the two ways the
+    application puts an override beside a canonical, the other being
+    carry-forward.  A fixture wanting "an override sibling in paycheck N"
+    generates the definition's row in ANOTHER paycheck and moves it here.
+
+    Args:
+        row: The flushed :class:`~app.models.transaction.Transaction`, the
+            engine's.
+        into: The :class:`~app.models.pay_period.PayPeriod` the owner moved
+            it into.
+
+    Returns:
+        *row*, flushed, in *into*.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.extensions import db
+
+    row.pay_period_id = into.id
+    row.is_override = True
+    db.session.flush()
+    return row
+
+
 def definition_firing_twice_in_a_paycheck(db_session, seed_user, *, name):
-    """Pin a 60-day calendar and author a MONTHLY definition that names TWO
-    occurrences in its second paycheck; return ``(template, that period)``.
+    """Pin a 60-day calendar and author a MONTHLY definition that names ONE
+    occurrence in its first paycheck and TWO in its second; return
+    ``(template, first paycheck, second paycheck)``.
 
     The one fixture for "a paycheck holding two rows of one definition" -- the
     state plan step R17 made storable -- so the cases that need it (the
     builder's 2+ refusal in ``test_fixture_validation``, the R17 downgrade
-    guard, DC-06's acceptance of the pair) state it once and the calendar
-    arithmetic is argued once.  :func:`generate_row_of` REFUSES this
-    definition in this paycheck by design; the cases that want the pair
-    written take it from :func:`populate_in_a_fresh_pass`.
+    guard, DC-06's acceptance of the pair, carry-forward's earliest-occurrence
+    tie-break) state it once and the calendar arithmetic is argued once.
+    :func:`generate_row_of` REFUSES this definition in the second paycheck by
+    design; the cases that want the pair written take it from
+    :func:`populate_in_a_fresh_pass`.  In the FIRST paycheck it answers the
+    definition's one row there, which is what a case rolling a leftover INTO
+    the pair needs as its source (plan step balance:X-cf-3b).
 
     **The calendar is pinned to a stated date rather than derived from today,
     and the reason was measured, not argued.**  A 60-day paycheck that opens
@@ -4328,10 +4442,12 @@ def definition_firing_twice_in_a_paycheck(db_session, seed_user, *, name):
     June into early September (2026-06-29..08-30, 2027-07-05..08-29,
     2029-07-02..09-02, 2030-07-01..09-01; none in 2028).  Found by
     adversarial review 2026-09-11 under ``SHEKEL_FAKE_TODAY=2026-07-15``,
-    which is the way to see it.  The second paycheck here opens 2026-05-01
-    and closes 2026-06-29:
-    May and June are 61 days, so it holds the 1st of May and the 1st of June
-    and no third, on every clock.
+    which is the way to see it.  The first paycheck here opens 2026-03-02 and
+    closes 2026-04-30, the second opens 2026-05-01 and closes 2026-06-29:
+    the rule's first occurrence is 2026-04-01, so the first paycheck holds
+    that one and no other (the 1st of March precedes the rule); May and June
+    are 61 days, so the second holds the 1st of May and the 1st of June and no
+    third, on every clock.
 
     Args:
         db_session: The test session.
@@ -4339,10 +4455,10 @@ def definition_firing_twice_in_a_paycheck(db_session, seed_user, *, name):
         name: The definition's name.
 
     Returns:
-        ``(template, period)``: the flushed
+        ``(template, first, second)``: the flushed
         :class:`~app.models.transaction_template.TransactionTemplate` carrying
-        the monthly rule, and the :class:`~app.models.pay_period.PayPeriod`
-        it fires twice in.
+        the monthly rule, the :class:`~app.models.pay_period.PayPeriod` it
+        fires once in, and the one it fires twice in.
     """
     # Pylint: ``import-outside-toplevel`` -- a tests-package import kept
     # local so this module's import graph stays as it was.
@@ -4353,8 +4469,8 @@ def definition_firing_twice_in_a_paycheck(db_session, seed_user, *, name):
         seed_user["user"].id, _real_date(2026, 3, 2), 6, 60,
     )
     template = bare_expense_template(db_session, seed_user, name=name)
-    make_cadence_rule(template, MONTHLY, starts_on=periods[1].start_date)
-    return template, periods[1]
+    make_cadence_rule(template, MONTHLY, starts_on=_real_date(2026, 4, 1))
+    return template, periods[0], periods[1]
 
 
 def require_assertion_instant(at):
@@ -5790,7 +5906,7 @@ def make_cadence_rule(owner, cadence, **kwargs):
 def make_expense_template(
     db_session, seed_user, amount="1200.00", is_active=True, *,
     name="Rent", category_key="Rent", is_envelope=False,
-    companion_visible=False, account=None,
+    companion_visible=False, account=None, category=None,
 ):
     """Create and flush an every-period expense template on the seed account.
 
@@ -5825,6 +5941,13 @@ def make_expense_template(
             whose row lives on an HYSA or a 401(k): the engine puts a row on
             its DEFINITION's account (``DerivedRowFields.account_id``), so
             that is the only place a fixture can say where the row goes.
+        category: The :class:`~app.models.category.Category` the definition
+            files under, when it is not one of the seed's -- a test that
+            authors its own category passes the row here and *category_key*
+            is not read.  Widened at plan step balance:X-cf-4 for the same
+            reason as *account*: the engine files a row under its
+            DEFINITION's category (``DerivedRowFields.category_id``), so the
+            definition is the only place a fixture can say so.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5839,13 +5962,14 @@ def make_expense_template(
         db_session, seed_user, TxnTypeEnum.EXPENSE, amount, is_active,
         name=name, category_key=category_key, is_envelope=is_envelope,
         companion_visible=companion_visible, account=account,
+        category=category,
     )
 
 
 def make_income_template(
     db_session, seed_user, amount="2000.00", is_active=True, *,
     name="Paycheck", category_key="Salary", is_envelope=False,
-    companion_visible=False, account=None,
+    companion_visible=False, account=None, category=None,
 ):
     """Create and flush an every-period INCOME template on the seed account.
 
@@ -5866,6 +5990,8 @@ def make_income_template(
         companion_visible: Whether a companion of the owner may see its rows.
         account: The account the definition pays into; the seed user's
             checking account when omitted.  See :func:`make_expense_template`.
+        category: The category the definition files under, when it is not
+            one of the seed's.  See :func:`make_expense_template`.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5880,12 +6006,13 @@ def make_income_template(
         db_session, seed_user, TxnTypeEnum.INCOME, amount, is_active,
         name=name, category_key=category_key, is_envelope=is_envelope,
         companion_visible=companion_visible, account=account,
+        category=category,
     )
 
 
 def _priced_repeating_template(
     db_session, seed_user, txn_type, amount, is_active, *,
-    name, category_key, is_envelope, companion_visible, account,
+    name, category_key, is_envelope, companion_visible, account, category,
 ):
     """The one body behind :func:`make_expense_template` and its income twin.
 
@@ -5902,6 +6029,8 @@ def _priced_repeating_template(
         companion_visible: Whether a companion of the owner may see its rows.
         account: The account the definition is on, or ``None`` for
             ``seed_user["account"]``.
+        category: The category the definition files under, or ``None`` for
+            ``seed_user["categories"][category_key]``.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -5916,7 +6045,10 @@ def _priced_repeating_template(
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=(seed_user["account"] if account is None else account).id,
-        category_id=seed_user["categories"][category_key].id,
+        category_id=(
+            seed_user["categories"][category_key] if category is None
+            else category
+        ).id,
         transaction_type_id=ref_cache.txn_type_id(txn_type),
         name=name,
         default_amount=Decimal(amount),
@@ -7976,6 +8108,105 @@ def open_owner_calendar(user_id, first_payday, num_periods=1, cadence_days=14):
     )
 
 
+def record_paydays_across_a_hole(user_id, first_payday, num_periods, rhythm):
+    """Record a batch the writer REFUSES for skipping a paycheck of the plan.
+
+    **Plan step ``pay_calendar:C17-c-2a`` (rulings R-PC67, R-PC76).**  A
+    batch whose first new payday falls at or past the SECOND payday the
+    owner's plan projects after their record leaves a whole paycheck
+    missing, and ``pay_period_write.record_paydays`` refuses it through
+    ``pay_period_batch.reject_skipped_paycheck`` -- from every door, which is
+    the point of asking it in the one writer.  So a hole is now a state no
+    application door can write, and :func:`rebuild_calendar`'s predicate
+    says where such a state is built: here, by hand, in one shared helper.
+
+    **Who needs it.**  ``seed_user`` opens its calendar at
+    :data:`~tests.conftest.SEED_USER_BOOTSTRAP_START` (2024-01-05) so the
+    seeded account has a paycheck to open in, and a case that then wants a
+    2026 block beside it -- two years of planned paychecks skipped -- was
+    writing it through the writer until this step.  Every such case is about
+    the 2026 rows, not the hole, and this keeps the rows, the ordinals and
+    the eras exactly as the writer used to leave them.  A case that means to
+    GRADE the refusal calls ``record_paydays`` and expects the
+    ``ValidationError``; a fixture whose batch the writer would ACCEPT is
+    refused here, so this helper cannot quietly become the default door.
+
+    **It composes the writer's own producers in the writer's order and skips
+    ONE refusal.**  The days are ``pay_period_batch.requested_paydays``'
+    (displaced under the rhythm, as the writer records them); the era rule is
+    the writer's (``pay_era_write.eras_describing`` / ``era_to_mint``), so a
+    batch stating a rhythm the covering era does not hold mints an era at its
+    first payday and one continuing the era mints none; the floor is asked of
+    the same list the writer hands it (the minted era's first payday in
+    front); the statements run in ``_apply``'s order (the schedule row, the
+    retire, the mint, the insert) and the session is expired when an era was
+    retired or minted.  What it does not ask is the ceiling, and it asserts
+    that the ceiling WOULD have fired.  What it does NOT reproduce: the
+    ``pay_periods_generated`` log event; the writer's own
+    ``reject_undatable_payday``, ``reject_out_of_range_batch_size`` and
+    ``reject_out_of_range_cadence`` (``mint_era`` re-asks the last for a
+    minting batch); and ``reject_shift_on_short_cadence`` at the writer
+    (``mint_era`` asks it too) -- a case grading any of them belongs on
+    ``record_paydays``.
+
+    Args:
+        user_id: The owning user's id.
+        first_payday: The batch's first NOMINAL payday.
+        num_periods: How many paydays the batch covers, existing ones included.
+        rhythm: The batch's :class:`~app.services.pay_rhythm.Rhythm`.
+
+    Returns:
+        The created :class:`~app.models.pay_period.PayPeriod` rows, payday
+        ascending and flushed -- ``record_paydays``' own answer shape.
+
+    Raises:
+        ValidationError: The floor refuses the batch (a payday inside a
+            paycheck the owner already has), exactly as the writer would.
+        AssertionError: The writer would have ACCEPTED this batch -- the
+            case should call ``record_paydays``.
+    """
+    from app.exceptions import ValidationError  # pylint: disable=import-outside-toplevel
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+    from app.services import pay_period_batch  # pylint: disable=import-outside-toplevel
+
+    held = {period.start_date for period in all_periods(user_id)}
+    requested = pay_period_batch.requested_paydays(first_payday, num_periods, rhythm)
+    new_paydays = [payday for payday in requested if payday not in held]
+    stored = pay_schedule_service.resolve_schedule(user_id)
+    standing = pay_era_write.eras_describing(stored, held)
+    era = None
+    if new_paydays:
+        era = pay_era_write.era_to_mint(standing, first_payday, rhythm)
+    pay_period_batch.reject_backward_payday(
+        held, new_paydays if era is None else [requested[0], *new_paydays],
+        None if stored is None else stored.eras,
+    )
+    try:
+        pay_period_batch.reject_skipped_paycheck(held, new_paydays, standing)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError(
+            f"record_paydays would accept a batch from {first_payday} x "
+            f"{num_periods} at {rhythm.cadence_days} days for user {user_id}; "
+            f"this helper is only for a batch that skips a paycheck of the "
+            f"plan.  Call pay_period_write.record_paydays instead."
+        )
+    pay_schedule_service.ensure_schedule_row(user_id)
+    retired = pay_era_write.retire_eras(
+        user_id, tuple(e.effective_from for e in standing),
+    )
+    if era is not None:
+        pay_era_write.mint_era(user_id, era)
+    created = [PayPeriod(user_id=user_id, start_date=payday) for payday in new_paydays]
+    db.session.add_all(created)
+    db.session.flush()
+    if retired or era is not None:
+        db.session.expire_all()
+    return created
+
+
 def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
     """Rebuild *user_id*'s WHOLE pay-period schedule through the reset door.
 
@@ -8127,25 +8358,29 @@ def rebuild_calendar_from_spans(user_id, spans):
     Returns:
         The owner's periods, payday ascending -- one per span.
 
+    **Every interior span is a HOLE the writer refuses** (plan step
+    ``pay_calendar:C17-c-2a``, ruling R-PC67): "January, April, July and
+    October" at a 31-day cadence skips two planned paychecks between each
+    pair, so the appends go through :func:`record_paydays_across_a_hole`,
+    the tree's one door for the state no application door writes.  Spans
+    the writer WOULD accept belong in :func:`rebuild_calendar`; that helper
+    says so by refusing them.
+
     Raises:
         ValidationError: Two spans open closer together than the last span's
             length, which is the forward-only rule
             ``pay_period_batch.reject_backward_payday`` states.
+        AssertionError: Two spans open within one planned paycheck of each
+            other, a batch the writer accepts -- use :func:`rebuild_calendar`.
     """
     from app.extensions import db  # pylint: disable=import-outside-toplevel
-    from app.services import (  # pylint: disable=import-outside-toplevel
-        pay_period_write,
-    )
 
     last_start, last_end = spans[-1]
     cadence_days = (last_end - last_start).days + 1
     rebuild_calendar(user_id, spans[0][0], 1, cadence_days)
     for start, _end in spans[1:]:
-        pay_period_write.record_paydays(
-            user_id=user_id,
-            first_payday=start,
-            num_periods=1,
-            rhythm=rhythm_of(cadence_days),
+        record_paydays_across_a_hole(
+            user_id, start, 1, rhythm_of(cadence_days),
         )
     # COMMIT the appends too.  :func:`rebuild_calendar` commits the opening
     # payday because the door it wraps leaves the transaction to its caller,

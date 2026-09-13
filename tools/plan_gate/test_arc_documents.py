@@ -164,7 +164,13 @@ CAPS = {
     # This arc carries the largest open leaf set of the five against the
     # second-lowest cap; 260 restores about the room that family needs and
     # leaves the forcing function well below the balance README's.
-    "bank_import": 260,
+    # **RAISED 260 -> 280 by the developer, 2026-09-13**, on the same terms:
+    # the document sat at 239 of an effective 240 with `X-gw`'s entry owed
+    # by `X-gt`'s tick, rule 5's escape spent (every other shipped entry
+    # carries an obey-clause a live sentence depends on; `X-gs`'s was
+    # condensed that morning), and the arc's own calibration -- 3.4 lines
+    # per open step, seven open -- gives 239 + 24 + 20 = 283, rounded down.
+    "bank_import": 280,
     # **SET at 260 by the developer, 2026-09-03**, when the arc was minted: the
     # bank_import number, eight open steps owing a few lines each plus the
     # argument, and the forcing function biting well before the balance

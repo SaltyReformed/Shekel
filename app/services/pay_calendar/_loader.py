@@ -125,14 +125,15 @@ def schedule_for(user_id: int) -> pay_schedule_service.ScheduleFacts:
 
     **PUBLIC since plan step ``C14-e-2``; it was ``_require_schedule``.**
     That step gave ``budget.pay_schedule`` a third calendar fact -- the
-    NOMINAL grid's phase -- which the derivation does not read and
-    ``pay_period_admin.extend_pay_periods`` does.  A door that holds the
-    facts and the calendar together is what lets that caller take BOTH from
-    one read; the alternative was a second scalar query of a row the same
-    request had just resolved, which is precisely the duplicate ``C14-e-1``
-    deleted (``resolve_shift``).  Exporting the door that already existed
-    keeps the refusal below in one place rather than restating its message at
-    a second caller.
+    NOMINAL grid's phase -- which the derivation does not read and the
+    extend door did.  A door that holds the facts and the calendar together
+    is what let that caller take BOTH from one read; the alternative was a
+    second scalar query of a row the same request had just resolved, which
+    is precisely the duplicate ``C14-e-1`` deleted (``resolve_shift``).
+    Exporting the door that already existed keeps the refusal below in one
+    place rather than restating its message at a second caller -- which
+    since plan step ``C17-c-2b`` is ``pay_period_write.continue_paydays``,
+    reading the eras it materialises the plan of through this door.
 
     Args:
         user_id: The owning user's id.

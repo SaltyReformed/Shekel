@@ -19,7 +19,6 @@ import pytest
 
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.models.transaction_template import TransactionTemplate
 from app.models.transaction_entry import TransactionEntry
 from app.models.ref import Status, TransactionType
 from app.routes._render_helpers import fragment_amounts
@@ -30,6 +29,8 @@ from app.services import transaction_service
 from tests._test_helpers import (
     an_entered_day,
     current_pay_period,
+    generate_row_of,
+    make_expense_template,
 )
 from app.services.settle_day import record_settle_day
 from app.models.amount_ownership import AmountOwnership
@@ -99,39 +100,18 @@ def _create_tracked_txn(seed_user, seed_periods_today, period_index=0,
                          estimated=Decimal("500.00")):
     """Create a tracked expense transaction backed by a tracking-enabled template.
 
+    The definition is priced at *estimated* and its row is the engine's
+    (:func:`generate_row_of`, plan step balance:X-cf-4): DERIVED, so the
+    figure a case expects to see rendered is what the row RESOLVES to.
+
     Returns:
         tuple of (Transaction, TransactionTemplate).
     """
-    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-    projected = db.session.query(Status).filter_by(name="Projected").one()
-
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        name="Groceries",
-        default_amount=estimated,
-        is_envelope=True,
+    template = make_expense_template(
+        db.session, seed_user, amount=estimated, name="Groceries",
+        category_key="Groceries", is_envelope=True,
     )
-    db.session.add(template)
-    db.session.flush()
-
-    txn = Transaction(
-        user_id=seed_periods_today[period_index].user_id,
-        pay_period_id=seed_periods_today[period_index].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
-        name="Groceries",
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=expense_type.id,
-        template_id=template.id,
-        amount_ownership=AmountOwnership.own(estimated),
-    )
-    db.session.add(txn)
-    db.session.flush()
-
+    txn = generate_row_of(template, seed_periods_today[period_index])
     return txn, template
 
 
@@ -508,37 +488,11 @@ class TestBuildEntryListsDict:
         get inline entries.
         """
         with app.app_context():
-            expense_type = (
-                db.session.query(TransactionType)
-                .filter_by(name="Expense").one()
+            template = make_expense_template(
+                db.session, seed_user, amount="2000.00", name="Mortgage",
+                category_key="Groceries",
             )
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            template = TransactionTemplate(
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                name="Mortgage",
-                default_amount=Decimal("2000.00"),
-                is_envelope=False,
-            )
-            db.session.add(template)
-            db.session.flush()
-            txn = Transaction(
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Mortgage",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                template_id=template.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
-            )
-            db.session.add(txn)
+            txn = generate_row_of(template, seed_periods_today[0])
             db.session.commit()
 
             result = _lists([txn])
@@ -1114,4 +1068,6 @@ class TestTheAmountFenceIsGone:
                 html = template.render(
                     txn=txn, locked=False, budgets=fragment_amounts(txn).budgets,
                 )
-                assert f'value="{txn.estimated_amount}"' in html
+                # The row is DERIVED, so the figure the box must carry is the
+                # price its definition states -- its own column is None.
+                assert 'value="500.00"' in html

@@ -9,14 +9,16 @@ ad-hoc row (template_id IS NULL) uses its own column.  These properties
 are the load-bearing abstraction behind F2 (companion visibility) and
 F3 (purchase tracking) for ad-hoc transactions.
 
-**The ``is_envelope`` cell is SEALED since plan step ``balance:X-bi-1``**
-(ruling **R-JQ**; the seal over a pin, developer 2026-09-11):
-:class:`TestTheDeadCellHasNoPublicName` pins what that means.  On a
+**Both cells are SEALED**: ``is_envelope`` since plan step ``balance:X-bi-1``
+(ruling **R-JQ**; the seal over a pin, developer 2026-09-11) and
+``companion_visible`` since ``balance:X-bi-1b`` (ruling **R-BAL19**, once
+``companion_service`` stopped keying SQL on it).
+:class:`TestTheDeadCellHasNoPublicName` pins what that means, on each.  On a
 template-generated row the row's own cell is dead, and keying on it read
-4 envelopes where there are 238 -- so the public name ``is_envelope``
-now READS the one accessor and only WRITES the cell, and every derived
-flag's class-level name refuses to key a query rather than silently
-matching nothing.
+4 envelopes where there are 238 (3 visible rows where there are 232, for
+the twin) -- so each public column name now READS the one accessor and
+only WRITES the cell, and every derived flag's class-level name refuses to
+key a query rather than silently matching nothing.
 """
 from decimal import Decimal
 
@@ -172,11 +174,38 @@ class TestVisibleToCompanionResolution:
             assert txn_off.visible_to_companion is False
 
 
-class TestTheDeadCellHasNoPublicName:
-    """Plan step ``balance:X-bi-1``: ``is_envelope`` is sealed on the row.
+# The two sealed cells, each as ``(column name, accessor name)``: the public
+# column name reads the accessor and writes the cell.  Every claim below is
+# graded on both, because ``companion_visible`` took the seal one step after
+# ``is_envelope`` (plan step balance:X-bi-1b) and a claim proved on one cell
+# says nothing about its twin.
+SEALED_CELLS = [
+    ("is_envelope", "tracks_purchases"),
+    ("companion_visible", "visible_to_companion"),
+]
 
-    Six claims, and they fail for different reasons.  The public name
-    READS the accessor (a reader reaching for the column name gets the
+
+def _templated_with(seed_user, period, column, *, template, own):
+    """Generate a row under a template whose *column* flag is *template*.
+
+    The row's OWN cell for that column is then set to *own* -- through the
+    public setter, the same door the ad-hoc constructors use -- with the
+    other flag at its default on both.  The state that proves a reader of
+    the column name gets the template's answer is ``own != template``.
+    """
+    flags = {"tpl_envelope": False, "tpl_visible": False,
+             "own_envelope": False, "own_visible": False}
+    suffix = {"is_envelope": "envelope", "companion_visible": "visible"}[column]
+    flags[f"tpl_{suffix}"] = template
+    flags[f"own_{suffix}"] = own
+    return _templated(seed_user, period, **flags)
+
+
+class TestTheDeadCellHasNoPublicName:
+    """Plan steps ``balance:X-bi-1`` / ``X-bi-1b``: both cells are sealed.
+
+    Six claims per cell, and they fail for different reasons.  The public
+    name READS the accessor (a reader reaching for the column name gets the
     template's answer on a generated row); it still WRITES the cell (the
     ad-hoc doors keep their kwarg); the guessed single-underscore name
     reaches no column; the SQL name is unchanged; a class-level name
@@ -184,50 +213,51 @@ class TestTheDeadCellHasNoPublicName:
     measured 2026-09-11); and the two read-only flags refuse assignment.
     """
 
+    @pytest.mark.parametrize("column, accessor", SEALED_CELLS)
     def test_the_public_name_reads_the_template_on_a_generated_row(
-        self, app, db, seed_user, seed_periods_today,
+        self, app, db, seed_user, seed_periods_today, column, accessor,
     ):
-        """``txn.is_envelope`` on a generated row is the TEMPLATE's answer.
+        """``txn.<column>`` on a generated row is the TEMPLATE's answer.
 
         Both rows set the own cell to the opposite of the template flag,
         so a passing assertion proves the column name no longer reaches the
         dead cell -- the 4-where-there-are-238 misread, unrepresentable.
         """
         with app.app_context():
-            txn_on = _templated(
-                seed_user, seed_periods_today[0],
-                tpl_envelope=True, tpl_visible=False,
-                own_envelope=False, own_visible=False,
+            txn_on = _templated_with(
+                seed_user, seed_periods_today[0], column,
+                template=True, own=False,
             )
-            assert txn_on.is_envelope is True
-            assert txn_on.is_envelope is txn_on.tracks_purchases
+            assert getattr(txn_on, column) is True
+            assert getattr(txn_on, column) is getattr(txn_on, accessor)
 
-            txn_off = _templated(
-                seed_user, seed_periods_today[1],
-                tpl_envelope=False, tpl_visible=False,
-                own_envelope=True, own_visible=False,
+            txn_off = _templated_with(
+                seed_user, seed_periods_today[1], column,
+                template=False, own=True,
             )
-            assert txn_off.is_envelope is False
-            assert txn_off.is_envelope is txn_off.tracks_purchases
+            assert getattr(txn_off, column) is False
+            assert getattr(txn_off, column) is getattr(txn_off, accessor)
 
+    @pytest.mark.parametrize("column, accessor", SEALED_CELLS)
     def test_the_public_name_reads_the_own_cell_on_an_adhoc_row(
-        self, app, db, seed_user, seed_periods_today,
+        self, app, db, seed_user, seed_periods_today, column, accessor,
     ):
         """On an ad-hoc row the cell IS the answer, through the same accessor."""
         with app.app_context():
             txn = _adhoc(
                 seed_user, seed_periods_today[0],
-                is_envelope=True, companion_visible=False,
+                **{"is_envelope": False, "companion_visible": False, column: True},
             )
-            assert txn.is_envelope is True
-            txn.is_envelope = False
+            assert getattr(txn, column) is True
+            setattr(txn, column, False)
             db.session.commit()
             db.session.expire(txn)
-            assert txn.is_envelope is False
-            assert txn.tracks_purchases is False
+            assert getattr(txn, column) is False
+            assert getattr(txn, accessor) is False
 
+    @pytest.mark.parametrize("column, accessor", SEALED_CELLS)
     def test_a_setattr_over_a_variable_name_still_writes_the_cell(
-        self, app, db, seed_user, seed_periods_today,
+        self, app, db, seed_user, seed_periods_today, column, accessor,
     ):
         """The PATCH route's generic ``setattr`` loop keeps working.
 
@@ -241,16 +271,17 @@ class TestTheDeadCellHasNoPublicName:
                 seed_user, seed_periods_today[0],
                 is_envelope=False, companion_visible=False,
             )
-            field = "is_envelope"
+            field = column
             setattr(txn, field, True)
             db.session.commit()
             db.session.expire(txn)
-            assert txn.tracks_purchases is True
+            assert getattr(txn, accessor) is True
 
+    @pytest.mark.parametrize("column, accessor", SEALED_CELLS)
     def test_a_guessed_single_underscore_reaches_no_column(
-        self, app, db, seed_user, seed_periods_today,
+        self, app, db, seed_user, seed_periods_today, column, accessor,
     ):
-        """``row._is_envelope`` binds a plain attribute, never the cell.
+        """``row._<column>`` binds a plain attribute, never the cell.
 
         The seal's own claim about itself, from the column comment: the
         double underscore mangles the mapped name, so the spelling a reader
@@ -261,29 +292,33 @@ class TestTheDeadCellHasNoPublicName:
                 seed_user, seed_periods_today[0],
                 is_envelope=False, companion_visible=False,
             )
-            txn._is_envelope = True  # pylint: disable=protected-access
+            setattr(txn, f"_{column}", True)
             db.session.commit()
             db.session.expire(txn)
-            assert txn.tracks_purchases is False
-            assert txn.is_envelope is False
+            assert getattr(txn, accessor) is False
+            assert getattr(txn, column) is False
 
-    def test_the_sql_name_is_unchanged(self, app):
+    @pytest.mark.parametrize("column", [c for c, _ in SEALED_CELLS])
+    def test_the_sql_name_is_unchanged(self, app, column):
         """The seal renames the ATTRIBUTE and leaves the column where it was.
 
-        No migration rides with X-bi-1; this is the half of that claim a
-        model test can grade.  The other half -- an empty autogenerate
-        diff -- was measured on 2026-09-11 against an untouched
-        ``origin/dev`` tree: the same six pre-existing ``system.*`` items
-        on both, nothing on either flag.
+        No migration rides with either seal; this is the half of that claim
+        a model test can grade.  The other half -- an autogenerate diff
+        with nothing on either flag -- was measured for ``is_envelope`` on
+        2026-09-11 against an untouched ``origin/dev`` tree, and for
+        ``companion_visible`` on 2026-09-12 against the ``18f9efac`` tree it
+        builds on: the same six pre-existing ``system.*`` items on both
+        sides each time.
         """
         with app.app_context():
-            column = Transaction.__table__.c.is_envelope
-            assert column.name == "is_envelope"
-            assert column.nullable is False
-            assert str(column.server_default.arg) == "false"
+            sql_column = Transaction.__table__.c[column]
+            assert sql_column.name == column
+            assert sql_column.nullable is False
+            assert str(sql_column.server_default.arg) == "false"
 
     @pytest.mark.parametrize("flag", [
-        "is_envelope", "tracks_purchases", "visible_to_companion",
+        "is_envelope", "tracks_purchases",
+        "companion_visible", "visible_to_companion",
     ])
     def test_a_query_keyed_on_a_derived_flag_refuses_to_build(
         self, app, flag,
@@ -293,8 +328,8 @@ class TestTheDeadCellHasNoPublicName:
         A plain ``property`` at class level compares ``False`` to
         everything, so ``filter_by(flag=True)`` and ``Transaction.flag ==
         True`` returned NO ROWS with no error (measured 2026-09-11 on the
-        first cut of this step) -- a silent wrong answer, worse than the
-        wrong column it replaced.  Three spellings, one refusal each.
+        first cut of X-bi-1) -- a silent wrong answer, worse than the
+        wrong column it replaced.  Five spellings, one refusal each.
         """
         with app.app_context():
             with pytest.raises(TypeError, match="cannot key a query"):

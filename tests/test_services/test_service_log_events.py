@@ -83,6 +83,7 @@ from app.utils.log_events import (
     EVT_TRANSFER_UPDATED,
 )
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     generate_row_of,
     make_every_period_rule,
     make_expense_template,
@@ -145,13 +146,20 @@ class _LogCapture:
 class TestPayPeriodServiceLogging:
     """``pay_period_service.generate_pay_periods`` emits ``pay_periods_generated``."""
 
-    def test_generate_emits_event(self, app, db, seed_user):
-        """Generating periods emits one event with user_id and count."""
+    def test_generate_emits_event(self, app, db, bare_user):
+        """Generating periods emits one event with user_id and count.
+
+        A ``bare_user`` -- one with no opening payday -- so the batch is the
+        writer's own first schedule; beside ``seed_user``'s 2024 opening
+        payday a 2027 block is a hole the writer refuses (plan step
+        ``pay_calendar:C17-c-2a``), and the tree helper that builds such a
+        state emits nothing.
+        """
         with app.app_context(), _LogCapture(
             "app.services.pay_period_write",
         ) as cap:
             created = pay_period_write.record_paydays(
-                user_id=seed_user["user"].id,
+                user_id=bare_user["user"].id,
                 first_payday=date(2027, 1, 1),
                 num_periods=3,
                 rhythm=rhythm_of(14),
@@ -165,7 +173,7 @@ class TestPayPeriodServiceLogging:
         )
         assert record.levelno == logging.INFO
         assert record.category == BUSINESS
-        assert record.user_id == seed_user["user"].id
+        assert record.user_id == bare_user["user"].id
         assert record.count == 3
         assert record.cadence_days == 14
         assert record.start_date == "2027-01-01"
@@ -890,12 +898,10 @@ class TestRecurrenceEngineLogging:
         ).one()
 
         # Build a transaction owned by the second user.
-        from app.services import pay_period_write as ppw  # noqa: WPS433
-        s2_periods = ppw.record_paydays(
-            user_id=seed_second_user["user"].id,
-            first_payday=date(2027, 6, 1),
-            num_periods=1,
-            rhythm=rhythm_of(14),
+        # Years past the second owner's 2024 opening payday: a hole, written
+        # through the tree's helper (plan step C17-c-2a, ruling R-PC67).
+        s2_periods = record_paydays_across_a_hole(
+            seed_second_user["user"].id, date(2027, 6, 1), 1, rhythm_of(14),
         )
         db.session.flush()
 

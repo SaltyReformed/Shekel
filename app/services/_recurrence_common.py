@@ -618,7 +618,7 @@ def classify_maintain_work(
     and the row that answers an occurrence need not be in it: the owner may
     have moved that row to a paycheck the window does not reach.  An
     adversarial review of this leaf measured the consequence at the service
-    seam, through the salary door (``routes/salary/_helpers`` regenerates with
+    seam, through the salary door (``salary_regeneration`` regenerates with
     ``effective_from=date.today()``): a row moved back one paycheck left
     ``existing`` while its occurrence stayed named, and the create arm answered
     that occurrence a SECOND time -- silently where the moved row is still an

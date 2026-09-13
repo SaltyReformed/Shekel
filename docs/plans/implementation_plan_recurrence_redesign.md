@@ -400,31 +400,20 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
 - [x] **R7d-b** `0462dc38` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R7d-c -- the DECOMPOSED parent of "generation takes the resolver."** Split into TWO leaves
-      2026-08-27 (**R-R38**): the pass has to REACH generation first, and WHO opens it is a question
-      about the three write doors, each of which did a write and then a read-dependent write in ONE
-      call so no caller could get between them.
+- [x] **R7d-c** `b8509c1e` -- the DECOMPOSED parent of "generation takes the resolver", split into
+      TWO leaves 2026-08-27 (**R-R38**): the pass had to REACH generation first (R7d-c-1), and who
+      opens it was a question about the three write doors, each of which did a write and then a
+      read-dependent write in ONE call. Both leaves shipped; the container ships with the last.
 
 - [x] **R7d-c-1** `61d81c7f` -- as built:
       `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
-- [ ] **R7d-c-2 -- GENERATION takes the resolver.** Both engines' `resolve_generation_plan` applies
-      `loan_payment_window`'s answer over the rule's own bound. **MOVES MONEY**: `$0.00` today
-      (production and dev both store `2029-02-22` on rule 48, equal to the derivation, measured
-      2026-09-11), and the `$531.94` installment the stale column once dropped is the MECHANISM.
-      **D46** closed at `R16-b-2` (**R-R64**).
-
-**A second build is HELD at `de8d1a56`** (`feat/r7d-c-2`, pushed, no PR), superseding `9aff7ab9`:
-`resolve_generation_plan` reads `recurring_definition.read_definition` over the pass the schedule
-carries, with the harness `tests/manual/verify_loan_bound_at_generation.py` (five doors on a stamped
-production clone). It ships AFTER R16-b-2 (**R-R65**): alone it regressed the reset door, the
-mechanism ruled at **R-R64**. **RE-CUT on R16-b-2's tree at `e5404ac1`** (merge of `8c654712`, the
-re-cut `a01839aa`, merge of the memo `7e2e6413`): the `$50` second-definition fixture, three
-controls (the reset door in its hole, D46; two full definitions, D47; the `$3,000` cent, REC-517),
-and the harness re-measured with R16-b-2's tree as the base -- live doors byte-identical, and the
-planted second definition 35/65 -> 32/32 rows to `2028-11-22`: the sum reaches the ROWS only through
-generation taking the door. Full suite 13335, exit 0. The 2026-08-31 measurement `balance:X-au-f`
-rests on (rows raised to `$900.00` -> `2028-02-22`, halved -> `2030-04-22`) stands.
+- [x] **R7d-c-2** `b8509c1e` -- generation resolves a loan payment's stop through the composed door
+      (`read_definition` over the pass the schedule carries), so a stale `end_date` binds nothing
+      either way (**R-R56**) and R16-b-2's summed payoff reaches the ROWS. `$0.00` live on the
+      clone; the planted `$50` definition 35/65 -> 32/32 rows at `2028-11-22` (measured 2026-09-11
+      on R16-b-2's tree; not re-run on the era calendar). Held behind R16-b-2 (**R-R65**), re-cut at
+      `a01839aa`, its first review found the id-keyed memo (**R-R73**). Closed **D46** via R16-b-2.
 
 - [x] **R7d-h** `83dd4b8a` -- a loan gets ONE closing date, past AND future: `loan_closing_date`
       answers the forward crossing while the loan owes and the day it LAST became closed once it
@@ -437,15 +426,15 @@ rests on (rows raised to `$900.00` -> `2028-02-22`, halved -> `2030-04-22`) stan
       `recurring_view` and its route take ONE read pass and read each definition through
       `recurring_definition`; the resolver takes the resolved rule; `4f40d6de` is ruling **R-R56**
       (an app-written `end_date` is read as the cache). Later steps obey: R7d-e moved the monthly
-      equivalent off the column (`89302ba4`); R7d-f owns **N-511** and **N-512**; R7d-g deletes the
-      door's arm with the column. As built: commits `f6ba59f8`..`713c4fce` (PR #240).
+      equivalent off the column (`89302ba4`); R7d-f closed **N-511**, **N-512**, **REC-521**; R7d-g
+      deletes the door's arm with the column. As built: commits `f6ba59f8`..`713c4fce` (PR #240).
 
 - [x] **R7d-e** `89302ba4` -- the monthly totals took the resolver: every `DerivedStop` answers
       `has_closed` under **R-R57** (R-R45's reading), `Closing.has_closed` ORs its two stops over
       one memoised reading, the date-bound closure rule is ONE function shared by `EndsOnDate` and
       `ClosesOn`, `has_ended` judges the reading the door produced, and the aggregator and its three
       callers take the read pass. `$0.00` on dev, `$200.00`/mo both ways in its tests. Opened
-      **N-513**, **N-514** (both R7d-f). As built: PR #253.
+      **N-513**, **N-514**, both closed at R7d-f-2. As built: PR #253.
 
 - [ ] **R7d-f -- the FORM's "Ends" control, its refusals and its preview.**
 
@@ -459,16 +448,32 @@ NULL-the-column census, because the difference is in what the next save persists
 
 - [x] **R7d-f-1** `6af50d53` -- the locked *Ends* row reads the RESOLVER and the locks read the
       pass, through one renamed identity and per-ROW lock flags. Closed **N-511**, opened
-      **REC-515**. **A LATER LEAF MUST OBEY**: the identity serves the form's locks and the door's
-      **R-R56** arm ONLY, never the resolver (**R-R35** stands); and the BROWSER PASS did not run,
-      because `shekel-dev-app` bind-mounts the main checkout rather than a worktree, so
-      `tests/manual/verify_recurrence_form.py` is still owed.
-- [ ] **R7d-f-2** -- memo the readings on the pass, put the horizon on `RuleReading`, and bound the
-      form's live preview by the loan's own closing date. Closes **N-513**, **N-514**, **REC-515**.
-- [ ] **R7d-f-3** -- refuse a stated closing bound AT CREATE where the destination loan holds no
-      active payment (**R-R60**), the JS lock demoted to an affordance. The refusal lands in
-      `_transfer_creation_helpers` because `app/routes/transfers/templates.py` is at 997 of 1000.
-      Closes **N-512**.
+      **REC-515** (closed at R7d-f-2). **A LATER LEAF MUST OBEY**: the identity serves the form's
+      locks and the door's **R-R56** arm ONLY, never the resolver (**R-R35** stands). Its browser
+      pass RAN with R7d-f-3's (154 checks).
+- [x] **R7d-f-2** `1d1f466f` -- the horizon rides ON `RuleReading` and `has_ended` takes no calendar
+      (**N-514**); the occurrence WALK is the pass's memo keyed by the COMPOSED value
+      (`placements_of`, R-R73's shape; a /savings render walks a goal transfer once, **N-513**); the
+      preview resolves an `UnsavedDefinition` through `resolved_submission`, destination
+      owner-checked (**REC-515**; R-R34's preview census now wholly corrected). Prerequisite:
+      `_context.py` split (**R-R75**, closes balance:BAL-483). Browser pass RAN (158 checks).
+- [x] **R7d-f-3** `e3661f6f` -- a stated stop is REFUSED at create where the destination loan holds
+      no active payment (**R-R60**), "stated" meaning a real stop and never the key's presence
+      (**R-R74**); the server emits which loans derive the stop and the script locks the "Ends" row
+      as an affordance. Closed **N-512**; the update door's twin, **REC-521**, closed at R7d-f-4.
+      **R7d-g MUST OBEY**: `recurring_definition` limit (1) names three producers of an owner's
+      bound that outlive the two doors' refusals. Browser pass RAN (154 checks), R7d-f-1's too.
+- [x] **R7d-f-4** `e0c67c0b` -- the UPDATE door settles the destination the edit LEAVES ahead of the
+      recurrence step (`settle_destination_for_update`): the first occurrence derived, a real stop
+      refused where the loan holds no active payment, "Never" or nothing writing the unbounded rule
+      even over a stored stop (**R-R77**); a loan's payment (standing or settings-carrying, the
+      twin's union) cannot change destination (**R-R76**). Closed **REC-521**; opened **REC-522**
+      (R7d-g: an archived transfer edited and unarchived, a THIRD producer).
+- [ ] **R7d-f-5** -- the transfer EDIT form gets the create form's lock affordance: the server emits
+      `LoanDestinationLocks` computed for THIS edit (every configured loan when the template has no
+      rule, every loan but the stored destination when it has one, per **D50**; the payment-less
+      subset for the "Ends" row), the script unchanged; reverses two tests' premises by ruling; OWES
+      the browser pass (`tests/manual/verify_recurrence_form.py`, already past the 1000-line cap).
 - [ ] **R7d-g -- the column stops being WRITTEN, and the CHECK lands.**
 
 Nine of the ten call sites go, `end_date` goes NULL for every loan payment in a migration, and
@@ -482,9 +487,11 @@ NULL-every-loan-payment predicate cannot tell an authored bound from the cache, 
 scopes the migration to the rows the sync wrote or rules the erasure intended -- and must DECIDE
 archived loan payments, whose cached columns the composed door still reads as authored (ruling
 **R-R56**). It stops nine of the ten syncs and must NAME whether the tenth (`params.py:190`, kept
-for the opening bound) still overwrites a closing bound authored on the generic create form
-(**N-512**); if none does, the door's arm in `recurring_definition` must be DELETED with the column
-or it reads that owner's word as the cache forever.
+for the opening bound) still overwrites an owner's bound in the cached column -- the three producers
+`recurring_definition` limit (1) names since R7d-f-4 (the pre-refusal rows, a promoted second
+transfer, and **REC-522**'s archived transfer edited and unarchived, which the **D56** decision must
+count); if none does, the door's arm in `recurring_definition` must be DELETED with the column or it
+reads that owner's word as the cache forever.
 
 - [ ] **R7e -- the recurrence form's three-state fields become ONE typed submission.**
 
@@ -749,7 +756,7 @@ package's core; that package is now where it is filed.
       (baseline byte-identical over both loans; a planted `$500` sweep into the Mortgage `None` ->
       `2034-10-01`; the reset hole `2029-03-22` -> `2029-02-22`; August charged once, 91 -> 90).
       Closed **D46**, **D47**, **D48**, **D53**, **D54**; opened **REC-517** (R16-f), **REC-518**
-      (R5), **REC-519** (R20), **balance:BAL-483** (X-i1). The code supersedes its specification.
+      (R5), **REC-519** (R20), **balance:BAL-483** (closed at R7d-f-2, **R-R75**).
 
 - [ ] **R20** -- The setup door records the stated balance as the assertion it is.
 
