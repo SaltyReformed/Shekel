@@ -833,9 +833,6 @@ _FENCED_MODULE_RULINGS = {
         # the confirmed view).  Its docstring names both.  Same classification
         # and the same reason as ``scenario_id``: an id, not a balance.
         "scenario_id_or_none",
-        # The fail-loud no-baseline guard.  It raises or returns None; it
-        # answers nothing about an account.
-        "require_scenario",
         # The read pass's ONE remaining memo handle, un-FENCED at D3 and ruled
         # a NON-producer: ``loan_walk`` hands the leaf's public FACTS
         # (``walk_loan_ledger``'s own ruling), and the fold that would turn
@@ -865,6 +862,14 @@ _FENCED_MODULE_RULINGS = {
         # ``recurrence.resolved_recurrence`` is a public leaf below this seam
         # that answers the identical value.
         "resolved_recurrence_of",
+        # The read pass's OCCURRENCE-WALK memo (plan step recurrence:R7d-f-2,
+        # ledger row N-513's remedy): every occurrence a resolved recurrence
+        # names on the owner's calendar, walked once per pass.  A NON-producer
+        # on the same ground -- occurrence DATES paired with pay periods, no
+        # money anywhere in the value -- and ``recurrence.occurrence_placements``
+        # is a public leaf below this seam that answers the identical value
+        # for the same inputs.
+        "placements_of",
         # The read pass's AMOUNT-MODEL memo (plan step X-au-c2b).  A
         # NON-producer on the ground ``calendar`` stands on: it hands back an
         # ``AmountBasis``, which carries the two live DERIVATIONS a row's

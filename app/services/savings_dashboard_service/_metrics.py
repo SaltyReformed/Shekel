@@ -245,13 +245,18 @@ def _get_current_paycheck_breakdown(balance_ctx, current_period):
     stays at 10.00/10 with no ``duplicate-code`` message.  It survived every
     gate because ``useless-suppression`` cannot see a stale ``duplicate-code``
     disable, which is finding **N-154**; this is a measured instance of it.
-    **The sequence itself is still written TWICE** -- here and
-    ``retirement_dashboard_service._compute_current_pay`` -- which is reported
-    rather than merged here (``CLAUDE.md`` rule 6: collapsing it changes what
-    another page produces).  *A THIRD spelling,
-    ``income_service.get_current_gross_biweekly``, was deleted at plan step
-    salary:R14-b: its consumers read the paycheck engine's own per-period
-    breakdown now, so its scalar had no caller left.*  Both consumers -- the savings-goal
+    **The sequence was written TWICE until plan step salary:S3-f-2a moved
+    the ``/retirement`` copy onto the read pass's pricer** (ruling
+    **R-SAL21** as amended): that copy and the pricer priced ONE payday
+    ``$31.29`` apart on the developer's data, because this shape passes no
+    ``calibration=`` where the pricer passes the profile's.  This is the last
+    spelling of the three, it prices the same way, and it is ledger row
+    **P62**'s, owned by plan step **C12**: collapsing it changes what
+    ``/savings`` publishes, which is a ruling and not a reader's to take.
+    *A THIRD spelling, ``income_service.get_current_gross_biweekly``, was
+    deleted at plan step salary:R14-b: its consumers read the paycheck
+    engine's own per-period breakdown now, so its scalar had no caller
+    left.*  Both consumers -- the savings-goal
     trajectory's net biweekly pay and the DTI denominator's gross
     monthly income -- route through this helper so the page cannot
     silently disagree with the paycheck engine on the same period.

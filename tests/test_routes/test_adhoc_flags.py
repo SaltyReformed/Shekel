@@ -236,6 +236,40 @@ class TestAdhocFlagUI:
             assert tag is not None
             assert "checked" not in tag.group(0)
 
+    def test_full_edit_popover_visibility_checkbox_reflects_the_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The visibility box renders checked exactly when the row is visible.
+
+        The tracking box's twin: the control reads
+        ``txn.visible_to_companion`` since plan step ``balance:X-bi-1b`` --
+        the one accessor -- rather than the column name, and inside the
+        ad-hoc guard the two are one value.  Matched by its own ``id`` for
+        the reason the tracking case gives.
+        """
+        with app.app_context():
+            visible = _make_adhoc(
+                seed_user, seed_periods_today[0], companion_visible=True,
+                name="Visible",
+            )
+            private = _make_adhoc(
+                seed_user, seed_periods_today[0], companion_visible=False,
+                name="Private",
+            )
+            box = re.compile(r'<input[^>]*id="companion_visible"[^>]*>')
+
+            resp = auth_client.get(f"/transactions/{visible.id}/full-edit")
+            assert resp.status_code == 200
+            tag = box.search(resp.data.decode())
+            assert tag is not None
+            assert "checked" in tag.group(0)
+
+            resp = auth_client.get(f"/transactions/{private.id}/full-edit")
+            assert resp.status_code == 200
+            tag = box.search(resp.data.decode())
+            assert tag is not None
+            assert "checked" not in tag.group(0)
+
     def test_full_edit_popover_shows_purchases_when_envelope(
         self, app, auth_client, seed_user, seed_periods_today,
     ):

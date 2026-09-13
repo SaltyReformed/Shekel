@@ -39,6 +39,7 @@ from app.models.user import User, UserSettings
 from app.services import pay_era_write, pay_period_write, pay_schedule_service
 from app.services.auth_service import hash_password
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     era_of,
     load_migration_module,
     rhythm_of,
@@ -308,7 +309,7 @@ class TestTheMigrationBothWays:
             user_id=user.id, first_payday=date(2026, 1, 2), num_periods=2,
             rhythm=rhythm_of(14),
         )
-        pay_period_write.record_paydays(
+        record_paydays_across_a_hole(
             user_id=user.id, first_payday=date(2026, 2, 20), num_periods=1,
             rhythm=rhythm_of(7),
         )
@@ -396,7 +397,7 @@ class TestTheMigrationBothWays:
             user_id=user.id, first_payday=date(2026, 1, 2), num_periods=2,
             rhythm=rhythm_of(14),
         )
-        pay_period_write.record_paydays(
+        record_paydays_across_a_hole(
             user_id=user.id, first_payday=date(2026, 2, 20), num_periods=1,
             rhythm=rhythm_of(7),
         )

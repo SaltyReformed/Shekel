@@ -13,6 +13,15 @@ R16-b-2**: the rule-and-period derivation of a generated row's own date,
 (ruling **R-R69**), because the balance seam's ESTIMATED loan tier has to date
 an occurrence no row answers yet exactly as the row would be dated, and the
 seam cannot reach this package without importing the write state machine.
+
+**"Where does this definition fire" is asked of the COMPOSED door since plan
+step R7d-c-2** (:func:`app.services.recurring_definition.read_definition`):
+what the rule authors AND what its destination allows, so a transfer paying a
+loan is generated only while the loan owes.  Until then the seam walked the
+rule alone (``recurrence.rule_occurrences``) and a loan payment's stop reached
+it only as the payoff some chokepoint had last cached into
+``budget.recurrence_rules.end_date`` -- plan ledger row **D35**, the stale
+cache that dropped an installment.
 """
 import logging
 from datetime import date
@@ -22,7 +31,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app import ref_cache
 from app.enums import StatusEnum
 from app.services.pay_calendar import DerivedPeriod
-from app.services.recurrence import rule_occurrences
+from app.services.recurring_definition import read_definition
 from app.services._recurrence_common import check_scenario_ownership
 
 logger = logging.getLogger(__name__)
@@ -131,7 +140,69 @@ def resolve_generation_plan(
     engines cannot drift on which periods a rule applies to.  Public (no
     leading underscore) because the transfer engine calls it cross-module --
     the shared preamble is deliberately part of this module's public surface,
-    like :func:`rule_occurrences`.
+    like :func:`~app.services.recurrence.rule_occurrences`.
+
+    **The walk is the composed door's, since plan step R7d-c-2.**  The
+    placements come from
+    :func:`~app.services.recurring_definition.read_definition` over the pass
+    the schedule carries (``schedule.ctx``), so every occurrence is narrowed by
+    the rule's authored bound AND by the stop its destination derives -- a
+    transfer into a loan stops where the loan's balance folds to zero
+    (:func:`~app.services.loan_recurrence_sync.loan_payment_window`).  It read
+    ``rule_occurrences`` until then, which applies the rule's own bound alone,
+    so a loan payment's stop reached generation only as the payoff some
+    chokepoint had last written into the authored bound's column: a CACHE with
+    no reconciler, measurably behind on live data (plan ledger row **D35**:
+    ``2029-01-22`` stored against ``2029-02-22`` derived, one ``$531.94``
+    installment never created).  Two things follow, and both are the door's
+    rather than this function's.  For the loan's STANDING payment that column
+    is read as the cache it is (ruling **R-R56**), so a stale date there --
+    earlier OR later than the payoff -- binds nothing here.  And the loan is
+    folded ONCE per pass however many definitions pay into it, because the
+    door reads the pass's memoised resolution; a transaction template, which
+    pays into no account, costs the door no query at all.  The rule is
+    resolved once too: the pass memoises its resolution by the rule's SPEC
+    (``BalanceContext.resolved_recurrence_of``, plan step R16-b-2), so the
+    fold that sums the definition and the door that narrows it read one
+    value (``CLAUDE.md`` rule 14, ONE WALK) -- and a rule re-authored on the
+    pass is resolved afresh, which the merge of this step onto R16-b-2
+    measured the id-keyed first cut of that memo could not do: a regenerate
+    after an edit on one pass walked the pre-edit cadence.
+
+    **What the bound is derived FROM is the loan's forward plan, and that
+    plan is invariant under the rows this seam writes** (``balance_at._plan``:
+    the PLANNED tier is the loan's projected transfer shadows, the ESTIMATED
+    tier every occurrence a definition names that the schedule places and no
+    row in any state answers, past or future -- ruling **R-R64** -- dated as
+    its row would be, **R-R69**, and priced by the one function the written
+    row is priced by, **R-R67**, for EVERY definition into the loan, plan step
+    R16-b-2).  So a row this pass writes answers its occurrence at the cash
+    and the date the estimate already carried, the payoff read before the
+    write is the payoff read after it, and a second pass writes nothing: a
+    FIXED POINT by construction.  It was not always one.  This step's first
+    build (``de8d1a56``) landed on the tree before R16-b-2, where the
+    estimate priced the standing payment alone and no slot behind ``as_of``,
+    and its own review measured four shapes on which the tiers parted, one of
+    them a REGRESSION: a pass opened in the reset door's hole read the payoff
+    one installment late and wrote one row past a ``$1,200`` loan's life
+    where the column, synced before the wipe, had bounded HEAD's at three
+    (plan ledger row **D46**).  The developer ruled root cause first: R16-b-2
+    shipped AHEAD of this step carrying R-R64 (ruling **R-R65**), and the
+    step was re-cut on that tree.  Closed there: the past unanswered slot
+    (D46), the second definition (**D47**) and the paycheck-dated row.  What
+    remains is a cent, and it is stable rather than a break: on ``$3,000`` at
+    5% over three months the amount model's derive arm bills the level
+    ``$1,008.34`` where the contract bills ``$1,008.35`` on the last
+    installment, both tiers agree on it, ``$0.01`` is left owing and the
+    payoff reads one installment late before the rows exist and after them
+    (plan ledger row **REC-517**, owned by R16-f; ``$0.00`` live).  Each of
+    the three is pinned in
+    ``tests/test_services/test_loan_bound_at_generation.py`` on the re-cut
+    tree (2026-09-11): the reset door reads ``2026-04-15`` in its hole and
+    writes three rows; two full definitions into one loan close it on
+    ``2026-03-15`` before any row exists and generate to that stop; and the
+    ``$3,000`` loan reads ``2026-05-15``, writes four rows on the first pass
+    and none on the second.
 
     **It answers in ``(occurrence, period)`` pairs** (plan step R4b-2).  It
     used to answer in periods alone, so the date a row's cadence actually
@@ -222,7 +293,14 @@ def resolve_generation_plan(
     # read.
     window = schedule.write_period_ids
     placements = []
-    for placement in rule_occurrences(rule, schedule.calendar):
+    # The composed door over the pass the schedule carries: its calendar is
+    # the same memo ``schedule.calendar`` reads, so the schedule the rule is
+    # resolved against and the pass its derived stop is folded in are one
+    # value (plan step R7d-c-1 put the pass on the schedule for exactly this
+    # read).  The reading's ``resolved`` is ``None`` for an owner with no pay
+    # periods, where its placements are empty and the loop below writes
+    # nothing -- the same answer ``rule_occurrences`` gave for that state.
+    for placement in read_definition(template, schedule.ctx).placements:
         period = placement.period
         if period is None:
             # The saved schedule does not reach this occurrence.  Ordinary --

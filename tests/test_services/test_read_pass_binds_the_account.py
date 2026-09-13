@@ -12,7 +12,7 @@ checked against the account handed alongside.  The seam cited "an argument a
 caller can get wrong is a defect, not a contract" in three places and then
 reproduced the shape.
 
-**Where the rule lives now, and why THERE.**  ``_context._memoize_once`` is the
+**Where the rule lives now, and why THERE.**  ``_memoize._memoize_once`` (in ``_context`` until recurrence:R7d-f-2 moved it) is the
 one primitive that creates state keyed by ``account.id`` on a pass, so the
 binding is a precondition of creating that state rather than a guard repeated at
 each of the five funnels.  A funnel added later cannot forget a check it never

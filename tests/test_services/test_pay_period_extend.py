@@ -48,6 +48,7 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     era_of,
     rhythm_of,
     assert_pay_period_invariants,
@@ -64,7 +65,7 @@ from tests._test_helpers import (
 
 def _future_periods(db_session, seed_user, count=4, start=date(2026, 7, 3)):
     """Generate `count` biweekly future periods (indices 1..count)."""
-    periods = pay_period_write.record_paydays(
+    periods = record_paydays_across_a_hole(
         user_id=seed_user["user"].id,
         first_payday=start,
         num_periods=count,
@@ -148,7 +149,7 @@ class TestTheExtendAnchorIsTheNOMINALGrid:
         builds and deleted that function with its duplicate query.*
         The recorded row is 2030-11-14 under every convention, because that day
         is an ordinary Thursday and so is its own displacement -- which is what
-        keeps this one fixture now that ``_requested_paydays`` DISPLACES what
+        keeps this one fixture now that ``requested_paydays`` DISPLACES what
         it records (``C14-e-3``).
         """
         pay_period_write.record_paydays(
@@ -289,7 +290,7 @@ class TestTheExtendAnchorIsTheNOMINALGrid:
         refusal, and said in its own docstring that what would make it fail is
         ``C14-e`` landing without the writer's half.
 
-        **The remedy it named is what shipped**: ``_requested_paydays`` runs
+        **The remedy it named is what shipped**: ``requested_paydays`` runs
         the progression on the grid and records each element DISPLACED, which
         lands 2030-11-29 -- exactly the floor -- and is accepted.  So this
         asserts the ACCEPTANCE and the three recorded days, and the ``$0.00``
@@ -512,7 +513,7 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
 
         Asked against the last recorded PAYDAY the door answers 2030-01-18,
         which falls inside the paycheck the owner still holds and which
-        ``_reject_backward_payday`` refuses -- permanently, and on a read path
+        ``reject_backward_payday`` refuses -- permanently, and on a read path
         with no handler, because ``top_up_rolling_window`` reaches this door
         from ``/grid`` and ``/dashboard``.  Asked against the paycheck's END,
         which is the floor's own subject, it answers a day past the floor and
@@ -542,7 +543,7 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
             )
             # A second era, deliberately OFF the first grid: 2030-02-22 is 36
             # days after 2030-01-17, and 36 is not a multiple of 7.
-            pay_period_write.record_paydays(
+            record_paydays_across_a_hole(
                 user_id=user_id, first_payday=date(2030, 2, 22),
                 num_periods=2, rhythm=rhythm_of(7),
             )

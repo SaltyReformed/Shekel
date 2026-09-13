@@ -35,6 +35,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
+    record_paydays_across_a_hole,
     rhythm_of,
     all_periods,
     pay_periods_hydrated,
@@ -208,7 +209,7 @@ def _create_other_user_with_template():
     db.session.flush()
 
     from datetime import date
-    periods = pay_period_write.record_paydays(
+    periods = record_paydays_across_a_hole(
         user_id=other_user.id,
         first_payday=date(2026, 1, 2),
         num_periods=3,
@@ -2772,7 +2773,7 @@ def _create_second_user_transfer(second_user_data):
     db.session.add(savings)
     db.session.flush()
 
-    periods = pay_period_write.record_paydays(
+    periods = record_paydays_across_a_hole(
         user_id=second_user_data["user"].id,
         first_payday=_date(2026, 1, 2),
         num_periods=3,

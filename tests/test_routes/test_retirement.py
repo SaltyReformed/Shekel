@@ -2,6 +2,7 @@
 Tests for retirement planning routes.
 """
 
+import json
 import re
 from datetime import date
 from decimal import Decimal
@@ -26,7 +27,7 @@ from app.models.ref import (
     TransactionType,
 )
 from app.utils.dates import display_today
-from tests._test_helpers import make_every_period_rule
+from tests._test_helpers import make_every_period_rule, make_recurring_raise
 
 
 def _create_salary_profile(seed_user, db_session):
@@ -1818,10 +1819,15 @@ class TestTheRailStatesEachRecurringRaisesEndYear:
     Plan step **salary:S3-c** (ruling **R-SAL11**) deleted the global setting
     that row saved, because the horizon a recurring raise decays over is a
     fact on the RAISE.  The rail states each recurring raise's end year
-    instead, READ-ONLY, with a link to the salary page that owns the edit --
-    so ``/retirement`` says what it is projecting from and has no second home
-    for the belief to disagree from.  Probing one without saving is plan step
-    salary:S3-f's.
+    instead, with a link to the salary page that owns the edit -- so
+    ``/retirement`` says what it is projecting from and has no second home
+    for the belief to disagree from.  **Since plan step salary:S3-f-2b the
+    row IS the salary form's end-year pair** (ruling **R-SAL13**): a mode
+    select pre-selected from the row and a year input pre-filled from it,
+    both what-if inputs, so "the rail states the stored end year" is graded
+    on the SELECTED option and the input's VALUE -- the read-only cell that
+    spelled "ends after 2033" is gone, and the strings that graded it went
+    with it.  Probing one is :class:`TestTheRailProbesARaisesEndYear`'s.
 
     **Both render sites are covered and they load differently.**  The
     dashboard's include gets the profiles off the render's own
@@ -1862,16 +1868,49 @@ class TestTheRailStatesEachRecurringRaisesEndYear:
         db.session.commit()
         return starts + (ends_after or 0)
 
+    @staticmethod
+    def _raise_row(html):
+        """The ONE recurring-raise row's markup, or fail if there is not one."""
+        rows = re.findall(
+            r'<div class="retire-assump-row" data-assumption="raise_terminal_year"'
+            r'\s+data-raise-id="(\d+)">(.*?)</div>',
+            html, re.S,
+        )
+        assert len(rows) == 1, f"expected one raise row, found {len(rows)}"
+        return rows[0]
+
+    def _assert_row_states(self, html, *, mode, year):
+        """The row's mode select has *mode* selected and its year input *year*.
+
+        Graded as the template emits them -- ``<option value=".." selected>``
+        and ``value=".."`` on the year input, both NAMED by the raise id --
+        because these are the controls a readiness refresh submits
+        (``feedback_a_route_test_must_post_what_the_template_emits``).
+        """
+        raise_id, row = self._raise_row(html)
+        assert f'name="raise_end_mode_{raise_id}"' in row
+        assert f'<option value="{mode}" selected>' in row, (
+            f"the mode select does not pre-select {mode!r}: {row}"
+        )
+        assert row.count(" selected>") == 1, "two options selected at once"
+        assert (
+            f'name="raise_end_year_{raise_id}" placeholder="year"\n'
+            in row
+        )
+        assert f'value="{year}"\n' in row, (
+            f"the year input is not pre-filled with {year!r}: {row}"
+        )
+        return raise_id
+
     def test_the_dashboard_states_a_stored_end_year(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """A raise with an end year reads "ends after <that year>" on the rail."""
+        """A raise with an end year pre-selects "ends after" and fills the year."""
         ends = self._seed_raise(seed_user, db, ends_after=6)
 
         html = auth_client.get("/retirement").data.decode()
 
-        assert 'data-assumption="raise_terminal_year"' in html
-        assert f"ends after {ends}" in html
+        self._assert_row_states(html, mode="year", year=ends)
 
     def test_the_dashboard_states_a_raise_with_no_end_year(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1881,13 +1920,15 @@ class TestTheRailStatesEachRecurringRaisesEndYear:
         "no end year" and an empty cell are different claims: the first says
         the owner believes the raise continues, the second reads as a fact
         nobody has supplied.  The projection compounds it forever either way,
-        so the rail must not make that look unstated.
+        so the rail must not make that look unstated: the mode select
+        pre-selects *no end year* and the year box is empty, which is the pair
+        the salary form itself would show for the row.
         """
         self._seed_raise(seed_user, db, ends_after=None)
 
         html = auth_client.get("/retirement").data.decode()
 
-        assert "no end year" in html
+        self._assert_row_states(html, mode="none", year="")
 
     def test_an_owner_with_no_recurring_raises_reads_none_recorded(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -1957,11 +1998,12 @@ class TestTheRailStatesEachRecurringRaisesEndYear:
 
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert f"ends after {ends}" in html, (
+        assert 'data-assumption="raise_terminal_year"' in html, (
             "the rail's re-render after a save lost the recurring-raise "
             "rows, so update_settings is not loading the salary profiles the "
             "dashboard's include supplies"
         )
+        self._assert_row_states(html, mode="year", year=ends)
 
 
 class TestAssumptionSaves:
@@ -2625,3 +2667,215 @@ class TestDashboardReadinessContext:
         # Shape spot-checks: the producers' signature keys are present.
         assert "funded_ratio" in context["readiness"]
         assert "no_horizon" in context["levers"]
+
+
+class TestTheRailProbesARaisesEndYear:
+    """The rail's end-year pair is a WHAT-IF the readiness GET carries (S3-f-2b).
+
+    Plan step **salary:S3-f-2b** (rulings **R-SAL20**, **R-SAL21**, **R-SAL13**).
+    Each recurring-raise row renders the salary form's pair -- a mode select
+    and a year input, both ``whatif-param js-whatif-input`` -- so the existing
+    debounce fires the readiness GET with them and the plan point resolves
+    them against the rows.  The cases post WHAT THE TEMPLATE EMITS
+    (``feedback_a_route_test_must_post_what_the_template_emits``): the first
+    reads the rendered controls back off the dashboard and submits exactly
+    those, which must be the stored plan; the rest vary one control.
+    """
+
+    @staticmethod
+    def _seed_forever_raise(seed_user, db):
+        """An underfunded owner with one recurring 5% January raise, no end year.
+
+        Effective NEXT year so the probe can end it after its first year --
+        a smaller salary path, a smaller target, a higher funded ratio.
+        """
+        _seed_underfunded(seed_user, db.session)
+        profile = (
+            db.session.query(SalaryProfile)
+            .filter_by(user_id=seed_user["user"].id).one()
+        )
+        effective = display_today().year + 1
+        row = make_recurring_raise(
+            profile.id, db.session, effective_year=effective,
+        )
+        db.session.commit()
+        return row.id, effective
+
+    @staticmethod
+    def _rail_controls(html):
+        """Every ``whatif-param`` control the rail's raise rows render: name -> value."""
+        rows = re.findall(
+            r'<div class="retire-assump-row" data-assumption="raise_terminal_year"'
+            r'\s+data-raise-id="\d+">(.*?)</div>',
+            html, re.S,
+        )
+        assert rows, "the dashboard rendered no recurring-raise row"
+        controls = {}
+        for row in rows:
+            select = re.search(
+                r'<select[^>]*name="(raise_end_mode_\d+)"[^>]*>(.*?)</select>',
+                row, re.S,
+            )
+            assert select and "whatif-param js-whatif-input" in select.group(0)
+            selected = re.search(r'<option value="(\w+)" selected>', select.group(2))
+            controls[select.group(1)] = selected.group(1) if selected else ""
+            year = re.search(
+                r'<input[^>]*name="(raise_end_year_\d+)"[^>]*value="([^"]*)"',
+                row, re.S,
+            )
+            assert year and "whatif-param js-whatif-input" in year.group(0)
+            controls[year.group(1)] = year.group(2)
+        return controls
+
+    def _fragment(self, auth_client, params):
+        """GET the readiness fragment with *params*; return ``(status, html)``."""
+        resp = auth_client.get(
+            "/retirement/readiness", query_string=params,
+            headers={"HX-Request": "true"},
+        )
+        return resp.status_code, resp.data.decode()
+
+    def test_what_the_rail_emits_is_the_stored_plan(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The pre-filled controls, submitted verbatim, resolve to no what-if.
+
+        Every rail row submits on every refresh, so a point that treated the
+        pre-filled pair as an override would derive one plan twice and state a
+        zero delta (row P57's shape).  The controls are read back off the
+        rendered page rather than hand-written, so this grades the pair the
+        browser actually sends.
+        """
+        raise_id, _ = self._seed_forever_raise(seed_user, db)
+        html = auth_client.get("/retirement").data.decode()
+        controls = self._rail_controls(html)
+        assert controls == {
+            f"raise_end_mode_{raise_id}": "none",
+            f"raise_end_year_{raise_id}": "",
+        }
+
+        status, fragment = self._fragment(auth_client, controls)
+        assert status == 200
+        assert 'data-readiness="verdict"' in fragment
+        assert 'data-readiness="deltas"' not in fragment, (
+            "the rail's own pre-filled pair was read as a what-if"
+        )
+
+    def test_a_probed_end_year_moves_the_verdict_and_the_levers(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """Ending the raise after its first year is a what-if with a delta.
+
+        A shorter raise is a smaller final salary, so the income target and
+        the required savings FALL and the funded ratio RISES: the delta line
+        renders with a positive points change, and the lever card -- solved
+        against the displayed what-if since plan step C2-f2d-4 -- comes back
+        different from the stored plan's.
+        """
+        raise_id, effective = self._seed_forever_raise(seed_user, db)
+        _, stored = self._fragment(auth_client, {})
+        status, probed = self._fragment(auth_client, {
+            f"raise_end_mode_{raise_id}": "year",
+            f"raise_end_year_{raise_id}": str(effective),
+        })
+        assert status == 200
+        assert 'data-readiness="deltas"' in probed
+        points = re.search(r"Funded change: (-?[\d.]+) points", probed)
+        assert points, "the delta line did not state the funded change"
+        assert Decimal(points.group(1)) > 0, (
+            "ending the raise early did not raise the funded ratio, so the "
+            "probe did not reach the income target"
+        )
+        stored_lines = re.search(r'<div id="lever-outcomes".*?</div>', stored, re.S)
+        probed_lines = re.search(r'<div id="lever-outcomes".*?</div>', probed, re.S)
+        assert stored_lines and probed_lines
+        assert stored_lines.group(0) != probed_lines.group(0), (
+            "the lever card was solved at the stored raise set beside a "
+            "verdict stated at the probed one"
+        )
+
+    def test_a_probe_on_a_raise_that_does_not_exist_is_refused(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A stale bookmark or a URL edit is a designed 422, not a silent no-op."""
+        raise_id, _ = self._seed_forever_raise(seed_user, db)
+        stale = raise_id + 999
+        status, body = self._fragment(auth_client, {
+            f"raise_end_mode_{stale}": "none",
+            f"raise_end_year_{stale}": "",
+        })
+        assert status == 422
+        errors = json.loads(body)["errors"]
+        assert list(errors["raise_probes"]) == [str(stale)]
+        assert errors["raise_probes"][str(stale)] == [
+            "Not one of your recurring raises; reload the page.",
+        ]
+
+    def test_a_probe_on_another_owners_raise_is_refused_and_discloses_nothing(
+        self, auth_client, seed_user, seed_second_user, db, seed_periods_today,
+    ):
+        """Another owner's raise id is refused EXACTLY as a dead id is.
+
+        The IDOR axis the dead-id case above cannot measure (an adversarial
+        review of this step).  The probe is resolved against THIS owner's rows
+        -- never by querying the submitted id -- so a foreign id has no row to
+        be graded against, and the refusal is the constant not-found sentence.
+        The probe deliberately names a year BEFORE the foreign raise's
+        effective year: a resolver that looked the row up by id would answer
+        "it takes effect in <that year>", leaking a fact about a stranger's
+        salary, and this case would then fail on both assertions.
+        """
+        self._seed_forever_raise(seed_user, db)
+        foreign_profile = _create_salary_profile(seed_second_user, db.session)
+        foreign_effective = display_today().year + 7
+        foreign = make_recurring_raise(
+            foreign_profile.id, db.session, effective_year=foreign_effective,
+        )
+        db.session.commit()
+
+        status, body = self._fragment(auth_client, {
+            f"raise_end_mode_{foreign.id}": "year",
+            f"raise_end_year_{foreign.id}": str(foreign_effective - 1),
+        })
+        assert status == 422
+        assert json.loads(body)["errors"]["raise_probes"] == {
+            str(foreign.id): [
+                "Not one of your recurring raises; reload the page.",
+            ],
+        }
+        assert str(foreign_effective) not in body, (
+            "the refusal disclosed another owner's raise effective year"
+        )
+
+    def test_a_year_before_the_raises_effective_year_is_refused(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The ONE end-year rule, applied against the ROW, answers the rail too.
+
+        The salary form refuses this payload through ``RaiseCreateSchema``; the
+        rail refuses it through ``plan_with`` with the same sentence, because
+        both call ``salary_raises.end_year_of``.
+        """
+        raise_id, effective = self._seed_forever_raise(seed_user, db)
+        status, body = self._fragment(auth_client, {
+            f"raise_end_mode_{raise_id}": "year",
+            f"raise_end_year_{raise_id}": str(effective - 1),
+        })
+        assert status == 422
+        assert json.loads(body)["errors"]["raise_probes"] == {
+            str(raise_id): [
+                f"A raise cannot end before it starts: it takes effect in "
+                f"{effective}.",
+            ],
+        }
+
+    def test_a_mode_outside_the_vocabulary_is_refused_by_the_schema(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The field-tier half of the rule stays the schema's, as on the form."""
+        raise_id, _ = self._seed_forever_raise(seed_user, db)
+        status, body = self._fragment(auth_client, {
+            f"raise_end_mode_{raise_id}": "forever",
+        })
+        assert status == 422
+        assert "raise_probes" in json.loads(body)["errors"]

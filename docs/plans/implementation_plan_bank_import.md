@@ -157,29 +157,37 @@ what it leaves a LATER step is on that step's own entry.
 - [ ] **X-gn** `feat(import): a match may name a second bank line` -- **R-KC**, which carries the
       argument and the three facts keeping the AXIS. `X-gi-2` deleted the workbench, the only door
       to a multi-line group, and the developer accepted that gap: this restores it card-side.
-- [ ] **X-gr** `fix(import): the import doors say what they do` -- **BI-487**, **BI-488**,
-      **BI-489**, **BI-490**, all surfaced by `X-gi-4`'s reviews once `aa31bedf` put the released
-      placements on the delete receipt: the import receipt discards the same count, the delete
-      CONFIRMATION previews neither figure (developer ruling 2026-09-11: it previews both, from the
-      one read the act counts with), the delete door's prose and event still say "moves NO money"
-      (false since **R-GG**), and the "not placed" badge blames the file for a release the app
-      performed -- that wording is a design question for the developer.
-- [ ] **X-gs** `fix(auth): require_owner fails closed` -- **BI-486**. The helper's
-      `getattr(current_user, "role_id", owner_id)` is a fixture accommodation that treats an
-      anonymous principal as an owner wherever the login gate (**R-BI4**) is off. Read the attribute
-      outright; fixtures that lack a role set one. Minted by the developer 2026-09-11 from
-      `X-gi-4`'s review findings, beside `X-gr`.
-- [ ] **X-gt** `refactor(import): the receipt value leaves _batch.py` -- **BI-491**. `_batch.py`
-      sits at 998 of pylint's 1000 lines after `X-gi-5`; `BatchOutcome` and `_Tally` move to
-      `_outcome.py` as a PURE move in its own commit, the cut ruled first (**R-PC71**'s shape),
-      before `balance:X-bn` touches the file; **N-474**'s wording fix is its second commit (the X-gi
-      container owned that row and shipped). Minted by the developer 2026-09-12.
+- [x] **X-gr** `303a907f` -- the import doors say what they do. Closed **BI-487**, **BI-488**,
+      **BI-490**; **BI-489** ruled **R-BI6** (the badge and the receipt assert no cause; the
+      released-placement fact lives nowhere until the level relation) and re-homed to
+      `balance:X-bj-1` as **BAL-485**. **A LATER STEP OBEYS**: the delete confirmation and the act
+      read ONE producer per figure (`resting_on`, `lines_by_import`, `orphan_merchants_by_import`);
+      a second spelling of any of them is the defect BI-490 named.
+- [x] **X-gs** `eec1a2be` -- `require_owner` reads `current_user.role_id` outright; closed
+      **BI-486** (the fixture half was EMPTY, measured twice; the commit carries the census).
+- [x] **X-gt** `89e39a18` -- the receipt value (`AppliedItem`, `RefusedItem`, `BatchOutcome`,
+      `Tally`) left `_batch.py` (998 -> 679) for `_outcome.py` (374) as a PURE move, AST-graded
+      (**R-BI7**); **N-474**'s wording fixed at `74673532`, two more exclusive sentences in the
+      rider. Closed **BI-491**, **N-474**; **BI-494** filed under `X-gw`.
 - [ ] **X-gu** `fix(import): the delete door locks its lines in the shared order` -- **BI-492**.
       `lock_lines` over the import's lines before `delete_import` deletes the row, so the cascade
       cannot cross a press; the cross-resource half is `balance:X-bn`'s. Minted 2026-09-12.
 - [ ] **X-gv** `fix(import): a locked read re-hydrates what it locks` -- **BI-493**. The locked
       reads take `populate_existing()`; a line hydrated before the lock is otherwise returned stale.
       Minted 2026-09-12 from `X-gi-5`'s design review.
+- [ ] **X-gx** `fix(import): the offer names the merchant the door filed under` -- **BI-495**. The
+      create door reports the merchant it filed for, the receipt item carries it, and the offer
+      filters the applied items instead of reading the pre-lock `review`. Minted 2026-09-12 from
+      `X-gv`'s diff review; stacked on `X-gt` + `X-gv`.
+- [ ] **X-gy** `chore(ci): the suite's CI clock is measured, then fixed` -- **BI-496**. CI runs a
+      database-bound test 5-13x slower than the host and only ~2x of it is accounted for; a matched
+      A/B on the runner names the rest, the fix lands with its measurement, and `pytest.ini`'s cap
+      is re-sized from CI's own `--durations` table. Minted 2026-09-13 by the developer from the
+      coordinator's triage of PR #337's timeout.
+- [ ] **X-gw** `refactor(import): the tally freezes itself` -- **BI-494**. `Tally.frozen()` beside
+      both classes in `_outcome.py`, built from the field names so a counter on one side and not the
+      other refuses loudly; `apply_reviewed` returns it (`X-gx`, queued ahead, edits the same file).
+      Minted by the developer 2026-09-12 at `X-gt`'s ruling.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.
