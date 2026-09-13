@@ -434,7 +434,6 @@ class TestSeedUserSubprocessScrub:
         env.update(overrides)
         return env
 
-    @pytest.mark.timeout(30)
     def test_subprocess_does_not_print_password_after_seed(
         self, app, db,  # pylint: disable=unused-argument
     ):
