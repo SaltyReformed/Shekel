@@ -116,8 +116,13 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
         # application holds an owner-less rule at all, not even an unsaved one:
         # ``build_transient_rule`` takes an owner exactly as ``author_rule``
         # does, so what a transient rule lacks is a ROW, never an owner.
+        # THREE arms since plan step salary:R15-b (ruling R-SAL32): a payroll
+        # deduction's cadence is a rule too.  ``<>`` on two NULL tests was XOR;
+        # exactly one of three is the sum of the three set-flags equalling 1.
         db.CheckConstraint(
-            "(transaction_template_id IS NULL) <> (transfer_template_id IS NULL)",
+            "(transaction_template_id IS NOT NULL)::int"
+            " + (transfer_template_id IS NOT NULL)::int"
+            " + (paycheck_deduction_id IS NOT NULL)::int = 1",
             name="ck_recurrence_rules_one_owner",
         ),
         # 1:1, per arm, and this is what the runtime census plan step R-F6
@@ -144,6 +149,12 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
             "transfer_template_id",
             unique=True,
             postgresql_where=db.text("transfer_template_id IS NOT NULL"),
+        ),
+        db.Index(
+            "uq_recurrence_rules_paycheck_deduction_id",
+            "paycheck_deduction_id",
+            unique=True,
+            postgresql_where=db.text("paycheck_deduction_id IS NOT NULL"),
         ),
         db.CheckConstraint("interval_n > 0", name="ck_recurrence_rules_positive_interval"),
         # The per-month ceiling's floor (plan step salary:R15-a).  NULL is the
@@ -304,6 +315,20 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
         db.ForeignKey(
             "budget.transfer_templates.id", ondelete="CASCADE",
             name="fk_recurrence_rules_transfer_template_id",
+        ),
+        nullable=True,
+    )
+    # The third arm (plan step salary:R15-b, rulings R-SAL3 and R-SAL32): a
+    # payroll deduction's own FREQUENCY is a recurrence rule against the pay
+    # calendar -- "every paycheck, at most 2 a month" for the 24-per-year
+    # line, "monthly, on the first paycheck on or after the 1st" for the 12
+    # -- and NO rule is R-SAL3's NULL, every paycheck.  Same disposal as the
+    # other two arms: the database cascades the rule with its deduction.
+    paycheck_deduction_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "salary.paycheck_deductions.id", ondelete="CASCADE",
+            name="fk_recurrence_rules_paycheck_deduction_id",
         ),
         nullable=True,
     )
@@ -505,6 +530,9 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
     transfer_template = db.relationship(
         "TransferTemplate", back_populates="recurrence_rule",
     )
+    paycheck_deduction = db.relationship(
+        "PaycheckDeduction", back_populates="recurrence_rule",
+    )
 
     @property
     def user_id(self) -> int:
@@ -528,8 +556,9 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
             ValueError: The rule has no owner at all.  Unreachable through
                 either write door -- both take one -- and unreachable for a
                 row, which ``ck_recurrence_rules_one_owner`` refuses without
-                one.  What it catches is a rule CONSTRUCTED directly, which is
-                a fixture bypassing the seam rather than an application state,
+                one (exactly one of THREE since plan step salary:R15-b).  What
+                it catches is a rule CONSTRUCTED directly, which is a fixture
+                bypassing the seam rather than an application state,
                 and it names that rather than surfacing as an ``AttributeError``
                 on ``None`` three frames down.
         """
@@ -541,9 +570,13 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
         if owner is None:
             owner = self.transfer_template
         if owner is None:
+            # The deduction arm (plan step salary:R15-b) reaches the owner
+            # through its profile: ``PaycheckDeduction.user_id`` is that read.
+            owner = self.paycheck_deduction
+        if owner is None:
             raise ValueError(
-                "this RecurrenceRule has no owning template, so it has no "
-                "owner to report.  A rule with neither owning FK set is a "
+                "this RecurrenceRule has no owning definition, so it has no "
+                "owner to report.  A rule with no owning FK set is a "
                 "TRANSIENT rule (build_transient_rule); state the user on the "
                 "RecurrenceSpec instead of reading it back off the rule."
             )

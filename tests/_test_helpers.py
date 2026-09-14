@@ -5873,6 +5873,60 @@ def make_every_period_rule(db_session, owner):  # pylint: disable=unused-argumen
     )
 
 
+def make_deduction_cadence_rule(db_session, deduction, per_year):  # pylint: disable=unused-argument
+    """Author the rule migration ``542c61e48ee8`` writes for a 24 / 12 line.
+
+    **The shared cadence builder for every fixture that gave a deduction a
+    ``deductions_per_year`` of 24 or 12** before plan step salary:R15-b
+    deleted the column (rulings R-SAL3, R-SAL29, R-SAL30): the same two
+    shapes the migration writes, authored through the write door onto the
+    deduction as its owner, so a fixture's line is taken on exactly the
+    paydays the migrated production line is.
+
+    Args:
+        db_session: The test session; unused for the reason
+            :func:`make_every_period_rule` gives.
+        deduction: A flushed ``PaycheckDeduction`` on a profile whose owner
+            has pay periods.  Mutated: its ``recurrence_rule`` is set.
+        per_year: ``24`` -- every paycheck, at most 2 a month, from the
+            owner's opening payday -- or ``12`` -- monthly, on the first
+            paycheck on or after the 1st, from the first of the opening
+            payday's month.  A 26 line has NO rule; do not call this for one.
+
+    Returns:
+        The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
+
+    Raises:
+        ValueError: *per_year* is neither 24 nor 12.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
+    from app.services.pay_calendar import calendar_for
+    from app.services.recurrence import RecurrenceSpec, author_rule
+
+    calendar = calendar_for(deduction.user_id)
+    opening = calendar.opening_bound()
+    if per_year == 24:
+        spec = RecurrenceSpec(
+            user_id=deduction.user_id,
+            unit=RecurrenceUnitEnum.PERIOD,
+            starts_on=opening,
+            max_per_month=2,
+        )
+    elif per_year == 12:
+        spec = RecurrenceSpec(
+            user_id=deduction.user_id,
+            unit=RecurrenceUnitEnum.MONTH,
+            placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            starts_on=opening.replace(day=1),
+        )
+    else:
+        raise ValueError(
+            f"per_year must be 24 or 12 (a 26 line carries no rule); got {per_year!r}"
+        )
+    return author_rule(spec, calendar, deduction)
+
+
 def first_occurrence_on_day(user_id, fires_on_day, fires_in_month=None):
     """Return the first date matching a calendar cadence the schedule reaches.
 

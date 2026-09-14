@@ -750,9 +750,9 @@ def _apply_salary_deduction(_records):
     composition.  A POST-TAX FLAT line does not -- it is subtracted last and
     whole -- so ``+$1,000.00`` of it is ``-$1,000.00`` of net on every paycheck
     that takes it, under the bracket path and the calibrated path alike.
-    ``deductions_per_year=26`` is what makes "every paycheck" true:
-    ``_deduction_applies_at`` skips a third paycheck only at 24 and a non-first
-    one only at 12.
+    A line with NO recurrence rule (since plan step salary:R15-b; it was
+    ``deductions_per_year=26``) is what makes "every paycheck" true: the
+    engine skips a payday only where the line's rule names none.
 
     **Two earlier choices were rejected, and the reasons are the control's own
     argument.**  ``SalaryProfile.extra_withholding`` is exactly linear
@@ -783,7 +783,6 @@ def _apply_salary_deduction(_records):
             calc_method_id=ref_cache.calc_method_id(CalcMethodEnum.FLAT),
             name="X-bl-1 invariance control (never flushed)",
             amount=_NUDGE,
-            deductions_per_year=26,
             annual_cap=None,
             inflation_enabled=False,
             is_active=True,

@@ -1,4 +1,5 @@
 {% from "_money_macros.html" import money %}
+{% from "_recurrence_fields.html" import recurrence_cadence_controls with context %}
 <div class="card mb-3" id="deductions-section">
   <div class="card-header d-flex justify-content-between align-items-center">
     <h6 class="mb-0"><i class="bi bi-dash-circle"></i> Deductions</h6>
@@ -46,17 +47,10 @@
               {{ money(d.amount) }}
             {% endif %}
           </td>
-          <td>
-            {% if d.deductions_per_year == 26 %}
-              26x/yr <small class="text-muted">(every paycheck)</small>
-            {% elif d.deductions_per_year == 24 %}
-              24x/yr <small class="text-muted">(skip 3rd paycheck)</small>
-            {% elif d.deductions_per_year == 12 %}
-              12x/yr <small class="text-muted">(monthly)</small>
-            {% else %}
-              {{ d.deductions_per_year }}x/yr
-            {% endif %}
-          </td>
+          {# The line's cadence, worded by the recurrence package through the
+             route's ``cadence_phrases`` (plan step salary:R15-b): its rule's
+             description, or "Every paycheck" for a line with none. #}
+          <td data-ded-cadence="{{ d.id }}">{{ cadence_phrases[d.id] }}</td>
           <td class="text-end font-mono">
             {{ money(d.annual_cap) if d.annual_cap else '--' }}
           </td>
@@ -68,13 +62,25 @@
             {% endif %}
           </td>
           <td class="text-nowrap text-end table-sticky-actions">
+            {# What an EDIT of this line starts its cadence controls on (plan
+               step salary:R15-c): the SelectedCadence the route resolved
+               through the one render-side reader every recurrence edit form
+               uses, or none for a line with no rule -- emitted as four
+               attributes app.js fills the inline form from, the way it fills
+               the line's every other field.  Empty attributes for no rule:
+               the script sets "Does not repeat" and lets recurrence_form.js
+               hide the rest. #}
+            {% set cadence = selected_cadences[d.id] %}
             <button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Edit"
                     data-ded-edit="{{ d.id }}"
                     data-ded-name="{{ d.name }}"
                     data-ded-timing-id="{{ d.deduction_timing_id }}"
                     data-ded-method-id="{{ d.calc_method_id }}"
                     data-ded-amount="{{ '%.2f'|format((d.amount|to_percent)) if d.calc_method_id == CALC_PERCENTAGE else '%.2f'|format(d.amount) }}"
-                    data-ded-per-year="{{ d.deductions_per_year }}"
+                    data-ded-unit-id="{{ cadence.unit_id if cadence else '' }}"
+                    data-ded-interval="{{ cadence.interval_n if cadence else '' }}"
+                    data-ded-placement-id="{{ cadence.placement_id if cadence else '' }}"
+                    data-ded-max-per-month="{{ cadence.max_per_month if cadence and cadence.max_per_month is not none else '' }}"
                     data-ded-cap="{{ '%.2f'|format(d.annual_cap) if d.annual_cap else '' }}"
                     data-ded-target-account="{{ d.target_account_id or '' }}"
                     data-ded-inflation-enabled="{{ 'true' if d.inflation_enabled else 'false' }}"
@@ -172,16 +178,30 @@
                    class="form-control form-control-sm" required
                    placeholder="e.g. 500">
           </div>
-          <div class="col-md-4">
-            <label class="form-label">Frequency</label>
-            <select name="deductions_per_year" class="form-select form-select-sm">
-              <option value="26">26 (every paycheck)</option>
-              <option value="24">24 (skip 3rd paycheck)</option>
-              <option value="12">12 (monthly)</option>
-            </select>
+        </div>
+        {# Row 4: Frequency -- the shared recurrence CADENCE controls (plan
+           step salary:R15-c, ruling R-SAL31), where the 26 / 24 / 12 select
+           stood until R15-b: the unit, the interval, the per-month ceiling
+           (R15-a's "at most N a month", which is what a 24-per-year line IS)
+           and the funding placement, from the same partial and the same
+           offer set (ruling R-SAL37: the whole set) as the recurring-
+           transaction and transfer forms.  "Does not repeat" here means
+           every paycheck (ruling R-SAL3), and so does "Paychecks, every 1"
+           with no ceiling, which the route canonicalises to no rule
+           (R-SAL29).  Deliberately NOTHING else of the partial: no "Starts
+           on" (a payroll line's first occurrence is the owner's opening
+           payday, rulings R-SAL30 / R-SAL36), no due day, no end bound, no
+           preview.  recurrence_form.js links these controls exactly as it
+           does on the two template forms; it is loaded by salary/form.html
+           and re-initialises itself after the HTMX swap that re-renders this
+           section.  ``selected`` is none: the ADD form opens unset, and an
+           EDIT is filled by app.js from the row's data-ded-* attributes. #}
+        <div class="row g-2 mb-2">
+          <div class="col-12">
+            {{ recurrence_cadence_controls(recurrence_picker, none) }}
           </div>
         </div>
-        {# Row 4: Schedule #}
+        {# Row 5: Schedule #}
         <div class="row g-2 align-items-end">
           <div class="col-md-3">
             <label class="form-label">Annual Cap</label>

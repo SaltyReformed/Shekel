@@ -327,7 +327,10 @@ def is_loan_payment(template: Any) -> bool:
     answers ``False`` without a query.
 
     Args:
-        template: The ``TransactionTemplate`` or ``TransferTemplate``.
+        template: The ``TransactionTemplate`` or ``TransferTemplate`` -- or,
+            since plan step salary:R15-c, the ``PaycheckDeduction`` whose
+            update runs the same dispatcher; it carries no settings row and
+            answers ``False`` the way a transaction template does.
 
     Returns:
         ``True`` when the template carries loan-payment settings.
@@ -504,7 +507,9 @@ def is_loan_payment_or_standing(template: Any, pass_ctx: BalanceContext) -> bool
 
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate``.  A
-            transaction template answers ``False`` on both halves.
+            transaction template answers ``False`` on both halves, and so
+            does a ``PaycheckDeduction`` (plan step salary:R15-c), which has
+            neither a settings row nor a destination.
         pass_ctx: The read pass the route built, whose loan-resolution memo
             answers the standing identity.
 

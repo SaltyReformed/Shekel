@@ -29,7 +29,6 @@ import _registry as registry
     ("rulings.md", "| balance | R-IA |"),
     ("rulings.md", "| balance | R-IF |"),
     ("ledger.md", "| salary | N-391 "),
-    ("ledger.md", "| salary | SAL-556 "),
 ])
 def test_the_plan_identifiers_this_step_cites_actually_exist(registry_name, ident):
     """A citation is only worth as much as the row it names.
@@ -77,7 +76,14 @@ def test_the_plan_identifiers_this_step_cites_actually_exist(registry_name, iden
     row measures, so the finding stayed live under the salary arc's key and this list
     followed it -- the same finding, not a closure, so the pin moves rather than leaves. No
     `app/` or `tests/` line cites N-399 or SAL-556 by name (measured 2026-09-14): this pin is a
-    presence check on the registry, not the trace of a code citation.
+    presence check on the registry, not the trace of a code citation -- until `salary:R15-b`
+    (`4ed9b5b3`), whose tests cite SAL-556 twice in
+    `tests/test_services/test_paycheck_calculator.py`.
+    **`SAL-556` then LEFT at plan step `salary:R15-b`** (`4ed9b5b3`), which closed
+    it: `_cumulative_deduction_before` asks no month ordinal per prior payday any
+    more (a structural test pins it), so the row left `ledger.md` and its pin leaves
+    here -- the arm working, as for N-390 and N-398, whose code citations stayed put
+    exactly as these two do.
     """
     path = registry.PLANS / registry_name
     assert ident in path.read_text(encoding="utf-8"), (

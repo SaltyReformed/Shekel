@@ -539,7 +539,6 @@ class TestXSSPrevention:
                     "amount": "100",
                     "deduction_timing_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
-                    "deductions_per_year": "26",
                 },
             )
 
