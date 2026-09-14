@@ -26,6 +26,14 @@ from flask.typing import ResponseReturnValue
 # listener in app/static/js/app.js -- the two names must stay in sync.
 DESIGNED_FRAGMENT_HEADER = "Shekel-Designed-Fragment"
 
+# htmx's own response header naming the element a response swaps into
+# INSTEAD of the request's hx-target (a CSS selector; htmx reads it before
+# it raises htmx:beforeSwap, so the marker listener above sees the retargeted
+# swap).  A designed fragment built for a region the request did not target
+# carries it -- the ``/retirement/readiness`` what-if's refusal is the
+# assumptions RAIL, and that request targets the readiness card.
+RETARGET_HEADER = "HX-Retarget"
+
 # The uniform user-facing message for a foreign-key ``IntegrityError`` --
 # one definition shared by the transaction, entries, and transfer
 # mutation handlers whose designed fragments surface it.
@@ -34,21 +42,34 @@ INVALID_REFERENCE_MSG = (
 )
 
 
-def designed_error(body: str, status: int) -> ResponseReturnValue:
+def designed_error(
+    body: str, status: int, *, retarget: str | None = None,
+) -> ResponseReturnValue:
     """Wrap a rendered error fragment so htmx swaps it despite the status.
 
     Args:
         body: The rendered partial, built for the request's own
             ``hx-target`` (the same surface a success response would
-            replace -- cell, card, entry list, form panel).
+            replace -- cell, card, entry list, form panel) -- or, with
+            *retarget*, for the region that selector names.
         status: The HTTP error status (422 validation, 400 domain
             rejection, 500 handled failure).
+        retarget: A CSS selector for the element the body swaps into when
+            it is NOT the request's own target (:data:`RETARGET_HEADER`);
+            the request's own swap style still applies.  ``None`` for a
+            body built for the request's target, which is every caller but
+            the readiness what-if's refusal (plan step salary:S3-f-4,
+            ruling **R-SAL33**).
 
     Returns:
         Flask response tuple ``(body, status, headers)`` carrying the
-        designed-fragment marker header.
+        designed-fragment marker header, and the retarget header when one
+        was asked for.
     """
-    return body, status, {DESIGNED_FRAGMENT_HEADER: "1"}
+    headers = {DESIGNED_FRAGMENT_HEADER: "1"}
+    if retarget is not None:
+        headers[RETARGET_HEADER] = retarget
+    return body, status, headers
 
 
 def flatten_schema_errors(errors: dict[str, list[str]]) -> str:

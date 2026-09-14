@@ -31,6 +31,19 @@
  *      successful (2xx) assumptions-panel swap the page reloads so all
  *      of them re-derive server-side; the 422 path stays inline (field
  *      errors echo in place, no reload).
+ *   5. A refusal retires when its control is edited, and the request in
+ *      flight is aborted on every keystroke (plan step
+ *      salary:S3-f-4, ruling R-SAL34).  The rail renders a refusal --
+ *      the Save's, or since that step the what-if GET's, which answers
+ *      a refused input with the rail itself, retargeted (R-SAL33) -- as
+ *      ``is-invalid`` on the control and one ``.invalid-feedback`` per
+ *      row.  The GET's SUCCESS never re-renders the rail (a re-render on
+ *      every debounced refresh would replace the input the owner is
+ *      still typing in), so without this a corrected year would keep
+ *      the refusal of the year it replaced beside a card drawn at
+ *      itself.  The message describes the value it refused; editing the
+ *      value retires it, and the server's next answer -- 200 or 422,
+ *      GET or Save -- re-states whatever still holds.
  */
 
 (function () {
@@ -58,6 +71,41 @@
     }, DEBOUNCE_MS);
   }
 
+  /**
+   * Retire the refusal rendered on the rail row that holds a control.
+   *
+   * The row's controls drop ``is-invalid`` and its feedback line goes; a
+   * raise row's two controls share one feedback line, and a refusal of
+   * either half is about the pair, so the whole row clears.  A control
+   * outside a rail row (the assumed-return what-if) has nothing to clear.
+   * @param {Element} el - The control that was edited.
+   */
+  function retireRefusal(el) {
+    var row = el.closest ? el.closest(".retire-assump-row") : null;
+    if (!row) return;
+    row.querySelectorAll(".is-invalid").forEach(function (control) {
+      control.classList.remove("is-invalid");
+    });
+    row.querySelectorAll(".invalid-feedback").forEach(function (feedback) {
+      feedback.remove();
+    });
+  }
+
+  /**
+   * Abort the readiness request in flight, if any: its answer is for an
+   * input the owner has since changed.  A refusal re-renders the rail with
+   * the request's own values echoed (R-SAL33), so a stale answer landing
+   * after a newer keystroke would put the older value back under the
+   * caret; a stale 200 landing after a newer one would draw the card at
+   * the older input.  The debounce re-issues the request with the latest
+   * values, and hx-sync="this:replace" on the trigger covers the case
+   * where the next request is issued while one is still in flight.
+   */
+  function abortInFlightRefresh() {
+    var trigger = document.getElementById("readiness-refresh");
+    if (trigger && window.htmx) htmx.trigger(trigger, "htmx:abort");
+  }
+
   // What-if / lever inputs -> debounced refresh events (delegated so
   // HTMX panel swaps cannot orphan the listeners).
   document.body.addEventListener("input", function (event) {
@@ -67,8 +115,11 @@
     var mirror = mirrorId ? document.getElementById(mirrorId) : null;
     if (mirror) mirror.value = el.value;
     if (el.classList.contains("js-whatif-input")) {
+      retireRefusal(el);
+      abortInFlightRefresh();
       debounced("shekel:readiness-whatif");
     } else if (el.classList.contains("js-lever-input")) {
+      abortInFlightRefresh();
       debounced("shekel:lever-refresh");
     }
   });
@@ -102,12 +153,34 @@
   // global listener in app.js swaps the rail with its field errors, and
   // the status >= 400 guard below skips the reload.  The save forms
   // target the stable #assumptions-region wrapper with an innerHTML
-  // swap, so the swap lands on an attached node.
+  // swap, so the swap lands on an attached node.  The what-if GET's
+  // refusal lands there too, RETARGETED by the route (R-SAL33): htmx
+  // then raises afterSwap on this region at 422, which the same guard
+  // keeps from reloading the page mid-edit -- and which is where the
+  // caret is put back at the end of the value the owner is typing.
   document.body.addEventListener("htmx:afterSwap", function (event) {
     var detail = event.detail || {};
-    if (event.target && event.target.id === "assumptions-region" &&
-        detail.xhr && detail.xhr.status < 400) {
+    if (!event.target || event.target.id !== "assumptions-region" || !detail.xhr) {
+      return;
+    }
+    if (detail.xhr.status < 400) {
       window.location.reload();
+      return;
+    }
+    // A refusal re-rendered the rail around the control the owner is
+    // typing in.  htmx restored focus to the swapped-in control by id, but
+    // a number input has no selection to restore and Chromium's focus()
+    // puts the caret at the START -- the next digit would land in front
+    // of the value (measured at plan step salary:S3-f-4: a "0" typed after
+    // a refused "2025" read "02025").  Re-assigning the value moves the
+    // caret to the end, and a programmatic value write fires no input
+    // event, so nothing here re-triggers the refresh.
+    var active = document.activeElement;
+    var value;
+    if (active && active.tagName === "INPUT" && event.target.contains(active)) {
+      value = active.value;
+      active.value = "";
+      active.value = value;
     }
   });
 })();

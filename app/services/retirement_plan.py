@@ -119,20 +119,29 @@ class RaiseProbeError(ValueError):
     the readiness route can answer a designed 422 rather than resolve a stale
     bookmark or a URL edit into a silently unchanged plan.  Every probe that
     failed is reported, not just the first, the way a schema reports every
-    field.
+    field.  **Each refusal names WHICH HALF of the pair it is about** (plan
+    step salary:S3-f-4, ruling **R-SAL33**): the route renders it on that
+    half's control, exactly as the rail's Save renders the same rule's
+    refusal, and a refusal of the pair as a whole -- the row is not one of
+    this owner's -- names no half.
 
     Attributes:
-        errors: ``{raise_id: message}`` -- one sentence per refused probe.
+        errors: ``{raise_id: (field, message)}`` -- one entry per refused
+            probe; *field* is :class:`~app.services.salary_raises
+            .EndYearError`'s vocabulary (``"mode"`` or ``"year"``) for a rule
+            refusal and ``None`` for a raise the owner has no row for.
     """
 
-    def __init__(self, errors: "dict[int, str]") -> None:
+    def __init__(self, errors: "dict[int, tuple[str | None, str]]") -> None:
         """Record every refused probe.
 
         Args:
-            errors: ``{raise_id: message}``.
+            errors: ``{raise_id: (field, message)}``.
         """
         super().__init__(
-            "; ".join(f"raise {rid}: {msg}" for rid, msg in errors.items()),
+            "; ".join(
+                f"raise {rid}: {message}" for rid, (_, message) in errors.items()
+            ),
         )
         self.errors = errors
 
@@ -413,18 +422,18 @@ class RetirementInputs:
         rows = recurring_raises(self.gap.salary_profiles)
         by_id = {row.id: row for row in rows}
         believed: dict[int, int | None] = {}
-        errors: dict[int, str] = {}
+        errors: dict[int, tuple[str | None, str]] = {}
         for raise_id, (mode, year) in (raise_probes or {}).items():
             row = by_id.get(raise_id)
             if row is None:
                 errors[raise_id] = (
-                    "Not one of your recurring raises; reload the page."
+                    None, "Not one of your recurring raises; reload the page.",
                 )
                 continue
             try:
                 believed[raise_id] = end_year_of(mode, year, row.effective_year)
             except EndYearError as exc:
-                errors[raise_id] = exc.message
+                errors[raise_id] = (exc.field, exc.message)
         if errors:
             raise RaiseProbeError(errors)
         return tuple(sorted(
