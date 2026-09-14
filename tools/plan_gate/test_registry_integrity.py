@@ -289,31 +289,41 @@ class TestTheKeyIsTheArcAndTheId:
         """A row whose id is blank has no key, and nothing else could see it.
 
         **This is the one silent hole the other arms do not backstop.**  An
-        empty ARC cell is the FIRST cell, so ``_rows`` drops the row, the table
-        shrinks and rule 3's count arm reports it (the control below).  An
         empty ID is the SECOND cell: the row parses, the count still agrees,
         and the key silently becomes ``balance:`` -- every later predicate then
         grades a finding that has no name.  Measured before this arm existed:
-        138 rows in, 138 rows out, every arm SILENT.
+        138 rows in, 138 rows out, every arm SILENT.  (An empty ARC cell, the
+        FIRST cell, was DROPPED by the reader's separator test until
+        2026-09-14 and reached rule 3's count arm only; it is a row now and
+        lands here too -- the control below.)
         """
         line = row_of("ledger", a_live_ledger_row())
         stage("ledger", line, with_cell(line, 1, ""))
         problems = registry.unique_key_violations()
         assert any("empty arc or id" in p for p in problems), problems
 
-    def test_an_empty_arc_cell_is_caught_by_the_count_arm(self, stage):
-        """The row vanishes instead, so rule 3 is what reports it.
+    def test_an_empty_arc_cell_is_caught_by_the_key_arm_too(self, stage):
+        """An empty FIRST cell is a row with no key, named by the same arm.
 
-        Recorded as a control rather than as prose because the two empty-cell
-        cases fail through DIFFERENT arms, and a reader who assumes one arm
-        covers both would delete the wrong one.
+        Until 2026-09-14 this control asserted the opposite: that the row
+        VANISHES and rule 3's count arm reports it, because the reader's
+        separator test (``set(row[0]) <= {"-", ":"}``) is true of an empty
+        cell.  That defence was measured false the same day, when a row
+        dropped by an unescaped ``|`` had its count SET from the lossy parse
+        and every arm stayed green; the developer ruled the empty-arc row a
+        row as well, so it keeps its place in the table (the count agrees)
+        and the key arm, written to name "an empty arc or id" and never able
+        to see an empty arc, now does.
         """
         before = len(registry.ledger_rows())
         line = row_of("ledger", a_live_ledger_row())
+        bare = line.split(" | ")[1].strip()
         stage("ledger", line, with_cell(line, 0, ""))
-        assert len(registry.ledger_rows()) == before - 1, "the row must vanish"
-        problem = registry.stated_count_violation()
-        assert problem is not None and "rule 3" in problem, problem
+        assert len(registry.ledger_rows()) == before, "the row must stay a row"
+        problems = registry.unique_key_violations()
+        assert any(
+            "empty arc or id" in p and f"':{bare}'" in p for p in problems
+        ), problems
 
 
 class TestAnIdentityClassSharesOneTickState:
@@ -826,21 +836,6 @@ class TestTheParserSurvivesTheShapesTheRealFilesUse:
         """The balance N-73 row carries a literal ``Decimal \\| None``."""
         rows = {row.key: row for row in registry.ledger_rows()}
         assert "balance:N-73" not in rows or "|" in rows["balance:N-73"].finding
-
-    def test_an_unescaped_pipe_does_not_pass_silently(self, stage):
-        """The false-negative direction of the arm above.
-
-        ``_rows`` SKIPS a row of the wrong width rather than asserting on it,
-        which is what lets one table hold two shapes.  The row therefore
-        vanishes, and rule 3's count is the only thing standing between that
-        and a finding nobody sees again.
-        """
-        before = len(registry.ledger_rows())
-        line = row_of("ledger", a_live_ledger_row())
-        stage("ledger", line, with_cell(line, 3, "an unescaped X | Y pipe"))
-        assert len(registry.ledger_rows()) == before - 1, "the row must vanish"
-        problem = registry.stated_count_violation()
-        assert problem is not None and "rule 3" in problem, problem
 
     def test_a_fenced_heading_does_not_truncate_a_checkbox_scan(self):
         """A ``##`` inside a fence must not end the steps scan."""

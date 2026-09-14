@@ -41,6 +41,16 @@ STEPS_HEADER = (
 FORKS_HEADER = ("defect", "competing remedies", "ruled")
 RULINGS_HEADER = ("arc", "id", "also", "date", "what was ruled")
 
+#: Which document each header lives in, so a refused row can be named by FILE
+#: without :func:`rows_under` taking a path it never reads.  A header is a
+#: registry's identity (N-234), so the map is keyed by it and not by width.
+DOCUMENT_OF_HEADER = {
+    LEDGER_HEADER: "ledger.md",
+    STEPS_HEADER: "steps.md",
+    FORKS_HEADER: "steps.md",
+    RULINGS_HEADER: "rulings.md",
+}
+
 #: An ``order`` cell placing a step in the sequence: ``#12``.  The three legal
 #: spellings of that column are this, ``container`` and ``SHIPPED``; anything
 #: else is a row a reader cannot place.
@@ -377,8 +387,26 @@ def rows_under(text: str, header: tuple[str, ...]) -> list[list[str]]:
     order, containers and shipped sections are one registry in three), and a
     different header is a different subject whatever its width.
 
-    A row inside a matched table whose cell count differs is DROPPED, unchanged:
-    that is how an unescaped ``|`` surfaces, and rule 3's count arm reports it.
+    **A row inside a matched table whose cell count differs is REFUSED, by
+    file, line and leading cells** (developer 2026-09-14).  Until then it was
+    DROPPED, unchanged, on the argument that rule 3's count arm would report
+    the loss -- and on 2026-09-14 that argument failed in practice, in a
+    tick's working tree before its commit: an unescaped ``|`` in the draft of
+    ``pay_calendar:PC-515`` dropped the row, the coordinator's count-setting
+    script (outside this tree; it reads these producers) then SET the stated
+    counts from the lossy parse, and every arm was green with a finding gone
+    until the adversarial review re-counted.  A reader that silently narrows
+    what it reads is measuring less than it claims, so the parser fails
+    closed on a MIS-WIDTH row and no consumer of these producers can compute
+    over a registry missing one.  **A row whose FIRST cell is empty is a row
+    too** (developer 2026-09-14, the same ruling): until then the separator
+    test below skipped it as well -- ``set("")`` is a subset of anything, and
+    the ``not row[0]`` beside it was dead code -- so an empty arc cell
+    vanished the same way and reached rule 3's count arm only; it now flows
+    to the unique-key arm, which was already written to name it and could
+    never see one.  What still is not a row: a ``|`` line no table precedes
+    (``in_table`` is False) -- ``test_tables`` grades every ``|``-leading
+    line of every registry against the table it sits in for that shape.
 
     Args:
         text: The whole document.
@@ -391,11 +419,18 @@ def rows_under(text: str, header: tuple[str, ...]) -> list[list[str]]:
         AssertionError: When no table carries *header*.  A missing table is not
             an empty one -- a restructured document would empty a registry and
             every predicate over it would pass.
+        AssertionError: When a row under *header* does not split to the
+            header's width -- an unescaped ``|`` inside a cell, a cell too
+            few, or a bare ``|``.  The message names the document, the line
+            number, the row's leading cells and the remedy (``\\|``).
+        KeyError: When *header* is one :data:`DOCUMENT_OF_HEADER` does not
+            name -- loud, so a fifth registry cannot degrade the message to
+            "this document" unnoticed.
     """
     out: list[list[str]] = []
     found = False
     in_table = False
-    for line in text.splitlines():
+    for number, line in enumerate(text.splitlines(), 1):
         row = cells(line)
         if row is None:
             in_table = False
@@ -406,10 +441,15 @@ def rows_under(text: str, header: tuple[str, ...]) -> list[list[str]]:
             continue
         if not in_table:
             continue
-        if not row[0] or set(row[0]) <= {"-", ":"}:
+        if row and row[0] and set(row[0]) <= {"-", ":"}:  # the separator row
             continue
-        if len(row) != len(header):
-            continue
+        assert len(row) == len(header), (
+            f"{DOCUMENT_OF_HEADER[header]} line {number}: "
+            f"the row starting {' | '.join(row[:2])!r} splits to {len(row)} "
+            f"cells under a {len(header)}-column header, so a `|` inside a "
+            f"cell is unescaped (write it `\\|`) or a cell is missing; the "
+            f"row would otherwise vanish from every reader of this registry"
+        )
         out.append(row)
     assert found, (
         f"no table with the header {' | '.join(header)!r} -- the document was "

@@ -20,6 +20,8 @@ import pytest
 
 import _registry as registry
 import _rulings as rulings
+from _staging import with_cell
+from _tables import cells
 
 
 def _a_row_of(arc: str) -> str:
@@ -60,23 +62,6 @@ def _declaration() -> str:
     return match.group("arcs")
 
 
-def _with_cell(row: str, index: int, value: str) -> str:
-    """Return *row* with cell *index* replaced by *value*.
-
-    Args:
-        row: A whole markdown row, outer pipes included.
-        index: The zero-based cell position -- 0 ``arc``, 1 ``id``, 2 ``also``,
-            3 ``date``, 4 ``what was ruled``.
-        value: The replacement cell text.
-
-    Returns:
-        The rebuilt row.
-    """
-    cells = [c.strip() for c in row.strip().strip("|").split("|")]
-    cells[index] = value
-    return "| " + " | ".join(cells) + " |"
-
-
 class TestTheRegistryIsWellFormed:
     """Rule 10: the key is ``(arc, id)`` and it names exactly one ruling."""
 
@@ -102,25 +87,25 @@ class TestTheRegistryIsWellFormed:
     def test_a_malformed_id_is_caught(self, stage_rulings):
         """A ruling nobody can cite is a ruling that is not recorded."""
         row = _a_row_of("balance")
-        stage_rulings(row, _with_cell(row, 1, "not an id"))
+        stage_rulings(row, with_cell(row, 1, "not an id"))
         assert any("not a citable ruling id" in p for p in rulings.key_violations())
 
     def test_an_unknown_arc_is_caught(self, stage_rulings):
         """Rule 10's key with half of it invented."""
         row = _a_row_of("balance")
-        stage_rulings(row, _with_cell(row, 0, "nonesuch"))
+        stage_rulings(row, with_cell(row, 0, "nonesuch"))
         assert any("is not one of" in p for p in rulings.key_violations())
 
     def test_a_row_stating_no_rule_is_caught(self, stage_rulings):
         """N-220: a ruling row must state a rule."""
         row = _a_row_of("balance")
-        stage_rulings(row, _with_cell(row, 4, "--"))
+        stage_rulings(row, with_cell(row, 4, "--"))
         assert any("states no rule" in p for p in rulings.key_violations())
 
     def test_a_row_stating_no_date_is_caught(self, stage_rulings):
         """Only the date orders two rulings on one subject."""
         row = _a_row_of("balance")
-        stage_rulings(row, _with_cell(row, 3, "--"))
+        stage_rulings(row, with_cell(row, 3, "--"))
         assert any("states no date" in p for p in rulings.key_violations())
 
     def test_an_alias_shadowing_a_live_id_is_caught(self, stage_rulings):
@@ -130,7 +115,7 @@ class TestTheRegistryIsWellFormed:
         other = next(r for r in rows
                      if r.arc == "balance" and r.key != victim.key)
         row = _a_row_of("balance")
-        stage_rulings(row, _with_cell(row, 2, other.bare_ident))
+        stage_rulings(row, with_cell(row, 2, other.bare_ident))
         assert any("resolves to two rulings in one arc" in p
                    for p in rulings.key_violations())
 
@@ -466,25 +451,33 @@ class TestTheLiftLostNothing:
         actual = Counter(row.arc for row in rulings.ruling_rows())
         assert rulings.declared_arc_counts() == dict(actual)
 
-    def test_no_rule_text_was_split_by_an_unescaped_pipe(self):
-        """bank_import:R-FW's own defect, as a predicate over every row.
+    def test_no_rule_text_was_split_by_an_unescaped_pipe(self, stage_rulings):
+        """bank_import:R-FW's own defect, graded on the defect's axis.
 
-        ``rows_under`` DROPS a row whose cell count differs from the header, so
-        a split row does not fail any other arm here -- it silently stops
-        being a ruling.  The count arm above is what catches it, and this
-        states the reason.
+        Until 2026-09-14 ``rows_under`` DROPPED a row whose cell count differs
+        from the header, and this control counted the ``|``-leading lines
+        against the parsed rows to notice the loss.  The reader now REFUSES
+        such a row by file, line and leading cells (developer 2026-09-14,
+        after a ledger row vanished and its counts were set from the lossy
+        parse), so the control stages R-FW's shape into a live ruling and
+        asserts the refusal names ``rulings.md``, the line, the row's leading
+        cells and the widths -- the live file parsing clean is what every
+        other arm here already proves.
         """
         text = rulings.RULINGS.read_text()
         header = "| arc | id | also | date | what was ruled |"
-        body = [
-            line for line in text.splitlines()
-            if line.startswith("| ") and line != header
-            and not set(line) <= set("|- ")
-        ]
-        assert len(body) == len(rulings.ruling_rows()), (
-            "a row was dropped by rows_under, which means an unescaped pipe "
-            "split it -- escape it as \\| (see _tables.UNESCAPED_PIPE_RX)"
+        line = next(
+            ln for ln in text.splitlines()
+            if ln.startswith("| ") and ln != header and not set(ln) <= set("|- ")
         )
+        number = text.split("\n").index(line) + 1
+        stage_rulings(line, with_cell(line, 4, "a rule with an X | Y pipe"))
+        with pytest.raises(AssertionError) as refusal:
+            rulings.ruling_rows()
+        message = str(refusal.value)
+        assert f"rulings.md line {number}:" in message, message
+        assert f"starting {' | '.join(cells(line)[:2])!r}" in message, message
+        assert "6 cells under a 5-column" in message and "`\\|`" in message, message
 
     def test_the_ambiguous_id_the_registry_now_makes_visible(self):
         """R-GU names two rulings, and here that is legal AND findable.
@@ -538,7 +531,7 @@ class TestTheArmsThatHadNoControl:
                       and not r.also_keys())
         row = _a_row_of(victim.arc)
         assert row.split(" | ")[1] == victim.bare_ident, row[:60]
-        stage_rulings(row, _with_cell(row, 2, alias))
+        stage_rulings(row, with_cell(row, 2, alias))
         assert any(f"{alias} is claimed as an `also` id by 2 rows" in p
                    for p in rulings.key_violations())
 
@@ -579,7 +572,7 @@ class TestRuleFourAppliesToThisFileToo:
     def test_a_new_row_over_the_cap_is_caught(self, stage_rulings):
         """The debt is a named set to compare against, never a licence."""
         row = _a_row_of("balance")
-        stage_rulings(row, _with_cell(row, 4, "x" * (rulings.RULINGS_ROW_CAP + 1)))
+        stage_rulings(row, with_cell(row, 4, "x" * (rulings.RULINGS_ROW_CAP + 1)))
         assert any("against the" in p and "row cap" in p
                    for p in rulings.row_width_violations())
 
@@ -595,7 +588,7 @@ class TestRuleFourAppliesToThisFileToo:
         widest = max(rulings.ruling_rows(), key=lambda r: r.width)
         row = next(line for line in rulings.RULINGS.read_text().splitlines()
                    if line.startswith(f"| {widest.arc} | {widest.bare_ident} |"))
-        stage_rulings(row, _with_cell(row, 4, "the rule, and nothing else"))
+        stage_rulings(row, with_cell(row, 4, "the rule, and nothing else"))
         assert any(f"{widest.key} is recorded in LIFTED_ROWS_OVER_CAP" in p
                    for p in rulings.row_width_violations())
 
@@ -610,7 +603,7 @@ class TestRuleFourAppliesToThisFileToo:
         widest = max(rulings.ruling_rows(), key=lambda r: r.width)
         row = next(line for line in rulings.RULINGS.read_text().splitlines()
                    if line.startswith(f"| {widest.arc} | {widest.bare_ident} |"))
-        stage_rulings(row, _with_cell(row, 4, widest.rule + " x" * 4000))
+        stage_rulings(row, with_cell(row, 4, widest.rule + " x" * 4000))
         assert any(f"{widest.key} is" in p and "and the debt records" in p
                    for p in rulings.row_width_violations())
 
