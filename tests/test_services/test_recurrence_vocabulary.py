@@ -99,7 +99,7 @@ class TestAnUnmodelledRowIsInvisible:
         table, and ``_picker`` did not import the pattern model at all -- so
         inserting into that table could not move the answer whatever the
         producer did.  Plan step R7c-c deleted that table with the closed set;
-        the options come from ``_frequency.authorable_cadences`` now, which is
+        the options come from ``_offer.authorable_cadences`` now, which is
         derived from two predicates over the ENUM members (plan step R8-a; it
         was the anchor router until then) and reads no ``ref`` table either.
 

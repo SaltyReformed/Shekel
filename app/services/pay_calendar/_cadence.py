@@ -104,14 +104,19 @@ Six call sites spelled the biweekly-to-monthly factor inline as
 26/12 inlining is a regression of D6-05").  Naming each conversion once puts
 the factor in one place per DIRECTION.
 
-**One direction is still spelled inline and it is deliberate**:
-``obligations_aggregator`` writes
-``amount * units_per_year / (interval_n * MONTHS_PER_YEAR)`` rather than
-calling a method here, and plan step R7a-2b measured why: that form divides
+**One direction lives on the RECURRENCE value rather than here, and it is
+deliberate**: ``obligations_aggregator`` takes
+:meth:`app.services.recurrence.Cadence.monthly_equivalent`, which spells
+``amount * units_per_year / (interval_n * MONTHS_PER_YEAR)`` -- and plan step
+R7a-2b measured why that form and not a method of this module: it divides
 ONCE, by an exact integer, where dividing the amount by the interval FIRST --
 ``per_paycheck_to_monthly(amount / n)`` -- rounds twice.  (At ``n = 1`` the two
-are byte-identical; the cost is only in the interval.)  It is a genuine fifth
-direction rather than an oversight, and the one that must not be wrapped.
+are byte-identical; the cost is only in the interval.)  It was spelled inline
+in the aggregator until plan step salary:R15-a gave it a second arm -- a rule
+whose per-month ceiling binds costs exactly ``amount * max_per_month`` -- and
+two arms in a caller is the shape that grows a third.  It is a genuine fifth
+direction rather than an oversight, and the one that must not be wrapped in a
+conversion of this module's.
 
 **Each keeps the sequential order, and that is an accuracy claim rather than a
 style one.**  ``periods_per_year`` is an integral ``Decimal``, so ``x * ppy``

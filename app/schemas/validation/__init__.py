@@ -68,6 +68,7 @@ from app.schemas.validation._helpers import (
 )
 from app.schemas.validation._recurrence import (
     RECURRENCE_END_BOUND_KEY,
+    RECURRENCE_MAX_PER_MONTH_KEY,
     RECURRENCE_NEEDS_A_START,
     RECURRENCE_NOMINAL_DAY_KEY,
     RECURRENCE_STARTS_ON_KEY,
@@ -179,6 +180,7 @@ __all__ = [
     "EFFECTIVE_DATE_MAX",
     "EFFECTIVE_DATE_MIN",
     "RECURRENCE_END_BOUND_KEY",
+    "RECURRENCE_MAX_PER_MONTH_KEY",
     "RECURRENCE_NEEDS_A_START",
     "RECURRENCE_NOMINAL_DAY_KEY",
     "RECURRENCE_STARTS_ON_KEY",
