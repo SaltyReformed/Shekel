@@ -28,13 +28,11 @@ from app.utils.dates import display_today
 from app.extensions import db
 from app.models.category import Category
 from app.models.transfer_template import TransferTemplate
-from app.models.transfer import Transfer
 from app.models.account import Account
 from app.services import (
     account_service,
     category_service,
     template_amount_service,
-    transfer_recurrence,
 )
 from app.services.pay_calendar import calendar_for
 from app.routes._commit_helpers import (
@@ -48,12 +46,7 @@ from app.routes._amount_version_actions import (
     withdraw_amount_version,
 )
 from app.services.balance_at import BalanceContext
-from app.services.cash_ledger import derived_amount_basis, resolve_transfer_amount
-from app.routes._recurrence_conflict_chooser import (
-    PreEditTemplateState,
-    RecurrenceConflictKind,
-    regenerate_or_conflict_chooser,
-)
+from app.routes._recurrence_conflict_chooser import PreEditTemplateState
 from app.routes._recurrence_form_helpers import (
     author_recurrence_for_create,
     recurrence_spec_for_create,
@@ -72,6 +65,10 @@ from app.routes._loan_destination import (
     loan_destination_locks_for_edit,
     settle_destination_for_update,
     settle_first_occurrence,
+)
+from app.routes._standing_payment import (
+    regenerate_or_refuse,
+    sync_loan_payment_start_or_refuse,
 )
 from app.routes._transfer_creation_helpers import (
     flush_template_or_namedup_redirect,
@@ -228,11 +225,14 @@ def _settle_create_references(data, start_period_id):
        transfer submits no period at all.  Resolved unconditionally when
        present, so a crafted POST pairing a foreign period with a repeating
        cadence is refused rather than ignored.
-    3. **A loan destination's first occurrence is DERIVED**, and it must be
-       settled before the rule is built so nothing is authored that
-       ``bind_rule_to_loan`` then replaces (plan step R7c-b, developer ruling
-       2026-08-15); and a stop stated for a loan holding no payment yet is
-       REFUSED there too (plan step R7d-f-3, ruling **R-R60**).  It runs LAST
+    3. **A loan destination's first occurrence is DERIVED where the
+       definition would be its standing payment**, settled before the rule
+       is built so nothing is authored and then replaced (plan step R7c-b,
+       developer ruling 2026-08-15; the ``bind_rule_to_loan`` that replaced
+       it went at plan step R7d-g-2, ruling **R-R85**); a stop stated for
+       such a loan is REFUSED there too (plan step R7d-f-3, ruling
+       **R-R60**); and a SECOND transfer's owner-typed start is refused at
+       or before the loan's origination (ruling **R-R81**).  It runs LAST
        because it reads the destination's loan parameters, which step 1 has
        just proved are the owner's -- reading them first would be an IDOR.
 
@@ -425,25 +425,6 @@ def edit_transfer_template(template_id):
         ),
         amount_version_delete_endpoint="transfers.delete_amount_version",
     )
-
-
-# The transfer-template kind for the shared regenerate-or-chooser flow.
-# Mutations route through transfer_recurrence (shadow-safe resolve).
-_TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
-    model=Transfer,
-    # A transfer's amount rule, as a one-argument callable and the exact twin of
-    # the transaction kind's.  It passed the resolver BARE until plan step
-    # X-au-f-2, under a comment claiming a parent transfer needs no basis --
-    # made false by R-BAL10; pinned off the row, one row at a time -- so N
-    # conflicted loan payments resolve their loan N times, bounded by the
-    # conflicted set and free for every other kind (the basis is lazy).
-    resolve_amount=lambda row: resolve_transfer_amount(
-        row, derived_amount_basis(row.user_id, row.scenario_id),
-    ),
-    regenerate_fn=transfer_recurrence.regenerate_for_template,
-    resolve_fn=transfer_recurrence.resolve_conflicts,
-    update_endpoint="transfers.update_transfer_template",
-)
 
 
 @transfers_bp.route("/transfers/<int:template_id>", methods=["POST"])
@@ -660,7 +641,18 @@ def _regenerate_and_commit_template(
 ):
     """Regenerate a transfer template's future transfers, then commit.
 
-    Re-runs ``transfer_recurrence.regenerate_for_template`` against the
+    FIRST brings the standing payment of the destination the edit LEAVES
+    onto the loan's contract (plan step R7d-g-2, ruling **R-R85**; the same
+    entry helper every lifecycle door calls, and the one write this function
+    makes before regenerating).  The edit it is for: the standing payment's
+    cadence UNIT moving -- every paycheck to monthly would otherwise store a
+    payday as the monthly day until the next params edit healed it.  For
+    every other edit the producer finds the start in step, or no loan at
+    all, and writes nothing: a rename costs it one lookup.  Its one refusal
+    is the window CHECK's (ruling **R-R82**), worded whole, and it sends the
+    user back to the edit form.
+
+    Then re-runs ``transfer_recurrence.regenerate_for_template`` against the
     baseline scenario, diverting to the recurrence-conflict chooser when an
     amount change would overwrite hand-edited upcoming transfers, then
     commits.  Optimistic-lock and name-uniqueness failures at flush time are
@@ -682,6 +674,18 @@ def _regenerate_and_commit_template(
         name-duplicate conflict, or a redirect to the template list on
         success.
     """
+    edit_form = RedirectTarget(
+        "transfers.edit_transfer_template", {"template_id": template_id},
+    )
+    # ``rows_follow=False``: the pass below is the one that brings this
+    # definition's rows along, and the standing payment is the only
+    # definition the sync can move from this door (see the helper).
+    refused = sync_loan_payment_start_or_refuse(
+        template.to_account_id, redirect=edit_form, rows_follow=False,
+    )
+    if refused is not None:
+        return refused
+
     # A template that neither has nor had a rule does not regenerate at all
     # (the gate below returns before touching a row -- that is what closes
     # defect D16), so its already-created Transfer is reached HERE or nowhere.
@@ -691,12 +695,16 @@ def _regenerate_and_commit_template(
             return refused
 
     # Regenerate future transfers, diverting to the conflict chooser when an
-    # amount change would overwrite hand-edited upcoming instances.
-    diverted = regenerate_or_conflict_chooser(
-        template, before, effective_from, _TRANSFER_TEMPLATE_KIND,
-        amount_drives_instances=True,
+    # amount change would overwrite hand-edited upcoming instances -- and,
+    # since plan step R7d-g-2, translating the transfer service's own refusal
+    # of a row (ruling R-C: a second transfer's every-paycheck row dated at
+    # or before its loan's origination) into this form's flash rather than a
+    # 500 (``_standing_payment.regenerate_or_refuse``).
+    diverted = regenerate_or_refuse(
+        template, before, effective_from, redirect=edit_form,
     )
-    # The chooser short-circuits (its pending edit is already rolled back).
+    # The chooser short-circuits (its pending edit is already rolled back),
+    # and so does a refusal.
     if diverted is not None:
         return diverted
 

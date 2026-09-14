@@ -297,16 +297,19 @@ class TestTemplateList:
             assert b'name="from_account_id"' in response.data
             assert b"New Recurring Transfer" in response.data
 
-    def test_the_create_form_names_the_destinations_that_derive_a_start(
+    def test_the_create_form_names_the_destinations_that_derive_the_bounds(
         self, app, auth_client, seed_user, db, seed_periods,
     ):
-        """The CREATE form carries which destinations lock "Starts on".
+        """The CREATE form carries which destinations lock both bound rows.
 
         Plan step R7c-b.  A loan payment's first occurrence is the loan's, so
         the control stops being the user's to state the moment a loan is
         chosen as the destination -- and the server cannot know at render
         which the user will choose, so it ships the SET and
-        ``recurrence_form.js`` applies it.
+        ``recurrence_form.js`` applies it.  ONE set since plan step R7d-g-2
+        (ruling **R-R81**): the payment-less loans, which derive both bounds;
+        the wider ``data-loan-account-ids`` that locked "Starts on" for every
+        loan went with the derivation of a second transfer's start.
 
         What this can see is the attribute; whether the script actually
         disables the control is ``tests/manual/verify_recurrence_form.py``'s,
@@ -332,9 +335,11 @@ class TestTemplateList:
 
             html = auth_client.get("/transfers/new").data.decode()
 
-            assert f'data-loan-account-ids="{loan.id}"' in html
+            assert f'data-loan-account-ids-without-payment="{loan.id}"' in html
+            assert 'data-loan-account-ids="' not in html
             assert str(savings.id) not in (
-                html.split('data-loan-account-ids="')[1].split('"')[0]
+                html.split('data-loan-account-ids-without-payment="')[1]
+                .split('"')[0]
             )
 
     def test_an_edit_form_names_the_destinations_computed_for_this_edit(
@@ -352,12 +357,12 @@ class TestTemplateList:
         render, so the form invited a start the save replaces.  The two do not
         answer one question: the server answers the STORED identity and locks
         the standing payment's rows, the script answers the CHOSEN destination
-        against sets the server computed for this edit -- a definition that
-        already repeats leaves its stored destination out, one the door pins
-        ships empty sets.  The census is
+        against the set the server computed for this edit -- the payment-less
+        loans, or nothing for a definition the door pins (one set since plan
+        step R7d-g-2, ruling **R-R81**).  The census is
         ``tests/test_routes/test_transfer_edit_form_locks.py``; this is the
         representative case: a repeating savings transfer names the loan a
-        move onto which derives the start.
+        move onto which derives both bounds.
         """
         with app.app_context():
             loan = create_loan_account(
@@ -379,7 +384,7 @@ class TestTemplateList:
                 f"/transfers/{template.id}/edit",
             ).data.decode()
 
-            assert f'data-loan-account-ids="{loan.id}"' in html
+            assert f'data-loan-account-ids-without-payment="{loan.id}"' in html
 
 
 class TestTemplatePrefill:

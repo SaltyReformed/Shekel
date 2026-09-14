@@ -13,10 +13,13 @@ plan step R7d-g the two ends are held two different ways:
   against a zero balance and the origination anchor resets over it: $0.00
   principal, the whole payment to Refund) while the cash side still debits
   it, so a mortgage closing one month out projected $3,220.92 of payments for
-  a loan that did not exist.  Written at the doors where a definition becomes
-  the standing payment (:func:`bind_rule_to_loan` at create) and re-derived
-  where the contract moves (:func:`sync_loan_payment_start`, from the
-  loan-params edit).
+  a loan that did not exist.  Written into the payload at the two transfer
+  form doors where a definition is created or edited into the standing
+  payment (``_loan_destination``), and re-derived by
+  :func:`sync_loan_payment_start` at every door where WHICH definition is
+  standing, or WHAT the contract says, can move (plan step R7d-g-2, ruling
+  **R-R85**): loan setup, the params edit, archive, unarchive, hard-delete
+  and the transfer update door.
 * the CLOSING bound = the loan's CLOSING DATE, DERIVED on every read by
   :func:`loan_payment_window` and stored NOWHERE: the projected payoff while
   the loan still owes, and the day it LAST became closed once it does not.
@@ -40,9 +43,11 @@ loan and every ARCHIVED transfer into one) and landed
 stored closing bound is its owner's word and the ONE writer of the pair
 (``recurrence._authoring._author``) refuses an inverted one off the values
 it stores.  Nothing in ``app/`` writes ``end_date`` from a derivation any
-more; the ONE state a loan edit could still reach that the writer refuses is
-translated in :func:`_sync_loan_cadence` into a sentence naming the transfer
-and refused at the loan-params door.
+more; the ONE state a door could still reach that the writer refuses -- the
+standing payment's re-derived start moved past a stop its owner authored
+(ruling **R-R82**) -- is translated in :func:`_sync_loan_cadence` into a
+sentence naming the transfer and refused whole at whichever door reached it
+(``_standing_payment.sync_loan_payment_start_or_refuse``).
 
 Flask-isolated: plain ``account_id`` in, no ``request`` / ``session`` reads;
 the writer flushes into the caller's transaction and never commits (the
@@ -114,6 +119,7 @@ from app.utils.log_events import (
 if TYPE_CHECKING:  # pragma: no cover -- typing only; these are ORM row types
     from app.models.loan_params import LoanParams
     from app.models.recurrence_rule import RecurrenceRule
+    from app.models.transfer_template import TransferTemplate
     # Type-only, both: ``RecurrenceOwner`` names only ``loan_payment_window``'s
     # parameter here, and ``recurring_definition`` imports THIS module at
     # runtime, so the edge back is a forward reference and nothing more.
@@ -123,21 +129,26 @@ if TYPE_CHECKING:  # pragma: no cover -- typing only; these are ORM row types
 logger = logging.getLogger(__name__)
 
 LOAN_START_WOULD_PASS_AN_AUTHORED_STOP: str = (
-    "This change would move the loan's first installment to {starts_on}, "
-    "after the recurring transfer '{name}' is set to end ({stop}). Archive "
-    "that transfer first, or set up the payment again without an end date."
+    "The recurring transfer '{name}' is set to end on {stop}, before the "
+    "loan's first installment ({starts_on}) it would pay from. Set it up "
+    "again without an end date, or archive it."
 )
-"""Refusal when a loan-params edit would move a payment's start past its stop.
+"""Refusal when a door would move the standing payment's start past its stop.
 
-The ONE state ``ck_recurrence_rules_valid_window`` refuses that a loan edit
-can reach (plan step R7d-g): the standing payment's ``starts_on`` is the
-loan's contract fact and follows ``payment_day``; its closing bound is its
-owner's word (ruling **R-R82**) and follows nothing.  The write door refuses
-the pair (:class:`~app.services.recurrence.EmptyAuthoredWindowError`);
-:func:`_sync_loan_cadence` words it with the transfer's name, and the
-loan-params route refuses the edit whole.  The remedy names archiving, not
-editing: the standing payment's "Ends" row is locked and a stated bound is
-refused, so the only door to that stop is the archive.
+The ONE state ``ck_recurrence_rules_valid_window`` refuses that a door can
+reach (plan step R7d-g): the standing payment's ``starts_on`` is the loan's
+contract fact and follows ``payment_day``; its closing bound is its owner's
+word (ruling **R-R82**) and follows nothing.  The write door refuses the pair
+(:class:`~app.services.recurrence.EmptyAuthoredWindowError`);
+:func:`_sync_loan_cadence` words it with the transfer's name, and the door
+that reached it refuses its edit whole.  Worded for EVERY such door since plan
+step R7d-g-2 (ruling **R-R85**) -- the params edit, where the installment
+moves; archive and hard-delete, where a second transfer carrying a stop is
+promoted; unarchive, where a restored one is -- so it names the transfer and
+the two dates and nothing about which edit was made.  The remedy names
+archiving or re-creating, not editing: the standing payment's "Ends" row is
+locked and a stated bound is refused, so the only door to that stop is the
+archive.
 """
 
 
@@ -460,7 +471,7 @@ def loan_cadence_spec(
     )
 
 
-def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> None:
+def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> bool:
     """Bring a loan recurrence's opening bound onto the loan's contract.
 
     Nothing else re-points a loan payment after a ``payment_day`` edit (the
@@ -502,14 +513,22 @@ def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> None:
     value it STORES and refuses it (:class:`~app.services.recurrence
     .EmptyAuthoredWindowError`, the one comparison in the application); this
     function TRANSLATES that refusal into a sentence naming the transfer, so
-    the loan-params route can refuse the edit whole and say which definition
-    stands in its way.  The remedy is the owner's (archive that transfer),
-    which is what the message names.  A COUNT bound cannot invert against a
-    date and passes.
+    the door that reached it can refuse its edit whole and say which
+    definition stands in its way.  The remedy is the owner's (archive that
+    transfer, or set it up again), which is what the message names.  A COUNT
+    bound cannot invert against a date and passes.
 
     Args:
         rule: The recurring payment's :class:`RecurrenceRule`.
         params: The loan's :class:`~app.models.loan_params.LoanParams`.
+
+    Returns:
+        ``True`` when the rule was re-authored -- its first occurrence MOVED
+        -- and ``False`` when it was already on the contract.  The caller
+        reads it to bring the rule's generated rows along (plan step
+        R7d-g-2, ruling **R-R85**): a rule whose start moved names different
+        occurrences, and rows left on the old ones would be a second home for
+        the same derived fact.
 
     Raises:
         ValidationError: The re-derived first installment falls after the
@@ -519,10 +538,10 @@ def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> None:
     current = recurrence_spec(rule)
     wanted = loan_cadence_spec(current, params)
     if wanted == current:
-        return
+        return False
     calendar = calendar_for(rule.user_id)
     if resolve(wanted, calendar) == resolve(current, calendar):
-        return
+        return False
     old_start = current.starts_on
     # RE-AUTHORED, not assigned: a rule is written whole through one door, so
     # the cycle phase and the closed set's storage encoding are re-derived from
@@ -553,6 +572,7 @@ def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> None:
         old_nominal_day=current.nominal_day,
         new_nominal_day=wanted.nominal_day,
     )
+    return True
 
 
 def bind_rule_to_loan(rule: "RecurrenceRule", account_id: int) -> None:
@@ -568,14 +588,21 @@ def bind_rule_to_loan(rule: "RecurrenceRule", account_id: int) -> None:
     created into the same loan would leave the NEW rule unbounded while
     re-bounding the old one -- silently reopening the very hole this closes.
 
+    **One application caller since plan step R7d-g-2**: the loan dashboard's
+    own payment door (``routes/loan/payment_transfer.py``), which builds its
+    rule from :func:`loan_cadence_start` and so finds the date already right.
+    The generic transfer form's create path stopped calling it (ruling
+    **R-R85**): its door derives the standing payment's start before the rule
+    is built, and a SECOND transfer's start is its owner's (ruling **R-R81**),
+    which this would have overwritten with the contract's.
+
     Args:
         rule: The just-built :class:`RecurrenceRule`, before generation.
         account_id: The transfer's destination account (any kind).
 
     Raises:
         ValidationError: See :func:`_sync_loan_cadence`.  Unreachable from
-            the two create doors, which grade a stated stop against the
-            derived start before the rule is built.
+            the dashboard door, which authors no stop.
     """
     params = loan_loaders.load_loan_params(account_id)
     if params is None:
@@ -583,7 +610,7 @@ def bind_rule_to_loan(rule: "RecurrenceRule", account_id: int) -> None:
     _sync_loan_cadence(rule, params)
 
 
-def sync_loan_payment_start(account_id: int) -> None:
+def sync_loan_payment_start(account_id: int) -> "TransferTemplate | None":
     """Re-derive a loan's standing payment's opening bound from the loan's contract.
 
     **The tenth of the ten chokepoints, and the only one left** (plan step
@@ -597,7 +624,15 @@ def sync_loan_payment_start(account_id: int) -> None:
     whose start is the loan's contract fact rather than its owner's word: the
     loan's STANDING payment (ruling **R-R81**; a second transfer's start is
     the owner's and is never re-synced).  It is called where that contract
-    fact moves: the loan-params edit, which can change ``payment_day``.
+    fact moves -- the loan-params edit, which can change ``payment_day`` --
+    and, since plan step R7d-g-2 (ruling **R-R85**), at every door where
+    WHICH definition is standing can move: loan setup, archive and
+    hard-delete (the next-oldest is promoted), unarchive (the restored one is
+    standing again, or newly), and the transfer update door (the standing
+    payment's cadence unit).  Each calls it AFTER its write is flushed, so the
+    lookup below answers for the state the door leaves; the route-side
+    helper ``_standing_payment.sync_loan_payment_start_or_refuse`` is the one
+    spelling of that call and of the refusal's handling.
 
     A no-op -- returning before any write -- when the account is not a
     configured loan, has no recurring payment, or its standing payment's
@@ -609,6 +644,14 @@ def sync_loan_payment_start(account_id: int) -> None:
         account_id: The loan account whose standing payment's ``starts_on`` to
             re-derive.
 
+    Returns:
+        The standing payment's :class:`~app.models.transfer_template
+        .TransferTemplate` when its start MOVED, else ``None`` -- for a
+        no-op of any kind, and for a start already on the contract.  The
+        route-side helper brings the moved definition's rows along (ruling
+        **R-R85**: a rule and its generated rows are one derived fact, and
+        the maintain pass is what keeps them one).
+
     Raises:
         ValidationError: The re-derived first installment falls after a stop
             the standing payment's owner authored (see
@@ -617,14 +660,16 @@ def sync_loan_payment_start(account_id: int) -> None:
     """
     account = db.session.get(Account, account_id)
     if account is None:
-        return
+        return None
     # The template lookup comes FIRST: with no recurring payment there is
     # nothing to re-derive.  Cheapest disqualifying check first.
     template = active_recurring_transfer_template(account_id, account.user_id)
     if template is None or template.recurrence_rule is None:
-        return
+        return None
     params = loan_loaders.load_loan_params(account_id)
     if params is None:
         # Not a configured loan (no LoanParams) -- the bound is not defined.
-        return
-    _sync_loan_cadence(template.recurrence_rule, params)
+        return None
+    if _sync_loan_cadence(template.recurrence_rule, params):
+        return template
+    return None
