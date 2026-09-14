@@ -112,6 +112,9 @@ def _open_add_form(page) -> None:
 
     The button also RESETS the form (``data-ded-reset``), which is the path
     under test after an edit: a reset form must post what a fresh one posts.
+    The form sits in a Bootstrap ``collapse``, so every wait for its controls
+    in this file is for ATTACHED, never visible: the first run of this drive
+    timed out waiting for a hidden unit select to become visible on its own.
 
     Args:
         page: The Playwright page.
@@ -130,7 +133,7 @@ def _drive_add_form(page, profile_id: int) -> None:
     """Check the add form's cadence controls show, hide and post as the script links them."""
     print(f"\n=== deduction add form: /salary/{profile_id}/edit ===")
     page.goto(f"{DEV_BASE_URL}/salary/{profile_id}/edit", wait_until="domcontentloaded")
-    page.wait_for_selector("#recurrence_unit")
+    page.wait_for_selector("#recurrence_unit", state="attached")
     _open_add_form(page)
     units = _unit_ids(page)
     _check("A: the form offers paychecks, months AND years (R-SAL37)",
@@ -280,7 +283,7 @@ def _drive_existing_rows(page, profile_id: int) -> None:
     """Check every existing line's edit prefill, whatever cadence it carries."""
     print(f"\n=== deduction edit prefill: /salary/{profile_id}/edit ===")
     page.goto(f"{DEV_BASE_URL}/salary/{profile_id}/edit", wait_until="domcontentloaded")
-    page.wait_for_selector("#recurrence_unit")
+    page.wait_for_selector("#recurrence_unit", state="attached")
     rows = _rows(page)
     _check("E: the page lists at least one deduction row", bool(rows), "no rows")
     for row in rows:
@@ -308,14 +311,14 @@ def _submit_and_settle(page) -> None:
     """Submit the deduction form through htmx and wait for the section to be swapped."""
     page.click("#ded-submit-btn")
     page.wait_for_timeout(int(POST_SPACING_SECONDS * 1000))
-    page.wait_for_selector("#recurrence_unit")
+    page.wait_for_selector("#recurrence_unit", state="attached")
 
 
 def _drive_write_pass(page, profile_id: int) -> None:
     """Add, re-cadence and delete one marked line through the real form and its swaps."""
     print(f"\n=== deduction write pass (VERIFY_WRITE=1): /salary/{profile_id}/edit ===")
     page.goto(f"{DEV_BASE_URL}/salary/{profile_id}/edit", wait_until="domcontentloaded")
-    page.wait_for_selector("#recurrence_unit")
+    page.wait_for_selector("#recurrence_unit", state="attached")
     _open_add_form(page)
     units = _unit_ids(page)
     before = len(_rows(page))
@@ -382,10 +385,16 @@ def _drive_write_pass(page, profile_id: int) -> None:
            and stored[0].endswith("-01"), str(stored))
 
     # --- delete it through the row's form ------------------------------
-    page.on("dialog", lambda dialog: dialog.accept())
+    # The confirmation is the project's own modal (confirm.js intercepts
+    # htmx:confirm and asks through #confirmModal; the browser's confirm()
+    # is only its fallback), so the Yes button is what a user clicks.  The
+    # first run of this drive accepted a native dialog that never opened and
+    # reported the row surviving a delete that was never sent.
     page.click(f'form[action$="/deductions/{added["id"]}/delete"] button[type=submit]')
+    page.wait_for_selector("#confirmModalYes", state="visible")
+    page.click("#confirmModalYes")
     page.wait_for_timeout(int(POST_SPACING_SECONDS * 1000))
-    page.wait_for_selector("#recurrence_unit")
+    page.wait_for_selector("#recurrence_unit", state="attached")
     _check("W: the delete swapped the section in without the row",
            not [r for r in _rows(page) if r["name"] == MARK], "the row survived")
     _check("W: the delete took the rule with it",
