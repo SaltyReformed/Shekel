@@ -22,7 +22,7 @@ from app.models.scenario import Scenario
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import TransactionType, Status
+from app.models.ref import AccountType, TransactionType, Status
 from app import ref_cache
 from app.enums import (
     AmountSourceEnum,
@@ -2666,6 +2666,122 @@ class TestRegenerateForTemplate:
                 f"expected the counter leg to move accounts, got "
                 f"{before} -> {after}"
             )
+
+    def test_propagating_to_a_rule_less_definition_reconciles_the_ledger_too(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The transaction twin of ``propagate_to_unruled_template``, ledger half.
+
+        Plan step balance:X-bi-7a.  ``propagate_to_unruled_definition`` is
+        what a rule-less definition's edit reaches its rows by, and it takes
+        the same two acts ``_apply_maintain_work`` takes after its splat: a
+        flush, then ``sync_transaction_postings`` on every updated row.  The
+        case above is why that loop is graded rather than trusted -- deleting
+        it once passed the whole suite.  Here the definition's cadence is
+        CLEARED after its row books a purchase leg, its category moves, and
+        the purchase's counter leg has to move with it.
+        """
+        with app.app_context():
+            template = self._make_envelope_template(seed_user)
+            created = recurrence_engine.generate_for_template(
+                template,
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id), {seed_periods[0].id},
+                ),
+                seed_user["scenario"].id,
+            )
+            db.session.flush()
+            (spent_on,) = created
+            self._record_purchase(
+                spent_on, seed_user, amount="120.00",
+                settled_on=spent_on.pay_period.start_date,
+            )
+            template.recurrence_rule = None
+            db.session.flush()
+            assert spent_on.recurs is False
+
+            def legs():
+                """Every posting on this row's family, by ledger account."""
+                rows = (
+                    db.session.query(Posting.ledger_account_id, Posting.amount)
+                    .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+                    .filter(JournalEntry.transaction_entry_id.isnot(None))
+                    .all()
+                )
+                totals = {}
+                for ledger_account_id, amount in rows:
+                    totals[ledger_account_id] = (
+                        totals.get(ledger_account_id, Decimal("0.00")) + amount
+                    )
+                return {k: v for k, v in totals.items() if v != Decimal("0.00")}
+
+            before = legs()
+            assert before and sum(before.values()) == Decimal("0.00")
+
+            template.category_id = seed_user["categories"]["Groceries"].id
+            db.session.flush()
+            retained = recurrence_engine.propagate_to_unruled_definition(
+                template, [spent_on],
+            )
+            db.session.flush()
+
+            assert retained == []
+            assert spent_on.category_id == template.category_id
+            after = legs()
+            assert sum(after.values()) == Decimal("0.00")
+            assert after != before, (
+                "the category move did not reach the purchase's counter leg"
+            )
+            assert (set(before) - set(after)) and (set(after) - set(before))
+
+    def test_propagating_retains_a_row_holding_records_when_its_account_moves(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The same refusal the regular pass makes, on the same two functions.
+
+        A row holding a purchase is RETAINED where it is when its rule-less
+        definition moves to another account -- moving it would drag the
+        purchase's leg onto an account the money never left -- and its id is
+        answered back for the route to report; a row holding nothing follows.
+        """
+        with app.app_context():
+            template = self._make_envelope_template(seed_user)
+            created = recurrence_engine.generate_for_template(
+                template,
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id),
+                    {seed_periods[0].id, seed_periods[1].id},
+                ),
+                seed_user["scenario"].id,
+            )
+            db.session.flush()
+            holding, empty = sorted(created, key=lambda row: row.pay_period_id)
+            self._record_purchase(holding, seed_user, amount="12.79")
+            template.recurrence_rule = None
+            db.session.flush()
+            old_account = template.account_id
+            checking = db.session.query(AccountType).filter_by(name="Checking").one()
+            other = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=checking.id,
+                    name="Other Checking",
+                    anchor_balance=Decimal("0"),
+                ),
+            )
+            db.session.add(other)
+            db.session.flush()
+
+            template.account_id = other.id
+            db.session.flush()
+            retained = recurrence_engine.propagate_to_unruled_definition(
+                template, [holding, empty],
+            )
+            db.session.flush()
+
+            assert retained == [holding.id]
+            assert holding.account_id == old_account
+            assert empty.account_id == other.id
 
     def test_a_cross_user_scenario_is_refused_and_retires_nothing(
         self, app, db, seed_user, seed_periods, second_user
