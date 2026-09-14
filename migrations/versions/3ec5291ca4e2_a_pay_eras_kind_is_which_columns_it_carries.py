@@ -1,7 +1,7 @@
 """a pay era's kind is which columns it carries
 
 Revision ID: 3ec5291ca4e2
-Revises: bf50951a3599
+Revises: ef32dfe4cd8e
 Create Date: 2026-09-13
 
 Plan step **pay_calendar:C17-d-2** (rulings **R-PC79** and **R-PC80**,
@@ -58,7 +58,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "3ec5291ca4e2"
-down_revision = "bf50951a3599"
+down_revision = "ef32dfe4cd8e"
 branch_labels = None
 depends_on = None
 
