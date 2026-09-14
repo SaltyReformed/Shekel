@@ -159,33 +159,51 @@ class TestUnifiedRender:
         # The lone recurring expense is 100% of its section's committed total.
         assert "100.0% of section" in html
 
-    def test_one_time_definition_is_shown(
+    def test_a_rule_less_definition_is_not_listed_but_its_archive_is(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """A non-repeating expense IS listed -- the management surface shows
-        every active definition, unlike the retired /obligations lens.
+        """The Recurring list shows definitions WITH a rule (R-BAL23).
 
-        Non-repeating is ``recurrence_rule_id IS NULL`` since plan step R2e-3;
-        this named the ``Once`` PATTERN before it.  The row must render its
-        "One-time" cell too, which is the macro's rule-less branch -- the
-        ``REC_ONCE`` branch that used to answer for it went with the pattern.
+        **This asserted the opposite until plan step balance:X-bi-7b.**  A
+        rule-less transaction definition is a ONE-OFF's since that step: the
+        grid popover is its whole lifecycle, so listing it here would give
+        every one-off a second door and, once bank import mints one per
+        envelope, fill this page with lines that repeat nothing.  The active
+        sections ask each definition ``recurs`` and drop the rest.
+
+        **The Archived drawer is deliberately NOT filtered**: an archived
+        one-off's row is soft-deleted, so that drawer's Unarchive is the only
+        door left to it, and hiding it there would strand the definition.
         """
         user = seed_user["user"]
         checking = seed_user["account"]
         category = seed_user["categories"]["Rent"]
         _txn(user, checking, category, None, "999.00",
              type_enum=TxnTypeEnum.EXPENSE, name="One Time Buy")
+        parked = _txn(user, checking, category, None, "5.00",
+                      type_enum=TxnTypeEnum.EXPENSE, name="Parked One Off")
+        parked.is_active = False
         db.session.commit()
 
         html = auth_client.get("/templates").data.decode()
-        assert "One Time Buy" in html
-        # Scoped to THIS row's markup, not the whole document: a page-wide
-        # substring would pass on any other cell that happened to say it.
-        row = html[html.index("One Time Buy"):][:1200]
-        assert "One-time" in row, (
-            "the rule-less branch of the recurrence_cell macro must label "
-            "a non-repeating definition"
-        )
+        assert "One Time Buy" not in html
+        assert "Parked One Off" in html
+        drawer = html[html.index("Parked One Off") - 1200:][:2400]
+        assert "Archived" in drawer
+
+    def test_a_recurring_definition_is_listed_with_its_cadence(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The firing control for the filter above: a definition WITH a rule renders."""
+        user = seed_user["user"]
+        checking = seed_user["account"]
+        category = seed_user["categories"]["Rent"]
+        _txn(user, checking, category, EVERY_PERIOD, "999.00",
+             type_enum=TxnTypeEnum.EXPENSE, name="Every Paycheck Buy")
+        db.session.commit()
+
+        html = auth_client.get("/templates").data.decode()
+        assert "Every Paycheck Buy" in html
 
     def test_empty_state(self, auth_client, seed_user, db, seed_periods_today):
         """With no definitions the empty-state message renders."""

@@ -342,17 +342,23 @@ def _new_envelope_placement(
     # have filed spending into a same-named envelope under a category the owner
     # did not pick.  The label is not compared either: it appends the
     # pay-period span for a reader.
-    # **A TEMPLATE-generated row is excluded**, because naming a template is a
-    # DIFFERENT answer with its own resolution beside this one
+    # **A row a RECURRING definition generated is excluded**, because naming a
+    # template is a DIFFERENT answer with its own resolution beside this one
     # (:func:`_template_placement`, including its "this period holds two of
     # them" report).  An owner who means the recurring envelope has that answer
     # available and did not pick it; converging onto it here would make the two
-    # answers indistinguishable in effect.
+    # answers indistinguishable in effect.  **Keyed on ``recurs`` since plan
+    # step ``balance:X-bi-7b``**: a one-off envelope carries a rule-less
+    # definition from that step, and it is exactly the row this answer creates
+    # -- excluding it on the link would mint a second envelope beside it in
+    # the same period, which is finding **N-327**'s fragmentation back.  The
+    # family's third leaf (``X-f6c``) converges on the definition instead of
+    # the name, and this key goes with it.
     named = [
         destination for destination in offered
         if destination.name == rule.envelope_name
         and destination.category_id == rule.category_id
-        and destination.template_id is None
+        and not destination.recurs
     ]
     if len(named) == 1:
         return Placement(

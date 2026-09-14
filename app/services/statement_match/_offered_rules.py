@@ -90,7 +90,7 @@ class OfferedAnswer:
             **The offer set and the RULE door's accepted set are not the same
             set, and an adversarial review reproduced both ways they differ.**
             A destination is offered by
-            :func:`~._candidates.destinations_for`, which never asks whether a
+            :func:`~._destinations.destinations_for`, which never asks whether a
             template is still active; :func:`~._stating.state_rules` validates
             against :func:`~._rules.offerable_templates` and an ACTIVE
             category.  So a settled envelope from an archived template, and an

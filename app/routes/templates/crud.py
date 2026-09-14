@@ -207,10 +207,16 @@ def create_template():
     if invalid is not None:
         return invalid
 
-    # Create the recurrence rule if a cadence was specified, or NO rule when
-    # the form says "Does not repeat".  The F-24 helper pops every
+    # Read the cadence the form states.  The F-24 helper pops every
     # recurrence-related key from ``data`` so the TransactionTemplate
-    # constructor below does not receive stray kwargs.
+    # constructor below does not receive stray kwargs.  **It never answers
+    # "no rule" for THIS kind since plan step balance:X-bi-7b** (ruling
+    # R-BAL23): the form offers no "Does not repeat" and
+    # ``TemplateCreateSchema.validate_a_cadence_is_chosen`` has refused an
+    # empty unit before this line -- a transaction that does not repeat is a
+    # ONE-OFF, made at the Budget grid through ``one_off.place_one_off``, so a
+    # definition with no occurrence is not something this door can mint.  The
+    # helper's ``None`` arm is the transfer form's.
     #
     # **The ``duplicate-code`` disable this call carried is GONE, and so is
     # the duplication** (plan step R7b-4).  The suppression's stated reason
@@ -302,8 +308,10 @@ def edit_template(template_id):
         # controls START.  A rule whose stored pattern the application no
         # longer models resolves to ``None`` -- the controls render UNSET and
         # ``edit_form_cadence`` flashes why -- rather than to a stale selection
-        # the browser would silently replace with the first option, the empty
-        # "Does not repeat" entry whose save DELETES the rule (R2e-1).
+        # the browser would silently replace with the first option.  On this
+        # kind that first option is a "Choose how it repeats" placeholder
+        # (plan step balance:X-bi-7b) whose save the update schema REFUSES, so
+        # an unchanged save can no longer delete the rule (R2e-1's hazard).
         # The pass is the form's one read pass (plan step R7d-f).
         recurrence=edit_form_recurrence_state(
             template, BalanceContext.build(current_user.id),
@@ -499,9 +507,11 @@ def update_template(template_id):
     # (the gate inside ``regenerate_or_conflict_chooser`` returns before
     # touching a row -- that is what closes defect D16), so the rows it holds
     # are reached HERE or nowhere (plan step balance:X-bi-7a; the transfer
-    # twin's ``_regenerate_and_commit_template`` takes the same fork).  A
-    # CLEARED cadence goes through the regeneration below instead, which
-    # retires or retains what the deleted rule generated.
+    # twin's ``_regenerate_and_commit_template`` takes the same fork).  On
+    # this door that is a one-off's definition being given a cadence (*make
+    # this repeat*) or edited before one: a cadence can no longer be CLEARED
+    # here (balance:X-bi-7b, R-BAL23), so the "cleared cadence" sweep the
+    # regeneration below performs is reached from the transfer twin alone.
     if not before.had_recurrence_rule and not template.recurs:
         propagate_to_non_repeating_rows(template)
 
@@ -531,25 +541,14 @@ def update_template(template_id):
     ))
     if response is not None:
         return response
-    # An edit that ended the recurrence removed this template's upcoming
-    # projected rows; "updated." alone would report a destructive change as a
-    # routine one.  Mirrors the archive route, which already names what it
-    # removed.
-    #
-    # **It names THREE kept classes since plan step R10-a, not two.**  A row
-    # carrying the owner's own records -- purchases, a note, a hand-entered
-    # actual -- is now RETAINED rather than removed (ruling R-R19), so the
-    # earlier wording asserted a removal that did not happen and contradicted
-    # the warning ``_flash_retained`` emits in the same response.
-    if before.had_recurrence_rule and not template.recurs:
-        flash(
-            f"'{template.name}' no longer repeats. Its upcoming projected "
-            "entries were removed; settled ones, hand-edited ones, and any "
-            "carrying purchases or notes were kept.",
-            "success",
-        )
-    else:
-        flash(f"Recurring transaction '{template.name}' updated.", "success")
+    # **No "no longer repeats" arm since plan step balance:X-bi-7b.**  A
+    # transaction definition's cadence cannot be CLEARED from this form any
+    # more (ruling R-BAL23: the schema refuses an empty unit, and a definition
+    # with no rule is a one-off made at the grid), so the flash that named the
+    # sweep such an edit performed described a state this door can no longer
+    # produce.  The transfer twin keeps its arm; the sweep it names is graded
+    # there.
+    flash(f"Recurring transaction '{template.name}' updated.", "success")
     return redirect(url_for("templates.list_templates"))
 
 

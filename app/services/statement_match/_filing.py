@@ -52,7 +52,7 @@ it", and each is a measured hazard rather than caution.**
 (2026-08-26).**  A rule files into an envelope that has already CLOSED -- 33 of
 those 80 lines, `$911.10`, against **0** into an envelope still open, because
 the owner settles ahead of the bank -- which ruling **R-FX** already admits on
-exactly the terms :func:`~._candidates.destinations_for` enforces: the row's
+exactly the terms :func:`~._destinations.destinations_for` enforces: the row's
 recorded figure IS its purchases, so a new one raises that cost by exactly the
 figure the bank showed and carries the bank's own posting day.  And a *new
 envelope* answer files too, minting the container, because the alternative

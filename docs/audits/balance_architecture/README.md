@@ -390,11 +390,20 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       DISPOSED of with its account and a definition's live row is the account's history wherever it
       sits (**R-BAL27**); the `is_override` flip's MOVE half keys on `recurs`, its typed-figure
       half waits for 7b's restate (**R-BAL28**). `_leftover_due_date`'s rule-less arm deleted.
-    * [ ] **X-bi-7b** ONE producer for a one-off and every link-less writer on it: a merchant answer
-      mints its definition once and names it thereafter (`bank_import:X-f6c`, one step with this),
-      `category_id` nullable for `mint_uncategorized` (**R-BAL24**); the popover's edits land on the
-      definition, its delete keys on `recurs` and refuses a standing merchant rule, *Does not
-      repeat* goes (**R-BAL23**); the row schemas' flag fields and **BAL-484**'s writer go.
+    * [ ] **X-bi-7b** ONE producer for a one-off and every link-less writer on it -- the DECOMPOSED
+      parent, three leaves 2026-09-13 (**R-BAL31**), `bank_import:X-f6c` one step with it
+      (**R-BAL24**); ticks with 7b-3.
+      * [x] **X-bi-7b-1** `7a2fe751` -- `one_off.place_one_off(spec, period, *, scenario_id,
+        due_date=None)`, `spec` an `OneOffToPlace` of what the definition says (**R-BAL30**); both
+        grid create doors and `mint_uncategorized` on it, `category_id` nullable (migration
+        `9c1e4b7a2d3f`); a definition goes with its last row unless a merchant rule names it;
+        *Does not repeat* gone (**R-BAL32**).
+      * [ ] **X-bi-7b-2** the popover's flag edits on the DEFINITION; **R-BAL29**'s in-place
+        restate; a moved one-off re-placed (**R-BAL33**); the grid grouping by `(category_id, name)`
+        (**R-BAL34**); the update schema's flag fields and **BAL-484**'s writer go.
+      * [ ] **X-bi-7b-3** `_create_envelope` on the producer; a NEW-ENVELOPE answer flips to
+        TEMPLATE naming the minted definition; `MintedEnvelopes` keyed on the definition --
+        `X-f6c`'s shape.
     * [ ] **X-bi-7c** the suite's one-off builder on 7b's producer; every link-less `Transaction(`
       construction moved onto it (the marker is its `steps.md` row; which calls name no link is an
       AST walk over their keywords, so no total is stated here).

@@ -8,8 +8,11 @@ because they are the same question about two acts:
   each priced with its SIGNED effect on the account so a comparison against
   ``bank_statement_lines.amount`` is a subtraction rather than a sign
   negotiation;
-* :func:`destinations_for` -- *what budget line could a statement line BECOME a
-  purchase against*, which is ruling **R-FS**'s third shape.
+* :func:`~._destinations.destinations_for` -- *what budget line could a
+  statement line BECOME a purchase against*, which is ruling **R-FS**'s third
+  shape.  **In its own module since plan step ``balance:X-bi-7b``**, when
+  this one crossed the 1,000-line bound (ruling **balance:R-IR**); the seam is
+  this paragraph's, and the pass still derives the two together.
 
 **Both are ONE scope shared by the screen that offers and the door that
 writes**, which is the security property ``reconcile_service`` is built on: a
@@ -48,8 +51,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import aliased, contains_eager, joinedload, selectinload
 
-from app import ref_cache
-from app.enums import SettledDayBasisEnum, SettlementBasisEnum
+from app.enums import SettledDayBasisEnum
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.statement_match import StatementMatchMember
@@ -835,166 +837,3 @@ def candidates_for(
         rows=transactions + _purchase_candidates(account_id, period_ids),
         unpriceable_ids=tuple(unpriceable),
     )
-
-
-def destinations_for(
-    account_id: int, calendar: "PayCalendar",
-) -> "list[PurchaseDestination]":
-    """Return every budget line a bank line could become a purchase against.
-
-    **ONE scope, shared by the screen that offers a destination and the door
-    that writes into it** (:func:`~._container._existing_envelope`), which is the
-    property :func:`~._resolve.resolve_rows` rests on: a row this does not return
-    cannot be reached by crafting a request, and a row it does return cannot be
-    refused by the write door.  Every clause below is one of those doors'.
-
-    **It lives beside :func:`candidates_for` because it is the same kind of
-    answer about the other act** (plan step ``bank_import:X-f6a-3c-2``), and
-    because a review pass now derives both together and threads them: it was in
-    ``_reads`` while that module was the only caller, and the write doors
-    reached across for it.
-
-    Scope, and what each clause is:
-
-    * on THIS account, and its pay period is one the OWNER'S CALENDAR holds --
-      a statement is one bank's record of one account.  Ownership through the
-      paycheck; ``C13-b`` REFUSED ``Transaction.user_id``.  **The ids come
-      from the calendar
-      rather than from a correlated subquery on ``pay_periods.user_id``, and
-      that is what makes the span lookup below total** (pay-calendar plan step
-      C4-a-4): the scan filters on
-      :meth:`~app.services.pay_calendar.PayCalendar.saved_by_id`'s own keys and
-      then indexes that same mapping, so a row it cannot place is
-      unconstructible rather than skipped.  It is the clause
-      :func:`_transaction_candidates` already carries, for its stated reason --
-      inside a COMMAND the two reads are separate snapshots under READ
-      COMMITTED, so a concurrent payday INSERT between them is expressible, and
-      scoping by the calendar's own ids means the query simply does not ask
-      about a period the calendar has not got;
-    * it TRACKS PURCHASES -- ``entry_service.create_entry`` refuses a parent
-      that does not, and a purchase needs a container that can hold more than
-      one;
-    * it is not a TRANSFER and not INCOME -- both are ``create_entry``
-      refusals: a transfer's legs are the transfer service's, and money coming
-      in is not a purchase;
-    * it CONTRIBUTES to a balance and is not soft-deleted
-      (:func:`~app.utils.balance_predicates.balance_contributing_clause`) -- a
-      Credit or Cancelled row records no cash, so a purchase filed under one
-      would post nothing (ruling **R-FM**);
-    * if it has SETTLED, its recorded figure IS its purchases.  **This is the
-      money clause** (:func:`~app.services.entry_service._doors
-      ._reject_settled_addition`): on a ``purchases`` basis a new purchase
-      raises what the row cost by exactly its own amount and the row's cash leg
-      does not move, so the movement is recorded; on a stored-figure basis the
-      gross cannot rise, and ``settled_cash_leg`` then subtracts money the gross
-      never held -- measured on a production clone, `-163.95` became `+203.67`
-      while the anchor true-up moved `$0.00`.
-
-    **A SIXTH clause stood here until plan step balance:X-am** (ruling
-    **balance:R-HA**): the row must not be ARCHIVED, because an archived row's
-    purchases were history (finding **N-229**) and
-    :func:`_purchase_candidates` declined to offer one.  The terminal
-    ``Settled`` status is deleted, so both arms dropped the clause in one
-    commit and still agree on what they offer.
-
-    **Whether it is ITSELF MATCHED is NOT a clause here**, and that is this
-    step's change rather than a relaxation: it is :func:`unmatched_destinations`,
-    applied by the screen against the claims it read and by
-    :func:`~._container._existing_envelope` against the claims that ACT read.  The
-    rule is unchanged -- ``accept_match``'s
-    :func:`~._accept._reject_parent_and_its_own_purchase` refuses a purchase
-    whose parent another match already names, so offering such an envelope
-    would render a chooser whose submission always fails.  What changed is
-    WHEN it is asked, and it had to: measured on the developer's own statement,
-    4 envelopes (2225, 2228, 2389, 2581) are both named by a proposal and
-    offered as a destination, so **15 of the 91 creatable lines aim at an
-    envelope an earlier item in the same pass claims**.  A snapshot carrying
-    the clause baked in would have offered all 15 and refused them a tier
-    deeper, with the sentence about counting money twice rather than the one
-    about the envelope being gone.
-
-    **Finding N-317 says this clause is wider than the money needs, and the
-    developer's ruling of 2026-08-19 is that it STAYS WHOLE**: a money guard is
-    not narrowed for a `$0.00` benefit.  The row is OPEN in ``ledger.md`` with
-    its diagnosis corrected -- an earlier closure argued the clause protects a
-    projected envelope holding no entries, whose leg moves `+111.02` when a
-    purchase is added, and adversarial review measured that shape unreachable
-    through this clause: a match SETTLES the envelope it names, and a
-    zero-entry settle records a STORED FIGURE, which the money clause above
-    already refuses.
-
-    Args:
-        account_id: The cash account the statement is for.
-        calendar: The owner's
-            :class:`~app.services.pay_calendar.PayCalendar`, built by the read
-            pass.  **It IS the ownership scope**, which is why no ``owner_id``
-            sits beside it -- the rule :func:`candidates_for` states for its
-            own signature, applied here at pay-calendar plan step C4-a-4: the
-            periods it carries are exactly that owner's, so a second parameter
-            naming the owner would be a second statement of whose rows may be
-            offered and the two could disagree.  It is also where each offered
-            row's SPAN comes from, DERIVED, where this producer read
-            ``txn.pay_period.end_date`` -- a stored copy of a derivable fact
-            that plan step ``pay_calendar:C4-c`` dropped.
-
-    Returns:
-        One :class:`~._creations.PurchaseDestination` per offerable row, oldest
-        pay period first and then by name -- a deterministic order, so the
-        chooser a screen shows does not depend on what the planner returned.
-        **Ordered by the paycheck's own PAYDAY rather than by its id**, which
-        is what "oldest" means: the two agree on every schedule written
-        forward, and plan step ``pay_calendar:C6`` inserts a payday
-        MID-SCHEDULE by design, which would give the newest row the newest id
-        in the middle of the sequence.
-    """
-    purchases_basis = ref_cache.settlement_basis_id(
-        SettlementBasisEnum.PURCHASES,
-    )
-    # The owner's SAVED paychecks, keyed the way a row names one.  This ONE
-    # mapping is both halves of the answer -- the scan's ownership scope on the
-    # line below, and the span every offered row is labelled by -- so the two
-    # cannot describe different schedules and the lookup cannot miss.
-    spans = calendar.saved_by_id()
-    rows = (
-        db.session.query(Transaction)
-        .options(
-            # ``tracks_purchases`` below reads ``template.is_envelope`` for
-            # every template-generated row, so the template travels with the
-            # scan for the same reason ``_transaction_candidates`` loads it:
-            # a predicate in the comprehension must not cost a query per row.
-            # **``Transaction.pay_period`` is NOT loaded beside it** since
-            # pay-calendar plan step C4-a-4: the relationship was here to read
-            # the period's stored span, and the span now comes off ``spans``.
-            joinedload(Transaction.template),
-        )
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.transfer_id.is_(None),
-            balance_contributing_clause(),
-            Transaction.pay_period_id.in_(spans.keys()),
-        )
-        .all()
-    )
-    offered = [
-        PurchaseDestination(
-            transaction_id=txn.id,
-            name=txn.name,
-            category_id=txn.category_id,
-            # Indexed rather than searched, and a ``KeyError`` here is
-            # unconstructible: the filter above IS this mapping's key set.
-            period=spans[txn.pay_period_id],
-            is_settled=txn.status.is_settled,
-            # The row's identity ACROSS periods, which is what a merchant
-            # rule names (plan step X-f6a-3d).
-            template_id=txn.template_id,
-        )
-        for txn in rows
-        if txn.tracks_purchases
-        and not txn.is_income
-        and (
-            not txn.status.is_settled
-            or txn.settled_basis_id == purchases_basis
-        )
-    ]
-    offered.sort(key=lambda d: (d.period.start_date, d.label))
-    return offered

@@ -245,7 +245,10 @@ class TestTemplateList:
     def test_list_templates(self, app, auth_client, seed_user):
         """GET /templates renders the template list page."""
         with app.app_context():
-            _create_template(seed_user, name="Car Payment")
+            # A definition WITH a rule: the list shows those and only those
+            # since plan step balance:X-bi-7b (R-BAL23); a rule-less one is a
+            # one-off's, graded absent in ``TestTheListShowsDefinitionsWithARule``.
+            _create_template(seed_user, name="Car Payment", cadence=EVERY_PERIOD)
 
             resp = auth_client.get("/templates")
             assert resp.status_code == 200
@@ -281,35 +284,27 @@ class TestTemplateCreate:
             assert b'name="interval_n"' in resp.data
             assert b'name="recurrence_placement"' in resp.data
 
-    def test_create_no_recurrence_with_the_payload_a_browser_posts(
+    def test_create_with_no_cadence_is_refused_with_the_payload_a_browser_posts(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """"Does not repeat" saves when every rendered control submits.
+        """An empty cadence is REFUSED, not read as "does not repeat" (R-BAL23).
 
-        **The regression for a 500 the whole suite was green across**, found
-        by the browser drive (``tests/manual/verify_recurrence_form.py``) at
-        plan step R7b-4 and fixed in the same commit.  The "Starts on" box
-        lives inside ``#recurrence-fields``, which is HIDDEN when the form
-        says "does not repeat" -- and a hidden input still submits, so a real
-        save posted ``start_date=""``.  The F-24 helper's no-cadence branch
-        did not pop it, and the key reached ``TransactionTemplate(**data)``,
-        whose constructor has no such keyword.
-
-        Every hand-written payload in this suite omitted the key, because a
-        person writing one includes the fields they are thinking about.  This
-        one is written the other way round: it carries every control the page
-        renders, empty where the user touched nothing, which is what the wire
-        actually holds.
-
-        The script now DISABLES the box when the definition does not repeat,
-        so the key no longer arrives -- and this test keeps the server half
-        honest anyway.  Disabling is the affordance; popping is the rule.
+        Plan step ``balance:X-bi-7b``: a transaction definition with no rule
+        is a ONE-OFF, made at the Budget grid through the one-off producer,
+        so the form no longer offers *Does not repeat* and the schema refuses
+        the empty unit its placeholder posts
+        (``TemplateCreateSchema.validate_a_cadence_is_chosen``).  The payload
+        is browser-shaped -- every control the page renders, empty where the
+        user touched nothing -- so this grades the wire the form actually
+        holds, and what a hidden ``starts_on`` box still submits reaches the
+        refusal too rather than a constructor.  No definition is minted.
         """
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(
                 name="Expense",
             ).one()
             category = seed_user["categories"]["Rent"]
+            before = db.session.query(TransactionTemplate).count()
 
             resp = auth_client.post("/templates", data={
                 "name": "Browser Shaped No Recurrence",
@@ -317,7 +312,7 @@ class TestTemplateCreate:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                # "Does not repeat" -- an empty unit, with every other
+                # The placeholder -- an empty unit, with every other
                 # recurrence control posting the value it renders with.
                 "recurrence_unit": "",
                 "recurrence_placement": "",
@@ -332,12 +327,12 @@ class TestTemplateCreate:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            template = (
-                db.session.query(TransactionTemplate)
-                .filter_by(name="Browser Shaped No Recurrence")
-                .one()
-            )
-            assert template.recurrence_rule is None
+            assert b"needs a cadence" in resp.data
+            assert b"Budget grid" in resp.data
+            assert db.session.query(TransactionTemplate).count() == before
+            assert db.session.query(TransactionTemplate).filter_by(
+                name="Browser Shaped No Recurrence",
+            ).count() == 0
 
     def test_create_with_a_starts_on_date_bounds_the_rule(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -377,8 +372,16 @@ class TestTemplateCreate:
             assert template.recurrence_rule is not None
             assert template.recurrence_rule.starts_on == starts_on
 
-    def test_create_template_no_recurrence(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /templates creates a template without recurrence."""
+    def test_create_template_with_no_unit_at_all_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An ABSENT unit is refused on a create exactly as an empty one is.
+
+        A create states a whole definition, so there is no stored cadence for
+        an omitted field to leave alone; the schema treats absent and empty
+        as one statement (R-BAL23).  The update schema's narrower rule is
+        graded in ``test_recurrence_clear``.
+        """
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
@@ -392,13 +395,10 @@ class TestTemplateCreate:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"created" in resp.data
-
-            template = db.session.query(TransactionTemplate).filter_by(
-                name="Internet Bill"
-            ).one()
-            assert template.default_amount == Decimal("79.99")
-            assert template.recurrence_rule is None
+            assert b"needs a cadence" in resp.data
+            assert db.session.query(TransactionTemplate).filter_by(
+                name="Internet Bill",
+            ).count() == 0
 
     def test_create_template_with_recurrence(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates creates a template with recurrence and generates transactions."""
@@ -474,6 +474,9 @@ class TestTemplateCreate:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": other["account"].id,  # Other user's account.
+                # A cadence, because a transaction template REQUIRES one since plan step
+                # balance:X-bi-7b (R-BAL23); what this case grades is unchanged.
+                **cadence_payload(),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -491,6 +494,9 @@ class TestTemplateCreate:
                 "category_id": other["category"].id,  # Other user's category.
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
+                # A cadence, because a transaction template REQUIRES one since plan step
+                # balance:X-bi-7b (R-BAL23); what this case grades is unchanged.
+                **cadence_payload(),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -527,6 +533,9 @@ class TestTemplateCreate:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": loan.id,
+                # A cadence, because a transaction template REQUIRES one since plan step
+                # balance:X-bi-7b (R-BAL23); what this case grades is unchanged.
+                **cadence_payload(),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -2041,6 +2050,9 @@ class TestTemplateNegativePaths:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
+                # A cadence, because a transaction template REQUIRES one since plan step
+                # balance:X-bi-7b (R-BAL23); what this case grades is unchanged.
+                **cadence_payload(),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -2070,6 +2082,9 @@ class TestTemplateNegativePaths:
                 "category_id": other_cat.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
+                # A cadence, because a transaction template REQUIRES one since plan step
+                # balance:X-bi-7b (R-BAL23); what this case grades is unchanged.
+                **cadence_payload(),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -2095,6 +2110,9 @@ class TestTemplateNegativePaths:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": second_user["account"].id,
+                # A cadence, because a transaction template REQUIRES one since plan step
+                # balance:X-bi-7b (R-BAL23); what this case grades is unchanged.
+                **cadence_payload(),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -2610,9 +2628,15 @@ class TestTemplateHardDelete:
     def test_list_separates_active_and_archived(self, app, auth_client, seed_user):
         """C-5A.5-15: List page shows active and archived in separate sections."""
         with app.app_context():
-            active_1 = _create_template(seed_user, name="Active One", amount="100.00")
-            active_2 = _create_template(seed_user, name="Active Two", amount="200.00")
-            archived = _create_template(seed_user, name="Archived One", amount="300.00")
+            active_1 = _create_template(
+                seed_user, name="Active One", amount="100.00", cadence=EVERY_PERIOD,
+            )
+            active_2 = _create_template(
+                seed_user, name="Active Two", amount="200.00", cadence=EVERY_PERIOD,
+            )
+            archived = _create_template(
+                seed_user, name="Archived One", amount="300.00", cadence=EVERY_PERIOD,
+            )
             archived.is_active = False
             db.session.commit()
 
@@ -2895,6 +2919,9 @@ class TestEnvelopeIncomeRejection:
                 "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
                 "is_envelope": "on",
+                # A cadence, because a transaction template REQUIRES one since plan step
+                # balance:X-bi-7b (R-BAL23); what this case grades is unchanged.
+                **cadence_payload(),
             }, follow_redirects=True)
 
             assert resp.status_code == 200

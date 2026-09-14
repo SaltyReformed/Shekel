@@ -452,7 +452,7 @@ def require_period(
     ``statement_match._candidates.transaction_candidate`` asks
     :func:`period_by_id` of a stored ``pay_period_id`` and treats the ``None``
     as "not offerable, and not an error";
-    ``statement_match._candidates.destinations_for`` indexes
+    ``statement_match._destinations.destinations_for`` indexes
     :func:`saved_by_id` with one and cannot miss at all.  Both are right, and
     for one reason each states at its own scan: those queries are SCOPED BY THE
     CALENDAR'S OWN period ids, so a row they return names a period the calendar
