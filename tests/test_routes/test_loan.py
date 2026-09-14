@@ -586,7 +586,10 @@ class TestLoanSetup:
         assert resp.status_code == 200
         body = resp.data.decode()
         assert template.name in body
-        assert "Archive that transfer first" in body
+        # The refusal's own remedy clause, worded once for every door since
+        # plan step R7d-g-2 (ruling R-R85; it read "Archive that transfer
+        # first" while the params edit was the only door that could reach it).
+        assert "Set it up again without an end date, or archive it." in body
         assert db.session.query(LoanParams).filter_by(
             account_id=account.id,
         ).one_or_none() is None, "a refused setup left LoanParams behind"
@@ -6160,7 +6163,9 @@ class TestTheClosingBoundIsNeverWrittenByARoute:
         assert resp.status_code == 200
         body = resp.data.decode()
         assert tpl.name in body
-        assert "Archive that transfer first" in body
+        # The remedy clause, worded once for every door since plan step
+        # R7d-g-2 (ruling R-R85) -- see the setup case above.
+        assert "Set it up again without an end date, or archive it." in body
 
         db.session.expire_all()
         params = load_loan_params(acct.id)

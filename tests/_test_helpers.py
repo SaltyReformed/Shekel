@@ -2278,6 +2278,10 @@ def loan_income_shadow(db_session, transfer_id, loan_account_id):
 #: and ``budget.pay_periods.period_index``.
 _C4C_REVISION_FILE = "b7a41e2c9d63_a_pay_period_is_one_fact.py"
 _C17A_REVISION_FILE = "6fc77e86d76f_a_pay_schedule_is_a_sequence_of_eras.py"
+#: Plan step ``pay_calendar:C17-d-2``'s revision, whose ``downgrade()`` puts
+#: ``budget.pay_eras.kind_id`` and ``ref.pay_cadence_kinds`` back -- the
+#: objects ``C17-a``'s downgrade drops, so it runs FIRST in the rewind.
+_C17D2_REVISION_FILE = "3ec5291ca4e2_a_pay_eras_kind_is_which_columns_it_carries.py"
 
 
 def restore_pay_schedule_rhythm_columns(db_session):
@@ -2353,12 +2357,20 @@ def rewind_pay_schedule_rhythm(db_session):
     reader working.  Call it FIRST: that helper skips once the columns exist,
     and the restore statement it would run reads the table this drops.
 
-    It refuses a schedule row holding no era, as the shipped downgrade does.
+    **It runs ``C17-d-2``'s downgrade before ``C17-a``'s** (plan step
+    ``pay_calendar:C17-d-2``), Alembic's newest-first order: the head has no
+    ``kind_id`` and no ``ref.pay_cadence_kinds`` for ``C17-a``'s downgrade
+    to drop, and the later revision's downgrade is what puts them back.  It
+    refuses a day-of-month era, as that downgrade does, and a schedule row
+    holding no era, as ``C17-a``'s does.
 
     Args:
         db_session: The test ``db.session``, in the scope that currently holds
             the schedule table's locks.
     """
+    run_migration_callable(
+        load_migration_module(_C17D2_REVISION_FILE).downgrade, db_session,
+    )
     run_migration_callable(
         load_migration_module(_C17A_REVISION_FILE).downgrade, db_session,
     )
@@ -2930,10 +2942,11 @@ def mint_fixture_era(user_id, effective_from, cadence_days,
 
     The state every payday-holding owner has, for a fixture that then writes
     its ``budget.pay_periods`` rows BY HAND -- a corrupt shape a checker must
-    catch, or a calendar-monthly schedule no door can yet write (ledger row
-    **P78**).  ``fk_pay_periods_schedule`` needs the row and a calendar needs
-    the era; the ordinary fixtures go through ``record_paydays``, which does
-    both, and this is the one line for the fixtures that cannot.
+    catch.  (A calendar-monthly schedule was the other reason until plan
+    step ``pay_calendar:C17-d-2`` gave it a door, ledger row **P78**.)
+    ``fk_pay_periods_schedule`` needs the row and a calendar needs the era;
+    the ordinary fixtures go through ``record_paydays``, which does both,
+    and this is the one line for the fixtures that cannot.
 
     Plan step ``pay_calendar:C17-a``: it replaces the
     ``upsert_schedule(user_id, rhythm, None)`` line those fixtures carried,
@@ -5893,6 +5906,7 @@ def _cadence_spec(
     nominal_day=None,
     due_day_of_month=None,
     end_date=None,
+    max_per_month=None,
 ):
     """Translate a stated CADENCE into the spec the write door takes.
 
@@ -5915,6 +5929,7 @@ def _cadence_spec(
         nominal_day: See :func:`make_cadence_rule`.
         due_day_of_month: See :func:`make_cadence_rule`.
         end_date: See :func:`make_cadence_rule`.
+        max_per_month: See :func:`make_cadence_rule`.
 
     Returns:
         The :class:`~app.services.recurrence.RecurrenceSpec`.
@@ -5972,6 +5987,7 @@ def _cadence_spec(
         end_bound=(
             NEVER_ENDS if end_date is None else EndsOnDate(end_date)
         ),
+        max_per_month=max_per_month,
     )
 
 
@@ -6032,6 +6048,8 @@ def make_cadence_rule(owner, cadence, **kwargs):
         due_day_of_month: Real bill due day, when it differs from the
             scheduling day.
         end_date: The rule's closing bound.  ``None`` never ends.
+        max_per_month: The per-month ceiling (plan step salary:R15-a), or
+            ``None`` for none.
 
     Returns:
         The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
@@ -7169,7 +7187,7 @@ def seed_tax_bracket_set(user_id, tax_year=2026):
 
 def validated_cadence(
     unit=None, interval_n=1, placement=None, starts_on=None, nominal_day=None,
-    states_a_start=True,
+    states_a_start=True, max_per_month=None,
 ):
     """Return one cadence as a SCHEMA hands it to a route helper.
 
@@ -7207,6 +7225,8 @@ def validated_cadence(
             it.  Absence and presence being distinguishable is the whole point
             of the ruling of 2026-08-15, so a helper that could only produce
             one of them could not exercise it.
+        max_per_month: The per-month ceiling (plan step salary:R15-a), or
+            ``None`` to leave the key out -- what a DISABLED control posts.
 
     Returns:
         A dict of deserialized payload values, ready to splat into the ``data``
@@ -7241,6 +7261,8 @@ def validated_cadence(
         )
     if nominal_day is not None:
         payload["nominal_day"] = nominal_day
+    if max_per_month is not None:
+        payload["max_per_month"] = max_per_month
     return payload
 
 
@@ -7276,7 +7298,7 @@ def end_bound_payload(bound=None):
 
 def cadence_payload(
     unit=None, interval_n=1, placement=None, starts_on=None, nominal_day=None,
-    states_a_start=True,
+    states_a_start=True, max_per_month=None,
 ):
     """Return the form keys that author one cadence, as a BROWSER posts them.
 
@@ -7300,6 +7322,10 @@ def cadence_payload(
             ``None``, matching the control's own conditional rendering.
         states_a_start: ``False`` omits ``starts_on``, which is what a locked
             (``disabled``) control posts; see :func:`validated_cadence`.
+        max_per_month: The per-month ceiling (plan step salary:R15-a).  Absent
+            from the returned dict when ``None``, which is what the control
+            posts DISABLED beside a calendar-month unit; a test modelling an
+            enabled, empty box adds ``"max_per_month": ""`` itself.
 
     Returns:
         A dict of form values -- strings, as an HTML form submits them -- ready
@@ -7310,6 +7336,7 @@ def cadence_payload(
 
     loaded = validated_cadence(
         unit, interval_n, placement, starts_on, nominal_day, states_a_start,
+        max_per_month,
     )
     payload = {
         "recurrence_unit": str(
@@ -7324,6 +7351,8 @@ def cadence_payload(
         payload["starts_on"] = loaded["starts_on"].isoformat()
     if "nominal_day" in loaded:
         payload["nominal_day"] = str(loaded["nominal_day"])
+    if "max_per_month" in loaded:
+        payload["max_per_month"] = str(loaded["max_per_month"])
     return payload
 
 
@@ -8404,7 +8433,7 @@ def record_paydays_across_a_hole(user_id, first_payday, num_periods, rhythm):
     else:
         raise AssertionError(
             f"record_paydays would accept a batch from {first_payday} x "
-            f"{num_periods} at {rhythm.cadence.days} days for user {user_id}; "
+            f"{num_periods} paid {rhythm.cadence.phrase} for user {user_id}; "
             f"this helper is only for a batch that skips a paycheck of the "
             f"plan.  Call pay_period_write.record_paydays instead."
         )
@@ -8423,6 +8452,28 @@ def record_paydays_across_a_hole(user_id, first_payday, num_periods, rhythm):
 
 
 def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
+    """Rebuild *user_id*'s WHOLE schedule on a fixed-days rhythm, through the reset door.
+
+    :func:`rebuild_calendar_on`'s fixed-days spelling, which is what every
+    caller before plan step ``pay_calendar:C17-d-2`` meant by a cadence;
+    that function carries the argument and the books bound.
+
+    Args:
+        user_id: The owning user's id.
+        first_payday: The opening payday of the rebuilt schedule.
+        num_periods: How many periods to build from it.
+        cadence_days: Days between them, persisted as the owner's cadence by
+            the writer (the cadence rule, plan step C3-b).
+
+    Returns:
+        :func:`rebuild_calendar_on`'s answer.
+    """
+    return rebuild_calendar_on(
+        user_id, first_payday, num_periods, rhythm_of(cadence_days),
+    )
+
+
+def rebuild_calendar_on(user_id, first_payday, num_periods, rhythm):
     """Rebuild *user_id*'s WHOLE pay-period schedule through the reset door.
 
     **Plan step ``pay_calendar:C4-b-1``.**  The one place the test tree says
@@ -8467,10 +8518,15 @@ def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
 
     Args:
         user_id: The owning user's id.
-        first_payday: The opening payday of the rebuilt schedule.
+        first_payday: The opening payday of the rebuilt schedule, a day on
+            *rhythm*'s grid.
         num_periods: How many periods to build from it.
-        cadence_days: Days between them, persisted as the owner's cadence by
-            the writer (the cadence rule, plan step C3-b).
+        rhythm: The :class:`~app.services.pay_rhythm.Rhythm` the schedule
+            runs on, persisted as the owner's era by the writer.  A
+            day-of-month cadence here (plan step ``pay_calendar:C17-d-2``)
+            is what lets the cross-page fixtures state a calendar-monthly
+            schedule through the door rather than by hand (ledger row
+            **P78**).
 
     Returns:
         The owner's periods, payday ascending -- :func:`all_periods`' answer,
@@ -8536,7 +8592,7 @@ def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
         f"Ask for a later first payday, or open that account's books earlier."
     )
     pay_period_admin.reset_pay_periods(
-        user_id, first_payday, num_periods, rhythm_of(cadence_days),
+        user_id, first_payday, num_periods, rhythm,
     )
     # The door is one transaction its ROUTE commits, so a test caller commits
     # it, and expires: the caller may hold rows the wipe deleted.

@@ -472,9 +472,14 @@ class TestTheScriptCanReadWhatTheServerSerialized:
     #: ``interval_n`` LEFT it at plan step R7c-c: every positive interval is
     #: authorable on every offered pair, so an offer names none and the script
     #: has no interval to filter on.
+    #:
+    #: ``can_repeat_within_month`` JOINED at plan step salary:R15-a: the
+    #: per-month ceiling control shows and enables only beside a unit that
+    #: can put two occurrences in a month, and that is a fact the SERVER
+    #: states about the offer rather than one the script infers.
     _READ_BY_THE_SCRIPT = frozenset({
         "unit_id", "placement_id", "schedules_on_day_of_month",
-        "has_day_of_month_coordinate",
+        "has_day_of_month_coordinate", "can_repeat_within_month",
     })
 
     @staticmethod

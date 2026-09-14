@@ -1,7 +1,7 @@
 """a definition may carry no category
 
 Revision ID: 9c1e4b7a2d3f
-Revises: bf50951a3599
+Revises: 3ec5291ca4e2
 Create Date: 2026-09-13 23:10:00.000000
 
 Plan step **balance:X-bi-7b** (leaf 7b-1) of
@@ -45,10 +45,11 @@ door above.  Measured on the 2026-09-12 production restore: 40 of 40
 definitions carry a category and a rule, so on that data both directions are
 no-ops on rows.
 
-``down_revision`` names the head of the tree this leaf was built on
-(``bf50951a3599``, the tree ``eecef63d`` = X-bi-7a stands on); the
-coordinator re-points it at the head dev holds when the leaf is cut, which is
-the rule every in-flight migration follows.
+``down_revision`` was ``bf50951a3599`` (the head of the tree this leaf was
+built on, ``eecef63d`` = X-bi-7a) and was re-pointed at ``3ec5291ca4e2``
+(pay_calendar C17-d-2) when ``origin/dev`` was merged into the branch, so the
+tree holds one head -- the rule every in-flight migration follows; the
+coordinator re-points again if another migration lands before the cut.
 """
 
 from alembic import op
@@ -57,7 +58,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "9c1e4b7a2d3f"
-down_revision = "bf50951a3599"
+down_revision = "3ec5291ca4e2"
 branch_labels = None
 depends_on = None
 

@@ -1,0 +1,413 @@
+"""The OFFER SET: which cadences a rule may be authored on, and why.
+
+**The offer-set half of** :mod:`._frequency`, **split out at plan step
+salary:R15-a** when the per-month ceiling took that module past pylint's
+1000-line ceiling (its 895 lines were 90% of it before the cadence's third
+value arrived, so the room the C12-a package split bought the paycheck engine
+was never here).  A leaf per concern is the answer this project has given the
+same measurement four times -- ``pay_calendar``, ``cash_ledger``,
+``transaction_service``, ``paycheck_calculator`` -- and it is a PURE MOVE:
+every definition below is byte-for-byte what :mod:`._frequency` held, graded
+by AST in the same commit.  The argument for the offer set being DERIVED from
+what a rule can DO rather than from a name it can have stays in
+:mod:`._frequency`'s own docstring, which this leaf implements.
+
+What lives here: the two predicates the offer set is derived from
+(:func:`has_row_date_coordinate`, :func:`emits_period_starts`), the transitional
+refusal the first of them backs (:func:`require_row_date_coordinate`), the
+row-dating question the picker asks of a PAIR (:func:`fires_on_day_of_month`),
+the offer itself (:class:`AuthorableCadence`, :func:`authorable_cadences`) and
+the two doors that ask it of a submission (:func:`is_authorable`,
+:func:`require_authorable_cadence`).
+
+**The dependency runs ONE way**: this module imports :mod:`._frequency` -- the
+unit facts, the interval floor and the error class -- and that module imports
+nothing of this one, which is what keeps the split a boundary.
+
+Pure: no Flask, no ORM, no clock, no database.
+"""
+from dataclasses import dataclass
+
+from app.enums import (
+    PeriodPlacementEnum,
+    RecurrenceUnitEnum,
+)
+from app.services.recurrence._frequency import (
+    RecurrenceResolutionError,
+    has_day_of_month_coordinate,
+    require_positive_interval,
+)
+
+
+def has_row_date_coordinate(unit: RecurrenceUnitEnum) -> bool:
+    """Return whether this unit's occurrences can be DATED onto a generated row.
+
+    **The offer set's first rule, and the one that keeps the ``WEEK`` unit out
+    of it** (plan step R8-a).  A generated row's date is
+    :func:`~app.services.recurrence.compute_due_date`, which has exactly two
+    sources: the rule's scheduling DAY OF THE MONTH, or -- when it has none --
+    the funding paycheck's own ``start_date``.  A unit whose occurrences are
+    neither is a unit whose rows cannot carry the date the cadence names:
+
+    * ``PERIOD`` -- an occurrence IS a payday, so the paycheck's ``start_date``
+      is the occurrence exactly (:func:`emits_period_starts`);
+    * ``MONTH`` / ``YEAR`` -- the occurrence is a day of the month, which the
+      row is dated from directly under ``CONTAINING_DATE`` and which the
+      DEFERRING placement deliberately trades for the later paycheck's payday,
+      a substitution the display describer words ("first paycheck") so the user
+      is told;
+    * ``WEEK`` -- neither.  Its coordinate is a WEEKDAY, which
+      ``compute_due_date`` cannot express, so every weekly row would be dated
+      on the payday with nothing saying so and the authored weekday silently
+      discarded.
+
+    **This is the LIVE constraint that replaced a dead one.**  Until plan step
+    R8-a the ``WEEK`` unit was refused by ``anchor_family``, whose stated reason
+    was that the unit "anchors on an authored date this vocabulary does not yet
+    collect" -- true until ruling **R-R16** made ``starts_on`` authored for
+    every unit at R7c-b, and a fossil after it.  Measured on this branch:
+    lifting that refusal alone made a ``(2, WEEK)`` rule resolve, walk, place
+    and word itself correctly, and its generated rows would still every one of
+    them have carried the wrong date.
+
+    **It dies at plan step R5**, which gives a generated row its own
+    ``occurs_on`` and deletes ``compute_due_date`` -- so this predicate goes
+    with the function whose two sources it names, and the ``WEEK`` unit becomes
+    authorable by the deletion rather than by a second edit.  Plan ledger rows
+    **D26** (a generated row's date has two producers and the engine discards
+    the occurrence) and **D18** are the same function's other faces.
+
+    Package-internal rather than exported: it is a statement about a
+    transitional limit, and a consumer outside this package asking it would be
+    a second reader to update when R5 removes it.
+
+    Args:
+        unit: The cadence unit.
+
+    Returns:
+        ``True`` when a row generated from this unit can be dated from the
+        cadence.
+    """
+    return emits_period_starts(unit) or has_day_of_month_coordinate(unit)
+
+
+def require_row_date_coordinate(unit: RecurrenceUnitEnum, where: str) -> None:
+    """Refuse to DATE a generated row from a cadence that cannot carry one.
+
+    :func:`has_row_date_coordinate`'s raising twin, the same split
+    :func:`is_authorable` / :func:`require_authorable_cadence` and
+    ``is_offerable_nominal_day`` / ``_require_nominal_day_pair`` already keep:
+    the predicate is what an OFFER SET asks, the refusal is what a reader that
+    already holds such a rule must make.
+
+    **It exists because deleting the router deleted a refusal by accident, and
+    an existing test caught it** (plan step R8-a).  ``anchor_family`` RAISED for
+    the ``WEEK`` unit, so ``_reading.scheduling_day_of_month`` inherited a
+    refusal through :func:`fires_on_day_of_month`; stating that predicate
+    directly made it answer ``False`` instead, and ``compute_due_date`` reads
+    ``False`` as "date this row from its paycheck".  Every weekly row would
+    then have been dated on the funding PAYDAY, silently, with the authored
+    weekday discarded -- the exact outcome the offer set withholds the unit to
+    prevent, arriving through the one door the offer set does not stand in
+    front of.
+
+    **Unreachable through the application and refused anyway**, which is the
+    disposition this package takes for every broken invariant: the write door
+    refuses the cadence (:func:`require_authorable_cadence`) and the picker
+    never offers it, so a row carrying it is a hand edit, a restore, or a seed
+    the enums have diverged from.  A plausible wrong DATE on a generated row is
+    worse than an error, and this one would move which paycheck a bill is
+    budgeted in.
+
+    **It dies with :func:`has_row_date_coordinate` at plan step R5**, which
+    gives a generated row its own ``occurs_on`` and deletes the function whose
+    two date sources this names.
+
+    Args:
+        unit: The cadence unit.
+        where: What to name in the refusal, composed by the caller because only
+            the caller knows which value is being dated.
+
+    Raises:
+        RecurrenceResolutionError: When *unit*'s occurrences are neither
+            paydays nor days of the month.
+    """
+    if has_row_date_coordinate(unit):
+        return
+    raise RecurrenceResolutionError(
+        f"a {unit!r} recurrence names no date a generated row can carry, for "
+        f"{where}.  Its occurrences are neither paydays nor days of the month, "
+        f"and recurrence.compute_due_date dates a row from nothing "
+        f"else -- so answering 'no day of the month' would date every row on "
+        f"the funding payday instead and discard the authored coordinate.  "
+        f"authorable_cadences withholds the unit for this reason, so a stored "
+        f"rule carrying it is a hand edit or a restore; plan step R5 gives a "
+        f"row its own occurs_on and removes both."
+    )
+
+
+def fires_on_day_of_month(
+    unit: RecurrenceUnitEnum, placement: PeriodPlacementEnum,
+) -> bool:
+    """Return whether a generated row is dated from a DAY of the month.
+
+    **The one predicate the three-valued anchor-family router collapsed to at
+    plan step R8-a**, and the collapse was measured rather than argued: over
+    all eight ``(unit, placement)`` pairs the router's
+    ``family == FAMILY_CALENDAR`` projection agreed with the expression below
+    on every pair it answered for, and disagreed only on the three it refused
+    -- which are the pairs that step re-decided.
+
+    It is NOT "is this unit measured in months", and an adversarial review of
+    plan step R7b-2 is why the distinction is stated here.  ``Monthly First``
+    is a MONTH-unit cadence whose rows are dated from the PAYCHECK they defer
+    onto, so ``scheduling_day_of_month`` answers ``None`` for it and the form
+    has always hidden the Due Day input -- while its occurrences still land on
+    days of the month, which is :func:`has_day_of_month_coordinate`'s question.
+    Reaching for the wrong one of the two moved money twice; see that function.
+
+    Args:
+        unit: The cadence unit.
+        placement: Which pay period funds an occurrence.
+
+    Returns:
+        ``True`` when the cadence has a day-of-month coordinate AND the row is
+        funded by the paycheck containing the occurrence, which is the one
+        reading ``recurrence.compute_due_date`` dates from that day.
+    """
+    return (
+        has_day_of_month_coordinate(unit)
+        and placement is PeriodPlacementEnum.CONTAINING_DATE
+    )
+
+
+@dataclass(frozen=True)
+class AuthorableCadence:
+    """One ``(unit, placement)`` pair a rule may be authored on.
+
+    :func:`authorable_cadences` returns these.
+
+    **It lost its ``interval_n`` field at plan step R7c-c**, and the loss is the
+    step: the interval was ``None`` for the one pattern that took it from a
+    column and a fixed 1 / 3 / 6 for the rest, so a "storable reading" had to
+    carry it.  Every positive interval is storable now, for every unit, so the
+    interval is no longer part of what an offer NAMES -- which is also why the
+    form's month ``<select>`` becomes a free number box in the same step.
+
+    **The consequence for plan ledger row D32**: a placement was a property of
+    the ``(unit, interval)`` PAIR while ``MONTHLY_FIRST`` had no quarterly twin,
+    so raising a monthly rule's interval silently rewrote its funding choice.
+    With the closed set gone the MONTH unit offers both placements at every
+    interval, and the pair dependency is gone with the fusion that created it.
+
+    Attributes:
+        unit: The cadence unit.
+        placement: Which pay period an occurrence is funded from.
+    """
+
+    unit: RecurrenceUnitEnum
+    placement: PeriodPlacementEnum
+
+
+def emits_period_starts(unit: RecurrenceUnitEnum) -> bool:
+    """Return whether *unit*'s occurrences ARE pay-period start dates.
+
+    **The one place "the placement is inert" is stated**, and it is what keeps
+    :func:`authorable_cadences` from offering a control that changes nothing.
+    ``_occurrence._period_walk`` yields a qualifying paycheck's own
+    ``start_date``, and both members of
+    :class:`~app.enums.PeriodPlacementEnum` carry a period start back to that
+    same period -- the one that CONTAINS it, and the first one STARTING on or
+    after it, are the same period when the date is a period's own start.  So a
+    pay-period cadence has one funding answer however the placement reads, and
+    a form offering the choice would be asking the user to decide something the
+    engine ignores.
+
+    Every other unit emits a calendar DATE, which can fall strictly inside a
+    period, where the two placements genuinely differ.
+
+    Stated as a predicate over the unit rather than derived from the
+    day-of-month one, because the two are different questions: this one says
+    whether the placement can move a row, and
+    :func:`has_day_of_month_coordinate` says whether the cadence names a day.
+    They answer differently for three of the four units and agree only on
+    ``WEEK``, where BOTH are ``False`` -- which is exactly what makes
+    :func:`has_row_date_coordinate`, their disjunction, exclude that one unit
+    and no other.  Pinned by driving ``place`` over a whole schedule under both
+    placements (``test_recurrence_occurrence``), which is a proof over the
+    schedule rather than the argument above.
+
+    Args:
+        unit: The cadence unit.
+
+    Returns:
+        ``True`` for the ``PERIOD`` unit and ``False`` for every other.
+    """
+    return unit is RecurrenceUnitEnum.PERIOD
+
+
+def authorable_cadences() -> tuple[AuthorableCadence, ...]:
+    """Return every ``(unit, placement)`` pair a rule may be authored on.
+
+    **The producer the form serves its options from**, which is what makes a
+    cadence the application cannot honour unofferable rather than fenced behind
+    a refusal.  Plan step R7b-2 gave the picker that property by deriving its
+    options from the storage ENCODER; R7c-c dropped the encoder and left the
+    anchor-family router holding the gate; plan step **R8-a** replaced the
+    router, which by then selected between derivations ruling **R-R16** had
+    deleted, with the two live constraints below.
+
+    Two rules, each derived from a fact stated once elsewhere rather than from
+    a list of units kept here:
+
+    * the cadence's occurrences must be DATABLE onto a generated row
+      (:func:`has_row_date_coordinate`).  ``WEEK`` is the one unit that is
+      neither a payday nor a day of the month, so
+      ``recurrence.compute_due_date`` has nothing to date its rows
+      from; plan step **R5** deletes that function and the rule with it;
+    * the placement must be able to CHANGE the answer
+      (:func:`emits_period_starts`).  A pay-period cadence's occurrences are
+      paydays and both placements carry a payday back to its own paycheck, so
+      offering the choice would render a control the engine ignores.
+
+    **What R8-a WIDENED, and it is one reading**: a year-scale cadence funded
+    from the first paycheck on or after its date.  The router refused it
+    because ``_resolution._first_of_month_anchor`` -- deleted at R7c-b -- would
+    have anchored it on "the 1st of the first qualifying month", firing it in
+    whichever month the owner's schedule happened to open in.  With
+    ``starts_on`` authored there is no such derivation and no such month: the
+    rule fires on its own date every ``interval_n`` years and defers onto the
+    next paycheck, exactly as its MONTH twin already did.  Measured on a
+    2026-08-16 production clone: 0 of 46 live rules read differently, and a
+    yearly cadence cannot put two occurrences in one paycheck at ANY cadence in
+    ``pay_schedule.cadence_days``' whole 1-365 domain.  That mattered while
+    the generation index was keyed on the paycheck and a repeat was REFUSED;
+    plan step **R17** re-keyed it onto the occurrence, so a repeat now stores
+    and the observation is a statement about the cadence rather than about
+    exposure.
+
+    The INTERVAL is not part of an offer.  Every positive interval is authorable
+    for every unit here, which is what the form's free number box renders and
+    what ``ck_recurrence_rules_positive_interval`` is the whole of the domain
+    for.
+
+    Returns:
+        One entry per authorable pair, in
+        :class:`~app.enums.RecurrenceUnitEnum` declaration order -- most
+        frequent first (paycheck, month, year), the order the picker has always
+        rendered -- and within a unit in
+        :class:`~app.enums.PeriodPlacementEnum` declaration order.
+    """
+    offered = []
+    for unit in RecurrenceUnitEnum:
+        if not has_row_date_coordinate(unit):
+            continue
+        for placement in PeriodPlacementEnum:
+            offered.append(AuthorableCadence(unit=unit, placement=placement))
+            # The ``break`` offers a unit with an INERT placement its FIRST
+            # member, and which member that is depends on
+            # :class:`~app.enums.PeriodPlacementEnum`'s declaration order.
+            # That dependency is load-bearing rather than incidental: the one
+            # offered must be ``CONTAINING_DATE``, because that is what
+            # ``RecurrenceSpec.placement`` defaults to and what an edit form
+            # preselects for a stored pay-period rule.  Asserted rather than
+            # left to the ordering by ``test_recurrence_frequency
+            # .test_the_offer_set_is_exactly_these_five_readings``, which names
+            # the pair.
+            if emits_period_starts(unit):
+                break
+    return tuple(offered)
+
+
+def is_authorable(
+    interval_n: int,
+    unit: RecurrenceUnitEnum,
+    placement: PeriodPlacementEnum,
+) -> bool:
+    """Return whether this reading can be AUTHORED, without raising.
+
+    The write door's question asked by a validator rather than by the door: the
+    door raises because reaching it with an unauthorable cadence is a broken
+    invariant, while a SUBMISSION carrying one is bad input to refuse with a
+    field error.  Built on :func:`authorable_cadences`, so the validator and
+    the form's own offer set cannot disagree about the set.
+
+    Args:
+        interval_n: The authored interval.
+        unit: The cadence unit.
+        placement: Which pay period an occurrence is funded from.
+
+    Returns:
+        ``True`` when a rule may be authored on this reading.
+    """
+    if interval_n < 1:
+        return False
+    return AuthorableCadence(unit=unit, placement=placement) in (
+        authorable_cadences()
+    )
+
+
+def require_authorable_cadence(
+    interval_n: int,
+    unit: RecurrenceUnitEnum,
+    placement: PeriodPlacementEnum,
+    where: str,
+) -> None:
+    """Refuse a cadence this application cannot author.
+
+    **The write door's completeness refusal, and plan step R7c-c is why it has
+    a name of its own.**  ``encode_cadence`` used to be it: a cadence the
+    closed pattern set could not NAME had nowhere to be written, so the door
+    raised and every caller above it inherited the refusal -- including the
+    recurrence PREVIEW, which builds a transient rule through the same door and
+    whose whole contract is to show what saving would produce.  Deleting the
+    encoder took that refusal with it, and the preview began listing dates for
+    a cadence the schema then refused -- measured, five of them for the ``WEEK``
+    unit.
+
+    So the refusal is restated where it belongs, over the set the FORM offers
+    rather than over the set a storage encoding could name.  It is
+    :func:`is_authorable`'s raising twin and reads the same producer, which is
+    what keeps the three answers one: the picker offers it, the schema accepts
+    it, the door writes it.
+
+    Args:
+        interval_n: The authored interval.
+        unit: The cadence unit.
+        placement: Which pay period funds an occurrence.
+        where: What to name in the refusal, composed by the caller because only
+            the caller knows which value is being built.
+
+    Raises:
+        RecurrenceResolutionError: When *interval_n* is not positive, or when
+            the pair is one this application cannot author.
+    """
+    require_positive_interval(interval_n, where)
+    if is_authorable(interval_n, unit, placement):
+        return
+    raise RecurrenceResolutionError(
+        f"a recurrence of every {interval_n} {unit!r} funded {placement!r} is "
+        f"not one this application can author, for {where}.  Either the unit's "
+        f"occurrences cannot be DATED onto a generated row -- the WEEK unit "
+        f"names a weekday, which recurrence.compute_due_date cannot "
+        f"express, and plan step R5 is what gives a row its own occurs_on -- "
+        f"or the placement is inert for the unit and offering it would store a "
+        f"choice the edit form cannot preselect.  The offer set is "
+        f"``authorable_cadences``; nothing the picker renders reaches here."
+    )
+
+
+__all__ = [
+    "AuthorableCadence",
+    "authorable_cadences",
+    "emits_period_starts",
+    "fires_on_day_of_month",
+    "is_authorable",
+    "require_authorable_cadence",
+]
+# ``has_row_date_coordinate`` and ``require_row_date_coordinate`` are
+# deliberately ABSENT, exactly as ``require_positive_interval`` is from
+# ``_frequency``'s: each states a rule this package applies to itself, and both
+# of these state a TRANSITIONAL one that plan step R5 deletes with
+# ``compute_due_date``.  A consumer outside the package asking either would be
+# a second reader to find then.

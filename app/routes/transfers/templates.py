@@ -1,20 +1,22 @@
 """
 Shekel Budget App -- Transfer route package: template management.
 
-CRUD for recurring transfer templates: list, create, edit, update, archive,
-unarchive, and hard-delete, plus the update-acceptance gate and the
-regenerate-and-commit step.  Every URL and endpoint name is preserved verbatim
-from the pre-split ``app/routes/transfers.py``.
+CRUD for recurring transfer templates: list, create, edit and update, plus
+the update-acceptance gate and the regenerate-and-commit step.  Every URL and
+endpoint name is preserved verbatim from the pre-split
+``app/routes/transfers.py``.
 
 What happens to the ``budget.transfers`` ROWS a template stands for --
 materializing them on create, and carrying an edit onto a non-repeating
 template's single Transfer -- is the sibling module
 :mod:`app.routes.transfers._instances`, split out at plan step R2e-3 when this
-one reached the 1,000-line module cap.
+one reached the 1,000-line module cap.  The template's LIFECYCLE doors --
+archive, unarchive and hard-delete -- are :mod:`app.routes.transfers.lifecycle`,
+split out at plan step R7d-g-2 (ruling **R-R84**) when it reached the cap
+again.
 """
 
 import logging
-from datetime import date
 
 from flask import Response, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user
@@ -26,24 +28,16 @@ from app.utils.dates import display_today
 from app.extensions import db
 from app.models.category import Category
 from app.models.transfer_template import TransferTemplate
-from app.models.transfer import Transfer
 from app.models.account import Account
-from app.models.ref import Status
-from app.utils import archive_helpers
 from app.services import (
     account_service,
     category_service,
     template_amount_service,
-    transfer_recurrence,
-    transfer_service,
 )
 from app.services.pay_calendar import calendar_for
-from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
-    STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
     StaleConflictContext,
-    commit_or_handle_stale,
     handle_stale_conflict,
     handle_stale_form_conflict,
 )
@@ -52,12 +46,7 @@ from app.routes._amount_version_actions import (
     withdraw_amount_version,
 )
 from app.services.balance_at import BalanceContext
-from app.services.cash_ledger import derived_amount_basis, resolve_transfer_amount
-from app.routes._recurrence_conflict_chooser import (
-    PreEditTemplateState,
-    RecurrenceConflictKind,
-    regenerate_or_conflict_chooser,
-)
+from app.routes._recurrence_conflict_chooser import PreEditTemplateState
 from app.routes._recurrence_form_helpers import (
     author_recurrence_for_create,
     recurrence_spec_for_create,
@@ -77,9 +66,12 @@ from app.routes._loan_destination import (
     settle_destination_for_update,
     settle_first_occurrence,
 )
+from app.routes._standing_payment import (
+    regenerate_or_refuse,
+    sync_loan_payment_start_or_refuse,
+)
 from app.routes._transfer_creation_helpers import (
     flush_template_or_namedup_redirect,
-    generate_transfers_for_all_periods,
 )
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._instances import (
@@ -233,11 +225,14 @@ def _settle_create_references(data, start_period_id):
        transfer submits no period at all.  Resolved unconditionally when
        present, so a crafted POST pairing a foreign period with a repeating
        cadence is refused rather than ignored.
-    3. **A loan destination's first occurrence is DERIVED**, and it must be
-       settled before the rule is built so nothing is authored that
-       ``bind_rule_to_loan`` then replaces (plan step R7c-b, developer ruling
-       2026-08-15); and a stop stated for a loan holding no payment yet is
-       REFUSED there too (plan step R7d-f-3, ruling **R-R60**).  It runs LAST
+    3. **A loan destination's first occurrence is DERIVED where the
+       definition would be its standing payment**, settled before the rule
+       is built so nothing is authored and then replaced (plan step R7c-b,
+       developer ruling 2026-08-15; the ``bind_rule_to_loan`` that replaced
+       it went at plan step R7d-g-2, ruling **R-R85**); a stop stated for
+       such a loan is REFUSED there too (plan step R7d-f-3, ruling
+       **R-R60**); and a SECOND transfer's owner-typed start is refused at
+       or before the loan's origination (ruling **R-R81**).  It runs LAST
        because it reads the destination's loan parameters, which step 1 has
        just proved are the owner's -- reading them first would be an IDOR.
 
@@ -430,25 +425,6 @@ def edit_transfer_template(template_id):
         ),
         amount_version_delete_endpoint="transfers.delete_amount_version",
     )
-
-
-# The transfer-template kind for the shared regenerate-or-chooser flow.
-# Mutations route through transfer_recurrence (shadow-safe resolve).
-_TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
-    model=Transfer,
-    # A transfer's amount rule, as a one-argument callable and the exact twin of
-    # the transaction kind's.  It passed the resolver BARE until plan step
-    # X-au-f-2, under a comment claiming a parent transfer needs no basis --
-    # made false by R-BAL10; pinned off the row, one row at a time -- so N
-    # conflicted loan payments resolve their loan N times, bounded by the
-    # conflicted set and free for every other kind (the basis is lazy).
-    resolve_amount=lambda row: resolve_transfer_amount(
-        row, derived_amount_basis(row.user_id, row.scenario_id),
-    ),
-    regenerate_fn=transfer_recurrence.regenerate_for_template,
-    resolve_fn=transfer_recurrence.resolve_conflicts,
-    update_endpoint="transfers.update_transfer_template",
-)
 
 
 @transfers_bp.route("/transfers/<int:template_id>", methods=["POST"])
@@ -660,264 +636,23 @@ def delete_amount_version(template_id, version_id):
     return withdraw_amount_version(template, version_id, _AMOUNT_VERSION_ACTION)
 
 
-@transfers_bp.route("/transfers/<int:template_id>/archive", methods=["POST"])
-@require_owner
-def archive_transfer_template(template_id):
-    """Archive a transfer template (stops future generation, keeps history).
-
-    Soft-deletes projected transfers and their shadow transactions via
-    the transfer service to maintain the three-level cascade:
-    template archival -> transfer soft-delete -> shadow soft-delete.
-
-    Optimistic locking (commit C-18 / F-010): the template's
-    ``version_id`` is enforced by SQLAlchemy on the
-    ``is_active = False`` flush; a concurrent edit raises
-    ``StaleDataError`` which the handler converts into a flash +
-    redirect so the user retries against fresh state.
-    """
-    template = get_or_404(TransferTemplate, template_id)
-    if template is None:
-        abort(404)
-
-    template.is_active = False
-
-    # Find projected, non-deleted transfers to soft-delete.  Routed
-    # through the centralized ``is_projected_clause`` (D6-09 / MED-02)
-    # parameterised on ``Transfer`` so the rule "what does a
-    # Projected filter look like in SQL" is shared with the
-    # Transaction filter sites.
-    transfers_to_delete = (
-        db.session.query(Transfer)
-        .filter(
-            Transfer.transfer_template_id == template.id,
-            is_projected_clause(Transfer),
-            Transfer.is_deleted.is_(False),
-        )
-        .all()
-    )
-
-    # Route each through the service to ensure shadows are soft-deleted.
-    for xfer in transfers_to_delete:
-        transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
-
-    conflict = commit_or_handle_stale(StaleConflictContext(
-        logger=logger,
-        log_label="archive_transfer_template",
-        log_id=template_id,
-        flash_message=STALE_ACTION_MESSAGE.format(
-            noun="recurring transfer",
-        ),
-        redirect=RedirectTarget("transfers.list_transfer_templates"),
-    ))
-    if conflict is not None:
-        return conflict
-
-    flash(
-        f"Recurring transfer '{template.name}' archived. "
-        f"{len(transfers_to_delete)} projected transfer(s) removed.",
-        "info",
-    )
-    return redirect(url_for("transfers.list_transfer_templates"))
-
-
-@transfers_bp.route("/transfers/<int:template_id>/unarchive", methods=["POST"])
-@require_owner
-def unarchive_transfer_template(template_id):
-    """Unarchive a transfer template.
-
-    Restores soft-deleted transfers and their shadow transactions.
-
-    Optimistic locking: see :func:`archive_transfer_template`.
-    """
-    template = get_or_404(TransferTemplate, template_id)
-    if template is None:
-        abort(404)
-
-    template.is_active = True
-
-    # Find soft-deleted projected transfers to restore.  Routed
-    # through ``is_projected_clause(Transfer)`` (D6-09 / MED-02);
-    # see ``archive_transfer_template`` above.
-    transfers_to_restore = (
-        db.session.query(Transfer)
-        .filter(
-            Transfer.transfer_template_id == template.id,
-            is_projected_clause(Transfer),
-            Transfer.is_deleted.is_(True),
-        )
-        .all()
-    )
-
-    # Restore transfers and shadows via the service so all mutations
-    # flow through the single enforcement point (design doc section 4.1).
-    for xfer in transfers_to_restore:
-        transfer_service.restore_transfer(xfer.id, current_user.id)
-
-    restored_count = len(transfers_to_restore)
-
-    if template.recurrence_rule:
-        generate_transfers_for_all_periods(template, effective_from=date.today())
-
-    conflict = commit_or_handle_stale(StaleConflictContext(
-        logger=logger,
-        log_label="unarchive_transfer_template",
-        log_id=template_id,
-        flash_message=STALE_ACTION_MESSAGE.format(
-            noun="recurring transfer",
-        ),
-        redirect=RedirectTarget("transfers.list_transfer_templates"),
-    ))
-    if conflict is not None:
-        return conflict
-    flash(
-        f"Recurring transfer '{template.name}' unarchived. "
-        f"{restored_count} projected transfer(s) restored.",
-        "success",
-    )
-    return redirect(url_for("transfers.list_transfer_templates"))
-
-
-@transfers_bp.route("/transfers/<int:template_id>/hard-delete", methods=["POST"])
-@require_owner
-def hard_delete_transfer_template(template_id):
-    """Permanently delete a transfer template if it has no payment history.
-
-    Maintains all five transfer invariants from CLAUDE.md:
-      1. Two linked shadows per transfer -- CASCADE on Transaction.transfer_id
-         removes both shadows when the parent Transfer is hard-deleted via
-         transfer_service.delete_transfer(soft=False).
-      2. No orphaned shadows -- shadows are removed atomically with their
-         parent transfer through the service's CASCADE verification.
-      3. Amount/status/period parity -- not applicable; entire records are
-         removed, not mutated.
-      4. All mutations through the transfer service -- every transfer
-         deletion is routed through transfer_service.delete_transfer().
-      5. Balance calculator queries only budget.transactions -- after
-         deletion, shadow transactions no longer exist in the table.
-
-    Two-path logic:
-      - History exists (Paid transfers): permanent deletion is
-        blocked.  Template is archived instead (if not already) and the
-        user is warned.
-      - No history: linked transfers are hard-deleted through the
-        transfer service (which CASCADE-deletes shadows), then the
-        template itself is permanently removed.
-
-    Defense in depth (F-14): the bulk delete is constrained to non-
-    settled transfers via the semantic ``Status.is_settled`` boolean,
-    mirroring the ``templates.py::hard_delete_template`` shape added
-    after CRIT-05.  Even if the guard predicate above regresses, is
-    bypassed, or races a concurrent mark-done that lands between the
-    guard check and the loop, settled transfers (Paid, Received,
-    Received) and their two-shadow pairs cannot be physically destroyed
-    by this route.  Survivors retain their ``transfer_template_id``;
-    the column's FK is ``ON DELETE SET NULL`` so they become detached
-    settled history when the parent template is removed.
-    """
-    template = get_or_404(TransferTemplate, template_id)
-    if template is None:
-        abort(404)
-
-    if archive_helpers.transfer_template_has_paid_history(template.id):
-        flash(
-            f"'{template.name}' has payment history and cannot be permanently "
-            "deleted. It has been archived instead.",
-            "warning",
-        )
-        if template.is_active:
-            template.is_active = False
-            # Soft-delete projected transfers via the service (same as
-            # archive_transfer_template) to maintain shadow invariants.
-            # Routed through ``is_projected_clause(Transfer)``
-            # (D6-09 / MED-02); see ``archive_transfer_template`` above.
-            transfers_to_delete = (
-                db.session.query(Transfer)
-                .filter(
-                    Transfer.transfer_template_id == template.id,
-                    is_projected_clause(Transfer),
-                    Transfer.is_deleted.is_(False),
-                )
-                .all()
-            )
-            for xfer in transfers_to_delete:
-                transfer_service.delete_transfer(xfer.id, current_user.id, soft=True)
-            conflict = commit_or_handle_stale(StaleConflictContext(
-                logger=logger,
-                log_label="hard_delete_transfer_template archive-fallback",
-                log_id=template_id,
-                flash_message=STALE_ACTION_MESSAGE.format(
-                    noun="recurring transfer",
-                ),
-                redirect=RedirectTarget("transfers.list_transfer_templates"),
-            ))
-            if conflict is not None:
-                return conflict
-        return redirect(url_for("transfers.list_transfer_templates"))
-
-    # No history -- safe to permanently delete linked transfers through
-    # the transfer service so that shadow transactions are CASCADE-
-    # deleted (invariants 1, 2, 4).  ``transfer_service.delete_transfer``
-    # flushes but does not commit, so all deletions are atomic within a
-    # single DB transaction.
-    #
-    # Defense in depth (F-14 / commit C-21 mirror): the bulk delete is
-    # additionally constrained to ``Status.is_settled = False`` rows via
-    # the semantic ``Status.is_settled`` boolean -- the same shape
-    # ``templates.py::hard_delete_template`` applies after CRIT-05.
-    # Even if ``transfer_template_has_paid_history`` regresses, is
-    # bypassed, or races a concurrent mark-done that lands between the
-    # guard check and the loop below, settled transfers (Paid,
-    # Received) and their two-shadow pairs cannot be
-    # physically destroyed by this route.  Survivors retain their
-    # ``transfer_template_id``; the column's FK is ``ON DELETE SET
-    # NULL`` (see ``app/models/transfer.py``) so they become detached
-    # settled history when the parent template is removed below.
-    template_name = template.name
-    settled_status_ids = db.session.query(Status.id).filter(
-        Status.is_settled.is_(True)
-    ).scalar_subquery()
-    deletable_transfers = (
-        db.session.query(Transfer)
-        .filter(
-            Transfer.transfer_template_id == template.id,
-            Transfer.status_id.notin_(settled_status_ids),
-        )
-        .all()
-    )
-    for xfer in deletable_transfers:
-        transfer_service.delete_transfer(xfer.id, current_user.id, soft=False)
-
-    db.session.delete(template)
-    conflict = commit_or_handle_stale(StaleConflictContext(
-        logger=logger,
-        log_label="hard_delete_transfer_template",
-        log_id=template_id,
-        flash_message=STALE_ACTION_MESSAGE.format(
-            noun="recurring transfer",
-        ),
-        redirect=RedirectTarget("transfers.list_transfer_templates"),
-    ))
-    if conflict is not None:
-        return conflict
-
-    flash(f"Recurring transfer '{template_name}' permanently deleted.", "info")
-    return redirect(url_for("transfers.list_transfer_templates"))
-
-
-
-
-
-
-
-
-
-
 def _regenerate_and_commit_template(
     template, before, effective_from, template_id,
 ):
     """Regenerate a transfer template's future transfers, then commit.
 
-    Re-runs ``transfer_recurrence.regenerate_for_template`` against the
+    FIRST brings the standing payment of the destination the edit LEAVES
+    onto the loan's contract (plan step R7d-g-2, ruling **R-R85**; the same
+    entry helper every lifecycle door calls, and the one write this function
+    makes before regenerating).  The edit it is for: the standing payment's
+    cadence UNIT moving -- every paycheck to monthly would otherwise store a
+    payday as the monthly day until the next params edit healed it.  For
+    every other edit the producer finds the start in step, or no loan at
+    all, and writes nothing: a rename costs it one lookup.  Its one refusal
+    is the window CHECK's (ruling **R-R82**), worded whole, and it sends the
+    user back to the edit form.
+
+    Then re-runs ``transfer_recurrence.regenerate_for_template`` against the
     baseline scenario, diverting to the recurrence-conflict chooser when an
     amount change would overwrite hand-edited upcoming transfers, then
     commits.  Optimistic-lock and name-uniqueness failures at flush time are
@@ -939,6 +674,18 @@ def _regenerate_and_commit_template(
         name-duplicate conflict, or a redirect to the template list on
         success.
     """
+    edit_form = RedirectTarget(
+        "transfers.edit_transfer_template", {"template_id": template_id},
+    )
+    # ``rows_follow=False``: the pass below is the one that brings this
+    # definition's rows along, and the standing payment is the only
+    # definition the sync can move from this door (see the helper).
+    refused = sync_loan_payment_start_or_refuse(
+        template.to_account_id, redirect=edit_form, rows_follow=False,
+    )
+    if refused is not None:
+        return refused
+
     # A template that neither has nor had a rule does not regenerate at all
     # (the gate below returns before touching a row -- that is what closes
     # defect D16), so its already-created Transfer is reached HERE or nowhere.
@@ -948,12 +695,16 @@ def _regenerate_and_commit_template(
             return refused
 
     # Regenerate future transfers, diverting to the conflict chooser when an
-    # amount change would overwrite hand-edited upcoming instances.
-    diverted = regenerate_or_conflict_chooser(
-        template, before, effective_from, _TRANSFER_TEMPLATE_KIND,
-        amount_drives_instances=True,
+    # amount change would overwrite hand-edited upcoming instances -- and,
+    # since plan step R7d-g-2, translating the transfer service's own refusal
+    # of a row (ruling R-C: a second transfer's every-paycheck row dated at
+    # or before its loan's origination) into this form's flash rather than a
+    # 500 (``_standing_payment.regenerate_or_refuse``).
+    diverted = regenerate_or_refuse(
+        template, before, effective_from, redirect=edit_form,
     )
-    # The chooser short-circuits (its pending edit is already rolled back).
+    # The chooser short-circuits (its pending edit is already rolled back),
+    # and so does a refusal.
     if diverted is not None:
         return diverted
 

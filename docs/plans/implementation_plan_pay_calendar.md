@@ -2,12 +2,11 @@
 
 ## Where this stands
 
-**JUST LANDED: `C17-d-1` (`7a6bbaf5`)**, `$0.00`: the cadence is a VALUE OF ITS OWN KIND and the
-kind is its type (`pay_rhythm.FixedDays`, `Rhythm.cadence`, `Era` without `kind`), after
-**R-PC79**-**R-PC81** ruled `C17-d`'s forks 2026-09-13: two owner-chosen days of the month, absence
-as the discriminator, three leaves. **NEXT: `C17-d-2`**, the `Monthly` and `SemiMonthly` kinds with
-their migration (MOVES MONEY for such an owner, `$0.00` on production; `recurrence:R13` ticks with
-it); `steps.md` carries the order, and `C17-d-3` and `C17-e` (**R-PC77**) follow it there.
+**JUST LANDED: `C17-d-2` (`d79986c7`)**, the `Monthly` and `SemiMonthly` kinds with their migration
+`3ec5291ca4e2` (MOVED MONEY for such an owner, `$0.00` on production; `recurrence:R13` ticked with
+it; **R-PC82**, **R-PC83**), after `C17-d-1` (`7a6bbaf5`) made the cadence a VALUE OF ITS OWN KIND
+under **R-PC79**-**R-PC81**. **NEXT: `C17-d-3`**, the doors offering the kind, with which the
+`C17-d` container ships; `steps.md` carries the order, and `C17-e` (**R-PC77**) follows it there.
 
 **BUILT AND TICKED**: `C1`; `C2` whole, which is one step under three names (`balance:X-l`,
 `recurrence:R-F12`), ticked at `C2-f3e`; `C3`; `C4` whole; `C10` and `C11`, which came out of
@@ -320,17 +319,16 @@ record.
       `Rhythm.cadence`; `Era` without `kind` (the type is the kind, **R-PC80**); `_grid` dispatches
       on the value's type through one table; `PayCadence` takes the value; `era_to_mint` asks the
       grid's round trip. `$0.00`, a pure refactor.
-- [ ] **C17-d-2 -- the `Monthly` and `SemiMonthly` kinds** (**R-PC79**, **R-PC80**). Month
-      arithmetic in `_grid` (a day 29..31 clamps to the month's end; a pair's phase is read off the
-      anchor); migration: `cadence_days` nullable, `nominal_day` (29..31, only when the first month
-      was too short, `recurrence:R-R3`'s shape) and the other day added with CHECKs that make every
-      storable row a legal era, `kind_id` and `ref.pay_cadence_kinds` DROPPED; the floor asked of
-      the shortest gap; `PayCadence` 12 / 24 without dividing; P78's eight fixtures through the
-      door; N-399 measured. **MOVES MONEY** for such an owner; `$0.00` on production. Closes
-      **P78**.
+- [x] **C17-d-2 -- the `Monthly` and `SemiMonthly` kinds.** `d79986c7`. Month arithmetic in `_grid`
+      (a day 29..31 clamps to the month's end); migration `3ec5291ca4e2`: `cadence_days` nullable,
+      `nominal_day` and the other day with CHECKs, `kind_id` and `ref.pay_cadence_kinds` DROPPED
+      (**R-PC80**); `PayCadence` 12 / 24 without dividing; the event's phrase (**R-PC82**),
+      registration's day (**R-PC83**); P78's eight fixtures through the door. MOVED MONEY for such
+      an owner, `$0.00` on production. Closed **P78**; N-399 re-measured, re-homed as **SAL-556**.
 - [ ] **C17-d-3 -- the doors offer the kind.** The four schedule forms and registration take a kind
       and its parameters; the schema builds the cadence value; `validate_derivable_rhythm` asks the
-      shortest-gap floor. `$0.00`.
+      shortest-gap floor. Closes **PC-513** (`add_months`, a third spelling of the month clamp) and
+      **PC-514** (the event's "biweekly" description). `$0.00`.
 - [ ] **C17-e -- coalesced nominal paydays are ONE paycheck** (**R-PC77**; closes **N-493**). Two
       nominal paydays a closed run displaces onto one cash day derive one paycheck wherever an era's
       grid is read; `reject_shift_on_short_cadence` is then a fence. `$0.00`, after `C17-d`.

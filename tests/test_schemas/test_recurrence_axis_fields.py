@@ -735,6 +735,105 @@ class TestTheNominalDayMustFitTheFirstOccurrence:
             assert "starts_on" not in loaded
 
 
+class TestThePerMonthCeilingFitsTheUnit:
+    """``max_per_month`` on the shared mixin (plan step salary:R15-a, ruling R-SAL29).
+
+    The field's own ``Range(1, 32767)`` mirrors the column's floor and type.
+    Which UNITS admit a ceiling is a two-field rule -- a calendar-month
+    cadence fires at most once a month by construction, so a ceiling beside
+    it is a value the walk never reads -- and
+    :class:`~app.services.recurrence.RecurrenceSpec` refuses the pair as a
+    broken invariant.  The submission's half of that rule is what turns a
+    crafted POST into a field error naming the control rather than a flash.
+    """
+
+    @staticmethod
+    def _cadence(unit: RecurrenceUnitEnum) -> dict[str, str]:
+        """Return a complete cadence submission on *unit*, as a browser posts it."""
+        return {
+            "recurrence_unit": str(ref_cache.recurrence_unit_id(unit)),
+            "recurrence_placement": str(
+                ref_cache.period_placement_id(
+                    PeriodPlacementEnum.CONTAINING_DATE,
+                ),
+            ),
+            "interval_n": "1",
+            "starts_on": _A_FIRST_OCCURRENCE.isoformat(),
+        }
+
+    @pytest.mark.parametrize("schema_label,schema_cls", _SCHEMAS)
+    def test_a_ceiling_on_a_paycheck_cadence_loads_as_an_integer(
+        self, app, schema_label, schema_cls,
+    ):
+        """Every paycheck at most 2 a month reaches the route as ``2``."""
+        with app.app_context():
+            loaded = schema_cls().load(
+                {**self._cadence(RecurrenceUnitEnum.PERIOD), "max_per_month": "2"},
+                partial=True,
+            )
+
+        assert loaded["max_per_month"] == 2, schema_label
+
+    @pytest.mark.parametrize("schema_label,schema_cls", _SCHEMAS)
+    @pytest.mark.parametrize(
+        "unit", [RecurrenceUnitEnum.MONTH, RecurrenceUnitEnum.YEAR],
+        ids=lambda unit: unit.value,
+    )
+    def test_a_ceiling_on_a_calendar_month_cadence_is_a_field_error(
+        self, app, schema_label, schema_cls, unit,
+    ):
+        """Swept over all four schemas because the rule is inherited."""
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc:
+                schema_cls().load(
+                    {**self._cadence(unit), "max_per_month": "2"},
+                    partial=True,
+                )
+
+        assert exc.value.messages.keys() == {"max_per_month"}, schema_label
+
+    @pytest.mark.parametrize("value", ["0", "-1", "32768"])
+    def test_the_columns_domain_is_mirrored(self, app, value):
+        """Below one and above ``smallint`` are field errors, not flush errors."""
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc:
+                TemplateCreateSchema().load(
+                    {
+                        **self._cadence(RecurrenceUnitEnum.PERIOD),
+                        "max_per_month": value,
+                    },
+                    partial=True,
+                )
+
+        assert exc.value.messages.keys() == {"max_per_month"}
+
+    def test_an_empty_box_is_a_stated_none(self, app):
+        """An enabled, empty control posts ``""`` and that reaches the route as ``None``.
+
+        A present ``None`` is how the update door clears a stored ceiling;
+        an absent key is a disabled control and leaves it alone.  The two must
+        stay distinguishable, so the empty string maps to the first and never
+        to the second.
+        """
+        with app.app_context():
+            loaded = TemplateCreateSchema().load(
+                {**self._cadence(RecurrenceUnitEnum.PERIOD), "max_per_month": ""},
+                partial=True,
+            )
+
+        assert "max_per_month" in loaded
+        assert loaded["max_per_month"] is None
+
+    def test_no_ceiling_key_states_nothing(self, app):
+        """A submission without the key loads without it: absence is preserved."""
+        with app.app_context():
+            loaded = TemplateCreateSchema().load(
+                self._cadence(RecurrenceUnitEnum.MONTH), partial=True,
+            )
+
+        assert "max_per_month" not in loaded
+
+
 class TestTheTransactionSchemasRequireACadence:
     """Plan step ``balance:X-bi-7b``, ruling R-BAL23: no *Does not repeat* here."""
 

@@ -833,7 +833,9 @@ class TestExtendMaterialisesThePlan:
                 record for record in caplog.records
                 if getattr(record, "event", None) == "pay_periods_generated"
             ]
-            assert events[-1].cadence_days == 14
+            # The rhythm as its kind's PHRASE (ruling R-PC82, plan step
+            # pay_calendar:C17-d-2), on this emitter as on record_paydays'.
+            assert events[-1].cadence == "every 14 days"
             assert events[-1].era_minted_from is None
             assert events[-1].retired == 0
             assert events[-1].count == 1

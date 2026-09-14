@@ -379,21 +379,17 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   a PLAN and a RECORD with a status column pretending one becomes the other -- 161 of 238 fold facts
   on Checking are plan rows whose status was flipped, and the movement record is `$4,270.78` from
   the bank over 155 days.
-  * [x] **X-bi-1** `18f9efac` -- the row's `is_envelope` cell SEALED on X-au-k's pattern rather than the move
-    pinned (**R-BAL18**): private column, public name reads the accessor and writes the cell, every derived
-    flag's class-level name refuses a query; the last two second spellings moved. No migration.
-  * [x] **X-bi-1b** `71e09443` -- the companion query asks each loaded row `visible_to_companion` and
-    restates nothing in SQL (**R-BAL19**); `companion_visible` sealed on the row as `is_envelope` was,
-    the one-consumer mixin dissolved, an id tie-break where `ORDER BY name` left a carried pair to the
-    plan. Row set before and after on a production restore: 64 pages, 232 of 951, byte-identical.
-    Closes **BAL-482**.
+  * [x] **X-bi-1** `18f9efac` -- the row's `is_envelope` cell SEALED (**R-BAL18**): private column, public name reads the accessor, a derived flag's class-level name refuses a query. No migration.
+  * [x] **X-bi-1b** `71e09443` -- the companion query loads and asks each row `visible_to_companion` (**R-BAL19**); `companion_visible` sealed; 232 of 951 rows byte-identical on a restore. Closes **BAL-482**.
   * [ ] **X-bi-7** the DECOMPOSED parent of the ONE-DEFINITION shape (**R-BAL20**; forks **R-BAL21**
     to **R-BAL26**): every plan item has exactly one definition, so a one-off is a rule-less
     definition plus its placed rows; argument: `../../design/from_scratch_architecture.md` section 10.
-    * [ ] **X-bi-7a** ONE accessor `recurs`, read by every "no cadence" site (section 10.5's first
-      class lists them; no one regex names them; the account-delete refusal counts recurring
-      definitions), plus a transaction twin of `propagate_to_unruled_template`. No production
-      row changes behaviour: no rule-less transaction definition exists.
+    * [x] **X-bi-7a** `eecef63d` -- `recurs` on the definition and the row (`DerivedFlag`); the seven
+      "no cadence" sites and the account-delete refusal read it; the transaction twin
+      `propagate_to_unruled_definition`. Two rulings at the cut: a row-less rule-less definition is
+      DISPOSED of with its account and a definition's live row is the account's history wherever it
+      sits (**R-BAL27**); the `is_override` flip's MOVE half keys on `recurs`, its typed-figure
+      half waits for 7b's restate (**R-BAL28**). `_leftover_due_date`'s rule-less arm deleted.
     * [ ] **X-bi-7b** ONE producer for a one-off and every link-less writer on it: a merchant answer
       mints its definition once and names it thereafter (`bank_import:X-f6c`, one step with this),
       `category_id` nullable for `mint_uncategorized` (**R-BAL24**); the popover's edits land on the
@@ -1029,7 +1025,7 @@ section 4, under their unchanged ids.*
   that is precisely the form the first ruling specified and measurement rejected. The instrument is
   an open question the step's trace decides, and it must be shown FIRING on a planted defect.
 * [ ] **X-ah** `fix(routes): a query-string id is parsed like every other id` -- closes **N-142**.
-  The one submitted-id surface X-ae did not convert: the `request.args.get(..., type=int)` calls (census 30 code lines `request\.args\.get\([^)]*type=int` in `app/**/*.py`); `X-ah`'s own marker counts every `type=int` coercion, which is 34
+  The one submitted-id surface X-ae did not convert: the `request.args.get(..., type=int)` calls (census 31 code lines `request\.args\.get\([^)]*type=int` in `app/**/*.py`); `X-ah`'s own marker counts every `type=int` coercion, which is 36
   where Werkzeug catches the `ValueError` (so no crash) but the coercion is `int()` (so `'١٠٦'` is
   106, `' 2026 '` is 2026, `'1_0'` is 10). **It needs a per-site ruling, which is why it is a step**:
   the path parameters were all row ids and the schema fields all row ids, so each took one blanket
@@ -1048,16 +1044,11 @@ section 4, under their unchanged ids.*
   `steps.md` state the same number and were moved with it.
 *The `X-br` family -- the fresh container per run, its container and four leaves -- is ARCHIVED to `archive/x_br_family_2026-09-09.md` (2026-09-09, developer's call under rule 4). Every id still resolves in `steps.md`.*
 * [x] **X-bv** `66ff070b` -- closed the STRAND at its producer: a leftover carries `compute_due_date`'s answer, so `declare_derived` cannot leave a row amount rule 3 must price on a due date it has not got. **Its written remedy aimed at the wrong tier**; the CHECK is `X-bv-2`'s.
-* [x] **X-bv-2** `6fa17bac` -- the CHECK on BOTH row tables in one migration (`4d7123cd9803`); `_stated_amount`'s no-due-date arm and the three tests that graded fences DELETED, three derived-date types tightened to `date`; BAL-463 closed.
-  **Binding the twin measured 44 red tests the transaction-side census never saw** (BAL-488), which is why the step waited for `X-ch`; a three-term mutation turns all six refusal cases red, and the round trip plants a violator on each table in turn.
-* [x] **X-cf** `ccf88c01` -- the DECOMPOSED parent of the suite's ONE builder for a row of a definition
-  (**R-BAL17**), five leaves shipped 2026-09-11..12 (`8fac9e6f`, `b3e51806`, `641801a3`, `699bd05d`, `ccf88c01`); BAL-480 closed with the last.
-* [x] **X-cf-3b** `699bd05d` -- the three plan-figure builders (164 sites) take the engine's row; the owner's re-price and move gained ONE spelling each (`repriced_by_the_owner`, `moved_by_the_owner`, beside `generate_row_of`).
-  Two engine rows in one paycheck share ONE due date (D18), so WHICH row a carry topped up is read off the rows, never a figure; its review found an index restore restating the pre-X-au-h DDL that no test could see, because every case clones its own database.
-* [x] **X-cf-4** `ccf88c01` -- the route suites' 38 hand-built rows (28 undated, 5 hand-dated, 5 `txn.template_id = ...` assignments) and four owner-act spellings take the engine's row; every BAL-480 census reads zero, and BAL-480 closed with it.
-  Its review measured the ambiguous carry-forward target got STRONGER (the old undated pair was refused on `occurs_on IS NULL` alone; the dated pair only by the `is_override` rule), and the three reads of the column a derived row leaves NULL name the definition's stated figure instead.
-* [x] **X-ch** `28a6317e` -- `generate_transfer_of`, R-BAL17's builder one table over (one private body with `generate_row_of`), and `transfer_repriced_by_the_owner`; all 23 hand-built linked-transfer sites in 11 files converted, BAL-488 closed.
-  **Its review caught the conversion DISARMING a control**: under the every-paycheck cadence the engine dates a row on its period's start, so "the later price on the row's own date" read one day for both; both later-price cases now take MONTHLY on the 1st in the straddling paycheck.
+* [x] **X-bv-2** `6fa17bac` -- the CHECK on BOTH row tables in one migration (`4d7123cd9803`); `_stated_amount`'s no-due-date arm and three fence-grading tests DELETED; BAL-463 closed.
+* [x] **X-cf** `ccf88c01` -- the DECOMPOSED parent of the suite's ONE builder for a row of a definition (**R-BAL17**), five leaves shipped 2026-09-11..12; BAL-480 closed with the last.
+* [x] **X-cf-3b** `699bd05d` -- the three plan-figure builders (164 sites) take the engine's row; `repriced_by_the_owner` and `moved_by_the_owner` are the owner's two acts, stated once.
+* [x] **X-cf-4** `ccf88c01` -- the route suites' 38 hand-built rows and four owner-act spellings take the engine's row; every BAL-480 census reads zero, and BAL-480 closed with it.
+* [x] **X-ch** `28a6317e` -- `generate_transfer_of`, R-BAL17's builder one table over, and `transfer_repriced_by_the_owner`; all 23 hand-built linked-transfer sites converted, BAL-488 closed.
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
   The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
   `is_override` term; the undated arm keeps the term because its index does. Script and test only.
@@ -1266,7 +1257,7 @@ section 4, under their unchanged ids.*
   **The census is RE-RUN, not remembered** -- it read "26 canonical accessors plus five, measured
   2026-08-23 and not to be re-taken" until 2026-09-11, by which point it was 27 plus seven and one
   of its claims was false. Canonical:
-  (census 28 lines `^def [a-z_]*_id\(` in `app/ref_cache/_accessors.py`).
+  (census 27 lines `^def [a-z_]*_id\(` in `app/ref_cache/_accessors.py`).
   **`acct_type_icon` and `acct_type_max_term` have no PRODUCTION
   caller** (census 0 code lines `acct_type_(icon\|max_term)` in `app/routes/**/*.py`) and are
   candidates for DELETION rather than folding -- with them the `_cache.acct_type_meta` map `init()`

@@ -91,6 +91,7 @@ from app.routes._recurrence_form_refusals import (
 )
 from app.schemas.validation import (
     RECURRENCE_END_BOUND_KEY,
+    RECURRENCE_MAX_PER_MONTH_KEY,
     RECURRENCE_NEEDS_A_START,
     RECURRENCE_NOMINAL_DAY_KEY,
     RECURRENCE_STARTS_ON_KEY,
@@ -117,6 +118,7 @@ _BASE_RECURRENCE_KEYS: tuple[str, ...] = (
     "recurrence_placement",
     "interval_n",
     RECURRENCE_NOMINAL_DAY_KEY,
+    RECURRENCE_MAX_PER_MONTH_KEY,
 )
 
 # The closing bound's three controls (plan step R7b-3).
@@ -327,7 +329,7 @@ def recurrence_spec_from_form(
     Args:
         data: Marshmallow-validated payload; mutated in place.  The
             helper pops ``recurrence_unit``, ``recurrence_placement``,
-            ``interval_n``, ``nominal_day``,
+            ``interval_n``, ``nominal_day``, ``max_per_month``,
             ``starts_on``, the closing
             bound's three (:data:`_END_BOUND_KEYS`), and -- when
             ``ctx.include_due_day_of_month`` is ``True`` --
@@ -403,6 +405,10 @@ def recurrence_spec_from_form(
     # empty state this replaced meant "start with the schedule" and generated
     # five backdated rows into pay periods that had already closed.
     starts_on = data.pop(RECURRENCE_STARTS_ON_KEY, None)
+    # The cadence's third value (plan step salary:R15-a).  Popped like the
+    # interval beside it; ``None`` -- a cleared box, or a control the form
+    # disabled beside a calendar-month unit -- authors no ceiling.
+    max_per_month = data.pop(RECURRENCE_MAX_PER_MONTH_KEY, None)
     due_day_of_month = (
         data.pop(_DUE_DAY_KEY, None) if ctx.include_due_day_of_month else None
     )
@@ -434,6 +440,7 @@ def recurrence_spec_from_form(
         placement=placement,
         nominal_day=nominal_day,
         due_day_of_month=due_day_of_month,
+        max_per_month=max_per_month,
         # A create form that stated no bound authors an UNBOUNDED rule:
         # there is no stored bound to leave alone, so absence and "never"
         # are the same request here and only here.
@@ -485,7 +492,7 @@ def update_recurrence_rule_from_form(
             tests ``template.recurrence_rule``).
         data: Marshmallow-validated payload; mutated in place.  Pops
             ``recurrence_unit``, ``recurrence_placement``, ``interval_n``,
-            ``nominal_day``, ``starts_on``, and -- when
+            ``nominal_day``, ``max_per_month``, ``starts_on``, and -- when
             ``ctx.include_due_day_of_month`` is ``True`` --
             ``due_day_of_month``.
         ctx: The :class:`RecurrenceFormContext` carrying the form's
@@ -561,8 +568,16 @@ def update_recurrence_rule_from_form(
     states_a_start = RECURRENCE_STARTS_ON_KEY in data
     # Read before the pop below, for the reason the start's presence is.
     states_a_due_day = _DUE_DAY_KEY in data
+    # The per-month ceiling on the same present-versus-absent rule (plan step
+    # salary:R15-a): the control is rendered beside the cadence and DISABLED
+    # beside a unit that cannot repeat within a month, so absence means the
+    # form could not show it and the stored value rides through -- dropped
+    # by ``recurrence_spec_with_cadence`` where the stated unit cannot hold
+    # it -- while a present ``None`` is a cleared box and clears.
+    states_a_ceiling = RECURRENCE_MAX_PER_MONTH_KEY in data
     submitted_starts_on = data.pop(RECURRENCE_STARTS_ON_KEY, None)
     submitted_nominal_day = data.pop(RECURRENCE_NOMINAL_DAY_KEY, None)
+    submitted_ceiling = data.pop(RECURRENCE_MAX_PER_MONTH_KEY, None)
     # The bound's keys too, on THIS branch as well: the route reads the mode
     # into ``ctx.end_bound`` before calling, and a submission that named none
     # still leaves its two value keys behind (see :data:`_END_BOUND_KEYS`).
@@ -618,6 +633,9 @@ def update_recurrence_rule_from_form(
         interval_n=submitted_interval,
         unit=unit,
         placement=placement,
+        max_per_month=(
+            submitted_ceiling if states_a_ceiling else rule.max_per_month
+        ),
     )
     reauthor_rule(
         rule,

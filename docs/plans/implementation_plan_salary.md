@@ -8,10 +8,12 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`S3-f-3` shipped 2026-09-13 (`a5ef1bdf`): each rail row SAVES a raise's end year and the salary
-regeneration is a service** (**R-SAL22**, **R-SAL24**). Of `S3`'s leaves only `S3-f-4` is open (the
-refused probe rendered, **SAL-548**); the shipped `S3-f` leaves are archived
-(`historical/salary_s3f_as_built_2026-09-13.md`), as are the `R14` span
+**`S3-f-4` shipped 2026-09-13 (`329b663d`): every readiness what-if refusal is the rail at 422 and
+retires on edit** (**R-SAL33**, **R-SAL34**), and `S3` -- the engine prices the WHOLE horizon --
+ships with it; the whole `S3` span is archived (`historical/salary_s3_as_built_2026-09-13.md`, the
+`S3-f` leaves in `historical/salary_s3f_as_built_2026-09-13.md`). The same day `R15-a` (`bdd77055`)
+gave a recurrence rule's cadence a per-month CEILING (**R-SAL29**), the vocabulary `R15-b` migrates
+every 24 / 12 deduction onto. Also archived: the `R14` span
 (`historical/salary_r14_as_built_2026-09-11.md`), `S3-e-2`'s record
 (`historical/salary_s3e2_as_built_2026-09-11.md`) and `S2`'s
 (`historical/salary_s2_as_built_2026-09-04.md`). Nine steps were re-filed or minted into this arc
@@ -149,28 +151,21 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
   - [x] **R14-b** `e0f0c05f` -- the contribution tier CONSUMES the engine's breakdown (**R-SAL2**),
         `+$452.42`; closed **D45**, **N-532**. Its interim hold went at `S3-e-2`. Archived with
         `R14`.
-- [ ] **S3 -- the engine prices the WHOLE horizon** (the DECOMPOSED parent, split 2026-09-05 into
-      five leaves once **R-SAL11** ruled the raise model; **R-SAL10**; closed **N-541**; **N-540**
-      went to `S4`): the extrapolation `AccountPayrollFeed` held past the saved calendar is DELETED
-      rather than repaired, `income_service` prices a paycheck PER PAYDAY on demand (**R-SAL14**,
-      `S3-d`) and the feed prices whichever period it is handed through that pricer (**R-SAL15**,
-      `S3-e-2`). Every leaf but `S3-f-4` has shipped; the container ships with it. Its full
-      argument, the struck cost figures and the raise-model fork R-SAL11 closed are archived with
-      the leaves.
-- [x] **S3-a** `e4491ee6` -- the merit horizon is a per-raise TERMINATION, not a split. Archived.
-- [x] **S3-b** `8a8dd51e` -- `terminal_year` and three CHECKs, migration `c9a4e17b53d8`, no reader;
-      its all-NULL obligation was discharged by `S3-c`'s backfill. Archived with `S3-a`.
-- [x] **S3-c** `62567d87` -- THE CUTOVER (**R-SAL12**, **R-SAL13**): the stored end year is a
-      raise's only termination. **Its downgrade is STATE-LOSSY**: a lossless rollback needs
-      `UPDATE salary.salary_raises SET terminal_year = NULL` beside it. Archived with `S3-a`.
-- [x] **S3-d** `62612c9a` -- the producer became a FUNCTION of the payday (**R-SAL14**), NO FIGURE
-      MOVED; its not-yet-asked-for obligation was discharged by `S3-e-2`; opened **N-547**.
-      Archived.
-- [ ] **S3-f -- the PER-RAISE probe and its Save on the `/retirement` rail**
-      (**R-SAL20**-**R-SAL24**; four leaves, the middle one split at the money line; only `S3-f-2a`
-      moved a figure); ships with `S3-f-4`. As built so far, with every shipped leaf's record:
-      `historical/salary_s3f_as_built_2026-09-13.md`.
-- [x] **S3-f-1** `c463dfbc` -- the engine seam (**R-SAL20**); NO FIGURE MOVED. Archived with `S3-f`.
+- [x] **S3** `329b663d` -- the engine prices the WHOLE horizon (**R-SAL10**, **R-SAL11**,
+      **R-SAL14**, **R-SAL15**; closed **N-541**); ticked with `S3-f-4`, the last leaf of its last
+      leaf. The span as it stood: `historical/salary_s3_as_built_2026-09-13.md`; its argument and
+      the `S3-a`..`S3-d` records: `historical/salary_s3_leaves_as_built_2026-09-11.md`.
+- [x] **S3-a** `e4491ee6` -- the merit horizon is a per-raise TERMINATION. Archived with `S3`.
+- [x] **S3-b** `8a8dd51e` -- `terminal_year` and three CHECKs (migration `c9a4e17b53d8`). Archived
+      with `S3`.
+- [x] **S3-c** `62567d87` -- THE CUTOVER (**R-SAL12**, **R-SAL13**); its downgrade is STATE-LOSSY.
+      Archived with `S3`.
+- [x] **S3-d** `62612c9a` -- the producer became a FUNCTION of the payday (**R-SAL14**). Archived
+      with `S3`.
+- [x] **S3-f** `329b663d` -- the PER-RAISE probe and its Save on the `/retirement` rail
+      (**R-SAL20**-**R-SAL24**, **R-SAL33**, **R-SAL34**); ticked with `S3-f-4`. Every leaf's
+      record: `historical/salary_s3f_as_built_2026-09-13.md`.
+- [x] **S3-f-1** `c463dfbc` -- the engine seam (**R-SAL20**). Archived with `S3-f`.
 - [x] **S3-f-2** `587c20d5` -- the plan point and the probe, split at the money line. Archived with
       `S3-f`.
 - [x] **S3-f-2a** `f3032c87` -- the calibrated current paycheck (**R-SAL21**); MOVED `+$41,562.00`.
@@ -179,40 +174,59 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       Archived with `S3-f`.
 - [x] **S3-f-3** `a5ef1bdf` -- the rail SAVES it (**R-SAL22**); the regeneration is a service
       (**R-SAL24**). Archived with `S3-f`.
-- [ ] **S3-f-4** -- the refused probe RENDERED: the readiness GET re-renders the rail with the
-      message on the raise's row in the one 422 shape the Save uses, and the schema's nested shape
-      goes. Minted 2026-09-13 from `S3-f-2b`'s reviews (**SAL-548**); the container ships with it.
-- [x] **S3-e** `a6af5b3c` -- the hold is DELETED (the DECOMPOSED parent, split 2026-09-06 into the
-      NO-MONEY re-homing and the MONEY; **R-SAL16** carries the argument and **R-SAL15** the
-      design). Both leaves shipped, so the container ships with the last of them.
+- [x] **S3-f-4** `329b663d` -- the refused what-if RENDERED (**R-SAL33**, **R-SAL34**): the rail at
+      422 via `HX-Retarget`, a row's refusal retiring on edit; 28 browser checks. Closed
+      **SAL-548**; opened **SAL-550**, **SAL-551** (owner `S5`). Archived with `S3-f`.
+- [x] **S3-e** `a6af5b3c` -- the hold is DELETED (**R-SAL15**, **R-SAL16**). Archived with `S3`.
 - [x] **S3-e-1** `b8ee429a` -- the two window-only questions re-homed and deleted (**R-SAL17**,
-      **R-SAL18**); NO FIGURE MOVED. Archived with the S3 leaves.
-- [x] **S3-e-2** `a6af5b3c` -- the feed prices a payday ON DEMAND through the pass's pricer
-      (**R-SAL15**), its resolvers take the PERIOD and carry both presence facts (**R-SAL19**), and
-      the timeline asks the period whether it is projected (**R-SAL18**). MOVED `+$194,321.85` on
-      `/investment`'s 40-year contribution line and `-$4,909.81` on `/retirement`, measured
-      2026-09-11. Closed **N-541**-**N-546**. As built:
+      **R-SAL18**). Archived with `S3`.
+- [x] **S3-e-2** `a6af5b3c` -- the feed prices a payday ON DEMAND (**R-SAL15**, **R-SAL19**); MOVED
+      `+$194,321.85` on `/investment` and `-$4,909.81` on `/retirement`. As built:
       `historical/salary_s3e2_as_built_2026-09-11.md`.
 - [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (**R-SAL3**; findings **F-21**,
-      **N-395**). `salary.paycheck_deductions.deductions_per_year` server-defaults to 26 and the
-      form offers 26 / 24 / 12; it is never multiplied or divided, only compared, so it is a
-      three-valued MODE wearing a biweekly count, and a third reader ignores it altogether -- the
-      investment contribution timeline pays every deduction on every payday, 26 times against the 24
-      the engine takes (**N-395**). At a weekly cadence "every paycheck" is 52 and "skip the 3rd
-      paycheck" names nothing; 11 of the developer's 12 live deductions carry 24. **The ruling**: a
-      line's cadence is a RECURRENCE RULE against the pay calendar, `NULL` meaning every paycheck,
-      placed by the engine that already places recurring rows -- one cadence engine in the app, and
-      `_deduction_applies_at` is deleted. **Its first act is a trace**: how
-      `resolve_generation_plan` couples to a template, since a paycheck line has none, and what the
-      migration re-expresses the three live values as. The count column moves no figure; APPLYING
-      the frequency to the timeline does, at 2/26 of a 24-per-year deduction's annual total, latent
-      until one names an investment account. A migration and a form change; own review pass.
+      **SAL-549**; **N-395** left at R15-a's tick, its fix having shipped at `R14-b` `e0f0c05f`).
+      `deductions_per_year` stores 26 / 24 / 12 as a three-valued MODE the engine only compares
+      against; 11 of the developer's 12 live deductions carry 24, a cadence the recurrence
+      vocabulary could not say. The DECOMPOSED parent, split into THREE leaves 2026-09-13 once its
+      four forks were ruled (**R-SAL29**-**R-SAL32**); ships with `R15-c`.
+- [x] **R15-a** `bdd77055` -- the per-month CEILING as the cadence's third value (**R-SAL29** as
+      amended: a paycheck cadence counts the month's paydays on the OWNER'S calendar; a week cadence
+      its own first N): `budget.recurrence_rules.max_per_month` + CHECK (migration `ef32dfe4cd8e`),
+      `_ceilinged` between the walk and the bound, `monthly_equivalent` off the aggregator, the
+      template form end to end; three pure moves for the line ceiling. NO FIGURE MOVED; the browser
+      drive was run by the developer.
+- [ ] **R15-b** -- the third owning arm `paycheck_deduction_id` (an exactly-one-of-three CHECK),
+      `PayrollBasis` resolving each line's rule ONCE and the engine asking it whether a payday is an
+      admitted occurrence, and the migration writing one rule per 24 / 12 line (`starts_on` = the
+      owner's opening payday, **R-SAL30**) then DROPPING `deductions_per_year` and
+      `_deduction_applies_at`; graded byte-identical over the 63 saved paychecks. **How a NEW
+      deduction states its cadence between this leaf and `R15-c` -- or whether the two ship in one
+      PR -- is a question for the developer before it is built.** Closes **F-21**, **SAL-549**;
+      carries **SAL-556** (ex N-399). A migration; own review.
+- [ ] **R15-c** -- the deduction form takes `_recurrence_fields.html` (**R-SAL31**), the end-bound
+      and due-day rows off by flag and the ceiling on, replacing the 26 / 24 / 12 select and
+      `app.js`'s prefill.
 - [ ] **S4 -- a payroll deduction's `annual_cap` is a DATED figure** (finding **N-540**, re-pointed
       here at `S3-f-3`'s tick, developer ruling 2026-09-12). The column is read raw and never
       escalated, so a statutory limit that rises every year is modelled as fixed and understates
       contributions over a long horizon; `tax_config_service` already prices an unconfigured year
       from the latest configured one and says so, which is the shape a dated cap should take.
       `$0.00` today (no live deduction's cap binds). Needs a RULING first.
+- [ ] **S5 -- every readiness region renders its own refusals** (findings **SAL-550**, **SAL-551**,
+      both from the `S3-f-4` session 2026-09-13). The readiness GET answers every refusal as the
+      assumptions rail (**R-SAL33**), so the assumed-return, months and contribution inputs outside
+      the rail, and a stale or foreign raise id, still leave the card silently at its previous
+      picture; and the SWR refusal says "less than or equal to 1" beside a percent box.
+      Display-only, `$0.00`.
+- [ ] **S6 -- the rail's raise set is the projection's, and a stale Save is refused** (findings
+      **SAL-552**, **SAL-553**, **SAL-554**, the `S3-f` span's openings filed 2026-09-13 when it
+      shipped). The `/retirement` rail lists every ACTIVE profile's raises rather than the set the
+      page projects; its raise row carries no `version_id`, so a Save from a stale rail is
+      last-write-wins on one column; the regeneration is handed one read pass per profile. Needs a
+      RULING on the race first. `$0.00`.
+- [ ] **S7 -- `projection_inputs.py` splits by shape** (finding **SAL-555**: 994 of 1000 lines). A
+      PURE move graded by AST (**R-PC74**'s shape), its own step because no live step edits the
+      file. `$0.00`.
 - [ ] **R18 -- a paycheck's EARNINGS side gets LINES, as its deductions side already has** (finding
       **D59**). `paycheck_calculator.Earnings` is four scalars and `net_pay` only ever SUBTRACTS, so
       there is no way to add a dollar to a paycheck that is not an annual-salary raise; a negative
@@ -266,8 +280,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 **Rows in `ledger.md` whose `arc` reads `salary`.** A finding is not arc-local; the rows that moved
 here on 2026-09-03 keep their bare ids (**D45**, **F-21**, **N-395**, **D59**, **P62**, **P63**,
 **P64**, **N-235**, **N-236**, **N-237**, **N-240**, **N-294**, **N-391**, **N-441**, **N-442**,
-**N-443**) because commit messages already cite them, and one was minted here from `balance:N-243`'s
-dissolved census (**N-530**).
+**N-443**) because commit messages already cite them, one was minted here from `balance:N-243`'s
+dissolved census (**N-530**), and `recurrence:D43` re-homed here as **SAL-549** (**R-SAL32**).
 
 ## 6. Alternatives considered and rejected
 

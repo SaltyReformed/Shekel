@@ -40,6 +40,14 @@
   var controls = document.getElementById('cadence-controls');
   var intervalWrap = document.getElementById('field-interval');
   var interval = document.getElementById('interval_n');
+  // The per-month CEILING, the cadence's third value (plan step salary:R15-a).
+  // Its row shows and its input is enabled only beside a unit whose
+  // occurrences can repeat within a month -- the wire's
+  // can_repeat_within_month, stated by the SERVER about the chosen offer --
+  // and disabled otherwise, because a hidden input still submits and a
+  // ceiling beside a monthly unit is the pair the write door refuses.
+  var ceilingWrap = document.getElementById('field-max-per-month');
+  var ceiling = document.getElementById('max_per_month');
   var placementWrap = document.getElementById('field-placement');
   var placementSelect = document.getElementById('recurrence_placement');
   var placementHelp = document.getElementById('placement-help');
@@ -96,18 +104,18 @@
     return raw.split(',').filter(function(id) { return id !== ''; });
   }
 
-  // The destinations whose first occurrence the app DERIVES (plan step
-  // R7c-b): every configured loan.
-  var loanDestinations = destinationIds('data-loan-account-ids');
-
-  // The destinations whose CLOSING bound the app derives as well (plan step
-  // R7d-f-3): the loans holding no active payment, so the definition being
-  // created IS that loan's payment the moment it exists, and a loan payment
-  // runs to the payoff with no stop of its owner's.  A subset of the list
-  // above -- a loan that already has a payment is in that one and not this,
-  // because a SECOND transfer into it keeps its owner's stop.  Both sets are
-  // the server's (one value, _loan_destination.LoanDestinationLocks);
-  // this file tests membership and decides nothing about loans.
+  // The destinations whose BOTH bounds the app derives: the loans holding no
+  // active payment, so the definition being created or moved IS that loan's
+  // standing payment the moment it is saved -- its first occurrence is the
+  // loan's first contractual installment (plan step R7c-b) and it runs to
+  // the payoff with no stop of its owner's (plan step R7d-f-3).  ONE set
+  // since plan step R7d-g-2 (ruling R-R81): it was two -- every configured
+  // loan for the start, this subset for the stop -- while the doors derived
+  // the start for every loan destination; a SECOND transfer into a loan that
+  // already holds a payment carries its owner's start and stop now, so its
+  // loan is in no set and no row locks for it.  The set is the server's (one
+  // value, _loan_destination.LoanDestinationLocks); this file tests
+  // membership and decides nothing about loans.
   var loansWithoutPayment = destinationIds(
     'data-loan-account-ids-without-payment'
   );
@@ -275,7 +283,7 @@
   // that does not name it.
   function syncEndBound(repeating) {
     if (!endMode || endBoundLocked) return;
-    var derived = repeating && destinationDerivesTheStop();
+    var derived = repeating && destinationDerivesTheBounds();
     if (derived && endModeBeforeLock === null) {
       endModeBeforeLock = endMode.selectedIndex;
       endMode.selectedIndex = -1;
@@ -329,7 +337,7 @@
   // back a control the server locked.
   function syncStartsOn(repeating) {
     if (!startsOn || startsOnLocked) return;
-    startsOn.disabled = !repeating || destinationDerivesTheStart();
+    startsOn.disabled = !repeating || destinationDerivesTheBounds();
   }
 
   // Whether the destination the user has CHOSEN is in ``ids``.  Always false
@@ -341,22 +349,18 @@
     return ids.indexOf(destinationSelect.value) !== -1;
   }
 
-  // Whether the chosen destination is one whose first occurrence the app
-  // derives (plan step R7c-b).  The browser's half of a rule the server
-  // states: this form offers every active account, so a recurring loan
-  // payment can be created here or an existing transfer moved onto a loan
-  // (plan step R7d-f-5) -- and asking the user for a date the route is going
-  // to replace is the defect LOAN_PAYMENT_BOUND_IS_DERIVED closes one path
-  // over.
-  function destinationDerivesTheStart() {
-    return destinationIsOneOf(loanDestinations);
-  }
-
-  // Whether the chosen destination is one whose CLOSING bound the app derives
-  // too (plan step R7d-f-3): a loan holding no payment yet, so this would be
-  // it.  The same rule's other half, and the door refuses a stop stated for
-  // such a loan whatever this file does (ruling R-R60).
-  function destinationDerivesTheStop() {
+  // Whether the chosen destination is one whose bounds the app derives: a
+  // loan holding no payment yet, so this would be it.  The browser's half of
+  // a rule the server states: this form offers every active account, so a
+  // recurring loan payment can be created here or an existing transfer moved
+  // onto a loan (plan step R7d-f-5) -- and asking the user for a date the
+  // route is going to replace is the defect LOAN_PAYMENT_BOUND_IS_DERIVED
+  // closes one path over, and the door refuses a stop stated for such a loan
+  // whatever this file does (ruling R-R60).  ONE question for both rows
+  // since plan step R7d-g-2; the two functions it replaced asked it of two
+  // sets that differed only while the doors derived a second transfer's
+  // start (ruling R-R81).
+  function destinationDerivesTheBounds() {
     return destinationIsOneOf(loansWithoutPayment);
   }
 
@@ -369,7 +373,7 @@
   function syncStartsOnHelp() {
     var help = document.getElementById('starts-on-help');
     if (!help || startsOnLocked) return;
-    var derived = destinationDerivesTheStart();
+    var derived = destinationDerivesTheBounds();
     var text = help.getAttribute(
       derived ? 'data-locked-text' : 'data-open-text'
     );
@@ -382,7 +386,7 @@
   function syncEndBoundHelp() {
     var help = document.getElementById('end-bound-help');
     if (!help || endBoundLocked) return;
-    var derived = destinationDerivesTheStop();
+    var derived = destinationDerivesTheBounds();
     var text = help.getAttribute(
       derived ? 'data-locked-text' : 'data-open-text'
     );
@@ -473,6 +477,17 @@
     );
   }
 
+  // The value is NOT cleared with the row, for the reason the due day's is
+  // not: switching to a monthly unit and back should not lose a typed
+  // ceiling, and the update door reads an ABSENT key (a disabled control) as
+  // "leave the stored one alone" and drops a stored ceiling itself where the
+  // saved unit cannot hold it.
+  function syncCeiling(canRepeatWithinMonth) {
+    if (!ceilingWrap || !ceiling) return;
+    ceilingWrap.classList.toggle('d-none', !canRepeatWithinMonth);
+    ceiling.disabled = !canRepeatWithinMonth;
+  }
+
   function toggleFields() {
     var id = unitId();
 
@@ -495,6 +510,7 @@
       syncStartsOn(false);
       syncNominalDay(false);
       syncDueDom(false);
+      syncCeiling(false);
       fetchPreview();
       return;
     }
@@ -526,13 +542,14 @@
     var hasDayCoordinate =
       chosen !== null && chosen.has_day_of_month_coordinate;
     syncDueDom(schedulesOnDay);
+    syncCeiling(chosen !== null && chosen.can_repeat_within_month);
 
     syncStartPeriod(true);
     syncStartsOn(true);
     // The "repeating on" control rides with the date: a derived first
     // occurrence brings its own nominal day, so a control the user could still
     // touch would state a day the route is about to replace.
-    syncNominalDay(hasDayCoordinate && !destinationDerivesTheStart());
+    syncNominalDay(hasDayCoordinate && !destinationDerivesTheBounds());
     syncStartsOnHelp();
 
     if (endBoundWrap) {
@@ -596,6 +613,14 @@
     }
     if (statesAStartValue(nominalDay)) {
       params.set('nominal_day', nominalDay.value);
+    }
+
+    // The per-month ceiling, sent exactly when the save would carry it: an
+    // enabled control with a value.  A disabled one (a monthly unit) states
+    // nothing, and an empty one is "no ceiling", which the endpoint reads
+    // from the key's absence.
+    if (ceiling && !ceiling.disabled && ceiling.value) {
+      params.set('max_per_month', ceiling.value);
     }
 
     // The closing bound, as the SAME three controls the save posts: the mode
@@ -668,11 +693,9 @@
   // The DESTINATION re-links the "Starts on" row, and the "Ends" row for a
   // loan whose payment this would be, wherever the server shipped a set to
   // apply (both transfer forms since plan step R7d-f-5): choosing a loan
-  // hands its first occurrence to the route, so the control stops being the
-  // user's to state, and a loan with no payment yet hands its stop over too.
-  // ``toggleFields`` is what applies both, so the enable/disable rule stays
-  // in one function rather than two that agree.  The second list is a subset
-  // of the first, so the first alone decides whether to listen.
+  // with no payment yet hands both bounds to the route, so neither control
+  // is the user's to state.  ``toggleFields`` is what applies both, so the
+  // enable/disable rule stays in one function rather than two that agree.
   //
   // Where there is no lock to apply -- an owner with no loans, or a
   // definition pinned to its loan -- the destination still drives the
@@ -684,10 +707,10 @@
   if (destinationSelect) {
     destinationSelect.addEventListener(
       'change',
-      loanDestinations.length > 0 ? toggleFields : fetchPreview
+      loansWithoutPayment.length > 0 ? toggleFields : fetchPreview
     );
   }
-  ['due_day_of_month', 'nominal_day', 'end_date',
+  ['due_day_of_month', 'nominal_day', 'max_per_month', 'end_date',
    'max_occurrences'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('change', fetchPreview);

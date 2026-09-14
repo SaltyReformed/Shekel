@@ -33,11 +33,23 @@
            and a slider move had no lever answer to refresh.  They do not
            ignore them any more, so a slider move must carry the stepper values
            too or the card would come back with the owner's entries reset; two
-           triggers with one include set is one trigger. #}
-        <div hx-get="{{ url_for('retirement.readiness_fragment') }}"
+           triggers with one include set is one trigger.
+
+           A SUPERSEDED request's answer never lands (plan step salary:S3-f-4,
+           an adversarial review): a refusal re-renders the rail -- the input
+           the owner is typing in included (R-SAL33) -- so an answer to an
+           earlier keystroke arriving after a later one would put the earlier
+           value back in the box, and two answers can land out of order.
+           ``hx-sync`` aborts the in-flight request when the next is issued,
+           and retirement_controls.js aborts it on the keystroke itself, before
+           the debounce, so the answer that lands always echoes the latest
+           input; the id is that script's handle for the abort. #}
+        <div id="readiness-refresh"
+             hx-get="{{ url_for('retirement.readiness_fragment') }}"
              hx-trigger="shekel:readiness-whatif from:body,
                          shekel:lever-refresh from:body"
              hx-target="#readiness-region" hx-swap="innerHTML"
+             hx-sync="this:replace"
              hx-include=".whatif-param, .lever-param"></div>
         <div id="readiness-region">
           {% with embedded = true %}
