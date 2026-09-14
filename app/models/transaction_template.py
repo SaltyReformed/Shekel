@@ -8,6 +8,7 @@ pay periods.
 """
 
 from app.extensions import db
+from app.models._derived_flag import DerivedFlag
 from app.models.mixins import (
     IsActiveMixin,
     OptimisticLockMixin,
@@ -147,6 +148,32 @@ class TransactionTemplate(
         cascade="all, delete-orphan",
         lazy="select",
     )
+
+    @DerivedFlag
+    def recurs(self):
+        """True when this definition has a recurrence rule.
+
+        **The ONE accessor for "does this definition repeat"** (plan step
+        ``balance:X-bi-7a``, ruling **R-BAL20**), stated on the definition
+        because that is where the fact lives -- the 0-or-1 cadence
+        ``recurrence:R-F6`` put on the RULE's side -- and delegated to by
+        :attr:`Transaction.recurs` for every row it generated.  A definition
+        with no rule is a ONE-OFF's: its rows are PLACED rather than
+        generated (a cleared cadence's survivors today; the family's cutover
+        and doors leaves mint one per one-off), no pass ever regenerates
+        them, the account-delete refusal counts these out, and
+        ``recurrence_engine.propagate_to_unruled_definition`` is how its
+        edits reach its rows.
+
+        A :class:`DerivedFlag` rather than a plain property because the
+        question is one a query would want to ask -- *the recurring
+        definitions on this account* -- and a plain property at class level
+        compares ``False`` to everything, so ``filter_by(recurs=True)`` would
+        return no rows with no error.  Spelling it in SQL (``has()`` over the
+        rule) would be a second body of one rule (ruling **R-IZ**); the
+        readers load and ask.
+        """
+        return self.recurrence_rule is not None
 
     def __repr__(self):
         return f"<TransactionTemplate '{self.name}' ${self.default_amount}>"

@@ -66,8 +66,10 @@ def _paychecks_per_year() -> "int | None":
     dropdown** (plan step R-F16).  The engine divides the annual salary by this
     number, so the page has to state it or the gross it previews is
     unexplainable -- but it is not the owner's to choose HERE: it derives from
-    ``budget.pay_schedule.cadence_days``, which the pay-period settings own,
-    and offering a second control was the finding.
+    the owner's pay era's cadence (``budget.pay_eras`` since plan step
+    ``pay_calendar:C17-a``; ``budget.pay_schedule.cadence_days`` until then),
+    which the pay-period settings own, and offering a second control was the
+    finding.
 
     ``None`` for an owner with no resolvable cadence, which the template
     renders as a pointer to generate a schedule.  Answered rather than raised:

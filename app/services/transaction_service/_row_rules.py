@@ -86,8 +86,8 @@ def repays_card_spend(txn: Transaction) -> bool:
     a ROW-backed one is copied once by
     ``credit_workflow.create_cc_payback_transaction`` and repaired never, so it
     STICKS and quietly stops matching the card.  ``is_override`` cannot carry
-    either case -- ``mutations._apply_field_updates`` sets it only for a
-    TEMPLATE-linked row, and a payback carries no template and no transfer.
+    either case -- ``routes/transactions/_field_updates._apply_field_updates`` sets it
+    only for a TEMPLATE-linked row, and a payback carries no template and no transfer.
 
     Args:
         txn: The row.  Reads ``credit_payback_for_id`` only -- the LINK is what

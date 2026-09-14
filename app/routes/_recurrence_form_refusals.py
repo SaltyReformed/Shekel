@@ -49,6 +49,7 @@ from app.schemas.validation import (
     RECURRENCE_STARTS_ON_KEY,
     end_bound_before_start_message,
 )
+from app.services import loan_loaders
 from app.services.cash_ledger import is_loan_payment_definition
 from app.services.balance_at import (
     BalanceContext,
@@ -58,6 +59,9 @@ from app.services.recurrence import (
     EndBound,
     end_bound_from_columns,
     stored_cadence,
+)
+from app.services.recurring_transfer_query import (
+    active_recurring_transfer_templates,
 )
 
 LOAN_PAYMENT_CANNOT_BE_ONE_TIME: str = (
@@ -137,9 +141,10 @@ into a loan, or a repeating transfer moved onto one, through the same reading
 **R-R76** and **R-R77**) -- ahead of :func:`refuse_recurrence_update`, whose
 presence rule below is the standing payment's alone.
 
-**Which definitions it fires for is
-``balance_at.is_standing_loan_payment``, not
-:func:`is_loan_payment`** (plan step R7b-4; read off the pass since R7d-f).
+**Which definitions it fires for is :func:`bounds_are_the_loans` --
+``balance_at.is_standing_loan_payment``, or its archived reading since plan
+step R7d-g-2 -- not :func:`is_loan_payment`** (plan step R7b-4; read off the
+pass since R7d-f).
 Those are different questions and asking the second was a defect an
 adversarial review of plan step R7b-3 found: a template can carry loan-payment
 SETTINGS without being the loan's standing payment, and its form then locked a
@@ -331,14 +336,144 @@ def is_loan_payment(template: Any) -> bool:
     return is_loan_payment_definition(template)
 
 
+def would_be_standing_payment(
+    account_id: int, user_id: int, *, template_id: int | None = None,
+) -> bool:
+    """Return whether a definition into loan *account_id* WOULD be its standing payment.
+
+    **The door-time reading of the standing-payment identity, spelled once
+    for its readers**: the two transfer-form doors' branch gate
+    (``_loan_destination.settle_first_occurrence`` and
+    ``settle_destination_for_update``, rulings **R-R60**, **R-R77** and, since
+    plan step R7d-g-2, **R-R81**: the standing branch runs ONLY where this
+    answers ``True``), the form's affordance
+    (``_loan_destination.loan_destination_locks``) and the archived reading
+    of the identity (:func:`bounds_are_the_loans`).
+
+    **It answers the SEAM's own question**, not an approximation of it
+    (developer 2026-09-13, after R7d-g-2's adversarial review).  The standing
+    payment is the loan's OLDEST active recurring transfer -- the first of
+    :func:`~app.services.recurring_transfer_query.active_recurring_transfer_templates`,
+    the producer the read pass memoises for
+    :func:`~app.services.balance_at.is_standing_loan_payment` -- so a
+    definition would be standing once saved and active exactly when no
+    active recurring transfer into the loan is OLDER than it.  A definition
+    that does not exist yet (*template_id* ``None``) is younger than every
+    active one, so it is standing only where the loan holds none.  The first
+    cut asked emptiness alone, and emptiness disagrees with the seam in one
+    shape: an ARCHIVED or MOVED definition older than the loan's live payment
+    is the seam's standing payment the moment it is active there, so a door
+    that read it as a second wrote the owner's start and the next sync
+    overwrote it -- the derive-then-discard shape ruling **R-R81** rejects.
+    This is a READ of the seam's tie-break (ordered by id, ruling **R-R35**),
+    not a second spelling of it: the ordering is the producer's.
+
+    Asked of the producer directly rather than off a pass: a create resolves
+    no loan before it generates, so there is no memo to read and building a
+    pass here would fold the loan for one boolean.
+
+    Lived in ``_loan_destination`` as ``_loan_holds_no_active_payment``
+    until plan step R7d-g-2, when the archived reading below needed it one
+    module down (that module imports this one, never the reverse).
+
+    Args:
+        account_id: A CONFIGURED loan's account.  The callers have already
+            established that (``load_loan_params`` for the doors, the loan-id
+            loader for the affordance); asked of a savings account this would
+            answer ``True`` and mean nothing.
+        user_id: The owner, scoping the query as the producer requires.
+        template_id: The definition's id where it exists -- an edit, an
+            archived transfer -- or ``None`` for one being created.
+
+    Returns:
+        ``True`` when no active recurring transfer into the loan is older
+        than the definition.
+    """
+    actives = active_recurring_transfer_templates(account_id, user_id)
+    if not actives:
+        return True
+    return template_id is not None and actives[0].id > template_id
+
+
+def bounds_are_the_loans(template: Any, pass_ctx: BalanceContext) -> bool:
+    """Return whether *template*'s two validity bounds are the LOAN's to state.
+
+    **The ONE predicate behind every per-bound rule the edit form applies**
+    (plan step R7d-g-2, ruling **R-R86**), read by the form's two locks
+    (:func:`~app.routes._recurrence_form_render.edit_form_recurrence_state`),
+    the presence refusal (:func:`refuse_recurrence_update`'s
+    ``LOAN_PAYMENT_BOUND_IS_DERIVED`` arm) and, through
+    :func:`is_loan_payment_or_standing`, the pin that keeps a loan payment on
+    its loan.  Two readings, one answer:
+
+    * the definition IS the loan's standing payment -- its oldest active
+      recurring transfer, off the pass's loan resolution
+      (:func:`~app.services.balance_at.is_standing_loan_payment`); or
+    * it is ARCHIVED, repeats, and pays into a configured loan holding no
+      active payment OLDER than it, so it BECOMES the standing payment the
+      moment it is unarchived (:func:`would_be_standing_payment`, the seam's
+      own oldest-active reading).
+
+    The second reading is plan ledger row **REC-522** closed structurally.
+    The seam's identity reads the ACTIVE set, so an archived former payment
+    answered ``False`` and its edit form unlocked both bound rows: the owner
+    could type a start and a stop that rode onto the loan's standing payment
+    when it was unarchived, with no sync to correct the start and the stop
+    stored as an owner's word in the column the composed door reads.  With
+    this reading the archived form renders exactly as the standing payment's
+    does -- both rows locked, the destination pinned -- and posts nothing; a
+    crafted submission stating a bound is refused; the stored bounds ride
+    through every edit untouched; and the UNARCHIVE door is where the start
+    is re-derived (ruling **R-R85**) and a stop the owner authored earlier is
+    honoured (ruling **R-R82**).  Nothing but an owner's submission writes the
+    closing-bound column, and the archived form cannot make one.  Rejected
+    (developer 2026-09-13): running the update door's loan branch for the
+    archived case -- derive and write the start, refuse a real stop, read
+    "nothing" as the unbounded rule -- which erases a stored owner's stop on
+    any edit of the archived transfer and, for a settings-carrying archived
+    payment (pinned, so shipped no lock affordance), silently replaces the
+    start its open row posts.
+
+    Cheapest disqualifiers first on the archived arm: the destination FK
+    (absent on a transaction template, which answers before its other
+    columns are read), the rule and ``is_active`` columns are in hand, the
+    loan-params load is one primary-key read, and the set query runs only for
+    an archived recurring transfer into a configured loan.
+
+    Args:
+        template: The ``TransactionTemplate`` or ``TransferTemplate``.  A
+            transaction template pays into no account and answers ``False``
+            on both readings (``getattr`` on the FK column keeps the archived
+            arm kind-agnostic, as the seam's own reader is).
+        pass_ctx: The read pass the route built, whose loan-resolution memo
+            answers the standing identity.
+
+    Returns:
+        ``True`` when the app derives both of this definition's bounds.
+    """
+    if is_standing_loan_payment(template, pass_ctx):
+        return True
+    account_id = getattr(template, "to_account_id", None)
+    if account_id is None or template.recurrence_rule is None or template.is_active:
+        return False
+    if loan_loaders.load_loan_params(account_id) is None:
+        return False
+    return would_be_standing_payment(
+        account_id, template.user_id, template_id=template.id,
+    )
+
+
 def is_loan_payment_or_standing(template: Any, pass_ctx: BalanceContext) -> bool:
     """Return whether *template* is a loan payment by EITHER identity.
 
     **The UNION two refusals cover, spelled once** (plan step R7d-f-5, ruling
     **R-R79**): a definition carrying loan-payment SETTINGS
-    (:func:`is_loan_payment`), OR the STANDING payment of the loan it pays
-    into -- its oldest active recurring transfer, read off the pass's loan
-    resolution (:func:`~app.services.balance_at.is_standing_loan_payment`).
+    (:func:`is_loan_payment`), OR the one whose bounds are the loan's
+    (:func:`bounds_are_the_loans`) -- the STANDING payment of the loan it pays
+    into, its oldest active recurring transfer read off the pass's loan
+    resolution (:func:`~app.services.balance_at.is_standing_loan_payment`),
+    or since plan step R7d-g-2 an ARCHIVED transfer that becomes it on
+    unarchive (ruling **R-R86**).
     Each half is the right question for one half of the harm the two refusals
     name.  ``is_loan_payment`` is the settings row's: the standing
     ``extra_principal`` it carries, and the amount model pricing the
@@ -379,7 +514,7 @@ def is_loan_payment_or_standing(template: Any, pass_ctx: BalanceContext) -> bool
     Returns:
         ``True`` when either identity holds.
     """
-    return is_loan_payment(template) or is_standing_loan_payment(template, pass_ctx)
+    return is_loan_payment(template) or bounds_are_the_loans(template, pass_ctx)
 
 
 def refuse_recurrence_update(
@@ -417,9 +552,10 @@ def refuse_recurrence_update(
             helpers pop the recurrence keys; not mutated.
         ctx: The form context: the submitted closing bound (``None`` when the
             form stated none) and where a refusal sends the user.
-        pass_ctx: The read pass.  Read for ONE fact, whether *template* is
-            the standing payment of the loan it pays into
-            (:func:`~app.services.balance_at.is_standing_loan_payment`),
+        pass_ctx: The read pass.  Read for ONE fact, whether *template*'s
+            bounds are the loan's (:func:`bounds_are_the_loans` -- the
+            standing payment of the loan it pays into, or an archived
+            transfer that becomes it on unarchive),
             which two of the four rules turn on -- and read only when one of
             them can fire, because answering it resolves the loan.  Built by
             the route BEFORE any write, as
@@ -476,7 +612,11 @@ def refuse_recurrence_update(
     # ONE guard over both bounds because ONE identity decides both (plan step
     # R7d-f split what each bound's rule MEANS without splitting the set it
     # applies to), and reading it off the pass is what keeps this refusal, the
-    # form's two locks and the composed door on one producer.
+    # form's two locks and the composed door on one producer.  Since plan
+    # step R7d-g-2 that identity has an ARCHIVED reading (ruling **R-R86**,
+    # ``bounds_are_the_loans``): a transfer that becomes the standing payment
+    # on unarchive renders the same two locked rows, so a stated bound here
+    # is the same crafted POST.
     #
     # **ABSENCE is the signal, for BOTH halves** (developer ruling
     # 2026-08-15).  Each locked control renders ``disabled`` and a disabled
@@ -495,7 +635,7 @@ def refuse_recurrence_update(
     # innocent rename on a stale echo.  The schema rule moved to CREATE instead
     # (``RecurrenceFormFieldsMixin.validate_recurrence_states_a_start``), which
     # is where the money it guards actually is.
-    if states_a_bound and is_standing_loan_payment(template, pass_ctx):
+    if states_a_bound and bounds_are_the_loans(template, pass_ctx):
         flash(LOAN_PAYMENT_BOUND_IS_DERIVED, "danger")
         return ctx.redirect.to_response()
     # **The SAME question ``edit_form_cadence`` renders unset on** (plan step
@@ -522,8 +662,10 @@ __all__ = [
     "LOAN_PAYMENT_CANNOT_BE_ONE_TIME",
     "UNREPAIRED_CADENCE_CANNOT_BE_CLEARED",
     "RecurrenceFormContext",
+    "bounds_are_the_loans",
     "is_loan_payment",
     "is_loan_payment_or_standing",
+    "would_be_standing_payment",
     "refuse_inverted_window",
     "refuse_recurrence_update",
 ]

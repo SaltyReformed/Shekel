@@ -21,6 +21,9 @@ Module map:
 * :mod:`app.routes.transfers._helpers` -- shared Marshmallow schema singletons
   and the ownership / cell-render helpers.
 * :mod:`app.routes.transfers.templates` -- recurring-template CRUD.
+* :mod:`app.routes.transfers.lifecycle` -- the template's archive /
+  unarchive / hard-delete doors (split out at plan step R7d-g-2, ruling
+  **R-R84**, when ``templates.py`` reached the 1,000-line cap).
 * :mod:`app.routes.transfers.forms` -- read-only grid-cell GET partials.
 * :mod:`app.routes.transfers.mutations` -- single-instance mutations (edit /
   ad-hoc create / delete / mark-done / cancel), co-located so their shared
@@ -37,6 +40,7 @@ from app.routes.transfers._bp import transfers_bp
 # out-of-order-import warnings that would otherwise fire on what is, by design,
 # a deferred-import side-effect registration.
 from app.routes.transfers import templates  # noqa: F401, E402
+from app.routes.transfers import lifecycle  # noqa: F401, E402
 from app.routes.transfers import forms  # noqa: F401, E402
 from app.routes.transfers import mutations  # noqa: F401, E402
 

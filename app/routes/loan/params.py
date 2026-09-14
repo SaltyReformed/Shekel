@@ -14,12 +14,13 @@ from decimal import Decimal
 from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user
 
-from app.exceptions import ValidationError as ShekelValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
+from app.routes._standing_payment import sync_loan_payment_start_or_refuse
+from app.routes._redirect_target import RedirectTarget
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _PARAM_FIELDS,
@@ -33,7 +34,6 @@ from app.services import (
     cash_ledger,
     loan_loaders,
     loan_posting_service,
-    loan_recurrence_sync,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.scenario_resolver import get_baseline_scenario
@@ -45,37 +45,6 @@ from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.digit_strings import parse_row_id
 
 logger = logging.getLogger(__name__)
-
-
-def _sync_payment_start_or_refuse(account):
-    """Re-derive the standing payment's start from *account*'s contract, or refuse.
-
-    The one call the two routes that MOVE a loan's contract make -- setup,
-    where an account already holding a recurring transfer becomes a loan and
-    that transfer becomes its standing payment (ruling **R-R81**: its start is
-    the contract's from that moment), and the params edit, where
-    ``payment_day`` moves the first installment (ruling **R-R29**).  The
-    CLOSING bound is derived on every read since plan step R7d-g and no edit
-    writes it; the one pair that step's CHECK could refuse out of either route
-    -- the moved start passing a stop the payment's owner authored (ruling
-    **R-R82**) -- is refused HERE, whole, naming the transfer, rather than left
-    to surface as an ``IntegrityError`` from the flush.
-
-    Args:
-        account: The loan account, owner-checked by the route.
-
-    Returns:
-        ``None`` when the start is in step (or nothing needed writing), else
-        the refusal redirect with the pending edit rolled back and the sentence
-        flashed.
-    """
-    try:
-        loan_recurrence_sync.sync_loan_payment_start(account.id)
-    except ShekelValidationError as exc:
-        db.session.rollback()
-        flash(str(exc), "danger")
-        return redirect(url_for("loan.dashboard", account_id=account.id))
-    return None
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/setup", methods=["POST"])
@@ -164,8 +133,12 @@ def create_params(account_id):
     # A recurring transfer that already pays into this account is the loan's
     # standing payment from this moment, and its start is the contract's
     # (ruling **R-R81**; plan step R7d-g).  Until that step the next
-    # chokepoint of any kind healed it; this door is where it becomes one.
-    refused = _sync_payment_start_or_refuse(account)
+    # chokepoint of any kind healed it; this door is where it becomes one,
+    # through the entry helper every such door calls (ruling **R-R85**).
+    refused = sync_loan_payment_start_or_refuse(
+        account.id,
+        redirect=RedirectTarget("loan.dashboard", {"account_id": account.id}),
+    )
     if refused is not None:
         return refused
     db.session.commit()
@@ -222,8 +195,14 @@ def update_params(account_id):
     # Re-derive the standing payment's OPENING bound before committing: a
     # PAYMENT-DAY change moves the loan's first contractual installment
     # (plan step C9a), the one stored bound on that rule a params edit can
-    # shift (ruling **R-R29**).
-    refused = _sync_payment_start_or_refuse(account)
+    # shift (ruling **R-R29**).  The one pair the window CHECK refuses out of
+    # this edit -- the moved start passing a stop the payment's owner
+    # authored (ruling **R-R82**) -- is refused there, whole, naming the
+    # transfer (ruling **R-R85**: the helper is every such door's).
+    refused = sync_loan_payment_start_or_refuse(
+        account.id,
+        redirect=RedirectTarget("loan.dashboard", {"account_id": account.id}),
+    )
     if refused is not None:
         return refused
     db.session.commit()

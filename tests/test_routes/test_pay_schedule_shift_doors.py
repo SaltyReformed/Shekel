@@ -10,7 +10,7 @@ is about is the browser's: the control is rendered from the shared
 ``PAYDAY_SHIFT_OPTIONS``, submitted as a ``ref.business_day_shifts`` id
 alongside every other control the form carries, deserialized to an enum member
 by
-:class:`~app.schemas.validation.pay_periods.BusinessDayShiftField`, and written
+:class:`~app.schemas.validation._pay_rhythm.BusinessDayShiftField`, and written
 beside the cadence in one statement.  A break anywhere in that chain reads to
 an owner as "I answered and the app ignored me", which is exactly the failure
 **N-398** records payroll making in the other direction.
@@ -86,6 +86,7 @@ class TestTheControlIsRenderedOnAllFourDoors:
         response = bare_auth_client.post("/pay-periods/generate", data={
             "start_date": "not-a-date",
             "num_periods": "3",
+            "cadence_kind": "fixed_days",
             "cadence_days": "14",
             "shift": shift_form_value(),
         })
@@ -150,7 +151,8 @@ class TestTheManageCardPreselectsTheLatestErasConvention:
 
     Plan step ``pay_calendar:C17-a`` moved the convention from the schedule
     row to the era, and the three templates read ``pp_era.shift_id`` where
-    they read ``pp_schedule.shift_id``; nothing graded the preselect before
+    they read ``pp_schedule.shift_id`` (``pp_rhythm.shift``, the stored
+    rhythm in wire spelling, since ``C17-d-3``); nothing graded the preselect before
     (the census above counts ``name="shift"`` only), which is how a re-pointed
     value could render every select back on ``none`` and pass.  Graded as the
     rendered ``<option ... selected>`` for the stored id, TWICE on the page
@@ -173,6 +175,7 @@ class TestTheManageCardPreselectsTheLatestErasConvention:
             assert auth_client.post("/pay-periods/regenerate", data={
                 "new_start_date": start.isoformat(),
                 "num_periods": "3",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(BusinessDayShiftEnum.PRIOR),
             }).status_code == 302
@@ -243,6 +246,7 @@ class TestEachDoorPersistsTheAnswer:
             response = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": display_today().isoformat(),
                 "num_periods": "3",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(BusinessDayShiftEnum.NEXT),
             })
@@ -264,6 +268,7 @@ class TestEachDoorPersistsTheAnswer:
             response = auth_client.post("/pay-periods/regenerate", data={
                 "new_start_date": start.isoformat(),
                 "num_periods": "3",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(BusinessDayShiftEnum.PRIOR),
             })
@@ -281,6 +286,7 @@ class TestEachDoorPersistsTheAnswer:
             response = auth_client.post("/pay-periods/reset", data={
                 "new_start_date": display_today().isoformat(),
                 "num_periods": "4",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(BusinessDayShiftEnum.NEXT),
                 "confirm": "true",
@@ -309,6 +315,7 @@ class TestADoorRefusesAPairNoCalendarCanDerive:
             response = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": display_today().isoformat(),
                 "num_periods": "3",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "2",
                 "shift": shift_form_value(BusinessDayShiftEnum.PRIOR),
             })
@@ -346,6 +353,7 @@ class TestADoorRefusesAPairNoCalendarCanDerive:
             response = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": display_today().isoformat(),
                 "num_periods": "3",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "2",
                 "shift": shift_form_value(BusinessDayShiftEnum.NONE),
             })
@@ -380,6 +388,7 @@ class TestAnUnmodelledConventionIsRefusedAtTheSchema:
             response = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": display_today().isoformat(),
                 "num_periods": "3",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": bogus,
             })

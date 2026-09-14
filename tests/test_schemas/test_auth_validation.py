@@ -31,6 +31,7 @@ import pytest
 from marshmallow import ValidationError
 
 from app.config import BaseConfig
+from app.services.pay_rhythm import FixedDays
 from app.schemas.validation import (
     ChangePasswordSchema,
     LoginSchema,
@@ -255,7 +256,11 @@ class TestRegisterSchema:
         cannot become a third statement of the same numbers.
         """
         data = RegisterSchema().load(self._valid_payload())
-        assert data["cadence_days"] == BaseConfig.DEFAULT_PAY_CADENCE_DAYS
+        # The rhythm is the loaded VALUE since plan step pay_calendar:C17-d-3
+        # (ruling R-PC84); the kind defaults with the day count.
+        assert data["rhythm"].cadence == FixedDays(
+            BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
+        )
         assert data["num_periods"] == BaseConfig.DEFAULT_PAY_PERIOD_HORIZON
 
     def test_missing_last_payday_is_rejected_with_its_own_message(self):

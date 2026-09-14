@@ -16,13 +16,14 @@ each:
     leftover.  See ``docs/carry-forward-aftermath-design.md`` Option F
     for the rationale.
 
-  * **Discrete templates / ad-hoc rows** (no recurring envelope template)
-    -- the pre-existing 33cd21e behaviour: relocate the row to the target
-    period and set ``is_override = True`` if template-linked so the
-    recurrence engine does not regenerate over the moved row.  Ad-hoc
-    envelope rows (``is_envelope`` set, no template) land here too: they
-    move whole and carry their entries, because there is no recurring
-    canonical to roll an unspent leftover into.
+  * **Discrete rows** (everything that is not a recurring envelope) -- the
+    pre-existing 33cd21e behaviour: relocate the row to the target period
+    and set ``is_override = True`` if its definition RECURS, so the
+    recurrence engine does not regenerate over the moved row.  Envelope rows
+    no rule generated -- ad-hoc, or a rule-less definition's (plan step
+    balance:X-bi-7a, ``Transaction.recurs``) -- land here too: they move
+    whole and carry their entries, because there is no recurring canonical
+    to roll an unspent leftover into.
 
   * **Transfer shadows** (``transfer_id IS NOT NULL``) -- delegate to
     ``transfer_service.update_transfer`` so the parent transfer and

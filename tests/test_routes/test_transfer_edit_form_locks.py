@@ -12,12 +12,20 @@ one-time transfer into a loan, and a repeating transfer moved onto one -- so
 the form invited a start the save replaces and a stop the save refuses.
 
 **What the edit form emits is decided the way the door decides the same edit**
-(:func:`~app.routes._loan_destination.loan_destination_locks_for_edit`), filter
-by filter: a definition ruling **R-R76** pins to its loan may not move at all,
-so it ships EMPTY sets and a DISABLED destination control carrying the
-refusal's sentence; a definition that already repeats leaves its stored
-destination out (staying put derives nothing); one that does not repeat yet
-keeps every loan in (adding a cadence derives for the loan it pays into).
+(:func:`~app.routes._loan_destination.loan_destination_locks_for_edit`): a
+definition ruling **R-R76** pins to its loan may not move at all, so it ships
+an EMPTY set and a DISABLED destination control carrying the refusal's
+sentence; every other definition ships the owner's payment-less loans.
+
+**Re-cut at plan step R7d-g-2**: ONE set (ruling **R-R81** -- the door derives
+a second transfer's start no longer, so the wider "every loan" set that locked
+the "Starts on" row alone is gone with the derivation, and with it the stored
+destination carve-out); and the pin's standing arm has an ARCHIVED reading
+(ruling **R-R86**, ``bounds_are_the_loans``): a transfer archived into a loan
+that holds no active payment OLDER than it -- the seam's own oldest-active
+reading -- renders as the standing payment does, both rows locked, the
+destination pinned, and a crafted bound is refused.  The cases that moved say
+so.
 
 Rendered HTML can see the attributes, the ``disabled`` flag and the help text;
 whether the script actually locks a row when a listed loan is chosen is
@@ -32,6 +40,7 @@ Two tests elsewhere had their premise reversed by this step's ruling
 sets, and ``test_transfer_create_derived_stop.py``'s help-sentence case asserts
 the edit form carries both sentences too.
 """
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -45,8 +54,14 @@ from app.routes._loan_destination import (
     LoanDestinationLocks,
     loan_destination_locks_for_edit,
 )
+from app.routes._recurrence_form_refusals import (
+    LOAN_PAYMENT_BOUND_IS_DERIVED,
+    bounds_are_the_loans,
+)
 from app.schemas.validation import SAME_ACCOUNT_TRANSFER_MESSAGE
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import reauthor_rule, recurrence_spec
 from tests._test_helpers import (
     cadence_payload,
     create_account_of_type,
@@ -88,14 +103,16 @@ def _savings(seed_user):
     )
 
 
-def _template_into(seed_user, account, name, *, repeats):
+def _template_into(seed_user, account, name, *, repeats, starts_on=None):
     """Return a FLUSHED transfer template into *account*, named *name*.
 
     ``make_transfer_template``'s shape with a free name -- the owner's names
     are unique (``uq_transfer_templates_user_name``) and several cases here
     need two definitions into one loan.  Priced through the one write door;
     given the every-paycheck rule when *repeats*, else left as the "does not
-    repeat" definition ``POST /transfers`` creates by default.  The caller
+    repeat" definition ``POST /transfers`` creates by default.  *starts_on*
+    re-authors the rule's first occurrence (the fixture's own is the
+    schedule's opening payday, before the loans here originate).  The caller
     commits.
     """
     template = TransferTemplate(
@@ -109,7 +126,13 @@ def _template_into(seed_user, account, name, *, repeats):
     db.session.flush()
     state_template_price(template)
     if repeats:
-        make_every_period_rule(db.session, template)
+        rule = make_every_period_rule(db.session, template)
+        if starts_on is not None:
+            reauthor_rule(
+                rule,
+                replace(recurrence_spec(rule), starts_on=starts_on),
+                calendar_for(seed_user["user"].id),
+            )
     return template
 
 
@@ -125,12 +148,17 @@ def _attribute(html, name):
     return container.split(f'{name}="')[1].split('"')[0]
 
 
-def _sets(html):
-    """Return the two lock sets the page emits, as the script reads them."""
-    return (
-        _attribute(html, "data-loan-account-ids"),
-        _attribute(html, "data-loan-account-ids-without-payment"),
+def _derived_set(html):
+    """Return the ONE lock set the page emits, as the script reads it.
+
+    And that the wider set the form carried until plan step R7d-g-2 is gone:
+    an attribute the script no longer reads would be a claim nothing grades.
+    """
+    container = html.split('id="recurrence-fields"')[1].split(">")[0]
+    assert 'data-loan-account-ids="' not in container, (
+        "the every-loan set left with the derivation it served (R-R81)"
     )
+    return _attribute(html, "data-loan-account-ids-without-payment")
 
 
 def _destination_select_tag(html):
@@ -141,6 +169,11 @@ def _destination_select_tag(html):
 def _starts_on_input_tag(html):
     """Return the opening tag of the "Starts on" ``<input>``."""
     return html.split('id="starts_on"')[1].split(">")[0]
+
+
+def _end_mode_select_tag(html):
+    """Return the opening tag of the "Ends" ``<select>``."""
+    return html.split('id="recurrence_end_mode"')[1].split(">")[0]
 
 
 def _pass(seed_user):
@@ -185,14 +218,15 @@ def _reload(template):
 class TestWhatTheEditFormEmits:
     """The rendered attributes, one edit shape at a time."""
 
-    def test_a_repeating_savings_transfer_names_every_loan(
+    def test_a_repeating_savings_transfer_names_the_payment_less_loans(
         self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """A repeating transfer into SAVINGS: every loan derives the start.
+        """A repeating transfer into SAVINGS: only a payment-less loan derives anything.
 
-        Its stored destination is not a loan, so the exclusion below has
-        nothing to remove; a move onto either loan derives the start, onto
-        the payment-less one the stop too (the door's rule 2 and rule 3).
+        A move onto the payment-less loan derives both bounds (the door's
+        rule 2); a move onto the paid one is a second transfer, both bounds
+        the owner's (rule 3), so it is in no set.  MOVED BY RULING at plan
+        step R7d-g-2 (**R-R81**): the paid loan was in the wider start set.
         """
         with app.app_context():
             paid = _mortgage(seed_user, "Paid")
@@ -203,26 +237,21 @@ class TestWhatTheEditFormEmits:
             )
             db.session.commit()
 
-            start_set, stop_set = _sets(_edit_form(auth_client, template))
+            assert _derived_set(_edit_form(auth_client, template)) == str(unpaid.id)
 
-            assert start_set == f"{paid.id},{unpaid.id}"
-            assert stop_set == str(unpaid.id)
-
-    def test_a_repeating_transfer_leaves_its_stored_loan_out(
+    def test_a_repeating_second_transfer_names_the_other_loan(
         self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """A repeating SECOND transfer into a paid loan: staying put derives nothing.
+        """A repeating SECOND transfer into a paid loan: its own loan is not listed.
 
         The loan's standing payment is the OLDER definition (the loan door's
         own, with a settings row), so this one is neither standing nor
-        settings-carrying -- not pinned -- and its stored start is its own
-        (plan ledger row **D50**).  The door's early return for "a rule, and
-        not moving" is what this mirrors: its stored loan leaves both sets and
-        the other loan stays.
-
-        NEGATIVE CONTROL: drop the ``excluding`` filter from
-        ``_loan_destination_lock_sets`` and the stored loan appears in the
-        start set, so the script would lock a start the door leaves alone.
+        settings-carrying -- not pinned -- and both its bounds are its own
+        (ruling **R-R81**).  Its stored loan holds a payment, so it is not in
+        the set; the payment-less loan is.  Until plan step R7d-g-2 a
+        carve-out excluded the stored destination by hand; the set's own
+        filter answers it now (an active recurring transfer's loan is never
+        payment-less).
         """
         with app.app_context():
             paid = _mortgage(seed_user, "Paid")
@@ -233,22 +262,23 @@ class TestWhatTheEditFormEmits:
 
             html = _edit_form(auth_client, second)
 
-            assert _sets(html) == (str(unpaid.id), str(unpaid.id))
+            assert _derived_set(html) == str(unpaid.id)
             assert "disabled" not in _destination_select_tag(html)
+            assert "disabled" not in _starts_on_input_tag(html)
 
     def test_a_one_time_transfer_into_a_loan_keeps_that_loan_in(
         self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
         """A transfer that does not repeat yet: adding a cadence derives for its own loan.
 
-        No rule, so nothing is excluded: the door's authoring shape derives
-        for whatever loan the edit LEAVES the definition paying into, the
-        stored one included -- and this loan holds no payment (a one-time
-        transfer is not a recurring one), so the stop derives too.
+        The door's authoring shape derives for whatever payment-less loan the
+        edit LEAVES the definition paying into, the stored one included --
+        this loan holds no payment (a one-time transfer is not a recurring
+        one).  The paid loan is not listed (ruling **R-R81**).
 
-        NEGATIVE CONTROL: exclude the stored destination whatever the rule
-        says and the stored loan leaves both sets, so the owner types a start
-        the save replaces -- the exact gap this leaf closes.
+        NEGATIVE CONTROL: exclude the stored destination and the stored loan
+        leaves the set, so the owner types a start the save replaces -- the
+        gap plan step R7d-f-5 closed.
         """
         with app.app_context():
             unpaid = _mortgage(seed_user, "Unpaid")
@@ -259,7 +289,7 @@ class TestWhatTheEditFormEmits:
 
             html = _edit_form(auth_client, one_off)
 
-            assert _sets(html) == (f"{unpaid.id},{paid.id}", str(unpaid.id))
+            assert _derived_set(html) == str(unpaid.id)
             assert "disabled" not in _destination_select_tag(html)
 
     def test_the_standing_payment_is_pinned(
@@ -281,12 +311,102 @@ class TestWhatTheEditFormEmits:
 
             html = _edit_form(auth_client, standing)
 
-        assert _sets(html) == ("", "")
+        assert _derived_set(html) == ""
         assert "disabled" in _destination_select_tag(html)
         assert LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION in html
         assert "disabled" in _starts_on_input_tag(html), (
             "the standing payment's Starts on row is server-locked"
         )
+
+    def test_an_archived_transfer_into_a_payment_less_loan_renders_as_the_standing_payment(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """Ruling **R-R86**: the archived reading of the identity, on the form.
+
+        The loan's only payment is archived, so the seam's identity (ACTIVE
+        transfers) answers ``False`` for it -- and until plan step R7d-g-2
+        its edit form unlocked both bound rows and offered the destination,
+        so an owner could author a start and a stop that rode onto the
+        loan's standing payment when it was unarchived (plan ledger row
+        **REC-522**).  It renders exactly as the standing payment's form
+        does now: both rows server-locked, the destination disabled with
+        the pin's sentence, an empty set.
+
+        NEGATIVE CONTROL: make ``bounds_are_the_loans`` return the seam's
+        identity alone and every one of the four assertions below fails.
+        """
+        with app.app_context():
+            loan = _mortgage(seed_user, "Paid")
+            _mortgage(seed_user, "Unpaid")
+            archived = _template_into(seed_user, loan, "Archived", repeats=True)
+            archived.is_active = False
+            db.session.commit()
+
+            html = _edit_form(auth_client, archived)
+
+        assert _derived_set(html) == ""
+        assert "disabled" in _destination_select_tag(html)
+        assert LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION in html
+        assert "disabled" in _starts_on_input_tag(html)
+        assert "disabled" in _end_mode_select_tag(html)
+
+    def test_an_archived_transfer_older_than_the_live_payment_renders_as_the_standing_payment(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """The seam's reading: older than the live payment, it IS standing on unarchive.
+
+        The identity is the OLDEST active transfer into the loan, so an
+        archived transfer created BEFORE the live payment becomes the
+        standing payment the moment it is unarchived.  Its form locks both
+        rows and pins the destination (developer 2026-09-13, after this
+        leaf's review: the first cut read emptiness alone and rendered this
+        form OPEN, so the owner typed a start the unarchive door overwrote).
+
+        NEGATIVE CONTROL: make ``would_be_standing_payment`` answer
+        emptiness alone and every assertion below fails.
+        """
+        with app.app_context():
+            paid = _mortgage(seed_user, "Paid")
+            _mortgage(seed_user, "Unpaid")
+            older = _template_into(seed_user, paid, "Older", repeats=True)
+            older.is_active = False
+            db.session.flush()
+            live = make_loan_payment_template(db.session, seed_user, paid)
+            db.session.commit()
+            assert older.id < live.id, "precondition: the archived one is older"
+
+            html = _edit_form(auth_client, older)
+
+        assert _derived_set(html) == ""
+        assert "disabled" in _destination_select_tag(html)
+        assert LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION in html
+        assert "disabled" in _starts_on_input_tag(html)
+        assert "disabled" in _end_mode_select_tag(html)
+
+    def test_an_archived_transfer_younger_than_the_live_payment_is_a_second_transfer(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """CONTROL for R-R86's reach: the loan holds an OLDER payment, so nothing locks.
+
+        An archived transfer created after the loan's live payment comes
+        back as a second transfer; its edit form is the owner's: rows open,
+        destination enabled, the payment-less loan listed.
+        """
+        with app.app_context():
+            paid = _mortgage(seed_user, "Paid")
+            make_loan_payment_template(db.session, seed_user, paid)
+            unpaid = _mortgage(seed_user, "Unpaid")
+            archived = _template_into(seed_user, paid, "Archived", repeats=True)
+            archived.is_active = False
+            db.session.commit()
+            unpaid_id = unpaid.id
+
+            html = _edit_form(auth_client, archived)
+
+        assert _derived_set(html) == str(unpaid_id)
+        assert "disabled" not in _destination_select_tag(html)
+        assert "disabled" not in _starts_on_input_tag(html)
+        assert "disabled" not in _end_mode_select_tag(html)
 
     def test_a_settings_carrying_second_payment_is_pinned_too(
         self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
@@ -315,7 +435,7 @@ class TestWhatTheEditFormEmits:
 
             html = _edit_form(auth_client, second)
 
-        assert _sets(html) == ("", "")
+        assert _derived_set(html) == ""
         assert "disabled" in _destination_select_tag(html)
         assert LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION in html
         assert "disabled" not in _starts_on_input_tag(html), (
@@ -376,6 +496,7 @@ class TestWhatTheEditFormEmits:
             html = auth_client.get("/templates/new").data.decode()
 
         assert "data-loan-account-ids" not in html
+        assert "data-loan-account-ids-without-payment" not in html
 
 
 class TestWhatThePinnedFormPosts:
@@ -473,14 +594,106 @@ class TestWhatThePinnedFormPosts:
             assert saved.version_id == version_before, "a refusal writes nothing"
 
 
+class TestWhatTheArchivedFormPosts:
+    """Ruling **R-R86** at the door: the archived form posts nothing, and a crafted bound is refused."""
+
+    def test_a_rename_saves_and_touches_neither_bound(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """What the locked archived form emits: the stored bounds ride through untouched.
+
+        The archived transfer stores an owner's start and stop (it was a
+        second transfer, then the standing payment was deleted); its rows
+        are locked, so a rename posts neither key, and the door leaves both
+        stored values alone -- the UNARCHIVE door is where the start is
+        re-derived and the stop honoured (rulings **R-R85**, **R-R82**).
+        """
+        with app.app_context():
+            loan = _mortgage(seed_user, "Paid")
+            # A stored start AFTER origination: the regeneration an edit runs
+            # would otherwise meet the transfer service's R-C refusal on the
+            # fixture's opening-payday start, which is not this case's
+            # subject.
+            archived = _template_into(
+                seed_user, loan, "Archived", repeats=True,
+                starts_on=date(2026, 5, 15),
+            )
+            archived.is_active = False
+            db.session.commit()
+            stored_start = archived.recurrence_rule.starts_on
+
+            resp = auth_client.post(f"/transfers/{archived.id}", data={
+                "name": "Archived, renamed",
+                "default_amount": str(archived.default_amount),
+                "from_account_id": str(archived.from_account_id),
+                "version_id": str(archived.version_id),
+                **cadence_payload(unit=RecurrenceUnitEnum.PERIOD, states_a_start=False),
+            })
+
+            assert resp.status_code == 302, _flashes(auth_client)
+            assert resp.headers["Location"].endswith("/transfers"), _flashes(auth_client)
+            saved = _reload(archived)
+            assert saved.name == "Archived, renamed"
+            assert saved.is_active is False
+            assert saved.recurrence_rule.starts_on == stored_start
+            assert saved.recurrence_rule.end_date is None
+
+    @pytest.mark.parametrize("crafted", [
+        pytest.param({"starts_on": "2026-06-01"}, id="a start"),
+        pytest.param(
+            {"recurrence_end_mode": "on_date", "end_date": "2027-01-01"}, id="a stop",
+        ),
+    ])
+    def test_a_crafted_bound_is_refused(
+        self, app, auth_client, seed_user, seed_periods, crafted,  # pylint: disable=unused-argument
+    ):
+        """REC-522's door: a bound posted for an archived would-be payment is refused.
+
+        The rows are disabled, so a key for either is a crafted POST, and
+        ``refuse_recurrence_update``'s presence rule answers it with the
+        standing payment's own sentence.  Nothing is written.
+
+        NEGATIVE CONTROL: make ``bounds_are_the_loans`` return the seam's
+        identity alone and the start is stored as posted (the update door
+        judges an archived template as any savings transfer).
+        """
+        with app.app_context():
+            loan = _mortgage(seed_user, "Paid")
+            archived = _template_into(
+                seed_user, loan, "Archived", repeats=True,
+                starts_on=date(2026, 5, 15),
+            )
+            archived.is_active = False
+            db.session.commit()
+            stored_start = archived.recurrence_rule.starts_on
+
+            resp = auth_client.post(f"/transfers/{archived.id}", data={
+                "name": archived.name,
+                "default_amount": str(archived.default_amount),
+                "from_account_id": str(archived.from_account_id),
+                "version_id": str(archived.version_id),
+                **cadence_payload(unit=RecurrenceUnitEnum.PERIOD, states_a_start=False),
+                **crafted,
+            })
+
+            assert resp.status_code == 302
+            assert resp.headers["Location"].endswith(f"/transfers/{archived.id}/edit")
+            assert LOAN_PAYMENT_BOUND_IS_DERIVED in _flashes(auth_client)
+            saved = _reload(archived)
+            assert saved.recurrence_rule.starts_on == stored_start
+            assert saved.recurrence_rule.end_date is None
+
+
 class TestTheEditProducer:
     """``loan_destination_locks_for_edit`` read directly, off a pass."""
 
-    def test_the_three_shapes(self, app, seed_user, seed_periods):  # pylint: disable=unused-argument
-        """Savings excludes nothing; a repeating loan transfer excludes its loan; a one-off keeps it.
+    def test_the_unpinned_shapes(self, app, seed_user, seed_periods):  # pylint: disable=unused-argument
+        """Savings, a second transfer and a one-off all ship the payment-less loans.
 
-        Ascending by account id in every set, and the stop set a subset of the
-        start set (which the value itself refuses to violate).
+        Ascending by account id.  MOVED BY RULING at plan step R7d-g-2
+        (**R-R81**): the three shapes shipped three different pairs of sets
+        while the door derived a second transfer's start; the one filter
+        answers all three now.
         """
         with app.app_context():
             paid = _mortgage(seed_user, "Paid")
@@ -494,40 +707,88 @@ class TestTheEditProducer:
             db.session.commit()
             ctx = _pass(seed_user)
 
-            assert loan_destination_locks_for_edit(savings, ctx) == LoanDestinationLocks(
-                start_derived_for=(paid.id, unpaid.id),
-                stop_derived_for=(unpaid.id,),
-            )
-            assert loan_destination_locks_for_edit(second, ctx) == LoanDestinationLocks(
-                start_derived_for=(unpaid.id,),
-                stop_derived_for=(unpaid.id,),
-            )
-            assert loan_destination_locks_for_edit(one_off, ctx) == LoanDestinationLocks(
-                start_derived_for=(paid.id, unpaid.id),
-                stop_derived_for=(unpaid.id,),
-            )
+            expected = LoanDestinationLocks(derived_for=(unpaid.id,))
+            assert loan_destination_locks_for_edit(savings, ctx) == expected
+            assert loan_destination_locks_for_edit(second, ctx) == expected
+            assert loan_destination_locks_for_edit(one_off, ctx) == expected
 
-    def test_a_pinned_definition_by_either_identity(
+    def test_a_pinned_definition_by_any_identity(
         self, app, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """Both arms of the R-R76 union answer the pinned value, sets empty."""
+        """Every arm of the R-R76 union answers the pinned value, set empty.
+
+        The standing payment, a settings-carrying second payment, and --
+        since plan step R7d-g-2 (ruling **R-R86**) -- a transfer archived
+        into a loan holding no active payment.
+        """
         with app.app_context():
             loan = _mortgage(seed_user, "Paid")
             _mortgage(seed_user, "Unpaid")
             standing = _template_into(seed_user, loan, "Standing", repeats=True)
             settings_carrying = make_loan_payment_template(db.session, seed_user, loan)
+            empty_loan = _mortgage(seed_user, "Was Paid")
+            archived = _template_into(seed_user, empty_loan, "Archived", repeats=True)
+            archived.is_active = False
             db.session.commit()
             ctx = _pass(seed_user)
 
             pinned = LoanDestinationLocks(
-                start_derived_for=(), stop_derived_for=(),
-                pinned_reason=LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION,
+                derived_for=(), pinned_reason=LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION,
             )
             assert loan_destination_locks_for_edit(standing, ctx) == pinned
             assert loan_destination_locks_for_edit(settings_carrying, ctx) == pinned
+            assert loan_destination_locks_for_edit(archived, ctx) == pinned
+
+    def test_the_archived_reading_of_the_identity(
+        self, app, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """``bounds_are_the_loans``, every arm (ruling **R-R86**).
+
+        True for the standing payment, for a recurring transfer archived
+        into a loan holding no active payment, and for one archived into a
+        loan whose live payment is YOUNGER (the seam's oldest-active
+        reading); false for an ACTIVE second transfer, for an archived one
+        younger than the live payment, for an archived one-time transfer,
+        and for an archived transfer into savings.
+        """
+        with app.app_context():
+            paid = _mortgage(seed_user, "Paid")
+            archived_older = _template_into(
+                seed_user, paid, "Archived older", repeats=True,
+            )
+            archived_older.is_active = False
+            standing = _template_into(seed_user, paid, "Standing", repeats=True)
+            second = _template_into(seed_user, paid, "Second", repeats=True)
+            archived_beside_live = _template_into(
+                seed_user, paid, "Archived beside live", repeats=True,
+            )
+            archived_beside_live.is_active = False
+            empty_loan = _mortgage(seed_user, "Was Paid")
+            archived_into_empty = _template_into(
+                seed_user, empty_loan, "Archived into empty", repeats=True,
+            )
+            archived_into_empty.is_active = False
+            archived_one_off = _template_into(
+                seed_user, empty_loan, "Archived one-off", repeats=False,
+            )
+            archived_one_off.is_active = False
+            archived_savings = _template_into(
+                seed_user, _savings(seed_user), "Archived savings", repeats=True,
+            )
+            archived_savings.is_active = False
+            db.session.commit()
+            ctx = _pass(seed_user)
+
+            assert bounds_are_the_loans(standing, ctx) is True
+            assert bounds_are_the_loans(archived_into_empty, ctx) is True
+            assert bounds_are_the_loans(archived_older, ctx) is True
+            assert bounds_are_the_loans(second, ctx) is False
+            assert bounds_are_the_loans(archived_beside_live, ctx) is False
+            assert bounds_are_the_loans(archived_one_off, ctx) is False
+            assert bounds_are_the_loans(archived_savings, ctx) is False
 
     def test_an_owner_with_no_loan(self, app, seed_user, seed_periods):  # pylint: disable=unused-argument
-        """Two empty sets and no pin: the script listens for nothing."""
+        """An empty set and no pin: the script listens for nothing."""
         with app.app_context():
             template = _template_into(
                 seed_user, _savings(seed_user), "To Savings", repeats=True,
@@ -536,33 +797,22 @@ class TestTheEditProducer:
 
             assert loan_destination_locks_for_edit(
                 template, _pass(seed_user),
-            ) == LoanDestinationLocks(start_derived_for=(), stop_derived_for=())
+            ) == LoanDestinationLocks(derived_for=())
 
 
 class TestTheValueRefusesToDisagreeWithItself:
-    """``LoanDestinationLocks.__post_init__``: the two invariants fire."""
+    """``LoanDestinationLocks.__post_init__``: the invariant fires."""
 
-    @pytest.mark.parametrize("start, stop", [
-        pytest.param((7,), (), id="pinned yet derives a start"),
-        pytest.param((7,), (7,), id="pinned yet derives both"),
-    ])
-    def test_a_pinned_value_carries_no_set(self, start, stop):
+    def test_a_pinned_value_carries_no_set(self):
         """A definition that cannot move has no destination choice to grade."""
         with pytest.raises(ValueError, match="pinned"):
             LoanDestinationLocks(
-                start_derived_for=start, stop_derived_for=stop,
-                pinned_reason=LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION,
+                derived_for=(7,), pinned_reason=LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION,
             )
 
-    def test_the_stop_set_is_a_subset_of_the_start_set(self):
-        """Every loan that derives the stop is a loan, and every loan derives the start."""
-        with pytest.raises(ValueError, match="without deriving the start"):
-            LoanDestinationLocks(start_derived_for=(7,), stop_derived_for=(7, 9))
-
     def test_the_two_shapes_that_construct(self):
-        """CONTROL: an unpinned pair and a pinned empty value both stand."""
-        LoanDestinationLocks(start_derived_for=(7, 9), stop_derived_for=(9,))
+        """CONTROL: an unpinned set and a pinned empty value both stand."""
+        LoanDestinationLocks(derived_for=(7, 9))
         LoanDestinationLocks(
-            start_derived_for=(), stop_derived_for=(),
-            pinned_reason=LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION,
+            derived_for=(), pinned_reason=LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION,
         )

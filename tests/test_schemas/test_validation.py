@@ -14,6 +14,7 @@ from decimal import Decimal
 import pytest
 from marshmallow import ValidationError
 
+from app.services.pay_rhythm import FixedDays
 from app.schemas.validation import (
     AccountCreateSchema,
     CategoryCreateSchema,
@@ -1026,14 +1027,21 @@ class TestPayPeriodGenerateSchema:
     """Tests for PayPeriodGenerateSchema."""
 
     def test_valid_data_with_defaults(self):
-        """Valid data uses defaults for num_periods and cadence_days."""
+        """Valid data uses defaults for num_periods and the rhythm.
+
+        The rhythm is read off the loaded payload as the VALUE since plan
+        step ``pay_calendar:C17-d-3`` (ruling **R-PC84**): the kind control
+        and the day count default together to every 14 days, and the wire
+        keys are consumed.
+        """
         data = PayPeriodGenerateSchema().load({
             "start_date": "2026-03-01",
         })
         from datetime import date
         assert data["start_date"] == date(2026, 3, 1)
         assert data["num_periods"] == 52   # Default.
-        assert data["cadence_days"] == 14  # Default.
+        assert data["rhythm"].cadence == FixedDays(14)  # Default.
+        assert "cadence_days" not in data
 
     def test_num_periods_out_of_range(self):
         """num_periods=0 fails Range(1-260) validation."""
@@ -1066,7 +1074,7 @@ class TestPayPeriodGenerateSchema:
         assert PayPeriodGenerateSchema().load({
             "start_date": "2026-03-01",
             "cadence_days": "1",
-        })["cadence_days"] == 1
+        })["rhythm"].cadence == FixedDays(1)
 
     def test_missing_start_date(self):
         """Missing start_date raises ValidationError."""

@@ -141,10 +141,14 @@ class DerivedRowFields(NamedTuple):
 def _derive_row_fields(template, rule, period):
     """Resolve what *template* and *period* derive on a generated row.
 
-    The single producer of :class:`DerivedRowFields`, so the create path and
-    the maintain path cannot disagree about what a generated row's definition
-    says -- see that class for why one statement of it is what lets a
-    regeneration UPDATE a row instead of destroying and rebuilding it.
+    The producer of :class:`DerivedRowFields` for a definition WITH a rule,
+    so the create path and the maintain path cannot disagree about what a
+    generated row's definition says -- see that class for why one statement
+    of it is what lets a regeneration UPDATE a row instead of destroying and
+    rebuilding it.  A definition with NO rule states the same five columns
+    and no date through :func:`_derive_unruled_fields` (plan step
+    ``balance:X-bi-7a``), which is the other way a row of a definition is
+    brought into line.
 
     **It took a ``GenerationSchedule`` and looked *period* up on that value's
     calendar until pay-calendar plan step C2-f3c**, then the CALENDAR alone
@@ -176,4 +180,34 @@ def _derive_row_fields(template, rule, period):
         transaction_type_id=template.transaction_type_id,
         amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
         due_date=compute_due_date(rule, period),
+    )
+
+
+def _derive_unruled_fields(template, row):
+    """Resolve what a RULE-LESS *template*'s definition says about *row*.
+
+    FIVE of the six columns, exactly as ``transfer_recurrence._derive_unruled_fields``
+    states them for the twin table (plan step ``balance:X-bi-7a``).  A
+    definition with no recurrence places no occurrence, so it states no DUE
+    DATE and the row keeps its own -- the owner's to state under ruling
+    **R-BAL22** -- which is expressed by deriving that field FROM the row
+    rather than by carrying a shorter tuple, so there is still exactly one
+    statement of what a generated row's definition says.
+
+    Args:
+        template: The rule-less
+            :class:`~app.models.transaction_template.TransactionTemplate`.
+        row: The :class:`~app.models.transaction.Transaction` it holds,
+            which supplies the one field the definition does not state.
+
+    Returns:
+        The :class:`DerivedRowFields` this definition says about *row*.
+    """
+    return DerivedRowFields(
+        account_id=template.account_id,
+        name=template.name,
+        category_id=template.category_id,
+        transaction_type_id=template.transaction_type_id,
+        amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
+        due_date=row.due_date,
     )

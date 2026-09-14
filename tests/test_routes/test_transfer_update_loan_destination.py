@@ -12,6 +12,13 @@ column).  Either way the row became the loan's standing payment with an
 owner's word in both bound columns.  ``settle_destination_for_update`` now
 runs ahead of the recurrence step and settles the definition the edit LEAVES.
 
+**Re-cut at plan step R7d-g-2 under ruling R-R81**: the door derives the
+start ONLY where the destination loan holds no active payment; a SECOND
+transfer's start is its owner's, required and refused at or before the
+loan's origination (``SECOND_TRANSFER_STARTS_AFTER_ORIGINATION``), and its
+stop is its owner's on the update door's ordinary reading.  The paid-loan
+cases below moved with that ruling and say so.
+
 **Every case reads the stored rule back**, never the redirect alone: a door
 that flashed the right sentence and saved anyway, or saved the typed start
 beside the right stop, passes a status-code assertion.  Every refusal asserts
@@ -32,7 +39,10 @@ from app.models.ref import RecurrenceUnit
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.routes._recurrence_form_refusals import LOAN_PAYMENT_BOUND_IS_DERIVED
-from app.routes._loan_destination import LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION
+from app.routes._loan_destination import (
+    LOAN_PAYMENT_CANNOT_CHANGE_DESTINATION,
+    SECOND_TRANSFER_STARTS_AFTER_ORIGINATION,
+)
 from app.schemas.validation import end_bound_before_start_message
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
@@ -86,6 +96,17 @@ _STORED_STOP = date(2027, 1, 1)
 #: transfer that stores it, inverted the moment the start is derived.
 _STORED_STOP_BEFORE_START = date(2026, 4, 1)
 
+#: A start a savings transfer STORES that falls after the loan's origination,
+#: so a move onto a PAID loan keeps it (ruling **R-R81**): the every-paycheck
+#: fixture's own start is the schedule's opening payday, before origination,
+#: which such a move refuses.
+_STORED_START_AFTER_ORIGINATION = date(2026, 5, 15)
+
+#: The refusal a second transfer meets for a start at or before origination.
+_ORIGINATION_REFUSAL = SECOND_TRANSFER_STARTS_AFTER_ORIGINATION.format(
+    loan="Mortgage", origination="Apr 15, 2026",
+)
+
 
 @pytest.fixture(autouse=True)
 def _frozen(monkeypatch):
@@ -132,22 +153,25 @@ def _one_off_into(seed_user, account, name="R7d-f-4 one-off"):
     return template
 
 
-def _recurring_into(seed_user, account, *, stop=None):
+def _recurring_into(seed_user, account, *, stop=None, start=None):
     """Return a COMMITTED every-paycheck transfer template into *account*.
 
     With *stop* stored as its authored closing bound when given -- the
     owner's own word about a savings transfer, written through the write
-    door and asserted back.
+    door and asserted back -- and *start* as its first occurrence when given
+    (the fixture's own is the schedule's opening payday).
     """
     template = make_transfer_template(db.session, seed_user, to_account=account)
-    if stop is not None:
+    if stop is not None or start is not None:
         rule = template.recurrence_rule
-        reauthor_rule(
-            rule,
-            replace(recurrence_spec(rule), end_bound=EndsOnDate(on=stop)),
-            calendar_for(seed_user["user"].id),
-        )
-        assert rule.end_date == stop, "precondition: the stop is stored"
+        spec = recurrence_spec(rule)
+        if stop is not None:
+            spec = replace(spec, end_bound=EndsOnDate(on=stop))
+        if start is not None:
+            spec = replace(spec, starts_on=start)
+        reauthor_rule(rule, spec, calendar_for(seed_user["user"].id))
+        if stop is not None:
+            assert rule.end_date == stop, "precondition: the stop is stored"
     db.session.commit()
     return template
 
@@ -336,19 +360,21 @@ class TestACadenceAddedToAOneTimeTransferIntoALoan:
         assert rule.starts_on == _FIRST_INSTALLMENT
         assert rule.end_date is None and rule.max_occurrences is None
 
-    def test_into_a_paid_loan_the_stop_is_the_owners_and_the_start_is_derived(
+    def test_into_a_paid_loan_both_bounds_are_the_owners(
         self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
         """A loan already holding a payment makes this a SECOND transfer.
 
-        Its stop is its owner's and binds beside the derived one (ruling
-        **R-R77**'s second-transfer clause); its start is still the loan's
-        on this tree -- plan ledger row **D50** was RULED at plan step R7d-g
-        (ruling **R-R81**: a second transfer's start is the owner's, refused
-        below origination) and leaf R7d-g-2 re-cuts this door and this case.
+        Its stop is its owner's (ruling **R-R77**'s second-transfer clause)
+        and, since plan step R7d-g-2, so is its start (ruling **R-R81**):
+        the typed date is stored, not the loan's first installment.  MOVED
+        BY RULING: until R7d-g-2 this case asserted the derived start beside
+        the owner's stop, the derive-then-discard shape plan ledger row
+        **D50** measured.
 
-        NEGATIVE CONTROL: delete the ``_loan_holds_no_active_payment`` test
-        from ``_refuse_stop_on_a_new_loan_payment`` and this is refused.
+        NEGATIVE CONTROL: delete the ``loan_holds_no_active_payment`` gate
+        from ``settle_destination_for_update`` and the start comes back
+        derived.
         """
         loan = _mortgage(seed_user)
         make_loan_payment_template(db.session, seed_user, loan)
@@ -364,19 +390,65 @@ class TestACadenceAddedToAOneTimeTransferIntoALoan:
         _assert_saved(resp, auth_client)
         rule = _reload(template).recurrence_rule
         assert rule is not None, _flashes(auth_client)
-        assert rule.starts_on == _FIRST_INSTALLMENT
+        assert rule.starts_on == _TYPED_START
         assert rule.end_date == _LATER_STOP
+        generated = [
+            row for row in _generated_into(loan)
+            if row.transfer_template_id == template.id
+        ]
+        assert generated, "the second transfer generated nothing"
+        assert generated[0].occurs_on == _TYPED_START, (
+            "a second transfer must generate from its owner's start, not the "
+            "loan's first installment"
+        )
 
-    def test_a_stop_before_the_derived_start_is_refused_on_a_paid_loan(
+    def test_into_a_paid_loan_a_start_at_or_before_origination_is_refused(
         self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """The comparison the schema made against the WRONG start.
+        """The one thing the loan still says about a second transfer's start.
 
-        ``require_end_bound_after_start`` compared the stop with the typed
-        start, which it follows; the derived start is later than both, so
-        the pair the write would state is inverted and would generate
-        nothing.  Refused with the window sentence, and NOT the derived-stop
-        one: a paid loan leaves the stop the owner's.
+        Ruling **R-R81**: refused at or before the loan's origination, with
+        the door's own sentence -- the transfer service's R-C floor is the
+        same fact, but it would refuse the first generated row after the
+        definition was flushed.  Both the boundary day and one before it,
+        because the service's boundary is ``<=`` and this must match it.
+        """
+        loan = _mortgage(seed_user)
+        make_loan_payment_template(db.session, seed_user, loan)
+        db.session.commit()
+        template = _one_off_into(seed_user, loan)
+
+        for typed in (_ORIGINATION, date(2026, 4, 14)):
+            resp = _post_update(
+                auth_client, template,
+                to_account_id=str(loan.id), **_cadence(starts_on=typed),
+            )
+            _assert_refused_to_the_edit_form(
+                resp, template, _ORIGINATION_REFUSAL, auth_client,
+            )
+            assert _reload(template).recurrence_rule is None
+
+        # The control: the day after originates.
+        resp = _post_update(
+            auth_client, template,
+            to_account_id=str(loan.id),
+            **_cadence(starts_on=date(2026, 4, 16)),
+        )
+        _assert_saved(resp, auth_client)
+        assert _reload(template).recurrence_rule.starts_on == date(2026, 4, 16)
+
+    def test_on_a_paid_loan_the_schema_grades_the_owners_pair(
+        self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """A second transfer's window is graded against ITS OWN start.
+
+        MOVED BY RULING at plan step R7d-g-2 (**R-R81**): this case posted a
+        typed start before origination and a stop after it, and asserted the
+        window sentence against the DERIVED start.  Nothing is derived for a
+        second transfer now, so the schema's own comparison
+        (``require_end_bound_after_start``) grades the posted pair: a stop
+        before the typed start is refused with the same sentence, and neither
+        the derived-stop nor the origination sentence speaks.
         """
         loan = _mortgage(seed_user)
         make_loan_payment_template(db.session, seed_user, loan)
@@ -386,26 +458,27 @@ class TestACadenceAddedToAOneTimeTransferIntoALoan:
         resp = _post_update(
             auth_client, template,
             to_account_id=str(loan.id),
-            **_cadence(starts_on=date(2025, 12, 1)),
+            **_cadence(starts_on=_TYPED_START),
             recurrence_end_mode="on_date", end_date=_EARLIER_STOP.isoformat(),
         )
 
         _assert_refused_to_the_edit_form(
             resp, template,
-            end_bound_before_start_message(_EARLIER_STOP, _FIRST_INSTALLMENT),
+            end_bound_before_start_message(_EARLIER_STOP, _TYPED_START),
             auth_client,
         )
         assert LOAN_PAYMENT_BOUND_IS_DERIVED not in _flashes(auth_client)
+        assert _ORIGINATION_REFUSAL not in _flashes(auth_client)
         assert _reload(template).recurrence_rule is None
 
-    def test_the_derived_rule_speaks_before_the_inverted_window(
+    def test_a_stop_before_the_derived_start_is_refused_as_a_stop_not_as_a_window(
         self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """Both refusals apply on a payment-less loan; the fundamental one speaks.
+        """On a payment-less loan the derived-stop sentence speaks; no window sentence exists.
 
-        NEGATIVE CONTROL: swap the two calls in
-        ``_refuse_stops_for_loan_destination`` and the window sentence is
-        flashed instead.
+        The create door's twin case says why: since plan step R7d-g-2 the
+        doors grade no stop against a derived start (ruling **R-R81**), so a
+        real stop here is refused for being stated at all, whatever its date.
         """
         loan = _mortgage(seed_user)
         template = _one_off_into(seed_user, loan)
@@ -529,12 +602,11 @@ class TestARecurringTransferMovedOntoALoan:
         loan; and a locked "Ends" row posts nothing, so this is the reading
         the affordance R7d-f-5 adds must be able to lock under.
 
-        NEGATIVE CONTROL: force ``stop_derived`` to ``False`` in
-        ``_settle_stop_for_loan_destination`` (both halves of the arm: the
-        bound graded and the bound handed back) and ``end_date`` reads
-        ``_STORED_STOP``.  Disabling only the first half still passes,
-        because the second hands ``NEVER_ENDS`` on -- measured while grading
-        this control; the case below is the one that grades that half.
+        NEGATIVE CONTROL: return ``end_bound`` instead of ``NEVER_ENDS`` from
+        ``_settle_standing_payment`` and ``end_date`` reads ``_STORED_STOP``
+        (the arm is one line since plan step R7d-g-2: the standing branch
+        hands the unbounded rule on unconditionally, the stored bound being
+        graded nowhere).
         """
         loan = _mortgage(seed_user)
         savings = _savings(seed_user)
@@ -614,19 +686,27 @@ class TestARecurringTransferMovedOntoALoan:
         assert template.to_account_id == savings.id
         assert template.recurrence_rule.unit_id == surplus.id
 
-    def test_onto_a_paid_loan_the_stored_stop_stays_the_owners(
+    def test_onto_a_paid_loan_both_stored_bounds_stay_the_owners(
         self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """A second transfer keeps its stored stop; only its start is derived.
+        """A second transfer keeps its stored start AND stop; nothing is derived.
 
-        CONTROL for ruling **R-R77**'s reach: the unbounded rule is written
-        only where the loan derives the stop.
+        CONTROL for ruling **R-R77**'s reach (the unbounded rule is written
+        only where the loan derives the stop) and, since plan step R7d-g-2,
+        for ruling **R-R81**'s: the stored start rides through the move
+        untouched.  MOVED BY RULING: this case asserted the derived start
+        beside the stored stop.  The stored start is after origination on
+        purpose -- the fixture's own, the schedule's opening payday, is
+        before it and the move would be refused for that (the next case).
         """
         loan = _mortgage(seed_user)
         make_loan_payment_template(db.session, seed_user, loan)
         db.session.commit()
         savings = _savings(seed_user)
-        template = _recurring_into(seed_user, savings, stop=_STORED_STOP)
+        template = _recurring_into(
+            seed_user, savings,
+            stop=_STORED_STOP, start=_STORED_START_AFTER_ORIGINATION,
+        )
         stored_start = template.recurrence_rule.starts_on
 
         resp = _post_update(
@@ -638,18 +718,24 @@ class TestARecurringTransferMovedOntoALoan:
         template = _reload(template)
         assert template.to_account_id == loan.id, _flashes(auth_client)
         rule = template.recurrence_rule
-        assert rule.starts_on == _FIRST_INSTALLMENT
+        assert rule.starts_on == stored_start
         assert rule.end_date == _STORED_STOP
 
-    def test_onto_a_paid_loan_a_stored_stop_before_the_derived_start_is_refused(
+    def test_onto_a_paid_loan_a_stored_start_before_origination_is_refused(
         self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """A stored stop the derived start would invert is refused, not written.
+        """A stored start the loan predates refuses the move, not the window.
 
-        Valid for the savings transfer that stored it; inverted the moment
-        the start is derived.  The write door does not refuse an inverted
-        pair and no CHECK does, so without this the row would move and
-        generate nothing.
+        The every-paycheck fixture's start is the schedule's opening payday
+        (2026-01-02), before the loan originates; moving it onto a paid loan
+        would generate rows the transfer service refuses (R-C), so the door
+        refuses first with the origination sentence (ruling **R-R81**).
+        Posted as a PARTIAL submission -- no cadence keys, the shape a form
+        that changes only the destination sends -- so the start graded is the
+        STORED one, which is the branch's second read.  MOVED BY RULING: this
+        case stored a stop before the derived start and asserted the window
+        sentence; nothing derives a start for a second transfer now, and a
+        stored pair that was valid stays valid.
         """
         loan = _mortgage(seed_user)
         make_loan_payment_template(db.session, seed_user, loan)
@@ -659,22 +745,20 @@ class TestARecurringTransferMovedOntoALoan:
             seed_user, savings, stop=_STORED_STOP_BEFORE_START,
         )
         stored_start = template.recurrence_rule.starts_on
+        assert stored_start < _ORIGINATION, "precondition: the fixture's start"
 
-        resp = _post_update(
-            auth_client, template,
-            to_account_id=str(loan.id), **_cadence(starts_on=stored_start),
-        )
+        resp = _post_update(auth_client, template, to_account_id=str(loan.id))
 
         _assert_refused_to_the_edit_form(
-            resp, template,
-            end_bound_before_start_message(
-                _STORED_STOP_BEFORE_START, _FIRST_INSTALLMENT,
-            ),
-            auth_client,
+            resp, template, _ORIGINATION_REFUSAL, auth_client,
         )
+        assert end_bound_before_start_message(
+            _STORED_STOP_BEFORE_START, _FIRST_INSTALLMENT,
+        ) not in _flashes(auth_client)
         template = _reload(template)
         assert template.to_account_id == savings.id
         assert template.recurrence_rule.starts_on == stored_start
+        assert template.recurrence_rule.end_date == _STORED_STOP_BEFORE_START
 
     def test_a_stored_stop_before_the_derived_start_is_replaced_where_the_loan_derives_the_stop(
         self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
@@ -689,12 +773,12 @@ class TestARecurringTransferMovedOntoALoan:
         cannot see.  This is the case that makes the graded half of the
         R-R77 arm visible (its sibling above passes with that half disabled).
 
-        NEGATIVE CONTROL: in ``_settle_stop_for_loan_destination`` change the
-        ``elif rule is not None`` to ``if rule is not None`` (so the stored
-        bound is graded even where the loan derives the stop) and this is
-        refused with the window sentence.  Deleting the ``NEVER_ENDS`` write
-        alone does NOT fire it: an ungraded ``None`` passes the window rule
-        and the handed-back bound is still the unbounded one -- measured.
+        Since plan step R7d-g-2 the standing branch grades no stored bound at
+        all (``_settle_standing_payment`` refuses a REAL stated stop and hands
+        ``NEVER_ENDS`` on; the window comparison went with ruling **R-R81**),
+        so what this case pins is that the stored stop is neither graded nor
+        kept.  NEGATIVE CONTROL: return ``end_bound`` instead of
+        ``NEVER_ENDS`` there and ``end_date`` reads the stored stop.
         """
         loan = _mortgage(seed_user)
         savings = _savings(seed_user)

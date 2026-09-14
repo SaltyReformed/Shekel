@@ -15,15 +15,12 @@ from marshmallow import (
 )
 
 from app.config import BaseConfig
-from app.enums import BusinessDayShiftEnum
-from app.schemas.validation._helpers import BaseSchema, _clear_nullable_empties
+from app.schemas.validation._helpers import BaseSchema
+from app.schemas.validation._pay_rhythm import DefaultedRhythmFields
 from app.schemas.validation.pay_periods import (
-    cadence_days_field,
     history_opens_on_field,
     num_periods_field,
     payday_field,
-    shift_field,
-    validate_derivable_rhythm,
 )
 
 
@@ -212,7 +209,7 @@ class LoginSchema(_AuthFormSchema):
     )
 
 
-class RegisterSchema(_AuthFormSchema):
+class RegisterSchema(DefaultedRhythmFields, _AuthFormSchema):
     """Validates POST data for /register.
 
     Required fields: email, display_name, password, confirm_password,
@@ -226,13 +223,19 @@ class RegisterSchema(_AuthFormSchema):
     **R-DB**), which deleted the fabricated sign-up pay period finding
     **N-123** traces, and a FOURTH arrived at plan step **balance:X-bh-2**
     (ruling **balance:R-IA**): ``history_opens_on``, how far back the owner's
-    paychecks reach.  They carry SHAPE only: the dates are dates and the two
+    paychecks reach.  They carry SHAPE only: the dates are dates and the
     integers are bounded, while whether the stated payday is one the owner
     could have been LAST paid on -- and whether the stated opening precedes it
     -- is ``auth_service``'s, because both need the user's clock or the other
     field, and a schema is not where this package reads a clock.  Every one of
-    the four takes the shared declaration the ``/pay-periods`` forms use, so
+    them takes the shared declaration the ``/pay-periods`` forms use, so
     the doors onto one calendar cannot bound their inputs differently.
+    **The rhythm's KIND and its arms' inputs arrived at plan step
+    ``pay_calendar:C17-d-3``** (ruling **R-PC84**), declared ONCE with the
+    generate door's in
+    :class:`~app.schemas.validation._pay_rhythm.DefaultedRhythmFields` and
+    collapsed into ``rhythm`` by its ``@post_load``; its ``@pre_load`` is
+    also what clears this form's untouched ``history_opens_on`` to ``None``.
 
     **The pay-calendar fields are declared AFTER the credential ones on
     purpose.**  Marshmallow accumulates errors in field-declaration order and
@@ -241,7 +244,11 @@ class RegisterSchema(_AuthFormSchema):
     *This read "``last_payday`` is declared LAST" and had not been true since
     X-ad-a itself, which put two more fields below it; the rule it was stating
     is the one above, and plan step balance:X-bh-2 adds a fourth field under
-    the same rule.*
+    the same rule.*  **The rhythm's six fields are the exception, and a
+    stated one**: they are ``DefaultedRhythmFields``', which marshmallow
+    orders BEFORE this class's own, and that mixin's docstring records the
+    one browser-producible error (exponent notation in a number box) that
+    now flashes ahead of a credential one.
     """
 
     email = _auth_email_field()
@@ -272,38 +279,29 @@ class RegisterSchema(_AuthFormSchema):
         ],
     )
     confirm_password = fields.String(required=True)
+    # The grid question is attributed to this box (RhythmFormMixin): a
+    # monthly rhythm stated from a day it does not pay is the payday's
+    # error, not the kind's.
+    payday_control = "last_payday"
     last_payday = payday_field(
         required=True,
         error_messages={"required": "Enter the day you were last paid."},
     )
-    cadence_days = cadence_days_field(
-        load_default=BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
-    )
-    shift = shift_field(load_default=BusinessDayShiftEnum.NONE)
     num_periods = num_periods_field(
         load_default=BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
     )
     history_opens_on = history_opens_on_field(load_default=None)
 
-    @pre_load
-    def normalize_inputs(self, data, **kwargs):
-        """Normalize the auth fields, then the cleared optional date.
-
-        Overrides :meth:`_AuthFormSchema.normalize_inputs` rather than adding a
-        second ``@pre_load``, which marshmallow would run in an unstated order.
-        The second half is what plan step **balance:X-bh-2** needed: an HTML
-        form submits every control it renders, so an untouched
-        ``history_opens_on`` arrives as ``""`` and
-        :func:`~app.schemas.validation._helpers._clear_nullable_empties` is
-        what turns that into the explicit ``None`` the field allows, instead of
-        a "Not a valid date." refusal every sign-up that skipped the question
-        would hit.  **The NULLABLE half only**, never
-        ``_normalize_empty_inputs``: that one also DROPS an empty
-        non-nullable input, which turns this form's own "Display name is
-        required." into marshmallow's "Missing data for required field." --
-        measured, on two suites.
-        """
-        return _clear_nullable_empties(self, _normalize_auth_form(data))
+    # The cleared-optional-input half of this form's ``@pre_load`` -- which
+    # plan step balance:X-bh-2 put in an override of
+    # ``_AuthFormSchema.normalize_inputs`` so the two halves ran in a stated
+    # order -- is ``RhythmFormMixin.clear_blank_rhythm_inputs`` since plan
+    # step pay_calendar:C17-d-3, because the rhythm's arms need the same
+    # clearing on every door.  The credential half stays the base class's.
+    # The two hooks commute (one strips and lowercases the credential
+    # strings, the other maps "" to None on the NULLABLE fields only), so
+    # marshmallow's unstated hook order is safe here; the override's warning
+    # against ``_normalize_empty_inputs`` now lives on the mixin's hook.
 
     @validates_schema
     def validate_password_bytes(self, data, **kwargs):
@@ -318,29 +316,6 @@ class RegisterSchema(_AuthFormSchema):
                 "Password and confirmation do not match.",
                 "confirm_password",
             )
-
-    @validates_schema
-    def validate_rhythm(self, data, **kwargs):
-        """Refuse a cadence and convention no calendar can derive.
-
-        The fourth of the four doors ruling **R-PC56** names, sharing the
-        pay-period schemas' own cross-field rule so sign-up and the settings
-        forms refuse the same pairs with the same wording.
-
-        **Not for field attribution, and a first draft of this docstring
-        claimed it was** (adversarial review, 2026-09-05).  On the three
-        pay-period doors the rule buys exactly that -- the message lands on
-        the ``shift`` control instead of under ``start_date``.  Registration
-        renders no field errors at all: ``routes/auth/credentials.register``
-        catches the marshmallow error and flashes
-        ``_first_validation_message``, so this refusal reads identically to
-        the one ``registration_service.register_user``'s up-front block would have
-        raised.  What it buys HERE is that all four doors refuse the same
-        pairs through one predicate rather than three of them through the
-        schema and the fourth through a service the schema does not reach.
-        """
-        validate_derivable_rhythm(data)
-
 
 class ChangePasswordSchema(BaseSchema):
     """Validates POST data for /change-password.
