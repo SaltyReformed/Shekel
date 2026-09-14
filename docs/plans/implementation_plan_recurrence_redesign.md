@@ -9,8 +9,8 @@ for (R-R16 / R-R18 / R-R27). Which steps are in PRODUCTION is a measurement, nev
 
 **R7d DECOMPOSED into seven leaves 2026-08-25 (R-R33, R-R34), R7d-c into two more 2026-08-27 (R-R38)
 and R7d-g into three 2026-09-13 (R-R80..R-R83); every reader is on the resolver and the WRITE is
-gone.** R7d-g-1 deleted the closing bound's writers, NULLed the cache and landed the window CHECK;
-left: the stored OPENING bound's maintenance contract (R7d-g-2) and the per-definition card
+gone.** R7d-g-1 deleted the closing bound's writers and landed the window CHECK; R7d-g-2 completed
+the stored OPENING bound's maintenance contract at every door; left: the per-definition card
 (R7d-g-3). **A tie-break is a sign the SEARCH is the wrong question** (R-R35): only ONE tier of
 three asks "which transfer into a loan is its payment", and **R16** deletes the rest -- DECOMPOSED
 into four leaves 2026-08-26 (**R-R36**); its summing leaf `R16-b-2` SHIPPED 2026-09-11 (`7e2e6413`),
@@ -480,21 +480,12 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
       `authored_closing` went; migration `bf50951a3599` NULLed the **R-R80** set (2 rows on
       production, `$0.00`) and landed the CHECK. Closed **D56**; ten tests flipped by ruling.
 
-- [ ] **R7d-g-2 -- the stored opening bound's maintenance contract is COMPLETE.**
-
-Under **R-R29** the standing payment's `starts_on` is a stored derived value, so every door where a
-definition BECOMES a loan's standing payment derives it and every mover re-derives it. Create
-(**R-R60**) and the update door's two edits (**R-R77**) have it; this leaf adds, through one entry
-helper: `unarchive_transfer_template` (**REC-522**), `archive_transfer_template` where the archive
-PROMOTES the next-oldest, and the standing payment's cadence-unit edit (PERIOD -> MONTH keeps a
-payday as the monthly day); loan setup already has it (R7d-g-1, after its review). None writes the
-closing bound (**R-R82**). Under **R-R81** the create and update doors derive the start ONLY where
-the loan holds no active payment; a SECOND transfer's owner-typed start is refused below
-origination, never replaced -- deleting the `$250.00` of past sweeps the doors as built generate for
-a mid-life sweep -- and `LoanDestinationLocks`' two sets collapse to the one payment-less set. The
-archived edit door refuses a real stop where unarchiving would make the definition standing. First,
-archive/unarchive move out of `transfers/templates.py` (at its 1,000-line cap): a pure move,
-AST-graded, its own commit (R-R78's shape). Closes **D35**, **D50**, **REC-522**.
+- [x] **R7d-g-2** `547cc43d` -- the stored opening bound's maintenance contract is COMPLETE: every
+      door where a definition becomes the standing payment (unarchive, archive, hard-delete, the
+      update door, setup, params) calls ONE entry helper (**R-R85**); a SECOND transfer's start is
+      its owner's, refused at or before origination (**R-R81**; the `$250.00` of past sweeps gone);
+      the archived edit form locks as the standing payment's (**R-R86**); the lifecycle doors moved
+      (**R-R84**). Closed **D35** (R-R29's residue is by design), **D50**, **REC-522**.
 
 - [ ] **R7d-g-3 -- the loan dashboard's payment card is PER DEFINITION.**
 
@@ -622,15 +613,16 @@ Found while X-f3b measured the ledger. Its two leaves are below.
 
 - [ ] **R19-b -- `occurs_on` becomes NOT NULL**, which is what makes `R19-a`'s branch unreachable
       rather than merely quiet. A template-linked non-override row always records the occurrence it
-      answers; `carry_forward_service` already achieves this by flagging its rows `is_override`, and
-      the one-time transfer branch (`routes/transfers/_instances._materialize_one_time_transfer`)
-      does not -- so it owes a rule for what occurrence a one-time transfer answers, its own date
-      being the obvious candidate. It deletes THREE fences: the NULL arm of `rows_claiming`'s claim
-      query, `R19-a`'s branch with the forward guard beside it, and
-      `idx_transfers_template_scenario_undated`. **Its backfill belongs in the migration** -- a
-      hand-run script is what left this reachable -- and **R-R46** is the obstacle to state and
-      answer: no migration here may import app code, because `build_test_template.py` replays the
-      chain from zero. Expect it to DECOMPOSE.
+      answers; `carry_forward_service` achieved this by flagging its rows `is_override` until
+      `balance:X-bi-7a` (`eecef63d`) stopped flipping a rule-less definition's row (**REC-523**),
+      and the one-time transfer branch
+      (`routes/transfers/_instances._materialize_one_time_transfer`) does not -- so it owes a rule
+      for what occurrence a one-time transfer answers, its own date being the obvious candidate. It
+      deletes THREE fences: the NULL arm of `rows_claiming`'s claim query, `R19-a`'s branch with the
+      forward guard beside it, and `idx_transfers_template_scenario_undated`.
+      **Its backfill belongs in the migration** -- a hand-run script is what left this reachable --
+      and **R-R46** is the obstacle to state and answer: no migration here may import app code,
+      because `build_test_template.py` replays the chain from zero. Expect it to DECOMPOSE.
 
 - [ ] **R11 -- the LEAD placement: fund an occurrence from an EARLIER paycheck.**
 
@@ -790,6 +782,13 @@ the Van Loan was set up 2026-03-27 with `current_principal` `$17,020.47`, carrie
 route's tests (a past origination writes ONE `tracking_start` at the stated date; a future one
 writes none; the stray-field case), the migration up and down on a clone, and
 `tests/manual/verify_loan_plan_sum.py`'s baseline byte-identical.
+
+- [ ] **R21 -- the walk's placement runs backward for a stated owner** (**R-R87**; finding
+      **REC-527**, born at `salary:R15-b`'s review): `paychecks_from` and `_first_occurrence` read
+      the calendar as `balance:X-bh-2` made it run below the record when `history_opens_on` is
+      stated; generation still needs a saved period. `$0.00` today; graded by re-pricing a stated
+      owner's backdated paydays against the ordinal rule R15-b retired. Revisits the 2026-08-10
+      forward-only boundary (**R-R64**) for stated owners only.
 
 - [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**
 

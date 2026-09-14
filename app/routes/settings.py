@@ -22,6 +22,7 @@ from app.schemas.validation import (
     CompanionCreateSchema,
     CompanionEditSchema,
     UserSettingsSchema,
+    rhythm_to_wire,
 )
 from app.models.category import Category
 from app.models.ref import AccountType, AccountTypeCategory, FilingStatus, TaxType
@@ -266,10 +267,12 @@ def _load_pay_periods_context(user_id):
         The section's context.  ``pp_periods`` is empty and ``pp_schedule`` is
         ``None`` for an owner with no schedule row -- the state the generate
         form exists to leave, and one the template already renders (it guards
-        every ``pp_schedule`` read).  ``pp_era`` is the owner's latest
-        :class:`~app.models.pay_era.PayEra` row, or ``None`` for an owner
-        holding no era, which since plan step ``pay_calendar:C17-a`` is also
-        the owner who gets no period rows: a calendar derives from eras.
+        every ``pp_schedule`` read).  ``pp_rhythm`` is the owner's latest
+        era's rhythm in the WIRE spelling the schedule forms post
+        (:func:`~app.schemas.validation._pay_rhythm.rhythm_to_wire`), or
+        ``None`` for an owner holding no era, which since plan step
+        ``pay_calendar:C17-a`` is also the owner who gets no period rows: a
+        calendar derives from eras.
     """
     schedule = pay_schedule_service.get_schedule(user_id)
     facts = (
@@ -296,12 +299,19 @@ def _load_pay_periods_context(user_id):
     return {
         "pp_periods": period_rows,
         "pp_schedule": schedule,
-        # The LATEST era's row, for the three forms that preselect the
-        # owner's payday convention (plan step pay_calendar:C17-a): the
-        # convention is an era's fact now, and the schedule row no longer
-        # carries one.  The ROW rather than the value, because a select is
-        # keyed on the wire id the row holds, exactly as ``pp_schedule`` was.
-        "pp_era": schedule.eras[-1] if facts is not None else None,
+        # The LATEST era's rhythm, for the three forms that preselect the
+        # owner's payday convention (plan step pay_calendar:C17-a) and,
+        # since plan step C17-d-3, their cadence KIND and its inputs: the
+        # rhythm is an era's fact, and the schedule row no longer carries
+        # one.  In the WIRE spelling rather than as the value or the row,
+        # because a form control is keyed on what it posts -- the
+        # convention's id, the kind's token, the arm's numbers -- and the
+        # schema's own inverse is the one place that spelling is produced.
+        # *It was the era ROW (``pp_era``) until C17-d-3, read for its
+        # ``shift_id`` alone.*
+        "pp_rhythm": (
+            rhythm_to_wire(facts.rhythm) if facts is not None else None
+        ),
         "pp_can_reset": pay_period_gates.can_reset_pay_periods(user_id),
     }
 

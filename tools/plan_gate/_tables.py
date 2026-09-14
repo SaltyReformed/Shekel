@@ -137,15 +137,18 @@ class StepRow:
         """Whether this row DECLARES itself the parent of a decomposition.
 
         **Declared, never derived, and that is the whole design.**  Rule 2 puts
-        a decomposition in the id, so deriving the relation by longest id
-        prefix is the obvious implementation -- and it is wrong on this corpus:
-        ``pay_calendar:C1`` is SHIPPED and is a string prefix of ``C10``,
-        ``C11`` and ``C12``, three unrelated OPEN steps, so a derived arm
-        reports three false failures.  **The worked example was the recurrence
-        arc's ``R-F1`` against ``R-F10`` / ``R-F12`` / ``R-F13`` until
-        2026-08-20**, and it went stale in both directions -- R-F13 is not in
-        the index at all and the other two have SHIPPED -- which is why
-        :func:`_staging.a_prefix_trap` now derives the specimen instead of
+        a decomposition in the id, so deriving the relation from the id is the
+        obvious implementation -- and it is wrong on this corpus: a suffix
+        also spells a FOLLOW-UP (``X-bi-1`` -> ``X-bi-1b``, ``X-bv`` ->
+        ``X-bv-2``, ``X-gd`` -> ``X-gd-1``; six such rows on 2026-09-14, five
+        of them SHIPPED with the successor open), so a derived parent set
+        would report five parents shipped ahead of a leaf.  **The worked
+        example was ``C1`` against ``C10`` / ``C11`` / ``C12`` until
+        2026-09-14** (and the recurrence arc's ``R-F1`` against ``R-F10`` /
+        ``R-F12`` / ``R-F13`` until 2026-08-20, which went stale in both
+        directions); :func:`_classes.is_leaf_ident`'s number boundary made the
+        first no example at all, which is why
+        :func:`_staging.a_prefix_trap` derives the specimen instead of
         three docstrings naming one.
 
         Consulting only DECLARED parents removes that class by construction

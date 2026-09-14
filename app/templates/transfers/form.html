@@ -93,30 +93,37 @@
       <div class="form-section--accent">
         <h6 class="form-section__title">Recurrence</h6>
         {{ recurrence_cadence_controls(recurrence.picker, recurrence.selected_cadence) }}
-        {# ``data-loan-account-ids`` carries which destinations the app derives
-           a first occurrence FOR, so recurrence_form.js can lock the "Starts
-           on" row the moment one is chosen (plan step R7c-b), and
-           ``data-loan-account-ids-without-payment`` the subset whose CLOSING
-           bound it derives as well -- the loans holding no active payment,
-           so the definition saved into one IS that loan's payment and the
-           "Ends" row locks too (plan step R7d-f-3).  Both come off ONE value
-           (_loan_destination.LoanDestinationLocks) so neither can be emitted
-           without the other.
+        {# ``data-loan-account-ids-without-payment`` carries which destinations
+           the app derives BOTH bounds for -- the owner's configured loans
+           holding no active recurring payment OLDER than this definition
+           (none at all, on a create), so the definition saved into one IS
+           that loan's standing payment: its first occurrence is the
+           loan's first contractual installment (plan step R7c-b) and its
+           closing bound the loan's payoff, with no stop of its owner's (plan
+           step R7d-f-3) -- so recurrence_form.js locks the "Starts on" and
+           "Ends" rows the moment one is chosen.  ONE set since plan step
+           R7d-g-2 (ruling R-R81): it was two, every loan for the start and
+           the payment-less subset for the stop, while the doors derived the
+           start for every loan destination; a SECOND transfer into a loan
+           that already holds a payment carries its owner's start and stop
+           now, so no row locks for it.  One value
+           (_loan_destination.LoanDestinationLocks).
 
            Emitted on BOTH forms since plan step R7d-f-5 (ruling R-R79), each
-           computed for ITS definition.  The create form's sets grade every
-           loan of the owner.  The edit form's are computed the way the update
+           computed for ITS definition.  The create form's set grades every
+           loan of the owner.  The edit form's is computed the way the update
            door decides the same edit (_loan_destination.loan_destination_locks_for_edit):
-           a definition that already repeats leaves its stored destination out
-           (staying put derives nothing), one that does not repeat yet keeps
-           every loan in (adding a cadence derives for the loan it pays into),
-           and a definition R-R76 pins to its loan ships EMPTY sets beside the
-           disabled destination control above.  The server answers the STORED
-           identity -- recurrence.selected_start.locked and .selected_end.locked
-           lock the standing payment's rows, and the script never re-enables
-           a control the server locked -- while the script answers the CHOSEN
-           destination against sets the server graded; the two never answer
-           one question, which is what keeps them from disagreeing.
+           a definition R-R76 pins to its loan -- the standing payment, an
+           archived transfer that becomes it on unarchive (ruling R-R86), or
+           one carrying loan-payment settings -- ships an EMPTY set beside
+           the disabled destination control above, and every other one the
+           loans it would be standing in.  The server answers the STORED identity --
+           recurrence.selected_start.locked and .selected_end.locked lock the
+           rows of a definition whose bounds are the loan's, and the script
+           never re-enables a control the server locked -- while the script
+           answers the CHOSEN destination against a set the server graded;
+           the two never answer one question, which is what keeps them from
+           disagreeing.
 
            The locks are affordances.  The enforcement is the route's --
            _loan_destination.settle_first_occurrence at create and
@@ -127,8 +134,7 @@
            stored value or the refusal, and no worse an outcome than a
            discarded input. #}
         <div id="recurrence-fields" class="d-none"
-             data-loan-account-ids="{{ loan_locks.start_derived_for|join(',') }}"
-             data-loan-account-ids-without-payment="{{ loan_locks.stop_derived_for|join(',') }}">
+             data-loan-account-ids-without-payment="{{ loan_locks.derived_for|join(',') }}">
           {# Each validity bound's row carries its own lock (plan step R7d-f).
              Both read ONE identity -- the loan's standing payment -- but what
              each lock MEANS differs: the opening bound is WRITTEN by

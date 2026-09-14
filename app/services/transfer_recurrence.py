@@ -58,6 +58,7 @@ from app.services.amount_ownership import derived_ownership
 from app.services._recurrence_common import (
     TemplateRowSelector,
     PlacedRow,
+    classify_unruled_work,
     log_resource_access_denied,
 )
 from app.services.recurrence import compute_due_date
@@ -277,7 +278,9 @@ def propagate_to_unruled_template(template, transfers) -> "list[int]":
     retained and reported.  That is the very inconsistency the step removed,
     re-created in the opposite direction.  Both paths ask
     :func:`_rows_holding_owner_records` and
-    :func:`_rows_the_definition_reattributes` now.
+    :func:`_rows_the_definition_reattributes` now, and the decision itself is
+    ``_recurrence_common.classify_unruled_work`` since plan step
+    ``balance:X-bi-7a``, shared with the transaction twin.
 
     **And only the fields that DIFFER are sent**, for the reason
     :func:`_apply_maintain_work` gives -- plus one this path has alone: sending
@@ -301,13 +304,12 @@ def propagate_to_unruled_template(template, transfers) -> "list[int]":
         NotFoundError: From ``transfer_service.update_transfer``.
         ValidationError: From ``transfer_service.update_transfer``.
     """
-    with_records = _rows_holding_owner_records(transfers)
-    reattributed = _rows_the_definition_reattributes(transfers, template)
-    retained = []
-    for xfer in transfers:
-        if xfer.id in reattributed and xfer.id in with_records:
-            retained.append(xfer.id)
-            continue
+    work = classify_unruled_work(
+        transfers,
+        with_records=_rows_holding_owner_records(transfers),
+        reattributed=_rows_the_definition_reattributes(transfers, template),
+    )
+    for xfer in work.update:
         changed = {
             field: value
             for field, value in _derive_unruled_fields(
@@ -327,7 +329,7 @@ def propagate_to_unruled_template(template, transfers) -> "list[int]":
             transfer_service.update_transfer(
                 xfer.id, template.user_id, **changed,
             )
-    return retained
+    return work.retained_ids
 
 
 def generate_for_template(template, schedule, scenario_id, effective_from=None):

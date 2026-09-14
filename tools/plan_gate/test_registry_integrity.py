@@ -620,29 +620,75 @@ class TestAParentTicksWithTheLastOfItsLeaves:
         rows = registry.step_rows()
         parents = [row for row in rows if row.is_decomposed_parent]
         assert parents, "no row declares itself a parent -- this arm grades nothing"
-        withleaves = [
-            p for p in parents
-            if any(r.arc == p.arc and r.ident != p.ident
-                   and r.ident.startswith(p.ident) for r in rows)
-        ]
+        withleaves = [p for p in parents if decomposition_leaf_keys(p, rows)]
         assert withleaves, f"no declared parent has a leaf in the table: {parents}"
 
-    def test_a_prefix_derivation_would_have_fired_falsely_on_this_corpus(self):
-        """The reason the parent set is DECLARED rather than derived.
+    def test_a_number_continuing_id_is_not_read_as_a_leaf_on_this_corpus(self):
+        """The id-prefix trap, graded on BOTH sides of the parent-leaf relation.
 
         :func:`_staging.a_prefix_trap` carries the argument and RAISES when the
-        corpus stops holding the trap -- which is this control firing.
+        corpus stops holding the trap -- which is this control firing.  Until
+        2026-09-14 this case asserted the OPPOSITE of its first half: that the
+        leaf derivation DID claim the sharers, and only the declared parent set
+        kept the arm quiet.  The first ``C2x`` id ever minted (``C20``) then
+        met a DECLARED parent (``C2``, shipped) and the arm fired falsely, so
+        the derivation gained :func:`_classes.is_leaf_ident`'s number boundary
+        and this half now grades it: a sharer that CONTINUES the shipped id's
+        trailing number is not its leaf.
         """
         shipped, sharers = a_prefix_trap()
         rows = registry.step_rows()
         by_key = {row.key: row for row in rows}
-        # A PREFIX derivation would claim the sharers as this row's leaves...
+        # The derivation must not claim the sharers as this row's leaves...
         derived = decomposition_leaf_keys(by_key[shipped], rows)
-        assert set(sharers) <= set(derived), (shipped, sharers, derived)
-        # ...and the DECLARED parent set is what stops the arm reporting it.
+        assert not set(sharers) & set(derived), (shipped, sharers, derived)
+        # ...and the arm reports nothing over them.
         assert not any(
             shipped in problem for problem in registry.decomposition_violations()
         ), f"{shipped} is reported over {sharers}, which are unrelated steps"
+
+    def test_the_number_boundary_grades_both_directions(self, stage):
+        """A sibling continuing a shipped parent's number is no leaf; one that does not is.
+
+        The specimen that found the defect was the identity class
+        ``balance:X-l`` / ``pay_calendar:C2`` / ``recurrence:R-F12`` (a SHIPPED
+        declared parent whose leaves are ``C2-*``) against ``C20``, an open
+        sibling one digit on -- chosen here by shape rather than named, so the
+        case outlives ``C20``'s own tick.  Staging the sibling's row under the
+        ident ``<parent>z`` (a suffix that does not continue the number) must
+        make the arm report the parent; the unstaged corpus must not.  Both
+        directions, because a control that grades only the quiet side reads
+        green while measuring nothing.
+        """
+        # CHOSEN, never named (the specimen defect D42 removed): any SHIPPED
+        # declared parent whose ident ends in a digit, and an OPEN same-arc row
+        # that continues that digit run -- the corpus is asserted to hold one so
+        # the quiet half cannot pass vacuously.
+        rows = registry.step_rows()
+        pairs = [
+            (parent, sibling)
+            for parent in rows if parent.shipped and parent.is_decomposed_parent
+            and parent.ident[-1].isdigit()
+            for sibling in rows if sibling.arc == parent.arc and not sibling.shipped
+            and sibling.ident.startswith(parent.ident)
+            and sibling.ident[len(parent.ident):len(parent.ident) + 1].isdigit()
+        ]
+        assert pairs, (
+            "no shipped declared parent has an open same-arc sibling continuing "
+            "its number, so the quiet half has nothing to grade -- re-anchor it"
+        )
+        parent, sibling = pairs[0]
+        assert sibling.key not in decomposition_leaf_keys(parent, rows), (parent.key, sibling.key)
+        assert not [p for p in registry.decomposition_violations() if f"{parent.ident} " in p]
+        staged_ident = f"{parent.ident}z"
+        line = row_of("steps", f"| {sibling.arc} | {sibling.ident} |")
+        stage("steps", line, with_cell(line, 1, staged_ident))
+        staged_rows = registry.step_rows()
+        staged_parent = {row.key: row for row in staged_rows}[parent.key]
+        staged_leaves = decomposition_leaf_keys(staged_parent, staged_rows)
+        assert f"{parent.arc}:{staged_ident}" in staged_leaves, staged_leaves
+        problems = [p for p in registry.decomposition_violations() if staged_ident in p]
+        assert problems, registry.decomposition_violations()
 
     def test_the_control_fires_when_a_parent_ships_over_an_open_leaf(self, stage):
         """The control fires when a parent ships over an open leaf.

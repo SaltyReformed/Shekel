@@ -14,6 +14,7 @@ from decimal import Decimal
 import pytest
 from marshmallow import ValidationError
 
+from app.services.pay_rhythm import FixedDays
 from app.schemas.validation import (
     AccountCreateSchema,
     CategoryCreateSchema,
@@ -927,19 +928,23 @@ class TestDeductionCreateSchema:
             "amount": "250.0000",
         })
         assert data["amount"] == Decimal("250.0000")
-        assert data["deductions_per_year"] == 26  # Default.
 
-    def test_invalid_deductions_per_year(self):
-        """deductions_per_year=52 fails OneOf validation."""
-        with pytest.raises(ValidationError) as exc:
-            DeductionCreateSchema().load({
-                "name": "Bad",
-                "deduction_timing_id": "1",
-                "calc_method_id": "1",
-                "amount": "100.0000",
-                "deductions_per_year": "52",
-            })
-        assert "deductions_per_year" in exc.value.messages
+    def test_the_schema_no_longer_reads_a_frequency_count(self):
+        """``deductions_per_year`` left the schema with its column (plan step salary:R15-b).
+
+        A line's cadence is a recurrence rule authored through the recurrence
+        seam (R15-c's form), so a posted count is an unknown key: dropped by
+        ``BaseSchema``'s EXCLUDE, never loaded, never written by name.
+        """
+        data = DeductionCreateSchema().load({
+            "name": "401k",
+            "deduction_timing_id": "1",
+            "calc_method_id": "1",
+            "amount": "250.0000",
+            "deductions_per_year": "24",
+        })
+        assert "deductions_per_year" not in data
+        assert "deductions_per_year" not in DeductionCreateSchema().fields
 
     def test_missing_required_field(self):
         """Missing name raises ValidationError."""
@@ -1022,14 +1027,21 @@ class TestPayPeriodGenerateSchema:
     """Tests for PayPeriodGenerateSchema."""
 
     def test_valid_data_with_defaults(self):
-        """Valid data uses defaults for num_periods and cadence_days."""
+        """Valid data uses defaults for num_periods and the rhythm.
+
+        The rhythm is read off the loaded payload as the VALUE since plan
+        step ``pay_calendar:C17-d-3`` (ruling **R-PC84**): the kind control
+        and the day count default together to every 14 days, and the wire
+        keys are consumed.
+        """
         data = PayPeriodGenerateSchema().load({
             "start_date": "2026-03-01",
         })
         from datetime import date
         assert data["start_date"] == date(2026, 3, 1)
         assert data["num_periods"] == 52   # Default.
-        assert data["cadence_days"] == 14  # Default.
+        assert data["rhythm"].cadence == FixedDays(14)  # Default.
+        assert "cadence_days" not in data
 
     def test_num_periods_out_of_range(self):
         """num_periods=0 fails Range(1-260) validation."""
@@ -1062,7 +1074,7 @@ class TestPayPeriodGenerateSchema:
         assert PayPeriodGenerateSchema().load({
             "start_date": "2026-03-01",
             "cadence_days": "1",
-        })["cadence_days"] == 1
+        })["rhythm"].cadence == FixedDays(1)
 
     def test_missing_start_date(self):
         """Missing start_date raises ValidationError."""

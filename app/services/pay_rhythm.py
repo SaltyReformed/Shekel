@@ -312,7 +312,7 @@ class Rhythm:
             on, as the :class:`~app.enums.BusinessDayShiftEnum` member rather
             than the ``ref.business_day_shifts`` id that spells it on the
             wire.  The id is what crosses a form and what the column holds, so
-            :class:`~app.schemas.validation.pay_periods.BusinessDayShiftField`
+            :class:`~app.schemas.validation._pay_rhythm.BusinessDayShiftField`
             converts on the way in and
             :func:`~app.services.pay_era_write.mint_era`
             converts on the way out; between them the value is a member, which

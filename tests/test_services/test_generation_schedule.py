@@ -93,6 +93,7 @@ from tests._test_helpers import (
     derived_span,
     last_covered_day,
     make_cadence_rule,
+    make_deduction_cadence_rule,
     make_transfer_template,
     payroll_basis,
     populate_in_a_fresh_pass,
@@ -565,9 +566,11 @@ class TestThePaycheckSeesTheWholeSchedule:
     def _salary_template(self, seed_user):
         """Create a salary profile whose deduction skips the 3rd paycheck.
 
-        ``deductions_per_year=24`` is the cadence
-        ``paycheck_calculator._deduction_applies_at`` skips on a month's third
-        payday -- the exact judgement the truncated period set got wrong on
+        The line's rule -- every paycheck, at most 2 a month, the shape plan
+        step salary:R15-b migrates a 24 onto -- is the cadence the engine
+        skips on a month's third payday through the recurrence walk (it was
+        ``deductions_per_year=24`` under ``_deduction_applies_at`` until that
+        step): the exact judgement the truncated period set got wrong on
         production.
 
         Args:
@@ -604,7 +607,7 @@ class TestThePaycheckSeesTheWholeSchedule:
         db.session.add(profile)
         db.session.flush()
 
-        db.session.add(PaycheckDeduction(
+        deduction = PaycheckDeduction(
             salary_profile_id=profile.id,
             deduction_timing_id=db.session.query(DeductionTiming)
             .filter_by(name="pre_tax").one().id,
@@ -612,8 +615,10 @@ class TestThePaycheckSeesTheWholeSchedule:
             .filter_by(name="flat").one().id,
             name="Health Insurance",
             amount=Decimal("500.00"),
-            deductions_per_year=24,
-        ))
+        )
+        db.session.add(deduction)
+        db.session.flush()
+        make_deduction_cadence_rule(db.session, deduction, 24)
         seed_tax_bracket_set(seed_user["user"].id)
         seed_state_tax_config(seed_user["user"].id, Decimal("0.0399"))
         seed_fica_config(seed_user["user"].id)

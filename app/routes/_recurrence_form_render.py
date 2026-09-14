@@ -25,8 +25,12 @@ three questions the two template forms render a control for:
   derives it.
 
 **Each bound's row carries its own lock, since plan step R7d-f.**  Both rows
-lock on ONE identity -- the definition is the standing payment of the loan it
-pays into (:func:`~app.services.balance_at.is_standing_loan_payment`)
+lock on ONE identity -- the definition's bounds are the loan's
+(:func:`~app.routes._recurrence_form_refusals.bounds_are_the_loans`): it is
+the standing payment of the loan it pays into
+(:func:`~app.services.balance_at.is_standing_loan_payment`), or since plan
+step R7d-g-2 an archived transfer that becomes it on unarchive (ruling
+**R-R86**)
 -- but what the lock MEANS differs per bound, and a single ``bounds_are_derived``
 flag said "the app writes both", a premise ruling **R-R29** made false.  The
 opening bound IS written: ``starts_on`` is the loan's first contractual
@@ -69,8 +73,9 @@ from typing import Any
 
 from flask import flash
 
+from app.routes._recurrence_form_refusals import bounds_are_the_loans
 from app.schemas.validation import EFFECTIVE_DATE_MAX, EFFECTIVE_DATE_MIN
-from app.services.balance_at import BalanceContext, is_standing_loan_payment
+from app.services.balance_at import BalanceContext
 from app.services.recurrence import (
     NEVER_ENDS,
     UNREADABLE_CADENCE_MESSAGE,
@@ -303,12 +308,13 @@ def create_form_recurrence_state() -> RecurrenceFormState:
     decision rather than a convenience.  Nothing is resolved here because
     there is no definition yet to resolve: a create form takes no read pass,
     and the loan-destination locks it applies as the user picks an account
-    are the browser's affordance over the two sets the transfer route emits
-    (:class:`~app.routes._loan_destination.LoanDestinationLocks`:
-    every loan derives the start, a loan holding no payment yet derives the
-    stop as well), with the derivation and the refusal the route's
-    (``settle_first_occurrence``, rulings **R-R60** and 2026-09-12's on what
-    a stated stop is at create).
+    are the browser's affordance over the ONE set the transfer route emits
+    (:class:`~app.routes._loan_destination.LoanDestinationLocks`: the loans
+    holding no payment yet, which derive both bounds -- since plan step
+    R7d-g-2, ruling **R-R81**; a loan already holding one takes a second
+    transfer with its owner's bounds), with the derivation and the refusal
+    the route's (``settle_first_occurrence``, rulings **R-R60** and
+    2026-09-12's on what a stated stop is at create).
 
     Returns:
         The :class:`RecurrenceFormState`.
@@ -332,8 +338,11 @@ def edit_form_recurrence_state(
     in the transaction form and another in the transfer form.
 
     **The identity is asked once, and the definition is resolved only for a
-    LOCKED row with a readable cadence.**  Whether *template* is the standing
-    payment of the loan it pays into decides both rows' locks; the composed
+    LOCKED row with a readable cadence.**  Whether *template*'s bounds are
+    the loan's -- it is the standing payment of the loan it pays into, or an
+    archived transfer that becomes it on unarchive (ruling **R-R86**,
+    :func:`~app.routes._recurrence_form_refusals.bounds_are_the_loans`) --
+    decides both rows' locks; the composed
     door (:func:`~app.services.recurring_definition.resolved_definition`) is
     what a locked "Ends" row displays and nothing else on this form reads it,
     so an open row -- every transaction template, every savings transfer, a
@@ -357,15 +366,16 @@ def edit_form_recurrence_state(
         The :class:`RecurrenceFormState`.
 
     Raises:
-        BaselineMissingError: *template* is the standing payment of a
-            configured loan and the owner has no baseline scenario (ruling
+        BaselineMissingError: *template*'s bounds are a configured loan's --
+            its standing payment, or an archived transfer that becomes it on
+            unarchive -- and the owner has no baseline scenario (ruling
             **R-R30**), raised by the seam's own guard on the way to the
             derived stop and answered by the application-level handler.  Any
             other definition renders for such an owner, a second transfer
             into a loan included: its row is open and reads no derived stop.
     """
     cadence = edit_form_cadence(template)
-    locked = is_standing_loan_payment(template, ctx)
+    locked = bounds_are_the_loans(template, ctx)
     resolved = (
         resolved_definition(template, ctx)
         if locked and cadence is not None else None
@@ -410,7 +420,9 @@ def edit_form_cadence(template: Any) -> SelectedCadence | None:
 
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate`` being
-            edited.  Read for ``recurrence_rule`` only; not mutated.
+            edited -- or, since plan step salary:R15-c, a ``PaycheckDeduction``,
+            whose row's edit prefill the salary page reads through this same
+            function.  Read for ``recurrence_rule`` only; not mutated.
 
     Returns:
         The :class:`~app.services.recurrence.SelectedCadence` to preselect, or

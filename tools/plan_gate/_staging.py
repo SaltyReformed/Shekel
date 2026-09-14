@@ -177,14 +177,16 @@ def a_prefix_trap() -> tuple[str, list[str]]:
     single reason that the corpus had progressed, and the workaround was to
     hold ``R-F1`` in a size-capped index for the control's benefit.
 
-    **What deriving buys is one hop and a MESSAGE, not immortality.**  Exactly
-    ONE pair qualifies on the live corpus (``pay_calendar:C1`` against ``C10``
-    / ``C11`` / ``C12``), so the next step to tick all three takes this red
-    again -- but it takes it with a sentence naming what left, where the named
-    version took it with a ``KeyError``.
+    **What deriving buys is one hop and a MESSAGE, not immortality.**  The
+    pairs on the live corpus are ``pay_calendar:C1`` against its ``C1x``
+    sharers, so the tick that ships the last of them takes this red again --
+    but it takes it with a sentence naming what left, where the named version
+    took it with a ``KeyError``.  **Since 2026-09-14 the specimen grades the
+    LEAF side**: :func:`_classes.is_leaf_ident`'s number boundary must NOT read
+    the sharers as the shipped step's leaves (``C20`` had read as ``C2``'s).
 
     TWO exclusions, both of which make the pair genuinely unrelated: a DECLARED
-    parent, whose prefix-sharers ARE its leaves; and a sharer spelled
+    parent, whose leaf-spelled sharers ARE its leaves; and a sharer spelled
     ``<id>-<suffix>``, which is rule 2's decomposition spelling and so is a
     real parent-leaf relation whether or not anyone declared it.  Without the
     second, a future undeclared parent shipped ahead of an open leaf would be
@@ -216,9 +218,9 @@ def a_prefix_trap() -> tuple[str, list[str]]:
             return row.key, sharers
     raise AssertionError(
         "no SHIPPED step is a string prefix of an OPEN one anywhere in the "
-        "corpus, so the id-PREFIX trap has left it entirely.  The parent set "
-        "is DECLARED rather than derived BECAUSE of that trap: re-read that "
-        "reasoning before relaxing anything here"
+        "corpus, so the id-PREFIX trap has left it entirely.  The number "
+        "boundary in _classes.is_leaf_ident was measured against this trap: "
+        "re-anchor the control on a live pair before relaxing anything here"
     )
 
 

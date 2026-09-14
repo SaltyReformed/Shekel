@@ -479,21 +479,25 @@ class TestNoPaymentGeneratesBeforeTheLoan:
 
         **The form's own "Starts on" is OVERWRITTEN here, deliberately.**  The
         posted payload carries today (2026-03-20, what a create form opens on),
-        and ``bind_rule_to_loan`` replaces it with the loan's contract -- which
-        is the rule ``LOAN_PAYMENT_BOUND_IS_DERIVED`` states on the EDIT path,
-        where the control renders locked so the user is never asked for a value
-        the app is going to discard.  What this test pins is that the SERVER
-        wins whatever the client posts, which is what makes the lock a
-        presentation choice rather than the enforcement.
+        and ``settle_first_occurrence`` replaces it with the loan's contract
+        -- which is the rule ``LOAN_PAYMENT_BOUND_IS_DERIVED`` states on the
+        EDIT path, where the control renders locked so the user is never
+        asked for a value the app is going to discard.  What this test pins
+        is that the SERVER wins whatever the client posts, which is what
+        makes the lock a presentation choice rather than the enforcement.
+        Still true after plan step R7d-g-2 (ruling **R-R81**), because this
+        loan holds no payment: the definition created IS its standing payment.
 
         NEGATIVE CONTROL: remove the ``settle_first_occurrence`` call from
         ``transfers.templates._settle_create_references`` and those three come
         back.  It named ``bind_rule_to_loan`` until plan step R7c-b, and that
         control is now FALSE: the derivation moved AHEAD of the rule being
         built (developer ruling 2026-08-15, so nothing is authored and then
-        replaced), and the sync that runs afterwards finds the date already
-        right.  A negative control that no longer fires is worse than none --
-        it reports a guard as tested.
+        replaced), and the create path's later bind was DELETED at plan step
+        R7d-g-2 (ruling **R-R85**) -- it found the date already right for the
+        standing payment and overwrote an owner's for a second transfer.  A
+        negative control that no longer fires is worse than none -- it
+        reports a guard as tested.
         """
         acct = _upcoming_mortgage(seed_user, db.session, seed_periods)
         checking = seed_user["account"]
@@ -528,11 +532,13 @@ class TestNoPaymentGeneratesBeforeTheLoan:
     def test_a_non_loan_destination_is_left_unbounded(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """The bind is a no-op for every non-loan destination.
+        """The derivation is a no-op for every non-loan destination.
 
-        ``bind_rule_to_loan`` is called unconditionally on the generic route, so
-        it must not overwrite an ordinary savings transfer's start -- which
-        would move the user's own schedule onto a loan's contract.
+        ``settle_first_occurrence`` runs for every create on the generic route
+        (and ``bind_rule_to_loan`` did too, unconditionally, until plan step
+        R7d-g-2 deleted that call), so neither may overwrite an ordinary
+        savings transfer's start -- which would move the user's own schedule
+        onto a loan's contract.
 
         **"Unbounded" is no longer expressible as a NULL** (plan step R7c-b
         made ``starts_on`` ``NOT NULL``), and the honest statement is stronger:
@@ -875,25 +881,22 @@ class TestAMonthEndLoanKeepsItsMonthEnd:
 
 
 class TestALoanCreateMayNotStopBeforeTheDerivedStart:
-    """The CREATE door's half of the window rule (plan step R7c-b).
+    """A SECOND transfer's window, at the CREATE door, since ruling R-R81.
 
-    ``require_end_bound_after_start`` runs inside the schema's ``@post_load``
-    and early-returns when ``starts_on`` is absent -- which is exactly what a
-    loan destination's submission looks like, because the form locks that
-    control and a disabled input posts nothing.  The route then DERIVES the
-    date from the loan's contract, after validation has finished, so any past
-    "Ends on" passed every validator and reached the write door beside a start
-    it had never been compared to.
+    Until plan step R7d-g-2 this class graded the route-side comparison the
+    schema could not make: ``require_end_bound_after_start`` early-returns
+    when ``starts_on`` is absent, a loan destination's row was locked and
+    posted nothing, and the route DERIVED the start after validation -- so a
+    past "Ends on" reached the write door beside a start it had never been
+    compared to, and ``_refuse_bound_before_derived_start`` caught it.
 
-    The "Ends" control is NOT locked on the create form for a loan that
-    already holds a payment -- a second transfer into it keeps its owner's
-    stop -- so the form invites this.  **Both cases here create that SECOND
-    transfer** (plan step R7d-f-3, ruling **R-R60**): for a loan holding no
-    payment the definition would be the loan's own, whose stop is refused
-    outright before this comparison is reached, and the create-side twin is
-    graded in ``tests/test_routes/test_transfer_create_derived_stop.py``.
-    Giving the loan a standing payment first is what keeps these two cases
-    about the window rule alone.
+    **MOVED BY RULING (R-R81)**: a second transfer's start is its OWNER's,
+    the row is open and posts a date, and the schema's own comparison grades
+    the pair; that route-side refusal is deleted with the derivation it
+    served.  Both cases still create a SECOND transfer (the loan holds its
+    standing payment first, so the stop is not refused outright, ruling
+    **R-R60**), and what they pin now is that the window is graded against
+    the TYPED start and the stop is stored beside it.
     """
 
     def _paid_loan(self, seed_user, db):
@@ -914,10 +917,15 @@ class TestALoanCreateMayNotStopBeforeTheDerivedStart:
         db.session.commit()
         return loan
 
+    #: The start the owner types for the second transfer: after the loan's
+    #: origination (2026-04-15) and its first installment (2026-05-01), so
+    #: nothing but the window rule can refuse the pair.
+    _TYPED_START = date(2026, 5, 15)
+
     def _post_a_bounded_monthly_transfer(
         self, auth_client, seed_user, db, to_account, ends_on,
     ):
-        """POST /transfers with a MONTHLY cadence, no start, and *ends_on*.
+        """POST /transfers with a MONTHLY cadence, the typed start, and *ends_on*.
 
         Args:
             auth_client: The signed-in test client.
@@ -938,7 +946,7 @@ class TestALoanCreateMayNotStopBeforeTheDerivedStart:
 
         with auth_client.application.app_context():
             monthly = cadence_payload(
-                unit=RecurrenceUnitEnum.MONTH, states_a_start=False,
+                unit=RecurrenceUnitEnum.MONTH, starts_on=self._TYPED_START,
             )
         return auth_client.post("/transfers", data={
             "name": f"To {to_account.name} bounded",
@@ -951,16 +959,16 @@ class TestALoanCreateMayNotStopBeforeTheDerivedStart:
             **monthly,
         })
 
-    def test_an_end_before_the_derived_first_installment_is_refused(
+    def test_an_end_before_the_typed_start_is_refused(
         self, auth_client, seed_user, db, seed_periods,  # pylint: disable=unused-argument
     ):
-        """A past "Ends on" beside a loan destination, refused at the door.
+        """A past "Ends on" beside the owner's start, refused by the schema.
 
-        The loan originates 2026-04-15 with ``payment_day`` 1, so the derived
-        first installment is 2026-05-01; an end of 2026-01-01 is before it.
-        The rule such a submission would author names no occurrence at all.
-        The message is asserted, because a loan create now has TWO refusals
-        that redirect to the same place and only this one names the window.
+        An end of 2026-01-01 is before the typed 2026-05-15; the rule such a
+        submission would author names no occurrence at all.  The message is
+        asserted against the TYPED start, not the loan's first installment
+        (2026-05-01): a loan create has more than one refusal that redirects
+        to the same place, and only this one names the window.
         """
         loan = self._paid_loan(seed_user, db)
         rows_before = (
@@ -978,7 +986,7 @@ class TestALoanCreateMayNotStopBeforeTheDerivedStart:
         with auth_client.session_transaction() as sess:
             flashed = [message for _category, message in sess.get("_flashes", [])]
         assert end_bound_before_start_message(
-            date(2026, 1, 1), date(2026, 5, 1),
+            date(2026, 1, 1), self._TYPED_START,
         ) in flashed, flashed
         assert (
             db.session.query(Transfer)
@@ -1013,3 +1021,6 @@ class TestALoanCreateMayNotStopBeforeTheDerivedStart:
             .one()
         )
         assert second.recurrence_rule.end_date == date(2030, 1, 1)
+        assert second.recurrence_rule.starts_on == self._TYPED_START, (
+            "a second transfer's start is its owner's (R-R81)"
+        )

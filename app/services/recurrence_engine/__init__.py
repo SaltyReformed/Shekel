@@ -81,7 +81,10 @@ from app.services.recurrence_engine._generate import (
     can_generate_in_period,
     generate_for_template,
 )
-from app.services.recurrence_engine._maintain import regenerate_for_template
+from app.services.recurrence_engine._maintain import (
+    propagate_to_unruled_definition,
+    regenerate_for_template,
+)
 from app.services.recurrence_engine._pass import (
     MaintainActs,
     PassReporting,
@@ -105,6 +108,7 @@ __all__ = [
     "create_for_unclaimed_occurrences",
     "derived_by_occurrence",
     "generate_for_template",
+    "propagate_to_unruled_definition",
     "regenerate_definition",
     "regenerate_for_template",
     "resolve_conflicts",

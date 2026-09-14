@@ -81,7 +81,9 @@ from tests._test_helpers import (
     bare_expense_template,
     create_loan_account,
     create_savings_account,
+    make_deduction_cadence_rule,
     make_expense_template,
+    make_salary_profile,
     make_transfer_template,
     sole_rule_owned_by,
 )
@@ -127,10 +129,12 @@ _AUTHORED_COLUMNS = (
 #: (:meth:`TestTheAuthoredSurfaceIsWholeAndClosed.test_the_owning_arc_is_written_and_exclusive`).
 #:
 #: Listing them here rather than loosening an assertion is what keeps the gate
-#: strict: a THIRD owning arm, or any other column added and forgotten, still
-#: fails the partition because it will not be on this list.
+#: strict: a further owning arm, or any other column added and forgotten,
+#: still fails the partition because it will not be on this list.  The THIRD
+#: arm, ``paycheck_deduction_id``, arrived at plan step salary:R15-b (ruling
+#: R-SAL32) exactly that way -- this line was the census that named it.
 _OWNING_ARC_COLUMNS = frozenset({
-    "transaction_template_id", "transfer_template_id",
+    "transaction_template_id", "transfer_template_id", "paycheck_deduction_id",
 })
 
 #: Every column the write door DERIVES, from ``resolve`` and the owner's
@@ -436,25 +440,43 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
         so, which is a constraint reporting a code defect rather than a test
         catching one.
 
-        Both kinds, because the arc has two arms and one call site fills either
-        -- ``owner.recurrence_rule`` dispatches on the owner's own mapper, so a
-        regression that hard-coded one arm would pass on half the definitions.
+        Every kind, because the arc has three arms and one call site fills
+        any -- ``owner.recurrence_rule`` dispatches on the owner's own mapper,
+        so a regression that hard-coded one arm would pass on the other
+        definitions.  The third arm, a payroll deduction, arrived at plan step
+        salary:R15-b (ruling R-SAL32) and reads its owner through its profile.
 
         Args:
             seed_user: The owner fixture.
             db: The session fixture.
         """
+        # pylint: disable=import-outside-toplevel
+        from app.models.paycheck_deduction import PaycheckDeduction
+        from app.models.ref import CalcMethod, DeductionTiming
+
         user_id = seed_user["user"].id
         savings = create_savings_account(
             seed_user, db.session, "Arc Savings", Decimal("0.00"),
         )
         expense = make_expense_template(db.session, seed_user)
         transfer = make_transfer_template(db.session, seed_user, savings)
+        profile = make_salary_profile(seed_user, db.session)
         db.session.flush()
+        deduction = PaycheckDeduction(
+            salary_profile_id=profile.id,
+            deduction_timing_id=db.session.query(DeductionTiming).first().id,
+            calc_method_id=db.session.query(CalcMethod).first().id,
+            name="Arc Health", amount=Decimal("100.00"),
+        )
+        db.session.add(deduction)
+        db.session.flush()
+        make_deduction_cadence_rule(db.session, deduction, 24)
 
-        for owner, filled, empty in (
-            (expense, "transaction_template_id", "transfer_template_id"),
-            (transfer, "transfer_template_id", "transaction_template_id"),
+        arms = ("transaction_template_id", "transfer_template_id", "paycheck_deduction_id")
+        for owner, filled in (
+            (expense, "transaction_template_id"),
+            (transfer, "transfer_template_id"),
+            (deduction, "paycheck_deduction_id"),
         ):
             rule = owner.recurrence_rule
             assert rule is not None, (
@@ -465,10 +487,13 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
                 f"author_rule did not point {filled} at the "
                 f"{type(owner).__name__} it was given"
             )
-            assert getattr(rule, empty) is None, (
-                f"author_rule filled BOTH arms of the arc; "
-                f"ck_recurrence_rules_one_owner allows exactly one"
-            )
+            for empty in arms:
+                if empty == filled:
+                    continue
+                assert getattr(rule, empty) is None, (
+                    f"author_rule filled {empty} beside {filled}; "
+                    f"ck_recurrence_rules_one_owner allows exactly one"
+                )
             assert rule.user_id == user_id, (
                 "the derived user_id does not read through to the owner's"
             )

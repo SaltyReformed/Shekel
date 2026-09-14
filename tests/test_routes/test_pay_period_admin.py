@@ -238,6 +238,7 @@ class TestTruncateRoute:
             confirm = auth_client.post("/pay-periods/regenerate", data={
                 "new_start_date": start,
                 "num_periods": "3",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(BusinessDayShiftEnum.PRIOR),
             })
@@ -348,6 +349,7 @@ class TestRegenerateRoute:
                 data={
                     "new_start_date": "2026-06-20",
                     "num_periods": "3",
+                    "cadence_kind": "fixed_days",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
                 },
@@ -379,6 +381,7 @@ class TestRegenerateRoute:
                 data={
                     "new_start_date": "2026-07-03",
                     "num_periods": "3",
+                    "cadence_kind": "fixed_days",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
                     "confirm_gap": "true",
@@ -418,6 +421,7 @@ class TestGenerateRoute:
                 data={
                     "start_date": "2027-01-01",
                     "num_periods": "4",
+                    "cadence_kind": "fixed_days",
                     "cadence_days": "10",
                     "shift": shift_form_value(),
                 },
@@ -729,6 +733,7 @@ class TestResetRoute:
                 data={
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
+                    "cadence_kind": "fixed_days",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
                     "confirm": "true",
@@ -755,6 +760,7 @@ class TestResetRoute:
                 data={
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
+                    "cadence_kind": "fixed_days",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
                 },
@@ -780,6 +786,7 @@ class TestResetRoute:
                 data={
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
+                    "cadence_kind": "fixed_days",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
                     "confirm": "true",
@@ -801,7 +808,8 @@ class TestResetRoute:
             resp = auth_client.post(
                 "/pay-periods/reset",
                 data={
-                    "num_periods": "4", "cadence_days": "14",
+                    "num_periods": "4", "cadence_kind": "fixed_days",
+                    "cadence_days": "14",
                     "shift": shift_form_value(), "confirm": "true",
                 },
                 follow_redirects=True,
@@ -818,6 +826,7 @@ class TestResetRoute:
                 data={
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
+                    "cadence_kind": "fixed_days",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
                     "confirm": "true",
@@ -1232,6 +1241,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
                 data={
                     "new_start_date": "2026-06-20",
                     "num_periods": "3",
+                    "cadence_kind": "fixed_days",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
                 },
@@ -1266,6 +1276,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
                 data={
                     "new_start_date": "2026-06-05",
                     "num_periods": "4",
+                    "cadence_kind": "fixed_days",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
                     "confirm": "true",
@@ -1301,6 +1312,7 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
                 data={
                     "start_date": (latest + timedelta(days=14)).isoformat(),
                     "num_periods": "3",
+                    "cadence_kind": "fixed_days",
                     "cadence_days": "14",
                     "shift": shift_form_value(),
                 },

@@ -38,10 +38,12 @@ The four calendar questions -- asked of the CALENDAR
 Pricing a paycheck needs four facts that are not about the paycheck itself but
 about where its payday SITS among this owner's other paydays:
 
-* whether it is the THIRD payday of its calendar month, which is the one a
-  24-per-year deduction skips;
-* whether it is the FIRST, which is the only one a 12-per-year deduction is
-  taken on;
+* whether it is the THIRD payday of its calendar month -- the cockpit's
+  badge, and until plan step salary:R15-b the one a 24-per-year deduction
+  skipped (each line's cadence is its own recurrence rule now, read through
+  the occurrence walk by ``PayrollBasis.deduction_applies_on``);
+* whether it is the FIRST, which was likewise the only payday a 12-per-year
+  deduction was taken on;
 * the gross this owner has already been paid this calendar year, which drives
   the FICA Social Security wage-base cap; and
 * how much of a capped deduction has already been taken this calendar year.
@@ -93,9 +95,14 @@ deduction, no ``annual_cap``, and ``$91,675`` against a ``$184,500`` wage base.
 The counts underneath DO move once he states his opening: 2026-03-26 goes from
 his month's first paycheck to its second, and the 2026 year-to-date at
 2026-12-31 from 20 paydays to 26.  With one deduction set to 12-per-year and
-one capped at ``$1,200``, the same harness moves net **UP by ``$1,190.54``**
+one capped at ``$1,200``, the same harness moved net **UP by ``$1,190.54``**
 across four paychecks -- up, because both mechanisms REMOVE a deduction.  That
-is what the ``$0.00`` is a property of, and what it is not.
+is what the ``$0.00`` is a property of, and what it is not.  *Since plan step
+salary:R15-b a line's cadence is a recurrence rule that starts on the RECORDED
+opening and is never projected backward, so under a stated opening the
+12-per-year half of that figure no longer moves the same way -- the
+migration's docstring (``542c61e48ee8``) states both directions of that
+divergence; the capped half is unchanged.*
 
 The per-paycheck gross -- a RATE, not a share of a year
 -------------------------------------------------------

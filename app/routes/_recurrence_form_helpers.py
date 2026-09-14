@@ -1,9 +1,13 @@
 """
 Shekel Budget App -- Recurrence-Form Route Helpers (F-24, F-26)
 
-What a template's recurrence rule IS after a form submit, for the
+What a definition's recurrence rule IS after a form submit, for the
 transaction-template (:mod:`app.routes.templates`) and transfer-template
-(:mod:`app.routes.transfers`) CRUD routes.  What happens to the ROWS that rule
+(:mod:`app.routes.transfers`) CRUD routes -- and, since plan step
+salary:R15-c, for the paycheck-deduction routes
+(:mod:`app.routes.salary.items`), the third owner the arc admits, which
+settle the two facts their form does not collect into the payload and then
+run the same create preamble and update dispatcher.  What happens to the ROWS that rule
 already generated is the sibling module
 :mod:`app.routes._recurrence_conflict_chooser`, split out at plan step R2e-1
 when this one reached the 1,000-line cap.  What an EDIT form's controls START
@@ -720,9 +724,9 @@ def _clear_recurrence_rule(template: Any) -> None:
     destructive statement is legible where it is written.
 
     Args:
-        template: The ``TransactionTemplate`` or ``TransferTemplate`` whose
-            recurrence is being cleared.  Mutated in place; a no-op when it
-            names no rule.
+        template: The ``TransactionTemplate``, ``TransferTemplate`` or (plan
+            step salary:R15-c) ``PaycheckDeduction`` whose recurrence is being
+            cleared.  Mutated in place; a no-op when it names no rule.
     """
     if template.recurrence_rule is None:
         return
@@ -805,10 +809,12 @@ def resolve_recurrence_rule_for_update(
     so this equals the pre-extraction ``current_user.id``.
 
     Args:
-        template: The ``TransactionTemplate`` or ``TransferTemplate``
-            being updated.  Accessed for ``recurrence_rule`` (which a
-            fresh rule is authored onto, and which is cleared when none
-            was selected) and ``user_id``.  Mutated in place.
+        template: The ``TransactionTemplate``, ``TransferTemplate`` or (plan
+            step salary:R15-c) ``PaycheckDeduction`` being updated -- the
+            :data:`~app.services.recurrence.RecurrenceOwner` union.
+            Accessed for ``recurrence_rule`` (which a fresh rule is authored
+            onto, and which is cleared when none was selected) and
+            ``user_id``.  Mutated in place.
         data: Marshmallow-validated payload; the recurrence keys are
             popped by the delegated helper.  Read for whether
             ``recurrence_unit`` and ``starts_on`` are PRESENT before those

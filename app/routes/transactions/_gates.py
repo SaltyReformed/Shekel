@@ -113,9 +113,30 @@ def _reject_generated_due_date_edit(txn, data):
     re-prices the row against a different point in its definition's series,
     silently, and the next regeneration puts it back.
 
-    **An AD-HOC row is untouched.**  It owns its figure, so amount rule 1
-    answers it off a column and no rule reads its date; clearing it there
-    prices nothing wrongly, which is why the form still offers it.
+    **Which rows it refuses is keyed on ``Transaction.recurs`` since plan
+    step ``balance:X-bi-7a``, not on the link**, and the three shapes get
+    three answers.  A row a RULE generated: the FIELD is refused, above.  A
+    LINK-LESS row (ad-hoc, a CC payback, a transfer shadow): untouched -- it
+    owns its figure or is priced through its parent, so amount rule 1 or 5
+    answers it and nothing reads its date; the form still offers it,
+    clearable.  A RULE-LESS DEFINITION's row: the date is the OWNER's to
+    state (ruling **R-BAL22** -- due on its placed paycheck's start unless
+    the owner says otherwise), no cadence derives it and no regeneration puts
+    it back, so MOVING it is allowed.  **The price follows the date**: the
+    row is priced by its definition's series AS OF that day (amount rule 3),
+    so a definition whose cadence the owner CLEARED and whose series still
+    holds several versions re-prices a row moved across a version boundary --
+    the amount model's own answer, stated rather than refused, and measured
+    (``test_one_off_row_doors``); a one-off's series holds ONE version once
+    the doors leaf mints it (**R-BAL21**), and then the move prices nothing
+    differently.  CLEARING it is not allowed: the same rule 3 needs the day,
+    which is what ``ck_transactions_template_row_needs_due_date`` (plan step
+    X-bv-2) says in storage.  The CHECK would refuse the clear
+    anyway; this arm exists so the owner reads *why* rather than the generic
+    invalid-reference sentence a constraint hit renders, which is the
+    screens-stating-what-is-false defect this arc keeps closing.  The popover
+    stops offering the clear at the family's doors leaf (``X-bi-7b``); until
+    then this is the sentence a cleared box meets.
 
     Args:
         txn: The Transaction being edited.
@@ -124,15 +145,23 @@ def _reject_generated_due_date_edit(txn, data):
     Returns:
         A designed 400 response tuple, or ``None`` when the edit may proceed.
     """
-    if "due_date" not in data or txn.template_id is None:
+    if "due_date" not in data:
         return None
-    return _error_transaction_response(
-        txn.id,
-        "This instance's due date comes from its recurring transaction, "
-        "which is also what prices it. Change the due day on the recurring "
-        "transaction to move every instance, or type an amount here to make "
-        "this month's figure its own.",
-    )
+    if txn.recurs:
+        return _error_transaction_response(
+            txn.id,
+            "This instance's due date comes from its recurring transaction, "
+            "which is also what prices it. Change the due day on the recurring "
+            "transaction to move every instance, or type an amount here to make "
+            "this month's figure its own.",
+        )
+    if txn.template_id is not None and data["due_date"] is None:
+        return _error_transaction_response(
+            txn.id,
+            "This item's due date can be moved but not cleared: its price is "
+            "resolved on that day.",
+        )
+    return None
 
 
 def _reject_typed_payback_figure(txn, data):
