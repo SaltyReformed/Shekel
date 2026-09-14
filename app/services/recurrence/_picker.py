@@ -8,7 +8,7 @@ for a cadence ("Quarterly"); it authors the two axes directly -- how often
 readings may be offered and how each reads to a human.
 
 **The offer set is DERIVED from the producer that would REFUSE the cadence**,
-through :func:`~app.services.recurrence._frequency.authorable_cadences`, and
+through :func:`~app.services.recurrence._offer.authorable_cadences`, and
 that is the whole point.  While the picker iterated ``RecurrencePatternEnum``
 and the write door read a different table, "nothing offers an uncreatable
 cadence" held only because the two sets happened to coincide -- a coincidence no
@@ -22,7 +22,7 @@ named its cadence with a closed pattern set, so ``(2, MONTH)`` walked correctly
 and had nowhere to be written.  With ``unit_id`` and ``interval_n`` authored
 columns every reading can be stored, and what is left is whether the
 application can HONOUR it -- which since plan step R8-a is
-:func:`~app.services.recurrence._frequency.authorable_cadences`' two derived
+:func:`~app.services.recurrence._offer.authorable_cadences`' two derived
 rules, replacing the ``anchor_family`` router that gated it on
 first-occurrence derivations ruling **R-R16** had already deleted.  Three
 consequences here:
@@ -41,7 +41,7 @@ consequences here:
 * **the "Funded from" row is always RENDERED** (developer ruling 2026-08-16,
   the rest of D32).  ONE cadence still admits one placement -- the ``PERIOD``
   unit, where it is inert
-  (:func:`~app.services.recurrence._frequency.emits_period_starts`) -- and
+  (:func:`~app.services.recurrence._offer.emits_period_starts`) -- and
   hiding the row for it is what let a funding rule change with nothing on
   screen saying so.  It was TWO until plan step **R8-a**, which admitted the
   ``YEAR`` unit's deferring reading; the row's two help sentences are unchanged
@@ -71,9 +71,12 @@ from app.services.recurrence._bounds import (
 )
 from app.services.recurrence._frequency import (
     CadenceReading,
+    can_repeat_within_month,
+    has_day_of_month_coordinate,
+)
+from app.services.recurrence._offer import (
     authorable_cadences,
     fires_on_day_of_month,
-    has_day_of_month_coordinate,
 )
 
 #: What each cadence UNIT is called on the form, singular and plural.
@@ -87,7 +90,7 @@ from app.services.recurrence._frequency import (
 #: :class:`~app.enums.RecurrenceUnitEnum` without copy raises ``KeyError`` at
 #: the first render rather than shipping a blank option.  ``WEEK`` is absent
 #: DELIBERATELY, and since plan step R8-a the reason is a LIVE one:
-#: :func:`~app.services.recurrence._frequency.has_row_date_coordinate` keeps the
+#: :func:`~app.services.recurrence._offer.has_row_date_coordinate` keeps the
 #: unit out of the offer set because ``recurrence.compute_due_date`` has
 #: no way to date a weekly row, so this map is never asked for it.  Plan step
 #: **R5** deletes that function; the leaf that adds the copy is the one that
@@ -136,7 +139,7 @@ class CadenceWire:
             form shows its Due Day input -- that field states the servicer's
             date only where the cadence has a scheduling day to differ from.
             Answered by
-            :func:`~app.services.recurrence._frequency.fires_on_day_of_month`
+            :func:`~app.services.recurrence._offer.fires_on_day_of_month`
             rather than by a unit test the script could repeat, because it is
             a property of the ``(unit, placement)`` PAIR: a monthly cadence
             funded from the month's first paycheck dates its rows from the
@@ -164,12 +167,23 @@ class CadenceWire:
             same function ``offerable_nominal_days`` is built on, so the
             control the browser shows and the set the server offers cannot
             disagree.
+        can_repeat_within_month: Whether the unit can put two occurrences in
+            one calendar month, which is what decides whether the "at most N a
+            month" control has anything to ask (plan step salary:R15-a).
+            Answered by
+            :func:`~app.services.recurrence.can_repeat_within_month`, the same
+            predicate :class:`~app.services.recurrence.RecurrenceSpec` refuses
+            a ceiling against, so the control the browser shows and the pair
+            the door admits cannot disagree -- the ``emits_period_starts``
+            shape: a control the engine would ignore is one the form does
+            not render.
     """
 
     unit_id: int
     placement_id: int
     schedules_on_day_of_month: bool
     has_day_of_month_coordinate: bool
+    can_repeat_within_month: bool
 
 
 @dataclass(frozen=True)
@@ -244,6 +258,9 @@ def cadence_options() -> tuple[CadenceOption, ...]:
                     ),
                     has_day_of_month_coordinate=(
                         has_day_of_month_coordinate(cadence.unit)
+                    ),
+                    can_repeat_within_month=(
+                        can_repeat_within_month(cadence.unit)
                     ),
                 ),
                 unit_label_one=label_one,
@@ -525,11 +542,26 @@ class SelectedCadence:
         unit_id: The ``ref.recurrence_units`` id to preselect.
         interval_n: The interval to prefill.
         placement_id: The ``ref.period_placements`` id to preselect.
+        max_per_month: The per-month ceiling to prefill, or ``None`` for an
+            empty box (plan step salary:R15-a) -- the cadence's third value,
+            read off the same :class:`~app.services.recurrence.CadenceReading`
+            as the other two so the form cannot preselect a cadence and
+            forget its ceiling.
+        ceiling_applies: Whether the ceiling control starts ENABLED -- the
+            preselected unit can put two occurrences in a month
+            (:func:`~app.services.recurrence.can_repeat_within_month`).  A
+            fact about the unit rather than the value: a paycheck rule with
+            no ceiling still renders an empty, enabled box, and a monthly
+            rule renders it disabled so the control posts nothing.  Served
+            here so the server renders the state the script would set,
+            which is what makes the form correct before any script runs.
     """
 
     unit_id: int
     interval_n: int
     placement_id: int
+    max_per_month: int | None
+    ceiling_applies: bool
 
 
 def selected_cadence(reading: CadenceReading) -> SelectedCadence:
@@ -573,6 +605,8 @@ def selected_cadence(reading: CadenceReading) -> SelectedCadence:
         unit_id=ref_cache.recurrence_unit_id(reading.cadence.unit),
         interval_n=reading.cadence.interval_n,
         placement_id=ref_cache.period_placement_id(reading.placement),
+        max_per_month=reading.cadence.max_per_month,
+        ceiling_applies=can_repeat_within_month(reading.cadence.unit),
     )
 
 

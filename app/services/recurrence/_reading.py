@@ -74,7 +74,7 @@ from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import DerivedPeriod, PayCalendar
 from app.services.recurrence._bounds import BoundReading, end_bound_from_columns
-from app.services.recurrence._occurrence import (
+from app.services.recurrence._placement import (
     OccurrencePlacement,
     occurrence_placements,
 )
@@ -82,20 +82,25 @@ from app.services.recurrence._frequency import (
     Cadence,
     CadenceReading,
     RecurrenceResolutionError,
-    fires_on_day_of_month,
+    can_repeat_within_month,
     placement_member,
-    require_row_date_coordinate,
     unit_member,
+)
+from app.services.recurrence._offer import (
+    fires_on_day_of_month,
+    require_row_date_coordinate,
 )
 from app.services.recurrence._vocabulary import (
     modelled_placement,
     modelled_unit,
 )
+from app.services.recurrence._nominal_day import (
+    cadence_day_of_month,
+    is_offerable_nominal_day,
+)
 from app.services.recurrence._resolution import (
     RecurrenceSpec,
     ResolvedRecurrence,
-    cadence_day_of_month,
-    is_offerable_nominal_day,
     resolve,
 )
 
@@ -142,7 +147,7 @@ class RuleReading:
         without a meaning is a value that contradicts itself; and a walk that
         placed anything ran against a schedule that reaches somewhere, so
         placements with no horizon is one too
-        (``_occurrence._placements`` answers ``()`` before it walks when the
+        (``_placement._placements`` answers ``()`` before it walks when the
         horizon is ``None``).  Checks rather than docstring guarantees, for
         the reason :class:`~app.services.recurrence.OccurrencePlacement`
         records in its own: this project has been burned by an invariant the
@@ -240,7 +245,10 @@ def stored_cadence(rule: RecurrenceRule) -> CadenceReading | None:
     if unit is None or placement is None:
         return None
     return CadenceReading(
-        cadence=Cadence(interval_n=rule.interval_n, unit=unit),
+        cadence=Cadence(
+            interval_n=rule.interval_n, unit=unit,
+            max_per_month=rule.max_per_month,
+        ),
         placement=placement,
     )
 
@@ -280,6 +288,11 @@ def cadence_of(rule: RecurrenceRule) -> Cadence:
     """
     return Cadence(
         interval_n=rule.interval_n, unit=unit_member(rule.unit_id),
+        # The third value of "how often" (plan step salary:R15-a): a reader
+        # asking the yearly count or the monthly equivalent of a ceilinged
+        # rule reads 24 a year and not 26, and it reads it from the value
+        # rather than from a second look at the row.
+        max_per_month=rule.max_per_month,
     )
 
 
@@ -320,7 +333,7 @@ def scheduling_day_of_month(rule: RecurrenceRule) -> int | None:
 
     **``None`` means "date this row from its PAYCHECK", so a unit that cannot
     be dated either way is REFUSED rather than answered** -- plan step R8-a's
-    :func:`~app.services.recurrence._frequency.require_row_date_coordinate`,
+    :func:`~app.services.recurrence._offer.require_row_date_coordinate`,
     which restates a refusal this function used to inherit.  Until that step
     ``fires_on_day_of_month`` RAISED for the ``WEEK`` unit (it read the
     anchor-family router, which had no derivation for it); stating that
@@ -396,6 +409,7 @@ def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:
         interval_n=rule.interval_n,
         unit=unit_member(rule.unit_id),
         placement=placement_member(rule.placement_id),
+        max_per_month=rule.max_per_month,
     )
 
 
@@ -405,6 +419,7 @@ def recurrence_spec_with_cadence(
     interval_n: int,
     unit: RecurrenceUnitEnum,
     placement: PeriodPlacementEnum,
+    max_per_month: int | None,
 ) -> RecurrenceSpec:
     """Read a rule's authored state with a STATED cadence in place of its own.
 
@@ -451,11 +466,17 @@ def recurrence_spec_with_cadence(
         interval_n: The cadence interval to state.
         unit: The cadence unit to state.
         placement: The placement to state.
+        max_per_month: The per-month ceiling to state, or ``None`` (plan step
+            salary:R15-a).  The cadence's third value, so the caller that owns
+            the cadence states it beside the other two rather than having the
+            row's own read back under a unit that may not hold it.
 
     Returns:
         The :class:`~app.services.recurrence.RecurrenceSpec`.  Its
         ``nominal_day`` is the row's own only where the STATED cadence can hold
-        it; see the inline comment on that field.
+        it; see the inline comment on that field.  Its ``max_per_month`` is
+        the STATED one, DROPPED where the stated unit cannot repeat within a
+        month, for the reason the nominal day is.
 
     Raises:
         RecurrenceResolutionError: The row carries BOTH closing-bound columns,
@@ -502,6 +523,14 @@ def recurrence_spec_with_cadence(
         # place the two columns are seen apart (plan step R7b-3).
         end_bound=end_bound_from_columns(
             rule.end_date, rule.max_occurrences,
+        ),
+        # DROPPED where the STATED unit cannot hold it, exactly as the nominal
+        # day above: the edit form's repair path states a calendar-month
+        # cadence over a stored paycheck one, and carrying a ceiling across
+        # would build the pair ``RecurrenceSpec`` refuses (plan step
+        # salary:R15-a).
+        max_per_month=(
+            max_per_month if can_repeat_within_month(unit) else None
         ),
     )
 

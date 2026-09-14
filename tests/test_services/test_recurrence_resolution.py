@@ -58,8 +58,11 @@ from tests.oracles.recurrence_baseline import (
     ANNUAL,
 )
 from app.services.recurrence import (
+    NEVER_ENDS,
+    Closing,
     RecurrenceResolutionError,
     RecurrenceSpec,
+    ResolvedRecurrence,
     is_offerable_nominal_day,
     occurrence_placements,
     offerable_nominal_days,
@@ -685,6 +688,82 @@ class TestTheNominalDayPair:
             spec_for(
                 EVERY_PERIOD, date(2026, 4, 30),
                 nominal_day=31,
+            )
+
+
+@pytest.mark.usefixtures("app")
+class TestTheMonthCeilingPair:
+    """``(unit, max_per_month)`` is refused where the ceiling could never bind.
+
+    The cadence's third value (plan step salary:R15-a, ruling R-SAL29).  A
+    calendar-month cadence fires at most once a month by construction, so a
+    ceiling beside it would be stored for no reader -- the closed-set shape
+    this package removes.  Refused at CONSTRUCTION on both values, exactly as
+    the nominal-day pair is, and mirrored by no CHECK because ``unit_id`` is
+    a ``ref`` id.
+    """
+
+    @pytest.mark.parametrize(
+        "cadence", [MONTHLY, MONTHLY_FIRST, QUARTERLY, SEMI_ANNUAL, ANNUAL],
+        ids=lambda cadence: cadence.label,
+    )
+    def test_a_ceiling_on_a_calendar_month_cadence_is_refused_at_construction(
+        self, cadence,
+    ):
+        """The spec itself refuses the pair, before ``resolve`` is reached."""
+        with pytest.raises(RecurrenceResolutionError, match="max_per_month 2"):
+            spec_for(cadence, date(2026, 4, 15), max_per_month=2)
+
+    def test_the_resolved_value_refuses_the_pair_too(self):
+        """A hand-built resolved value cannot carry the contradiction either."""
+        with pytest.raises(RecurrenceResolutionError, match="max_per_month 1"):
+            ResolvedRecurrence(
+                offset_periods=0,
+                interval_n=1,
+                unit=RecurrenceUnitEnum.MONTH,
+                starts_on=date(2026, 4, 15),
+                placement=PeriodPlacementEnum.CONTAINING_DATE,
+                shift=BusinessDayShiftEnum.NONE,
+                closing=Closing(authored=NEVER_ENDS),
+                nominal_day=None,
+                max_per_month=1,
+            )
+
+    @pytest.mark.parametrize(
+        "cadence", [EVERY_PERIOD, EVERY_N_PERIODS],
+        ids=lambda cadence: cadence.label,
+    )
+    def test_a_paycheck_cadence_carries_its_ceiling_through_resolve(
+        self, cadence,
+    ):
+        """``resolve`` answers the ceiling the spec stated, off the canonical cadence."""
+        resolved = resolve(
+            spec_for(cadence, date(2026, 3, 26), max_per_month=2),
+            build_calendar(),
+        )
+
+        assert resolved.max_per_month == 2
+        assert resolved.unit is RecurrenceUnitEnum.PERIOD
+
+    def test_no_ceiling_resolves_to_none(self):
+        """The default is what every rule authored before this step means."""
+        resolved = resolve(
+            spec_for(EVERY_PERIOD, date(2026, 3, 26)), build_calendar(),
+        )
+
+        assert resolved.max_per_month is None
+
+    @pytest.mark.parametrize("ceiling", [0, -1])
+    def test_a_ceiling_below_one_is_refused_as_a_domain(self, ceiling):
+        """The column's floor, mirrored at the door like the due day's domain.
+
+        ``ck_recurrence_rules_positive_max_per_month`` bounds it; a zero would
+        be a rule that never fires spelled as a cadence.
+        """
+        with pytest.raises(RecurrenceResolutionError, match="max_per_month"):
+            resolve(
+                spec_for(EVERY_PERIOD, date(2026, 3, 26), max_per_month=ceiling),
+                build_calendar(),
             )
 
 

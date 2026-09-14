@@ -77,6 +77,8 @@
 {% set sel_unit = selected.unit_id if selected else none %}
 {% set sel_interval = selected.interval_n if selected else none %}
 {% set sel_placement = selected.placement_id if selected else none %}
+{% set sel_ceiling = selected.max_per_month if selected else none %}
+{% set sel_ceiling_applies = selected.ceiling_applies if selected else false %}
 {# Both projections of the offer set are served ready-made off the PickerModel
    -- picker.units and picker.placements.  They were de-duplicating loops and a
    selectattr chain here until one shipped a visible defect: MONTHLY and
@@ -111,6 +113,28 @@
                class="form-control interval-box" min="1"
                value="{{ sel_interval if sel_interval is not none else 1 }}"
                {{ 'disabled' if sel_unit is none else '' }}>
+      </div>
+    </div>
+    {# The per-month CEILING, the cadence's third value (plan step
+       salary:R15-a, ruling R-SAL29): "every paycheck, at most 2 a month" is
+       a payroll benefit taken on a month's first two paychecks.  Shown and
+       ENABLED only beside a unit whose occurrences can repeat within a month
+       -- the wire's can_repeat_within_month, the same predicate the write
+       door refuses the pair against -- and disabled otherwise so it posts
+       nothing, the discipline #field-due-dom keeps: a hidden input still
+       submits.  Empty means no ceiling.  The server renders the state
+       matching ``selected`` (ceiling_applies) so the form is correct before
+       any script runs. #}
+    <div class="col-auto d-none" id="field-max-per-month">
+      <div class="input-group">
+        <span class="input-group-text">at most</span>
+        <input type="number" id="max_per_month" name="max_per_month"
+               class="form-control interval-box" min="1"
+               placeholder="any"
+               aria-label="Most occurrences in any one month"
+               value="{{ sel_ceiling if sel_ceiling is not none else '' }}"
+               {{ '' if sel_ceiling_applies else 'disabled' }}>
+        <span class="input-group-text">a month</span>
       </div>
     </div>
   </div>
