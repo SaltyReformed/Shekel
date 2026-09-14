@@ -1217,7 +1217,9 @@ class TestTheFloorAnchorsOnTheEra:
             )
             db.session.commit()
 
-            with pytest.raises(ValidationError, match="at a 7-day cycle"):
+            # The covering era's rhythm, named by its kind's phrase since
+            # plan step pay_calendar:C17-d-2 ("at a 7-day cycle" until then).
+            with pytest.raises(ValidationError, match="paid every 7 days"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 2, 10),
                     num_periods=1, rhythm=rhythm_of(7),

@@ -741,9 +741,15 @@ class TestThePointBelievesARaiseSet:
             )
             stale = raise_row.id + 999
 
+            # Each refusal names WHICH HALF of the pair it is about (plan step
+            # salary:S3-f-4, ruling R-SAL33), so the route can render it on
+            # that half's control as the Save does; a raise the owner has no
+            # row for is a refusal of the pair as a whole and names none.
             with pytest.raises(retirement_plan.RaiseProbeError) as unknown:
                 inputs.plan_with(raise_probes={stale: ("none", None)})
-            assert set(unknown.value.errors) == {stale}
+            assert unknown.value.errors == {
+                stale: (None, "Not one of your recurring raises; reload the page."),
+            }
 
             with pytest.raises(retirement_plan.RaiseProbeError) as early:
                 inputs.plan_with(
@@ -751,16 +757,22 @@ class TestThePointBelievesARaiseSet:
                 )
             assert early.value.errors == {
                 raise_row.id: (
+                    "year",
                     f"A raise cannot end before it starts: it takes effect "
-                    f"in {year}."
+                    f"in {year}.",
                 ),
             }
+            assert str(early.value) == (
+                f"raise {raise_row.id}: A raise cannot end before it starts: "
+                f"it takes effect in {year}."
+            )
 
             with pytest.raises(retirement_plan.RaiseProbeError) as unanswered:
                 inputs.plan_with(raise_probes={raise_row.id: ("year", None)})
             assert unanswered.value.errors == {
                 raise_row.id: (
-                    "Enter the last year this raise is believed to happen."
+                    "year",
+                    "Enter the last year this raise is believed to happen.",
                 ),
             }
 
@@ -772,6 +784,50 @@ class TestThePointBelievesARaiseSet:
                     stale: ("year", year),
                 })
             assert set(both.value.errors) == {raise_row.id, stale}
+
+    def test_another_owners_raise_is_refused_as_a_raise_this_owner_lacks(
+        self, app, db, seed_user, seed_second_user, seed_periods_today,
+    ):
+        """The membership is THIS owner's rows; a foreign id is graded against nothing.
+
+        The IDOR axis at the service door (an adversarial review of plan step
+        salary:S3-f-4, where the route's case lost its JSON oracle): the probe
+        names a year the foreign row would ACCEPT, so a resolver that looked
+        the row up by id would resolve it into a believed set and raise
+        nothing -- the refusal, with the constant not-found sentence and no
+        half named, is the assertion.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import make_recurring_raise
+
+        with app.app_context():
+            year = display_today().year + 1
+            _seed_believed_plan(db, seed_user, effective_year=year)
+            other = seed_second_user["user"]
+            foreign_profile = SalaryProfile(
+                user_id=other.id,
+                scenario_id=seed_second_user["scenario"].id,
+                filing_status_id=db.session.query(FilingStatus).first().id,
+                name="Second Job",
+                annual_salary=Decimal("65000.00"),
+                state_code="NC",
+                is_active=True,
+            )
+            db.session.add(foreign_profile)
+            db.session.flush()
+            foreign = make_recurring_raise(
+                foreign_profile.id, db.session, effective_year=year + 2,
+            )
+            db.session.commit()
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
+
+            with pytest.raises(retirement_plan.RaiseProbeError) as refused:
+                inputs.plan_with(raise_probes={foreign.id: ("year", year + 3)})
+            assert refused.value.errors == {
+                foreign.id: (None, "Not one of your recurring raises; reload the page."),
+            }
 
     def test_a_probed_set_is_the_one_legitimate_second_pricer(
         self, app, db, seed_user, seed_periods_today,

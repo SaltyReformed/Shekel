@@ -246,23 +246,31 @@ def raise_end_control(raise_id, field: str) -> str:
     return f"{_RAISE_END_PARAMS[field]}{raise_id}"
 
 
-def raise_probe_errors_by_control(field_errors: dict) -> dict[str, list[str]]:
-    """Re-key the ``raise_probes`` field's refusals onto the rail's controls.
+def errors_by_rail_control(errors: dict) -> dict[str, list[str]]:
+    """Re-key a schema's refusals onto the assumptions rail's controls.
 
-    marshmallow reports a ``Dict`` field per key: ``{"value": {half:
-    [messages]}}`` when the nested pair failed, ``{"key": [messages]}`` when
-    the id itself did.  The rail renders errors by control name, so each half
-    lands on its control and a refused id -- which names no rendered row --
-    lands on the mode control of the id as submitted.
+    The ONE error shape the rail renders (plan step salary:S3-f-3, and since
+    salary:S3-f-4 the readiness GET's refusals too -- ruling **R-SAL33**):
+    ``{control name: [messages]}``.  Every field but ``raise_probes`` is
+    already keyed by the name its control submits, so it passes through as
+    it is.  ``raise_probes`` is marshmallow's ``Dict`` report, per key:
+    ``{"value": {half: [messages]}}`` when the nested pair failed, ``{"key":
+    [messages]}`` when the id itself did.  Each half lands on its control
+    and a refused id -- which names no rendered row -- lands on the mode
+    control of the id as submitted.
 
     Args:
-        field_errors: ``errors["raise_probes"]`` from ``schema.validate``.
+        errors: ``schema.validate``'s dict, or ``ValidationError.messages``,
+            from either schema that reads the rail's pair.
 
     Returns:
         ``{control name: [messages]}``.
     """
-    by_control: dict[str, list[str]] = {}
-    for raise_id, halves in field_errors.items():
+    by_control: dict[str, list[str]] = {
+        name: list(messages)
+        for name, messages in errors.items() if name != "raise_probes"
+    }
+    for raise_id, halves in errors.get("raise_probes", {}).items():
         for half, messages in halves.get("value", {}).items():
             by_control.setdefault(raise_end_control(raise_id, half), []).extend(messages)
         if "key" in halves:

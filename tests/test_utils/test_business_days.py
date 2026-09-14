@@ -513,9 +513,11 @@ class TestTheShortestCollisionFreeCadence:
 class TestTheEarliestNominalPaidAfterADay:
     """``earliest_nominal_paid_after``: :func:`shift_to_business_day`'s inverse.
 
-    Plan step **pay_calendar:C14-e-3**.  ``auth_service`` refuses a sign-up
-    payday whose paycheck has already ended and has to name the earliest one
-    that WOULD work; that day is one cadence below the answer here.
+    Plan step **pay_calendar:C14-e-3**.  ``registration_service`` refuses a
+    sign-up payday whose paycheck has already ended and has to name the one
+    that WOULD work; that day is the last grid day on the owner's stated
+    rhythm below the answer here (ruling R-PC83; one cadence below it, on a
+    fixed-days grid, until plan step ``pay_calendar:C17-d-2``).
     """
 
     def test_under_NONE_it_is_always_the_next_day(self):

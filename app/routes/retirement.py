@@ -8,7 +8,7 @@ and retirement planning settings.
 import logging
 from datetime import date
 
-from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user
 from marshmallow import ValidationError
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -37,8 +37,8 @@ from app.schemas.validation import (
     RetirementSettingsSchema,
 )
 from app.schemas.validation.retirement import (
+    errors_by_rail_control,
     raise_end_control,
-    raise_probe_errors_by_control,
 )
 from app.services import (
     retirement_dashboard_service,
@@ -48,6 +48,7 @@ from app.services import (
     salary_regeneration,
 )
 from app.services.balance_at import BalanceContext
+from app.services.retirement_dashboard_service import RetirementRows
 from app.services.salary_raises import EndYearError, end_year_of
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,16 @@ _SETTINGS_FIELDS = {
     "safe_withdrawal_rate", "planned_retirement_date",
     "estimated_retirement_tax_rate",
 }
+
+# The element the assumptions rail swaps into: ``dashboard.html`` renders it,
+# every rail Save form targets it (``retirement/_assumptions.html``,
+# ``hx-target``) and ``retirement_controls.js`` watches it for the post-save
+# reload.  Spelled here because the readiness what-if's REFUSAL is the rail
+# too, and that request targets the readiness card, so its 422 is retargeted
+# at this selector (plan step salary:S3-f-4, ruling **R-SAL33**).  The four
+# spellings are held together by ``tests/test_routes/test_retirement.py``'s
+# ``TestTheRailRegionIsSpelledOnce``.
+_RAIL_REGION = "#assumptions-region"
 
 # Name of the composite unique constraint that backstops the
 # pension-profile double-submit fix (F-105 / C-22).  Mirrors the
@@ -414,11 +425,26 @@ def readiness_fragment():
     recurring raise is believed.  All validated through
     :class:`RetirementReadinessQuerySchema` (bounds -> 422 on garbage); a
     probe naming a raise that is not this owner's, or a year before the
-    raise's own effective year, is refused by ``plan_with`` against the ROWS
-    and answered with the same 422 shape.  Renders the minimal
-    ``_readiness.html`` stub P3b restyles, with the income panel and the lever
-    card as out-of-band siblings so every figure the request moved updates in
-    one round trip.
+    raise's own effective year, is refused by ``plan_with`` against the ROWS.
+    Renders the minimal ``_readiness.html`` stub P3b restyles, with the income
+    panel and the lever card as out-of-band siblings so every figure the
+    request moved updates in one round trip.
+
+    **Every refusal is the assumptions RAIL, re-rendered at 422 with each
+    message on its control** (plan step salary:S3-f-4, ruling **R-SAL33**,
+    closing ledger row **SAL-548**) -- the one 422 shape the rail's Save
+    answers with, delivered by :func:`_refused_rail`.  Until that step both
+    refusal tiers answered a JSON the panel never swapped in (htmx swaps no
+    bare 4xx), so a year typed before a raise's effective year left the card
+    silently at its previous picture.  This request targets the readiness
+    CARD, so the rail is RETARGETED at its own region; the card keeps the last
+    picture it drew, exactly as it does on a Save's refusal.  The raise rows
+    and the SWR box render their refusals; a refused assumed return or lever
+    stepper -- controls outside the rail -- still renders nowhere (known, an
+    opportunity for a step that lets each region render its own), and so
+    does a probe on an id the rail does not list (a stale page or a URL
+    edit): it is keyed to that id's mode control, which no row carries, and
+    the rail comes back showing the rows as they are.
 
     **ONE set of assumptions per response, since plan step C2-f2d-4.**  The
     verdict, the chart, the income meter and both levers are computed at the
@@ -440,14 +466,18 @@ def readiness_fragment():
     if not request.headers.get("HX-Request"):
         return redirect(url_for("retirement.dashboard"))
 
+    ctx = BalanceContext.build(current_user.id)
     try:
         query_data = _readiness_query_schema.load(request.args)
     except ValidationError as exc:
-        return jsonify(errors=exc.messages), 422
+        # A field-tier refusal answers before the picture's inputs are loaded;
+        # the rail's three rows come through the pass all the same.
+        return _refused_rail(
+            retirement_dashboard_service.load_retirement_rows(ctx),
+            errors_by_rail_control(exc.messages),
+        )
 
-    inputs = retirement_plan.load_retirement_inputs(
-        BalanceContext.build(current_user.id),
-    )
+    inputs = retirement_plan.load_retirement_inputs(ctx)
     # RESOLVED against the owner's settings and rows, not carried as
     # overrides: a saveable rail input is pre-filled with the stored value and
     # so submits it on every request, and an override that equals the stored
@@ -462,12 +492,10 @@ def readiness_fragment():
             raise_probes=query_data.get("raise_probes"),
         )
     except retirement_plan.RaiseProbeError as exc:
-        return jsonify(errors={
-            "raise_probes": {
-                str(raise_id): [message]
-                for raise_id, message in exc.errors.items()
-            },
-        }), 422
+        # The pass's bundle IS the rail's rows (plus the cadence); a second
+        # load of them here would be the redundant read the pass exists to
+        # remove.
+        return _refused_rail(inputs.gap, _refused_probes_by_control(exc.errors))
     whatif = retirement_readiness.compute_readiness_whatif(inputs, point)
     return render_template(
         "retirement/_readiness.html",
@@ -490,6 +518,98 @@ def readiness_fragment():
     )
 
 
+# ── The assumptions rail ─────────────────────────────────────────
+
+
+def _render_rail(rows: RetirementRows, errors, form_data) -> str:
+    """Render the assumptions rail with freshly resolved provenance.
+
+    The ONE renderer of ``retirement/_assumptions.html`` outside the
+    dashboard's include: the settings route's every answer and the readiness
+    GET's refusals (ruling **R-SAL33**) all come through here, so the rail
+    cannot be rendered two ways.  Returns the body only; the error callers
+    wrap it in :func:`~app.utils.error_fragments.designed_error` so the
+    fragment swaps despite the status.
+
+    Args:
+        rows: The owner's :class:`~app.services.retirement_dashboard_service
+            .RetirementRows` -- loaded for the request, or the read pass's
+            :class:`~app.services.retirement_dashboard_service.GapInputs`,
+            which extends it.
+        errors: ``{control name: [messages]}``, or ``None`` for a clean rail.
+        form_data: The submitted payload to echo, or ``None`` to state every
+            stored value.
+
+    Returns:
+        The rendered fragment.
+    """
+    return render_template(
+        "retirement/_assumptions.html",
+        settings=rows.settings,
+        form_data=form_data,
+        errors=errors,
+        date_provenance=(
+            retirement_dashboard_service
+            .resolve_retirement_date_provenance(rows.pensions, rows.settings)
+        ),
+        raise_assumptions=(
+            retirement_dashboard_service
+            .resolve_recurring_raise_assumptions(rows.salary_profiles)
+        ),
+    )
+
+
+def _refused_rail(rows: RetirementRows, errors):
+    """The readiness what-if's refusal: the rail at 422, retargeted.
+
+    The same body the rail's Save answers a refusal with -- the rail with
+    each message on its control and the request's own values echoed -- sent
+    to the rail's region rather than to the readiness card this request
+    targets (ruling **R-SAL33**).  The echo is the query string: every rail
+    what-if control rides on every refresh (``hx-include`` in
+    ``dashboard.html``), so every raise row and the SWR box re-state what is
+    on screen, and the rows the GET does not carry (the date, the tax rate)
+    state their stored values, as on any rail 422.
+
+    Args:
+        rows: See :func:`_render_rail`.
+        errors: ``{control name: [messages]}``.
+
+    Returns:
+        The designed 422, retargeted at :data:`_RAIL_REGION`.
+    """
+    return designed_error(
+        _render_rail(rows, errors, dict(request.args)), 422, retarget=_RAIL_REGION,
+    )
+
+
+def _refused_probes_by_control(
+    refusals: dict[int, tuple[str | None, str]],
+) -> dict[str, list[str]]:
+    """Key each refused end-year pair to the rail control it belongs to.
+
+    The one spelling of where a raise row's refusal lands: a refusal of one
+    HALF of the pair (:class:`~app.services.salary_raises.EndYearError`'s
+    ``field``) on that half's control, and a refusal of the pair as a whole
+    -- no half named -- on the row's first control, the mode select.  Both
+    doors that resolve the pair against the rows report through it: the
+    probe's :class:`~app.services.retirement_plan.RaiseProbeError` and the
+    Save's :func:`_resolve_end_year_saves`, and the Save's failure arms key
+    their one sentence per row the same way.
+
+    Args:
+        refusals: ``{raise_id: (field, message)}`` -- *field* ``"mode"`` or
+            ``"year"``, or ``None`` for the whole pair.
+
+    Returns:
+        ``{control name: [message]}``.
+    """
+    return {
+        raise_end_control(raise_id, field or "mode"): [message]
+        for raise_id, (field, message) in refusals.items()
+    }
+
+
 # ── Retirement Settings ──────────────────────────────────────────
 
 
@@ -507,12 +627,13 @@ def _resolve_end_year_saves(
     submitted id, so a foreign id has no row to be graded against -- and the
     ONE end-year rule :func:`~app.services.salary_raises.end_year_of` against
     the row's effective year.  Where the two doors differ is the refusal a
-    non-member earns: the probe reports it by name in a JSON the page never
-    renders, and this is a WRITE, so an id the rail does not list (missing,
-    another owner's, a one-time raise, an archived profile's) is the
-    project's 404 for "not found" and "not yours" alike, with
-    :func:`~app.utils.auth_helpers.log_refused_lookup` leaving the trail a
-    cross-user probe must leave.
+    non-member earns: the probe answers a designed 422 keyed to a control no
+    row renders (a what-if reads nothing it should not, and the re-rendered
+    rail shows the rows as they are), and this is a WRITE, so an id the rail
+    does not list (missing, another owner's, a one-time raise, an archived
+    profile's) is the project's 404 for "not found" and "not yours" alike,
+    with :func:`~app.utils.auth_helpers.log_refused_lookup` leaving the trail
+    a cross-user probe must leave.
 
     Args:
         raise_probes: ``{raise_id: (mode, year)}`` off the settings schema --
@@ -535,7 +656,7 @@ def _resolve_end_year_saves(
         for row in retirement_dashboard_service.recurring_raises(salary_profiles)
     }
     writes: list[tuple[SalaryRaise, int | None]] = []
-    errors: dict[str, list[str]] = {}
+    refusals: dict[int, tuple[str | None, str]] = {}
     for raise_id, (mode, year) in raise_probes.items():
         row = by_id.get(raise_id)
         if row is None:
@@ -544,8 +665,8 @@ def _resolve_end_year_saves(
         try:
             writes.append((row, end_year_of(mode, year, row.effective_year)))
         except EndYearError as exc:
-            errors[raise_end_control(raise_id, exc.field)] = [exc.message]
-    return writes, errors
+            refusals[raise_id] = (exc.field, exc.message)
+    return writes, _refused_probes_by_control(refusals)
 
 
 def _pension_date_write(
@@ -595,13 +716,13 @@ def _pension_date_write(
 
 
 def _apply_end_year_writes(
-    end_year_writes: list[tuple[SalaryRaise, int | None]],
+    end_year_writes: list[tuple[SalaryRaise, int | None]], ctx: BalanceContext,
 ) -> list[int]:
     """Stage each resolved end year on its row and regenerate its profile.
 
     The write is the column on ``salary.salary_raises``; what follows it is
     what EVERY raise write is followed by (ruling **R-SAL24** put that walk
-    below both routes): ONE read pass for the request, handed down -- a
+    below both routes): the request's ONE read pass, handed down -- a
     producer below the route takes the pass; only a route builds one -- and
     one regeneration per profile whose raise moved.  Flushes; the caller
     commits, catches the two failures the flushes can raise, and only THEN
@@ -612,8 +733,9 @@ def _apply_end_year_writes(
 
     Args:
         end_year_writes: ``[(row, terminal_year)]`` from
-            :func:`_resolve_end_year_saves`; empty stages nothing and opens
-            no pass.
+            :func:`_resolve_end_year_saves`; empty stages nothing.
+        ctx: The request's read pass -- the one the route loaded the rail's
+            rows through.
 
     Returns:
         The ids of the rows the regeneration declined to touch, across every
@@ -623,7 +745,6 @@ def _apply_end_year_writes(
         return []
     for row, terminal_year in end_year_writes:
         row.terminal_year = terminal_year
-    ctx = BalanceContext.build(current_user.id)
     profiles = {row.salary_profile.id: row.salary_profile for row, _ in end_year_writes}
     retained: list[int] = []
     for profile in profiles.values():
@@ -633,7 +754,7 @@ def _apply_end_year_writes(
     return retained
 
 
-def _commit_with_end_year_writes(end_year_writes, rail_response):
+def _commit_with_end_year_writes(end_year_writes, ctx, rail_response):
     """Commit the request's writes, reporting the raise write's two failures.
 
     The settings and pension writes are staged already; the raise write is
@@ -655,6 +776,7 @@ def _commit_with_end_year_writes(end_year_writes, rail_response):
     Args:
         end_year_writes: ``[(row, terminal_year)]`` from
             :func:`_resolve_end_year_saves`; empty for a settings-only save.
+        ctx: The request's read pass, for the regeneration.
         rail_response: The route's ``(errors, form_data) -> body`` renderer.
 
     Returns:
@@ -665,7 +787,7 @@ def _commit_with_end_year_writes(end_year_writes, rail_response):
     # nothing rather than to its id.
     written_raise_ids = [row.id for row, _ in end_year_writes]
     try:
-        retained = _apply_end_year_writes(end_year_writes)
+        retained = _apply_end_year_writes(end_year_writes, ctx)
         db.session.commit()
     except StaleDataError:
         db.session.rollback()
@@ -706,7 +828,7 @@ def _on_written_rows(raise_ids: list[int], message: str) -> dict[str, list[str]]
     Returns:
         ``{control name: [message]}``.
     """
-    return {raise_end_control(raise_id, "mode"): [message] for raise_id in raise_ids}
+    return _refused_probes_by_control({raise_id: (None, message) for raise_id in raise_ids})
 
 
 @retirement_bp.route("/retirement/settings", methods=["POST"])
@@ -762,50 +884,20 @@ def update_settings():
     # Preserve original user input for form re-display on error.
     raw_form_data = dict(request.form)
 
-    settings = (
-        db.session.query(UserSettings)
-        .filter_by(user_id=current_user.id)
-        .first()
-    )
-    # The date row's provenance decides the write-through target AND how
-    # the re-rendered rail captions the row.  Resolved per render below
-    # -- the success branch must see the POST-save state.
-    pensions = (
-        db.session.query(PensionProfile)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .all()
-    )
-    # The rail states the end year of every recurring raise (plan step
-    # salary:S3-c), so its re-render needs them exactly as the dashboard's
-    # include does.  Loaded beside the pensions above rather than through a
-    # read pass: this route derives no picture, and the one pass it opens is
-    # the raise arm's, for the regeneration a written end year is followed by.
-    salary_profiles = (
-        db.session.query(SalaryProfile)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .all()
-    )
+    # The request's ONE read pass: the rail's rows come through it (the same
+    # loader the picture's inputs come through), and the raise arm's
+    # regeneration takes it below.  The date row's provenance decides the
+    # write-through target AND how the re-rendered rail captions the row,
+    # and the raise rows are the rail's (plan step salary:S3-c); both are
+    # resolved per render below -- the success branch must see the POST-save
+    # state.
+    ctx = BalanceContext.build(current_user.id)
+    rows = retirement_dashboard_service.load_retirement_rows(ctx)
+    settings, pensions, salary_profiles = rows.settings, rows.pensions, rows.salary_profiles
 
     def rail_response(rail_errors, form_data):
-        """Render the assumptions fragment with freshly resolved provenance.
-
-        Returns the body only; the 422 error callers wrap it in
-        :func:`designed_error` so the fragment swaps despite the status.
-        """
-        return render_template(
-            "retirement/_assumptions.html",
-            settings=settings,
-            form_data=form_data,
-            errors=rail_errors,
-            date_provenance=(
-                retirement_dashboard_service
-                .resolve_retirement_date_provenance(pensions, settings)
-            ),
-            raise_assumptions=(
-                retirement_dashboard_service
-                .resolve_recurring_raise_assumptions(salary_profiles)
-            ),
-        )
+        """This request's rail, over the rows loaded above."""
+        return _render_rail(rows, rail_errors, form_data)
 
     # F-17 / Commit 12: percent-to-fraction conversion is owned by the
     # schema's @pre_load (RetirementSettingsSchema._PERCENT_FIELDS); the
@@ -817,9 +909,9 @@ def update_settings():
         # The marker header opts the 422 back into swapping; replaces
         # the swap shim that lived in retirement_controls.js.  A refused
         # raise pair is reported per control, as every other rail error is.
-        if "raise_probes" in errors:
-            errors.update(raise_probe_errors_by_control(errors.pop("raise_probes")))
-        return designed_error(rail_response(errors, raw_form_data), 422)
+        return designed_error(
+            rail_response(errors_by_rail_control(errors), raw_form_data), 422,
+        )
 
     if settings is None:
         flash("Settings not found.", "danger")
@@ -841,7 +933,7 @@ def update_settings():
     for field_name, value in data.items():
         if field_name in _SETTINGS_FIELDS:
             setattr(settings, field_name, value)
-    failure = _commit_with_end_year_writes(end_year_writes, rail_response)
+    failure = _commit_with_end_year_writes(end_year_writes, ctx, rail_response)
     if failure is not None:
         return failure
     logger.info("user_id=%d updated retirement settings", current_user.id)
