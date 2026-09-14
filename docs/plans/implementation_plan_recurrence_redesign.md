@@ -622,15 +622,16 @@ Found while X-f3b measured the ledger. Its two leaves are below.
 
 - [ ] **R19-b -- `occurs_on` becomes NOT NULL**, which is what makes `R19-a`'s branch unreachable
       rather than merely quiet. A template-linked non-override row always records the occurrence it
-      answers; `carry_forward_service` already achieves this by flagging its rows `is_override`, and
-      the one-time transfer branch (`routes/transfers/_instances._materialize_one_time_transfer`)
-      does not -- so it owes a rule for what occurrence a one-time transfer answers, its own date
-      being the obvious candidate. It deletes THREE fences: the NULL arm of `rows_claiming`'s claim
-      query, `R19-a`'s branch with the forward guard beside it, and
-      `idx_transfers_template_scenario_undated`. **Its backfill belongs in the migration** -- a
-      hand-run script is what left this reachable -- and **R-R46** is the obstacle to state and
-      answer: no migration here may import app code, because `build_test_template.py` replays the
-      chain from zero. Expect it to DECOMPOSE.
+      answers; `carry_forward_service` achieved this by flagging its rows `is_override` until
+      `balance:X-bi-7a` (`eecef63d`) stopped flipping a rule-less definition's row (**REC-523**),
+      and the one-time transfer branch
+      (`routes/transfers/_instances._materialize_one_time_transfer`) does not -- so it owes a rule
+      for what occurrence a one-time transfer answers, its own date being the obvious candidate. It
+      deletes THREE fences: the NULL arm of `rows_claiming`'s claim query, `R19-a`'s branch with the
+      forward guard beside it, and `idx_transfers_template_scenario_undated`.
+      **Its backfill belongs in the migration** -- a hand-run script is what left this reachable --
+      and **R-R46** is the obstacle to state and answer: no migration here may import app code,
+      because `build_test_template.py` replays the chain from zero. Expect it to DECOMPOSE.
 
 - [ ] **R11 -- the LEAD placement: fund an occurrence from an EARLIER paycheck.**
 

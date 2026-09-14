@@ -53,6 +53,7 @@ from app.routes.accounts.opening import books_opening_context
 from app.services import (
     account_posting_service,
     account_service,
+    definition_delete,
     ledger_account_service,
     pay_period_service,
     transfer_service,
@@ -612,11 +613,22 @@ def hard_delete_account(account_id):
       2. Transfer template guard -- any TransferTemplate (active or
          archived) referencing this account blocks deletion because the
          FK is ON DELETE RESTRICT.
-      3. Transaction template guard -- any TransactionTemplate (active
-         or archived) referencing this account blocks deletion for the
-         same FK reason.
-      4. History check -- any non-deleted Transaction referencing this
-         account triggers archive-instead-of-delete.
+      3. Recurring-definition guard -- any TransactionTemplate (active or
+         archived) on this account that RECURS blocks deletion for the same
+         FK reason.  A rule-less definition is a ONE-OFF's (plan step
+         ``balance:X-bi-7a``, ruling **R-BAL23**: the refusal counts
+         definitions with a rule) and is disposed of below, because the
+         Recurring list is where the owner would go to "delete those
+         recurring transactions first" and a one-off is not listed there.
+      4. History check -- any non-deleted Transaction on this account, or
+         under one of its definitions, triggers archive-instead-of-delete;
+         so a rule-less definition still holding a live row anywhere
+         archives the account exactly as an ad-hoc row does.  So does a
+         SETTLED row under one of them whatever its ``is_deleted`` -- the
+         definition door's own refusal (``template_has_paid_history``,
+         ruling **R-JE**): the disposal below would otherwise leave that
+         row TEMPLATE-priced with its link nulled, the state finding
+         **N-440** names.
       5. Posting-ledger check -- any posting on ANY of this account's
          ledger accounts (a settled transfer's immutable entries, which
          survive a transfer delete, and its anchor corrections' counter
@@ -631,6 +643,17 @@ def hard_delete_account(account_id):
           invariants.
         - Transaction rows (soft-deleted ghosts) referencing this
           account.
+        - The rule-less TransactionTemplates on this account (the only
+          kind guard 3 lets through), each holding no live and no settled
+          row (guard 4): a definition with no rule and no row defines
+          nothing, and its RESTRICT key would refuse the account otherwise.
+          Disposed of through ``definition_delete.permanently_delete_definition``,
+          the SAME act the definition's own hard-delete performs, so the
+          soft-deleted ghosts it still names (on this account or another)
+          are deleted with their purchase postings reversed rather than
+          unlinked.  Their series rows cascade with them; the merchant rules
+          that could name one cascade with the ACCOUNT already
+          (``fk_merchant_rules_owner``).
       CASCADE-FK dependents (LoanParams, InterestParams,
       InvestmentParams, AccountAnchorHistory, SavingsGoal, LoanFeatures)
       are auto-deleted by PostgreSQL when the account row is removed.
@@ -659,13 +682,16 @@ def hard_delete_account(account_id):
         )
         return redirect(url_for("savings.dashboard"))
 
-    # Guard 3: transaction templates with RESTRICT FK.
-    blocking_txn_template = (
+    # Guard 3: RECURRING transaction definitions with RESTRICT FK.  Loaded
+    # and asked rather than filtered: ``recurs`` is a per-row derivation with
+    # one spelling (``TransactionTemplate.recurs``), and a query keyed on it
+    # refuses to build.  An account holds a handful of definitions.
+    definitions = (
         db.session.query(TransactionTemplate)
         .filter_by(account_id=account_id, user_id=current_user.id)
-        .first()
+        .all()
     )
-    if blocking_txn_template:
+    if any(definition.recurs for definition in definitions):
         flash(
             "Cannot delete this account -- it has recurring transactions. "
             "Delete those recurring transactions first.",
@@ -673,8 +699,15 @@ def hard_delete_account(account_id):
         )
         return redirect(url_for("savings.dashboard"))
 
-    # Guard 4: transaction history (any non-deleted transaction).
-    if archive_helpers.account_has_history(account.id):
+    # Guard 4: transaction history -- any non-deleted transaction on the
+    # account or under one of its definitions, and any SETTLED row under one
+    # of its definitions whatever its ``is_deleted`` (the definition door's
+    # own refusal, ruling R-JE; an adversarial review of plan step
+    # balance:X-bi-7a reproduced the disposal below nulling such a row's link).
+    if archive_helpers.account_has_history(account.id) or any(
+        archive_helpers.template_has_paid_history(definition.id)
+        for definition in definitions
+    ):
         return _archive_instead_of_delete(
             account, account_id,
             f"'{account.name}' has transaction history and cannot be permanently "
@@ -720,6 +753,16 @@ def hard_delete_account(account_id):
     db.session.query(Transaction).filter(
         Transaction.account_id == account_id,
     ).delete(synchronize_session="fetch")
+
+    # Step 2b: dispose of the rule-less definitions guard 3 let through.
+    # Every one of them holds no live row and no settled row (guard 4
+    # archived the account otherwise), so each defines nothing; the
+    # soft-deleted, non-settled ghosts it still names -- on this account,
+    # already gone at step 2, or on another -- are deleted with their
+    # purchase postings reversed, never unlinked, because it is the SAME act
+    # the definition's own hard-delete performs.
+    for definition in definitions:
+        definition_delete.permanently_delete_definition(definition)
 
     # Step 3: explicitly delete CASCADE-FK dependents that lack ORM
     # relationships on Account.  Without explicit relationships,

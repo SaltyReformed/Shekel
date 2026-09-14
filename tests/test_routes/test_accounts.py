@@ -1103,6 +1103,264 @@ class TestHardDeletePostingLedgerGuard:
                 assert sum(leg.amount for leg in legs) == Decimal("0.00")
 
 
+class TestHardDeleteAndTheAccountsDefinitions:
+    """Guard 3 counts RECURRING definitions; a rule-less one goes with the account.
+
+    Plan step ``balance:X-bi-7a`` (ruling **R-BAL23**: the account-delete
+    refusal counts definitions with a rule, so an account holding only a
+    one-off archives as it does today; the disposal of a row-less rule-less
+    definition ruled by the developer 2026-09-13).  Until this step guard 3
+    refused on ANY definition, so the refusal named, for a one-off, a
+    "recurring transaction" the Recurring list will not show once the doors
+    leaf lands -- and, re-keyed alone, a rule-less definition with no row
+    would have passed every guard and hit ``transaction_templates``'
+    RESTRICT key as a 500.  Each case makes the definition rule-less the way
+    the edit door does: the engine's row under a cadence, then the cadence
+    cleared.
+    """
+
+    def _fresh_account(self, seed_user, name):
+        """A checking account opened at `$0.00`, so it posts no anchor leg.
+
+        Guard 5 archives an account holding ANY posting, and a non-zero
+        opening posts one at creation -- so an account that is to reach the
+        definition guards and the permanent delete has to open empty.
+        """
+        account = create_account_of_type(
+            seed_user, db.session, "Checking", name,
+            anchor_balance=Decimal("0.00"),
+        )
+        db.session.commit()
+        return account
+
+    def test_a_recurring_definition_still_refuses(
+        self, app, auth_client, seed_user,
+    ):
+        """THE CONTROL: a definition with a rule blocks the delete, as before."""
+        with app.app_context():
+            account = self._fresh_account(seed_user, "Has A Rule")
+            make_expense_template(
+                db.session, seed_user, name="Gym", account=account,
+            )
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/accounts/{account.id}/hard-delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"Delete those recurring transactions first" in response.data
+            kept = db.session.get(Account, account.id)
+            assert kept is not None and kept.is_active is True
+
+    def test_a_rule_less_definition_holding_a_row_archives_instead(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An account whose only history is a one-off archives, as an ad-hoc row does."""
+        with app.app_context():
+            from app.models.transaction_template import (  # pylint: disable=import-outside-toplevel
+                TransactionTemplate,
+            )
+            account = self._fresh_account(seed_user, "One-Off Only")
+            template = make_expense_template(
+                db.session, seed_user, name="Kindle", account=account,
+            )
+            row = generate_row_of(template, seed_periods_today[0])
+            template.recurrence_rule = None
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/accounts/{account.id}/hard-delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"has transaction history" in response.data
+            archived = db.session.get(Account, account.id)
+            assert archived is not None and archived.is_active is False
+            assert db.session.get(Transaction, row.id) is not None
+            assert db.session.get(TransactionTemplate, template.id) is not None
+
+    def test_a_rule_less_definitions_row_on_another_account_archives_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The history predicate sees a row UNDER a definition, wherever it sits.
+
+        A retained row stays on the old account when its definition's account
+        moves (the maintain pass keeps a row holding the owner's records where
+        it is), so the definition's account can hold no row of its own.
+        Deleting that definition would ``SET NULL`` the row's link and leave a
+        TEMPLATE-priced row with nothing to price it; guard 4 sees the row
+        through the definition and archives instead.
+        """
+        with app.app_context():
+            account = self._fresh_account(seed_user, "Definition Here")
+            template = make_expense_template(
+                db.session, seed_user, name="Moved Away",
+            )
+            row = generate_row_of(template, seed_periods_today[0])
+            template.recurrence_rule = None
+            # The definition moves to the fresh account; its row stays on the
+            # seed account, as a retained row does.
+            template.account_id = account.id
+            db.session.commit()
+            assert row.account_id != account.id
+
+            response = auth_client.post(
+                f"/accounts/{account.id}/hard-delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"has transaction history" in response.data
+            archived = db.session.get(Account, account.id)
+            assert archived is not None and archived.is_active is False
+            db.session.expire_all()
+            assert db.session.get(Transaction, row.id).template_id == template.id
+
+    def test_a_settled_ghost_under_a_rule_less_definition_archives_instead(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The definition door's refusal (R-JE, N-440), made at this door too.
+
+        **Found by the adversarial review of this step, reproduced before it
+        was fixed**: a settled row soft-deleted while its definition still
+        recurred is a tombstone the definition still names; guard 4 read
+        live rows only and guard 5 this account's ledger only, so the
+        disposal deleted the definition and ``transactions.template_id``'s
+        SET NULL left a settled, TEMPLATE-priced row with nothing to price
+        it -- unpriceable on any revert, unrestorable by the cutover's
+        downgrade.  ``template_has_paid_history`` counts that ghost, and the
+        account archives instead, exactly as the definition's own hard-delete
+        refuses.
+        """
+        with app.app_context():
+            from app.enums import AmountSourceEnum  # pylint: disable=import-outside-toplevel
+            from app.models.transaction_template import (  # pylint: disable=import-outside-toplevel
+                TransactionTemplate,
+            )
+            account = self._fresh_account(seed_user, "Definition Lands Here")
+            template = make_expense_template(
+                db.session, seed_user, name="Moved Away", amount="55.00",
+            )
+            row = generate_row_of(template, seed_periods_today[0])
+            db.session.commit()
+            row_id, template_id = row.id, template.id
+            # Settled on the SEED account, then deleted while the definition
+            # still recurs: the soft arm, a tombstone.
+            assert auth_client.post(
+                f"/transactions/{row_id}/mark-done",
+            ).status_code == 200
+            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+            db.session.expire_all()
+            row = db.session.get(Transaction, row_id)
+            assert row.is_deleted is True and row.status.is_settled
+            # The definition moves to the fresh account and loses its cadence.
+            template = db.session.get(TransactionTemplate, template_id)
+            template.account_id = account.id
+            template.recurrence_rule = None
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/accounts/{account.id}/hard-delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"has transaction history" in response.data
+            db.session.expire_all()
+            archived = db.session.get(Account, account.id)
+            assert archived is not None and archived.is_active is False
+            assert db.session.get(TransactionTemplate, template_id) is not None
+            row = db.session.get(Transaction, row_id)
+            assert row.template_id == template_id
+            assert row.amount_source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+
+    def test_a_projected_ghost_under_a_rule_less_definition_is_deleted_not_unlinked(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A non-settled ghost on ANOTHER account goes with its definition.
+
+        The other half of the same review finding: a Projected row soft-deleted
+        while the definition recurred, on the seed account, under a definition
+        that then moved to the fresh account and lost its cadence.  Nothing
+        refuses (no live row, no settled row), and the disposal is the
+        definition door's own act -- the ghost is DELETED, not left as a
+        TEMPLATE-priced row with a NULL link.
+        """
+        with app.app_context():
+            from app.models.transaction_template import (  # pylint: disable=import-outside-toplevel
+                TransactionTemplate,
+            )
+            account = self._fresh_account(seed_user, "Definition Lands Here")
+            template = make_expense_template(
+                db.session, seed_user, name="Moved Away",
+            )
+            row = generate_row_of(template, seed_periods_today[0])
+            db.session.commit()
+            row_id, template_id = row.id, template.id
+            assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
+            db.session.expire_all()
+            assert db.session.get(Transaction, row_id).is_deleted is True
+            template = db.session.get(TransactionTemplate, template_id)
+            template.account_id = account.id
+            template.recurrence_rule = None
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/accounts/{account.id}/hard-delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"permanently deleted" in response.data
+            db.session.expire_all()
+            assert db.session.get(Account, account.id) is None
+            assert db.session.get(TransactionTemplate, template_id) is None
+            assert db.session.get(Transaction, row_id) is None
+
+    def test_a_rule_less_definition_with_no_row_goes_with_the_account(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A definition with no rule and no row defines nothing: disposed.
+
+        The state a hard-deleted one-off leaves until the doors leaf deletes
+        the pair together, and the one the template form's *Does not repeat*
+        makes today.  Without the disposal the delete reaches
+        ``transaction_templates.account_id``'s RESTRICT key.
+        """
+        with app.app_context():
+            from app.models.template_amount_version import (  # pylint: disable=import-outside-toplevel
+                TemplateAmountVersion,
+            )
+            from app.models.transaction_template import (  # pylint: disable=import-outside-toplevel
+                TransactionTemplate,
+            )
+            account = self._fresh_account(seed_user, "Row-less One-Off")
+            template = make_expense_template(
+                db.session, seed_user, name="Kindle", account=account,
+            )
+            row = generate_row_of(template, seed_periods_today[0])
+            template.recurrence_rule = None
+            db.session.commit()
+            template_id = template.id
+            # The one-off's row is hard-deleted at the grid (this step's
+            # delete arm), leaving the definition standing alone.
+            assert auth_client.delete(f"/transactions/{row.id}").status_code == 200
+            assert db.session.get(Transaction, row.id) is None
+
+            response = auth_client.post(
+                f"/accounts/{account.id}/hard-delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"permanently deleted" in response.data
+            db.session.expire_all()
+            assert db.session.get(Account, account.id) is None
+            assert db.session.get(TransactionTemplate, template_id) is None
+            assert db.session.query(TemplateAmountVersion).filter_by(
+                transaction_template_id=template_id,
+            ).count() == 0
+
+
 # ── Anchor Balance (Inline + True-up) ─────────────────────────────
 
 

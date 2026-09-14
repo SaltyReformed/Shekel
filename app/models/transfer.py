@@ -459,8 +459,9 @@ class Transfer(
         (``routes/transactions/_shadow_mutations``).  The second was missed by
         an adversarial review's own account of this step, which is why the
         predicate is a property rather than a line repeated at each door: the
-        transaction twin's single gate reads ``txn.template_id is None`` inline
-        and has no second door to drift from.
+        transaction twin's single gate reads ``txn.recurs`` (plan step
+        balance:X-bi-7a; it read the link inline until then) and has no second
+        door to drift from.
 
         **It is not a refusal the SERVICE can make**, and that is why it lives
         at the doors: the recurrence engine's maintain pass writes this very

@@ -580,6 +580,45 @@ class TestCarryForwardStatusRecheck:
             assert txn.pay_period_id == seed_periods[1].id
             assert txn.is_override is True
 
+    def test_a_rule_less_definitions_row_moves_without_the_flip(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A row of a definition with NO rule moves as an ad-hoc row does.
+
+        Plan step balance:X-bi-7a (ruling **R-BAL20**): the two bulk UPDATEs
+        split on ``Transaction.recurs``, not on the link.  A cleared cadence
+        leaves its rows template-linked, and until this step the discrete
+        branch flagged them ``is_override`` on the move -- a flag whose only
+        effect on a rule-less definition's row is to hide it from
+        ``propagate_to_unruled_definition`` for good (the twin's defect
+        **BAL-493**).  The recurring sibling above keeps its flip; this row
+        keeps its link, its date and ``is_override = False``.
+        """
+        with app.app_context():
+            template = _create_template(
+                seed_user, name="Cleared Cadence", category_key="Groceries",
+            )
+            txn = generate_row_of(template, seed_periods[0])
+            template.recurrence_rule = None
+            db.session.commit()
+            generated_due = txn.due_date
+            assert txn.is_override is False
+            assert txn.recurs is False
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            db.session.refresh(txn)
+            assert count == 1
+            assert txn.pay_period_id == seed_periods[1].id
+            assert txn.template_id == template.id
+            assert txn.is_override is False
+            assert txn.due_date == generated_due
+
     def test_version_id_bumped_by_bulk_update(
         self, app, db, seed_user, seed_periods,
     ):
@@ -1311,17 +1350,34 @@ def _create_envelope_template(
     The shared builder (:func:`make_expense_template`), so the definition is
     one the engine can generate from and its rows are the engine's own
     (:func:`generate_row_of`, plan step balance:X-cf-3b).  It took a
-    ``with_rule=False`` switch until that step, for the "missing target
-    canonical" cases: a definition with NO cadence holds rows only one way --
-    they were generated under a cadence the owner then CLEARED, which is the
-    edit door's act (``_recurrence_form_helpers._clear_recurrence_rule``:
-    dis-associate, and delete-orphan removes the rule) -- so those cases
-    generate the source first and then set ``template.recurrence_rule = None``.
+    ``with_rule=False`` switch until that step; the "missing target
+    canonical" cases then CLEARED the rule after generating the source, and
+    since plan step balance:X-bi-7a that no longer reaches the rollover at
+    all -- a rule-less definition's row is a one-off and moves whole
+    (``Transaction.recurs`` gates the envelope branch) -- so those cases
+    re-author the cadence to one that RECURS but fires in no seed paycheck
+    (:func:`_fires_in_no_seed_paycheck`).
     """
     return make_expense_template(
         db.session, seed_user, amount=default_amount,
         name=name, category_key=category_key, is_envelope=True,
     )
+
+
+def _fires_in_no_seed_paycheck(template):
+    """Re-author *template*'s cadence to a June-15 ANNUAL rule, and flush.
+
+    The Father's Day shape: the definition RECURS, so its rows take the
+    envelope rollover, and against a schedule that runs January to May the
+    engine places nothing in any seed paycheck -- so the CREATE branch of
+    ``_classify_leftover_target`` is the only one reachable.  Cleared the
+    way the edit door clears a rule (dis-associate; delete-orphan), then
+    re-authored, the idiom ``TestACarriedForwardLeftoverRowIsDated`` uses.
+    """
+    template.recurrence_rule = None
+    db.session.flush()
+    make_cadence_rule(template, ANNUAL, fires_on_day=15, fires_in_month=6)
+    db.session.refresh(template)
 
 
 def _plan_of(txn):
@@ -1743,15 +1799,15 @@ class TestCarryForwardEnvelopeMissingTarget:
     def test_template_inactive_in_target_creates_override_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """Template without a recurrence rule + empty target: create a row.
+        """A rule that names no row in the target + empty target: create a row.
 
-        With no recurrence rule the engine returns [], so there is no
-        canonical to bump.  Instead of refusing, the branch settles the
-        source and creates a fresh ``is_override`` row in the target
-        carrying the leftover -- the Father's Day case (a yearly envelope
-        rolling into an off-anniversary period).  The source was generated
-        under a cadence the owner then cleared, which is the one way a
-        rule-less definition comes to hold a row.
+        The engine places nothing there, so there is no canonical to bump.
+        Instead of refusing, the branch settles the source and creates a
+        fresh ``is_override`` row in the target carrying the leftover -- the
+        Father's Day case (a yearly envelope rolling into an off-anniversary
+        period).  The source is the engine's row under the every-paycheck
+        cadence; the owner then re-authors the cadence to a yearly one
+        (:func:`_fires_in_no_seed_paycheck`).
 
         Source: $100 envelope, $30 spent -> settles Paid at $30,
         leftover $70.  Target had no row -> one new Projected override
@@ -1760,7 +1816,7 @@ class TestCarryForwardEnvelopeMissingTarget:
         with app.app_context():
             template = _create_envelope_template(seed_user)
             source = generate_row_of(template, seed_periods[0])
-            template.recurrence_rule = None
+            _fires_in_no_seed_paycheck(template)
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
             source_id = source.id
@@ -2079,17 +2135,18 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
     ):
         """Father's Day: yearly envelope, $0 spent -> $100 rolls to a new row.
 
-        A once-yearly envelope (no per-period rule) budgeted $100 with
-        no purchases.  Source settles Paid at $0; the full $100 leftover
-        lands in a fresh Projected override row in the target period.  The
-        source was generated under a cadence the owner then cleared.
+        A once-yearly envelope (a rule that fires in no seed paycheck)
+        budgeted $100 with no purchases.  Source settles Paid at $0; the
+        full $100 leftover lands in a fresh Projected override row in the
+        target period.  The source is the engine's row under the
+        every-paycheck cadence the owner then re-authored to yearly.
         """
         with app.app_context():
             template = _create_envelope_template(
                 seed_user, name="Father's Day",
             )
             source = generate_row_of(template, seed_periods[0])
-            template.recurrence_rule = None
+            _fires_in_no_seed_paycheck(template)
             db.session.commit()
             source_id = source.id
 
@@ -2920,14 +2977,15 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
     def test_template_inactive_is_actionable_creates_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """No target + no rule: actionable, predicts a fresh row (Father's Day).
+        """No target + a rule that fires elsewhere: actionable, a fresh row.
 
-        The source was generated under a cadence the owner then cleared.
+        The Father's Day shape: the source is the engine's row under the
+        every-paycheck cadence the owner then re-authored to yearly.
         """
         with app.app_context():
             template = _create_envelope_template(seed_user)
             source = generate_row_of(template, seed_periods[0])
-            template.recurrence_rule = None
+            _fires_in_no_seed_paycheck(template)
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
 
@@ -3597,42 +3655,66 @@ class TestACarriedForwardLeftoverRowIsDated:
             assert fresh.due_date.day == 15
             assert fresh.due_date != derived_span(target_period).start_date
 
-    def test_a_definition_with_no_cadence_dates_the_row_from_the_paycheck(
+    def test_a_rule_less_definitions_envelope_moves_whole_and_keeps_its_date(
         self, app, db, seed_user, seed_periods,
     ):
-        """A CLEARED cadence still states a price, so its row still needs a date.
+        """A CLEARED cadence's envelope row is a one-off: it MOVES, whole.
 
-        The paycheck's start is ``compute_due_date``'s own answer for a
-        cadence that names no day of the month, so the two arms of
-        ``_leftover_due_date`` are one rule rather than two.  The source was
-        generated under a cadence the owner then cleared.
+        **The behaviour this case pinned was REPLACED at plan step
+        balance:X-bi-7a** (ruling **R-BAL20**; ``from_scratch_architecture.md``
+        10.4 trace 4, option (i), confirmed by the developer 2026-09-13).
+        Until then a rule-less definition's envelope row took the ROLLOVER:
+        the source settled at its purchases and a second row of the same
+        definition -- answering no occurrence, dated from the paycheck's
+        start by a ``rule is None`` arm of ``_leftover_due_date`` -- took the
+        leftover, giving a definition that places ONE row two.  The envelope
+        branch is gated on ``Transaction.recurs`` now, so the row falls
+        through to the discrete bucket like an ad-hoc envelope: it is
+        RELOCATED with its purchases, keeps the date it was generated with,
+        is not settled, and -- unlike a recurring definition's row -- is NOT
+        flagged ``is_override``, because no pass would ever write over it and
+        the flag would only stop its definition speaking to it.  That arm of
+        ``_leftover_due_date`` is deleted as unreachable.
         """
         with app.app_context():
             template = _create_envelope_template(
                 seed_user, name="Father's Day",
             )
-            generate_row_of(template, seed_periods[0])
+            source = generate_row_of(template, seed_periods[0])
+            generated_due = source.due_date
             template.recurrence_rule = None
+            _add_entry(source, seed_user, "30.00")
             db.session.commit()
+            source_id = source.id
 
-            carry_forward_service.carry_forward_unpaid(
+            count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id,
                 seed_user["scenario"].id,
                 balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
-            fresh = (
+            assert count == 1
+            rows = (
                 db.session.query(Transaction)
                 .filter_by(
                     template_id=template.id,
-                    pay_period_id=seed_periods[1].id,
                     scenario_id=seed_user["scenario"].id,
                     is_deleted=False,
-                ).one()
+                ).all()
             )
-            assert fresh.is_override is True
-            assert fresh.due_date == derived_span(seed_periods[1]).start_date
+            # ONE row of the definition, the same one, now in the target.
+            assert [row.id for row in rows] == [source_id]
+            moved = rows[0]
+            assert moved.pay_period_id == seed_periods[1].id
+            assert moved.is_override is False
+            assert moved.due_date == generated_due
+            assert moved.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            # Its purchase travelled with it, and it is still the definition's
+            # to price: no figure of its own, no settlement.
+            assert [entry.amount for entry in moved.entries] == [Decimal("30.00")]
+            assert moved.estimated_amount is None
+            assert moved.settled_basis_id is None
 
     def test_handing_the_leftover_back_to_its_definition_leaves_it_priceable(
         self, app, db, seed_user, seed_periods,
