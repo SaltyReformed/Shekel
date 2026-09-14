@@ -312,9 +312,11 @@ def is_loan_payment(template: Any) -> bool:
 
     A :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row is
     present "only for recurring loan payments" (decision B), and it carries the
-    standing ``extra_principal`` that
-    ``recurring_transfer_query.loan_standing_extra`` threads into the balance
-    seam's :class:`~app.services.balance_at._resolution.ResolvedLoan`.
+    standing ``extra_principal`` that amount rule 4 prices into every row the
+    definition generates and the seam's forward plan prices into every
+    occurrence no row covers (``recurring_transfer_query.loan_payment_config``
+    is the read; the loan-level ``loan_standing_extra`` that threaded one
+    picked definition's extra into the resolver went at plan step R7d-g-3).
 
     **ONE reading of the settings-row test**: the amount model's
     :func:`~app.services.cash_ledger.is_loan_payment_definition`, which is

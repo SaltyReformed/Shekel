@@ -39,7 +39,6 @@ from app.services.loan_loaders import (
     latest_settled_payment_due_date,
     load_loan_anchor_facts,
 )
-from app.services.recurring_transfer_query import loan_standing_extra
 from app.services.loan_payment_service import LoanContext, load_loan_context
 from app.services.rate_period_engine import payment_number
 from app.services.balance_at import BalanceContext
@@ -544,9 +543,7 @@ def accelerated_overlay(scenarios):
     return [None] * n_history + balances["accelerated"][n_history:]
 
 
-def build_baseline_scenarios(
-    loan_inputs, account, balance_ctx, extra_principal=Decimal("0.00"),
-):
+def build_baseline_scenarios(loan_inputs, account, balance_ctx):
     """Run the baseline payoff-scenario composer call for the loan detail page.
 
     One ``compute_payoff_scenarios`` call (no what-if lever, ``extra_monthly=0``)
@@ -557,10 +554,16 @@ def build_baseline_scenarios(
     The returned scenario consumes ALL payments (confirmed + projected): its
     ``history_rows + committed_forward`` slice IS the planned trajectory the band
     chart, payment breakdown, and summary read, while ``original_forward``
-    supplies the contractual x-axis baseline.  The loan's STANDING
-    ``extra_principal`` (step 5) is threaded so ``committed_forward`` -- the
-    planned trajectory -- reflects the overpayment, accelerating the band chart
-    and the projected payoff exactly as the cash debit does.
+    supplies the contractual x-axis baseline.  **No standing extra is threaded
+    since plan step R7d-g-3** (ruling **R-R88**, which re-ruled R-R83's seam clause there): every
+    projected row's cash already carries its own definition's extra (amount
+    rule 4), so the composer taking one as well paid it twice on every
+    row-covered month -- and the one it took was the OLDEST definition's
+    alone (plan ledger row **D49**).  Past the last generated row the
+    committed slice is the CONTRACT's installment; the definitions' own
+    occurrences there are the seam's forward plan's (``balance_at._plan``),
+    which the "Projected payoff" chip reads and this slice does not until
+    plan step R16-f re-expresses the composer as that fold.
 
     Read switch: reads the genesis-ledger confirmed view ONCE via the seam's
     :func:`app.services.balance_at.confirmed_view` -- the FOLD of the loan's
@@ -586,8 +589,6 @@ def build_baseline_scenarios(
             scopes the confirmed seed and its ``as_of`` IS the replay / projection
             boundary, so the seed and the composer can no longer be handed two
             different clocks.
-        extra_principal: The loan's standing monthly overpayment (``0.00`` when
-            none), threaded into the committed trajectory.
 
     Returns:
         The baseline :class:`loan_resolver.PayoffScenarios`.
@@ -597,7 +598,6 @@ def build_baseline_scenarios(
         extra_monthly=Decimal("0.00"),
         as_of=balance_ctx.as_of,
         confirmed_view=balance_at.confirmed_view(account, balance_ctx),
-        extra_principal=extra_principal,
     )
 
 
@@ -633,10 +633,10 @@ def load_baseline_scenarios(account, params):
     band-chart producer (:func:`build_loan_band_chart`) and the standalone
     schedule route (:mod:`app.routes.loan.schedule`).  It loads the service
     :class:`LoanContext` and composes the baseline
-    :class:`~app.services.loan_resolver.PayoffScenarios` (no what-if lever)
-    threaded with the loan's standing extra -- the committed trajectory the loan
-    card carries.  Returns both so the caller can read the ``LoanContext``
-    (escrow / rate feeds) alongside the composed scenarios.
+    :class:`~app.services.loan_resolver.PayoffScenarios` (no what-if lever) --
+    the committed trajectory the loan card carries.  Returns both so the
+    caller can read the ``LoanContext`` (escrow / rate feeds) alongside the
+    composed scenarios.
 
     It builds a :class:`BalanceContext` for the pass (plan step E1d-b) where it
     previously resolved a bare scenario id: the confirmed slice these schedules
@@ -660,7 +660,6 @@ def load_baseline_scenarios(account, params):
     loan = load_loan_context(account.id, balance_ctx.amounts(), params)
     scenarios = build_baseline_scenarios(
         _loan_inputs(params, loan), account, balance_ctx,
-        loan_standing_extra(account.id, current_user.id),
     )
     return loan, scenarios
 

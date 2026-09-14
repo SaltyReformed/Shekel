@@ -127,6 +127,57 @@ class GenerationPlan(NamedTuple):
 
 
 
+def definition_recurs(template) -> bool:
+    """Return whether *template* names ANY occurrence: active, and carrying a rule.
+
+    **The ONE predicate for "does this definition recur"**, read where a
+    definition's plan is resolved (:func:`resolve_generation_plan`, so a
+    definition that does not recur names no occurrence and the maintain
+    pass considers every row it holds for retirement) and where the
+    recurrence-conflict chooser asks whether an edit will regenerate rows at
+    the new amount (``routes/_recurrence_conflict_chooser``).  Two readers
+    of one fact, stated once.
+
+    Two arms.  A definition with NO rule does not recur, the one way it has
+    said so since plan step R2e-3 retired the ``Once`` pattern.  **An
+    ARCHIVED definition does not recur either, since plan step R7d-g-3**
+    (plan ledger row **REC-524**): the archive door soft-deletes every
+    projected row and takes the definition out of every active set, and
+    until this arm existed nothing on the regeneration path read the flag
+    -- the update doors reach an archived template by URL.  A soft-deleted
+    row still CLAIMS its occurrence
+    (:class:`~app.services._recurrence_common.OccurrenceClaims`), so what a
+    rename regenerated was a live row for every occurrence NO row answered:
+    a definition archived before it generated (``0 -> 6`` rows measured), and
+    every pay period populated AFTER the archive, since period population
+    skips an archived template and leaves its later occurrences unclaimed --
+    the Recurring surface still listing the template as archived.  Reading
+    the flag HERE rather than at a door makes the defect unrepresentable: no
+    pass, for either template kind, can write a row for a definition the
+    owner has stopped.  The unarchive door flips the flag before its pass
+    runs, so the restored definition recurs again by the same rule.  Two
+    more readers inherit the same answer, by the same rule: the
+    carry-forward's prediction (``_generate.can_generate_in_period``) says an
+    archived envelope's definition would generate nothing, so a leftover is
+    CREATED as its own row rather than generated from a stopped definition;
+    and a salary regeneration (``salary_regeneration``) over a profile whose
+    template was archived writes nothing where it revived rows.
+
+    Args:
+        template: A ``TransactionTemplate`` or ``TransferTemplate``.  Every
+            production door flushes before it regenerates, so ``is_active``
+            has been given its column default by the time this reads it; a
+            fixture asking about an UNFLUSHED template reads ``None`` there,
+            which is the default's value-to-be and not an archive, so it is
+            read as active rather than answered "does not recur" silently.
+
+    Returns:
+        ``True`` iff the definition is not archived and carries a recurrence
+        rule.
+    """
+    return template.is_active is not False and template.recurrence_rule is not None
+
+
 def resolve_generation_plan(
     template, schedule, scenario_id, effective_from, *, block_message,
 ):
@@ -259,21 +310,22 @@ def resolve_generation_plan(
 
     Returns:
         A :class:`GenerationPlan` when generation should proceed, or
-        ``None`` when ownership fails or the rule is absent (every
-        caller returns an empty list in the None case).
+        ``None`` when ownership fails or the definition does not recur --
+        no rule, or archived (:func:`definition_recurs`); every caller
+        returns an empty list in the None case.
     """
     if not check_scenario_ownership(
         logger, template, scenario_id, block_message=block_message,
     ):
         return None
 
-    rule = template.recurrence_rule
-    if rule is None:
-        # No recurrence rule -- nothing to generate.  This is the ONE way a
-        # definition says "does not recur" (plan step R2e-3 retired the
-        # ``Once`` pattern that was the second way, and the guard that read
-        # it).
+    if not definition_recurs(template):
+        # No recurrence rule, or an ARCHIVED definition -- nothing to
+        # generate.  ONE predicate says "does not recur" (plan step R2e-3
+        # retired the ``Once`` pattern that was a second way, and the guard
+        # that read it); see :func:`definition_recurs` for the archived arm.
         return None
+    rule = template.recurrence_rule
 
     # Narrow the walk's answer to what this pass may actually write.  Dropping
     # the window intersection would make a schedule extend re-walk every

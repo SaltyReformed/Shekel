@@ -186,7 +186,6 @@ def resolve_loan(
     loan_inputs: LoanInputs,
     as_of: date,
     confirmed_view: ConfirmedLedgerView | None = None,
-    extra_principal: Decimal = ZERO_MONEY,
 ) -> LoanState:
     """Resolve a loan to its (payment, rate, schedule, interest).
 
@@ -195,7 +194,7 @@ def resolve_loan(
     package scope; generates the full schedule via
     :func:`._payoff.compute_payoff_scenarios` (the COMMITTED, plan-aware
     composition ``history_rows + committed_forward``, honoring the projected
-    recurring payments and the standing ``extra_principal``); derives the
+    recurring payments at the cash each row resolves to); derives the
     total interest from the same schedule.  The loan's BALANCE is not here
     (plan step D2a): the ``balance_at`` seam folds it from the loan's recorded
     events (see the :class:`LoanState` docstring).
@@ -212,14 +211,16 @@ def resolve_loan(
        :func:`app.utils.dates.anchor_chronology_key`, i.e. ``(anchor_date,
        created_at, event_id)`` DESC (:func:`._periods.select_latest_anchor`).
     2. Generate the schedule via :func:`._payoff.compute_payoff_scenarios`
-       with the FULL payment list and the standing ``extra_principal``
-       (``extra_monthly=0``: the payoff lever's what-if extra is not part of
-       the committed plan).  The composer replays the payments SETTLED by
-       ``as_of`` and routes everything else (projected recurring payments, and
-       any payment settled after ``as_of``) forward through
-       ``monthly_override``,
-       applying the standing extra to every forward month.  ARM vs. fixed-rate
-       anchor handling lives inside the composer (Phase 6 of the
+       with the FULL payment list (``extra_monthly=0``: the payoff lever's
+       what-if extra is not part of the committed plan).  The composer
+       replays the payments SETTLED by ``as_of`` and routes everything else
+       (projected recurring payments, and any payment settled after
+       ``as_of``) forward through ``monthly_override``.  A standing extra
+       is INSIDE each projected row's cash (amount rule 4 prices it from the
+       row's own definition), so the composer takes none: it took a loan-level
+       ``extra_principal`` until plan step R7d-g-3 and applied it a second
+       time on every month a row covered.  ARM vs. fixed-rate anchor
+       handling lives inside the composer (Phase 6 of the
        amortization-engine split); the resolver no longer reaches the engine
        directly.
     3. ``LoanState.schedule = history_rows + committed_forward`` -- the
@@ -250,16 +251,6 @@ def resolve_loan(
             anchor replay unchanged (an unconfigured loan, or a caller that
             deliberately reads the schedule balance -- e.g. the "ever paid
             off" ``date.max`` probe).
-        extra_principal: The loan's standing monthly overpayment (from
-            ``loan_payment_settings``; ``Decimal("0.00")`` when none), applied
-            to every forward month of the committed schedule so the payoff date,
-            total interest, and forward balances reflect the real plan (step 8).
-            The summary read path (``balance_at._resolution.resolved_loan``)
-            loads the loan's WHOLE standing payment centrally via
-            :func:`recurring_transfer_query.standing_payment` -- the forward
-            plan needs the definition and not just this field of it, since plan
-            step R7d-a -- and threads this term into the resolve; a direct
-            caller (e.g. the ``date.max`` probe) may leave it ``0.00``.
 
     Returns:
         A :class:`LoanState` with the four resolver fields.
@@ -280,9 +271,10 @@ def resolve_loan(
     # the COMMITTED trajectory: it partitions the FULL ``payments`` view into
     # settled-by-``as_of`` (replayed) and everything else (projected
     # recurring payments + any payment settled after ``as_of``, routed forward
-    # through ``monthly_override``), then applies the standing ``extra_principal``
-    # to every forward month.  ``extra_monthly=0`` because the payoff lever's
-    # what-if extra is NOT part of the committed plan.  ``LoanState.schedule`` is
+    # through ``monthly_override``).  ``extra_monthly=0`` because the payoff
+    # lever's what-if extra is NOT part of the committed plan; a standing
+    # extra rides inside each projected row's own cash and is never applied
+    # here (plan step R7d-g-3).  ``LoanState.schedule`` is
     # the confirmed-history rows plus that committed forward slice -- the loan's
     # real plan, not the lender minimum (the step-8 seam fix,
     # ``docs/design/escrow_line_identity_refactor.md`` Sec. 16).  ARM vs.
@@ -297,7 +289,6 @@ def resolve_loan(
         extra_monthly=ZERO_MONEY,
         as_of=as_of,
         confirmed_view=confirmed_view,
-        extra_principal=extra_principal,
     )
     schedule = list(scenarios.history_rows) + list(
         scenarios.committed_forward

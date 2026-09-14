@@ -13,7 +13,6 @@ from datetime import date
 from decimal import Decimal, ROUND_CEILING
 
 from flask import render_template, request
-from flask_login import current_user
 
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
@@ -26,7 +25,6 @@ from app.routes.loan._helpers import (
 )
 from app.services import amortization_engine, balance_at, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
-from app.services.recurring_transfer_query import loan_standing_extra
 from app.utils.auth_helpers import require_owner
 from app.utils.money import round_money
 
@@ -79,17 +77,17 @@ def _build_payoff_summary(scenarios, monthly_payment):
     )
 
 
-def _payoff_extra_payment_result(params, ctx, data, confirmed_view, extra_principal):
+def _payoff_extra_payment_result(params, ctx, data, confirmed_view):
     """Render the extra-payment payoff scenario partial.
 
     One ``compute_payoff_scenarios`` call drives both the band-chart
     overlay and the summary metrics so they cannot diverge (the
     structural fix for the "extra applied to ghost historical months"
     defect): replay routes confirmed payments through history, projection
-    routes projected payments through ``monthly_override``, the loan's
-    STANDING ``extra_principal`` accelerates the committed slice, and the
+    routes projected payments through ``monthly_override`` at each row's own
+    resolved cash (a standing extra inside it, amount rule 4), and the
     lever's ``extra_monthly`` previews additional acceleration on top in the
-    accelerated slice.  Both extras apply to every forward month (step 5).  The
+    accelerated slice, applied to every forward month (step 5).  The
     accelerated forward slice becomes the band chart's green dashed preview via
     :func:`._helpers.accelerated_overlay` -- forward-only, aligned to the
     band's contractual x-axis, so the client overlays it on the same
@@ -105,8 +103,6 @@ def _payoff_extra_payment_result(params, ctx, data, confirmed_view, extra_princi
             amortizes the real owed balance -- and charts the ledger-derived
             confirmed history -- the loan card shows.  ``None`` falls back to
             the anchor replay.
-        extra_principal: The loan's standing monthly overpayment (``0.00`` when
-            none); the committed baseline the lever previews on top of.
 
     Returns:
         Rendered ``loan/_payoff_results.html`` response.
@@ -121,7 +117,6 @@ def _payoff_extra_payment_result(params, ctx, data, confirmed_view, extra_princi
         # one day onto a projection from the next (plan step E1d-b).
         as_of=ctx.balance_ctx.as_of,
         confirmed_view=confirmed_view,
-        extra_principal=extra_principal,
     )
 
     committed_months_saved, committed_interest_saved = (
@@ -254,11 +249,10 @@ def payoff_calculate(account_id):
     ctx = _load_route_context(account, params)
 
     if mode == "extra_payment":
-        # Resolved INSIDE the branch that uses them (step C8f): the target-date
-        # mode takes neither, since its plan-aware answer folds the seam's own
-        # memoized walk and plan and the standing extra is already inside the
-        # plan's payment cash.  Hoisting them would make every target-date
-        # request pay for a genesis-ledger walk and a template query it discards.
+        # Resolved INSIDE the branch that uses it (step C8f): the target-date
+        # mode takes no confirmed view, since its plan-aware answer folds the
+        # seam's own memoized walk and plan.  Hoisting it would make every
+        # target-date request pay for a genesis-ledger walk it discards.
         #
         # Read switch: read the genesis-ledger confirmed view ONCE and thread it
         # into the forward projection, so the payoff results project from the
@@ -268,12 +262,7 @@ def payoff_calculate(account_id):
         # which is also what the loan card's own resolution was seeded with.
         # ``require_owner`` already gated ownership above.
         view = balance_at.confirmed_view(account, ctx.balance_ctx)
-        # The loan's standing overpayment: the committed baseline this mode
-        # previews additional extra on top of (step 5).
-        standing_extra = loan_standing_extra(account_id, current_user.id)
-        return _payoff_extra_payment_result(
-            params, ctx, data, view, standing_extra,
-        )
+        return _payoff_extra_payment_result(params, ctx, data, view)
     if mode == "target_date":
         return _payoff_target_date_result(params, ctx, data)
     return render_template(

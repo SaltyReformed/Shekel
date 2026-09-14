@@ -6319,6 +6319,65 @@ def make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
     return template
 
 
+def bind_rule_to_loan(rule, account_id):
+    """Bound a fixture's NEWLY built recurrence rule's START to its loan's contract.
+
+    **A test helper since plan step R7d-g-3, moved here from
+    ``loan_recurrence_sync``** (plan ledger row **REC-526**): its last
+    application caller, the loan dashboard's create door, built its rule
+    from :func:`~app.services.loan_recurrence_sync.loan_cadence_start` and
+    then called this on the same rule -- the same pair re-derived through the
+    same producer, a no-op by construction -- and the generic transfer form's
+    call went at R7d-g-2 (ruling **R-R85**).  What fixtures still need is the
+    composition the app's doors perform in two steps: author a rule with a
+    fixture day, then put the loan's own first contractual installment onto
+    it.  Re-stated here over the PUBLIC producers -- ``loan_cadence_spec`` for
+    the wanted spec, ``reauthor_rule`` for the write -- with the production
+    writer's two idempotency stages (``_sync_loan_cadence``, which the doors
+    run at every point a definition becomes the standing payment, compares
+    the authored spec and then the resolved one before it writes); its
+    refusal translation and its audit event are the doors', not a fixture's.
+    A no-op unless *account_id* is a configured loan, so a fixture may call
+    it for ANY destination without a type check.
+
+    Takes the rule DIRECTLY rather than looking it up from the account, which
+    the production sync must do: that lookup returns the account's OLDEST
+    active recurring template, so a fixture building a second recurring
+    payment into the same loan would leave the NEW rule unbound while
+    re-binding the old one.
+
+    Args:
+        rule: The just-built ``RecurrenceRule``, before generation.
+        account_id: The transfer's destination account (any kind).
+
+    Raises:
+        EmptyAuthoredWindowError: The re-derived first installment falls after
+            a stop the rule's owner authored -- the write door's own refusal,
+            untranslated: the ``ValidationError`` sentence naming the transfer
+            is ``_sync_loan_cadence``'s and belongs to the doors that run it.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.loan_loaders import load_loan_params
+    from app.services.loan_recurrence_sync import loan_cadence_spec
+    from app.services.pay_calendar import calendar_for
+    from app.services.recurrence import (
+        reauthor_rule, recurrence_spec, resolve,
+    )
+    params = load_loan_params(account_id)
+    if params is None:
+        return
+    current = recurrence_spec(rule)
+    wanted = loan_cadence_spec(current, params)
+    if wanted == current:
+        return
+    calendar = calendar_for(rule.user_id)
+    if resolve(wanted, calendar) == resolve(current, calendar):
+        return
+    reauthor_rule(rule, wanted, calendar)
+
+
 def make_loan_payment_template(
     db_session, seed_user, loan_account, amount="200.00", *,
     derive_from_loan=True, extra_principal="0.00", cadence=None,
@@ -6423,7 +6482,6 @@ def make_loan_payment_template(
     # (``bind_rule_to_loan``, plan step C9a), the order ``track_payment``
     # takes.
     if cadence is None:
-        from app.services.loan_recurrence_sync import bind_rule_to_loan
         from app.services.loan_loaders import load_loan_params
         from tests.oracles.recurrence_baseline import MONTHLY
 
@@ -6487,7 +6545,6 @@ def make_retired_loan_payment(
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
-    from app.services.loan_recurrence_sync import bind_rule_to_loan
     from tests.oracles.recurrence_baseline import MONTHLY
 
     loan = create_loan_account(

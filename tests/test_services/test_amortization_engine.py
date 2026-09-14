@@ -1166,10 +1166,12 @@ class TestProjectForward:
       - ``monthly_override`` routes the user's planned payments
         through a forward-only channel;
       - ``extra_monthly`` applies to EVERY forward month, override and
-        contractual alike (C2-4 -- step 5: a standing overpayment must
-        accelerate the whole loan, and a recurring plan makes every near
-        month an override month; no double-count because the standing
-        extra is never baked into the override amount);
+        contractual alike (C2-4 -- step 5: the payoff lever's what-if extra
+        must accelerate the whole loan, and a recurring plan makes every
+        near month an override month.  A STANDING extra is inside the
+        override amount itself -- amount rule 4 prices it into the row --
+        and the composer stopped passing it here at plan step R7d-g-3,
+        where it had been paying it twice);
       - negative amortization, overpayment cap, and ARM rate-change
         re-amortization all mirror ``generate_schedule``'s existing
         behavior on the projection side;
@@ -1326,14 +1328,16 @@ class TestProjectForward:
     def test_override_plus_extra_applies_extra_to_override_months(self):
         """C2-4: ``extra_monthly`` is applied to an override month too (step 5).
 
-        Behavior change ratified by the operator (Q3, 2026-07-07): a standing
-        overpayment (and the payoff lever's additional extra) must accelerate
-        every forward month.  A recurring payment plan makes every near month an
-        OVERRIDE month, so the pre-step-5 rule "override months ignore extra"
-        made the standing extra a no-op for exactly the loans that have one.  The
-        override amount is the month's BASE payment; ``extra_monthly`` is applied
-        on top.  There is no double-count: the standing extra is a live parameter
-        (``loan_payment_service``) and is never baked into the override amount.
+        Behavior change ratified by the operator (Q3, 2026-07-07): the extra a
+        caller passes must accelerate every forward month.  A recurring payment
+        plan makes every near month an OVERRIDE month, so the pre-step-5 rule
+        "override months ignore extra" made the extra a no-op for exactly the
+        loans that have a plan.  The override amount is the month's planned
+        payment; ``extra_monthly`` is applied on top.  What a caller may pass
+        is the payoff lever's what-if extra and nothing else: a STANDING extra
+        is already inside the planned amount (amount rule 4 prices it into the
+        row), and the composer passed it here as well until plan step R7d-g-3,
+        paying it twice on every override month.
 
         Hand arithmetic for June 2026 (override $2,000 + $500 extra), balance
         entering June $296,781.36 (after four contractual+$500-extra rows):

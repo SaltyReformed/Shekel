@@ -153,7 +153,6 @@ from app.services import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.loan_recurrence_sync import bind_rule_to_loan
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     EndsOnDate,
@@ -164,6 +163,7 @@ from app.services.recurrence import (
 )
 from app.services.recurring_definition import resolved_definition
 from app.services.scenario_resolver import get_baseline_scenario
+from tests._test_helpers import bind_rule_to_loan
 
 USER_ID = 1
 

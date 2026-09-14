@@ -2,24 +2,35 @@
 
 A single-responsibility leaf helper for the one query three surfaces share --
 "does an active recurring transfer template pay INTO this account, and if so
-which one?" -- and for the facts read off the template it returns.  Its only
-service import is ``template_amount_service``, itself a leaf over ``db`` and
-two models, so the graph stays acyclic: every consumer of THIS module imports
-it, and none of them is reachable from there.  The loan and investment
-dashboards use the query to decide
-whether to show the set-up-a-recurring-payment prompt, and the loan
-recurrence-sync (Risk R-4) uses it to find the rule whose ``end_date`` it bounds
-to the projected payoff.  Centralising it keeps those surfaces from drifting on
-what counts as an account's recurring funding transfer.
+which one?" -- and for the facts read off the template it returns.  It
+imports no service at all -- ``db`` and two models -- so the graph stays
+acyclic: every consumer of THIS module imports it, and none of them is
+reachable from there.  The loan and investment
+dashboards use the query to decide whether to show the
+set-up-a-recurring-payment prompt, and the loan recurrence-sync uses it to
+find the rule whose OPENING bound it re-derives from the loan's contract
+(:func:`~app.services.loan_recurrence_sync.sync_loan_payment_start`).
+Centralising it keeps those surfaces from drifting on what counts as an
+account's recurring funding transfer.
 
-**The loan-payment SETTINGS reads moved here at plan step R7d-a**, from
-``loan_payment_service``.  They are reads OF this module's own subject -- the
-mode a payment is in, the base it states, the standing extra it carries -- and
-they were three call sites away from the query that finds the template they read.
-That module was at pylint's 1000-line ceiling exactly, so the move is also what
-stops the next fact about a definition being paid for by a ``too-many-lines``
-disable; a module's line count going over is a statement that it holds more than
-one subject, and this was the second one.
+**The loan-payment SETTINGS read moved here at plan step R7d-a**, from
+``loan_payment_service``.  It is a read OF this module's own subject -- the
+mode a payment is in and the standing extra it carries -- and it was three
+call sites away from the query that finds the template it reads.  That module
+was at pylint's 1000-line ceiling exactly, so the move is also what stops the
+next fact about a definition being paid for by a ``too-many-lines`` disable; a
+module's line count going over is a statement that it holds more than one
+subject, and this was the second one.  **Its LOAN-LEVEL siblings went at plan
+step R7d-g-3** -- ``standing_payment`` / ``StandingPayment`` (the oldest
+definition and ITS extra, bundled) and ``loan_standing_extra`` (that extra
+alone): each answered a loan-level question by picking ONE definition, the
+tie-break ruling **R-R35** wants deleted rather than answered, and the two
+readers that priced money off them (the balance seam's resolver and the loan
+page's payoff composer, ``loan_resolver.compute_payoff_scenarios``) take no
+extra at all now (ruling **R-R88**, which re-ruled R-R83's seam clause at R7d-g-3): a generated row
+carries its own definition's extra through amount rule 4, and what no row
+covers is priced from every definition's own occurrences by the forward plan.
+The settings row is read per DEFINITION, through :func:`loan_payment_config`.
 
 What is deliberately NOT here is how a MATERIALISED row is priced
 (``cash_ledger.LoanPricing``): that needs the loan resolved, its rate
@@ -35,7 +46,6 @@ an estimate is priced through those arms now
 (:func:`app.services.cash_ledger.definition_cash`).
 """
 
-from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -118,9 +128,12 @@ def active_recurring_transfer_templates(
     seam's ESTIMATED tier sums each one's occurrences on its own cadence --
     so the question this answers is "which definitions pay in here", where
     :func:`active_recurring_transfer_template` below answers the narrower
-    "which ONE is the standing payment" for the three readers that still
-    need a single row.  That function is this one's first element, so the
-    filter is stated once.
+    "which ONE is the standing payment" for the opening-bound sync alone.
+    That function is this one's first element, so the filter is stated once.
+    **Since plan step R7d-g-3 the loan dashboard reads THIS set too**: its
+    payment card offers extra-principal and track controls per definition
+    (ruling **R-R83**), and its two settings doors admit a template only if
+    it is in this set for the loan the URL names.
 
     The 1:1 ``settings`` row and the price SERIES are eager-loaded on every
     row -- see the comments on the options for why.
@@ -193,12 +206,21 @@ def active_recurring_transfer_template(
     **Since plan step R16-b-2 this row PRICES nothing** -- the ESTIMATED tier
     sums every definition (:func:`active_recurring_transfer_templates`) --
     and what it still decides is the loan-payment IDENTITY the form locks on
-    and the opening-bound sync writes for
-    (:func:`app.services.balance_at.is_standing_loan_payment`, plan ledger
-    row **D50**), plus the three loan-side readers that need ONE row: the
-    dashboard's extra-principal prefill and the two routes that MUTATE a
-    settings row (**D49**).  Ruling **R-R35** wants that search deleted
-    rather than answered; those readers are what keep it.
+    and the opening-bound sync writes for (ruling **R-R81**: the standing
+    payment's start is the loan's contract fact, a second transfer's is its
+    owner's).  **Its readers since plan step R7d-g-3 are exactly two**:
+    :func:`~app.services.loan_recurrence_sync.sync_loan_payment_start`, the
+    one writer of that bound, and the investment dashboard's "is a
+    contribution set up" test (an existence read, where any member of the
+    set would do).  The balance seam reads the same identity off the FIRST
+    element of the plural it already holds
+    (:func:`app.services.balance_at.is_standing_loan_payment`) rather than
+    through this function.  The three loan-side readers that needed ONE row
+    -- the dashboard's extra-principal prefill and the two routes that MUTATE
+    a settings row -- went at R7d-g-3 (plan ledger row **D49**, ruling
+    **R-R83**): the card is per definition and the doors take a template id.
+    Ruling **R-R35** wants the search deleted rather than answered; the
+    opening-bound sync is what keeps it.
 
     Args:
         account_id: The destination account (a loan or investment account).
@@ -210,58 +232,6 @@ def active_recurring_transfer_template(
     """
     templates = active_recurring_transfer_templates(account_id, user_id)
     return templates[0] if templates else None
-
-
-def loan_standing_extra(account_id: int, user_id: int) -> Decimal:
-    """Return a loan's standing monthly overpayment (``0.00`` when none).
-
-    The ``extra_principal`` on the loan's active recurring payment's
-    ``loan_payment_settings`` row -- the single loan-level figure the payoff
-    projection threads so the committed trajectory and payoff date reflect the
-    real plan (step 5).  ``Decimal("0.00")`` when the loan has no recurring
-    payment, or one with no settings row (a legacy manual payment).
-
-    **One field of :func:`standing_payment`, and it reads it rather than
-    repeating it** (plan step R7d-a).  It stated the row-absent default a third
-    time -- ``template.settings is None -> 0.00`` -- beside
-    :func:`loan_payment_config`, which exists to state exactly that once.
-
-    Args:
-        account_id: The loan account whose standing extra to read.
-        user_id: The owning user (scopes the lookup).
-
-    Returns:
-        The standing ``extra_principal`` ``Decimal``, or ``Decimal("0.00")``.
-    """
-    standing = standing_payment(account_id, user_id)
-    return Decimal("0.00") if standing is None else standing.extra_principal
-
-
-def loan_standing_extra_for_account(account_id: int) -> Decimal:
-    """Return a loan's standing overpayment, resolving the owner from the account.
-
-    The account-scoped form of :func:`loan_standing_extra` for callers that hold
-    only ``account_id``, and it derives the owning user from the account (one PK
-    lookup) before reading the active recurring payment's ``extra_principal``.
-    ``Decimal("0.00")`` when the account does not exist or has no recurring loan
-    payment.
-
-    **The balance seam stopped calling it at plan step R7d-a** -- its resolver
-    bundle takes the WHOLE :func:`standing_payment` now, since the forward plan
-    needs the definition and not just one field of it, and reads the extra off
-    that. What is left here is ``tests/manual/verify_loan_daily_figures.py``,
-    the by-hand loan probe.
-
-    Args:
-        account_id: The loan account whose standing extra to read.
-
-    Returns:
-        The standing ``extra_principal`` ``Decimal``, or ``Decimal("0.00")``.
-    """
-    account = db.session.get(Account, account_id)
-    if account is None:
-        return Decimal("0.00")
-    return loan_standing_extra(account_id, account.user_id)
 
 
 def loan_payment_config(template: TransferTemplate) -> tuple[bool, Decimal]:
@@ -301,86 +271,35 @@ def loan_payment_config(template: TransferTemplate) -> tuple[bool, Decimal]:
     return settings.derive_from_loan, Decimal(str(settings.extra_principal))
 
 
-@dataclass(frozen=True)
-class StandingPayment:
-    """What a loan's STANDING recurring payment says one installment costs.
+def tracking_definition(
+    definitions: list[TransferTemplate],
+) -> TransferTemplate | None:
+    """Return the definition among *definitions* that TRACKS the loan, or ``None``.
 
-    The loan-level answer to "what is this loan going to be paid each month",
-    read off the definition rather than off any row the definition has already
-    generated -- which is the whole reason it exists (plan step **R7d-a**).  The
-    forward plan has to price an installment for a month whose row has not been
-    written yet, and it used to guess the CONTRACT there while the row it was
-    guessing about would carry this.  A guess that disagrees with the row makes
-    a loan's payoff depend on whether the rows happen to have been materialised,
-    which is a loop: the payoff bounds the recurrence, the recurrence writes the
-    rows, and the rows move the payoff.
-
-    **It PRICES nothing since plan step R16-b-2** (ruling **R-R67**): the
-    forward plan sums every definition into the loan and prices each
-    occurrence through the amount model's own arm.  What it still carries is
-    the extra the resolver's committed schedule threads and the identity the
-    recurrence form locks on (:func:`app.services.balance_at.is_standing_loan_payment`).
-
-    **It carries the TEMPLATE and not a price, and that is the correction an
-    adversarial review of this step forced.**  The first cut carried
-    ``template.default_amount``, which is not what the definition costs on a
-    date: :func:`~app.services.template_amount_service._resync_scalar` puts that
-    column on **the NEWEST price the series states**, deliberately not today's,
-    and ``current_amount`` exists because an edit form asking the wrong one of
-    those two was already a defect once.  Pricing three hundred future
-    installments off it makes an amount stated as effective in 2028 reach every
-    installment from 2026 forward -- measured on a production clone, an owner
-    stating ``$700.00`` effective 2028-01-01 moved the Van Loan's derived payoff
-    from `2029-01-22` to `2028-07-22` when its future rows were absent, six
-    installments in the UNDER-generating direction this step exists to close.
-    Holding the template instead lets the price resolve AS OF the installment
-    (:func:`~app.services.template_amount_service.amount_as_of`), which is
-    ruling **R-FI**'s rule and what every other reader of a stated amount does.
-
-    Attributes:
-        template: The loan's active recurring payment definition.  Its price is
-            resolved per installment rather than read as a scalar, and whether
-            it states a price at all is
-            :func:`~app.services.template_amount_service.owns_its_amount`'s
-            question -- False for a DERIVE-mode payment, whose stored figure is
-            a snapshot of the contract rather than a statement.
-        extra_principal: The standing monthly overpayment (``0.00`` when none),
-            added in BOTH modes exactly as
-            amount rule 4 (:func:`app.services.cash_ledger.resolve_transaction_amount`)
-            adds it to a materialised row.
-    """
-
-    template: TransferTemplate
-    extra_principal: Decimal
-
-
-def standing_payment(
-    account_id: int, user_id: int,
-) -> "StandingPayment | None":
-    """Return what *account_id*'s standing recurring payment says, or ``None``.
-
-    ONE read of the loan's payment definition, where
-    :func:`~app.services.recurring_transfer_query.loan_standing_extra` reads a
-    single field of the same row: the mode and the stated base are needed
-    beside the extra the moment anything has to price an installment the
-    definition has not generated yet.
-
-    ``None`` when the loan has no active recurring payment at all -- a loan the
-    owner pays by hand, or has not set up yet.  That is a THIRD state and not a
-    zeroed :class:`StandingPayment`: "no definition" means the contract is the
-    only estimate there is, where a definition stating ``0.00`` would mean the
-    owner plans to pay nothing.
+    The oldest whose settings row says ``derive_from_loan`` -- the payment
+    whose every occurrence is priced at the loan's full contractual
+    installment (amount rule 4's derive arm).  ONE such definition is the
+    state a loan can sensibly be in: a second would pay the contract twice a
+    month, the shape ruling **R-R83**'s worked example named as the defect
+    (`$531.94 + $531.94`), so the loan dashboard's track door REFUSES to make
+    a second one and its card offers no Track control while one exists
+    (developer, 2026-09-14, at plan step R7d-g-3).  Both read this function,
+    over the list they already hold, so the door and the card cannot
+    disagree about which definition that is.  A loan holding two already --
+    a state no door can create now, and none exists on production -- answers
+    its oldest, and both then show as tracking with nothing offered.
 
     Args:
-        account_id: The loan account whose standing payment to read.
-        user_id: The owning user (scopes the lookup, as the shared query
-            requires).
+        definitions: The loan's active recurring transfers, oldest first
+            (:func:`active_recurring_transfer_templates`), settings rows
+            loaded.
 
     Returns:
-        The :class:`StandingPayment`, or ``None``.
+        The tracking :class:`TransferTemplate`, or ``None`` when every
+        definition is a fixed amount.
     """
-    template = active_recurring_transfer_template(account_id, user_id)
-    if template is None:
-        return None
-    _derive, extra = loan_payment_config(template)
-    return StandingPayment(template=template, extra_principal=extra)
+    for template in definitions:
+        tracks_loan, _extra = loan_payment_config(template)
+        if tracks_loan:
+            return template
+    return None

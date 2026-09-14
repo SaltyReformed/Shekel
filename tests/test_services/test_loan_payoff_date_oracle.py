@@ -37,15 +37,12 @@ import pytest
 
 from app.enums import AcctTypeEnum
 from app.extensions import db
-from app import ref_cache
 from app.models.loan_payment_settings import LoanPaymentSettings
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.transfer_template import TransferTemplate
 from app.services import (
     balance_at,
     loan_loaders,
     loan_payment_service,
-    loan_recurrence_sync,
     loan_resolver,
 )
 from app.services.balance_at._positions import memoized_payoff
@@ -65,6 +62,7 @@ from app.services.balance_at._resolution import (
 from app.services.balance_at import BalanceContext
 from app.utils.dates import add_months
 from tests._test_helpers import (
+    bind_rule_to_loan,
     amount_basis_for_scenario,
     create_loan_account,
     insert_trueup_event,
@@ -284,7 +282,7 @@ def _attach_derive_extra(seed_user, loan_account, extra):
     rule = make_cadence_rule(
         template, MONTHLY, fires_on_day=1,
     )
-    loan_recurrence_sync.bind_rule_to_loan(rule, loan_account.id)
+    bind_rule_to_loan(rule, loan_account.id)
     db.session.commit()
 
 
@@ -305,19 +303,24 @@ def _committed_payoff(loan_params, scenario_id, as_of, extra):
         loan_params,
     )
     anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
+    # The extra rides as the composer's what-if ``extra_monthly`` and the
+    # reference is the ACCELERATED slice.  It was the COMMITTED slice with the
+    # extra passed as the loan-level ``extra_principal`` until plan step
+    # R7d-g-3 deleted that parameter (ruling **R-R88**, which re-ruled R-R83's seam clause there);
+    # no oracle fixture generates a row, so there is no override month and
+    # the two slices are the same walk -- the reference is byte-identical.
     scenarios = loan_resolver.compute_payoff_scenarios(
         loan_inputs=loan_resolver.LoanInputs(
             loan_params, anchor_events, ctx_loan.payments, ctx_loan.rate_changes,
         ),
-        extra_monthly=Decimal("0.00"),
+        extra_monthly=extra,
         as_of=as_of,
         confirmed_view=seam_confirmed_view(
             loan_params.account_id, scenario_id, as_of,
         ),
-        extra_principal=extra,
     )
     return (
-        scenarios.payoff_date_committed,
+        scenarios.payoff_date_accelerated,
         scenarios.original_forward[-1].payment_date,
     )
 

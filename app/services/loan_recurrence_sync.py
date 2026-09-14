@@ -196,13 +196,15 @@ def loan_payment_window(
     **What that buys is precise, and it is less than "the tie-break is gone".**
     This function's SUBJECT is no longer chosen by one -- every definition into
     a loan is asked about and every one gets the same answer -- but the
-    ANSWER's value still travels through it: ``loan_figures`` ->
+    ANSWER's value still travelled through it: ``loan_figures`` ->
     ``resolved_loan`` -> ``standing_payment`` ->
     ``active_recurring_transfer_template``, whose ``.order_by(id).first()``
-    prices the ESTIMATED tier.  In the `$200.00` case above the resolver
-    returns ``INDEFINITE`` for BOTH definitions: they agree, and both are
-    wrong.  Plan ledger row **D47** carries that half and **R16** closes it by
-    making the estimate SUM, as its two sibling tiers already do.
+    priced the ESTIMATED tier.  In the `$200.00` case above the resolver
+    returned ``INDEFINITE`` for BOTH definitions: they agreed, and both were
+    wrong.  Plan ledger row **D47** carried that half and **R16-b-2** closed
+    it by making the estimate SUM, as its two sibling tiers already did; the
+    chain's ``standing_payment`` link went at plan step R7d-g-3 with the last
+    figure read off the picked definition (**D49**).
 
     **EMPTY is decided against the definition's RESOLVED first occurrence**,
     read off the *resolved* value the caller already holds
@@ -573,41 +575,6 @@ def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> bool:
         new_nominal_day=wanted.nominal_day,
     )
     return True
-
-
-def bind_rule_to_loan(rule: "RecurrenceRule", account_id: int) -> None:
-    """Bound a NEWLY built recurrence rule's START to its destination loan's contract.
-
-    The creation-time entry point, for a route that has just built a rule and is
-    about to generate against it.  A no-op unless *account_id* is a configured
-    loan, so a caller may call it for ANY destination without a type check.
-
-    Takes the rule DIRECTLY rather than looking it up from the account, which
-    :func:`sync_loan_payment_start` must do: that lookup returns the
-    account's FIRST active recurring template, so a second recurring payment
-    created into the same loan would leave the NEW rule unbounded while
-    re-bounding the old one -- silently reopening the very hole this closes.
-
-    **One application caller since plan step R7d-g-2**: the loan dashboard's
-    own payment door (``routes/loan/payment_transfer.py``), which builds its
-    rule from :func:`loan_cadence_start` and so finds the date already right.
-    The generic transfer form's create path stopped calling it (ruling
-    **R-R85**): its door derives the standing payment's start before the rule
-    is built, and a SECOND transfer's start is its owner's (ruling **R-R81**),
-    which this would have overwritten with the contract's.
-
-    Args:
-        rule: The just-built :class:`RecurrenceRule`, before generation.
-        account_id: The transfer's destination account (any kind).
-
-    Raises:
-        ValidationError: See :func:`_sync_loan_cadence`.  Unreachable from
-            the dashboard door, which authors no stop.
-    """
-    params = loan_loaders.load_loan_params(account_id)
-    if params is None:
-        return
-    _sync_loan_cadence(rule, params)
 
 
 def sync_loan_payment_start(account_id: int) -> "TransferTemplate | None":

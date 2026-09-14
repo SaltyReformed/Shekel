@@ -2,13 +2,15 @@
 {% from "_money_macros.html" import money %}
 {% from "loan/_chips.html" import rate_chip, total_payment_chip, escrow_badge %}
 {% from "_nav_macros.html" import back_link %}
+{% from "_recurrence_macros.html" import recurrence_cell %}
 {% block title %}{{ account.name }} -- {{ account_type.name }} -- Shekel{% endblock title %}
 
 {# Fable 5 loan detail page (docs/design/loan_audit.md, locked anatomy):
    a balance band (owed hero + honest caption + measured chips + full-width
    balance-over-time chart), two what-if levers (pay off sooner / refinance),
-   then the section cards (payment allocation, confirmed payment history,
-   balance-anchor drift, escrow, ARM rate history, secured-by, parameters).
+   then the section cards (payment allocation, recurring payments, confirmed
+   payment history, balance-anchor drift, escrow, ARM rate history, secured-by,
+   parameters).
    The amortization schedule is demoted to a footer link (its own route).
    All money is computed in the route / services and passed in; templates format
    only. #}
@@ -21,91 +23,6 @@
   </div>
   {{ back_link(url_for('savings.dashboard'), 'Accounts') }}
 </div>
-
-{% if show_transfer_prompt and source_accounts %}
-<div class="alert alert-info d-flex align-items-start mb-4" role="alert">
-  <i class="bi bi-arrow-repeat me-3 fs-4"></i>
-  <div class="flex-grow-1">
-    <h6 class="alert-heading mb-1">No recurring payment set up for this loan</h6>
-    <p class="mb-2 small">
-      Create a recurring monthly transfer of
-      <strong class="font-mono">{{ money(total_payment) }}</strong>
-      {% if monthly_escrow > 0 %}
-        (<span class="font-mono">{{ money(monthly_payment) }}</span> P&I
-        + <span class="font-mono">{{ money(monthly_escrow) }}</span> escrow)
-      {% endif %}
-      to keep your loan on track.
-      {# WHEN it starts, which this form never asks for: the route derives the
-         whole cadence from the loan's contract (plan step R7c-b), so the only
-         honest place for the date is beside the button that commits to it.
-         The figure comes from loan_recurrence_sync.loan_cadence_start -- the
-         SAME producer the create route authors the rule with -- so the promise
-         made here and the row written cannot disagree. #}
-      {% if first_payment_on %}
-      The first payment is due
-      <strong>{{ first_payment_on.strftime('%b %-d, %Y') }}</strong>,
-      one month after the loan originates.
-      {% endif %}
-    </p>
-    <form method="POST" action="{{ url_for('loan.create_payment_transfer', account_id=account.id) }}" class="row g-2 align-items-end">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="col-auto">
-        <label for="source_account_id" class="form-label form-label-sm mb-0">From</label>
-        <select class="form-select form-select-sm" id="source_account_id" name="source_account_id" required>
-          {% for acct in source_accounts %}
-          <option value="{{ acct.id }}" {% if acct.id == default_source_id %}selected{% endif %}>
-            {{ acct.name }}
-          </option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="col-auto">
-        <label for="extra_principal" class="form-label form-label-sm mb-0">Extra principal <span class="text-muted">(optional)</span></label>
-        <div class="input-group input-group-sm">
-          <span class="input-group-text">$</span>
-          <input type="number" step="0.01" min="0" class="form-control" id="extra_principal" name="extra_principal" placeholder="0.00">
-        </div>
-      </div>
-      <div class="col-auto">
-        <button type="submit" class="btn btn-primary btn-sm">
-          <i class="bi bi-plus-circle"></i> Create Recurring Transfer
-        </button>
-      </div>
-    </form>
-  </div>
-</div>
-{% endif %}
-
-{# Underpayment-drift warning (C7 / ruling D3): a manual recurring payment that
-   has fallen short of the contractual monthly payment after an escrow or rate
-   change.  Mutually exclusive with the transfer prompt above (that shows only
-   when no payment exists).  The one click switches the payment to auto-track. #}
-{% if payment_drift %}
-<div class="alert alert-warning d-flex align-items-start mb-4" role="alert">
-  <i class="bi bi-exclamation-triangle me-3 fs-4"></i>
-  <div class="flex-grow-1">
-    <h6 class="alert-heading mb-1">Your recurring payment is short of the amount due</h6>
-    <p class="mb-2 small">
-      This loan's recurring payment of
-      <strong class="font-mono">{{ money(payment_drift.stored) }}</strong>
-      is <strong class="font-mono">{{ money(payment_drift.shortfall) }}</strong>
-      short of the contractual monthly payment of
-      <strong class="font-mono">{{ money(payment_drift.contract) }}</strong>{% if monthly_escrow > 0 %}
-      (<span class="font-mono">{{ money(monthly_payment) }}</span> P&amp;I
-      + <span class="font-mono">{{ money(monthly_escrow) }}</span> escrow){% endif %},
-      likely after an escrow or rate change. Any standing extra principal is
-      separate and unaffected. Switch it to track the loan automatically so it
-      always matches.
-    </p>
-    <form method="POST" action="{{ url_for('loan.track_payment', account_id=account.id) }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <button type="submit" class="btn btn-warning btn-sm">
-        <i class="bi bi-arrow-repeat"></i> Switch to automatic payment
-      </button>
-    </form>
-  </div>
-</div>
-{% endif %}
 
 {# ── Balance band: owed hero + measured chips + balance-over-time chart ── #}
 <div class="pulse-canvas mb-4">
@@ -356,32 +273,156 @@
   <div class="col-lg-6">
     {% include "loan/_payment_breakdown.html" %}
 
-    {% if has_recurring_payment %}
-    {# ── Extra principal: standing overpayment on the recurring payment ────── #}
-    <div class="card mb-4">
-      <div class="card-header">
-        <h6 class="mb-0"><i class="bi bi-plus-slash-minus"></i> Extra principal</h6>
+    {# ── Recurring payments: what pays this loan, and how (R7d-g-3, ruling
+       R-R83).  One strip per recurring transfer INTO the loan, each with its
+       own figure, mode, extra-principal input and track control; a fixed
+       definition short of the contract shows its shortfall on its own strip
+       (C7 / ruling D3).  The set-up prompt is the card's empty state.  Every
+       figure is computed in the route; this template formats. #}
+    <div class="card mb-4" id="recurring-payments">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h6 class="mb-0"><i class="bi bi-arrow-repeat"></i> Recurring payments</h6>
+        {% if payment_strips %}
+        <span class="text-muted small">{{ payment_strips|length }} into this loan</span>
+        {% endif %}
       </div>
+      {% if payment_strips %}
+      <div class="card-body p-0">
+        <ul class="list-unstyled mb-0">
+          {% for strip in payment_strips %}
+          <li class="loan-payment{% if strip.drift %} loan-payment--short{% endif %}"
+              data-template-id="{{ strip.template.id }}">
+            <div class="d-flex justify-content-between align-items-start gap-3">
+              <div class="min-w-0">
+                <a href="{{ url_for('transfers.edit_transfer_template', template_id=strip.template.id) }}"
+                   class="loan-payment__name text-decoration-none">{{ strip.template.name }}</a>
+                <div class="small text-muted">{{ recurrence_cell(strip.recurrence) }}</div>
+                <div class="mt-1">
+                  {% if strip.tracks_loan %}
+                  <span class="badge-done"><i class="bi bi-link-45deg"></i> Tracks the loan</span>
+                  {% else %}
+                  <span class="acctd-type-tag">Fixed amount</span>
+                  {% endif %}
+                </div>
+              </div>
+              <div class="text-end flex-shrink-0">
+                {% if strip.per_payment is none %}
+                <div class="small text-muted">No upcoming payment</div>
+                {% else %}
+                <div class="font-mono loan-payment__figure">{{ money(strip.per_payment) }}</div>
+                <div class="small text-muted">
+                  next payment, {{ strip.next_due.strftime('%b %-d') }}{% if strip.extra > 0 %}<br>
+                  <span class="font-mono">{{ money(strip.base) }}</span> +
+                  <span class="font-mono">{{ money(strip.extra) }}</span> extra{% endif %}
+                </div>
+                {% endif %}
+              </div>
+            </div>
+            {% if strip.drift %}
+            <p class="small mb-1 mt-2 loan-payment__drift">
+              <i class="bi bi-exclamation-triangle"></i>
+              This payment's <strong class="font-mono">{{ money(strip.drift.stored) }}</strong>
+              is <strong class="font-mono">{{ money(strip.drift.shortfall) }}</strong>
+              short of the <strong class="font-mono">{{ money(strip.drift.contract) }}</strong>
+              due each month{% if monthly_escrow > 0 %}
+              (<span class="font-mono">{{ money(monthly_payment) }}</span> P&amp;I
+              + <span class="font-mono">{{ money(monthly_escrow) }}</span> escrow){% endif %},
+              likely after an escrow or rate change. Any extra principal is
+              separate and unaffected.{% if strip.tracking_name %}
+              <strong>{{ strip.tracking_name }}</strong> tracks the loan, so this
+              payment is on top of the full amount.{% endif %}
+            </p>
+            {% endif %}
+            <div class="d-flex flex-wrap align-items-end gap-2 mt-2">
+              <form method="POST"
+                    action="{{ url_for('loan.update_payment_settings', account_id=account.id, template_id=strip.template.id) }}"
+                    class="d-flex align-items-end gap-2">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div>
+                  <label for="extra-principal-{{ strip.template.id }}" class="form-label form-label-sm mb-0">Extra principal</label>
+                  <div class="input-group input-group-sm">
+                    <span class="input-group-text">$</span>
+                    <input type="number" step="0.01" min="0" class="form-control loan-payment__extra"
+                           id="extra-principal-{{ strip.template.id }}" name="extra_principal"
+                           value="{{ '%.2f'|format(strip.extra) }}">
+                  </div>
+                </div>
+                <button type="submit" class="btn btn-outline-primary btn-sm">Update</button>
+              </form>
+              {% if strip.can_track %}
+              <form method="POST"
+                    action="{{ url_for('loan.track_payment', account_id=account.id, template_id=strip.template.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-sm {% if strip.drift %}btn-warning{% else %}btn-outline-secondary{% endif %}"
+                        title="Set this payment to the loan's contractual amount and keep it there">
+                  <i class="bi bi-link-45deg"></i> Track the loan
+                </button>
+              </form>
+              {% endif %}
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% elif source_accounts %}
       <div class="card-body">
-        <form method="POST" action="{{ url_for('loan.update_payment_settings', account_id=account.id) }}" class="row g-2 align-items-end">
+        <p class="mb-2 small">
+          No recurring payment set up for this loan. Create a recurring
+          monthly transfer of
+          <strong class="font-mono">{{ money(total_payment) }}</strong>
+          {% if monthly_escrow > 0 %}
+            (<span class="font-mono">{{ money(monthly_payment) }}</span> P&amp;I
+            + <span class="font-mono">{{ money(monthly_escrow) }}</span> escrow)
+          {% endif %}
+          to keep it on track.
+          {# WHEN it starts, which this form never asks for: the route derives
+             the whole cadence from the loan's contract (plan step R7c-b), so
+             the only honest place for the date is beside the button that
+             commits to it.  The figure comes from
+             loan_recurrence_sync.loan_cadence_start -- the SAME producer the
+             create route authors the rule with -- so the promise made here
+             and the row written cannot disagree. #}
+          {% if first_payment_on %}
+          The first payment is due
+          <strong>{{ first_payment_on.strftime('%b %-d, %Y') }}</strong>,
+          one month after the loan originates.
+          {% endif %}
+        </p>
+        <form method="POST" action="{{ url_for('loan.create_payment_transfer', account_id=account.id) }}" class="row g-2 align-items-end">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="col-auto">
-            <label for="extra_principal_edit" class="form-label form-label-sm mb-0">Added to every payment</label>
-            <div class="input-group">
+            <label for="source_account_id" class="form-label form-label-sm mb-0">From</label>
+            <select class="form-select form-select-sm" id="source_account_id" name="source_account_id" required>
+              {% for acct in source_accounts %}
+              <option value="{{ acct.id }}" {% if acct.id == default_source_id %}selected{% endif %}>
+                {{ acct.name }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-auto">
+            <label for="extra_principal" class="form-label form-label-sm mb-0">Extra principal <span class="text-muted">(optional)</span></label>
+            <div class="input-group input-group-sm">
               <span class="input-group-text">$</span>
-              <input type="number" step="0.01" min="0" class="form-control" id="extra_principal_edit" name="extra_principal" value="{{ '%.2f'|format(recurring_payment_extra) }}">
+              <input type="number" step="0.01" min="0" class="form-control" id="extra_principal" name="extra_principal" placeholder="0.00">
             </div>
           </div>
           <div class="col-auto">
-            <button type="submit" class="btn btn-primary">Update</button>
-          </div>
-          <div class="col-12">
-            <p class="form-text mb-0">Paid toward principal on top of the base payment every month, accelerating your payoff. Set to 0 to remove.</p>
+            <button type="submit" class="btn btn-primary btn-sm">
+              <i class="bi bi-plus-circle"></i> Create Recurring Transfer
+            </button>
           </div>
         </form>
       </div>
+      {% else %}
+      <div class="card-body">
+        <p class="text-muted small mb-0">
+          No recurring payment set up for this loan, and there is no other
+          active account to pay it from.
+        </p>
+      </div>
+      {% endif %}
     </div>
-    {% endif %}
 
     <div class="card mb-4">
       <div class="card-header d-flex justify-content-between align-items-center">

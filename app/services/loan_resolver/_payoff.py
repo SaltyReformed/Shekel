@@ -76,15 +76,14 @@ class PayoffScenarios:  # pylint: disable=too-many-instance-attributes
             transfers routed through ``monthly_override`` -- the
             user's planned outlay, no acceleration.
         accelerated_forward: ``committed_forward`` plus
-            ``extra_monthly`` applied to every non-override month.
-            Override months ignore extra -- the load-bearing
-            distinction that makes the "extra applied to ghost
-            historical months" bug structurally impossible (no row
-            of any forward slice has a payment_date at or before the
-            last replay row).
+            ``extra_monthly`` applied to every forward month, override
+            and contractual alike.  No row of any forward slice has a
+            payment_date at or before the last replay row, which is what
+            makes the "extra applied to ghost historical months" bug
+            structurally impossible.
         months_saved: ``len(committed_forward) - len(accelerated_forward)``.
             Number of payments avoided by paying ``extra_monthly`` per
-            non-override month.  Zero when ``extra_monthly == 0`` or
+            forward month.  Zero when ``extra_monthly == 0`` or
             when the schedules pay off at the same month boundary.
         interest_saved: ``round_money(sum(committed.interest) -
             sum(accelerated.interest))``.  Total interest avoided by
@@ -364,7 +363,6 @@ def compute_payoff_scenarios(
     extra_monthly: Decimal,
     as_of: date,
     confirmed_view: ConfirmedLedgerView | None = None,
-    extra_principal: Decimal = ZERO_MONEY,
 ) -> PayoffScenarios:
     """Single source of truth for the Payoff Calculator's three scenarios.
 
@@ -378,15 +376,28 @@ def compute_payoff_scenarios(
     loan interest) all derive from the single return value, so chart
     and summary cannot diverge.
 
-    Two extras (step 5).  ``extra_principal`` is the loan's STANDING
-    overpayment (from ``loan_payment_settings``): it is part of the real plan,
-    so it accelerates the COMMITTED and ACCELERATED slices (every forward month,
-    override and contractual alike -- the engine no longer exempts override
-    months).  ``extra_monthly`` is the payoff lever's ADDITIONAL what-if extra,
-    previewed on top in the ACCELERATED slice only.  ``original_forward`` stays
-    the pure contractual reference (no override, no extra), so committed-vs-
-    original quantifies the whole plan (standing extra included) and
-    accelerated-vs-committed quantifies just the lever.
+    ONE extra, the payoff lever's.  ``extra_monthly`` is the lever's what-if
+    extra, previewed on top in the ACCELERATED slice only (every forward
+    month, override and contractual alike).  ``original_forward`` stays the
+    pure contractual reference (no override, no extra), so committed-vs-
+    original quantifies the owner's plan and accelerated-vs-committed
+    quantifies just the lever.  **A loan-level ``extra_principal`` -- the
+    standing overpayment off ONE picked definition's ``loan_payment_settings``
+    row -- was the second extra until plan step R7d-g-3**, applied to every
+    forward month of the committed slice.  It is gone, and for two reasons.
+    It DOUBLE-COUNTED: since plan step ``balance:X-au-g-2c-1`` the payment
+    feed is priced by the amount model, and rule 4 puts a definition's extra
+    INSIDE its projected row's cash, so an override month carried the extra
+    in ``monthly_override`` and again through this parameter (measured
+    2026-09-14: P&I ``$526.46`` + a ``$100`` extra arrived as ``$626.46`` and
+    the month then paid ``$676.46`` of principal + interest).  And it PICKED:
+    a loan with two recurring transfers paying in has two settings rows, and
+    the parameter carried the oldest's alone (ruling **R-R83**; plan ledger
+    row **D49**).  What no row covers is the CONTRACT's installment here, and
+    is priced from every definition's own occurrences by the balance seam's
+    forward plan (``balance_at._plan``), which is the producer the loan
+    page's tail reads once plan step R16-f re-expresses this walk as that
+    fold.
 
     Routes projected payments forward through ``monthly_override``
     instead of relying on the engine's "apply extra when no payment
@@ -394,20 +405,16 @@ def compute_payoff_scenarios(
     "extra applied to ghost historical months" bug documented at
     ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``.
     The forward slices are all after the replay boundary, so no extra ever
-    lands on a historical month.  The extra flows through PROJECTED override
-    amounts, which are base-only (the standing extra is a live parameter, never
-    baked into a projected shadow's stored amount), so there is no double-count
-    on them.  ONE narrow edge is exempt from that guarantee: a SETTLED payment
-    whose settle day is after ``as_of`` is routed to the override
-    (:func:`_build_monthly_override`) carrying its FROZEN actual (base + the
-    standing extra frozen at settlement), so for a loan with a standing extra
-    that one month's forward chart double-applies it.  It is display-only (the
-    ledger balance is authoritative), and plan step **X-an** narrowed WHEN it
-    can arise: the edge used to be any payment settled before its pay period
-    began, which is an ordinary early payment rather than a data-hygiene case
-    (finding **N-187**).  What is left is a read of a PAST date whose loan has
-    been paid since -- where treating the payment as a projection is the correct
-    answer for that date, and only the frozen extra inside its amount is off.
+    lands on a historical month.  A projected row's cash carries its own
+    definition's standing extra (amount rule 4), and a SETTLED payment
+    routed to the override because its settle day is after ``as_of``
+    (:func:`_build_monthly_override`) carries its FROZEN actual; each lands
+    in ``monthly_override`` exactly once and nothing here adds to it.  Plan
+    step **X-an** narrowed WHEN the settled case can arise: the edge used to
+    be any payment settled before its pay period began, which is an ordinary
+    early payment rather than a data-hygiene case (finding **N-187**).  What
+    is left is a read of a PAST date whose loan has been paid since -- where
+    treating the payment as a projection is the correct answer for that date.
 
     **It is not claimed unreachable for a today-read, deliberately.**  The
     write door refuses a future settle day
@@ -453,10 +460,9 @@ def compute_payoff_scenarios(
             from everything else (override) internally; the full
             rate-period terms feed governs the forward slices month by
             month.
-        extra_monthly: The payoff lever's ADDITIONAL what-if extra, applied to
-            every month of the ACCELERATED scenario on top of the standing
-            ``extra_principal``.  ``0`` collapses accelerated to committed
-            (``months_saved == 0``, ``interest_saved == 0``).
+        extra_monthly: The payoff lever's what-if extra, applied to every
+            month of the ACCELERATED scenario.  ``0`` collapses accelerated
+            to committed (``months_saved == 0``, ``interest_saved == 0``).
         as_of: Evaluation date.  The replay/projection boundary.
             Typically ``date.today()`` from the route.
         confirmed_view: The loan's genesis-ledger confirmed view (the read
@@ -467,11 +473,6 @@ def compute_payoff_scenarios(
             it once (via ``balance_at.confirmed_view``) so the
             chart / summary / table all derive from the same real owed
             balance and actual history the loan card shows.
-        extra_principal: The loan's STANDING monthly overpayment (from
-            ``loan_payment_settings``; ``0.00`` when none).  Part of the real
-            plan, so it accelerates BOTH the committed and accelerated slices
-            (never the pure-contractual original).  The accelerated slice adds
-            ``extra_monthly`` on top of it.
 
     Returns:
         A :class:`PayoffScenarios` with the three forward slices and
@@ -485,9 +486,10 @@ def compute_payoff_scenarios(
 
     # All three forward slices share starting state; only override presence and
     # the extra applied vary.  Original is the pure contractual reference (no
-    # extra); committed carries the standing extra_principal (the real plan);
-    # accelerated adds the lever's extra_monthly on top.  Funnelling all three
-    # through one primitive call shape keeps chart and summary in lockstep.
+    # override, no extra); committed is the owner's plan (each override month
+    # at its rows' own resolved cash, standing extras inside); accelerated
+    # adds the lever's extra_monthly on top.  Funnelling all three through
+    # one primitive call shape keeps chart and summary in lockstep.
     original_forward = project_forward(
         prep.projection_inputs,
         monthly_override=None,
@@ -496,12 +498,12 @@ def compute_payoff_scenarios(
     committed_forward = project_forward(
         prep.projection_inputs,
         monthly_override=prep.monthly_override,
-        extra_monthly=extra_principal,
+        extra_monthly=ZERO_MONEY,
     )
     accelerated_forward = project_forward(
         prep.projection_inputs,
         monthly_override=prep.monthly_override,
-        extra_monthly=extra_principal + extra_monthly,
+        extra_monthly=extra_monthly,
     )
 
     # Summary metrics derive from the same forward slices the chart

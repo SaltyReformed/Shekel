@@ -27,7 +27,6 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from app import ref_cache
 from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
@@ -37,7 +36,6 @@ from app.services import (
     loan_loaders,
     loan_payment_service,
     loan_posting_service,
-    loan_recurrence_sync,
     loan_resolver,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
@@ -46,6 +44,7 @@ from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
+    bind_rule_to_loan,
     amount_basis_for_scenario,
     create_loan_account,
     freeze_today,
@@ -624,12 +623,13 @@ def test_arm_payoff_date_consistent_across_surfaces(
 def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
     """Attach a derive-from-loan recurring payment carrying a standing extra.
 
-    The single loan-level ``extra_principal`` the committed trajectory must
-    reflect (step 5 / step 8): a monthly recurring transfer INTO the loan whose
-    1:1 ``loan_payment_settings`` row carries ``derive_from_loan`` plus the
-    standing overpayment.  :func:`recurring_transfer_query.loan_standing_extra`
-    reads it, so the resolver seam picks it up once step 8 threads it through
-    the seam's whole-loan read.
+    A monthly recurring transfer INTO the loan whose 1:1
+    ``loan_payment_settings`` row carries ``derive_from_loan`` plus the
+    standing overpayment.  Amount rule 4 prices the extra into every row the
+    definition generates and the seam's forward plan into every occurrence no
+    row covers; since plan step R7d-g-3 nothing threads it into the resolver
+    (the loan-level ``loan_standing_extra`` read is gone), which is what the
+    two tests below pin from either side.
     """
     user = seed_user["user"]
     # Authored through the write door (plan step R7c-b): the day a rule fires
@@ -657,36 +657,42 @@ def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
     rule = make_cadence_rule(
         template, MONTHLY, fires_on_day=1,
     )
-    loan_recurrence_sync.bind_rule_to_loan(rule, loan_account.id)
+    bind_rule_to_loan(rule, loan_account.id)
     db.session.commit()
 
 
-def test_standing_extra_payoff_consistent_across_surfaces(
+def test_standing_extra_lives_in_the_fold_not_the_resolver_schedule(
     app, seed_user, seed_periods,
 ):
-    """Step 8: a loan with a standing extra shows ONE payoff on every surface.
+    """R7d-g-3: the resolver's schedule is extra-free; the FOLD carries the extra.
 
-    The step-8 seam fix (Section 16 of
-    ``docs/design/escrow_line_identity_refactor.md``).  Before it, the summary
-    surfaces (net worth / year-end / /savings / debt-strategy) resolved a loan
-    through ``resolve_loan``, which projected the CONTRACTUAL schedule -- it
-    stripped payments to confirmed-only and ignored the standing
-    ``extra_principal`` -- while the loan detail page read the COMMITTED
-    (plan-aware) trajectory.  So a loan paying a standing extra showed one payoff
-    on the detail page and a later one everywhere else; and because the cash leg
-    of the payment ALREADY debits the extra from checking, the contractual
-    liability made projected net worth wrong.
+    Until plan step R7d-g-3 this test pinned step 8's seam fix the other way
+    round: ``resolve_loan_bundle`` threaded the loan's standing
+    ``extra_principal`` into ``resolve_loan``, so ``state.schedule`` was the
+    committed trajectory WITH the extra, and the summary surfaces and the
+    year-end aggregation had to report the same payoff as the loan page.
+    Ruling **R-R88**, which re-ruled R-R83's seam clause at R7d-g-3, deleted that parameter: a
+    projected row carries its own definition's extra through amount rule 4,
+    so the composer adding one again paid it TWICE on every row-covered month
+    (measured 2026-09-14), and the one it added was the OLDEST definition's
+    alone (plan ledger row **D49**).  What no row covers is priced from every
+    definition's own occurrences by the seam's forward plan, and the payoff
+    every surface shows is the FOLD's (plan step C8d: ``LoanState`` carries no
+    payoff, and :attr:`LoanFigures.payoff_date` is the date the balance folds
+    to zero).
 
-    This pins the fix: the summary seam (``resolve_loan_bundle``) and the
-    year-end debt aggregation must report the SAME payoff and life-of-loan
-    interest as the committed detail trajectory.  The sibling
-    ``test_arm_payoff_date_consistent_across_surfaces`` locks the no-payment case
-    (contractual == committed); this locks the with-standing-extra case (they
-    differ), so the invariant cannot be satisfied vacuously.  Because the
-    schedule is what carries the extra into the loan's forward balance, asserting
-    the summary schedule IS the committed schedule is exactly what restores
-    net-worth consistency: the liability leg now falls by the same extra the cash
-    leg already debits.
+    So the invariant is now three-sided, and none of its sides is vacuous:
+
+    * the resolver's ``state.schedule`` IS the composer's committed slice for
+      the same inputs, to the row -- and with a standing extra and NO
+      generated row that slice is the pure CONTRACT (its payoff equals the
+      extra-free original's);
+    * the year-end aggregation reads that same schedule;
+    * the seam's DERIVED payoff sits STRICTLY EARLIER than the contractual
+      one, because the fold prices the definition's occurrences with the
+      extra inside them.  This is the side that fails the day the extra
+      stops reaching the fold, and the side that failed the OLD way the day
+      the resolver stopped adding it.
     """
     with app.app_context():
         account, loan_params = _create_fixed_loan(
@@ -701,12 +707,10 @@ def test_standing_extra_payoff_consistent_across_surfaces(
             account.id, amount_basis_for_scenario(scenario_id), loan_params,
         )
         anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
-        # The committed (plan-aware) reference: the loan detail page's producer,
-        # honoring the standing extra the operator committed to.  resolve_loan
-        # composes ``state.schedule = history_rows + committed_forward`` and
-        # derives payoff / total_interest from it
-        # (``app/services/loan_resolver/_state.py``), so build the reference the
-        # same way, to the cent.
+        # The composer's committed slice for the same inputs: no loan-level
+        # extra exists to pass.  ``resolve_loan`` composes ``state.schedule =
+        # history_rows + committed_forward`` (``loan_resolver/_state.py``), so
+        # the reference is built the same way, to the cent.
         committed = loan_resolver.compute_payoff_scenarios(
             loan_inputs=loan_resolver.LoanInputs(
                 loan_params, anchor_events, ctx.payments, ctx.rate_changes,
@@ -716,7 +720,6 @@ def test_standing_extra_payoff_consistent_across_surfaces(
             confirmed_view=seam_confirmed_view(
                 loan_params.account_id, scenario_id, today,
             ),
-            extra_principal=extra,
         )
         ref_schedule = (
             list(committed.history_rows) + list(committed.committed_forward)
@@ -725,48 +728,144 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         ref_total_interest = round_money(
             sum((row.interest for row in ref_schedule), Decimal("0.00")),
         )
-
-        # Guard against a vacuous pass: the standing extra must genuinely
-        # accelerate payoff versus the pure-contractual original (extra-free).
+        # With no generated row the committed slice has no override month and
+        # no extra: it IS the contract, and the composer's extra-free original
+        # ends on the same date.  Pinned so a re-threaded extra shows up here
+        # as the two parting, not as a silent acceleration.
         contractual_payoff = committed.original_forward[-1].payment_date
-        assert ref_payoff < contractual_payoff, (
-            "Standing extra did not accelerate payoff; the test would be "
-            "vacuous (contractual == committed)."
+        assert ref_payoff == contractual_payoff, (
+            "the composer's committed slice parted from the contract with no "
+            "generated row: something re-threaded a loan-level extra into it"
         )
 
         # Summary seam: every summary surface resolves a debt account through
         # the seam's ONE memoized whole-loan read (``balance_at._resolution.resolved_loan``).
-        resolved = resolved_loan(
-            account,
-            BalanceContext.build(seed_user["user"].id, as_of=today),
-        )
+        balance_ctx = BalanceContext.build(seed_user["user"].id, as_of=today)
+        resolved = resolved_loan(account, balance_ctx)
         assert resolved is not None
         state = resolved.state
         summary_payoff = (
             state.schedule[-1].payment_date if state.schedule else None
         )
         assert summary_payoff == ref_payoff, (
-            f"Summary-surface payoff {summary_payoff} != committed detail "
-            f"payoff {ref_payoff}: the resolver seam still ignores the standing "
-            "extra (contractual)."
+            f"Summary-surface schedule ends {summary_payoff} != the composer's "
+            f"committed slice {ref_payoff}: the resolver seam threads something "
+            "the composer does not."
         )
         assert state.total_interest == ref_total_interest, (
             f"Summary-surface life-of-loan interest {state.total_interest} != "
-            f"committed {ref_total_interest}: the seam ignores the extra."
+            f"the composer's {ref_total_interest}."
         )
 
         # Year-end / net-worth debt aggregation reads the same seam
         # (``_generate_debt_schedules`` IS ``net_worth_kernel.generate_debt_schedules``).
         debt_schedules = (
-            net_worth_kernel.debt_schedule_rows(
-                [account], BalanceContext.build(seed_user["user"].id),
-            )
+            net_worth_kernel.debt_schedule_rows([account], balance_ctx)
         )
         ye_schedule = debt_schedules[account.id]
         assert ye_schedule[-1].payment_date == ref_payoff, (
-            f"Year-end debt schedule payoff {ye_schedule[-1].payment_date} != "
-            f"committed {ref_payoff}."
+            f"Year-end debt schedule ends {ye_schedule[-1].payment_date} != "
+            f"the composer's {ref_payoff}."
         )
+
+        # The teeth: the payoff a surface SHOWS is the fold's, and the fold
+        # prices the definition's occurrences with the extra inside them, so it
+        # clears the loan strictly before the contract does.
+        figures = balance_at.loan_figures(account, balance_ctx)
+        assert figures.payoff_date is not None
+        assert figures.payoff_date < contractual_payoff, (
+            f"The seam's derived payoff {figures.payoff_date} is not before the "
+            f"contractual {contractual_payoff}: the standing extra is not "
+            "reaching the fold."
+        )
+
+
+def test_a_generated_rows_extra_is_paid_once_in_the_committed_slice(
+    app, seed_user, seed_periods_today,
+):
+    """R-R88, end to end: an override month pays its row's cash exactly once.
+
+    The double count ruling **R-R88** deleted, measured on the real feed rather
+    than on hand-built records (the composer's unit tests hold the
+    arithmetic; this holds the WIRING above it): a derive-mode payment with a
+    ``$100`` extra generates a row whose cash amount rule 4 prices at P&I +
+    escrow + extra; that row reaches ``compute_payoff_scenarios`` through
+    ``load_loan_context`` -> ``monthly_override``; and the committed slice's
+    row for that month must pay THAT cash and nothing on top.  Until plan step
+    R7d-g-3 the seam and the loan page threaded the extra in again as
+    ``extra_principal``, and the month paid P&I + 2 x extra (measured
+    2026-09-14: ``$676.46`` of principal + interest against the row's
+    ``$626.46``).  A re-threading anywhere above the composer -- into
+    ``resolve_loan_bundle`` or ``build_baseline_scenarios`` -- fails this
+    where the composer's own tests would not see it.
+
+    Escrow-free loan, so the row's cash IS P&I + extra to the cent.  The loan
+    originates at the current period's start with a derived payment day, the
+    clean-past shape the sibling below explains, so the first installment is a
+    generated FUTURE row.
+    """
+    from app.services import transfer_recurrence  # pylint: disable=import-outside-toplevel
+    from app.services.generation_schedule import GenerationSchedule  # pylint: disable=import-outside-toplevel
+
+    with app.app_context():
+        current_period = next(
+            period for period in seed_periods_today
+            if period.start_date <= date.today() <= last_covered_day(period)
+        )
+        as_of = current_period.start_date
+        payment_day = (as_of.day % 28) + 1
+        account = create_loan_account(
+            seed_user, db.session, name="R-R88 Mortgage",
+            principal=FIXED_PRINCIPAL, rate=FIXED_RATE, term=FIXED_TERM,
+            origination_date=as_of, payment_day=payment_day,
+            account_type=AcctTypeEnum.MORTGAGE,
+        )
+        loan_params = loan_params_for(db.session, account.id)
+        extra = Decimal("100.00")
+        _add_recurring_payment_with_extra(seed_user, account, extra)
+        template = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=account.id).one()
+        )
+        ctx = BalanceContext.build(seed_user["user"].id, as_of=as_of)
+        transfer_recurrence.generate_for_template(
+            template, GenerationSchedule.for_pass(ctx), ctx.scenario_id,
+        )
+        db.session.commit()
+
+        ctx = BalanceContext.build(seed_user["user"].id, as_of=as_of)
+        loan = loan_payment_service.load_loan_context(
+            account.id, ctx.amounts(), loan_params,
+        )
+        # The feed: every generated row arrives at P&I + extra (rule 4).
+        contractual_pi = loan.contractual_pi
+        projected = [p for p in loan.payments if p.dates.settled_on is None]
+        assert projected, "no generated row reached the feed"
+        for payment in projected:
+            assert payment.amount == contractual_pi + extra
+
+        scenarios = _loan_page_baseline_scenarios(account, loan_params, loan, ctx)
+        by_month = {
+            (row.payment_date.year, row.payment_date.month): row
+            for row in scenarios.committed_forward
+        }
+        first = projected[0]
+        row = by_month[(first.dates.due_date.year, first.dates.due_date.month)]
+        # Paid ONCE: the row's cash is the payment, nothing rides on top, and
+        # the principal is that cash less the month's interest.
+        assert row.payment == contractual_pi + extra
+        assert row.extra_payment == Decimal("0.00")
+        assert row.principal == row.payment - row.interest
+        # And the double count's own figure is not what the month paid.
+        assert row.principal + row.interest != contractual_pi + extra + extra
+
+
+def _loan_page_baseline_scenarios(account, loan_params, loan, ctx):
+    """The loan page's own composer call, the way ``load_baseline_scenarios`` makes it."""
+    from app.routes.loan._helpers import (  # pylint: disable=import-outside-toplevel
+        _loan_inputs, build_baseline_scenarios,
+    )
+    return build_baseline_scenarios(_loan_inputs(loan_params, loan), account, ctx)
 
 
 def test_standing_extra_folds_past_the_shadow_horizon(
@@ -842,22 +941,28 @@ def test_standing_extra_folds_past_the_shadow_horizon(
             account.id, amount_basis_for_scenario(scenario_id), loan_params,
         )
         anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
-        # One composer call yields BOTH references: the committed forward (extra
-        # applied every month, the fold's target) and the pure-contractual
-        # original (extra-free, the teeth's third reference).
+        # One composer call yields BOTH references: the ACCELERATED forward
+        # (the extra applied every month, the fold's target) and the
+        # pure-contractual original (extra-free, the teeth's third reference).
+        # The reference was the COMMITTED slice with the extra passed as the
+        # composer's loan-level ``extra_principal`` until plan step R7d-g-3
+        # deleted that parameter (ruling **R-R88**, which re-ruled R-R83's seam clause there); with NO
+        # generated row -- this fixture's whole point -- that slice and the
+        # accelerated one with the same figure as ``extra_monthly`` are the
+        # same walk, so the reference is byte-identical and still comes from
+        # an INDEPENDENT producer (``project_forward``).
         scenarios = loan_resolver.compute_payoff_scenarios(
             loan_inputs=loan_resolver.LoanInputs(
                 loan_params, anchor_events, ctx_loan.payments,
                 ctx_loan.rate_changes,
             ),
-            extra_monthly=Decimal("0.00"),
+            extra_monthly=extra,
             as_of=as_of,
             confirmed_view=seam_confirmed_view(
                 loan_params.account_id, scenario_id, as_of,
             ),
-            extra_principal=extra,
         )
-        committed_forward = list(scenarios.committed_forward)
+        committed_forward = list(scenarios.accelerated_forward)
         contractual_by_date = {
             row.payment_date: row.remaining_balance
             for row in scenarios.original_forward

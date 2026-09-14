@@ -1651,44 +1651,58 @@ class TestComputePayoffScenarios:
         assert july.payment == Decimal("1798.65")
         assert july.extra_payment == Decimal("500.00")
 
-    def test_standing_extra_principal_accelerates_committed(self):
-        """Step 5: a standing extra_principal accelerates the COMMITTED slice.
+    def test_the_composer_takes_no_loan_level_extra(self):
+        """R7d-g-3: the committed slice carries no standing extra of its own.
 
-        With ``extra_principal=$500`` and no projected override, every committed
-        forward row carries ``extra_payment=$500`` and the committed slice pays
-        off sooner than the pure-contractual original (which carries no extra).
-        This is the operator-facing deliverable: the band chart / payoff summary
-        reflect the standing overpayment, exactly as the cash debit does.
+        Until plan step R7d-g-3 this pinned step 5's ``extra_principal``: a
+        loan-level standing extra threaded into the composer and applied to
+        every committed forward row.  Ruling **R-R88**, which re-ruled R-R83's seam clause there,
+        deleted the parameter -- a projected row's cash carries its own
+        definition's extra (amount rule 4), so the composer adding one again
+        paid it twice on every override month, and the one it added was the
+        oldest definition's alone (plan ledger row **D49**).  Two pins:
+        the keyword no longer exists (a re-threading cannot land silently),
+        and with no override month the committed slice IS the contract --
+        extra-free rows, the same length as the original.
         """
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
+        inputs = LoanInputs(
+            loan_params=params,
+            anchor_events=[anchor],
+            payments=_four_contractual_payments_jan_to_apr_2026(),
+            rate_changes=_rate_feed(params),
+        )
+        with pytest.raises(TypeError, match="extra_principal"):
+            compute_payoff_scenarios(
+                loan_inputs=inputs,
+                extra_monthly=Decimal("0.00"),
+                as_of=self.AS_OF,
+                extra_principal=Decimal("500.00"),
+            )
         scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=_rate_feed(params),
-            ),
+            loan_inputs=inputs,
             extra_monthly=Decimal("0.00"),
             as_of=self.AS_OF,
-            extra_principal=Decimal("500.00"),
         )
-        # The standing extra rides every committed forward row.
-        for row in scenarios.committed_forward[:-1]:
-            assert row.extra_payment == Decimal("500.00")
-        # Committed (with the standing extra) pays off before the contractual
-        # original (no extra), and the original stays extra-free.
-        assert len(scenarios.committed_forward) < len(scenarios.original_forward)
+        for row in scenarios.committed_forward:
+            assert row.extra_payment == Decimal("0.00")
+        assert len(scenarios.committed_forward) == len(
+            scenarios.original_forward,
+        )
         assert scenarios.original_forward[0].extra_payment == Decimal("0.00")
 
-    def test_standing_extra_and_lever_stack_on_override_month(self):
-        """Step 5: committed carries the standing extra; accelerated adds the lever.
+    def test_the_lever_alone_rides_an_override_month(self):
+        """R7d-g-3: an override month pays its planned cash, plus the lever only.
 
-        June 2026 is an override month ($2,000 planned).  With standing
-        ``extra_principal=$300`` and the lever's ``extra_monthly=$200``:
-          committed June: payment $2,000 base, extra_payment $300 (standing);
-          accelerated June: payment $2,000 base, extra_payment $500 (300 + 200).
-        The two extras stack on the override month with no double-count.
+        June 2026 is an override month ($2,000 planned -- a row's own resolved
+        cash, any standing extra already inside it by amount rule 4).  With the
+        lever's ``extra_monthly=$200``:
+          committed June: payment $2,000, extra_payment $0.00;
+          accelerated June: payment $2,000, extra_payment $200 (the lever).
+        Until plan step R7d-g-3 a standing ``extra_principal=$300`` stacked
+        here too (committed $300, accelerated $500), which on a real row was
+        the standing extra paid twice.
         """
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
@@ -1704,7 +1718,6 @@ class TestComputePayoffScenarios:
             ),
             extra_monthly=Decimal("200.00"),
             as_of=self.AS_OF,
-            extra_principal=Decimal("300.00"),
         )
         june_committed = next(
             row for row in scenarios.committed_forward
@@ -1715,9 +1728,9 @@ class TestComputePayoffScenarios:
             if row.payment_date == date(2026, 6, 1)
         )
         assert june_committed.payment == Decimal("2000.00")
-        assert june_committed.extra_payment == Decimal("300.00")
+        assert june_committed.extra_payment == Decimal("0.00")
         assert june_accelerated.payment == Decimal("2000.00")
-        assert june_accelerated.extra_payment == Decimal("500.00")
+        assert june_accelerated.extra_payment == Decimal("200.00")
 
     def test_months_saved_metric(self):
         """C3-8: months_saved = len(committed) - len(accelerated).

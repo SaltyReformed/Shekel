@@ -6,7 +6,7 @@ rate history, and payoff calculator across multiple loan types.
 """
 
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -38,10 +38,10 @@ from app.services import (
     balance_at,
     escrow_calculator,
     loan_loaders,
-    loan_recurrence_sync,
 )
 
 from tests._test_helpers import (
+    bind_rule_to_loan,
     add_escrow_line,
     an_entered_day,
     clear_loan_ledger,
@@ -177,6 +177,19 @@ def _create_auto_loan(seed_user, db_session, name="My Auto Loan"):
         Decimal("25000.00"), Decimal("0.05000"), 60,
         date(2025, 1, 1), 15,
     )
+
+
+def _payment_template(db_session, seed_user, acct):
+    """Return the loan's recurring payment template (the settings doors' URLs name it)."""
+    from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+    tpl = (
+        db_session.query(TransferTemplate)
+        .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+        .first()
+    )
+    assert tpl is not None
+    return tpl
 
 
 def _create_mortgage(seed_user, db_session, name="My Mortgage"):
@@ -3823,53 +3836,96 @@ class TestTransferPrompt:
     def test_update_payment_settings_changes_extra(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """The payment-settings route updates the standing extra in place.
+        """The per-definition settings door updates that payment's extra in place.
 
         No shadow regeneration is needed (the extra is a live parameter): the
-        settings row's ``extra_principal`` is set to the new value.
+        settings row's ``extra_principal`` is set to the new value.  The 302
+        is also the proof that the moved door still ROUTES: the ownership 404s
+        below are only meaningful beside it.
         """
-        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
-
         acct = _create_mortgage(seed_user, db.session)
         checking = seed_user["account"]
         auth_client.post(
             f"/accounts/{acct.id}/loan/create-transfer",
             data={"source_account_id": str(checking.id)},
         )
+        tpl = _payment_template(db.session, seed_user, acct)
 
         resp = auth_client.post(
-            f"/accounts/{acct.id}/loan/payment-settings",
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
             data={"extra_principal": "150.00"},
         )
         assert resp.status_code == 302
 
-        tpl = (
-            db.session.query(TransferTemplate)
-            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
-            .first()
-        )
+        db.session.expire(tpl)
         assert tpl.settings.extra_principal == Decimal("150.00")
 
-    def test_update_payment_settings_no_recurring_payment_warns(
+    def test_update_payment_settings_unknown_template_404s(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Editing the extra on a loan with no recurring payment warns, no 500."""
+        """A template id that names none of this loan's payments is a 404.
+
+        The door names the definition it writes (plan step R7d-g-3, ruling
+        R-R83); with no recurring payment there is no id to name, and an id
+        that names nothing reads the same as one that is not the owner's.
+        """
         acct = _create_mortgage(seed_user, db.session)
 
         resp = auth_client.post(
-            f"/accounts/{acct.id}/loan/payment-settings",
+            f"/accounts/{acct.id}/loan/payments/999999/settings",
             data={"extra_principal": "150.00"},
-            follow_redirects=True,
         )
-        assert resp.status_code == 200
-        assert b"no recurring payment" in resp.data.lower()
+        assert resp.status_code == 404
+
+    def test_update_payment_settings_refuses_another_loans_template(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The owner's OWN payment into a different loan is a 404 on this loan's door.
+
+        The template must pay INTO the loan the URL names -- the set the card
+        renders a strip for -- so a valid id on the wrong loan writes nothing.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        other = _create_mortgage(seed_user, db.session, name="Other Mortgage")
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{other.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        other_tpl = _payment_template(db.session, seed_user, other)
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{other_tpl.id}/settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 404
+        db.session.expire(other_tpl)
+        assert other_tpl.settings.extra_principal == Decimal("0.00")
+
+    def test_update_payment_settings_refuses_an_archived_template(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """An ARCHIVED payment is not in the loan's active set, so its door is a 404."""
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        tpl = _payment_template(db.session, seed_user, acct)
+        resp = auth_client.post(f"/transfers/{tpl.id}/archive")
+        assert resp.status_code == 302
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 404
 
     def test_update_payment_settings_rejects_negative_extra(
         self, auth_client, seed_user, db, seed_periods,
     ):
         """A negative extra is rejected (danger flash) and never mutates settings."""
-        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
-
         acct = _create_mortgage(seed_user, db.session)
         checking = seed_user["account"]
         auth_client.post(
@@ -3880,40 +3936,55 @@ class TestTransferPrompt:
             },
         )
 
+        tpl = _payment_template(db.session, seed_user, acct)
+
         resp = auth_client.post(
-            f"/accounts/{acct.id}/loan/payment-settings",
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
             data={"extra_principal": "-5.00"},
             follow_redirects=True,
         )
         assert resp.status_code == 200
         assert b"valid extra principal" in resp.data.lower()
         # The original extra is untouched.
-        tpl = (
-            db.session.query(TransferTemplate)
-            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
-            .first()
-        )
+        db.session.expire(tpl)
         assert tpl.settings.extra_principal == Decimal("50.00")
 
     def test_update_payment_settings_idor(
         self, second_auth_client, seed_user, db, seed_periods,
     ):
-        """A non-owner editing a loan's extra gets a 404 (not-yours == not-found)."""
+        """A non-owner editing a loan's extra gets a 404 (not-yours == not-found).
+
+        With the owner's real template id in the URL, so the 404 is the
+        ownership gate's and not the URL map's -- the sibling
+        ``test_update_payment_settings_changes_extra`` proves the same URL
+        shape routes (302) for the owner.  The owner's payment is built
+        through the ORM rather than the owner's client: the ``db`` fixture
+        holds ONE app context for the whole test and Flask-Login caches
+        ``current_user`` on ``g`` per app context, so a request from a second
+        client after the owner's runs AS THE OWNER (measured 2026-09-14: the
+        non-owner's POST wrote the extra).
+        """
         acct = _create_mortgage(seed_user, db.session)
+        tpl = make_loan_payment_template(
+            db.session, seed_user, acct, amount="1500.00",
+        )
+        db.session.commit()
 
         resp = second_auth_client.post(
-            f"/accounts/{acct.id}/loan/payment-settings",
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
             data={"extra_principal": "150.00"},
         )
         assert resp.status_code == 404
+        db.session.expire(tpl)
+        assert tpl.settings.extra_principal == Decimal("0.00")
 
     def test_dashboard_shows_extra_control_when_payment_exists(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """The extra-principal edit control renders once a recurring payment exists.
+        """The payment card renders the definition's extra control once it exists.
 
-        Prefilled from the payment's stored extra ($125.00), posting to the
-        payment-settings route.
+        Prefilled from THAT payment's stored extra ($125.00), posting to its
+        own per-definition settings door.
         """
         acct = _create_mortgage(seed_user, db.session)
         checking = seed_user["account"]
@@ -3924,11 +3995,12 @@ class TestTransferPrompt:
                 "extra_principal": "125.00",
             },
         )
+        tpl = _payment_template(db.session, seed_user, acct)
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert f"/accounts/{acct.id}/loan/payment-settings" in html
+        assert f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings" in html
         assert 'value="125.00"' in html
 
     def test_source_accounts_exclude_debt_account(
@@ -4061,12 +4133,13 @@ class TestPaymentDrift:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "short of the contractual monthly payment" in html
+        tpl = _payment_template(db.session, seed_user, acct)
+        assert "short of the" in html
         assert f"${stored:,.2f}" in html          # stored transfer amount
         assert "$50.00" in html                    # the exact shortfall
         assert f"${contract:,.2f}" in html         # the contractual payment
-        assert f"/accounts/{acct.id}/loan/track-payment" in html
-        assert "Switch to automatic payment" in html
+        assert f"/accounts/{acct.id}/loan/payments/{tpl.id}/track" in html
+        assert "Track the loan" in html
 
     def test_dashboard_warns_when_legacy_manual_payment_short(
         self, auth_client, seed_user, db, seed_periods,
@@ -4087,7 +4160,7 @@ class TestPaymentDrift:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "short of the contractual monthly payment" in html
+        assert "short of the" in html
         assert "$50.00" in html
 
     def test_dashboard_warns_when_base_short_despite_standing_extra(
@@ -4119,7 +4192,7 @@ class TestPaymentDrift:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "short of the contractual monthly payment" in html
+        assert "short of the" in html
         assert "$50.00" in html          # the BASE shortfall, extra excluded
 
     @pytest.mark.parametrize("delta", [Decimal("0.00"), Decimal("100.00")])
@@ -4144,7 +4217,7 @@ class TestPaymentDrift:
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        assert "short of the contractual monthly payment" not in resp.data.decode()
+        assert "short of the" not in resp.data.decode()
 
     def test_dashboard_no_warning_when_derive_even_after_escrow_rise(
         self, auth_client, seed_user, db, seed_periods,
@@ -4182,7 +4255,7 @@ class TestPaymentDrift:
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        assert "short of the contractual monthly payment" not in resp.data.decode()
+        assert "short of the" not in resp.data.decode()
 
     def test_track_payment_flips_to_derive_and_clears_warning(
         self, auth_client, seed_user, db, seed_periods,
@@ -4193,8 +4266,6 @@ class TestPaymentDrift:
         derive_from_loan True and resets the stored base to the contract, so a
         re-render shows no warning and the loan now tracks the contract.
         """
-        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
-
         acct = _create_mortgage(seed_user, db.session)
         checking = seed_user["account"]
         contract = self._contract(acct, seed_user["user"].id)
@@ -4205,25 +4276,23 @@ class TestPaymentDrift:
                 "amount": str(contract - Decimal("50.00")),
             },
         )
+        tpl = _payment_template(db.session, seed_user, acct)
         # Precondition: the warning is showing.
         pre = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert "short of the contractual monthly payment" in pre.data.decode()
+        assert "short of the" in pre.data.decode()
 
-        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/track",
+        )
         assert resp.status_code == 302
         assert f"/accounts/{acct.id}/loan" in resp.headers.get("Location", "")
 
-        tpl = (
-            db.session.query(TransferTemplate)
-            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
-            .first()
-        )
         db.session.expire(tpl)
         assert tpl.settings.derive_from_loan is True
         assert tpl.default_amount == contract
 
         post = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert "short of the contractual monthly payment" not in post.data.decode()
+        assert "short of the" not in post.data.decode()
 
     def test_track_payment_creates_settings_row_for_legacy_manual(
         self, auth_client, seed_user, db, seed_periods,
@@ -4241,7 +4310,9 @@ class TestPaymentDrift:
         )
         assert tpl.settings is None   # legacy shape: no settings row
 
-        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/track",
+        )
         assert resp.status_code == 302
 
         db.session.expire(tpl)
@@ -4259,8 +4330,6 @@ class TestPaymentDrift:
         the switch flips derive True and keeps extra at $75 (the extra rides on top
         of the tracked base, unchanged), resetting the base to the contract.
         """
-        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
-
         acct = _create_mortgage(seed_user, db.session)
         checking = seed_user["account"]
         contract = self._contract(acct, seed_user["user"].id)
@@ -4272,39 +4341,293 @@ class TestPaymentDrift:
                 "extra_principal": "75.00",
             },
         )
+        tpl = _payment_template(db.session, seed_user, acct)
 
-        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/track",
+        )
         assert resp.status_code == 302
 
-        tpl = (
-            db.session.query(TransferTemplate)
-            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
-            .first()
-        )
         db.session.expire(tpl)
         assert tpl.settings.derive_from_loan is True
         assert tpl.settings.extra_principal == Decimal("75.00")
         assert tpl.default_amount == contract
 
-    def test_track_payment_no_recurring_payment_warns(
+    def test_track_payment_unknown_template_404s(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Switching a loan with no recurring payment warns, no 500."""
+        """A template id naming none of this loan's payments is a 404, no 500."""
         acct = _create_mortgage(seed_user, db.session)
         resp = auth_client.post(
-            f"/accounts/{acct.id}/loan/track-payment",
+            f"/accounts/{acct.id}/loan/payments/999999/track",
+        )
+        assert resp.status_code == 404
+
+    def test_track_payment_flips_the_named_definition_not_the_oldest(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Two payments into one loan: the door flips the one its URL names.
+
+        The shape ruling R-R83 was asked for (plan ledger row D49): a fixed
+        sweep created BEFORE the real payment, both fixed (the payment was
+        created with a typed amount).  The old loan-keyed door took
+        ``active_recurring_transfer_template`` -- the OLDEST -- and flipped
+        the sweep to derive, so the loan was projected paying the contract
+        twice a month.  Naming the payment in the URL makes the oldest
+        irrelevant: the sweep stays fixed at its own figure and the named
+        payment is the one that tracks.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        # The sweep first, so it is the oldest active definition into the loan.
+        sweep = self._legacy_manual_transfer(
+            seed_user, db.session, acct, Decimal("50.00"),
+        )
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": str(contract - Decimal("50.00")),
+            },
+        )
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+        payment = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .filter(TransferTemplate.id != sweep.id)
+            .one()
+        )
+        assert sweep.id < payment.id
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{payment.id}/track",
+        )
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        assert payment.settings.derive_from_loan is True
+        assert payment.default_amount == contract
+        assert sweep.settings is None
+        assert sweep.default_amount == Decimal("50.00")
+
+    def test_track_payment_refuses_another_loans_template(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The owner's payment into a DIFFERENT loan is a 404 on this loan's track door.
+
+        The same gate the settings door proves
+        (``TestTransferPrompt.test_update_payment_settings_refuses_another_loans_template``),
+        asked of the second door: one function, two doors, each measured.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        other = _create_mortgage(seed_user, db.session, name="Other Mortgage")
+        contract = self._contract(other, seed_user["user"].id)
+        other_tpl = self._legacy_manual_transfer(
+            seed_user, db.session, other, contract - Decimal("50.00"),
+        )
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{other_tpl.id}/track",
+        )
+        assert resp.status_code == 404
+        db.session.expire(other_tpl)
+        assert other_tpl.settings is None
+        assert other_tpl.default_amount == contract - Decimal("50.00")
+
+    def test_the_card_renders_one_strip_per_definition_with_its_own_controls(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Two payments into one loan: two strips, each with ITS figure and doors.
+
+        Ruling R-R83 (plan step R7d-g-3): the card lists every recurring
+        transfer into the loan.  A fixed ``$50`` sweep (the older definition,
+        no settings row) and the dashboard-created payment (tracks the loan,
+        ``$125`` extra).  Each strip prefills its OWN extra, posts to its OWN
+        settings door, and only the fixed one offers the Track button -- the
+        tracking one has nothing to flip.  The sweep, at ``$50`` against a
+        four-figure contract, is short, so its strip carries the shortfall
+        sentence and the warning tint while the tracking strip carries none.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        sweep = self._legacy_manual_transfer(
+            seed_user, db.session, acct, Decimal("50.00"),
+        )
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "extra_principal": "125.00",
+            },
+        )
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+        payment = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .filter(TransferTemplate.id != sweep.id)
+            .one()
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # Two strips, in definition order (oldest first), each named (the
+        # payment's name carries a ``->`` the template escapes).
+        assert (
+            html.index(f'data-template-id="{sweep.id}"')
+            < html.index(f'data-template-id="{payment.id}"')
+        )
+        assert sweep.name in html
+        assert payment.name.replace(">", "&gt;") in html
+        assert "2 into this loan" in html
+        # Each strip's own doors.
+        for tpl in (sweep, payment):
+            assert f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings" in html
+        # One tracker per loan: the payment tracks, so neither strip offers
+        # Track (the sweep's strip names the tracker in its shortfall).
+        assert f"/accounts/{acct.id}/loan/payments/{sweep.id}/track" not in html
+        assert f"/accounts/{acct.id}/loan/payments/{payment.id}/track" not in html
+        # Each strip's own extra, prefilled on its own input.
+        assert re.search(
+            rf'id="extra-principal-{sweep.id}"[^>]*value="0\.00"', html,
+        )
+        assert re.search(
+            rf'id="extra-principal-{payment.id}"[^>]*value="125\.00"', html,
+        )
+        # The modes, one each.
+        assert html.count("Tracks the loan") == 1
+        assert html.count("Fixed amount") == 1
+        # Each strip's next payment, priced by the amount model: the sweep's
+        # $50.00 stated price (rule 3 -- no settings row), the tracking
+        # payment's contract + its $125 extra (rule 4's derive arm).
+        assert "$50.00" in html
+        assert f"${contract + Decimal('125.00'):,.2f}" in html
+        assert "next payment," in html
+        # The sweep is short; the tracking payment is not.
+        assert html.count("loan-payment--short") == 1
+        assert "short of the" in html
+        # The page-top alerts are gone: the card is the one home (the base
+        # layout's own MFA nag is the one warning alert a page may carry).
+        assert "Switch to automatic payment" not in html
+        assert html.count("alert-warning") == html.count("mfa-nag-banner")
+        assert "No recurring payment set up" not in html
+
+    def test_the_strip_prices_the_next_payment_not_the_newest_stated_price(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A fixed payment's figure and drift are its NEXT row's price, per the amount model.
+
+        The owner states a future price on a fixed payment ($9,999.00 from
+        2028).  ``default_amount`` follows the NEWEST statement
+        (``template_amount_service._resync_scalar``), so the first cut of the
+        card -- and the drift before it -- would have shown $9,999.00 as what
+        the loan is paid and judged the drift on it.  The strip prices the
+        next occurrence through ``cash_ledger.definition_cash`` (ruling
+        R-R67's one producer), so it shows the price in effect for that date,
+        and the shortfall sentence names the same figure.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        contract = self._contract(acct, seed_user["user"].id)
+        stored = contract - Decimal("50.00")
+        tpl = self._legacy_manual_transfer(seed_user, db.session, acct, stored)
+        state_template_price(
+            tpl, Decimal("9999.00"), effective_on=date(2028, 1, 1),
+        )
+        db.session.commit()
+        db.session.expire(tpl)
+        assert tpl.default_amount == Decimal("9999.00"), (
+            "precondition: the scalar follows the newest statement"
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "$9,999.00" not in html
+        assert f"${stored:,.2f}" in html
+        assert "next payment," in html
+        assert "$50.00" in html and "short of the" in html
+
+    def test_a_second_tracker_is_refused_at_the_door_and_hidden_on_the_card(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """One definition tracks a loan (developer, 2026-09-14).
+
+        A tracking payment plus a fixed $50 sweep: the sweep's strip offers no
+        Track control and its shortfall sentence names the tracker; a crafted
+        POST to the sweep's track door is refused with the flash naming the
+        tracker and writes nothing -- no settings row, the $50 untouched.  The
+        tracker's own door still answers (a re-track writes the same mode).
+        """
+        from app.routes.loan.payment_transfer import (  # pylint: disable=import-outside-toplevel
+            ANOTHER_PAYMENT_TRACKS_THE_LOAN,
+        )
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        tracker = _payment_template(db.session, seed_user, acct)
+        sweep = self._legacy_manual_transfer(
+            seed_user, db.session, acct, Decimal("50.00"),
+        )
+
+        html = auth_client.get(f"/accounts/{acct.id}/loan").data.decode()
+        assert f"/accounts/{acct.id}/loan/payments/{sweep.id}/track" not in html
+        assert f"/accounts/{acct.id}/loan/payments/{tracker.id}/track" not in html
+        assert "tracks the loan, so this" in html
+        assert tracker.name.replace(">", "&gt;") in html
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{sweep.id}/track",
             follow_redirects=True,
         )
         assert resp.status_code == 200
-        assert b"no recurring payment" in resp.data.lower()
+        page = resp.data.decode()
+        # The door's own sentence, HTML-escaped as the flash renders it.
+        assert "already tracks this loan" in ANOTHER_PAYMENT_TRACKS_THE_LOAN
+        assert "already tracks this loan" in page
+        assert tracker.name.replace(">", "&gt;") in page
+        assert "cannot track it too" in page
+        db.session.expire_all()
+        assert sweep.settings is None
+        assert sweep.default_amount == Decimal("50.00")
+
+        # The tracker's own door is not refused by its own tracking.
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tracker.id}/track",
+        )
+        assert resp.status_code == 302
+        db.session.expire_all()
+        assert tracker.settings.derive_from_loan is True
 
     def test_track_payment_idor(
         self, second_auth_client, seed_user, db, seed_periods,
     ):
-        """A non-owner switching a loan's payment gets a 404 (not-yours == not-found)."""
+        """A non-owner switching a loan's payment gets a 404 (not-yours == not-found).
+
+        With the owner's real template id in the URL, so the 404 is the
+        ownership gate's and not the URL map's (the owner's 302 on the same
+        URL shape is ``test_track_payment_flips_to_derive_and_clears_warning``).
+        The owner's payment is built through the ORM, not the owner's client:
+        see ``test_update_payment_settings_idor`` for why a second client's
+        request after the owner's runs as the owner.
+        """
         acct = _create_mortgage(seed_user, db.session)
-        resp = second_auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        contract = self._contract(acct, seed_user["user"].id)
+        tpl = self._legacy_manual_transfer(
+            seed_user, db.session, acct, contract - Decimal("50.00"),
+        )
+        resp = second_auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/track",
+        )
         assert resp.status_code == 404
+        db.session.expire(tpl)
+        assert tpl.settings is None
+        assert tpl.default_amount == contract - Decimal("50.00")
 
 
 # ── ARM Rate History Integration Tests (Commit 5.7-1) ──────────────
@@ -6140,7 +6463,7 @@ class TestTheClosingBoundIsNeverWrittenByARoute:
         tpl, rule = _create_transfer_template(seed_user, db.session, acct)
         # Bound to the contract the way every production door binds a new
         # rule, so the start the edit would move is the loan's own.
-        loan_recurrence_sync.bind_rule_to_loan(rule, acct.id)
+        bind_rule_to_loan(rule, acct.id)
         params = load_loan_params(acct.id)
         first_installment = rule.starts_on
         assert first_installment.day == params.payment_day
@@ -6237,13 +6560,15 @@ class TestTheClosingBoundIsNeverWrittenByARoute:
         assert rule.end_date is None
 
         resp = auth_client.post(
-            f"/accounts/{acct.id}/loan/payment-settings",
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
             data={"extra_principal": "250.00"},
         )
         assert resp.status_code == 302
         _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
 
-        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/track",
+        )
         assert resp.status_code == 302
         _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
 

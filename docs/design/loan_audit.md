@@ -273,3 +273,40 @@ carries a revert-proof regression lock.
    plus `TestDisplayToday` unit tests. Adjacent DRY win the review surfaced: `_loan_inputs`
    extracted and the two remaining inline `LoanInputs` constructions in `calculators.py` migrated
    onto it.
+
+## Recurring payments card as-built (2026-09-14, plan step recurrence:R7d-g-3)
+
+The payment controls became PER DEFINITION (ruling `recurrence:R-R83`; plan ledger row D49). The
+page-top "No recurring payment set up" prompt alert, the page-top underpayment-drift alert and the
+left-stack "Extra principal" card were three homes for one subject and the latter two wrote
+whichever definition `active_recurring_transfer_template` picked (the oldest). They are ONE card
+now, "Recurring payments", in the left stack where the Extra principal card sat, in the escrow
+card's row idiom (`app/static/css/loan.css`, `.loan-payment*`, tokens only):
+
+- **One strip per recurring transfer INTO the loan**, oldest first: its name linking to its edit
+  form; its cadence in the Recurring surface's own words (`recurring_view.described`, made public
+  for this, so a definition reads the same on both pages); a mode chip ("Tracks the loan" in the
+  done tint, "Fixed amount" as the neutral type tag); its per-payment figure right-aligned tabular
+  (`base + extra`, the split shown beneath when an extra rides); an extra-principal input posting to
+  `POST /accounts/<id>/loan/payments/<template_id>/settings`; and, on a fixed definition only, a
+  "Track the loan" button posting to `.../payments/<template_id>/track`.
+- **A fixed definition SHORT of the contract** carries its shortfall sentence on its own strip
+  (warning token + icon, never color alone) under the warning tint, and its Track button is the
+  warning button. The drift is measured per definition (`_payment_drift`, pure over the two
+  figures), so a `$50` sweep beside the real payment is the strip that warns, not the page.
+- **The empty state** is the old prompt, inside the card: the create form with the source picker,
+  the optional extra and the first-payment date from `loan_cadence_start`.
+- **Both settings doors take the template id** and admit it only through
+  `_require_loan_payment_definition` (owned, paying into THIS loan, active, ruled) -- 404 otherwise.
+- **Each strip's figure is its NEXT payment, priced by the amount model** (`definition_cash` over
+  the definition's next placement, with the due date beside it), so it is what the row will carry;
+  the drift compares the same priced base. A definition with no upcoming placement says "No upcoming
+  payment".
+- **One tracker per loan** (developer, 2026-09-14): while a definition tracks the loan no other
+  strip offers Track (a short fixed strip names the tracker in its shortfall sentence), and the
+  track door refuses a second with a flash naming it.
+
+Verified: both themes shot through `tests/manual/shoot.py` on the test client's render of a
+two-definition loan (a fixed `$50` sweep created before a tracking payment carrying a `$125` extra)
+and of a loan with no definition; no inline style or script; every figure computed in
+`routes/loan/dashboard.py::_payment_strips`.

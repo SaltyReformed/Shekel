@@ -1,17 +1,29 @@
 """
-Shekel Budget App -- Loan route package: recurring payment transfer.
+Shekel Budget App -- Loan route package: recurring payment transfers.
 
 Creates a recurring monthly transfer (RecurrenceRule + TransferTemplate +
 generated Transfer records with shadow transactions) from a source account to
 the debt account.  The amount defaults to the resolver-derived monthly payment
 (P&I + escrow) with live derivation, or a user-supplied override.
+
+**The two settings doors are PER DEFINITION since plan step R7d-g-3** (ruling
+**R-R83**): a loan can have any number of recurring transfers paying into it,
+each with its own ``loan_payment_settings`` row, and the dashboard's payment
+card offers the extra-principal and track-the-contract controls on every one.
+Each door therefore names the TEMPLATE it writes in its URL and admits it only
+through :func:`_require_loan_payment_definition` -- the template must be one
+of the loan's own active recurring transfers, else 404.  Until that step both
+doors took the loan alone and wrote whichever definition
+``active_recurring_transfer_template`` picked (the oldest), which handed the
+Track door a ``$50`` sweep created before the real payment and flipped THAT
+to derive (plan ledger row **D49**).
 """
 
 import logging
 from datetime import date
 from decimal import Decimal
 
-from flask import Response, flash, redirect, request, url_for
+from flask import Response, abort, flash, redirect, request, url_for
 from flask_login import current_user
 
 from app.enums import RecurrenceUnitEnum
@@ -44,7 +56,8 @@ from app.services import (
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.services.recurring_transfer_query import (
-    active_recurring_transfer_template,
+    active_recurring_transfer_templates,
+    tracking_definition,
 )
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
@@ -175,9 +188,9 @@ def create_payment_transfer(account_id):
     # carries a servicer's day-31 payment through a 30-day origination month --
     # both from ``loan_recurrence_sync.loan_cadence_start``, the ONE producer of
     # that answer.  It used to be typed here as ``day_of_month=payment_day`` and
-    # then overwritten by ``bind_rule_to_loan`` a few lines below, which is the
-    # shape that let the GENERIC transfer form discard a user's typed date
-    # without saying so.
+    # then overwritten by a sync a few lines below (the ``bind_rule_to_loan``
+    # that went at plan step R7d-g-3), which is the shape that let the GENERIC
+    # transfer form discard a user's typed date without saying so.
     cadence_start = loan_recurrence_sync.loan_cadence_start(
         RecurrenceUnitEnum.MONTH, params,
     )
@@ -220,8 +233,10 @@ def create_payment_transfer(account_id):
     # carries its owner's FK, so the definition has to exist first.  After the
     # name-collision flush rather than before it, because ``author_rule``
     # flushes and an earlier one would surface a duplicate name as an unhandled
-    # ``IntegrityError`` instead of that helper's redirect.
-    rule = author_rule(
+    # ``IntegrityError`` instead of that helper's redirect.  The rule is
+    # reached through ``template.recurrence_rule`` from here on, so the
+    # return value is not held.
+    author_rule(
         RecurrenceSpec(
             user_id=current_user.id,
             unit=RecurrenceUnitEnum.MONTH,
@@ -232,20 +247,18 @@ def create_payment_transfer(account_id):
         template,
     )
 
-    # Bound the new recurrence's START BEFORE generating -- the reason this is
-    # load-bearing rather than merely tidy is that nothing may generate BEFORE
-    # the loan's first contractual installment (C9a): without it this route
-    # generated a payment into every materialized pay period, including those
-    # preceding origination.  The rule was built from ``loan_cadence_start``
-    # above, so this is the same value written through the same producer; it
-    # is applied to THIS rule directly rather than through the account-keyed
-    # sync, which resolves the loan's FIRST active recurring template and on
-    # a loan that already has one would re-bound the OLD rule.  The CLOSING
-    # bound is not written at all (plan step R7d-g): generation reads the
-    # loan's payoff through the composed door, so no shadow is generated past
-    # it, and the payments generated below move that payoff without any
-    # stored copy to lag behind them.
-    loan_recurrence_sync.bind_rule_to_loan(rule, account.id)
+    # The rule's START is already the loan's first contractual installment:
+    # the spec above was built from ``loan_cadence_start``, the ONE producer
+    # of that answer, so nothing may generate before origination (C9a) and
+    # nothing here re-derives it.  A ``bind_rule_to_loan`` call stood here
+    # until plan step R7d-g-3 (plan ledger row **REC-526**): it re-derived
+    # the same pair through the same producer and returned at its
+    # ``wanted == current`` check, a no-op by construction, and it was that
+    # function's last application caller.  The CLOSING bound is not written
+    # at all (plan step R7d-g): generation reads the loan's payoff through
+    # the composed door, so no shadow is generated past it, and the payments
+    # generated below move that payoff without any stored copy to lag behind
+    # them.
 
     # Generate transfers for existing pay periods.  ``create_transfer`` refuses
     # a payment dated before the loan originates (R-C) and a transfer OUT of a
@@ -277,25 +290,75 @@ def create_payment_transfer(account_id):
     return redirect(url_for("loan.dashboard", account_id=account_id))
 
 
+#: The track door's refusal of a second tracker (developer, 2026-09-14):
+#: ONE definition tracks a loan; the card hides the control while one does,
+#: and a crafted POST meets this sentence instead of a second full payment.
+ANOTHER_PAYMENT_TRACKS_THE_LOAN = (
+    "'{tracking}' already tracks this loan, so '{name}' cannot track it too: "
+    "two tracking payments would each pay the full contractual amount."
+)
+
+
+def _require_loan_payment_definition(account, template_id):
+    """Return the recurring transfer *template_id* names, if it pays into *account*.
+
+    The one gate the two per-definition settings doors share (plan step
+    R7d-g-3, ruling **R-R83**): the template is admitted only when it is in
+    :func:`~app.services.recurring_transfer_query.active_recurring_transfer_templates`
+    for THIS loan and the current owner -- owned, paying INTO the loan, active
+    and carrying a rule -- which is exactly the set the dashboard's payment
+    card renders a strip for.  Anything else 404s: a foreign owner's template,
+    a template paying into another account, an archived or rule-less one, or
+    an id that names nothing, all read the same (the project's "404 for
+    not-found and not-yours" rule), so the door leaks no fact about a row it
+    will not write.
+
+    Args:
+        account: The owner-checked, configured loan account
+            (:func:`~app.routes.loan._helpers._require_configured_loan`).
+        template_id: The template id from the route.
+
+    Returns:
+        ``(template, definitions)`` -- the
+        :class:`~app.models.transfer_template.TransferTemplate`, its
+        ``settings`` row loaded, and the loan's whole active set it was found
+        in, so a door that must judge the template AGAINST its siblings (the
+        track door's one-tracker rule) reads the list this gate already
+        holds rather than querying it again.
+    """
+    definitions = active_recurring_transfer_templates(
+        account.id, current_user.id,
+    )
+    for template in definitions:
+        if template.id == template_id:
+            return template, definitions
+    abort(404)
+
+
 @loan_bp.route(
-    "/accounts/<int:account_id>/loan/payment-settings", methods=["POST"],
+    "/accounts/<int:account_id>/loan/payments/<int:template_id>/settings",
+    methods=["POST"],
 )
 @require_owner
-def update_payment_settings(account_id):
-    """Update a loan's recurring-payment standing extra principal.
+def update_payment_settings(account_id, template_id):
+    """Update ONE recurring payment's standing extra principal.
 
-    The dashboard's extra-principal control posts here.  Updates the active
-    recurring payment's ``loan_payment_settings.extra_principal`` (creating the
+    The dashboard's payment card posts here, once per definition.  Updates
+    that definition's ``loan_payment_settings.extra_principal`` (creating the
     settings row when a legacy manual payment has none).  A changed extra
     moves the projected payoff, which the recurring payment's closing bound
     is derived from on every read (plan step R7d-g), so nothing is re-synced.
     The extra is a LIVE parameter -- applied at display, settle, and
     projection from this one value -- so no shadow regeneration is needed.
 
-    404s a cross-owner / non-loan account (``_require_configured_loan``);
-    redirects with a warning when the loan has no recurring payment to edit.
+    404s a cross-owner / non-loan account (``_require_configured_loan``) and
+    a template that is not one of this loan's active recurring transfers
+    (:func:`_require_loan_payment_definition`).
     """
     account, _params, _ = _require_configured_loan(account_id)
+    template, _definitions = _require_loan_payment_definition(
+        account, template_id,
+    )
 
     dashboard = RedirectTarget("loan.dashboard", {"account_id": account_id})
     errors = _payment_extra_schema.validate(request.form)
@@ -305,11 +368,6 @@ def update_payment_settings(account_id):
 
     data = _payment_extra_schema.load(request.form)
     extra_principal = data["extra_principal"]
-
-    template = active_recurring_transfer_template(account.id, current_user.id)
-    if template is None:
-        flash("This loan has no recurring payment to update.", "warning")
-        return dashboard.to_response()
 
     # Update the extra on the settings row, creating it for a legacy manual
     # payment that never had one (a template with no settings row resolves to
@@ -324,29 +382,33 @@ def update_payment_settings(account_id):
     db.session.commit()
 
     logger.info(
-        "Updated extra principal for loan %d to $%s",
-        account.id, extra_principal,
+        "Updated extra principal for loan %d payment %d to $%s",
+        account.id, template.id, extra_principal,
     )
     flash(
-        f"Extra principal set to ${extra_principal:,.2f} per payment.",
+        f"Extra principal on '{template.name}' set to "
+        f"${extra_principal:,.2f} per payment.",
         "success",
     )
     return redirect(url_for("loan.dashboard", account_id=account_id))
 
 
 @loan_bp.route(
-    "/accounts/<int:account_id>/loan/track-payment", methods=["POST"],
+    "/accounts/<int:account_id>/loan/payments/<int:template_id>/track",
+    methods=["POST"],
 )
 @require_owner
-def track_payment(account_id):
-    """Switch a loan's recurring payment to auto-track the contractual amount (D3 / C7).
+def track_payment(account_id, template_id):
+    """Switch ONE recurring payment to auto-track the contractual amount (D3 / C7).
 
-    The one-click resolution for the loan detail page's payment-drift warning:
-    when a MANUAL recurring payment has fallen short of the contractual monthly
-    payment (P&I + today's escrow) after an escrow or rate change, this flips it to
-    ``derive_from_loan`` so its projected cash always equals the contract, and
-    resets the stored base (``default_amount``) to today's contract so every
-    surface that reads it shows the current figure.
+    The one-click resolution for the payment card's drift warning: when a
+    MANUAL recurring payment has fallen short of the contractual monthly
+    payment (P&I + today's escrow) after an escrow or rate change, this flips
+    it to ``derive_from_loan`` so its projected cash always equals the
+    contract, and resets the stored base (``default_amount``) to today's
+    contract so every surface that reads it shows the current figure.  The
+    card offers it on every fixed-amount definition, short or not, and the
+    definition it flips is the one the URL names -- never a picked one.
 
     **No shadow is rewritten, and since plan step X-au-g-2c-2 that is
     STRUCTURAL rather than a property of a read-time override.**  It used to
@@ -359,15 +421,32 @@ def track_payment(account_id):
     projected payoff, which the recurring payment's closing bound is derived
     from on every read (plan step R7d-g), so nothing is re-synced.
 
-    404s a cross-owner / non-loan account (``_require_configured_loan``); redirects
-    with a warning when the loan has no recurring payment to switch.
+    404s a cross-owner / non-loan account (``_require_configured_loan``) and
+    a template that is not one of this loan's active recurring transfers
+    (:func:`_require_loan_payment_definition`).  **REFUSES a second
+    tracker** (developer, 2026-09-14): while another definition already
+    tracks the loan
+    (:func:`~app.services.recurring_transfer_query.tracking_definition`) the
+    flip is refused with :data:`ANOTHER_PAYMENT_TRACKS_THE_LOAN` and nothing
+    is written -- the card offers no Track control in that state, so only a
+    crafted POST reaches this arm.  A definition that already tracks is not
+    refused by it: asking it to track again writes the same mode and today's
+    contract, as before.
     """
     account, _params, _ = _require_configured_loan(account_id)
+    template, definitions = _require_loan_payment_definition(
+        account, template_id,
+    )
     dashboard = RedirectTarget("loan.dashboard", {"account_id": account_id})
 
-    template = active_recurring_transfer_template(account.id, current_user.id)
-    if template is None:
-        flash("This loan has no recurring payment to update.", "warning")
+    tracking = tracking_definition(definitions)
+    if tracking is not None and tracking.id != template.id:
+        flash(
+            ANOTHER_PAYMENT_TRACKS_THE_LOAN.format(
+                tracking=tracking.name, name=template.name,
+            ),
+            "warning",
+        )
         return dashboard.to_response()
 
     contract = _contractual_monthly_payment(account)
@@ -399,11 +478,11 @@ def track_payment(account_id):
     db.session.commit()
 
     logger.info(
-        "Switched loan %d recurring payment to auto-track ($%s)",
-        account.id, contract,
+        "Switched loan %d payment %d to auto-track ($%s)",
+        account.id, template.id, contract,
     )
     flash(
-        f"Recurring payment now tracks the loan automatically "
+        f"'{template.name}' now tracks the loan automatically "
         f"(${contract:,.2f} this month).",
         "success",
     )

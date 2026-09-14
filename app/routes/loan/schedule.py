@@ -6,9 +6,10 @@ The full month-by-month amortization schedule, demoted off the loan detail page
 occasionally, not the page's centre of gravity) into its own route linked from
 the detail page's footer.  Renders the same planned trajectory the loan card
 carries -- confirmed actuals from the genesis ledger plus the plan-aware
-projected payments (the committed trajectory reflecting recurring payments and
-any standing extra since the step-8 seam fix) -- so the table cannot diverge
-from the card.
+projected payments (each generated row at its own resolved cash, a standing
+extra inside it; past the last generated row the CONTRACT's installment, until
+plan step R7d-g-3's next leaf re-cuts this table onto the balance seam's forward
+plan) -- so the table cannot diverge from the card.
 """
 
 from flask import render_template
@@ -30,11 +31,10 @@ def schedule(account_id):
     A schedule TABLE, not a balance surface, so it does not read the balance
     seam: it composes its planned trajectory ONCE off the same load-and-compose
     the detail page's band chart shares (:func:`._helpers.load_baseline_scenarios`,
-    ``history_rows + committed_forward``) with the loan's standing extra -- the
-    identical committed trajectory the card carries -- so the schedule is
-    derived exactly once.  Guards via :func:`._require_configured_loan`:
-    a cross-owner / non-loan account 404s, an un-configured loan redirects to its
-    detail page (the setup surface).
+    ``history_rows + committed_forward``) -- the identical committed trajectory
+    the card carries -- so the schedule is derived exactly once.  Guards via
+    :func:`._require_configured_loan`: a cross-owner / non-loan account 404s,
+    an un-configured loan redirects to its detail page (the setup surface).
 
     **It reads no clock, and plan step X-au-g-2b is what removed the two reads
     it had** (ruling **R-IJ**).  It resolved

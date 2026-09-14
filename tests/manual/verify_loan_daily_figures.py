@@ -76,7 +76,6 @@ from app.services import (
     loan_loaders,
     loan_payment_service,
     loan_resolver,
-    recurring_transfer_query,
 )
 
 #: Horizons sampled from each read date.  The first is the read date itself (the
@@ -120,9 +119,6 @@ def _figures(account: Account, day: date) -> dict:
         extra_monthly=_ZERO,
         as_of=day,
         confirmed_view=balance_at.confirmed_view(account, ctx),
-        extra_principal=recurring_transfer_query.loan_standing_extra_for_account(
-            account.id,
-        ),
     )
     schedule = balance_at.debt_schedule_rows([account], ctx)[account.id]
     return {

@@ -535,10 +535,9 @@ class TestClearingATransferTemplatesRecurrence:
         # The definition first, then the cadence onto it (plan step R-F6).
         rule_id = _every_period_rule(template).id
         db.session.commit()
-        extra_before = recurring_transfer_query.loan_standing_extra(
-            loan.id, seed_user["user"].id,
-        )
-        assert extra_before == Decimal("250.00")
+        assert recurring_transfer_query.loan_payment_config(
+            template,
+        )[1] == Decimal("250.00")
 
         resp = auth_client.post(f"/transfers/{template.id}", data={
             "recurrence_unit": "",
@@ -553,9 +552,9 @@ class TestClearingATransferTemplatesRecurrence:
             TransferTemplate, template.id,
         ).recurrence_rule.id == rule_id
         assert db.session.get(RecurrenceRule, rule_id) is not None
-        assert recurring_transfer_query.loan_standing_extra(
-            loan.id, seed_user["user"].id,
-        ) == Decimal("250.00")
+        assert recurring_transfer_query.loan_payment_config(
+            db.session.get(TransferTemplate, template.id),
+        )[1] == Decimal("250.00")
 
     def test_a_rule_less_transfer_templates_single_transfer_survives_a_rename(
         self, app, auth_client, seed_user, seed_periods,
