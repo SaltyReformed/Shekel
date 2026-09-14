@@ -127,7 +127,7 @@ def _investment_account_with_an_active_deduction(db, seed_user, name):
         salary_profile_id=profile.id, name=name,
         amount=Decimal("100.00"), calc_method_id=1,
         deduction_timing_id=1, is_active=True,
-        target_account_id=account.id, deductions_per_year=26,
+        target_account_id=account.id,
     ))
     return account
 

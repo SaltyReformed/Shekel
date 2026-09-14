@@ -46,17 +46,10 @@
               {{ money(d.amount) }}
             {% endif %}
           </td>
-          <td>
-            {% if d.deductions_per_year == 26 %}
-              26x/yr <small class="text-muted">(every paycheck)</small>
-            {% elif d.deductions_per_year == 24 %}
-              24x/yr <small class="text-muted">(skip 3rd paycheck)</small>
-            {% elif d.deductions_per_year == 12 %}
-              12x/yr <small class="text-muted">(monthly)</small>
-            {% else %}
-              {{ d.deductions_per_year }}x/yr
-            {% endif %}
-          </td>
+          {# The line's cadence, worded by the recurrence package through the
+             route's ``cadence_phrases`` (plan step salary:R15-b): its rule's
+             description, or "Every paycheck" for a line with none. #}
+          <td data-ded-cadence="{{ d.id }}">{{ cadence_phrases[d.id] }}</td>
           <td class="text-end font-mono">
             {{ money(d.annual_cap) if d.annual_cap else '--' }}
           </td>
@@ -74,7 +67,6 @@
                     data-ded-timing-id="{{ d.deduction_timing_id }}"
                     data-ded-method-id="{{ d.calc_method_id }}"
                     data-ded-amount="{{ '%.2f'|format((d.amount|to_percent)) if d.calc_method_id == CALC_PERCENTAGE else '%.2f'|format(d.amount) }}"
-                    data-ded-per-year="{{ d.deductions_per_year }}"
                     data-ded-cap="{{ '%.2f'|format(d.annual_cap) if d.annual_cap else '' }}"
                     data-ded-target-account="{{ d.target_account_id or '' }}"
                     data-ded-inflation-enabled="{{ 'true' if d.inflation_enabled else 'false' }}"
@@ -172,14 +164,10 @@
                    class="form-control form-control-sm" required
                    placeholder="e.g. 500">
           </div>
-          <div class="col-md-4">
-            <label class="form-label">Frequency</label>
-            <select name="deductions_per_year" class="form-select form-select-sm">
-              <option value="26">26 (every paycheck)</option>
-              <option value="24">24 (skip 3rd paycheck)</option>
-              <option value="12">12 (monthly)</option>
-            </select>
-          </div>
+          {# The Frequency control -- the 26 / 24 / 12 select until plan step
+             salary:R15-b -- is the shared recurrence partial since R15-c
+             (ruling R-SAL31); between the two leaves, which ship in one PR
+             (R-SAL35), a new line is taken every paycheck. #}
         </div>
         {# Row 4: Schedule #}
         <div class="row g-2 align-items-end">

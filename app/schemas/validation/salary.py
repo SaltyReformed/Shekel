@@ -381,9 +381,6 @@ class DeductionCreateSchema(BaseSchema):
             min=Decimal("0.0001"), max=Decimal("1000000"),
         ),
     )
-    deductions_per_year = fields.Integer(
-        load_default=26, validate=validate.OneOf([12, 24, 26])
-    )
     # F-012 / C-24: ``annual_cap`` is nullable in the model (NULL =
     # uncapped); when present, must be positive (DB CHECK
     # ``annual_cap IS NULL OR annual_cap > 0``).  Column is

@@ -61,6 +61,7 @@ boundary.
 """
 from app import ref_cache
 from app.extensions import db
+from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
@@ -110,12 +111,13 @@ class EmptyAuthoredWindowError(RecurrenceResolutionError):
         )
 
 
-#: What a recurrence rule may belong to: the two recurring-definition kinds,
-#: which are the two arms of ``budget.recurrence_rules``' owning arc.  Named
-#: rather than spelled inline because :func:`author_rule` is the one door that
-#: binds an owner, and a third definition kind would be one edit here plus the
-#: column and the arm it needs.
-RecurrenceOwner = TransactionTemplate | TransferTemplate
+#: What a recurrence rule may belong to: the two recurring-definition kinds
+#: and, since plan step salary:R15-b (ruling **R-SAL32**), a payroll
+#: deduction -- the three arms of ``budget.recurrence_rules``' owning arc.
+#: Named rather than spelled inline because :func:`author_rule` is the one
+#: door that binds an owner; the third kind was exactly the edit this comment
+#: promised: one line here plus the column and the arm it needs.
+RecurrenceOwner = TransactionTemplate | TransferTemplate | PaycheckDeduction
 
 
 def _author(
@@ -370,10 +372,11 @@ def author_rule(
             it is not the OWNER'S -- a pay-period cadence's first occurrence
             and its phase are both measured against it, so the mismatched pair
             would produce a plausible wrong date rather than an error.
-        owner: The ``TransactionTemplate`` or ``TransferTemplate`` this rule
-            belongs to.  Mutated: its ``recurrence_rule`` is set to the new
-            rule.  It need not be flushed -- SQLAlchemy orders the parent's
-            INSERT before the rule's.
+        owner: The ``TransactionTemplate``, ``TransferTemplate`` or (since
+            plan step salary:R15-b) ``PaycheckDeduction`` this rule belongs
+            to.  Mutated: its ``recurrence_rule`` is set to the new rule.  It
+            need not be flushed -- SQLAlchemy orders the parent's INSERT
+            before the rule's.
 
     Returns:
         The flushed :class:`RecurrenceRule`.

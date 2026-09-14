@@ -57,6 +57,7 @@ from app.services.projection_inputs import (
 from tests._test_helpers import (
     an_entered_day,
     basis_for,
+    make_deduction_cadence_rule,
     pricing_over,
     settlement_columns,
     shadow_amount,
@@ -606,7 +607,7 @@ class TestLoadPayrollFeeds:
                 .filter_by(user_id=ids["user_id"], name="Active")
                 .one()
             )
-            db.session.add(PaycheckDeduction(
+            twice_monthly = PaycheckDeduction(
                 salary_profile_id=profile.id,
                 target_account_id=ids["acct_b_id"],
                 name="B-twice-monthly", amount=Decimal("100"),
@@ -614,8 +615,13 @@ class TestLoadPayrollFeeds:
                 deduction_timing_id=ref_cache.deduction_timing_id(
                     DeductionTimingEnum.PRE_TAX,
                 ),
-                is_active=True, deductions_per_year=24,
-            ))
+                is_active=True,
+            )
+            db.session.add(twice_monthly)
+            db.session.flush()
+            # The 24-per-year shape (plan step salary:R15-b): every paycheck,
+            # at most 2 a month.
+            make_deduction_cadence_rule(db.session, twice_monthly, 24)
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
             feed = load_payroll_feeds(
@@ -681,6 +687,23 @@ class TestLoadPayrollFeeds:
                 percentage=Decimal("0.0300"), is_recurring=True,
                 terminal_year=None,
             ))
+            # And a line WITH a cadence rule (plan step salary:R15-b): the
+            # engine reads it through the rule's owner and the owner's
+            # profile, so the walk must be query-free on THAT path too -- an
+            # adversarial review found the fixture blind to it.
+            ruled = PaycheckDeduction(
+                salary_profile_id=profile.id,
+                target_account_id=ids["acct_a_id"],
+                name="A-twice-monthly", amount=Decimal("40"),
+                calc_method_id=_flat_id(),
+                deduction_timing_id=ref_cache.deduction_timing_id(
+                    DeductionTimingEnum.PRE_TAX,
+                ),
+                is_active=True,
+            )
+            db.session.add(ruled)
+            db.session.flush()
+            make_deduction_cadence_rule(db.session, ruled, 24)
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
             pricing = pricing_over(calendar)
@@ -712,6 +735,15 @@ class TestLoadPayrollFeeds:
                 pricing.for_profile(profile).at(period).period.raise_event
                 for period in projected
             )
+            # Non-vacuity for the cadence path: the ruled line was priced on
+            # the walk and skipped on at least one projected third paycheck,
+            # so its rule was resolved and walked inside the count.
+            taken = [
+                any(line.name == "A-twice-monthly"
+                    for line in pricing.for_profile(profile).at(period).deductions.pre_tax)
+                for period in projected
+            ]
+            assert any(taken) and not all(taken)
 
     def test_an_inactive_or_ARCHIVED_line_contributes_nothing(
         self, app, db, seed_user, seed_second_user, seed_periods,

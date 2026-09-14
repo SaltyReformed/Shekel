@@ -3,8 +3,10 @@ Shekel Budget App -- Paycheck engine: the questions asked of the CALENDAR.
 
 The three reads behind the "four calendar questions" the package docstring
 names -- a payday's position among its month's paydays
-(:func:`_month_ordinal`, which both deduction cadences read), whether that
-position is the month's third or later (:func:`_is_third_paycheck`), and the
+(:func:`_month_ordinal`, the third-paycheck badge's read; the two deduction
+cadences read it too until plan step salary:R15-b moved each line's cadence
+onto its own recurrence rule), whether that position is the month's third or
+later (:func:`_is_third_paycheck`), and the
 gross this owner has already been paid this calendar year
 (:func:`_get_cumulative_wages`, the FICA wage-base cumulative).  The fourth
 question, a capped deduction's own year-to-date, is

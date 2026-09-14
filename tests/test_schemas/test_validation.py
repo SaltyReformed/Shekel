@@ -926,19 +926,23 @@ class TestDeductionCreateSchema:
             "amount": "250.0000",
         })
         assert data["amount"] == Decimal("250.0000")
-        assert data["deductions_per_year"] == 26  # Default.
 
-    def test_invalid_deductions_per_year(self):
-        """deductions_per_year=52 fails OneOf validation."""
-        with pytest.raises(ValidationError) as exc:
-            DeductionCreateSchema().load({
-                "name": "Bad",
-                "deduction_timing_id": "1",
-                "calc_method_id": "1",
-                "amount": "100.0000",
-                "deductions_per_year": "52",
-            })
-        assert "deductions_per_year" in exc.value.messages
+    def test_the_schema_no_longer_reads_a_frequency_count(self):
+        """``deductions_per_year`` left the schema with its column (plan step salary:R15-b).
+
+        A line's cadence is a recurrence rule authored through the recurrence
+        seam (R15-c's form), so a posted count is an unknown key: dropped by
+        ``BaseSchema``'s EXCLUDE, never loaded, never written by name.
+        """
+        data = DeductionCreateSchema().load({
+            "name": "401k",
+            "deduction_timing_id": "1",
+            "calc_method_id": "1",
+            "amount": "250.0000",
+            "deductions_per_year": "24",
+        })
+        assert "deductions_per_year" not in data
+        assert "deductions_per_year" not in DeductionCreateSchema().fields
 
     def test_missing_required_field(self):
         """Missing name raises ValidationError."""

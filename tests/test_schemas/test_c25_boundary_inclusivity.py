@@ -204,7 +204,6 @@ class TestPaycheckDeductionAnnualCap:
         payload = {
             "name": "Roth IRA",
             "amount": "500.0000",
-            "deductions_per_year": "26",
             "calc_method_id": "999",
             "deduction_timing_id": "999",
         }

@@ -56,7 +56,9 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
                       the profile: the cadence it divides the salary by
                       (assuming biweekly would model a weekly-paid owner's
                       income at half its true value) and the payday set the
-                      four calendar questions are counted over.  It was
+                      calendar questions are counted over -- and, since plan
+                      step salary:R15-b, the calendar each deduction's
+                      cadence rule is resolved against.  It was
                       a bare cadence beside an ``all_periods`` sequence until
                       plan step **balance:X-bh-1**; see the package docstring's
                       "The four calendar questions" for what a partial
@@ -81,12 +83,19 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
     # what plan step balance:X-aw removed (finding N-239).
     gross_biweekly = gross_per_paycheck(annual_salary, basis.periods_per_year)
 
-    # Steps 3-4 & 8: this payday's position in its month plus the pre- and
-    # post-tax deduction passes (all three share one per-paycheck context).
-    ded_ctx = _DeductionContext(
-        basis, period, gross_biweekly,
-        _month_ordinal(basis.calendar, period.start_date),
-    )
+    # Step 3: this payday's position in its month -- read BEFORE any line is
+    # priced, because the read is where a payday this calendar cannot place
+    # is REFUSED (``_month_ordinal`` raises), and a refusal that came after
+    # the deduction passes would let them price a foreign payday first (an
+    # adversarial review of plan step salary:R15-b, which moved each line's
+    # cadence off the ordinal and onto its rule).  What survives of the
+    # ordinal's own readers is the cockpit's third-paycheck badge below.
+    month_ordinal = _month_ordinal(basis.calendar, period.start_date)
+
+    # Steps 4 & 8: the pre- and post-tax deduction passes share one
+    # per-paycheck context; each line's cadence is its rule's answer through
+    # the basis (plan step salary:R15-b).
+    ded_ctx = _DeductionContext(basis, period, gross_biweekly)
     deductions = _compute_deductions(ded_ctx)
 
     # Step 5: Taxable income (for display -- taxes computed via Pub 15-T).
@@ -122,7 +131,7 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
     return PaycheckBreakdown(
         period=PeriodInfo(
             period.start_date, period.period_id,
-            _is_third_paycheck(ded_ctx.month_ordinal),
+            _is_third_paycheck(month_ordinal),
             get_raise_event(basis.raises, period),
         ),
         earnings=Earnings(annual_salary, gross_biweekly, taxable_biweekly, net_pay),

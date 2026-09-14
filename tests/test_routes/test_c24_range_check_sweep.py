@@ -216,7 +216,6 @@ class TestDeductionSchemaBounds:
             "deduction_timing_id": str(timing_id),
             "calc_method_id": str(flat_id),
             "amount": "500.00",
-            "deductions_per_year": "26",
         }
         base.update(overrides)
         return base

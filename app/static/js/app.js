@@ -548,8 +548,9 @@ function _populateDeductionForm(editBtn) {
     var amount = form.querySelector('[name=amount]');
     if (amount) amount.value = editBtn.dataset.dedAmount || '';
 
-    var perYear = form.querySelector('[name=deductions_per_year]');
-    if (perYear) perYear.value = editBtn.dataset.dedPerYear || '26';
+    // The frequency prefill (a 26 / 24 / 12 select) left at plan step
+    // salary:R15-b: a line's cadence is a recurrence rule, and R15-c's shared
+    // recurrence partial prefills it as the template forms do.
 
     var cap = form.querySelector('[name=annual_cap]');
     if (cap) cap.value = editBtn.dataset.dedCap || '';
