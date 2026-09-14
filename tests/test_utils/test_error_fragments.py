@@ -9,6 +9,7 @@ and the field-error flattening used by the single-message surfaces.
 
 from app.utils.error_fragments import (
     DESIGNED_FRAGMENT_HEADER,
+    RETARGET_HEADER,
     designed_error,
     flatten_schema_errors,
 )
@@ -23,6 +24,26 @@ class TestDesignedError:
         assert body == "<div>oops</div>"
         assert status == 422
         assert headers == {DESIGNED_FRAGMENT_HEADER: "1"}
+
+    def test_a_retarget_names_the_region_the_body_was_built_for(self):
+        """With *retarget*, htmx's own retarget header rides beside the marker.
+
+        Plan step salary:S3-f-4 (ruling R-SAL33): the readiness what-if's
+        refusal is the assumptions rail, which that request does not target.
+        The marker alone would swap the rail into the readiness card.
+        """
+        body, status, headers = designed_error(
+            "<div>rail</div>", 422, retarget="#assumptions-region",
+        )
+        assert body == "<div>rail</div>"
+        assert status == 422
+        assert headers == {
+            DESIGNED_FRAGMENT_HEADER: "1", RETARGET_HEADER: "#assumptions-region",
+        }
+
+    def test_the_retarget_header_is_htmxs_own(self):
+        """htmx reads ``HX-Retarget`` before ``htmx:beforeSwap``; a rename breaks the swap."""
+        assert RETARGET_HEADER == "HX-Retarget"
 
     def test_header_name_matches_js_listener(self):
         """The header name is the one app.js reads -- a rename must touch both.
