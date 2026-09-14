@@ -37,7 +37,6 @@ import pytest
 
 from app.services.amortization_engine._projection import (
     _apply_contractual_payment,
-    _apply_override_payment,
 )
 from app.services.rate_period_engine import RatePeriod, _replay_payment_row
 from app.utils.money import (
@@ -84,7 +83,14 @@ def _sweep():
 
 
 class TestEveryWalkAllocatesThroughTheOneRule:
-    """Each walk's split equals :func:`apply_payment_cash`'s, over the sweep."""
+    """Each walk's split equals :func:`apply_payment_cash`'s, over the sweep.
+
+    Three walks since plan step R7d-g-3: the projection's override path
+    (``_apply_override_payment``, the planned-outlay arm the loan resolver's
+    committed slice rode) went with that slice when the balance seam's fold
+    became the one planned walk (ruling **R-R88**), so the arm this class
+    graded beside the two below no longer exists to restate anything.
+    """
 
     def test_the_sweep_reaches_every_branch_it_claims_to(self):
         """The sweep is only evidence if it visits the arms it names.
@@ -125,28 +131,6 @@ class TestEveryWalkAllocatesThroughTheOneRule:
             assert row.principal == round_money(parts.principal)
             assert row.payment == round_money(parts.principal + interest)
             assert row.remaining_balance == parts.balance_after
-
-    def test_the_override_path_allocates_through_the_one_rule(self):
-        """``amortization_engine._apply_override_payment`` restates nothing.
-
-        What stays its own is only how a standing EXTRA is reported beside the
-        base payment; the base split itself is the shared rule.
-        """
-        for balance, _rate, interest, cash, extra in _sweep():
-            principal, payment, applied_extra, new_balance = (
-                _apply_override_payment(balance, interest, cash, extra)
-            )
-            parts = apply_payment_cash(cash, balance, interest, ZERO)
-            assert principal == parts.principal
-            assert payment == parts.principal + interest
-            if parts.excess > 0 or parts.balance_after <= 0:
-                assert applied_extra == ZERO
-                assert new_balance == ZERO
-            else:
-                assert applied_extra == min(max(extra, ZERO),
-                                            parts.balance_after)
-                assert new_balance == round_money(
-                    parts.balance_after - applied_extra)
 
     def test_the_contractual_path_allocates_through_the_one_rule(self):
         """``amortization_engine._apply_contractual_payment`` restates nothing.
