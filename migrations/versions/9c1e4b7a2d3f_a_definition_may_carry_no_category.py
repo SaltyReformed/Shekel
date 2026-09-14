@@ -46,10 +46,11 @@ definitions carry a category and a rule, so on that data both directions are
 no-ops on rows.
 
 ``down_revision`` was ``bf50951a3599`` (the head of the tree this leaf was
-built on, ``eecef63d`` = X-bi-7a) and was re-pointed at ``3ec5291ca4e2``
-(pay_calendar C17-d-2) when ``origin/dev`` was merged into the branch, so the
-tree holds one head -- the rule every in-flight migration follows; the
-coordinator re-points again if another migration lands before the cut.
+built on, ``eecef63d`` = X-bi-7a), re-pointed at ``3ec5291ca4e2``
+(pay_calendar C17-d-2) when ``origin/dev`` was merged into the branch and at
+``542c61e48ee8`` (salary R15-b) when the coordinator stacked the tick on the
+C20-a tree (``229542da``), so the tree holds one head -- the rule every
+in-flight migration follows.
 """
 
 from alembic import op
