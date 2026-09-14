@@ -29,7 +29,7 @@ import _registry as registry
     ("rulings.md", "| balance | R-IA |"),
     ("rulings.md", "| balance | R-IF |"),
     ("ledger.md", "| salary | N-391 "),
-    ("ledger.md", "| recurrence | N-399 "),
+    ("ledger.md", "| salary | SAL-556 "),
 ])
 def test_the_plan_identifiers_this_step_cites_actually_exist(registry_name, ident):
     """A citation is only worth as much as the row it names.
@@ -71,6 +71,13 @@ def test_the_plan_identifiers_this_step_cites_actually_exist(registry_name, iden
     and the pair was red. This case is the only thing in the corpus that
     would have said so, and it says it about the SECOND commit, which is
     the one no code-side gate looks at.
+
+    **`N-399` RE-HOMED to `salary:SAL-556` at plan step `pay_calendar:C17-d-2`'s tick**
+    (2026-09-13, developer ruling): `recurrence:R13` shipped there without ending the walk the
+    row measures, so the finding stayed live under the salary arc's key and this list
+    followed it -- the same finding, not a closure, so the pin moves rather than leaves. No
+    `app/` or `tests/` line cites N-399 or SAL-556 by name (measured 2026-09-14): this pin is a
+    presence check on the registry, not the trace of a code citation.
     """
     path = registry.PLANS / registry_name
     assert ident in path.read_text(encoding="utf-8"), (

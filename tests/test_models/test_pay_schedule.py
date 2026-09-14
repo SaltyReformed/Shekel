@@ -201,6 +201,25 @@ class TestTheCadenceBoundHasOneValue:
         assert CADENCE_DAYS_MIN == pay_calendar.MIN_CADENCE_DAYS
         assert CADENCE_DAYS_MAX == pay_calendar.MAX_CADENCE_DAYS
 
+    def test_the_day_of_month_bounds_agree_too(self):
+        """The three day-of-month bounds (plan step C17-d-2) are the same mirror.
+
+        The pure package keeps its own copy for the same purity reason, and
+        the write door and the CHECKs read the model's; this is the
+        reconciler for the deliberate duplicate.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.models.pay_era import (
+            DAY_OF_MONTH_MAX,
+            DAY_OF_MONTH_MIN,
+            SEMI_MONTHLY_LOWER_DAY_MAX,
+        )
+        from app.services.pay_calendar import _eras
+
+        assert DAY_OF_MONTH_MIN == _eras.MIN_DAY_OF_MONTH
+        assert DAY_OF_MONTH_MAX == _eras.MAX_DAY_OF_MONTH
+        assert SEMI_MONTHLY_LOWER_DAY_MAX == _eras.MAX_SEMI_MONTHLY_LOWER_DAY
+
     def test_the_check_constraint_carries_those_numbers(self):
         """``ck_pay_eras_cadence_range``'s SQL is built from the constants.
 

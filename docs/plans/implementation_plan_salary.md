@@ -201,8 +201,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       owner's opening payday, **R-SAL30**) then DROPPING `deductions_per_year` and
       `_deduction_applies_at`; graded byte-identical over the 63 saved paychecks. **How a NEW
       deduction states its cadence between this leaf and `R15-c` -- or whether the two ship in one
-      PR -- is a question for the developer before it is built.** Closes **F-21**, **SAL-549**. A
-      migration; own review.
+      PR -- is a question for the developer before it is built.** Closes **F-21**, **SAL-549**;
+      carries **SAL-556** (ex N-399). A migration; own review.
 - [ ] **R15-c** -- the deduction form takes `_recurrence_fields.html` (**R-SAL31**), the end-bound
       and due-day rows off by flag and the ceiling on, replacing the 26 / 24 / 12 select and
       `app.js`'s prefill.
@@ -218,6 +218,15 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       the rail, and a stale or foreign raise id, still leave the card silently at its previous
       picture; and the SWR refusal says "less than or equal to 1" beside a percent box.
       Display-only, `$0.00`.
+- [ ] **S6 -- the rail's raise set is the projection's, and a stale Save is refused** (findings
+      **SAL-552**, **SAL-553**, **SAL-554**, the `S3-f` span's openings filed 2026-09-13 when it
+      shipped). The `/retirement` rail lists every ACTIVE profile's raises rather than the set the
+      page projects; its raise row carries no `version_id`, so a Save from a stale rail is
+      last-write-wins on one column; the regeneration is handed one read pass per profile. Needs a
+      RULING on the race first. `$0.00`.
+- [ ] **S7 -- `projection_inputs.py` splits by shape** (finding **SAL-555**: 994 of 1000 lines). A
+      PURE move graded by AST (**R-PC74**'s shape), its own step because no live step edits the
+      file. `$0.00`.
 - [ ] **R18 -- a paycheck's EARNINGS side gets LINES, as its deductions side already has** (finding
       **D59**). `paycheck_calculator.Earnings` is four scalars and `net_pay` only ever SUBTRACTS, so
       there is no way to add a dollar to a paycheck that is not an annual-salary raise; a negative
