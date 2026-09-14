@@ -344,12 +344,99 @@ def days_in_range(first_day: date, last_day: date) -> "list[date]":
     return days
 
 
+#: Months in a year, as the ``int`` calendar arithmetic counts in.
+#:
+#: The one spelling for the month-ORDINAL arithmetic below and for
+#: :mod:`app.services.recurrence._months`, which imports it from here since
+#: plan step ``pay_calendar:C17-d-2`` moved the two ordinal primitives down
+#: to this leaf.  :data:`app.utils.money.MONTHS_PER_YEAR` is the same twelve
+#: as a ``Decimal`` -- the MONEY denominator, deliberately a separate name
+#: because every consumer of that one divides money by it.
+MONTHS_PER_YEAR = 12
+
+#: The fewest days any calendar month holds -- February's, outside a leap
+#: year -- and so the floor every day-of-month gap is measured against and
+#: the length a meant day of 29..31 can be lost past.  The ONE spelling
+#: (plan step ``pay_calendar:C17-d-2``): the cadence kinds' shortest gaps
+#: read it, the era table's bounds derive from it (a semi-monthly pair's
+#: lower day is at most one less, so the pair cannot collapse onto one day
+#: in February; ``nominal_day``'s domain starts one above it), and
+#: :func:`clamped_day` is where the clamp bottoms out at it.
+SHORTEST_MONTH_DAYS = 28
+
+
+def month_ordinal(day: date) -> int:
+    """Return *day*'s absolute month ordinal.
+
+    Months numbered continuously from year 0, so "three months later" is
+    ``+ 3`` with no year-boundary special case and a residue class over
+    ordinals is the same set as a residue class over month NUMBERS whenever
+    the step divides 12 -- which it does for every calendar pattern
+    (1, 3, 6, 12).
+
+    **Declared HERE, below both packages that walk months** (plan step
+    ``pay_calendar:C17-d-2``).  It was born in
+    :mod:`app.services.recurrence._months` for the recurrence walk; the pay
+    grid's day-of-month kinds step the same ordinals and clamp the same day
+    (:mod:`app.services.pay_calendar._grid`), and that package can reach
+    neither a private module of ``recurrence`` (the package-privacy gate) nor
+    the package itself (``recurrence`` imports ``pay_calendar``, so the edge
+    back is a cycle).  Rule 14's remedy for a shared leaf a layer puts out of
+    reach is to MOVE THE LEAF, not to spell it twice; ``_months`` imports it
+    back and its callers are unchanged.
+
+    Args:
+        day: Any date.
+
+    Returns:
+        ``year * 12 + (month - 1)``.
+    """
+    return day.year * MONTHS_PER_YEAR + (day.month - 1)
+
+
+def clamped_day(ordinal: int, nominal_day: int) -> date:
+    """Return the date *nominal_day* names in the month *ordinal* numbers.
+
+    :func:`month_ordinal`'s companion, moved here with it for the reason
+    that function gives: the ONE clamp both the recurrence walk and the pay
+    grid's day-of-month kinds land a meant day with.  A day-31 rule -- or
+    a day-31 payday -- is the 31st in January and the 30th in April, rather
+    than decaying to the 30th forever (recurrence ruling **R-R3**;
+    pay_calendar ruling **R-PC79**).
+
+    Args:
+        ordinal: An absolute month ordinal, from :func:`month_ordinal`.
+        nominal_day: The day of the month the rule MEANS, 1-31, before
+            clamping.
+
+    Returns:
+        That month's *nominal_day*, or its last day when the month is shorter.
+
+    Raises:
+        ValueError: *ordinal* names a month outside ``datetime.date``'s own
+            domain (year 1..9999), from the ``date`` constructor itself.  The
+            bound is the caller's, as it is for every grid producer.
+    """
+    year, month_index = divmod(ordinal, MONTHS_PER_YEAR)
+    month = month_index + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, min(nominal_day, last_day))
+
+
 def add_months(start: date, months: int) -> date:
     """Add ``months`` calendar months to ``start``, day-clamped.
 
     The result's day is clamped to the target month's last day, so
     ``add_months(date(2026, 1, 31), 1)`` yields ``date(2026, 2, 28)``
-    rather than raising for the nonexistent February 31st.
+    rather than raising for the nonexistent February 31st.  **The clamp is
+    :func:`clamped_day`'s and the step is :func:`month_ordinal`'s** (plan
+    step ``pay_calendar:C17-d-3``, closing ledger row **PC-513**): this
+    function spelled both again, one function below them, from before
+    ``C17-d-2`` moved the two primitives into this module.  It clamps to
+    *start*'s own day, so stepping AGAIN from the result decays a 31st to
+    the 28th for good -- the caller's spelling, kept as it was; a rule or a
+    payday that means the 31st carries the meant day itself
+    (``recurrence:R-R3``, **R-PC79**) and does not step through here.
 
     Overflow guard: returns :attr:`datetime.date.max` when the result
     would exceed year 9999 (Python's maximum representable year) instead
@@ -364,15 +451,10 @@ def add_months(start: date, months: int) -> date:
         A new :class:`datetime.date` ``months`` months after ``start``,
         or :attr:`datetime.date.max` on year-9999 overflow.
     """
-    total_months = start.month - 1 + months
-    year = start.year + total_months // 12
-    month = total_months % 12 + 1
-
-    if year > 9999:
+    ordinal = month_ordinal(start) + months
+    if ordinal >= (date.max.year + 1) * MONTHS_PER_YEAR:
         return date.max
-
-    day = min(start.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
+    return clamped_day(ordinal, start.day)
 
 
 def months_between(start: date, end: date) -> int:
@@ -395,7 +477,7 @@ def months_between(start: date, end: date) -> int:
     Returns:
         The signed whole-month delta as an ``int``.
     """
-    return (end.year - start.year) * 12 + (end.month - start.month)
+    return (end.year - start.year) * MONTHS_PER_YEAR + (end.month - start.month)
 
 
 #: English month names, indexed by ``month_number - 1``.

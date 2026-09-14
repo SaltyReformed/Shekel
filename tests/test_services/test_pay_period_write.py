@@ -1217,7 +1217,9 @@ class TestTheFloorAnchorsOnTheEra:
             )
             db.session.commit()
 
-            with pytest.raises(ValidationError, match="at a 7-day cycle"):
+            # The covering era's rhythm, named by its kind's phrase since
+            # plan step pay_calendar:C17-d-2 ("at a 7-day cycle" until then).
+            with pytest.raises(ValidationError, match="paid every 7 days"):
                 pay_period_write.record_paydays(
                     user_id=user_id, first_payday=date(2026, 2, 10),
                     num_periods=1, rhythm=rhythm_of(7),
@@ -2058,6 +2060,12 @@ class TestTheWriterBoundsWhatOneCallMayCreate:
         rhythm rather than defaulting one: a test that supplied ``none`` by
         hand would grade the cadence agreement and leave the pair rule
         untested at exactly the boundary this case exists to hold.
+
+        **The schema hands the rhythm over as the VALUE since plan step
+        ``pay_calendar:C17-d-3``** (ruling **R-PC84**), so the writer is
+        given ``loaded["rhythm"]`` whole -- the same object the routes now
+        pass -- rather than a pair re-assembled from two wire keys the
+        payload no longer carries.
         """
         with app.app_context():
             loaded = PayPeriodGenerateSchema().load({
@@ -2069,11 +2077,11 @@ class TestTheWriterBoundsWhatOneCallMayCreate:
                 user_id=bare_user["user"].id,
                 first_payday=loaded["start_date"],
                 num_periods=loaded["num_periods"],
-                rhythm=rhythm_of(loaded["cadence_days"], loaded["shift"]),
+                rhythm=loaded["rhythm"],
             )
             db.session.commit()
 
-            assert loaded["cadence_days"] == 1
+            assert loaded["rhythm"].cadence == FixedDays(1)
             assert _paydays(bare_user["user"].id) == [
                 (date(2026, 1, 2), date(2026, 1, 2), 0),
                 (date(2026, 1, 3), date(2026, 1, 3), 1),

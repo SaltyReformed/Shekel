@@ -124,6 +124,10 @@ from app.schemas.validation.loans import (
     RateChangeSchema,
     RefinanceSchema,
 )
+from app.schemas.validation._pay_rhythm import (
+    cadence_kind_token,
+    rhythm_to_wire,
+)
 from app.schemas.validation.pay_periods import (
     PayHistorySchema,
     PayPeriodExtendSchema,
@@ -261,4 +265,11 @@ __all__ = [
     "TransferUpdateSchema",
     "UserSettingsSchema",
     "YtdTaxCheckpointSchema",
+    # The rhythm's wire, read from OUTSIDE the package (plan step
+    # pay_calendar:C17-d-3): the two routes that render a Rhythm BACK into a
+    # form take the schema's own inverse here, and ``jinja_globals`` takes
+    # each kind's token for the radio arms' ``value=``.  The module that
+    # owns them is private, so this is their one public door.
+    "cadence_kind_token",
+    "rhythm_to_wire",
 ]

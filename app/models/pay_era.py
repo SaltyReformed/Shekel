@@ -3,7 +3,9 @@ Shekel Budget App -- Pay Era Model (budget schema)
 
 **A pay schedule is a SEQUENCE OF ERAS** (plan step ``pay_calendar:C17``,
 ruling **R-PC58**): one row per *how I have been paid since*, carrying the
-day the rhythm took effect, its KIND, its cadence and its payday convention.
+day the rhythm took effect, its cadence and its payday convention -- and
+the cadence's KIND as which parameter columns the row carries (plan step
+``C17-d-2``, ruling **R-PC80**).
 
 Until this step ``budget.pay_schedule`` held ONE rhythm per owner and every
 batch that recorded a payday overwrote it, so "correct my cadence going
@@ -53,6 +55,7 @@ key, the rolling top-up and the history door untouched.
 
 from app.extensions import db
 from app.models.mixins import CreatedAtMixin, UserScopedMixin
+from app.utils.dates import SHORTEST_MONTH_DAYS
 
 
 #: Inclusive bounds on ``pay_eras.cadence_days``, declared ONCE and read by
@@ -80,6 +83,62 @@ from app.models.mixins import CreatedAtMixin, UserScopedMixin
 CADENCE_DAYS_MIN = 1
 CADENCE_DAYS_MAX = 365
 
+#: The day-of-month bounds (plan step ``pay_calendar:C17-d-2``, ruling
+#: **R-PC79**), declared once beside the cadence bounds and for the same
+#: reason: the two CHECKs below, the write door's
+#: :func:`~app.services.pay_schedule_service.reject_out_of_range_cadence` and
+#: the pure package's mirror (:data:`app.services.pay_calendar._eras.MIN_DAY_OF_MONTH`
+#: and its two siblings, held equal by the same test) all read these names.
+#: A day is 1..31, with 29..31 meaning "or the last day of a shorter month".
+#: The two February-derived bounds are DERIVED from
+#: :data:`app.utils.dates.SHORTEST_MONTH_DAYS` rather than spelled: a
+#: semi-monthly pair's LOWER day is at most one less than February's length,
+#: because at that length or more both days clamp onto one day in February;
+#: and ``nominal_day``'s domain -- the days a month can fail to hold -- starts
+#: one above it.
+DAY_OF_MONTH_MIN = 1
+DAY_OF_MONTH_MAX = 31
+SEMI_MONTHLY_LOWER_DAY_MAX = SHORTEST_MONTH_DAYS - 1
+NOMINAL_DAY_MIN = SHORTEST_MONTH_DAYS + 1
+
+#: The CHECK texts, built from the constants above and read by the tests
+#: that hold model and DDL to one statement (the migration that installed
+#: them states each text frozen, as a revision records what it did).  Each
+#: is written so that every storable row is a LEGAL era (ruling
+#: **R-PC80**): the kind is readable off which columns are present and no
+#: reader needs a fence.
+#:
+#: ``ck_pay_eras_one_kind`` -- a fixed-days era carries neither month
+#: column, so ``cadence_days`` present means the other two are absent.
+ONE_KIND_CHECK = "cadence_days IS NULL OR (nominal_day IS NULL AND other_day IS NULL)"
+#: ``ck_pay_eras_nominal_day`` -- ``recurrence:R-R3``'s three conjuncts on
+#: this table's anchor: the domain (only 29..31 can be lost), a value
+#: strictly above the day the date carries (else it restates the date), and
+#: the CLAMP EQUALITY (the date's day is exactly what clamping the meant day
+#: into its month gives), so presence IMPLIES the first month was too short.
+#: ``EXTRACT(day FROM <date>)`` is IMMUTABLE for a ``date`` argument and
+#: ``date_trunc`` is cast to ``::timestamp`` for the same reason; verified
+#: against the live server when the recurrence CHECK landed.
+NOMINAL_DAY_CHECK = (
+    f"nominal_day IS NULL OR ("
+    f"nominal_day BETWEEN {NOMINAL_DAY_MIN} AND {DAY_OF_MONTH_MAX} "
+    f"AND nominal_day > EXTRACT(day FROM effective_from) "
+    f"AND EXTRACT(day FROM effective_from) = LEAST(nominal_day, "
+    f"EXTRACT(day FROM (date_trunc('month', effective_from::timestamp) "
+    f"+ INTERVAL '1 month - 1 day'))))"
+)
+#: ``ck_pay_eras_other_day`` -- a semi-monthly era's second day is a day of
+#: the month, DIFFERENT from the day the anchor means (``nominal_day`` when
+#: the first month clamped it, else ``effective_from``'s own day), and the
+#: lower of the two is at most 27.
+OTHER_DAY_CHECK = (
+    f"other_day IS NULL OR ("
+    f"other_day BETWEEN {DAY_OF_MONTH_MIN} AND {DAY_OF_MONTH_MAX} "
+    f"AND other_day <> COALESCE(nominal_day, EXTRACT(day FROM effective_from)) "
+    f"AND LEAST(other_day, COALESCE(nominal_day, "
+    f"EXTRACT(day FROM effective_from))) <= {SEMI_MONTHLY_LOWER_DAY_MAX})"
+)
+
 
 class PayEra(UserScopedMixin, CreatedAtMixin, db.Model):
     """One span of an owner's pay history and the rhythm it ran on.
@@ -97,6 +156,20 @@ class PayEra(UserScopedMixin, CreatedAtMixin, db.Model):
     minting an era supersedes every era taking effect on or after it, and a
     batch that leaves no payday standing leaves no era either.
 
+    **The KIND is which parameter columns the row carries** (plan step
+    ``C17-d-2``, ruling **R-PC80**, revising **R-PC58**'s letter).  The
+    three kinds have DISJOINT stored shapes: every-N-days is
+    ``cadence_days`` present; semi-monthly is ``other_day`` present;
+    monthly is neither.  A ``kind_id`` beside them would be a derived value
+    stored next to its source (rule 14, ``balance:R-IY``) that no CHECK
+    could tie to the columns without pinning a seed id, and a row saying
+    ``fixed_days`` with no cadence would be storable and need a reader-side
+    refusal.  Under the CHECKs below every storable row is a legal era and
+    ``pay_schedule_service._era_of`` reads the value's type off the row.
+    *``C17-a`` landed the column with one seeded member, ``C17-d-1`` mapped
+    the value's type onto it at the writer, and ``C17-d-2``'s migration
+    dropped it with ``ref.pay_cadence_kinds``.*
+
     Columns:
 
       ``effective_from`` -- the day the era takes effect, and the day its
@@ -110,26 +183,35 @@ class PayEra(UserScopedMixin, CreatedAtMixin, db.Model):
                           Nominal rather than cash: under a displacing
                           convention the day money moves is this day
                           displaced (``C14-e-3``), and the grid is what
-                          payroll INTENDS.
-      ``kind_id`` -- what KIND of rhythm the era runs on, keyed to
-                          ``ref.pay_cadence_kinds``
-                          (:class:`~app.enums.PayCadenceKindEnum`), whose
-                          one member is ``fixed_days``.  Ruling **R-PC58**
-                          put it here so the day-of-month kinds would arrive
-                          as rows; ruling **R-PC80** (2026-09-13) DROPS it at
-                          plan step ``C17-d-2``, because those kinds' own
-                          parameter columns make the kind readable off the
-                          row and a stored copy would be a derived value
-                          beside its source.  Written from the cadence
-                          VALUE's type by ``pay_era_write.mint_era`` until then.
+                          payroll INTENDS.  **For a day-of-month era it also
+                          carries the DAY the era pays on**, the month
+                          coordinate and the day coordinate in one date --
+                          the day the era MEANS unless ``nominal_day``
+                          records that this month could not hold it.
       ``cadence_days`` -- days between consecutive paydays under the
-                          ``fixed_days`` kind.  ``ck_pay_eras_cadence_range``
-                          bounds it to :data:`CADENCE_DAYS_MIN` ..
-                          :data:`CADENCE_DAYS_MAX`, the same two names the
-                          Marshmallow cadence fields and the write door read.
-                          ``NOT NULL`` while the only kind reads it; the leaf
-                          that adds a kind which does not owns the shape that
-                          kind needs.
+                          fixed-days kind, and NULL for a day-of-month
+                          era.  ``ck_pay_eras_cadence_range`` bounds it to
+                          :data:`CADENCE_DAYS_MIN` .. :data:`CADENCE_DAYS_MAX`
+                          (NULL passes ``BETWEEN``), the same two names the
+                          Marshmallow cadence fields and the write door
+                          read; ``ck_pay_eras_one_kind`` keeps both month
+                          columns NULL beside it.
+      ``nominal_day`` -- the day a day-of-month era MEANS when
+                          ``effective_from``'s month was too short to hold
+                          it -- 29, 30 or 31 -- and NULL otherwise, so the
+                          meant day never decays: an era opening 2026-02-28
+                          meaning the 31st projects 03-31, 04-30, 05-31.
+                          The shape ``budget.recurrence_rules.nominal_day``
+                          gives a rule (ruling ``recurrence:R-R3``), under
+                          the same three-conjunct CHECK
+                          (``ck_pay_eras_nominal_day``): presence IMPLIES the
+                          clamp happened, so absence has ONE meaning.
+      ``other_day`` -- a semi-monthly era's SECOND day: the member of the
+                          pair ``effective_from`` does not stand for, 1..31,
+                          distinct from the day the anchor means, with the
+                          lower of the two at most 27
+                          (``ck_pay_eras_other_day``); NULL for the other
+                          two kinds.
       ``shift_id`` -- what payroll does when a payday lands on a day no
                           money moves on, keyed to ``ref.business_day_shifts``
                           (``none`` / ``prior`` / ``next``).  Carries NO CHECK
@@ -156,6 +238,13 @@ class PayEra(UserScopedMixin, CreatedAtMixin, db.Model):
             f"cadence_days BETWEEN {CADENCE_DAYS_MIN} AND {CADENCE_DAYS_MAX}",
             name="ck_pay_eras_cadence_range",
         ),
+        # The three kinds' disjoint shapes, and each month column's own
+        # domain (plan step C17-d-2, ruling R-PC80): the texts are the module
+        # constants the migration installs, so model and DDL are one
+        # statement.
+        db.CheckConstraint(ONE_KIND_CHECK, name="ck_pay_eras_one_kind"),
+        db.CheckConstraint(NOMINAL_DAY_CHECK, name="ck_pay_eras_nominal_day"),
+        db.CheckConstraint(OTHER_DAY_CHECK, name="ck_pay_eras_other_day"),
         # An era belongs to an owner who holds a schedule row -- the
         # configuration a schedule cannot derive from its own rows -- exactly
         # as ``fk_pay_periods_schedule`` holds a payday to one.  RESTRICT, so
@@ -171,15 +260,7 @@ class PayEra(UserScopedMixin, CreatedAtMixin, db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     effective_from = db.Column(db.Date, nullable=False)
-    kind_id = db.Column(
-        db.Integer,
-        db.ForeignKey(
-            "ref.pay_cadence_kinds.id", ondelete="RESTRICT",
-            name="fk_pay_eras_kind_id",
-        ),
-        nullable=False,
-    )
-    cadence_days = db.Column(db.Integer, nullable=False)
+    cadence_days = db.Column(db.Integer, nullable=True)
     shift_id = db.Column(
         db.Integer,
         db.ForeignKey(
@@ -188,11 +269,16 @@ class PayEra(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         nullable=False,
     )
+    # The two day-of-month columns sit after the mixin columns in the
+    # table, where the C17-d-2 migration added them.
+    nominal_day = db.Column(db.SmallInteger, nullable=True)
+    other_day = db.Column(db.SmallInteger, nullable=True)
     # user_id (UserScopedMixin) and created_at (CreatedAtMixin) render
     # at the table tail; see the mixin docstrings for the DDL contract.
 
     def __repr__(self):
         return (
             f"<PayEra user={self.user_id} from={self.effective_from} "
-            f"cadence={self.cadence_days}>"
+            f"cadence_days={self.cadence_days} nominal_day={self.nominal_day} "
+            f"other_day={self.other_day}>"
         )

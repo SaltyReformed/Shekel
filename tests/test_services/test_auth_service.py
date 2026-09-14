@@ -37,7 +37,7 @@ from app.services import (
     tax_seed_data,
 )
 from app.exceptions import AuthError, ConflictError, ValidationError
-from app.services.pay_rhythm import FixedDays
+from app.services.pay_rhythm import FixedDays, Monthly, Rhythm
 from app.utils.dates import display_today
 from tests._test_helpers import (
     all_periods,
@@ -1081,7 +1081,15 @@ class TestRegistrationBuildsARealPayCalendar:
         landed" is honestly one cadence ago.  The FORM was the defect and was
         reworded to ask for the date on the paycheck; this message stopped
         accusing them either way, and names the span that ended plus the
-        earliest day that works.
+        payday that works.
+
+        **Which payday it names moved at plan step ``pay_calendar:C17-d-2``
+        (ruling R-PC83).**  It named ``E - cadence_days``, the earliest day
+        whose paycheck covers today -- a spelling no month grid has -- and
+        names the payday on the owner's STATED rhythm whose paycheck covers
+        today: ``stale + 14`` here, where it read ``today - 13``.  The
+        refusal set is unchanged; the worked figures are in the producer's
+        docstring.
         """
         today = display_today()
         stale = today - timedelta(days=20)
@@ -1093,9 +1101,68 @@ class TestRegistrationBuildsARealPayCalendar:
                 ))
             message = str(exc.value)
             assert "has already ended" in message
-            # The span it covered, and the earliest payday that would work.
+            # The span it covered, and the payday on the stated rhythm whose
+            # paycheck covers today.
             assert (stale + timedelta(days=13)).isoformat() in message
-            assert (today - timedelta(days=13)).isoformat() in message
+            assert (stale + timedelta(days=14)).isoformat() in message
+            assert (today - timedelta(days=13)).isoformat() not in message
+
+    def test_a_month_rhythm_stated_from_a_day_it_does_not_pay_is_refused_first(
+        self, app, db, monkeypatch,
+    ):
+        """The phase refusal runs BEFORE the grid is asked of the stated day.
+
+        Plan step ``pay_calendar:C17-d-2``'s adversarial review drove
+        ``Monthly(5)`` from the 10th through registration: without the
+        refusal in the precondition block the "already ended" rule ran the
+        grid from a day the rhythm never pays, ACCEPTED the sign-up and
+        recorded 2026-01-05, a payday the owner never typed.  No form can
+        state a month kind until ``C17-d-3``; the service door can, and this
+        is the state that door must refuse before a ``User`` row exists.
+        """
+        freeze_today(monkeypatch, date(2026, 1, 12))
+        with app.app_context():
+            with pytest.raises(ValidationError, match="2026-01-05"):
+                registration_service.register_user(registration_spec(
+                    email="offgrid@example.com", display_name="Off Grid",
+                    first_payday=date(2026, 1, 10),
+                    rhythm=Rhythm(Monthly(5), BusinessDayShiftEnum.NONE),
+                ))
+            assert db.session.query(User).filter_by(
+                email="offgrid@example.com",
+            ).first() is None
+
+    def test_a_monthly_owner_is_named_the_one_payday_that_works(
+        self, app, db, monkeypatch,
+    ):
+        """R-PC83 on a month kind: the named day is the unique legal answer.
+
+        Paid monthly on the 15th, sign-up 2026-03-20 stating 2026-01-15:
+        that paycheck ended 02-14, and the only first payday whose paycheck
+        covers 03-20 is 03-15 -- the grid is fixed by the stated day, so the
+        message can name it outright.  Stating it is accepted.
+        """
+        freeze_today(monkeypatch, date(2026, 3, 20))
+        monthly = Rhythm(Monthly(15), BusinessDayShiftEnum.NONE)
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc:
+                registration_service.register_user(registration_spec(
+                    email="monthly-stale@example.com", display_name="Stale",
+                    first_payday=date(2026, 1, 15), rhythm=monthly,
+                ))
+            message = str(exc.value)
+            assert "has already ended" in message
+            assert "2026-02-14" in message
+            assert "2026-03-15" in message
+
+            user = registration_service.register_user(registration_spec(
+                email="monthly-ok@example.com", display_name="Monthly",
+                first_payday=date(2026, 3, 15), num_periods=2, rhythm=monthly,
+            ))
+            db.session.flush()
+            assert [p.start_date for p in all_periods(user.id)] == [
+                date(2026, 3, 15), date(2026, 4, 15),
+            ]
 
 
 

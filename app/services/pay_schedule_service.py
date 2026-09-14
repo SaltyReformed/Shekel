@@ -4,8 +4,9 @@ Shekel Budget App -- Pay Schedule Service
 Reads and writes the per-user ``budget.pay_schedule`` row -- the owner-level
 configuration a schedule cannot derive from its own rows -- and the
 ``budget.pay_eras`` rows that hang off it: one era per *how I have been paid
-since*, carrying the cadence, its kind, the phase and the payday convention
-(plan step ``pay_calendar:C17-a``, ruling **R-PC58**).
+since*, carrying the cadence (whose KIND is which parameter columns the row
+holds, ruling **R-PC80**), the phase and the payday convention (plan step
+``pay_calendar:C17-a``, ruling **R-PC58**).
 
 **The RHYTHM is an ERA's fact and the ROW holds what is the owner's**, and the
 doors here are split on that line.  An era's ``cadence_days``, ``shift_id``
@@ -68,10 +69,17 @@ from app import ref_cache
 from app.enums import BusinessDayShiftEnum
 from app.exceptions import ValidationError
 from app.extensions import db
-from app.models.pay_era import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN, PayEra
+from app.models.pay_era import (
+    CADENCE_DAYS_MAX,
+    CADENCE_DAYS_MIN,
+    DAY_OF_MONTH_MAX,
+    DAY_OF_MONTH_MIN,
+    SEMI_MONTHLY_LOWER_DAY_MAX,
+    PayEra,
+)
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
-from app.services.pay_rhythm import Era, FixedDays, Rhythm
+from app.services.pay_rhythm import Era, FixedDays, Monthly, Rhythm, SemiMonthly
 from app.utils.business_days import shortest_collision_free_cadence
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
@@ -192,9 +200,8 @@ class ScheduleFacts:
 
         Raises:
             ValidationError: An era names a ``shift_id``
-                ``ref.business_day_shifts`` does not hold, or a ``kind_id``
-                ``ref.pay_cadence_kinds`` does not hold.  Stated once, at the
-                one place a stored id becomes a member.
+                ``ref.business_day_shifts`` does not hold.  Stated once, at
+                the one place a stored id becomes a member.
         """
         eras = tuple(_era_of(row) for row in schedule.eras)
         if not eras:
@@ -202,14 +209,44 @@ class ScheduleFacts:
         return cls(eras=eras, history_opens_on=schedule.history_opens_on)
 
 
+def _cadence_of(row: PayEra):
+    """Return the cadence VALUE a stored *row*'s parameter columns state.
+
+    **The kind is which columns are present** (plan step ``C17-d-2``, ruling
+    **R-PC80**), read here and nowhere else -- the inverse of
+    ``pay_era_write._COLUMNS_OF``, which is the one place a value becomes
+    its columns.  ``cadence_days`` present is a
+    :class:`~app.services.pay_rhythm.FixedDays` era (``ck_pay_eras_one_kind``
+    keeps both month columns NULL beside it); otherwise the day the era
+    means is ``nominal_day`` when the first month clamped it and
+    ``effective_from``'s own day when it did not, and ``other_day`` present
+    makes it a :class:`~app.services.pay_rhythm.SemiMonthly` pair, absent a
+    :class:`~app.services.pay_rhythm.Monthly` day.  Every branch reads a
+    column the CHECKs bound, so no refusal is needed here: there is no
+    storable row this cannot read as a legal era.
+
+    Args:
+        row: A ``budget.pay_eras`` row.
+
+    Returns:
+        The cadence value.
+    """
+    if row.cadence_days is not None:
+        return FixedDays(row.cadence_days)
+    meant = row.nominal_day if row.nominal_day is not None else row.effective_from.day
+    if row.other_day is not None:
+        return SemiMonthly((meant, row.other_day))
+    return Monthly(meant)
+
+
 def _era_of(row: PayEra) -> Era:
     """Return the :class:`~app.services.pay_rhythm.Era` a stored *row* states.
 
     The storage boundary in the READ direction: the shift id becomes its
     member here and nowhere else, which is IDs-for-logic as the project means
-    it -- no ``name`` string is ever compared -- and the kind id is checked
-    against the seeded set and not carried, since plan step ``C17-d-1``: the
-    kind is the cadence value's type (``FixedDays`` until ``C17-d-2``).
+    it -- no ``name`` string is ever compared -- and the cadence's kind is
+    read off which parameter columns the row carries (:func:`_cadence_of`),
+    since plan step ``C17-d-2`` dropped ``kind_id`` (ruling **R-PC80**).
 
     Args:
         row: A ``budget.pay_eras`` row.
@@ -218,11 +255,11 @@ def _era_of(row: PayEra) -> Era:
         The era as a value.
 
     Raises:
-        ValidationError: The row names a shift or a kind this application does
-            not model.  Refused rather than read as ``none`` / ``fixed_days``:
-            a missing convention would silently un-displace every projected
-            payday, which is a wrong date rather than an error.  The foreign
-            keys admit only seeded ids, so reaching this means a ``ref`` table
+        ValidationError: The row names a shift this application does not
+            model.  Refused rather than read as ``none``: a missing
+            convention would silently un-displace every projected payday,
+            which is a wrong date rather than an error.  The foreign key
+            admits only seeded ids, so reaching this means a ``ref`` table
             was changed under the application.
     """
     shift = ref_cache.business_day_shift_member(row.shift_id)
@@ -237,24 +274,9 @@ def _era_of(row: PayEra) -> Era:
             f"fk_pay_eras_shift_id admits only seeded ids, so reaching this "
             f"means ref.business_day_shifts was changed under the application."
         )
-    # The kind is the cadence VALUE's type since plan step ``C17-d-1``, and
-    # ``kind_id`` is read here only to refuse an id the one seeded member
-    # does not answer to: every stored era is a fixed-days one until
-    # ``C17-d-2`` lands the day-of-month kinds and DROPS the column (ruling
-    # **R-PC80**, the kind being readable off which parameter columns a row
-    # carries).
-    if ref_cache.pay_cadence_kind_member(row.kind_id) is None:
-        raise ValidationError(
-            f"user {row.user_id}'s pay era from "
-            f"{row.effective_from.isoformat()} names cadence kind "
-            f"{row.kind_id}, which this application does not model.  "
-            f"fk_pay_eras_kind_id admits only seeded ids, so "
-            f"reaching this means ref.pay_cadence_kinds was changed under the "
-            f"application."
-        )
     return Era(
         effective_from=row.effective_from,
-        rhythm=Rhythm(cadence=FixedDays(row.cadence_days), shift=shift),
+        rhythm=Rhythm(cadence=_cadence_of(row), shift=shift),
     )
 
 
@@ -357,8 +379,88 @@ def reread_schedule(user_id: int) -> PaySchedule:
     return schedule
 
 
-def reject_out_of_range_cadence(cadence: FixedDays) -> None:
-    """Refuse a cadence ``ck_pay_eras_cadence_range`` would refuse.
+def _reject_out_of_range_fixed_days(cadence: FixedDays) -> None:
+    """Refuse a day count ``ck_pay_eras_cadence_range`` would refuse.
+
+    Args:
+        cadence: The candidate.
+
+    Raises:
+        ValidationError: The count is outside 1..365.
+    """
+    if not CADENCE_DAYS_MIN <= cadence.days <= CADENCE_DAYS_MAX:
+        raise ValidationError(
+            f"Days between paydays must be between {CADENCE_DAYS_MIN} and "
+            f"{CADENCE_DAYS_MAX}; got {cadence.days}."
+        )
+
+
+def _reject_out_of_range_day(day: int) -> None:
+    """Refuse a day of the month no month has.
+
+    Args:
+        day: The candidate.
+
+    Raises:
+        ValidationError: *day* is outside 1..31.
+    """
+    if not DAY_OF_MONTH_MIN <= day <= DAY_OF_MONTH_MAX:
+        raise ValidationError(
+            f"A payday must be a day of the month, {DAY_OF_MONTH_MIN} to "
+            f"{DAY_OF_MONTH_MAX}; got {day}."
+        )
+
+
+def _reject_out_of_range_monthly(cadence: Monthly) -> None:
+    """Refuse a monthly cadence whose day no month has.
+
+    Args:
+        cadence: The candidate.
+
+    Raises:
+        ValidationError: The day is outside 1..31.
+    """
+    _reject_out_of_range_day(cadence.day)
+
+
+def _reject_out_of_range_semi_monthly(cadence: SemiMonthly) -> None:
+    """Refuse a semi-monthly pair ``ck_pay_eras_other_day`` would refuse.
+
+    Args:
+        cadence: The candidate.
+
+    Raises:
+        ValidationError: A day is outside 1..31, the two days are equal, or
+            the lower exceeds 27 (both would clamp onto 28 February).
+    """
+    lower, upper = cadence.days
+    _reject_out_of_range_day(lower)
+    _reject_out_of_range_day(upper)
+    if lower == upper:
+        raise ValidationError(
+            f"Twice a month needs two different days; got {lower} twice."
+        )
+    if lower > SEMI_MONTHLY_LOWER_DAY_MAX:
+        raise ValidationError(
+            f"The earlier of your two paydays must be day "
+            f"{SEMI_MONTHLY_LOWER_DAY_MAX} or before; got {lower} and "
+            f"{upper}, which both fall on February's last day."
+        )
+
+
+#: Each kind's bound at the write door, keyed by the value's class -- the
+#: door-side twin of ``pay_calendar._eras._PARAMETER_CHECKS``, raising the
+#: form error where that raises the package's.  A kind absent here is
+#: refused by the lookup rather than written unbounded.
+_RANGE_REFUSALS = {
+    FixedDays: _reject_out_of_range_fixed_days,
+    Monthly: _reject_out_of_range_monthly,
+    SemiMonthly: _reject_out_of_range_semi_monthly,
+}
+
+
+def reject_out_of_range_cadence(cadence) -> None:
+    """Refuse a cadence whose parameters the era table's CHECKs would refuse.
 
     **One implementation of the bound, two callers, and the second is why it
     is a function** (plan step X-ad-a).
@@ -374,26 +476,24 @@ def reject_out_of_range_cadence(cadence: FixedDays) -> None:
     of a range are two chances for the schema tier, the service tier and the
     column to disagree.
 
-    **It takes the cadence VALUE since plan step ``C17-d-1``**, so the
-    day-of-month kinds ``C17-d-2`` adds bring their own bounds to this one
-    door rather than to a second one beside it; at this leaf the one kind is
-    :class:`~app.services.pay_rhythm.FixedDays` and the bound is the column's.
+    **It takes the cadence VALUE since plan step ``C17-d-1`` and dispatches
+    on its kind since ``C17-d-2``** (ruling **R-PC79**), so the day-of-month
+    kinds bring their own bounds to this one door rather than to a second
+    one beside it: a fixed-days count is ``ck_pay_eras_cadence_range``'s
+    1..365; a day of the month is 1..31; a semi-monthly pair is two
+    distinct such days with the lower at most 27
+    (``ck_pay_eras_other_day``).  Each bound reads the model's constants,
+    which the pure package mirrors and a test holds equal.
 
     Args:
         cadence: The candidate cadence.
 
     Raises:
-        ValidationError: The day count falls outside
-            :data:`~app.models.pay_era.CADENCE_DAYS_MIN` ..
-            :data:`~app.models.pay_era.CADENCE_DAYS_MAX`.  The message
-            names the offending value and both bounds, so a surface can render
-            it verbatim.
+        ValidationError: The parameters fall outside the kind's bounds.
+            The message names the offending value and the bound, so a
+            surface can render it verbatim.
     """
-    if not CADENCE_DAYS_MIN <= cadence.days <= CADENCE_DAYS_MAX:
-        raise ValidationError(
-            f"Days between paydays must be between {CADENCE_DAYS_MIN} and "
-            f"{CADENCE_DAYS_MAX}; got {cadence.days}."
-        )
+    _RANGE_REFUSALS[type(cadence)](cadence)
 
 
 def reject_shift_on_short_cadence(rhythm: Rhythm) -> None:
@@ -424,7 +524,7 @@ def reject_shift_on_short_cadence(rhythm: Rhythm) -> None:
     2. **A constraint cannot name a FIELD.**  It arrives as an
        ``IntegrityError`` carrying a constraint name, where a form needs the
        message on the control the owner chose -- which is what
-       :func:`~app.schemas.validation.pay_periods.validate_derivable_rhythm`
+       :func:`~app.schemas.validation._pay_rhythm.validate_derivable_rhythm`
        supplies, and the same reason plan step X-ad-a moved the cadence bound
        out from behind ``ck_pay_schedule_cadence_range``.
 
@@ -474,12 +574,17 @@ def reject_shift_on_short_cadence(rhythm: Rhythm) -> None:
     if rhythm.shift is BusinessDayShiftEnum.NONE:
         return
     floor = shortest_collision_free_cadence()
-    if rhythm.cadence.days < floor:
+    # The floor is asked of the era's SHORTEST GAP (ruling R-PC79), which
+    # for a fixed-days cadence is its day count and for a day-of-month kind
+    # the value's own closed form: every theorem the package leans on rests
+    # on a displacement being shorter than the gap between two grid days,
+    # never on the gap being constant.
+    if rhythm.cadence.shortest_gap < floor:
         raise ValidationError(
-            f"Days between paydays must be at least {floor} when payroll "
+            f"Paydays must be at least {floor} days apart when payroll "
             f"moves a payday off a weekend or holiday; got "
-            f"{rhythm.cadence.days}.  A shorter cadence would land two "
-            f"paychecks on one day."
+            f"{rhythm.cadence.shortest_gap} (paid {rhythm.cadence.phrase}).  "
+            f"A shorter gap would land two paychecks on one day."
         )
 
 
@@ -789,8 +894,7 @@ def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
 
     Raises:
         ValidationError: An era names a ``shift_id``
-            ``ref.business_day_shifts`` does not hold, or a ``kind_id``
-            ``ref.pay_cadence_kinds`` does not hold
+            ``ref.business_day_shifts`` does not hold
             (:meth:`ScheduleFacts.of`, since plan step ``C14-e-1``).  **This
             does not make the door hard**, and the distinction is the one the
             paragraph above draws: the SOFT answer is about an owner with no
@@ -806,7 +910,7 @@ def resolve_schedule(user_id: int) -> "ScheduleFacts | None":
     return ScheduleFacts.of(schedule)
 
 
-def resolve_cadence(user_id: int) -> FixedDays | None:
+def resolve_cadence(user_id: int) -> "FixedDays | Monthly | SemiMonthly | None":
     """Resolve the cadence to continue the user's schedule with.
 
     :func:`resolve_schedule`'s cadence half, for the callers that need only

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import render_select %}
+{% from "_pay_cadence_fields.html" import cadence_kind_controls with context %}
 {% block title %}Register - Shekel{% endblock title %}
 
 {% block content %}
@@ -79,7 +80,7 @@
              opening balance has a paycheck to sit in and there is no second
              setup step.  The bound is
              ``registration_service._reject_impossible_first_payday`` at both
-             ends -- the lower one depends on the cadence chosen in the field
+             ends -- the lower one depends on the rhythm chosen in the arms
              below, and the upper one is not "today": the day asked for is the
              SCHEDULED payday (plan step pay_calendar:C17-c-2a, ledger row
              PC-504), which under "pay the business day before" can be
@@ -108,13 +109,14 @@
             <div class="form-text">{{ PAYDAY_NOMINAL_HELP }} Even if that
               paycheck has not cleared yet.</div>
           </div>
-          <div class="mb-3">
-            <label for="cadence_days" class="form-label">Days between paydays</label>
-            <input type="number" class="form-control" id="cadence_days" name="cadence_days"
-                   required min="{{ CADENCE_DAYS_MIN }}" max="{{ CADENCE_DAYS_MAX }}"
-                   value="{{ request.form.get('cadence_days') or config['DEFAULT_PAY_CADENCE_DAYS'] }}">
-            <div class="form-text">14 for every other week, 7 for weekly.</div>
-          </div>
+          {# How often, as a KIND and its inputs (plan step
+             pay_calendar:C17-d-3, ruling R-PC84): the same three radio arms
+             the settings doors render, from the one macro, so a new owner
+             paid on the 1st and 15th can say so at sign-up rather than on a
+             fortnight they never had.  Nothing stored yet, so no
+             preselection; the macro reads ``request.form`` for the
+             re-render after a refused submission. #}
+          {{ cadence_kind_controls() }}
           {# What payroll does when one of those paydays lands on a weekend or
              a federal holiday (plan step pay_calendar:C14-b, ruling R-PC56:
              the question is asked wherever a cadence is).  Rendered through
@@ -140,7 +142,7 @@
              payday's position in its month and the wages already paid this
              year, and below the first payday above it would otherwise count
              nothing at all.  The entered day is a FLOOR, not a payday: the
-             rhythm is stepped back from the payday above at the cadence below
+             rhythm is stepped back from the payday above on the rhythm stated above
              and stops here, so the wording asks when the paychecks started
              rather than for a specific one.  ``max`` is a browser convenience
              on top of the app's calendar window; the real upper bound is the

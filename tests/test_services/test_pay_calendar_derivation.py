@@ -400,7 +400,9 @@ class TestTheCadenceIsAValueOfAKnownKind:
         """
         from app.services.pay_calendar import _grid  # pylint: disable=import-outside-toplevel
 
-        assert _grid.KINDS == frozenset({pay_rhythm.FixedDays})
+        assert _grid.KINDS == frozenset({
+            pay_rhythm.FixedDays, pay_rhythm.Monthly, pay_rhythm.SemiMonthly,
+        })
         assert derive_periods([], (era_of(_OPENING, 14),)) == ()
 
     @pytest.mark.parametrize("cadence", [None, 14, "14"], ids=["None", "bare-int", "str"])

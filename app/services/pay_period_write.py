@@ -250,8 +250,12 @@ def record_paydays(
             :data:`~app.services.pay_period_batch.PERIOD_BATCH_MIN` ..
             :data:`~app.services.pay_period_batch.PERIOD_BATCH_MAX`
             (:func:`~app.services.pay_period_batch.reject_out_of_range_batch_size`);
-            *rhythm*'s cadence falls outside ``ck_pay_eras_cadence_range``
+            *rhythm*'s cadence falls outside its kind's bounds
             (:func:`~app.services.pay_schedule_service.reject_out_of_range_cadence`);
+            *first_payday* is off the grid *rhythm*'s cadence pays on -- a
+            monthly or semi-monthly rhythm stated with a first payday on a
+            day it does not pay
+            (:func:`~app.services.pay_era_write.reject_phase_off_grid`);
             *rhythm* pairs a displacing convention with a cadence too short
             to carry it
             (:func:`~app.services.pay_schedule_service.reject_shift_on_short_cadence`)
@@ -268,13 +272,16 @@ def record_paydays(
             nothing and leaves the stored rhythm alone.
     """
     # The door's preconditions, ahead of every statement -- and the first
-    # three ahead of the arithmetic below, which turns the cadence into
+    # four ahead of the arithmetic below, which turns the cadence into
     # dates.  The cadence bound is asked through the column's own owner rather
     # than restated here: two copies of a rule are two chances for the schema
-    # tier, the service tier and the database to disagree.
+    # tier, the service tier and the database to disagree.  The phase's
+    # place on its grid comes last of the four because it asks the grid,
+    # which the bound must have admitted the cadence to first.
     pay_period_batch.reject_undatable_payday(first_payday)
     pay_period_batch.reject_out_of_range_batch_size(num_periods)
     pay_schedule_service.reject_out_of_range_cadence(rhythm.cadence)
+    pay_era_write.reject_phase_off_grid(first_payday, rhythm.cadence)
 
     current = _owner_paydays(user_id)
     retiring = [i for i, _payday in current if i in retiring_ids]
@@ -364,7 +371,10 @@ def record_paydays(
         era_minted_from=(
             None if era is None else era.effective_from.isoformat()
         ),
-        cadence_days=rhythm.cadence.days,
+        # The rhythm as its kind's PHRASE (ruling R-PC82): one field every
+        # kind can fill, where ``cadence_days=`` had nothing to say for a
+        # month kind.
+        cadence=rhythm.cadence.phrase,
         shift=rhythm.shift.value,
     )
     return created
@@ -487,7 +497,7 @@ def continue_paydays(user_id: int, num_periods: int) -> "list[PayPeriod]":
         retired=0,
         start_date=created[0].start_date.isoformat(),
         era_minted_from=None,
-        cadence_days=covering.rhythm.cadence.days,
+        cadence=covering.rhythm.cadence.phrase,
         shift=covering.rhythm.shift.value,
     )
     return created

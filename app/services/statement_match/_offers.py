@@ -296,8 +296,9 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
           whole of what it asserts.
 
         **The bound this produces is CADENCE-RELATIVE, and saying so is part
-        of stating it.**  ``budget.pay_schedule.cadence_days`` is
-        user-selectable 1..365, so the days a line may be posted on and still
+        of stating it.**  The owner's cadence (a ``budget.pay_eras`` row's
+        since plan step ``pay_calendar:C17-a``) is user-stated, a day count
+        1..365 or a day of the month, so the days a line may be posted on and still
         claim a bill run to the period's length plus twice
         :data:`~._pairing.DAY_WINDOW`: 35 for a weekly owner, 42 for the
         biweekly one this was measured against, 58 monthly, and 393 at an

@@ -33,6 +33,7 @@ from app.utils.archive_helpers import (
     transfer_template_has_paid_history,
 )
 from tests._test_helpers import (
+    create_account_of_type,
     create_savings_account,
     current_pay_period,
     generate_row_of,
@@ -1221,6 +1222,35 @@ class TestArchiveHelpers:
             # seed_user["account"] has no transactions (tables truncated each test).
             result = account_has_history(seed_user["account"].id)
             assert result is False
+
+    def test_account_has_history_through_a_definition_on_it(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A live row UNDER one of the account's definitions is history too.
+
+        Plan step balance:X-bi-7a: the hard-delete door disposes of a
+        rule-less definition with the account, so a row that makes it define
+        something has to be seen here even when the row sits on ANOTHER
+        account (a retained row stays where it is when its definition's
+        account moves).  The row here is on the seed account; the
+        definition has moved to a fresh one that holds no row of its own.
+        """
+        with app.app_context():
+            other = create_account_of_type(
+                seed_user, db.session, "Checking", "Definition Moved Here",
+                anchor_balance=Decimal("0.00"),
+            )
+            template = make_expense_template(db.session, seed_user)
+            row = generate_row_of(template, seed_periods_today[0])
+            template.account_id = other.id
+            db.session.commit()
+            assert row.account_id == seed_user["account"].id
+
+            assert account_has_history(other.id) is True
+
+            row.is_deleted = True
+            db.session.commit()
+            assert account_has_history(other.id) is False
 
     def test_category_has_usage_true(self, app, db, seed_user):
         """C-5A.5-8: category_has_usage returns True when a template references the category."""

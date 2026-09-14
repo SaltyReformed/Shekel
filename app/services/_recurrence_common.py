@@ -473,6 +473,56 @@ class MaintainWork(NamedTuple):
     retained_ids: "list[int]"
 
 
+class UnruledWork(NamedTuple):
+    """What a RULE-LESS definition's edit will do to its rows, decided first.
+
+    :func:`classify_unruled_work` fills this by reading only, and each
+    engine's twin writes -- the shape :class:`MaintainWork` gives the
+    regular pass, for the one definition kind that does not regenerate.
+
+    Attributes:
+        update: The rows the definition speaks to: every row handed in except
+            those retained.
+        retained_ids: Conflicts -- the definition moved the account the row's
+            records are attributed to (finding **N-292**), so the row is left
+            exactly as found and the owner is told.
+    """
+
+    update: list
+    retained_ids: "list[int]"
+
+
+def classify_unruled_work(rows, *, with_records, reattributed) -> UnruledWork:
+    """Decide what a rule-less definition's edit does to each row, WITHOUT writing.
+
+    **The maintain pass's ONE retention rule, for the shape that has no
+    occurrences to name or drop**: a rule-less definition places its rows by
+    hand and no regeneration considers them, so the only refusal left is
+    :func:`classify_maintain_work`'s account arm -- a row whose account the
+    definition moved and which holds the owner's records is retained; every
+    other row takes the definition whole.  Both engines' twins
+    (``transfer_recurrence.propagate_to_unruled_template``,
+    ``recurrence_engine.propagate_to_unruled_definition``) spelled this inline
+    beside their own write until plan step ``balance:X-bi-7a``; it lives here
+    so the two cannot part, for the reason the regular pass's decision does.
+
+    Args:
+        rows: The definition's live, rule-owned rows, as the route selected
+            them (Projected, not overridden, not soft-deleted).
+        with_records: The ids among *rows* carrying the owner's own records.
+        reattributed: The ids among *rows* whose account the definition moved.
+
+    Returns:
+        The :class:`UnruledWork`, rows in the order given.
+    """
+    retained = [row.id for row in rows if row.id in reattributed and row.id in with_records]
+    held = set(retained)
+    return UnruledWork(
+        update=[row for row in rows if row.id not in held],
+        retained_ids=retained,
+    )
+
+
 class MaintainOutcome(NamedTuple):
     """What one maintain pass actually did, for the audit event and the raise.
 

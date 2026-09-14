@@ -13,13 +13,17 @@ The seam is the one :mod:`app.routes._recurrence_form_helpers` and
 it was cut here for the same reason: plan step R2e-3 pushed
 ``transfers/templates.py`` past the 1,000-line module cap.
 
-**Both halves exist because a NON-REPEATING transfer is not a non-repeating
-transaction.**  A transaction template with no recurrence rule generates
-nothing and waits for the user to add rows by hand, so there is nothing to
-create and nothing to propagate.  A transfer template with no rule still moves
-money exactly once: this module materialises that single Transfer (with its two
-shadow transactions, atomically) and then keeps it equal to the definition,
-because the regeneration path that does that job for every recurring template
+**The CREATE half exists because a NON-REPEATING transfer is not a
+non-repeating transaction.**  A transaction template with no recurrence rule
+generates nothing at creation, so there is nothing to create; the PROPAGATE
+half has a transaction twin since plan step ``balance:X-bi-7a``
+(:mod:`app.routes.templates._instances`), because the rows such a definition
+holds -- a cleared cadence's survivors today, a one-off's placed row once the
+family's cutover mints it a definition -- are reached by nothing else.  A
+transfer template with no rule still moves money exactly once: this module
+materialises that single Transfer (with its two shadow transactions,
+atomically) and then keeps it equal to the definition, because the
+regeneration path that does that job for every recurring template
 deliberately skips a rule-less one -- which is what stops a rename from
 destroying it (defect D16).
 
