@@ -30,7 +30,6 @@ from app.enums import (
     RecurrenceUnitEnum,
 )
 from app.extensions import db
-from app.models.recurrence_rule import RecurrenceRule
 from app.routes._commit_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
@@ -63,6 +62,7 @@ from app.routes._recurrence_form_render import (
     create_form_default_starts_on,
 )
 from tests._test_helpers import (
+    bind_rule_to_loan,
     create_loan_account,
     derived_span,
     freeze_today,
@@ -1063,7 +1063,7 @@ class TestAnUpdateMayNotInvertTheWindow:
             tpl = make_loan_payment_template(
                 db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=15,
             )
-            loan_recurrence_sync.bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+            bind_rule_to_loan(tpl.recurrence_rule, loan.id)
             db.session.commit()
 
             loan_recurrence_sync.sync_loan_payment_start(loan.id)

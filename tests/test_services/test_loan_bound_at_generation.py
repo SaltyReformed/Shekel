@@ -76,7 +76,6 @@ from app.services import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.loan_recurrence_sync import bind_rule_to_loan
 from app.services.period_population import (
     populate_periods_from_active_templates,
 )
@@ -92,6 +91,7 @@ from app.services.recurrence import (
 )
 from app.services.recurring_definition import resolved_definition
 from tests._test_helpers import (
+    bind_rule_to_loan,
     capture_sql_statements,
     create_account_of_type,
     create_loan_account,

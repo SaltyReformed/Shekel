@@ -27,17 +27,24 @@ from app.enums import (
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType
+from app.services.cash_ledger import DefinitionRow, definition_cash
+from app.services.recurring_definition import read_definition
 from app.services.recurring_transfer_query import (
-    active_recurring_transfer_template,
+    active_recurring_transfer_templates,
+    loan_payment_config,
+    tracking_definition,
 )
+from app.services.recurring_view import described, next_placement
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
     _forward_boundary,
     _load_loan_account,
     _load_route_context,
     _loan_inputs,
+    band_chart_dates,
     build_band_chart,
     build_baseline_scenarios,
+    planned_periods,
 )
 from app.services import (
     balance_at,
@@ -53,33 +60,6 @@ from app.services.loan_posting_service import (
 from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
-
-
-def _find_current_period_row(schedule):
-    """Find the schedule row for the current or next upcoming payment.
-
-    Returns the first projected (non-confirmed) row if one exists,
-    otherwise the last confirmed row.  Returns None for an empty
-    schedule.
-
-    This approach is more robust than date-based lookup because
-    shadow transaction dates (biweekly) and schedule payment dates
-    (monthly) use different calendars.  The confirmed/projected
-    boundary is the cleanest split.
-
-    Args:
-        schedule: List of AmortizationRow objects.
-
-    Returns:
-        AmortizationRow or None.
-    """
-    if not schedule:
-        return None
-    for row in schedule:
-        if not row.is_confirmed:
-            return row
-    # All rows confirmed -- use the last one.
-    return schedule[-1]
 
 
 def _distribute_payment_percentages(parts, total_payment):
@@ -149,33 +129,99 @@ def _project_next_year_escrow(escrow_components, escrow_portion):
     return next_year_escrow
 
 
-def _compute_payment_breakdown(schedule, escrow_components):
-    """Build payment allocation breakdown for the current period.
+def _next_period_payments(installments):
+    """Return the plan's payments in the next accrual period that meets a charge.
 
-    Combines the amortization engine's per-period principal/interest
-    split with the escrow calculator's monthly total to show the user
-    exactly how their payment is allocated.
+    The period the allocation bar reads: the first group of
+    :func:`~app.routes.loan._helpers.planned_periods` (the schedule page's own
+    grouping, so "this month" is spelled once) whose payments cleared any
+    interest or escrow -- the first period whose charge the plan pays.  A
+    payment that clears no charge precedes it: a catch-up the plan pays the
+    day after the read for an occurrence due before it (ruling **R-R64**, the
+    D1 clamp) against a charge the ledger's own payment already met, or an
+    extra before the loan's first installment (ruling R-C); both are pure
+    principal and neither is the coming month's payment.  A plan that meets no
+    charge at all (a loan charging nothing) reads its first period.
+
+    Args:
+        installments: The seam's forward plan
+            (:func:`~app.services.balance_at.loan_installments`), in the
+            fold's DUE order.
+
+    Returns:
+        The period's installments in the fold's DUE order; empty for an empty plan.
+    """
+    periods = planned_periods(installments)
+    for period in periods:
+        if any(
+            installment.split.interest > Decimal("0.00")
+            or installment.split.escrow > Decimal("0.00")
+            for installment in period
+        ):
+            return period
+    return periods[0] if periods else []
+
+
+def _compute_payment_breakdown(installments, escrow_components):
+    """Build the payment allocation breakdown for the next accrual period's payments.
+
+    The seam's fold has already split every installment the plan will pay
+    (:func:`~app.services.balance_at.loan_installments`, plan step R7d-g-3,
+    ruling **R-R88**): what a payment's cash does -- the interest it pays,
+    the escrow it impounds, the principal it retires (any standing extra
+    inside it) -- is read off those allocations, summed over the next
+    accrual period the plan pays a charge in (:func:`_next_period_payments`),
+    so the bar shows what the owner's own payments do that month rather than
+    what the contract's would, and agrees with the band chart, the payoff
+    chip and the schedule page, which fold and group the same plan.
+
+    **A period that does not cover what has accrued is said, not drawn
+    wrong.**  The fold charges every accrual period since the loan's last
+    assertion, so a loan behind on its payments meets several periods'
+    interest at its next installment, and the allocation's principal is
+    NEGATIVE (the balance grows).  A composition bar cannot draw a negative
+    segment: the principal segment is floored at zero, the interest segment
+    is the cash that actually went to interest (the cash less the escrow),
+    and ``shortfall`` carries how far short of the accrued charges the
+    period's payments fell, for the card to say.
 
     Percentages are computed with a truncate-then-distribute algorithm
     to guarantee they sum to exactly 100.0%.
 
     Args:
-        schedule: List of AmortizationRow objects (committed schedule).
+        installments: The seam's forward plan, in the fold's DUE order.
         escrow_components: Today's active escrow lines, resolved
-            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
+            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`),
+            for the next-year escrow projection beside the bar.
 
     Returns:
-        dict with breakdown data, or None if no schedule data.
+        dict with breakdown data, or None when the plan holds no payment or
+        the period's payments move nothing.
     """
-    current_row = _find_current_period_row(schedule)
-    if current_row is None:
+    period = _next_period_payments(installments)
+    if not period:
         return None
-
-    principal_portion = current_row.principal + current_row.extra_payment
-    interest_portion = current_row.interest
-    escrow_portion = escrow_calculator.calculate_monthly_escrow(
-        escrow_components,
+    cash = sum((installment.cash for installment in period), Decimal("0.00"))
+    principal = sum(
+        (installment.split.principal for installment in period),
+        Decimal("0.00"),
     )
+    interest = sum(
+        (installment.split.interest for installment in period),
+        Decimal("0.00"),
+    )
+    escrow_portion = sum(
+        (installment.split.escrow for installment in period), Decimal("0.00"),
+    )
+
+    if principal < Decimal("0.00"):
+        shortfall = -principal
+        principal_portion = Decimal("0.00")
+        interest_portion = cash - escrow_portion
+    else:
+        shortfall = Decimal("0.00")
+        principal_portion = principal
+        interest_portion = interest
     total_payment = principal_portion + interest_portion + escrow_portion
 
     if total_payment <= Decimal("0.00"):
@@ -201,29 +247,32 @@ def _compute_payment_breakdown(schedule, escrow_components):
         "principal_pct": truncated["principal"],
         "interest_pct": truncated["interest"],
         "escrow_pct": truncated["escrow"],
-        "is_confirmed": current_row.is_confirmed,
-        "payment_date": current_row.payment_date,
+        # The period's own installment date: the charge's, or the payment's
+        # for one before the plan's first charge.
+        "payment_date": period[0].charge_date or period[0].effective_date,
+        "shortfall": shortfall,
         "next_year_escrow": next_year_escrow,
     }
 
 
 def _build_payment_summary(
-    current_balance, monthly_payment, planned_schedule, escrow_components,
+    current_balance, monthly_payment, installments, escrow_components,
 ):
     """Build the loan-card payment-summary template context.
 
     Bundles the seam's current balance, the total monthly
-    payment (P&I + escrow), the current-period payment breakdown, and
-    the escrow display list.  The payment breakdown uses
-    the planned schedule so it reflects the next planned payment, not
-    the contractual one when the user is under-/over-paying.
+    payment (P&I + escrow), the next period's allocation, and
+    the escrow display list.  The allocation reads the seam's forward plan
+    so it reflects the next planned payments, not the contractual one when
+    the user is under-/over-paying.
 
     Args:
         current_balance: The loan's balance-at-today (``ctx.current_balance`` --
             the seam's fold, plan C4).
         monthly_payment: The loan's P&I payment (``ctx.monthly_payment`` -- the
             seam figure), the base the total payment adds escrow to.
-        planned_schedule: history + committed-forward AmortizationRows.
+        installments: The seam's forward plan
+            (:func:`~app.services.balance_at.loan_installments`).
         escrow_components: Today's active escrow lines.
 
     Returns:
@@ -241,77 +290,61 @@ def _build_payment_summary(
             monthly_payment, escrow_components,
         ),
         "payment_breakdown": _compute_payment_breakdown(
-            planned_schedule, escrow_components,
+            installments, escrow_components,
         ),
     }
 
 
-def _build_band_context(scenarios, has_payments):
+def _build_band_context(ctx, scenarios, installments):
     """Build the dashboard's band-chart template context.
 
-    Wraps :func:`._helpers.build_band_chart` (one committed-or-contractual
-    balance line on the contractual x-axis, which the client splits at the
-    confirmed / projected boundary) and derives ``has_chart`` -- the band renders
-    the chart when the line has points, otherwise a "paid off" note.  The client
-    (``loan_detail.js``) reads the serialized ``band_chart`` dict from
-    ``data-chart`` and overlays the payoff lever's accelerated preview onto it.
+    Wraps :func:`._helpers.build_band_chart` (the seam's balance at every
+    date of the contractual x-axis, :func:`._helpers.band_chart_dates`,
+    which the client splits at the confirmed / projected boundary) and
+    derives ``has_chart`` -- the band renders the chart when the line has
+    points, otherwise a "paid off" note.  The client (``loan_detail.js``)
+    reads the serialized ``band_chart`` dict from ``data-chart`` and
+    overlays the payoff lever's accelerated preview onto it.
 
     Args:
+        ctx: The route context (:func:`._helpers._load_route_context`) --
+            its pass and its derived payoff bound the grid.
         scenarios: The baseline :class:`PayoffScenarios` from
-            :func:`._helpers.build_baseline_scenarios`.
-        has_payments: ``True`` when the loan has a recurring payment plan
-            (selects the committed line over the contractual original).
+            :func:`._helpers.build_baseline_scenarios`, for the grid.
+        installments: The plan as it stands
+            (:func:`~app.services.balance_at.loan_installments`), read once
+            by the route and shared with the allocation bar.
 
     Returns:
         dict of template vars: band_chart (the serializable dict), has_chart.
     """
-    band_chart = build_band_chart(scenarios, has_payments)
+    band_chart = build_band_chart(
+        ctx.account, ctx.balance_ctx,
+        band_chart_dates(scenarios, ctx.payoff_date, installments),
+    )
     return {
         "band_chart": band_chart,
         "has_chart": bool(band_chart["balance"]),
     }
 
 
-def _resolve_transfer_prompt(account, template):
-    """Resolve the recurring-transfer prompt state for the dashboard.
+def _transfer_prompt_context(account):
+    """Resolve the set-up-a-recurring-payment prompt: the payment card's empty state.
 
-    The prompt shows when LoanParams exist but no active recurring
-    transfer template targets this account.  When shown, the eligible
-    source accounts (active, non-amortizing, excluding this account) and
-    the default source (the checking account, if any) are loaded.  When a
-    recurring payment DOES exist, ``has_recurring_payment`` gates the
-    extra-principal edit control and ``recurring_payment_extra`` prefills it
-    from the payment's ``loan_payment_settings`` (0.00 when it has no settings
-    row -- a legacy manual payment).
+    Rendered inside the payment card when NO active recurring transfer pays
+    into this loan (plan step R7d-g-3 moved it there from a page-top alert):
+    the eligible source accounts (active, non-amortizing, excluding this
+    account), the default source (the checking account, if any) and the day
+    the first payment would fall.  The caller renders it only for a loan with
+    no definition, so nothing here tests for one.
 
     Args:
         account: The loan account (scopes the source-account picker).
-        template: The loan's active recurring transfer template, or ``None`` --
-            loaded ONCE by the caller and shared with :func:`_payment_drift`, so
-            the page resolves the recurring payment a single time.
 
     Returns:
-        ``prompt_context`` -- a dict of template vars: show_transfer_prompt,
-        source_accounts, default_source_id, has_recurring_payment,
-        recurring_payment_extra.
+        A dict of template vars: source_accounts, default_source_id,
+        first_payment_on.
     """
-    if template is not None:
-        settings = template.settings
-        extra = (
-            Decimal(str(settings.extra_principal))
-            if settings is not None else Decimal("0.00")
-        )
-        return {
-            "show_transfer_prompt": False,
-            "source_accounts": [],
-            "default_source_id": None,
-            "has_recurring_payment": True,
-            "recurring_payment_extra": extra,
-            # The prompt is not rendered on this branch; the key is present so
-            # the template never references an undefined value.
-            "first_payment_on": None,
-        }
-
     source_accounts = (
         db.session.query(Account)
         .join(AccountType)
@@ -344,11 +377,8 @@ def _resolve_transfer_prompt(account, template):
     # rather than inventing one.
     params = loan_loaders.load_loan_params(account.id)
     return {
-        "show_transfer_prompt": True,
         "source_accounts": source_accounts,
         "default_source_id": default_source_id,
-        "has_recurring_payment": False,
-        "recurring_payment_extra": Decimal("0.00"),
         "first_payment_on": None if params is None else (
             loan_recurrence_sync.loan_cadence_start(
                 RecurrenceUnitEnum.MONTH, params,
@@ -357,30 +387,136 @@ def _resolve_transfer_prompt(account, template):
     }
 
 
-def _payment_drift(template, total_payment):
-    """Return the recurring-payment underpayment-drift warning context, or None.
+def _payment_strips(definitions, total_payment, balance_ctx):
+    """Build the payment card's strip per recurring transfer INTO the loan.
 
-    Warns (ruling D3, step C7) when the loan has a MANUAL recurring payment whose
-    stored base (``default_amount`` -- the P&I + escrow captured at its last write)
-    is now LESS than today's contractual monthly payment (``total_payment`` =
-    resolved P&I + active escrow), i.e. the transfer underfunds the loan after an
-    escrow or rate change.  Both figures are extra-free (the standing
-    ``extra_principal`` is added live on top of each and so cancels in the
-    comparison), so this measures the base drift regardless of any overpayment.
+    One strip per definition (plan step R7d-g-3, ruling **R-R83**), each
+    carrying what its controls act on and what its figure means: the
+    definition itself (its name and the link to its edit form), its cadence
+    in the Recurring surface's own words
+    (:func:`~app.services.recurring_view.described` over the composed
+    reading, so a definition reads the same on both pages), its MODE off the
+    settings row (:func:`~app.services.recurring_transfer_query.loan_payment_config`:
+    tracks the loan, or a fixed amount), what its NEXT payment will debit,
+    the standing extra inside that, and the underpayment drift a fixed
+    definition may show (:func:`_payment_drift`).
 
-    Returns ``None`` -- no warning -- for exactly the cases the ruling excludes:
-
-    * no recurring payment (``template is None``);
-    * a DERIVE-mode payment, whose projected cash is recomputed to the contract on
-      every read (amount rule 4, since plan step X-au-g-2c-2 -- the shadow is
-      DERIVED and stores no figure to go stale),
-      so it can never drift;
-    * a payment at or ABOVE contract -- underpayment-only, so a deliberate
-      overpayment never trips it.
+    **The next payment is priced by the amount model and nothing else.**
+    The definition's next placement on or after the pass's as-of
+    (:func:`~app.services.recurring_view.next_placement`, off the one reading
+    the cadence words come from) is priced through
+    :func:`~app.services.cash_ledger.definition_cash` -- rule 4 for a loan
+    payment in either mode, rule 3 for a definition with no settings row --
+    which is exactly what the row for that occurrence carries or would carry
+    (ruling **R-R67**).  Today's contractual total and the stored
+    ``default_amount`` were the first cut's two spellings of this figure, and
+    an adversarial review named both wrong: rule 4 prices an installment on
+    its OWN due date (an escrow version or a recast between today and then
+    parts the two), and ``default_amount`` is the NEWEST price the series
+    states, not the one in effect.  The drift a fixed definition shows
+    compares the same priced base, so a strip's figure and its shortfall
+    sentence are one value.  A definition whose reading places nothing on or
+    after the as-of -- a stop already passed -- has no next payment, and the
+    strip says so instead of pricing a date it will not pay on.
 
     Args:
-        template: The loan's active recurring transfer template, or ``None``
-            (loaded once by the caller, shared with :func:`_resolve_transfer_prompt`).
+        definitions: The loan's active recurring transfers, oldest first
+            (:func:`~app.services.recurring_transfer_query.active_recurring_transfer_templates`,
+            settings rows loaded).
+        total_payment: The loan's contractual monthly payment today (P&I +
+            escrow), the loan card's own figure and the drift's other side.
+        balance_ctx: The read pass: its calendar places the occurrences, its
+            amount basis prices them, its ``as_of`` is the display boundary.
+
+    **One tracker per loan** (developer, 2026-09-14): while a definition
+    tracks the loan (:func:`~app.services.recurring_transfer_query.tracking_definition`,
+    the same read the track door refuses on) no other strip offers the Track
+    control, and a fixed strip's shortfall sentence names the definition
+    that tracks instead; ``can_track`` carries that per strip.
+
+    Returns:
+        A list of dicts, one per definition, in the definitions' order:
+        template, recurrence, tracks_loan, can_track, tracking_name,
+        next_due, per_payment, base, extra, drift -- ``next_due``,
+        ``per_payment``, ``base`` and ``drift`` ``None`` for a definition
+        with no upcoming payment; ``tracking_name`` the tracker's name or
+        ``None``.
+
+    Raises:
+        AmountUnresolvable: A definition states no price for its next
+            occurrence (an empty series) -- exactly where its written row
+            would refuse, and where the page's own payoff chip already does.
+    """
+    tracking = tracking_definition(definitions)
+    strips = []
+    for template in definitions:
+        tracks_loan, extra = loan_payment_config(template)
+        reading = read_definition(template, balance_ctx)
+        placed = next_placement(
+            template.recurrence_rule, reading, balance_ctx.as_of,
+        )
+        if placed is None:
+            next_due = per_payment = base = drift = None
+        else:
+            period, next_due = placed
+            per_payment = definition_cash(
+                DefinitionRow(
+                    template=template,
+                    due_date=next_due,
+                    period_start=period.start_date,
+                    to_account_id=template.to_account_id,
+                ),
+                balance_ctx.amounts(),
+                subject=f"Recurring payment {template.id}'s next occurrence",
+            )
+            base = per_payment - extra
+            # A definition that tracks the loan resolves to the contract on
+            # every read (rule 4's derive arm), so it can never drift.
+            drift = None if tracks_loan else _payment_drift(base, total_payment)
+        strips.append({
+            "template": template,
+            "recurrence": described(template.recurrence_rule, reading.resolved),
+            "tracks_loan": tracks_loan,
+            "can_track": not tracks_loan and tracking is None,
+            "tracking_name": None if tracking is None else tracking.name,
+            "next_due": next_due,
+            "per_payment": per_payment,
+            "base": base,
+            "extra": extra,
+            "drift": drift,
+        })
+    return strips
+
+
+def _payment_drift(stored, total_payment):
+    """Return a FIXED recurring payment's underpayment-drift context, or None.
+
+    Warns (ruling D3, step C7) when a fixed payment's base -- what its next
+    row is priced at less the standing extra, the amount model's figure
+    (:func:`_payment_strips`); until plan step R7d-g-3 the stored
+    ``default_amount``, the NEWEST stated price rather than the one in effect
+    -- is LESS than today's contractual monthly payment (``total_payment`` =
+    resolved P&I + active escrow), i.e. the transfer underfunds the loan after
+    an escrow or rate change.  Both figures are extra-free (the standing
+    ``extra_principal`` is added live on top of each and so cancels in the
+    comparison), so this measures the base drift regardless of any
+    overpayment.  **Per definition since plan step R7d-g-3**: the payment card
+    asks it of every FIXED recurring transfer into the loan and renders the
+    answer on that definition's own strip, where until then the page asked it
+    of the one definition the tie-break picked and rendered a page-top alert.
+    A definition that TRACKS the loan is never asked: its projected cash is
+    recomputed to the contract on every read (amount rule 4, since plan step
+    X-au-g-2c-2 -- the shadow is DERIVED and stores no figure to go stale), so
+    :func:`_payment_strips` answers ``None`` for it before this runs.  Pure
+    over the two figures, so the base a strip SHOWS and the base its shortfall
+    sentence names are one value.
+
+    Returns ``None`` -- no warning -- for a payment at or ABOVE contract:
+    underpayment-only, so a deliberate overpayment never trips it.
+
+    Args:
+        stored: The fixed payment's base: its next row's priced cash less the
+            standing extra.
         total_payment: The loan's contractual monthly payment today (P&I +
             escrow) -- the same figure the loan card displays and
             :func:`app.routes.loan.payment_transfer.track_payment` writes, so
@@ -388,14 +524,8 @@ def _payment_drift(template, total_payment):
 
     Returns:
         ``{"stored": Decimal, "contract": Decimal, "shortfall": Decimal}`` when the
-        manual payment is short, else ``None``.
+        fixed payment is short, else ``None``.
     """
-    if template is None:
-        return None
-    settings = template.settings
-    if settings is not None and settings.derive_from_loan:
-        return None
-    stored = Decimal(str(template.default_amount))
     if stored >= total_payment:
         return None
     return {
@@ -596,27 +726,22 @@ def dashboard(account_id):
     ctx = _load_route_context(account, params)
     scenario_id = ctx.balance_ctx.scenario_id
     today = date.today()
-    # Resolve the recurring-payment state first: it carries the standing
-    # extra_principal the committed trajectory must reflect (step 5), so the
-    # band chart / payoff summary accelerate exactly as the cash debit does.
-    # R-4: the recurring transfer's end_date is NOT written here (that would be a
-    # write on a GET); it is synced at every payoff-affecting mutation instead.
-    # Loaded ONCE and shared with the drift warning below, so the page resolves
-    # the recurring payment a single time.
-    payment_template = active_recurring_transfer_template(
+    # Every recurring transfer paying INTO the loan, oldest first, loaded ONCE
+    # for the payment card's strips (plan step R7d-g-3, ruling R-R83).  R-4:
+    # the recurring transfer's opening bound is NOT written here (that would
+    # be a write on a GET); it is synced at every door that can move it.
+    definitions = active_recurring_transfer_templates(
         account.id, current_user.id,
     )
-    prompt_context = _resolve_transfer_prompt(account, payment_template)
     scenarios = build_baseline_scenarios(
         _loan_inputs(params, ctx.loan), account, ctx.balance_ctx,
-        prompt_context["recurring_payment_extra"],
     )
-    # PLANNED-trajectory schedule: real confirmed history + projected /
-    # contractual forward.  The loan card's current_balance (the seam's fold)
-    # and the forward projection here both derive from the SAME genesis-ledger
-    # balance (plan Section 8), so the card / debt card / net-worth
-    # liability and the chart cannot diverge (the E-18 invariant).
-    planned_schedule = scenarios.history_rows + scenarios.committed_forward
+    # The seam's forward plan, split ONCE for the page (plan step R7d-g-3,
+    # ruling R-R88): the allocation bar's next period and the band's grid
+    # read these installments, and the band's line and the payoff chip fold
+    # the same memoized plan, so the card, the chart and the chip cannot
+    # diverge.
+    installments = balance_at.loan_installments(account, ctx.balance_ctx)
 
     context = {
         "account": account,
@@ -658,16 +783,18 @@ def dashboard(account_id):
         "collateral_candidates": _load_collateral_candidates(current_user.id),
     }
     context.update(_build_payment_summary(
-        ctx.current_balance, ctx.monthly_payment, planned_schedule,
+        ctx.current_balance, ctx.monthly_payment, installments,
         ctx.loan.escrow_components,
     ))
-    # C7 (D3): the underpayment-drift warning -- a manual recurring payment that
-    # has fallen short of today's contractual payment after an escrow / rate
-    # change.  Reuses the loan card's already-computed total_payment (no re-fold)
-    # and the once-loaded template, so the page adds no extra resolution.
-    context["payment_drift"] = _payment_drift(
-        payment_template, context["total_payment"],
+    # The payment card: one strip per definition, each with its figure, its
+    # mode and its C7 (D3) underpayment drift against the loan card's
+    # already-computed total_payment (no re-fold); the set-up prompt is the
+    # card's empty state.
+    context["payment_strips"] = _payment_strips(
+        definitions, context["total_payment"], ctx.balance_ctx,
     )
+    if not definitions:
+        context.update(_transfer_prompt_context(account))
     # Escrow card: the version-drawer model, built off the raw lines
     # (``ctx.loan.escrow_lines``, loaded with the same context) and keyed by the
     # forward-only boundary so each drawer row's edit / delete controls match the
@@ -680,7 +807,7 @@ def dashboard(account_id):
     context["merge_candidates"] = escrow_calculator.build_merge_candidates(
         ctx.loan.escrow_lines,
     )
-    context.update(_build_band_context(scenarios, len(ctx.loan.payments) > 0))
+    context.update(_build_band_context(ctx, scenarios, installments))
     # YTD chips sum by the user's display-tz civil year (matching the Taxes tab
     # + the L9 attribution rule), not the backend-UTC ``today.year``.  The chips
     # fold the read pass's memoized walk (ctx.balance_ctx), so the page walks the
@@ -688,5 +815,4 @@ def dashboard(account_id):
     context.update(_build_measured_context(
         account, ctx.balance_ctx, display_today().year,
     ))
-    context.update(prompt_context)
     return render_template("loan/dashboard.html", **context)

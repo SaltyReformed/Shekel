@@ -44,6 +44,7 @@ from app.services.loan_payment_service import compute_contractual_pi
 from app.services.loan_loaders import load_loan_params, load_rate_changes
 from app.models.transfer_template import TransferTemplate
 from tests._test_helpers import (
+    bind_rule_to_loan,
     create_account_of_type,
     create_loan_account,
     capture_sql_statements,
@@ -204,7 +205,7 @@ class TestTheClosingBoundIsNeverWritten:
         with app.app_context():
             loan = self._current_loan(seed_user, db.session)
             tpl = make_loan_payment_template(db.session, seed_user, loan)
-            loan_recurrence_sync.bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+            bind_rule_to_loan(tpl.recurrence_rule, loan.id)
             db.session.commit()
             rule = tpl.recurrence_rule
             first_installment = rule.starts_on
@@ -258,7 +259,7 @@ class TestTheClosingBoundIsNeverWritten:
             tpl = make_loan_payment_template(
                 db.session, seed_user, loan, cadence=EVERY_PERIOD,
             )
-            loan_recurrence_sync.bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+            bind_rule_to_loan(tpl.recurrence_rule, loan.id)
             db.session.commit()
             rule = tpl.recurrence_rule
             assert rule.starts_on == date(2026, 7, 31), (
@@ -357,9 +358,10 @@ class TestIsStandingLoanPayment:
     overwritten by the next payoff-affecting edit.
 
     **Since plan step R7d-f it is ``is_standing_loan_payment(template, ctx)``**
-    and answers from the read pass's memoised loan resolution (the seam's
-    ``loan_standing_payment``) rather than re-running the two lookups the pass
-    already held (plan ledger row **N-511**).  It no longer claims to name
+    and answers from the read pass's memoised loan resolution
+    (``resolved_loan(...).standing``, the oldest definition) rather than
+    re-running the two lookups the pass already held (plan ledger row
+    **N-511**).  It no longer claims to name
     "the definition this module writes BOTH bounds for" -- ruling **R-R29**
     keeps only the opening bound written -- but the SET it names is unchanged,
     so every arm below is the arm it was.
@@ -1026,7 +1028,7 @@ class TestLoanPaymentWindowResolver:
             tpl = make_loan_payment_template(
                 db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
             )
-            loan_recurrence_sync.bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+            bind_rule_to_loan(tpl.recurrence_rule, loan.id)
             db.session.commit()
 
             ctx = self._ctx(seed_user)
@@ -1094,7 +1096,7 @@ class TestLoanPaymentWindowResolver:
             tpl = make_loan_payment_template(
                 db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=15,
             )
-            loan_recurrence_sync.bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+            bind_rule_to_loan(tpl.recurrence_rule, loan.id)
             db.session.commit()
 
             ctx = self._ctx(seed_user)
@@ -1156,7 +1158,7 @@ class TestLoanPaymentWindowResolver:
             tpl = make_loan_payment_template(
                 db.session, seed_user, loan, cadence=MONTHLY, fires_on_day=1,
             )
-            loan_recurrence_sync.bind_rule_to_loan(tpl.recurrence_rule, loan.id)
+            bind_rule_to_loan(tpl.recurrence_rule, loan.id)
             db.session.commit()
 
             ctx = self._ctx(seed_user)

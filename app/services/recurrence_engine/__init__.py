@@ -96,6 +96,7 @@ from app.services.recurrence_engine._pass import (
 from app.services.recurrence_engine._plan import (
     GenerationPlan,
     PlannedOccurrence,
+    definition_recurs,
     resolve_generation_plan,
 )
 
@@ -107,6 +108,7 @@ __all__ = [
     "PlannedOccurrence",
     "can_generate_in_period",
     "create_for_unclaimed_occurrences",
+    "definition_recurs",
     "derived_by_occurrence",
     "generate_for_template",
     "propagate_to_unruled_definition",

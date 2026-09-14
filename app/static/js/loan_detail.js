@@ -11,8 +11,8 @@
  * computes money -- it only draws the provided points and formats axis / tooltip
  * labels.
  *
- * ``current_index`` is the confirmed / projected boundary: points before it are
- * the ledger-confirmed history (solid) and the rest are the committed
+ * ``current_index`` is the ledger / plan boundary: points before it are the
+ * ledger's record through today (solid) and the rest are the plan's
  * projection (dashed, lighter), with a "Today" marker at the boundary -- the
  * same grammar as the account-detail trend, via ShekelChart.splitSegment /
  * ShekelChart.todayMarkerPlugin (chart_theme.js).
@@ -37,7 +37,7 @@
  * one session they align exactly.  In the rare case the confirmed-history length
  * shifts between the GET and a later POST (a payment settles in another tab, or
  * date.today() rolls past midnight), the preview can land one x-position off the
- * committed line until reload; the metric chips (new payoff, months / interest
+ * plan's line until reload; the metric chips (new payoff, months / interest
  * saved) come from the POST scenario and stay correct regardless.
  */
 

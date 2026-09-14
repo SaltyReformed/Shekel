@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_CEILING, Decimal
 
+from app.services.rate_period_engine import RatePeriod, period_for_date
+from app.utils.money import PaymentCashSplit
 from app.services.loan_ledger import (
     LoanCashEvent,
     LoanEventStream,
@@ -52,16 +54,27 @@ _CENTS = Decimal("0.01")
 _EXTRA_SEARCH_DOUBLINGS = 20
 
 @dataclass(frozen=True)
-class _PlanSplit:
-    """One planned payment's fold result: its visible date and the split parts.
+class PlannedInstallment:
+    """One planned payment's fold result: its dates, its cash and the split parts.
 
-    The per-payment output of :func:`_split_plan`, carrying what the two forward
-    readers need -- the ``principal`` paydown for :func:`fold_forward` (the balance)
-    and the ``interest`` for :func:`plan_interest_in_year` (the tax figure) -- keyed
-    by the EFFECTIVE date the payment becomes visible on, plus the ``due_date`` that
+    The per-payment output of :func:`_split_plan`, carrying what the forward
+    readers need -- the ``principal`` paydown for :func:`fold_forward` (the balance),
+    the ``interest`` for :func:`plan_interest_in_year` (the tax figure), and since
+    plan step R7d-g-3 the whole row a schedule surface renders -- keyed by the
+    EFFECTIVE date the payment becomes visible on, plus the ``due_date`` that
     identifies its installment (so the tax reader can drop a slot a settled payment
-    already covers).  Sharing ONE split is what keeps a loan's projected balance and
-    its projected interest from disagreeing about what a future payment pays.
+    already covers).  Sharing ONE split is what keeps a loan's projected balance,
+    its projected interest and its rendered schedule from disagreeing about what
+    a future payment pays.
+
+    **Public since plan step R7d-g-3** (it was the private ``_PlanSplit``):
+    the loan page's band chart, pay-off-sooner lever, allocation bar and
+    amortization table read the loan's forward trajectory off this record
+    through :func:`~app.services.balance_at.loan_installments`, where until
+    then they read ``loan_resolver.compute_payoff_scenarios``' committed
+    slice -- a second forward walk that priced the months no generated row
+    covered from the contract plus ONE picked definition's extra (ruling
+    **R-R88**; plan ledger row **D49**).  One fold, every surface.
 
     Attributes:
         due_date: The contractual installment this payment satisfies -- its
@@ -70,30 +83,51 @@ class _PlanSplit:
         effective_date: When this payment's paydown becomes VISIBLE to a read
             (``max(due, as_of + 1d)``, ruling D1); both readers key their year /
             prefix-sum on it.
-        interest: The interest this payment's cash paid, accrued on the running
-            balance before it (an Expense leg, ``>= 0``).
-        principal: The debt this payment paid down (``cash - interest - escrow``,
-            capped at the balance; may be NEGATIVE for an underpayment).
-        balance_after: The running balance AFTER this payment
-            (:attr:`~app.utils.money.PaymentCashSplit.balance_after`) --
-            what :func:`plan_payoff_date` scans for the first ``<= 0`` to find the
-            date the loan clears.  ``fold_forward`` does not read it (it prefix-sums
-            ``principal``); it is carried so the payoff derivation reuses the ONE
-            fold rather than re-walking the plan.
+        cash: What the payment moves, escrow-inclusive as the owner pays it
+            (:attr:`~app.services.balance_at._plan_records.PlannedPayment.cash`).
+        split: What that cash did, as the ONE allocation produced it
+            (:class:`~app.utils.money.PaymentCashSplit`): the ``interest`` it
+            paid (accrued on the running balance before it, ``>= 0``), the
+            ``escrow`` it impounded (the accrual period's charge, ``0.00`` for
+            a second payment inside one period), the ``principal`` it paid
+            down (``cash - interest - escrow``, capped at the balance; NEGATIVE
+            for an underpayment), any ``excess`` past payoff, and the running
+            ``balance_after`` -- what :func:`plan_payoff_date` scans for the
+            first ``<= 0`` to find the date the loan clears.  ``fold_forward``
+            prefix-sums the ``principal``; the rest rides so every reader of
+            an installment reads the one allocation rather than re-deriving a
+            part of it.
+        charge_date: The date of the accrual charge standing over this
+            payment (:attr:`~app.services.loan_ledger.AccrualCharge.on_date`,
+            the contract's installment date of the period it pays into) --
+            the identity of the ACCRUAL PERIOD the payment belongs to, which
+            a surface listing the plan month by month groups on.  ``None``
+            when no charge stands: a payment dated after the loan's latest
+            assertion and before the first installment after it, which pays
+            what stands (nothing -- ruling R-C's early extra, pure principal).
+        period: The rate period governing this payment
+            (:class:`~app.services.rate_period_engine.RatePeriod`): the
+            standing charge's, or for a payment no charge stands over the
+            period the loan's calendar puts its due date in
+            (:func:`~app.services.rate_period_engine.period_for_date` over
+            the plan's ``periods``).  Its ``annual_rate`` is the ARM rate
+            column's figure and its ``period_pi`` the contractual P&I a
+            surface splits an extra out against.
     """
 
     due_date: date
     effective_date: date
-    interest: Decimal
-    principal: Decimal
-    balance_after: Decimal
+    cash: Decimal
+    split: PaymentCashSplit
+    charge_date: date | None
+    period: RatePeriod
 
 
 def _split_plan(
     seed: Decimal,
     plan: LoanForwardPlan,
     extra_monthly: Decimal = _ZERO_MONEY,
-) -> list[_PlanSplit]:
+) -> list[PlannedInstallment]:
     """Fold *plan* from *seed* in DUE order, returning each payment's split.
 
     The shared forward fold every reader runs, and since plan step
@@ -148,7 +182,7 @@ def _split_plan(
             figure the target-date calculator reports.
 
     Returns:
-        One :class:`_PlanSplit` per payment, in DUE order.
+        One :class:`PlannedInstallment` per payment, in DUE order.
     """
     replay = replay_loan_events(
         seed,
@@ -169,12 +203,18 @@ def _split_plan(
         extra_per_period=extra_monthly,
     )
     return [
-        _PlanSplit(
+        PlannedInstallment(
             due_date=outcome.event.source.due_date,
             effective_date=outcome.event.source.effective_date,
-            interest=outcome.split.interest,
-            principal=outcome.split.principal,
-            balance_after=outcome.split.balance_after,
+            cash=outcome.event.cash,
+            split=outcome.split,
+            charge_date=(
+                None if outcome.charge is None else outcome.charge.on_date
+            ),
+            period=(
+                period_for_date(plan.periods, outcome.event.source.due_date)
+                if outcome.charge is None else outcome.charge.period
+            ),
         )
         for outcome in replay.payments
     ]
@@ -194,9 +234,10 @@ def plan_payoff_date(
     installment that pays the loan off.  This is a fold-to-zero, NOT
     ``plan[-1].date``: the plan runs PAST the contractual payoff (the ESTIMATED
     tail's extension, ``_plan._PAYOFF_EXTENSION_MONTHS``), so a loan paying extra
-    reaches zero at an EARLIER installment (== the resolver's committed payoff) and
-    an underpaying one at a LATER installment in the extension (a real date, where
-    the resolver forces the contractual date via ``is_last_month``).
+    reaches zero at an EARLIER installment (the date the engine's own
+    contract-plus-extra projection reaches, ``project_forward(extra_monthly=...)``)
+    and an underpaying one at a LATER installment in the extension (a real date,
+    where the contract's projection forces its last date via ``is_last_month``).
 
     Two ``None`` cases, kept distinct from a real payoff date so the caller can
     tell "already done" from "never pays off" (both differ from "pays off on date
@@ -216,8 +257,8 @@ def plan_payoff_date(
       disambiguated by ``is_retired`` (retired here is False).
 
     The DUE date (contract time), not the EFFECTIVE (visible) date, is returned so
-    the payoff month is the installment's own -- matching the resolver's
-    ``committed_forward[-1].payment_date`` the payoff has always keyed on, and, for
+    the payoff month is the installment's own -- matching the contract's
+    ``original_forward[-1].payment_date`` the payoff has always keyed on, and, for
     a normal future loan, equal to the effective date anyway (they differ only for
     an overdue-but-projected installment, which almost never clears a loan).
 
@@ -239,9 +280,29 @@ def plan_payoff_date(
     """
     if seed <= _ZERO_MONEY:
         return None
-    for split in _split_plan(seed, plan, extra_monthly):
-        if split.balance_after <= _ZERO_MONEY:
-            return split.due_date
+    return installments_payoff(_split_plan(seed, plan, extra_monthly))
+
+
+def installments_payoff(installments: list[PlannedInstallment]) -> date | None:
+    """Return the DUE date of the first installment whose balance reaches zero.
+
+    The ONE statement of "when does this trajectory clear the loan", read by
+    :func:`plan_payoff_date` over a fresh fold and by a surface already holding
+    the fold's installments (the loan page's pay-off-sooner lever, plan step
+    R7d-g-3), so a caller with the split in hand does not fold the plan a
+    second time to learn what it already holds.  Public through
+    :mod:`app.services.balance_at`.
+
+    Args:
+        installments: A :func:`_split_plan` result, in DUE order.
+
+    Returns:
+        The DUE date the balance first reaches ``<= 0``, or ``None`` when no
+        installment does (the plan never clears the loan, or there is none).
+    """
+    for installment in installments:
+        if installment.split.balance_after <= _ZERO_MONEY:
+            return installment.due_date
     return None
 
 
@@ -314,9 +375,9 @@ def plan_required_extra(
         moves -- so a past due date can never stand in for a payment that has not
         happened (see the note above).
         """
-        for split in _split_plan(seed, plan, extra):
-            if split.balance_after <= _ZERO_MONEY:
-                return split.effective_date <= target_date
+        for installment in _split_plan(seed, plan, extra):
+            if installment.split.balance_after <= _ZERO_MONEY:
+                return installment.effective_date <= target_date
         return False
 
     if _clears_by(_ZERO_MONEY):
@@ -379,7 +440,7 @@ def plan_required_extra(
 
 
 def _paydown_steps(
-    seed: Decimal, plan: LoanForwardPlan,
+    seed: Decimal, plan: LoanForwardPlan, extra_monthly: Decimal = _ZERO_MONEY,
 ) -> list[tuple[date, Decimal]]:
     """Return each planned payment's paydown as a NEGATIVE change on its visible date.
 
@@ -390,14 +451,16 @@ def _paydown_steps(
     Args:
         seed: The balance the projection starts from.
         plan: The loan's :func:`._plan.loan_plan` forward model.
+        extra_monthly: The what-if extra :func:`_split_plan` takes; ``0.00``
+            folds the plan as it stands.
 
     Returns:
         ``[(effective_date, balance_change), ...]`` in due order (balance_change is
         ``-principal``).
     """
     return [
-        (split.effective_date, -split.principal)
-        for split in _split_plan(seed, plan)
+        (installment.effective_date, -installment.split.principal)
+        for installment in _split_plan(seed, plan, extra_monthly)
     ]
 
 
@@ -440,6 +503,7 @@ def fold_forward(
     owed_from: date,
     plan: LoanForwardPlan,
     dates: list[date],
+    extra_monthly: Decimal = _ZERO_MONEY,
 ) -> dict[date, Decimal]:
     """Fold the confirmed-present *seed* forward over *plan* to a balance per date.
 
@@ -462,13 +526,17 @@ def fold_forward(
             ``0.00``.
         plan: The loan's :func:`._plan.loan_plan` forward model.
         dates: The dates to value the loan at, in any order.  Duplicates collapse.
+        extra_monthly: A HYPOTHETICAL extra per accrual period on top of the
+            plan (:func:`_split_plan`), for the pay-off-sooner lever's preview
+            line (plan step R7d-g-3).  ``0.00`` -- the default, and what every
+            real balance read passes -- folds the plan as it stands.
 
     Returns:
         ``{date: balance owed}`` -- one cent-quantized ``Decimal`` per requested
         date.  ``{}`` for an empty *dates*.
     """
     return _sample_from_steps(
-        seed, owed_from, _paydown_steps(seed, plan), dates,
+        seed, owed_from, _paydown_steps(seed, plan, extra_monthly), dates,
     )
 
 
@@ -523,10 +591,11 @@ def plan_interest_in_year(
     """
     return sum(
         (
-            split.interest
-            for split in _split_plan(seed, plan)
-            if split.effective_date.year == year
-            and (split.due_date.year, split.due_date.month) not in exclude_slots
+            installment.split.interest
+            for installment in _split_plan(seed, plan)
+            if installment.effective_date.year == year
+            and (installment.due_date.year, installment.due_date.month)
+            not in exclude_slots
         ),
         _ZERO_MONEY,
     )

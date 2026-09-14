@@ -6,7 +6,7 @@ rate history, and payoff calculator across multiple loan types.
 """
 
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -31,17 +31,17 @@ from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
 from app.services.transfer_service import TransferSpec, create_transfer
-from app.utils.dates import add_months
+from app.utils.dates import add_months, months_between
 from app.utils.money import round_money
 from app.services import (
     account_service,
     balance_at,
     escrow_calculator,
     loan_loaders,
-    loan_recurrence_sync,
 )
 
 from tests._test_helpers import (
+    bind_rule_to_loan,
     add_escrow_line,
     an_entered_day,
     clear_loan_ledger,
@@ -177,6 +177,19 @@ def _create_auto_loan(seed_user, db_session, name="My Auto Loan"):
         Decimal("25000.00"), Decimal("0.05000"), 60,
         date(2025, 1, 1), 15,
     )
+
+
+def _payment_template(db_session, seed_user, acct):
+    """Return the loan's recurring payment template (the settings doors' URLs name it)."""
+    from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+    tpl = (
+        db_session.query(TransferTemplate)
+        .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+        .first()
+    )
+    assert tpl is not None
+    return tpl
 
 
 def _create_mortgage(seed_user, db_session, name="My Mortgage"):
@@ -2722,14 +2735,16 @@ class TestPayoffChartShape:
     def test_summary_consistent_with_chart(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C4-4: Displayed Months Saved matches the overlay-vs-committed divergence.
+        """C4-4: Displayed Months Saved matches the overlay-vs-plan divergence.
 
-        The composer's ``months_saved`` is
-        ``len(committed_forward) - len(accelerated_forward)``.
-        Single-source-of-truth means the rendered ``Months Saved`` label equals
-        the count of chart indices where the committed line still owes but the
-        accelerated overlay has already reached $0 -- both derive from the same
-        forward slices, so they agree by construction.
+        The lever's ``months_saved`` is the calendar months between the plan's
+        payoff and the payoff with the extra, both the seam's fold
+        (``routes/loan/calculators._build_payoff_summary``, plan step
+        R7d-g-3).  Single-source-of-truth means the rendered ``Months Saved``
+        label equals the count of chart indices where the plan's line still
+        owes but the accelerated overlay has already reached $0 -- the line
+        and the overlay are the same fold on the band's monthly grid, so they
+        agree by construction.
         """
         import re as _re  # pylint: disable=import-outside-toplevel
 
@@ -2782,10 +2797,15 @@ class TestPayoffChartShape:
     ):
         """C4-5: Loan with zero confirmed payments still renders a full band chart.
 
-        With no confirmed payments, ``current_index`` is 0 (the whole line is
-        projection) and the band shows the contractual trajectory from the
-        origination-adjacent first month.  The overlay has no leading nulls
-        (there is no history to skip) and aligns to the same labels.
+        With no confirmed payments the band still splits at TODAY, not at a
+        confirmed row: the grid runs from the first installment after the
+        loan's latest assertion, and every grid date at or before the pass's
+        as-of reads the LEDGER (plan step R7d-g-3, ruling **R-R88**: the
+        band is the seam's ``positions`` on the contractual grid), which
+        holds the asserted $250,000 flat because nothing was paid.  The
+        overlay begins after today -- ``None`` on the ledger's points, a
+        what-if balance on every point after -- and aligns to the same
+        labels.
         """
         acct = _create_mortgage(seed_user, db.session)
         band = _parse_band_chart(
@@ -2798,16 +2818,20 @@ class TestPayoffChartShape:
         assert resp.status_code == 200
         overlay = _parse_chart_array(resp.data.decode(), "overlay")
         assert band is not None and overlay is not None
-        # No confirmed payments -> no history split, no leading overlay nulls.
-        assert band["current_index"] == 0
-        assert len(band["balance"]) == len(band["labels"]) == len(overlay) > 0
-        assert overlay[0] is not None
         # First label is the month after the loan's LATEST assertion:
         # _create_mortgage's user-trueup is dated ``_TRACKED_FROM`` (2026-01-01)
         # at $250k, and with no confirmed payments the first row is the
-        # contractual projection from the first installment after it.  (It read
-        # "Jul 2023" while the true-up was dated the day after origination.)
-        assert band["labels"][0] == "Feb 2026"
+        # contractual grid's first installment after it.  (It read "Jul 2023"
+        # while the true-up was dated the day after origination.)  Feb 1 and
+        # Mar 1 2026 are at or before the frozen 2026-03-20 today, so those
+        # two points are the ledger's: the asserted balance, unpaid.
+        assert band["labels"][:3] == ["Feb 2026", "Mar 2026", "Apr 2026"]
+        assert band["current_index"] == 2
+        assert band["balance"][:2] == [250000.0, 250000.0]
+        assert len(band["balance"]) == len(band["labels"]) == len(overlay) > 0
+        # The overlay is null on the ledger's points and begins after today.
+        assert overlay[:2] == [None, None]
+        assert overlay[2] is not None
 
     def test_target_date_mode_unchanged(
         self, auth_client, seed_user, db, seed_periods,
@@ -2901,107 +2925,169 @@ class TestPayoffChartShape:
 
 
 class TestBandChartLongestBaseline:
-    """loan_audit deferred follow-up #2: the band x-axis follows the LONGEST series.
+    """loan_audit deferred follow-up #2: the band x-axis runs to the plan's payoff.
 
-    A payment plan slower than the contractual P&I -- a sub-P&I recurring
-    transfer against a balance the contractual payment would clear early -- makes
-    the committed line (and the lever's accelerated overlay) run more months than
-    the contractual ``original`` baseline.  ``_build_chart_series`` keys its
-    labels off the LONGEST series, so the committed balance line never plots past
-    the last labelled tick, and ``accelerated_overlay`` includes ``committed`` in
-    its baseline so the overlay stays aligned to the band's labels one-to-one.
+    A plan slower than the contractual P&I -- here a loan two installments
+    behind, whose missed principal the post-contractual extension clears --
+    reaches zero AFTER the contract's last installment.  The band's grid is the
+    contractual calendar extended month by month to the seam's derived payoff
+    (``band_chart_dates``, plan step R7d-g-3), so the balance line never plots
+    past the last labelled tick, and the lever's accelerated overlay is folded
+    on that same grid so it stays aligned to the band's labels one-to-one.
 
-    These are pure-function locks on ``build_band_chart`` / ``accelerated_overlay``:
-    the composer-level trigger (a trued-down balance plus a sustained sub-P&I
-    recurring plan) is expensive to fixture end-to-end, but the label-selection
-    defect lives entirely in the helper's row-list handling, so a hand-built
-    scenario where committed OUTRUNS original exercises it directly.
+    These read the route helpers directly (``build_band_chart`` /
+    ``accelerated_overlay``) over a real loan: since R7d-g-3 both are the
+    seam's fold on the band's grid, and the grid-selection defect lives in
+    ``band_chart_dates``'s extension, which a loan whose payoff outruns its
+    contract exercises directly.
     """
 
     @staticmethod
-    def _forward(balances):
-        """Monthly forward rows from 2026-03-01, one per balance string."""
-        return [
-            SimpleNamespace(
-                payment_date=date(2026, 3 + i, 1),
-                remaining_balance=Decimal(bal),
-            )
-            for i, bal in enumerate(balances)
-        ]
+    def _two_installments_behind(seed_user, db_session):
+        """A $250k / 6.5% / 30-year mortgage originated 2026-01-01, nothing paid.
 
-    def _scenarios(self):
-        """A scenarios stand-in where committed OUTRUNS original (sub-P&I plan).
-
-        Two confirmed history months (Jan/Feb 2026), then from March 2026:
-          * original pays off in 3 months (the contractual P&I over-amortizes a
-            trued-down balance),
-          * committed drags 5 months (the sub-P&I recurring plan),
-          * accelerated (committed + extra) lands at 4 months.
-        So the committed series (2 history + 5 forward = 7 points) is the longest;
-        original (5) and accelerated (6) are shorter.  ``build_band_chart`` /
-        ``accelerated_overlay`` read only ``payment_date`` / ``remaining_balance``
-        off each row and the four slice attributes off the scenarios, so a
-        SimpleNamespace stand-in is a faithful input.
+        Its Feb 1 and Mar 1 2026 installments are due and unpaid at the frozen
+        2026-03-20 today, so they are not in the plan (ruling D1 / finding
+        B-9) and the fold clears the loan in the extension past Jan 2056.
         """
-        history = [
-            SimpleNamespace(payment_date=date(2026, 1, 1),
-                            remaining_balance=Decimal("250000.00")),
-            SimpleNamespace(payment_date=date(2026, 2, 1),
-                            remaining_balance=Decimal("249000.00")),
-        ]
-        return SimpleNamespace(
-            history_rows=history,
-            original_forward=self._forward(
-                ["200000.00", "100000.00", "0.00"],
-            ),
-            committed_forward=self._forward(
-                ["240000.00", "230000.00", "220000.00",
-                 "210000.00", "200000.00"],
-            ),
-            accelerated_forward=self._forward(
-                ["235000.00", "220000.00", "205000.00", "0.00"],
-            ),
+        acct = _create_fresh_mortgage(
+            seed_user, db_session, origination_date=date(2026, 1, 1),
         )
+        db_session.commit()
+        return acct
 
-    def test_band_labels_cover_the_committed_line(self):
+    @staticmethod
+    def _band_inputs(seed_user, acct):
+        """Return ``(balance_ctx, scenarios, dates)`` the way the dashboard builds them.
+
+        ``_load_route_context`` reads the pass's owner off ``current_user``;
+        outside a request the pass is built from the owner's id and the loan
+        context loaded the same way it does.  The grid is
+        ``band_chart_dates`` over the pass's payoff and the plan as it
+        stands, as the dashboard hands it.
+        """
+        # Pylint: import-outside-toplevel -- route-private helpers under test.
+        from app.routes.loan._helpers import (  # pylint: disable=import-outside-toplevel
+            _loan_inputs, band_chart_dates, build_baseline_scenarios,
+        )
+        from app.services.loan_payment_service import (  # pylint: disable=import-outside-toplevel
+            load_loan_context,
+        )
+        params = load_loan_params(acct.id)
+        balance_ctx = BalanceContext.build(seed_user["user"].id)
+        loan = load_loan_context(acct.id, balance_ctx.amounts(), params)
+        scenarios = build_baseline_scenarios(
+            _loan_inputs(params, loan), acct, balance_ctx,
+        )
+        dates = band_chart_dates(
+            scenarios,
+            balance_at.loan_payoff_date(acct, balance_ctx),
+            balance_at.loan_installments(acct, balance_ctx),
+        )
+        return balance_ctx, scenarios, dates
+
+    def test_band_labels_cover_the_plans_line(
+        self, app, seed_user, db, seed_periods,
+    ):
         """The band's balance line never runs past its labelled x-axis.
 
-        With committed (7 points) the longest series, labels are keyed off it, so
-        len(labels) == len(balance) == 2 history + 5 committed = 7, the line IS
-        the committed trajectory, and the confirmed/projected boundary is the 2
-        history rows.  Before the fix (labels keyed off ``original``, 5 points)
-        the 7-point committed line overran the 5 labels.
+        The grid is the confirmed history's dates plus the contract's (none
+        and 359 here: Feb 2026 .. Jan 2056), extended to the fold's payoff.
+        So len(labels) == len(balance), the last label is LATER than the
+        contract's last installment, the balance at the contract's last tick
+        is still positive (the residue the extension clears) and the line
+        ends at $0.  Before the fix (labels keyed off the contract alone) the
+        line overran the labels by the extension.
         """
-        band = build_band_chart(self._scenarios(), has_payments=True)
-        assert len(band["labels"]) == len(band["balance"]) == 7
+        acct = self._two_installments_behind(seed_user, db.session)
+        with app.app_context():
+            balance_ctx, scenarios, dates = self._band_inputs(seed_user, acct)
+            band = build_band_chart(acct, balance_ctx, dates)
+            contract_end = scenarios.original_forward[-1].payment_date
+            grid_end = balance_at.loan_payoff_date(acct, balance_ctx)
+        assert not scenarios.history_rows
+        assert len(band["labels"]) == len(band["balance"])
+        assert band["labels"][0] == "Feb 2026"
+        assert band["labels"][len(scenarios.original_forward) - 1] == "Jan 2056"
+        assert contract_end == date(2056, 1, 1)
+        assert grid_end is not None and grid_end > contract_end
+        assert band["labels"][-1] == grid_end.strftime("%b %Y")
+        assert band["balance"][len(scenarios.original_forward) - 1] > 0.0
+        assert band["balance"][-1] == 0.0
+        # The two grid dates at or before today are the ledger's.
         assert band["current_index"] == 2
-        # The line IS the committed trajectory (history + committed forward).
-        assert band["balance"] == [
-            250000.0, 249000.0,
-            240000.0, 230000.0, 220000.0, 210000.0, 200000.0,
-        ]
-        # Labels span the longest (committed) dates: Jan 2026 .. Jul 2026.
-        assert band["labels"][0] == "Jan 2026"
-        assert band["labels"][-1] == "Jul 2026"
+        assert band["balance"][:2] == [250000.0, 250000.0]
 
-    def test_overlay_stays_aligned_to_the_band_labels(self):
-        """The accelerated overlay pads to the band's full label count.
+    def test_a_month_end_loans_extension_keeps_the_months_end(
+        self, app, seed_user, db, seed_periods,
+    ):
+        """The grid's extension steps from the contract's last date, not from itself.
 
-        ``accelerated_overlay`` includes ``committed`` in its baseline, so the
-        overlay is padded to the band's 7 labels even though accelerated pays off
-        at 6 points: the first 2 (history) are null, the accelerated forward's 4
-        balances follow, then one post-payoff $0.00 pad -- 7 total, matching the
-        band exactly.  Without including committed the overlay would pad to only 6
-        and land one x-position short of the committed line.
+        A loan due on the 31st: ``add_months`` clamps a 31st to a short
+        month's end and, stepped AGAIN from that result, decays to the 28th
+        for good, so an extension built one step at a time would put its
+        dates before the plan's (the plan steps from the contract's last
+        installment by a month count, ``_plan._charge_dates``) and run one
+        tick past the payoff.  The grid's dates past the contract are the
+        plan's own: the last label is the payoff's month and the point
+        count past the contract is the month count to the payoff.
         """
-        scenarios = self._scenarios()
-        band = build_band_chart(scenarios, has_payments=True)
-        overlay = accelerated_overlay(scenarios)
-        assert len(overlay) == len(band["labels"]) == 7
-        # No overlay over confirmed history.
-        assert overlay[:2] == [None, None]
-        # Accelerated forward (4 points) then a post-payoff $0.00 pad to 7.
-        assert overlay[2:] == [235000.0, 220000.0, 205000.0, 0.0, 0.0]
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 31),
+            payment_day=31,
+        )
+        db.session.commit()
+        with app.app_context():
+            balance_ctx, scenarios, dates = self._band_inputs(seed_user, acct)
+            band = build_band_chart(acct, balance_ctx, dates)
+            payoff = balance_at.loan_payoff_date(acct, balance_ctx)
+            plan_dates = [
+                installment.due_date
+                for installment in balance_at.loan_installments(
+                    acct, balance_ctx,
+                )
+            ]
+        contract_end = scenarios.original_forward[-1].payment_date
+        assert contract_end.day == 31
+        assert payoff is not None and payoff > contract_end
+        assert payoff in plan_dates
+        past_contract = len(band["labels"]) - len(scenarios.original_forward)
+        assert past_contract == months_between(contract_end, payoff)
+        assert band["labels"][-1] == payoff.strftime("%b %Y")
+        assert band["balance"][-1] == 0.0
+        assert band["balance"][-2] > 0.0
+
+    def test_overlay_stays_aligned_to_the_band_labels(
+        self, app, seed_user, db, seed_periods,
+    ):
+        """The accelerated overlay is folded on the band's own grid.
+
+        ``accelerated_overlay`` reads ``band_chart_dates`` too, so the overlay
+        has exactly the band's label count: ``None`` on the grid dates at or
+        before today (the ledger's points), the what-if balance after.  With
+        $500 a month on top it clears the loan before the plan does and pads
+        $0.00 to the band's last tick -- aligned one-to-one, where a grid cut
+        at the contract would land the overlay short of the plan's line.
+        """
+        acct = self._two_installments_behind(seed_user, db.session)
+        with app.app_context():
+            balance_ctx, _scenarios, dates = self._band_inputs(seed_user, acct)
+            band = build_band_chart(acct, balance_ctx, dates)
+            overlay = accelerated_overlay(
+                acct, balance_ctx, dates, Decimal("500.00"),
+            )
+        assert len(overlay) == len(band["labels"])
+        current_index = band["current_index"]
+        assert current_index == 2
+        assert overlay[:current_index] == [None, None]
+        assert all(value is not None for value in overlay[current_index:])
+        # Accelerates: reaches $0 strictly before the plan's line does, and
+        # stays at $0 to the band's last tick.
+        overlay_zero = overlay.index(0.0)
+        plan_zero = band["balance"].index(0.0)
+        assert overlay_zero < plan_zero
+        assert set(overlay[overlay_zero:]) == {0.0}
+        assert overlay[-1] == 0.0
 
 
 # ── Account Creation Redirect Tests ──────────────────────────────────
@@ -3823,53 +3909,96 @@ class TestTransferPrompt:
     def test_update_payment_settings_changes_extra(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """The payment-settings route updates the standing extra in place.
+        """The per-definition settings door updates that payment's extra in place.
 
         No shadow regeneration is needed (the extra is a live parameter): the
-        settings row's ``extra_principal`` is set to the new value.
+        settings row's ``extra_principal`` is set to the new value.  The 302
+        is also the proof that the moved door still ROUTES: the ownership 404s
+        below are only meaningful beside it.
         """
-        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
-
         acct = _create_mortgage(seed_user, db.session)
         checking = seed_user["account"]
         auth_client.post(
             f"/accounts/{acct.id}/loan/create-transfer",
             data={"source_account_id": str(checking.id)},
         )
+        tpl = _payment_template(db.session, seed_user, acct)
 
         resp = auth_client.post(
-            f"/accounts/{acct.id}/loan/payment-settings",
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
             data={"extra_principal": "150.00"},
         )
         assert resp.status_code == 302
 
-        tpl = (
-            db.session.query(TransferTemplate)
-            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
-            .first()
-        )
+        db.session.expire(tpl)
         assert tpl.settings.extra_principal == Decimal("150.00")
 
-    def test_update_payment_settings_no_recurring_payment_warns(
+    def test_update_payment_settings_unknown_template_404s(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Editing the extra on a loan with no recurring payment warns, no 500."""
+        """A template id that names none of this loan's payments is a 404.
+
+        The door names the definition it writes (plan step R7d-g-3, ruling
+        R-R83); with no recurring payment there is no id to name, and an id
+        that names nothing reads the same as one that is not the owner's.
+        """
         acct = _create_mortgage(seed_user, db.session)
 
         resp = auth_client.post(
-            f"/accounts/{acct.id}/loan/payment-settings",
+            f"/accounts/{acct.id}/loan/payments/999999/settings",
             data={"extra_principal": "150.00"},
-            follow_redirects=True,
         )
-        assert resp.status_code == 200
-        assert b"no recurring payment" in resp.data.lower()
+        assert resp.status_code == 404
+
+    def test_update_payment_settings_refuses_another_loans_template(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The owner's OWN payment into a different loan is a 404 on this loan's door.
+
+        The template must pay INTO the loan the URL names -- the set the card
+        renders a strip for -- so a valid id on the wrong loan writes nothing.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        other = _create_mortgage(seed_user, db.session, name="Other Mortgage")
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{other.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        other_tpl = _payment_template(db.session, seed_user, other)
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{other_tpl.id}/settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 404
+        db.session.expire(other_tpl)
+        assert other_tpl.settings.extra_principal == Decimal("0.00")
+
+    def test_update_payment_settings_refuses_an_archived_template(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """An ARCHIVED payment is not in the loan's active set, so its door is a 404."""
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        tpl = _payment_template(db.session, seed_user, acct)
+        resp = auth_client.post(f"/transfers/{tpl.id}/archive")
+        assert resp.status_code == 302
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
+            data={"extra_principal": "150.00"},
+        )
+        assert resp.status_code == 404
 
     def test_update_payment_settings_rejects_negative_extra(
         self, auth_client, seed_user, db, seed_periods,
     ):
         """A negative extra is rejected (danger flash) and never mutates settings."""
-        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
-
         acct = _create_mortgage(seed_user, db.session)
         checking = seed_user["account"]
         auth_client.post(
@@ -3880,40 +4009,55 @@ class TestTransferPrompt:
             },
         )
 
+        tpl = _payment_template(db.session, seed_user, acct)
+
         resp = auth_client.post(
-            f"/accounts/{acct.id}/loan/payment-settings",
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
             data={"extra_principal": "-5.00"},
             follow_redirects=True,
         )
         assert resp.status_code == 200
         assert b"valid extra principal" in resp.data.lower()
         # The original extra is untouched.
-        tpl = (
-            db.session.query(TransferTemplate)
-            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
-            .first()
-        )
+        db.session.expire(tpl)
         assert tpl.settings.extra_principal == Decimal("50.00")
 
     def test_update_payment_settings_idor(
         self, second_auth_client, seed_user, db, seed_periods,
     ):
-        """A non-owner editing a loan's extra gets a 404 (not-yours == not-found)."""
+        """A non-owner editing a loan's extra gets a 404 (not-yours == not-found).
+
+        With the owner's real template id in the URL, so the 404 is the
+        ownership gate's and not the URL map's -- the sibling
+        ``test_update_payment_settings_changes_extra`` proves the same URL
+        shape routes (302) for the owner.  The owner's payment is built
+        through the ORM rather than the owner's client: the ``db`` fixture
+        holds ONE app context for the whole test and Flask-Login caches
+        ``current_user`` on ``g`` per app context, so a request from a second
+        client after the owner's runs AS THE OWNER (measured 2026-09-14: the
+        non-owner's POST wrote the extra).
+        """
         acct = _create_mortgage(seed_user, db.session)
+        tpl = make_loan_payment_template(
+            db.session, seed_user, acct, amount="1500.00",
+        )
+        db.session.commit()
 
         resp = second_auth_client.post(
-            f"/accounts/{acct.id}/loan/payment-settings",
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
             data={"extra_principal": "150.00"},
         )
         assert resp.status_code == 404
+        db.session.expire(tpl)
+        assert tpl.settings.extra_principal == Decimal("0.00")
 
     def test_dashboard_shows_extra_control_when_payment_exists(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """The extra-principal edit control renders once a recurring payment exists.
+        """The payment card renders the definition's extra control once it exists.
 
-        Prefilled from the payment's stored extra ($125.00), posting to the
-        payment-settings route.
+        Prefilled from THAT payment's stored extra ($125.00), posting to its
+        own per-definition settings door.
         """
         acct = _create_mortgage(seed_user, db.session)
         checking = seed_user["account"]
@@ -3924,11 +4068,12 @@ class TestTransferPrompt:
                 "extra_principal": "125.00",
             },
         )
+        tpl = _payment_template(db.session, seed_user, acct)
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert f"/accounts/{acct.id}/loan/payment-settings" in html
+        assert f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings" in html
         assert 'value="125.00"' in html
 
     def test_source_accounts_exclude_debt_account(
@@ -4061,12 +4206,13 @@ class TestPaymentDrift:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "short of the contractual monthly payment" in html
+        tpl = _payment_template(db.session, seed_user, acct)
+        assert "short of the" in html
         assert f"${stored:,.2f}" in html          # stored transfer amount
         assert "$50.00" in html                    # the exact shortfall
         assert f"${contract:,.2f}" in html         # the contractual payment
-        assert f"/accounts/{acct.id}/loan/track-payment" in html
-        assert "Switch to automatic payment" in html
+        assert f"/accounts/{acct.id}/loan/payments/{tpl.id}/track" in html
+        assert "Track the loan" in html
 
     def test_dashboard_warns_when_legacy_manual_payment_short(
         self, auth_client, seed_user, db, seed_periods,
@@ -4087,7 +4233,7 @@ class TestPaymentDrift:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "short of the contractual monthly payment" in html
+        assert "short of the" in html
         assert "$50.00" in html
 
     def test_dashboard_warns_when_base_short_despite_standing_extra(
@@ -4119,7 +4265,7 @@ class TestPaymentDrift:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "short of the contractual monthly payment" in html
+        assert "short of the" in html
         assert "$50.00" in html          # the BASE shortfall, extra excluded
 
     @pytest.mark.parametrize("delta", [Decimal("0.00"), Decimal("100.00")])
@@ -4144,7 +4290,7 @@ class TestPaymentDrift:
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        assert "short of the contractual monthly payment" not in resp.data.decode()
+        assert "short of the" not in resp.data.decode()
 
     def test_dashboard_no_warning_when_derive_even_after_escrow_rise(
         self, auth_client, seed_user, db, seed_periods,
@@ -4182,7 +4328,7 @@ class TestPaymentDrift:
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
-        assert "short of the contractual monthly payment" not in resp.data.decode()
+        assert "short of the" not in resp.data.decode()
 
     def test_track_payment_flips_to_derive_and_clears_warning(
         self, auth_client, seed_user, db, seed_periods,
@@ -4193,8 +4339,6 @@ class TestPaymentDrift:
         derive_from_loan True and resets the stored base to the contract, so a
         re-render shows no warning and the loan now tracks the contract.
         """
-        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
-
         acct = _create_mortgage(seed_user, db.session)
         checking = seed_user["account"]
         contract = self._contract(acct, seed_user["user"].id)
@@ -4205,25 +4349,23 @@ class TestPaymentDrift:
                 "amount": str(contract - Decimal("50.00")),
             },
         )
+        tpl = _payment_template(db.session, seed_user, acct)
         # Precondition: the warning is showing.
         pre = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert "short of the contractual monthly payment" in pre.data.decode()
+        assert "short of the" in pre.data.decode()
 
-        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/track",
+        )
         assert resp.status_code == 302
         assert f"/accounts/{acct.id}/loan" in resp.headers.get("Location", "")
 
-        tpl = (
-            db.session.query(TransferTemplate)
-            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
-            .first()
-        )
         db.session.expire(tpl)
         assert tpl.settings.derive_from_loan is True
         assert tpl.default_amount == contract
 
         post = auth_client.get(f"/accounts/{acct.id}/loan")
-        assert "short of the contractual monthly payment" not in post.data.decode()
+        assert "short of the" not in post.data.decode()
 
     def test_track_payment_creates_settings_row_for_legacy_manual(
         self, auth_client, seed_user, db, seed_periods,
@@ -4241,7 +4383,9 @@ class TestPaymentDrift:
         )
         assert tpl.settings is None   # legacy shape: no settings row
 
-        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/track",
+        )
         assert resp.status_code == 302
 
         db.session.expire(tpl)
@@ -4259,8 +4403,6 @@ class TestPaymentDrift:
         the switch flips derive True and keeps extra at $75 (the extra rides on top
         of the tracked base, unchanged), resetting the base to the contract.
         """
-        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
-
         acct = _create_mortgage(seed_user, db.session)
         checking = seed_user["account"]
         contract = self._contract(acct, seed_user["user"].id)
@@ -4272,39 +4414,293 @@ class TestPaymentDrift:
                 "extra_principal": "75.00",
             },
         )
+        tpl = _payment_template(db.session, seed_user, acct)
 
-        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/track",
+        )
         assert resp.status_code == 302
 
-        tpl = (
-            db.session.query(TransferTemplate)
-            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
-            .first()
-        )
         db.session.expire(tpl)
         assert tpl.settings.derive_from_loan is True
         assert tpl.settings.extra_principal == Decimal("75.00")
         assert tpl.default_amount == contract
 
-    def test_track_payment_no_recurring_payment_warns(
+    def test_track_payment_unknown_template_404s(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Switching a loan with no recurring payment warns, no 500."""
+        """A template id naming none of this loan's payments is a 404, no 500."""
         acct = _create_mortgage(seed_user, db.session)
         resp = auth_client.post(
-            f"/accounts/{acct.id}/loan/track-payment",
+            f"/accounts/{acct.id}/loan/payments/999999/track",
+        )
+        assert resp.status_code == 404
+
+    def test_track_payment_flips_the_named_definition_not_the_oldest(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Two payments into one loan: the door flips the one its URL names.
+
+        The shape ruling R-R83 was asked for (plan ledger row D49): a fixed
+        sweep created BEFORE the real payment, both fixed (the payment was
+        created with a typed amount).  The old loan-keyed door took
+        ``active_recurring_transfer_template`` -- the OLDEST -- and flipped
+        the sweep to derive, so the loan was projected paying the contract
+        twice a month.  Naming the payment in the URL makes the oldest
+        irrelevant: the sweep stays fixed at its own figure and the named
+        payment is the one that tracks.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        # The sweep first, so it is the oldest active definition into the loan.
+        sweep = self._legacy_manual_transfer(
+            seed_user, db.session, acct, Decimal("50.00"),
+        )
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": str(contract - Decimal("50.00")),
+            },
+        )
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+        payment = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .filter(TransferTemplate.id != sweep.id)
+            .one()
+        )
+        assert sweep.id < payment.id
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{payment.id}/track",
+        )
+        assert resp.status_code == 302
+
+        db.session.expire_all()
+        assert payment.settings.derive_from_loan is True
+        assert payment.default_amount == contract
+        assert sweep.settings is None
+        assert sweep.default_amount == Decimal("50.00")
+
+    def test_track_payment_refuses_another_loans_template(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The owner's payment into a DIFFERENT loan is a 404 on this loan's track door.
+
+        The same gate the settings door proves
+        (``TestTransferPrompt.test_update_payment_settings_refuses_another_loans_template``),
+        asked of the second door: one function, two doors, each measured.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        other = _create_mortgage(seed_user, db.session, name="Other Mortgage")
+        contract = self._contract(other, seed_user["user"].id)
+        other_tpl = self._legacy_manual_transfer(
+            seed_user, db.session, other, contract - Decimal("50.00"),
+        )
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{other_tpl.id}/track",
+        )
+        assert resp.status_code == 404
+        db.session.expire(other_tpl)
+        assert other_tpl.settings is None
+        assert other_tpl.default_amount == contract - Decimal("50.00")
+
+    def test_the_card_renders_one_strip_per_definition_with_its_own_controls(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Two payments into one loan: two strips, each with ITS figure and doors.
+
+        Ruling R-R83 (plan step R7d-g-3): the card lists every recurring
+        transfer into the loan.  A fixed ``$50`` sweep (the older definition,
+        no settings row) and the dashboard-created payment (tracks the loan,
+        ``$125`` extra).  Each strip prefills its OWN extra, posts to its OWN
+        settings door, and only the fixed one offers the Track button -- the
+        tracking one has nothing to flip.  The sweep, at ``$50`` against a
+        four-figure contract, is short, so its strip carries the shortfall
+        sentence and the warning tint while the tracking strip carries none.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        sweep = self._legacy_manual_transfer(
+            seed_user, db.session, acct, Decimal("50.00"),
+        )
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "extra_principal": "125.00",
+            },
+        )
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+        payment = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .filter(TransferTemplate.id != sweep.id)
+            .one()
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # Two strips, in definition order (oldest first), each named (the
+        # payment's name carries a ``->`` the template escapes).
+        assert (
+            html.index(f'data-template-id="{sweep.id}"')
+            < html.index(f'data-template-id="{payment.id}"')
+        )
+        assert sweep.name in html
+        assert payment.name.replace(">", "&gt;") in html
+        assert "2 into this loan" in html
+        # Each strip's own doors.
+        for tpl in (sweep, payment):
+            assert f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings" in html
+        # One tracker per loan: the payment tracks, so neither strip offers
+        # Track (the sweep's strip names the tracker in its shortfall).
+        assert f"/accounts/{acct.id}/loan/payments/{sweep.id}/track" not in html
+        assert f"/accounts/{acct.id}/loan/payments/{payment.id}/track" not in html
+        # Each strip's own extra, prefilled on its own input.
+        assert re.search(
+            rf'id="extra-principal-{sweep.id}"[^>]*value="0\.00"', html,
+        )
+        assert re.search(
+            rf'id="extra-principal-{payment.id}"[^>]*value="125\.00"', html,
+        )
+        # The modes, one each.
+        assert html.count("Tracks the loan") == 1
+        assert html.count("Fixed amount") == 1
+        # Each strip's next payment, priced by the amount model: the sweep's
+        # $50.00 stated price (rule 3 -- no settings row), the tracking
+        # payment's contract + its $125 extra (rule 4's derive arm).
+        assert "$50.00" in html
+        assert f"${contract + Decimal('125.00'):,.2f}" in html
+        assert "next payment," in html
+        # The sweep is short; the tracking payment is not.
+        assert html.count("loan-payment--short") == 1
+        assert "short of the" in html
+        # The page-top alerts are gone: the card is the one home (the base
+        # layout's own MFA nag is the one warning alert a page may carry).
+        assert "Switch to automatic payment" not in html
+        assert html.count("alert-warning") == html.count("mfa-nag-banner")
+        assert "No recurring payment set up" not in html
+
+    def test_the_strip_prices_the_next_payment_not_the_newest_stated_price(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A fixed payment's figure and drift are its NEXT row's price, per the amount model.
+
+        The owner states a future price on a fixed payment ($9,999.00 from
+        2028).  ``default_amount`` follows the NEWEST statement
+        (``template_amount_service._resync_scalar``), so the first cut of the
+        card -- and the drift before it -- would have shown $9,999.00 as what
+        the loan is paid and judged the drift on it.  The strip prices the
+        next occurrence through ``cash_ledger.definition_cash`` (ruling
+        R-R67's one producer), so it shows the price in effect for that date,
+        and the shortfall sentence names the same figure.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        contract = self._contract(acct, seed_user["user"].id)
+        stored = contract - Decimal("50.00")
+        tpl = self._legacy_manual_transfer(seed_user, db.session, acct, stored)
+        state_template_price(
+            tpl, Decimal("9999.00"), effective_on=date(2028, 1, 1),
+        )
+        db.session.commit()
+        db.session.expire(tpl)
+        assert tpl.default_amount == Decimal("9999.00"), (
+            "precondition: the scalar follows the newest statement"
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "$9,999.00" not in html
+        assert f"${stored:,.2f}" in html
+        assert "next payment," in html
+        assert "$50.00" in html and "short of the" in html
+
+    def test_a_second_tracker_is_refused_at_the_door_and_hidden_on_the_card(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """One definition tracks a loan (developer, 2026-09-14).
+
+        A tracking payment plus a fixed $50 sweep: the sweep's strip offers no
+        Track control and its shortfall sentence names the tracker; a crafted
+        POST to the sweep's track door is refused with the flash naming the
+        tracker and writes nothing -- no settings row, the $50 untouched.  The
+        tracker's own door still answers (a re-track writes the same mode).
+        """
+        from app.routes.loan.payment_transfer import (  # pylint: disable=import-outside-toplevel
+            ANOTHER_PAYMENT_TRACKS_THE_LOAN,
+        )
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},
+        )
+        tracker = _payment_template(db.session, seed_user, acct)
+        sweep = self._legacy_manual_transfer(
+            seed_user, db.session, acct, Decimal("50.00"),
+        )
+
+        html = auth_client.get(f"/accounts/{acct.id}/loan").data.decode()
+        assert f"/accounts/{acct.id}/loan/payments/{sweep.id}/track" not in html
+        assert f"/accounts/{acct.id}/loan/payments/{tracker.id}/track" not in html
+        assert "tracks the loan, so this" in html
+        assert tracker.name.replace(">", "&gt;") in html
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{sweep.id}/track",
             follow_redirects=True,
         )
         assert resp.status_code == 200
-        assert b"no recurring payment" in resp.data.lower()
+        page = resp.data.decode()
+        # The door's own sentence, HTML-escaped as the flash renders it.
+        assert "already tracks this loan" in ANOTHER_PAYMENT_TRACKS_THE_LOAN
+        assert "already tracks this loan" in page
+        assert tracker.name.replace(">", "&gt;") in page
+        assert "cannot track it too" in page
+        db.session.expire_all()
+        assert sweep.settings is None
+        assert sweep.default_amount == Decimal("50.00")
+
+        # The tracker's own door is not refused by its own tracking.
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tracker.id}/track",
+        )
+        assert resp.status_code == 302
+        db.session.expire_all()
+        assert tracker.settings.derive_from_loan is True
 
     def test_track_payment_idor(
         self, second_auth_client, seed_user, db, seed_periods,
     ):
-        """A non-owner switching a loan's payment gets a 404 (not-yours == not-found)."""
+        """A non-owner switching a loan's payment gets a 404 (not-yours == not-found).
+
+        With the owner's real template id in the URL, so the 404 is the
+        ownership gate's and not the URL map's (the owner's 302 on the same
+        URL shape is ``test_track_payment_flips_to_derive_and_clears_warning``).
+        The owner's payment is built through the ORM, not the owner's client:
+        see ``test_update_payment_settings_idor`` for why a second client's
+        request after the owner's runs as the owner.
+        """
         acct = _create_mortgage(seed_user, db.session)
-        resp = second_auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        contract = self._contract(acct, seed_user["user"].id)
+        tpl = self._legacy_manual_transfer(
+            seed_user, db.session, acct, contract - Decimal("50.00"),
+        )
+        resp = second_auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/track",
+        )
         assert resp.status_code == 404
+        db.session.expire(tpl)
+        assert tpl.settings is None
+        assert tpl.default_amount == contract - Decimal("50.00")
 
 
 # ── ARM Rate History Integration Tests (Commit 5.7-1) ──────────────
@@ -4388,28 +4784,36 @@ class TestMultiScenarioVisualization:
     def test_dashboard_chart_no_payments_shows_contractual(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Dashboard with no transfers: the band shows the contractual line.
+        """Dashboard with no transfers: the band splits at today, the past the ledger's.
 
-        With no payments there is no confirmed history, so the band's
-        ``current_index`` is 0 and the balance line is the pure contractual
-        projection (loan_detail.js draws it entirely as a dashed forward line).
+        With no payments there is no confirmed history, yet the band still
+        splits at TODAY (plan step R7d-g-3, ruling **R-R88**: the line is the
+        seam's ``positions`` on the contractual grid -- a past date reads the
+        ledger, a future one the plan fold).  ``_create_mortgage`` asserts
+        $250,000 on 2026-01-01 with payment day 1, so the grid's Feb 1 and
+        Mar 1 2026 fall at or before the frozen 2026-03-20 today: two
+        ledger points at the asserted balance (nothing paid), then the
+        projection.
         """
         acct = _create_mortgage(seed_user, db.session)
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         band = _parse_band_chart(resp.data.decode())
         assert band is not None
-        assert band["current_index"] == 0
-        assert len(band["balance"]) > 0
+        assert band["current_index"] == 2
+        assert band["balance"][:2] == [250000.0, 250000.0]
+        assert len(band["balance"]) > 2
 
     def test_dashboard_chart_with_projected_payment(
         self, auth_client, seed_user, db, seed_periods,
     ):
         """Dashboard with a projected transfer: band renders, no false history.
 
-        A projected (not-yet-confirmed) transfer forms a committed schedule but
-        no ledger-confirmed history, so the band's ``current_index`` stays 0 and
-        the balance line is present.
+        A projected (not-yet-confirmed) transfer is the plan's, not the
+        ledger's: the band's split stays at today (the same two ledger
+        points as the no-transfer case, at the asserted $250,000 -- a
+        projected row moves no past balance) and the balance line is
+        present.
         """
         acct = _create_mortgage(seed_user, db.session)
         _create_transfer_to_loan(
@@ -4422,17 +4826,20 @@ class TestMultiScenarioVisualization:
         assert resp.status_code == 200
         band = _parse_band_chart(resp.data.decode())
         assert band is not None
-        assert band["current_index"] == 0
-        assert len(band["balance"]) > 0
+        assert band["current_index"] == 2
+        assert band["balance"][:2] == [250000.0, 250000.0]
+        assert len(band["balance"]) > 2
 
     def test_dashboard_chart_confirmed_payment_is_history(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Dashboard with a confirmed transfer splits the band at the history boundary.
+        """Dashboard with a confirmed transfer: the ledger's points carry it.
 
-        A confirmed (Paid) transfer becomes ledger-confirmed history, so the
-        band's ``current_index`` advances past 0 -- the solid (history) portion
-        of the balance line.
+        A confirmed (Paid) transfer is the ledger's, so the band's solid
+        segment -- the grid dates at or before today, read off the ledger --
+        shows the balance it paid down: the Feb 1 2026 point (the payment is
+        due Feb 1, settled Jan 16) sits BELOW the $250,000 asserted on
+        2026-01-01, where the no-payment sibling's sits flat on it.
         """
         acct = _create_mortgage(seed_user, db.session)
         _create_transfer_to_loan(
@@ -4445,7 +4852,9 @@ class TestMultiScenarioVisualization:
         assert resp.status_code == 200
         band = _parse_band_chart(resp.data.decode())
         assert band is not None
-        assert band["current_index"] >= 1
+        assert band["current_index"] == 2
+        assert band["labels"][0] == "Feb 2026"
+        assert band["balance"][0] < 250000.0
 
     def test_payoff_results_committed_metrics(
         self, auth_client, seed_user, db, seed_periods,
@@ -4546,10 +4955,12 @@ class TestMultiScenarioVisualization:
     def test_dashboard_arm_band_renders(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """ARM loan: the band renders its contractual balance line and ARM tag.
+        """ARM loan: the band renders its balance line and ARM tag.
 
-        With no payments the band's balance line is the pure contractual
-        baseline (current_index 0); the rate chip carries the ARM tag.
+        With no payments the band's past points are the ledger's (the
+        $100,000 asserted on 2026-01-01, unpaid on the grid's Feb 1 and
+        Mar 1) and the rest the plan fold's; the rate chip carries the ARM
+        tag.
         """
         acct = _create_loan_account(
             seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM Mortgage",
@@ -4569,8 +4980,9 @@ class TestMultiScenarioVisualization:
         html = resp.data.decode()
         band = _parse_band_chart(html)
         assert band is not None
-        assert band["current_index"] == 0
-        assert len(band["balance"]) > 0
+        assert band["current_index"] == 2
+        assert band["balance"][:2] == [100000.0, 100000.0]
+        assert len(band["balance"]) > 2
         # The rate chip carries the ARM tag.
         assert "ARM" in html
         assert "Balance owed" in html
@@ -4796,6 +5208,54 @@ class TestPaymentBreakdown:
         html = resp.data.decode()
         assert "inflation estimates" in html
 
+    def test_breakdown_sums_the_coming_months_payments_and_skips_catch_ups(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The bar is the coming installment MONTH: every payment due in it, summed.
+
+        A $250k / 6.5% / 360-month mortgage originated 2026-03-01 (first
+        installment Apr 1 2026; nothing overdue at the frozen 2026-03-20
+        today) paid by TWO definitions: a tracking payment carrying a $125
+        extra, due the 1st, and a fixed $50 sweep due the 15th -- whose Mar
+        15 occurrence no row answers, so the plan prices it as a catch-up
+        paid the day after the read (ruling R-R64, the D1 clamp) and its Jan
+        and Feb occurrences fall inside the origination assertion (R-R72).
+
+        The bar reads April: ``$1,580.17 + $125 + $50 = $1,755.17``, not the
+        catch-up on top ($1,805.17) and not the next installment alone
+        ($1,705.17).  The catch-up still moves the balance the fold charges
+        on: ``$250,000 - $50 = $249,950`` at Apr 1, so April's interest is
+        ``249950 * 0.065 / 12 = $1,353.90`` (HALF_UP) and the month's
+        principal ``$1,755.17 - $1,353.90 = $401.27`` (the sweep's $50 is all
+        principal: April's charge is met by the payment before it).
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 3, 1),
+        )
+        tracking = make_loan_payment_template(
+            db.session, seed_user, acct, extra_principal="125.00",
+        )
+        # The builder names every template after the loan; two into one loan
+        # need distinct names (``uq_transfer_templates_user_name``).
+        tracking.name = "Mortgage payment"
+        db.session.flush()
+        make_loan_payment_template(
+            db.session, seed_user, acct, amount="50.00",
+            derive_from_loan=False, cadence=MONTHLY, fires_on_day=15,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Apr 2026 payment" in html
+        assert "$1,755.17" in html
+        assert "$1,353.90" in html
+        assert "$401.27" in html
+        assert "$1,805.17" not in html
+        pcts = re.findall(r'data-progress-pct="([0-9.]+)"', html)
+        assert sum(Decimal(p) for p in pcts) == Decimal("100.0")
+
     def test_breakdown_no_inflation_note_when_zero(
         self, auth_client, seed_user, db, seed_periods,
     ):
@@ -4929,20 +5389,32 @@ class TestAmortizationSchedule:
         Pre-Commit-5 the dashboard called ``generate_schedule``
         directly, which iterated up to ``max_months = remaining_months
         + term_months`` and emitted a 361st row absorbing the
-        sub-penny rounding residue.  Post-Commit-5 the dashboard
-        routes through ``compute_payoff_scenarios`` ->
-        ``project_forward``, which terminates cleanly at
-        ``month_num == remaining_months``, absorbing the residue in
-        the final scheduled month.  The architecturally correct row
-        count for a 30-year mortgage with no payments is therefore
-        ``term_months == 360`` -- one row per scheduled month, no
-        residue artifact.  Hand-derivation:
-        ``len(history_rows) == 0`` (no confirmed payments) +
-        ``len(committed_forward) == remaining_months_as_of == 360``.
+        sub-penny rounding residue.  Post-Commit-5 the schedule routed
+        through ``compute_payoff_scenarios`` -> ``project_forward``, which
+        terminates cleanly at ``month_num == remaining_months``, absorbing
+        the residue in the final scheduled month; since plan step R7d-g-3
+        (ruling **R-R88**) it lists the balance seam's forward plan
+        (``balance_at.loan_installments``) through the payoff, and a plan
+        with no recurring payment folds the contract's own installments.
+        The architecturally correct row count for a 30-year mortgage with
+        nothing due yet is therefore ``term_months == 360`` -- one row per
+        scheduled month, no residue artifact.  Hand-derivation:
+        ``len(history_rows) == 0`` (no confirmed payments) + 360
+        contractual installments, every one in the plan's future.
+
+        The loan originates on 2026-03-01 so its first installment (Apr 1)
+        is after the frozen 2026-03-20 today.  Originated a month earlier,
+        the Mar 1 installment would be due and unpaid, and an overdue
+        installment is NOT in the plan (ruling D1 / finding B-9): the fold
+        then clears the loan in the post-contractual extension and the
+        table honestly runs past 360 --
+        ``test_schedule_lists_the_plan_when_an_installment_is_overdue``.
         """
         expected_count = 360
 
-        acct = _create_fresh_mortgage(seed_user, db.session)
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 3, 1),
+        )
         resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
@@ -4974,8 +5446,8 @@ class TestAmortizationSchedule:
         ``compute_payoff_scenarios``, whose replay only consumes
         confirmed payments with ``payment_date <= as_of``; confirmed
         payments dated AFTER today are data-hygiene cases and are
-        routed through ``monthly_override`` (Projected badge) -- the
-        new architecture's stricter semantic for the Confirmed badge.
+        the plan's to price (Projected badge) -- the new
+        architecture's stricter semantic for the Confirmed badge.
         The previous fixture used April/May 2026 seed_periods (after
         the frozen today), which exercised the data-hygiene path,
         not the realistic "DONE payment in history" path.  This
@@ -5032,8 +5504,15 @@ class TestAmortizationSchedule:
           Principal = 1580.17 - 1354.17 = $226.00
 
         Last row: remaining_balance = $0.00
+
+        Originated 2026-03-01 so the first installment (Apr 1 2026) is the
+        plan's first row on the untouched $250,000 (see
+        ``test_schedule_has_correct_row_count`` for why a loan a month
+        older would list a different first row).
         """
-        acct = _create_fresh_mortgage(seed_user, db.session)
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 3, 1),
+        )
         resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
@@ -5051,23 +5530,41 @@ class TestAmortizationSchedule:
     def test_schedule_numbering_continuous_from_origination(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """The # column counts total payments from origination, not 1..N per slice.
+        """The # column counts installments from origination, not 1..N per slice.
 
         Regression for the user request: a mid-life loan's schedule must
-        number rows by total payments made -- a loan in its 26th month
-        shows #25 for its Feb 1 2026 payment -- and the projected slice
-        must keep counting up (#26, #27, ...) instead of restarting at 1
-        (the projected slice's pre-fix project_forward-local numbering).
+        number rows by the installment's place in the contract -- a loan in
+        its 26th month shows #25 for its Feb 1 2026 payment -- and the
+        projected slice must keep counting up (#26, #27, ...) instead of
+        restarting at 1 (the projected slice's pre-fix
+        project_forward-local numbering).
         """
         # Origination 2024-01-01 -> the Feb 1 2026 payment is the 25th
         # (25 whole months after origination) at the frozen today
-        # (2026-03-20).  seed_periods[2] (2026-01-30 .. 2026-02-12)
-        # contains 2/1, so its confirmed payment IS the Feb 1 payment.
-        acct = _create_fresh_mortgage(
-            seed_user, db.session, origination_date=date(2024, 1, 1),
+        # (2026-03-20).  The loan is asserted at $250,000 on 2026-01-01
+        # (``_create_loan_account``: the balance when the owner began
+        # tracking it, rulings R-R71 / R-R72), so the 24 installments before
+        # that are the assertion's business and not the plan's.
+        # seed_periods[2] (2026-01-30 .. 2026-02-12) contains 2/1, so its
+        # confirmed payment IS the Feb 1 payment; seed_periods[3] (2026-02-13
+        # .. 2026-02-26) contains no 1st, so its payment is due 3/1 -- the
+        # 26th, paid ahead of its due date.  Both installments due since the
+        # assertion are paid, so the plan's first row is the 27th and the
+        # numbering runs continuously across the boundary.  (An installment
+        # left unpaid past its due date is absent from the plan, and the
+        # numbering then honestly skips it:
+        # ``test_schedule_lists_the_plan_when_an_installment_is_overdue``.)
+        acct = _create_loan_account(
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "Mid-life Mortgage",
+            Decimal("250000.00"), Decimal("0.06500"), 360,
+            date(2024, 1, 1), 1,
         )
         _create_transfer_to_loan(
-            seed_user, acct, seed_periods[2], Decimal("1580.17"),
+            seed_user, acct, seed_periods[2], Decimal("1611.77"),
+            status_enum=StatusEnum.DONE,
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[3], Decimal("1611.77"),
             status_enum=StatusEnum.DONE,
         )
         db.session.commit()
@@ -5096,6 +5593,113 @@ class TestAmortizationSchedule:
                 f"Numbering restarted or jumped at index {i}: "
                 f"{row_numbers[i - 1]} -> {row_numbers[i]}"
             )
+
+    def test_schedule_lists_the_plan_when_an_installment_is_overdue(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """An overdue, unpaid installment is absent; the plan runs past the contract.
+
+        The schedule lists what the loan is projected to PAY -- the balance
+        seam's forward plan (plan step R7d-g-3, ruling **R-R88**) -- and an
+        installment due before today that no payment answers is not in it
+        (ruling D1 / finding B-9: a plan cannot have already happened).  A
+        $250k / 6.5% / 360-month mortgage originated 2026-01-01 with its Feb
+        1 2026 payment (#1) confirmed and its Mar 1 2026 payment (#2) unpaid
+        at the frozen 2026-03-20 today: the plan's first row is #3 (Apr 1
+        2026), the numbering runs continuously from there, and because the
+        missed $1,580.17 is never paid it rides the balance to the contract's
+        end -- ``1580.17 * 1.0054167 ** 358 ~= $10,930`` above the
+        contractual track at #360 (Jan 2056) -- which the post-contractual
+        extension clears at the level P&I (~$1,521 of principal a month
+        against the residue's dwindling interest) in 8 more installments:
+        the last row is #368 (Sep 2056) and reaches $0.00.  Until R7d-g-3
+        the composer's committed slice listed a contractual row for the
+        missed month as if it would be paid, and stopped at #360 with the
+        residue absorbed into a phantom final payment.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[2], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        row_numbers = [
+            int(n) for n in re.findall(
+                r'<tr class="(?:table-success)?">\s*<td>(\d+)</td>', html
+            )
+        ]
+        assert html.count('badge bg-success">Confirmed</span>') == 1
+        assert row_numbers[0] == 1
+        assert 2 not in row_numbers, (
+            "the overdue, unpaid Mar 1 installment is not in the plan"
+        )
+        planned = row_numbers[1:]
+        assert planned[0] == 3
+        assert planned == list(range(3, 3 + len(planned)))
+        assert planned[-1] == 368, (
+            "the missed installment's residue takes 8 extension installments "
+            f"to clear: the last row is #368, got #{planned[-1]}"
+        )
+        # The last data row's balance cell -- the money cell right before the
+        # status badge on a fixed-rate loan's row -- reaches $0.00.
+        balances = re.findall(
+            r'<td class="text-end font-mono">\$([0-9,]+\.\d\d)</td>\s*<td>\s*'
+            r'<span class="badge',
+            html,
+        )
+        assert len(balances) == len(row_numbers), "no balance cells parsed"
+        assert balances[-1] == "0.00"
+
+    def test_schedule_rows_are_months_summing_every_payment_in_them(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A planned row is a MONTH: every payment the plan makes in it, summed.
+
+        The same loan as
+        ``TestPaymentBreakdown.test_breakdown_sums_the_coming_months_payments_and_skips_catch_ups``
+        -- $250k / 6.5% / 360 months originated 2026-03-01, a tracking
+        payment with a $125 extra due the 1st and a $50 sweep due the 15th
+        whose Mar 15 occurrence is a catch-up paid the day after the frozen
+        2026-03-20 today -- so the table is month-by-month, not
+        payment-by-payment: the catch-up is a row of its own dated the day
+        it is paid (Mar 21, $50.00, all principal, balance $249,950.00),
+        and April is ONE row (Apr 1: $1,755.17 paid, $1,353.90 interest,
+        $401.27 principal, balance $249,548.73) with no separate Apr 15 row.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 3, 1),
+        )
+        tracking = make_loan_payment_template(
+            db.session, seed_user, acct, extra_principal="125.00",
+        )
+        tracking.name = "Mortgage payment"
+        db.session.flush()
+        make_loan_payment_template(
+            db.session, seed_user, acct, amount="50.00",
+            derive_from_loan=False, cadence=MONTHLY, fires_on_day=15,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        row_dates = re.findall(
+            r'<tr class="(?:table-success)?">\s*<td>\d+</td>\s*<td>([^<]+)</td>',
+            html,
+        )
+        assert row_dates[:2] == ["Mar 21, 2026", "Apr 1, 2026"], row_dates[:3]
+        assert "Apr 15, 2026" not in row_dates
+        assert "$249,950.00" in html
+        assert "$1,755.17" in html
+        assert "$1,353.90" in html
+        assert "$401.27" in html
+        assert "$249,548.73" in html
 
     def test_schedule_early_payoff_fewer_rows(
         self, auth_client, seed_user, db, seed_periods,
@@ -5280,18 +5884,11 @@ class TestAmortizationSchedule:
         principal = Decimal("250000.00")
         rate = Decimal("0.06500")
         term = 360
-        # _create_fresh_mortgage seeds origination_date one month
-        # before today so the first scheduled payment lands on the
-        # first of this month.
-        first_of_this_month = date.today().replace(day=1)
-        if first_of_this_month.month == 1:
-            origination_date = first_of_this_month.replace(
-                year=first_of_this_month.year - 1, month=12,
-            )
-        else:
-            origination_date = first_of_this_month.replace(
-                month=first_of_this_month.month - 1,
-            )
+        # Originated on the first of the frozen today's month (2026-03-01)
+        # so the first installment (Apr 1) is after today and the plan is
+        # the whole contract: 360 installments, none overdue (see
+        # ``test_schedule_has_correct_row_count``).
+        origination_date = date(2026, 3, 1)
         starting_date = advance_to_next_payment_date(origination_date, 1)
         contractual = calculate_monthly_payment(principal, rate, term)
 
@@ -5318,7 +5915,9 @@ class TestAmortizationSchedule:
         formatted_interest = f"${expected_interest:,.2f}"
         formatted_payment = f"${expected_payment:,.2f}"
 
-        acct = _create_fresh_mortgage(seed_user, db.session)
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=origination_date,
+        )
         resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
@@ -5387,10 +5986,10 @@ class TestAmortizationSchedule:
         See ``test_schedule_confirmed_rows_marked`` for the full
         rationale (same architectural change: composer's replay only
         consumes confirmed payments with ``payment_date <= as_of``;
-        future-dated DONE goes through ``monthly_override`` and
-        renders as Projected).  Previous fixture used April 2026
-        seed_periods after the frozen today (2026-03-20); this
-        rewrite uses February 2026 so the DONE payment lands in
+        a future-dated DONE is the plan's and renders as Projected).
+        Previous fixture used April 2026 seed_periods after the frozen
+        today (2026-03-20); this rewrite uses February 2026 so the DONE
+        payment lands in
         replay.
         """
         # Origination 2026-01-01 -> first scheduled payment month
@@ -5645,18 +6244,22 @@ class TestDashboardPayoffConsistency:
 
 
 class TestDashboardChartComposer:
-    """Lock the dashboard's migration to compute_payoff_scenarios.
+    """Lock the dashboard's projected figures to ONE forward walk.
 
     Commit 5 of the amortization engine split
     (``docs/plans/2026-05-21-amortization-engine-split-implementation.md``)
-    replaces the dashboard's three direct ``generate_schedule`` calls
-    (planned, original, floor) with two composer calls.  These tests
-    lock the resulting behavior:
+    replaced the dashboard's three direct ``generate_schedule`` calls
+    (planned, original, floor) with two composer calls; plan step R7d-g-3
+    (ruling **R-R88**) then re-cut every projected figure -- the band
+    chart's line, the schedule's planned rows, the breakdown's next payment
+    -- onto the balance seam's plan fold (``balance_at.positions`` /
+    ``loan_installments``), the walk the "Projected payoff" chip already
+    read, so the composer keeps only the confirmed history and the
+    contract's grid.  These tests lock the resulting behavior:
 
     * C5-1..C5-4 and C5-8 are "assert-unchanged" -- they pin the
-      composer-driven dashboard output against hand-computed
-      expectations derived from the composer (the new SSOT, not the
-      pre-Commit-5 ``generate_schedule`` 361-row residue artifact).
+      dashboard output against hand-computed expectations (one point per
+      scheduled month, no ``generate_schedule`` 361-row residue artifact).
     * C5-5 is a static grep guard: the dashboard body MUST NOT call
       ``generate_schedule`` directly.
     * C5-6 / C5-7 lock the floor's "projections cancelled" semantic.
@@ -5664,45 +6267,54 @@ class TestDashboardChartComposer:
     Helper notes: ``_create_fresh_mortgage`` with
     ``origination_date=date(2026, 1, 1)`` produces a 30-year
     $250,000 / 6.5% mortgage whose first scheduled payment month is
-    February 2026.  ``seed_periods[3]`` (2026-02-13) falls before
-    the autouse-frozen today (2026-03-20) so confirmed transfers in
-    that period land in the composer's replay window.
+    February 2026.  ``seed_periods[2]`` (2026-01-30 .. 2026-02-12) contains
+    2/1 and ``seed_periods[3]`` (2026-02-13 .. 2026-02-26) contains no 1st,
+    so a payment in the former is due Feb 1 and one in the latter Mar 1;
+    both settle before the autouse-frozen today (2026-03-20) and land in the
+    composer's replay window.  **Every installment due by today is paid in
+    these fixtures**: an installment left unpaid past its due date is not in
+    the plan (ruling D1 / finding B-9), and the fold then charges its accrued
+    interest against the next payment and clears the loan in the
+    post-contractual extension -- the honest shape
+    ``TestAmortizationSchedule.test_schedule_lists_the_plan_when_an_installment_is_overdue``
+    pins, and not what "unchanged" means here.
     """
 
     def test_dashboard_chart_values_unchanged(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C5-1: the band chart's committed line comes from the composer.
+        """C5-1: the band chart's line is the seam's balance on the contractual grid.
 
-        Fixture: 30-yr / $250k / 6.5% mortgage originated 2026-01-01, one
-        confirmed payment due Feb 1 2026 (seed_periods[2], the pay period that
-        CONTAINS 2/1 -- the loan's first contractual payment and the replay
-        window), one projected payment in May 2026 (seed_periods[9], forward
-        window via monthly_override).
+        Fixture: 30-yr / $250k / 6.5% mortgage originated 2026-01-01, its
+        two installments due by today paid -- Feb 1 2026 (seed_periods[2],
+        the pay period that CONTAINS 2/1) and Mar 1 2026 (seed_periods[3],
+        which contains no 1st, so its payment is due 3/1) -- and one
+        projected payment for Jun 1 2026 (seed_periods[9]), which the plan
+        takes as that month's occurrence at its own cash.
 
-        seed_periods[2] (2026-01-30 .. 2026-02-12) is used rather than [3]
-        (2026-02-13 ..) because the schedule keys rows by the true monthly DUE
-        date: [2] contains 2/1 so its payment IS the Feb 1 payment; [3] contains
-        no 1st, so its payment is due 3/1, skipping the 2/1 payment.
-
-        Asserts the band's balance line (the committed trajectory) is composer-
-        derived:
-          * Length equals term_months (360) -- one row per scheduled month, no
-            residue artifact (Commit 5 architectural fix).
-          * current_index is 1 (the single confirmed Feb 1 2026 history row).
-          * The line is monotonically non-increasing (positive amortization with
-            no overpayment) and ends at $0.
+        Asserts the band's balance line is the seam's:
+          * Length equals term_months (360) -- one point per scheduled month
+            (the confirmed history's two, the contract's grid for the rest),
+            no residue artifact and no extension, because nothing is overdue.
+          * current_index is 2 (the two grid dates at or before today; the
+            solid segment reads the ledger).
+          * The line is monotonically non-increasing (positive amortization
+            with no overpayment) and ends at $0.
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
         )
-        # Confirmed Feb 1 2026 (before today=2026-03-20) -- goes to
-        # replay's history_rows.
+        # Confirmed Feb 1 and Mar 1 2026 (both settled before today=2026-03-20)
+        # -- the replay's history_rows.
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[2], Decimal("1580.17"),
             status_enum=StatusEnum.DONE,
         )
-        # Projected May 2026 (after today) -- goes to monthly_override.
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[3], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        # Projected Jun 1 2026 (after today) -- an occurrence in the plan.
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[9], Decimal("1580.17"),
             status_enum=StatusEnum.PROJECTED,
@@ -5715,20 +6327,19 @@ class TestDashboardChartComposer:
         assert band is not None
         balance = band["balance"]
 
-        # 360 months for a 30-yr mortgage with no overpayment (one row per
-        # scheduled month; the composer eliminates the pre-Commit-5 residue
-        # artifact).
+        # 360 months for a 30-yr mortgage with no overpayment (one point per
+        # scheduled month; no pre-Commit-5 residue artifact).
         assert len(balance) == 360, (
-            f"Expected 360 rows from the composer, got {len(balance)}"
+            f"Expected 360 points on the grid, got {len(balance)}"
         )
-        assert band["current_index"] == 1, (
-            f"Expected one confirmed history row, got {band['current_index']}"
+        assert band["current_index"] == 2, (
+            f"Expected two grid dates at or before today, got {band['current_index']}"
         )
-        # The committed line never increases month-over-month (positive
-        # amortization) and pays off at $0 at term.
+        # The line never increases month-over-month (positive amortization)
+        # and pays off at $0 at term.
         for i in range(1, len(balance)):
             assert balance[i] <= balance[i - 1] + 0.01, (
-                f"Committed balance increased at index {i}: "
+                f"Balance increased at index {i}: "
                 f"{balance[i - 1]} -> {balance[i]}"
             )
         assert balance[-1] == 0.0
@@ -5738,18 +6349,24 @@ class TestDashboardChartComposer:
     ):
         """C5-2: the schedule route renders term_months rows for a full loan.
 
-        Uses the same fixture as C5-1.  The schedule renders
-        ``planned_schedule = history_rows + committed_forward`` from the
-        composer.  History contributes one row (the Feb 1 2026 confirmed
-        payment); the forward slice contributes 359 contractual rows.  Total:
-        360 rows.  Re-pinned for Commit 5 (one row per remaining_months, no
-        residue artifact) and the Loop B schedule demotion (its own route).
+        Uses the same fixture as C5-1.  The schedule renders the composer's
+        confirmed ``history_rows`` followed by the seam's forward plan
+        (``balance_at.loan_installments``) through the payoff.  History
+        contributes two rows (the Feb 1 and Mar 1 2026 confirmed payments);
+        the plan contributes the 358 remaining installments.  Total: 360
+        rows.  Re-pinned for Commit 5 (one row per remaining month, no
+        residue artifact), the Loop B schedule demotion (its own route) and
+        R7d-g-3 (the plan's rows).
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
         )
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[2], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[3], Decimal("1580.17"),
             status_enum=StatusEnum.DONE,
         )
         _create_transfer_to_loan(
@@ -5764,8 +6381,8 @@ class TestDashboardChartComposer:
         confirmed = html.count('badge bg-success">Confirmed</span>')
         projected = html.count('badge bg-secondary">Projected</span>')
         total = confirmed + projected
-        # 1 confirmed (Feb 2026 in history) + 359 forward = 360.
-        assert confirmed == 1, f"Expected 1 confirmed row, got {confirmed}"
+        # 2 confirmed (Feb and Mar 2026 in history) + 358 planned = 360.
+        assert confirmed == 2, f"Expected 2 confirmed rows, got {confirmed}"
         assert total == 360, (
             f"Expected 360 total schedule rows, got {total} "
             f"({confirmed} confirmed + {projected} projected)"
@@ -5776,16 +6393,20 @@ class TestDashboardChartComposer:
     ):
         """C5-3: Payment breakdown sums to total and percentages sum to 100.
 
-        The breakdown card derives from
-        ``_find_current_period_row(planned_schedule)``.  After
-        Commit 5 ``planned_schedule = scenarios_main.history_rows +
-        scenarios_main.committed_forward``; the first row with
-        ``is_confirmed=False`` is the next planned payment.  The
-        truncate-then-distribute percentages MUST still sum to
-        exactly 100.0% (the dashboard rendering invariant).
+        The breakdown card derives from the seam's NEXT planned installment
+        (``balance_at.loan_installments(...)[0]``, its allocation already
+        split by the fold; plan step R7d-g-3).  With both installments due
+        by today paid, the Apr 1 2026 payment pays interest and principal
+        and no escrow, so two segments render and the
+        truncate-then-distribute percentages MUST still sum to exactly
+        100.0% (the dashboard rendering invariant).
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[2], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
         )
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[3], Decimal("1580.17"),
@@ -5897,15 +6518,23 @@ class TestDashboardChartComposer:
     def test_arm_dashboard_chart_unchanged(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C5-8: ARM dashboard band chart values come from the composer.
+        """C5-8: ARM dashboard band chart values come from the seam's fold.
 
-        Creates an ARM mortgage in its fixed-rate window with no payments, so
-        the band's balance line is the pure contractual baseline.  Asserts it is
-        composer-derived: non-empty, monotonically non-increasing in the
-        fixed-rate window (the rate cannot rise yet), and ending at $0.
+        Creates an ARM mortgage in its fixed-rate window with no payments,
+        asserted at $100,000 on 2026-01-01 (``_create_loan_account``).  The
+        grid's Feb 1 and Mar 1 2026 fall at or before the frozen 2026-03-20
+        today and read the LEDGER -- the asserted balance, flat, nothing
+        paid -- and those two installments, due and unpaid, are absent from
+        the plan (ruling D1 / finding B-9), so the fold charges their accrued
+        interest at the Apr 1 payment: the projected line's first point sits
+        ABOVE the ledger's, then amortizes.  Asserts the line is the seam's:
+        the two ledger points flat at $100,000, non-increasing from the first
+        projected point on (the rate cannot rise in the fixed-rate window),
+        and ending at $0 -- in the post-contractual extension, since the two
+        missed installments' principal is never paid down.
 
         (The former C5-6 / C5-7 "floor" route tests were retired with the Loop B
-        band rebuild: the locked band anatomy plots only the committed line plus
+        band rebuild: the locked band anatomy plots only the plan's line plus
         the lever's accelerated preview, so the dashboard no longer computes or
         serializes a floor series.)
         """
@@ -5917,20 +6546,26 @@ class TestDashboardChartComposer:
         # Fixed-rate window: arm_first_adjustment_months defaults to
         # None in this fixture, so the ARM behaves like fixed-rate
         # for the resolver outside the window.  Either way the
-        # composer's behavior is locked.
+        # fold's behavior is locked.
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         band = _parse_band_chart(resp.data.decode())
         assert band is not None
         balance = band["balance"]
 
-        assert len(balance) > 0
-        # No confirmed payments -> the band line is the contractual baseline.
-        assert band["current_index"] == 0
-        # Last entry reaches $0 (loan pays off at term boundary).
+        assert len(balance) > 2
+        # The two grid dates at or before today are the ledger's: the
+        # asserted balance, unpaid.
+        assert band["current_index"] == 2
+        assert balance[:2] == [100000.0, 100000.0]
+        # The missed installments' accrued interest meets the first planned
+        # payment, so the projected line starts above the ledger's point.
+        assert balance[2] > 100000.0
+        # Last entry reaches $0 (the extension clears the residue).
         assert balance[-1] == 0.0
-        # Non-increasing across the fixed-rate window.
-        for i in range(1, len(balance)):
+        # Non-increasing across the fixed-rate window from the first
+        # projected point on.
+        for i in range(3, len(balance)):
             assert balance[i] <= balance[i - 1] + 0.01, (
                 f"ARM band balance increased at index {i}: "
                 f"{balance[i - 1]} -> {balance[i]}"
@@ -6140,7 +6775,7 @@ class TestTheClosingBoundIsNeverWrittenByARoute:
         tpl, rule = _create_transfer_template(seed_user, db.session, acct)
         # Bound to the contract the way every production door binds a new
         # rule, so the start the edit would move is the loan's own.
-        loan_recurrence_sync.bind_rule_to_loan(rule, acct.id)
+        bind_rule_to_loan(rule, acct.id)
         params = load_loan_params(acct.id)
         first_installment = rule.starts_on
         assert first_installment.day == params.payment_day
@@ -6237,13 +6872,15 @@ class TestTheClosingBoundIsNeverWrittenByARoute:
         assert rule.end_date is None
 
         resp = auth_client.post(
-            f"/accounts/{acct.id}/loan/payment-settings",
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/settings",
             data={"extra_principal": "250.00"},
         )
         assert resp.status_code == 302
         _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
 
-        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payments/{tpl.id}/track",
+        )
         assert resp.status_code == 302
         _assert_column_untouched_and_stop_derived(rule, tpl, seed_user)
 
@@ -6858,29 +7495,28 @@ class TestRefinanceForwardOnlyBaseline:
 
     The refinance side is inherently forward-only (a brand-new loan from today),
     so the current side must be too: "Remaining Term" counts the payments still
-    ahead and "Total Interest" the interest still to be paid.  And since the
-    resolver seam went plan-aware (step 8,
-    ``docs/design/escrow_line_identity_refactor.md`` Sec. 16), the current side
-    reads the pure-contractual ``scenarios.original_forward`` slice -- a
-    like-for-like minimum-vs-minimum comparison -- NOT the committed
-    ``state.schedule`` (which now reflects the loan's standing extra).  Before
-    these rules the builder used whole-schedule aggregates, counting sunk history
+    ahead and "Total Interest" the interest still to be paid.  And the current
+    side is the pure CONTRACT -- ``scenarios.original_forward``, a like-for-like
+    minimum-vs-minimum comparison -- never the owner's PLAN (the balance seam's
+    fold, which carries a standing extra a borrower could pay on either loan;
+    the builder is handed no fold at all, so that is structural).  Before these
+    rules the builder used whole-schedule aggregates, counting sunk history
     against a from-today refinance.
     """
 
     def test_current_side_reads_contractual_original_forward(self):
         """The current side derives from ``original_forward``, not ``state.schedule``.
 
-        Step 8 (Sec. 16): the current baseline is the pure-CONTRACTUAL forward
-        remainder read from ``scenarios.original_forward``, like-for-like against
-        a from-today minimum-payment refi -- not the committed ``state.schedule``
-        (plan-aware since the resolver seam).  Here ``original_forward`` is 2
-        contractual rows (interest 400.00 + 300.00 = 700.00, payoff Apr 2026)
-        while the committed ``state.schedule`` forward is a single faster-paydown
-        row (interest 250.00): the current side must report 2 remaining months /
-        700.00 / Apr-2026 from ``original_forward``, NOT 1 / 250.00 from the
-        committed schedule.  "Forward-only" is now structural too --
-        ``original_forward`` carries no confirmed rows.
+        The current baseline is the pure-CONTRACTUAL forward remainder read
+        from ``scenarios.original_forward``, like-for-like against a
+        from-today minimum-payment refi -- not the whole ``state.schedule``
+        (confirmed history plus that forward).  Here ``original_forward`` is
+        2 contractual rows (interest 400.00 + 300.00 = 700.00, payoff Apr
+        2026) behind 2 confirmed rows (interest 997.50): the current side
+        must report 2 remaining months / 700.00 / Apr-2026 from
+        ``original_forward``, NOT 4 / 1,697.50 from the whole schedule.
+        "Forward-only" is now structural too -- ``original_forward`` carries
+        no confirmed rows.
         """
         # Pylint: ``import-outside-toplevel`` -- route-private helper under
         # test; imported here so the module import stays route-surface only.
@@ -6909,11 +7545,6 @@ class TestRefinanceForwardOnlyBaseline:
             _row(3, Decimal("400.00"), Decimal("98500.00"), False),
             _row(4, Decimal("300.00"), Decimal("98000.00"), False),
         ]
-        # Committed forward (the plan, faster): a single row.  ``state.schedule``
-        # is confirmed history + this -- the current side must NOT read it.
-        committed_forward = [
-            _row(3, Decimal("250.00"), Decimal("98000.00"), False),
-        ]
         confirmed = [
             _row(1, Decimal("500.00"), Decimal("99500.00"), True),
             _row(2, Decimal("497.50"), Decimal("99000.00"), True),
@@ -6921,20 +7552,14 @@ class TestRefinanceForwardOnlyBaseline:
         scenarios = PayoffScenarios(
             history_rows=confirmed,
             original_forward=original_forward,
-            committed_forward=committed_forward,
-            accelerated_forward=committed_forward,
-            months_saved=0,
-            interest_saved=Decimal("0.00"),
-            payoff_date_committed=date(2026, 3, 1),
-            payoff_date_accelerated=date(2026, 3, 1),
-            total_interest_committed=Decimal("250.00"),
-            total_interest_accelerated=Decimal("250.00"),
         )
+        # ``state.schedule`` is confirmed history + the contract's forward --
+        # the current side must NOT read it (sunk history is not ahead).
         state = LoanState(
             monthly_payment=Decimal("1000.00"),
             current_rate=Decimal("0.06"),
-            schedule=confirmed + committed_forward,
-            total_interest=Decimal("1247.50"),
+            schedule=confirmed + original_forward,
+            total_interest=Decimal("1697.50"),
         )
         # The balance the route threads in explicitly (C4); a LoanState field
         # until plan step D2a deleted it (the route reads the seam's fold).
@@ -6973,10 +7598,10 @@ class TestRefinanceForwardOnlyBaseline:
         assert comparison["interest_savings"] == (
             Decimal("700.00") - comparison["refi_total_interest"]
         )
-        # Non-vacuity: the committed schedule (1 month / 250.00) and the
-        # whole-schedule total (1,247.50) both differ, so the current side is
-        # provably reading original_forward, not state.schedule.
-        assert comparison["current_remaining_months"] != len(committed_forward)
+        # Non-vacuity: the whole schedule (4 months / 1,697.50) differs on
+        # both figures, so the current side is provably reading
+        # original_forward, not state.schedule.
+        assert comparison["current_remaining_months"] != len(state.schedule)
         assert comparison["current_total_interest"] != state.total_interest
 
 
@@ -7123,6 +7748,202 @@ class TestPayoffChipDisplayStates:
         html = resp.data.decode()
         assert "No payoff at current payment" in html
         assert "Paid off" not in html
+
+
+class TestOneWalkEdges:
+    """R7d-g-3's adversarial review: the shapes the one-walk re-cut must survive.
+
+    Each test is a shape the review traced through the seam's fold and found
+    a surface answering wrong: an ARM whose plan pays before its first charge
+    (the rate column read ``None`` and the page raised), a retired loan (the
+    plan's payments folded to refunds and a phantom row, a five-year flat
+    band and a "Never" lever followed), an installment due TODAY (the
+    allocation bar skipped to next month), a plan that never clears (a
+    dollar "saving" beside "Never"), and a loan behind on its payments (the
+    shortfall the bar must say).
+    """
+
+    def test_an_arm_paying_before_its_first_charge_renders_its_rate(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A payment no charge stands over reads the period the calendar puts it in.
+
+        ARM at 5% originated 2026-03-01 (first installment Apr 1), with a
+        $50 sweep due the 15th whose Mar 15 occurrence the plan pays the day
+        after the frozen 2026-03-20 today -- before Apr 1's charge, so the
+        fold hands it no standing charge (ruling R-C's early extra).  Its
+        row's rate is the origination period's 5%
+        (``PlannedInstallment.period``, resolved from the plan's own
+        calendar), so the ARM rate column renders every row and the page
+        returns 200 rather than multiplying ``None``.
+        """
+        acct = _create_loan_account_exact(
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM Early Sweep",
+            Decimal("250000.00"), Decimal("0.05000"), 360,
+            date(2026, 3, 1), 1,
+        )
+        params = loan_params_for(db.session, acct.id)
+        params.is_arm = True
+        db.session.commit()
+        make_loan_payment_template(
+            db.session, seed_user, acct, amount="50.00",
+            derive_from_loan=False, cadence=MONTHLY, fires_on_day=15,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        rows = re.findall(
+            r'<tr class="(?:table-success)?">\s*<td>(\d+)</td>\s*<td>([^<]+)</td>',
+            html,
+        )
+        # The catch-up is the first planned row, before the loan's first
+        # installment (#0), paid the day after today; the sweep's April
+        # occurrence is installment #1's period (the loan has no other
+        # definition, so the plan is the sweep's occurrences alone).
+        assert rows[0] == ("0", "Mar 21, 2026"), rows[:2]
+        assert rows[1] == ("1", "Apr 15, 2026"), rows[:2]
+        rates = re.findall(r'>\s*([0-9]+\.[0-9]{3})%\s*</td>', html)
+        assert rates and set(rates) == {"5.000"}, rates[:3]
+
+    def test_a_retired_loan_lists_no_plan_and_draws_no_extension(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A loan trued up to zero has no planned row, no grid past its history, no lever.
+
+        The seam's plan for a retired loan is EMPTY (``loan_installments``
+        answers nothing for a seed at or below zero, the guard
+        ``plan_payoff_date`` already answers ``None`` under): the schedule
+        page lists no Projected row, the band's grid ends with the history
+        (no five-year flat zero past the contract), and the pay-off-sooner
+        lever says the loan is paid off rather than "Never, at this extra".
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[2], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+        insert_trueup_event(loan_params_for(db.session, acct.id), Decimal("0.00"))
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert html.count('badge bg-success">Confirmed</span>') == 1
+        assert html.count('badge bg-secondary">Projected</span>') == 0
+
+        band = _parse_band_chart(
+            auth_client.get(f"/accounts/{acct.id}/loan").data.decode()
+        )
+        assert band is not None
+        # The history's one point and nothing past it.
+        assert len(band["labels"]) == 1
+        assert band["labels"] == ["Feb 2026"]
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "200"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "This loan is paid off" in html
+        assert "Never, at this extra" not in html
+        assert "data-overlay=" not in html
+
+    def test_the_allocation_bar_reads_an_installment_due_today(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """An installment due TODAY and unpaid is this month's payment, not next month's.
+
+        A $250k / 6.5% mortgage originated 2026-02-20 on the 20th: its first
+        installment is due on the frozen 2026-03-20 today and no row answers
+        it, so the plan pays it tomorrow (the D1 clamp) against March's
+        charge.  The bar reads March -- ``$1,580.17`` paying ``$1,354.17`` of
+        interest on the untouched ``$250,000`` -- where a bar keyed on "due
+        after today" would have skipped to April on the morning the payment
+        is due.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 2, 20),
+            payment_day=20,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Mar 2026 payment" in html
+        assert "Apr 2026 payment" not in html
+        assert "$1,354.17" in html
+        assert "$226.00" in html
+
+    def test_a_plan_that_never_clears_shows_no_saving(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """"Never, at this extra" carries no months and no dollars saved.
+
+        Trued up to $900,000 against a ~$1,580 payment the balance grows and
+        neither trajectory reaches zero: the lever says "Never, at this
+        extra", and both savings chips read "--" -- a difference between two
+        sums cut at the plan's horizon is not a saving.  The plan-vs-contract
+        line says the plan never pays off.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[2], Decimal("1580.17"),
+            status_enum=StatusEnum.DONE,
+        )
+        db.session.commit()
+        insert_trueup_event(
+            loan_params_for(db.session, acct.id), Decimal("900000.00"),
+        )
+        db.session.commit()
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "extra_payment", "extra_monthly": "10"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Never, at this extra" in html
+        assert re.search(r"Months Saved</div>\s*<div[^>]*>\s*--\s*</div>", html)
+        assert re.search(r"Interest Saved</div>\s*<div[^>]*>\s*--\s*</div>", html)
+        assert "never pays off at the current plan" in html
+        assert "saved" not in html.split("Current plan vs. original")[1]
+
+    def test_a_loan_behind_says_its_shortfall(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Two installments behind, the bar floors principal and says the shortfall.
+
+        Nothing paid on a $250k / 6.5% mortgage originated 2026-01-01: the
+        fold charges February, March and April against the Apr 1 payment
+        (``$1,354.17 + $1,354.17 + $1,354.17 = $4,062.51`` of interest on the
+        untouched balance, less what the ledger's own accrual model lays off
+        -- the review's fold simulation puts the first planned payment's
+        interest at ``$2,705.88``), so the payment's principal is negative.
+        The bar shows the whole ``$1,580.17`` to interest, no principal
+        segment, and says how far short it fell.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "short of the interest and escrow charged" in html
+        pcts = re.findall(r'data-progress-pct="([0-9.]+)"', html)
+        assert pcts == ["100.0"], pcts
+        assert "to principal (0.0%)" in html
+        assert "$1,580.17</span>\n        to interest (100.0%)" in html
 
 
 class TestRefinanceAndPayoffByDateProjectForwardMigration:
@@ -8123,13 +8944,22 @@ class TestScheduleRowsResolveTheirOwnTerms:
         Today is frozen at 2026-03-20 for this file, so the second version is
         strictly in the FUTURE: a builder resolving one figure at ``today``
         cannot see it at all, which is the shape N-410 names.
+
+        Originated 2026-03-01 so its first installment (Apr 1) is after
+        today and nothing is overdue: a planned row's escrow is what the
+        fold impounded for its installment (plan step R7d-g-3), and an
+        installment left unpaid past its due date leaves its escrow to be
+        impounded with the next payment's -- three months' worth on the
+        first row of a loan originated in January, which is the fold's
+        truth about a loan behind on its payments and not the
+        version-boundary property these tests grade.
         """
         acct = _create_fresh_mortgage(
-            seed_user, db_session, origination_date=date(2026, 1, 1),
+            seed_user, db_session, origination_date=date(2026, 3, 1),
         )
         opening = add_escrow_line(
             db_session, acct.id, "Property Tax", Decimal("3600.00"),
-            effective_date=date(2026, 1, 1),
+            effective_date=date(2026, 3, 1),
         )
         db_session.add(EscrowComponentVersion(
             line_id=opening.line_id,

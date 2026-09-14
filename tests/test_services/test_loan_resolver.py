@@ -14,7 +14,6 @@ Every monetary expectation carries the arithmetic in a comment so a
 future reader can verify the assertion by hand.
 """
 
-import dataclasses
 import inspect
 import io
 import pathlib
@@ -34,14 +33,11 @@ from app.services.amortization_engine import (
 from app.services.loan_resolver import (
     ConfirmedLedgerView,
     LoanInputs,
-    LoanState,
-    PayoffScenarios,
     compute_payoff_scenarios,
     current_rate_baseline,
     resolve_loan,
     resolve_periods,
 )
-from app.services.loan_resolver._payoff import _build_monthly_override
 from app.services.loan_resolver._periods import _replay_from_anchor
 from app.utils.dates import has_settled_by
 from app.services.rate_period_engine import monthly_due_date
@@ -423,21 +419,20 @@ def test_projected_payment_not_replayed():
     assert _replay_balance(inputs, date(2026, 3, 1)) == Decimal("300000.00")
 
 
-def test_projected_overpayment_routes_into_the_forward_schedule():
-    """Step 8 (part a): a projected OVERPAYMENT rides the resolver's schedule.
+def test_a_projected_payment_does_not_ride_the_resolver_schedule():
+    """R7d-g-3: the resolver's schedule is the CONTRACT's; the plan is the seam's.
 
-    The seam fix stopped ``resolve_loan`` stripping payments to confirmed-only,
-    so a projected recurring payment above contractual now routes forward through
-    ``monthly_override`` and appears in ``LoanState.schedule`` -- the committed
-    (plan-aware) trajectory every summary surface reads.  Before the fix the
-    resolver ignored projected payments and its schedule was pure contractual.
-
-    Setup: $300k / 6% / 360mo, contractual P&I $1,798.65.  A single PROJECTED
-    payment of $2,500.00 due 2026-03-01 (overpaying by $701.35): the March
-    forward row must carry the $2,500 outlay, while WITHOUT it that row is the
-    contractual $1,798.65.  The projected payment still never reduces the
-    balance (a future commitment, not history), so ``current_balance`` stays at
-    the origination anchor (the C13-4 invariant holds alongside part a).
+    Until plan step R7d-g-3 this pinned step 8 the other way round: a
+    projected recurring payment above contractual rode forward through
+    ``monthly_override`` and appeared in ``LoanState.schedule`` as the
+    committed trajectory.  Ruling **R-R88** made the balance seam's plan fold
+    the one walk of what a loan is projected to PAY, and this schedule the
+    contract's: every reader of it takes a DATE (the net-worth trend's
+    first-payment gate, the equity chart's tracking start), never a balance.
+    So a $2,500 projected March payment leaves the resolver's March row at the
+    contractual $1,798.65, identical to the no-payment resolve, and the
+    replayed balance still stays at the origination anchor (the C13-4
+    invariant: a projected payment is not replayed).
     """
     params = FakeLoanParams(
         origination_date=date(2026, 1, 1),
@@ -471,12 +466,12 @@ def test_projected_overpayment_routes_into_the_forward_schedule():
             if row.payment_date == date(2026, 3, 1)
         )
 
-    # The projected outlay rides the March forward row; without it, contractual.
-    assert _march(planned).payment == Decimal("2500.00")
-    assert _march(contractual).payment == Decimal("1798.65")
-    # A projected payment never reduces the balance -- the replay stays at the
-    # origination anchor (C13-4 invariant), even though it shapes the schedule.
+    assert _march(planned).payment == Decimal("1798.65")
+    assert _march(planned) == _march(contractual)
+    assert planned.schedule == contractual.schedule
+    # The projected payment is not replayed: the balance is the anchor's.
     assert _replay_balance(planned_inputs, date(2026, 1, 15)) == Decimal("300000.00")
+
 
 
 # -- C13-5 -- fixed-rate, three confirmed payments --------------------------
@@ -1259,7 +1254,7 @@ def test_forward_rows_marked_unconfirmed():
 
     Same setup as :func:`test_history_rows_marked_confirmed`.  The
     fourth row onward comes from :func:`project_forward` (via the
-    composer's ``committed_forward`` slice) and is unconfirmed by
+    composer's ``original_forward`` slice) and is unconfirmed by
     construction -- projection rows are not facts about the
     recorded past.
 
@@ -1383,7 +1378,6 @@ class TestComputePayoffScenarios:
                 payments=_four_contractual_payments_jan_to_apr_2026(),
                 rate_changes=_rate_feed(params),
             ),
-            extra_monthly=Decimal("0.00"),
             as_of=self.AS_OF,
         )
         assert len(scenarios.history_rows) == 4
@@ -1391,21 +1385,17 @@ class TestComputePayoffScenarios:
             assert row.payment_date <= self.AS_OF
             assert row.is_confirmed is True
 
-    def test_forward_same_starting_balance(self):
-        """C3-2: All three forward slices share the same row 0 balance.
+    def test_forward_starts_from_the_replay_balance(self):
+        """C3-2: the contractual forward's row 0 splits the replay's balance.
 
         replay.balance_as_of after four $1798.65 payments is
-        $298,796.42 (verified at C13-5).  The first forward row of
-        each scenario then deducts the same principal portion at the
-        same rate, so original/committed/accelerated row 0
-        principal+interest match byte-identically; only
-        ``extra_payment`` differs (committed/original have $0,
-        accelerated has $500).  Hand arithmetic for row 0 P&I split:
-
+        $298,796.42 (verified at C13-5).  Hand arithmetic for row 0:
             interest    = 298796.42 * 0.005 = 1493.98 (HALF_UP)
             principal   = 1798.65 - 1493.98 = 304.67
-            balance(orig/committed) = 298796.42 - 304.67 = 298491.75
-            balance(accel) = balance(orig) - 500.00 extra = 297991.75
+            balance     = 298796.42 - 304.67 = 298491.75
+        Until plan step R7d-g-3 this pinned the committed and accelerated
+        slices against the same row; those slices are the balance seam's fold
+        now (ruling R-R88).
         """
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
@@ -1416,34 +1406,19 @@ class TestComputePayoffScenarios:
                 payments=_four_contractual_payments_jan_to_apr_2026(),
                 rate_changes=_rate_feed(params),
             ),
-            extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
         original_row0 = scenarios.original_forward[0]
-        committed_row0 = scenarios.committed_forward[0]
-        accelerated_row0 = scenarios.accelerated_forward[0]
-
-        # Same P&I split (interest, principal, base payment) across
-        # all three scenarios in row 0.
         assert original_row0.interest == Decimal("1493.98")
         assert original_row0.principal == Decimal("304.67")
-        assert committed_row0.interest == original_row0.interest
-        assert committed_row0.principal == original_row0.principal
-        assert accelerated_row0.interest == original_row0.interest
-        assert accelerated_row0.principal == original_row0.principal
-
-        # Balance differs only by the extra applied to accelerated.
         assert original_row0.remaining_balance == Decimal("298491.75")
-        assert committed_row0.remaining_balance == Decimal("298491.75")
-        assert accelerated_row0.remaining_balance == Decimal("297991.75")
+        assert original_row0.extra_payment == Decimal("0.00")
 
     def test_forward_first_row_date_matches_next_pay_date(self):
-        """C3-3: All three forward slices start at replay.next_pay_date.
+        """C3-3: the contractual forward starts at replay.next_pay_date.
 
         Last replayed payment is 2026-04-01, so projection picks up
-        at 2026-05-01.  All three slices share that first
-        payment_date -- catches the bug class "Accelerated curve
-        started one month earlier/later than the others."
+        at 2026-05-01.
         """
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
@@ -1454,13 +1429,9 @@ class TestComputePayoffScenarios:
                 payments=_four_contractual_payments_jan_to_apr_2026(),
                 rate_changes=_rate_feed(params),
             ),
-            extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
-        expected_first = date(2026, 5, 1)
-        assert scenarios.original_forward[0].payment_date == expected_first
-        assert scenarios.committed_forward[0].payment_date == expected_first
-        assert scenarios.accelerated_forward[0].payment_date == expected_first
+        assert scenarios.original_forward[0].payment_date == date(2026, 5, 1)
 
     def test_schedule_rows_dated_by_monthly_due_date(self):
         """Schedule rows show the true monthly due date, not the pay-period start.
@@ -1502,7 +1473,6 @@ class TestComputePayoffScenarios:
                 payments=payments,
                 rate_changes=_rate_feed(params),
             ),
-            extra_monthly=Decimal("0.00"),
             as_of=date(2026, 6, 2),
         )
         # Confirmed history row carries the true due date (06-01), not the
@@ -1511,42 +1481,13 @@ class TestComputePayoffScenarios:
         assert scenarios.history_rows[0].is_confirmed is True
         assert scenarios.history_rows[0].payment_date == date(2026, 6, 1)
         # The projection picks up the FOLLOWING month (07-01), not 06-01.
-        assert scenarios.committed_forward[0].is_confirmed is False
-        assert scenarios.committed_forward[0].payment_date == date(2026, 7, 1)
+        assert scenarios.original_forward[0].is_confirmed is False
+        assert scenarios.original_forward[0].payment_date == date(2026, 7, 1)
 
-    def test_history_byte_identical_across_scenarios(self):
-        """C3-4: history_rows prefix is shared (same list reference).
-
-        Chart rendering plots ``history_rows + <slice>_forward`` for
-        each scenario; the history prefix is byte-identical across
-        scenarios because replay returns a single list reused by the
-        composer.  Identity comparison is the strongest assertion --
-        the three slices literally share the same history list, so
-        no future refactor can silently produce divergent histories.
-        """
-        params = _fixed_rate_300k_params()
-        anchor = _origination_anchor(params)
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=_rate_feed(params),
-            ),
-            extra_monthly=Decimal("500.00"),
-            as_of=self.AS_OF,
-        )
-        # Identity assertion: only one history list exists.
-        assert scenarios.history_rows is scenarios.history_rows
-        # Defensive sequence-equality check (catches a future
-        # refactor that returns deep copies).
-        for row in scenarios.history_rows:
-            assert row.is_confirmed is True
-
-    def test_original_ignores_projections_and_extra(self):
+    def test_original_ignores_projections(self):
         """C3-5: original_forward uses contractual every row, no extras.
 
-        One projected $2000 payment in June 2026, extra=$500: every
+        One projected $2000 payment in June 2026 in the feed: every
         original_forward row uses the contractual $1798.65 P&I and
         ``extra_payment == 0``.  The original line is "what the
         lender would amortize" with NO planning data and NO
@@ -1567,7 +1508,6 @@ class TestComputePayoffScenarios:
                 payments=payments,
                 rate_changes=_rate_feed(params),
             ),
-            extra_monthly=Decimal("500.00"),
             as_of=self.AS_OF,
         )
         # All but the final row use the exact contractual payment;
@@ -1580,301 +1520,47 @@ class TestComputePayoffScenarios:
         # and original has no extras by construction).
         assert scenarios.original_forward[-1].extra_payment == Decimal("0.00")
 
-    def test_committed_honors_projections(self):
-        """C3-6: committed_forward applies projected payments as overrides.
+    def test_the_composer_takes_no_extra_and_no_plan(self):
+        """R7d-g-3: the composer walks the contract; the fold walks the plan.
 
-        June 2026 projected payment ($2000) replaces the contractual
-        for that month; ``extra_payment == 0`` (no acceleration in
-        committed by construction).  Other months use contractual.
+        Until plan step R7d-g-3 this composer took a loan-level
+        ``extra_principal`` (Leaf A deleted it: a projected row's cash
+        carries its own definition's extra through amount rule 4, so the
+        composer adding one again paid it twice on every row-covered month)
+        and the lever's ``extra_monthly`` beside a ``monthly_override`` of the
+        projected rows (ruling **R-R88** deleted both: the balance seam's plan
+        fold is the one walk of what a loan is projected to pay).  Three
+        pins: neither keyword exists, so a re-threading cannot land silently;
+        and the forward it does compose is the CONTRACT -- extra-free rows,
+        every one at the contractual P&I, whatever the feed's projected rows
+        say.
         """
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
-        payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(PaymentDates(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), None), Decimal("2000.00")),
-        ]
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=payments,
-                rate_changes=_rate_feed(params),
-            ),
-            extra_monthly=Decimal("0.00"),
-            as_of=self.AS_OF,
+        inputs = LoanInputs(
+            loan_params=params,
+            anchor_events=[anchor],
+            payments=_four_contractual_payments_jan_to_apr_2026() + [
+                PaymentRecord(PaymentDates(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), None), Decimal("2000.00")),
+            ],
+            rate_changes=_rate_feed(params),
         )
-        june = [
-            row for row in scenarios.committed_forward
-            if row.payment_date == date(2026, 6, 1)
-        ]
-        assert len(june) == 1
-        assert june[0].payment == Decimal("2000.00")
-        assert june[0].extra_payment == Decimal("0.00")
-
-        # A non-override month (May 2026, the first row) uses
-        # contractual.
-        assert scenarios.committed_forward[0].payment == Decimal("1798.65")
-
-    def test_accelerated_applies_extra_to_projections_and_contractual(self):
-        """C3-7: the lever's extra accelerates EVERY accelerated forward month.
-
-        Behavior change ratified by the operator (Q3, 2026-07-07): a recurring
-        plan's OVERRIDE months no longer swallow the extra.  June 2026 (override
-        $2000): payment=$2000 base, extra=$500.  July 2026 (no override):
-        payment=$1798.65 contractual, extra=$500.  Both accelerate -- the
-        override amount is the month's base and the extra rides on top.
-        """
-        params = _fixed_rate_300k_params()
-        anchor = _origination_anchor(params)
-        payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(PaymentDates(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), None), Decimal("2000.00")),
-        ]
+        for gone in ("extra_principal", "extra_monthly"):
+            with pytest.raises(TypeError, match=gone):
+                compute_payoff_scenarios(
+                    loan_inputs=inputs, as_of=self.AS_OF,
+                    **{gone: Decimal("500.00")},
+                )
         scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=payments,
-                rate_changes=_rate_feed(params),
-            ),
-            extra_monthly=Decimal("500.00"),
-            as_of=self.AS_OF,
+            loan_inputs=inputs, as_of=self.AS_OF,
         )
-        june = [
-            row for row in scenarios.accelerated_forward
-            if row.payment_date == date(2026, 6, 1)
-        ][0]
-        july = [
-            row for row in scenarios.accelerated_forward
-            if row.payment_date == date(2026, 7, 1)
-        ][0]
-        assert june.payment == Decimal("2000.00")
-        assert june.extra_payment == Decimal("500.00")
-        assert july.payment == Decimal("1798.65")
-        assert july.extra_payment == Decimal("500.00")
-
-    def test_standing_extra_principal_accelerates_committed(self):
-        """Step 5: a standing extra_principal accelerates the COMMITTED slice.
-
-        With ``extra_principal=$500`` and no projected override, every committed
-        forward row carries ``extra_payment=$500`` and the committed slice pays
-        off sooner than the pure-contractual original (which carries no extra).
-        This is the operator-facing deliverable: the band chart / payoff summary
-        reflect the standing overpayment, exactly as the cash debit does.
-        """
-        params = _fixed_rate_300k_params()
-        anchor = _origination_anchor(params)
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=_rate_feed(params),
-            ),
-            extra_monthly=Decimal("0.00"),
-            as_of=self.AS_OF,
-            extra_principal=Decimal("500.00"),
-        )
-        # The standing extra rides every committed forward row.
-        for row in scenarios.committed_forward[:-1]:
-            assert row.extra_payment == Decimal("500.00")
-        # Committed (with the standing extra) pays off before the contractual
-        # original (no extra), and the original stays extra-free.
-        assert len(scenarios.committed_forward) < len(scenarios.original_forward)
-        assert scenarios.original_forward[0].extra_payment == Decimal("0.00")
-
-    def test_standing_extra_and_lever_stack_on_override_month(self):
-        """Step 5: committed carries the standing extra; accelerated adds the lever.
-
-        June 2026 is an override month ($2,000 planned).  With standing
-        ``extra_principal=$300`` and the lever's ``extra_monthly=$200``:
-          committed June: payment $2,000 base, extra_payment $300 (standing);
-          accelerated June: payment $2,000 base, extra_payment $500 (300 + 200).
-        The two extras stack on the override month with no double-count.
-        """
-        params = _fixed_rate_300k_params()
-        anchor = _origination_anchor(params)
-        payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(PaymentDates(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), None), Decimal("2000.00")),
-        ]
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=payments,
-                rate_changes=_rate_feed(params),
-            ),
-            extra_monthly=Decimal("200.00"),
-            as_of=self.AS_OF,
-            extra_principal=Decimal("300.00"),
-        )
-        june_committed = next(
-            row for row in scenarios.committed_forward
+        june = next(
+            row for row in scenarios.original_forward
             if row.payment_date == date(2026, 6, 1)
         )
-        june_accelerated = next(
-            row for row in scenarios.accelerated_forward
-            if row.payment_date == date(2026, 6, 1)
-        )
-        assert june_committed.payment == Decimal("2000.00")
-        assert june_committed.extra_payment == Decimal("300.00")
-        assert june_accelerated.payment == Decimal("2000.00")
-        assert june_accelerated.extra_payment == Decimal("500.00")
-
-    def test_months_saved_metric(self):
-        """C3-8: months_saved = len(committed) - len(accelerated).
-
-        Under the anchor-seeded replay contract, the loan's remaining
-        contractual life at as_of is ``term - months_from_origination
-        (next_pay_date) + 1``, NOT ``term - len(rows)``.  Origination
-        2024-01-01, next_pay_date 2026-05-01 -> month 28 of the loan
-        -> 333 months remain (360 - 27).  The forward projection
-        therefore caps at 333 rows for committed (full term tail
-        from $298,796.42 at 6%), 211 rows for accelerated ($500/mo
-        extra accelerates payoff to ~Nov 2043).
-
-            P = 298796.42, i = 0.005, n_remaining = 333
-            committed M  = 1798.65; pays off at month 333
-            accelerated M = 2298.65; n_accel = -log(1 - P*i/M) /
-                log(1+i) approx 210.44 -> 211 rows
-            months_saved = 333 - 211 = 122
-
-        Pinning 122 here; the closed-form derivation above is the
-        verification path.  The pre-fix architecture used
-        ``remaining_months = term - len(rows) = 356`` and produced
-        months_saved=145, which was wrong: the four-row history
-        already consumed months 24-27 of the loan, so the committed
-        tail is 333 months, not 356.  A regression that re-
-        introduced the len(rows)-based calculation would push this
-        number back to 145.
-        """
-        params = _fixed_rate_300k_params()
-        anchor = _origination_anchor(params)
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=_rate_feed(params),
-            ),
-            extra_monthly=Decimal("500.00"),
-            as_of=self.AS_OF,
-        )
-        assert (
-            scenarios.months_saved
-            == len(scenarios.committed_forward)
-            - len(scenarios.accelerated_forward)
-        )
-        assert scenarios.months_saved == 122
-
-    def test_interest_saved_metric(self):
-        """C3-9: interest_saved = sum(committed.interest) - sum(accel.interest).
-
-        Composer-derived from the 333-row committed tail and the
-        211-row accelerated tail (see C3-8 for the row-count
-        derivation):
-
-            sum(committed.interest)   = $339,142.28
-            sum(accelerated.interest) = $184,964.88
-            interest_saved            = $154,177.40
-
-        The pinned value is the composer's output for the symptom
-        inputs.  A 122-month early payoff at a 6% APR on a $298,796
-        starting balance saves ~$154k of interest, matching within
-        rounding.
-        """
-        params = _fixed_rate_300k_params()
-        anchor = _origination_anchor(params)
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=_rate_feed(params),
-            ),
-            extra_monthly=Decimal("500.00"),
-            as_of=self.AS_OF,
-        )
-        expected = (
-            scenarios.total_interest_committed
-            - scenarios.total_interest_accelerated
-        )
-        assert scenarios.interest_saved == expected
-        assert scenarios.interest_saved == Decimal("154177.40")
-
-    def test_originally_reported_bug_regression(self):
-        """C3-10: LOAD-BEARING regression lock for the symptom.
-
-        The user's reported bug on ``/accounts/3/loan``: the
-        Accelerated chart diverges from the Original at origination
-        (2024-02 in this scenario), runs parallel to Committed
-        through the confirmed window (Jan-Apr 2026), then resumes
-        accelerated descent post-today.  Root cause (architectural
-        plan Section 2): ``generate_schedule``'s "apply extra when
-        no PaymentRecord exists" semantics treated every
-        origination-to-first-confirmed month as a no-record month,
-        applying $500 extra to 23 months of fictitious 2024-2025
-        history.
-
-        After the fix:
-
-        1. ``history_rows`` contains EXACTLY four rows (Jan-Apr 2026
-           confirmed payments); the gap months (2024-02 to 2025-12)
-           are absent -- replay does not fabricate.
-        2. ``accelerated_forward[0].payment_date == 2026-05-01`` --
-           the first month after as_of.  No fictitious 2024 row.
-        3. Every accelerated forward row has ``extra_payment ==
-           $500.00`` until the final row absorbs balance residue.
-           (The contractual is $1798.65; accelerated rows pay
-           $2298.65 with extra=$500.  Override months would set
-           extra=0, but this scenario has no overrides.)
-        4. ``months_saved == 145`` -- the hand-computed value (see
-           C3-8).  The buggy code would inflate this past 200
-           because ~23 months of ghost-history acceleration would
-           reduce the accelerated payoff to roughly month ~190.
-
-        If any of these assertions regresses, the same class of bug
-        has returned.
-        """
-        params = _fixed_rate_300k_params()
-        anchor = _origination_anchor(params)
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=_four_contractual_payments_jan_to_apr_2026(),
-                rate_changes=_rate_feed(params),
-            ),
-            extra_monthly=Decimal("500.00"),
-            as_of=self.AS_OF,
-        )
-        # 1. History is exactly the confirmed-payment count.
-        assert len(scenarios.history_rows) == 4
-        # 2. Accelerated starts the calendar month after the last
-        #    replayed row (Apr 1 confirmed -> May 1 first forward),
-        #    not a fictitious 2024 acceleration.  The composer's
-        #    next_pay_date is anchored to the replay boundary, not
-        #    to as_of; the May 1 row is before as_of=May 21 because
-        #    payments are dated at the start of their month.
-        last_history_date = scenarios.history_rows[-1].payment_date
-        assert (
-            scenarios.accelerated_forward[0].payment_date
-            == date(2026, 5, 1)
-        )
-        assert (
-            scenarios.accelerated_forward[0].payment_date
-            > last_history_date
-        )
-        # 3. Every accelerated forward row carries $500 extra
-        #    (except possibly the final row whose overpayment-cap
-        #    branch absorbs the balance residue and reports extra=0).
-        for row in scenarios.accelerated_forward[:-1]:
-            assert row.payment_date > last_history_date
-            assert row.extra_payment == Decimal("500.00")
-        # 4. Hand-computed months_saved (see C3-8 for the derivation;
-        #    a regression that re-introduces ghost-history
-        #    acceleration would inflate this past 200, and a
-        #    regression to the len(rows)-based remaining-months
-        #    formula would push it to 145).
-        assert scenarios.months_saved == 122
+        assert june.payment == Decimal("1798.65")
+        for row in scenarios.original_forward:
+            assert row.extra_payment == Decimal("0.00")
 
     def test_temporal_gap_property(self):
         """C3-11: history row count tracks confirmed-payment count, not gap.
@@ -1915,7 +1601,6 @@ class TestComputePayoffScenarios:
                     payments=payments,
                     rate_changes=_rate_feed(params),
                 ),
-                extra_monthly=Decimal("500.00"),
                 as_of=self.AS_OF,
             )
             assert len(scenarios.history_rows) == 4, (
@@ -1957,61 +1642,6 @@ class TestComputePayoffScenarios:
                 f"compute_payoff_scenarios references {marker!r} in "
                 f"executable code; the composer must remain pure."
             )
-
-    def test_summary_metrics_match_chart(self):
-        """C3-13: summary metrics reconcile bit-for-bit with the forward slices.
-
-        Single-source-of-truth invariant: the rendered "Months Saved"
-        and "Interest Saved" labels must equal length and interest
-        diffs derived from the same forward slices the chart plots.
-        Two computation paths would re-introduce the chart-summary
-        divergence the architectural fix removed.
-        """
-        params = _fixed_rate_300k_params()
-        anchor = _origination_anchor(params)
-        payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(PaymentDates(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), None), Decimal("2000.00")),
-        ]
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=payments,
-                rate_changes=_rate_feed(params),
-            ),
-            extra_monthly=Decimal("500.00"),
-            as_of=self.AS_OF,
-        )
-        # months_saved reconciles to slice length diff.
-        assert (
-            scenarios.months_saved
-            == len(scenarios.committed_forward)
-            - len(scenarios.accelerated_forward)
-        )
-        # interest_saved reconciles to slice interest diff (rounded
-        # via round_money at the boundary).
-        committed_sum = sum(
-            (row.interest for row in scenarios.committed_forward),
-            Decimal("0.00"),
-        )
-        accelerated_sum = sum(
-            (row.interest for row in scenarios.accelerated_forward),
-            Decimal("0.00"),
-        )
-        from app.utils.money import round_money
-        assert (
-            scenarios.interest_saved
-            == round_money(committed_sum - accelerated_sum)
-        )
-        # total interest fields reconcile to sum-of-interest.
-        assert (
-            scenarios.total_interest_committed
-            == round_money(committed_sum)
-        )
-        assert (
-            scenarios.total_interest_accelerated
-            == round_money(accelerated_sum)
-        )
 
     def test_arm_anchor_preserved(self):
         """C3-14: ARM anchor snaps replay's balance to the verified value.
@@ -2062,7 +1692,6 @@ class TestComputePayoffScenarios:
                 payments=payments,
                 rate_changes=_rate_feed(params),
             ),
-            extra_monthly=Decimal("0.00"),
             as_of=date(2026, 3, 1),
         )
         # Two post-trueup history rows; the first reflects the snap
@@ -2086,90 +1715,6 @@ class TestComputePayoffScenarios:
             scenarios.history_rows[1].remaining_balance
             == Decimal("247697.86")
         )
-
-    def test_confirmed_past_as_of_routed_to_override(self):
-        """C3-15: confirmed payments dated after as_of go to monthly_override.
-
-        Edge case: a user marks a future payment as confirmed before
-        ``as_of`` reaches its date.  Replay must stop at as_of (it
-        is the deterministic-past slice), and the future-confirmed
-        payment must appear in the forward projections via override
-        so chart/summary reflect the user's planned outlay.
-
-        Setup: one confirmed Jan-2026 payment ($1798.65 -- inside
-        as_of), one confirmed Aug-2026 payment ($2500.00 -- past
-        as_of=2026-05-21).  Assertions:
-
-        * History has one row (Jan 2026 only).
-        * Aug 2026 (override $2,500) uses $2,500 as the BASE payment in both
-          committed and accelerated.  Committed carries no standing extra here
-          (extra_payment == 0); accelerated adds the lever's $500 on top
-          (extra_payment == 500 -- step 5: the lever reaches override months).
-        * July 2026 (no override) in accelerated has
-          extra_payment == $500.
-        """
-        params = _fixed_rate_300k_params()
-        anchor = _origination_anchor(params)
-        payments = [
-            PaymentRecord(PaymentDates(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), date(2026, 1, 1)), Decimal("1798.65")),
-            PaymentRecord(PaymentDates(date(2026, 8, 1), monthly_due_date(date(2026, 8, 1), 1), date(2026, 8, 1)), Decimal("2500.00")),
-        ]
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=params,
-                anchor_events=[anchor],
-                payments=payments,
-                rate_changes=_rate_feed(params),
-            ),
-            extra_monthly=Decimal("500.00"),
-            as_of=self.AS_OF,
-        )
-        assert len(scenarios.history_rows) == 1
-        assert (
-            scenarios.history_rows[0].payment_date == date(2026, 1, 1)
-        )
-
-        # Aug 2026 in committed and accelerated honors the override.
-        aug_committed = next(
-            row for row in scenarios.committed_forward
-            if row.payment_date == date(2026, 8, 1)
-        )
-        aug_accelerated = next(
-            row for row in scenarios.accelerated_forward
-            if row.payment_date == date(2026, 8, 1)
-        )
-        assert aug_committed.payment == Decimal("2500.00")
-        assert aug_committed.extra_payment == Decimal("0.00")
-        assert aug_accelerated.payment == Decimal("2500.00")
-        assert aug_accelerated.extra_payment == Decimal("500.00")
-
-        # Jul 2026 (no override) in accelerated has extra=$500.
-        jul_accelerated = next(
-            row for row in scenarios.accelerated_forward
-            if row.payment_date == date(2026, 7, 1)
-        )
-        assert jul_accelerated.extra_payment == Decimal("500.00")
-
-
-# -- F-27 -- target-date outlook honors the committed plan ------------------
-
-
-# ``TestTargetDateOutlook`` was DELETED at plan step C8f with the producer it
-# graded.  ``target_date_outlook`` binary-searched the resolver's contractual
-# schedule walk, which amortizes installments nobody paid (finding B-9), so for a
-# loan behind on its payments it could report "no extra needed" for a target the
-# loan does not reach -- contradicting the payoff chip on the same page, which
-# folds.  The search now folds the loan's forward PLAN through the seam
-# (``balance_at.loan_required_extra``).
-#
-# Its surviving invariants moved WITH it, to
-# ``tests/test_services/test_loan_payoff_date_oracle.py``: the searched extra
-# really reaches the target and a cent less misses it (``TestPlanRequiredExtra``),
-# and a standing overpayment lowers the required top-up -- F-27's acceptance
-# (``TestLoanRequiredExtraSeam``).  The one assertion that did NOT survive is
-# ``test_committed_payoff_date_matches_composer``: the panel no longer reports a
-# payoff date at all, because the chip already does, from the one producer.
-
 
 class TestConfirmedLedgerView:
     """The read-switch seam: ``confirmed_view`` (the ConfirmedLedgerView bundle).
@@ -2245,33 +1790,33 @@ class TestConfirmedLedgerView:
             < unseeded.schedule[-1].payment_date
         )
 
-    def test_compute_payoff_scenarios_seeds_the_forward_slices(self):
-        """The composer's forward slices start from the seed, not the replay.
+    def test_compute_payoff_scenarios_seeds_the_forward_slice(self):
+        """The composer's contractual forward starts from the seed, not the replay.
 
-        The direct-call path the loan-detail chart and the payoff calculator wire
-        (they bypass ``resolve_loan``).  With the $290,000 seed the committed
-        slice's first row leaves 289,651.35 (vs 299,701.35 un-seeded) and its
-        life-of-remaining interest is strictly less.
+        The direct-call path the loan-detail chart's x-axis and the lever's
+        contract reference wire (they bypass ``resolve_loan``).  With the
+        $290,000 seed the contractual slice's first row leaves 289,651.35 (vs
+        299,701.35 un-seeded) and its life-of-remaining interest is strictly
+        less.
         """
         params, anchor = self._fixed_300k()
         loan_inputs = LoanInputs(params, [anchor], None, _rate_feed(params))
-
         seeded = compute_payoff_scenarios(
-            loan_inputs=loan_inputs, extra_monthly=Decimal("0.00"),
-            as_of=self.AS_OF, confirmed_view=self._view(),
+            loan_inputs=loan_inputs, as_of=self.AS_OF, confirmed_view=self._view(),
         )
         unseeded = compute_payoff_scenarios(
-            loan_inputs=loan_inputs, extra_monthly=Decimal("0.00"),
-            as_of=self.AS_OF,
+            loan_inputs=loan_inputs, as_of=self.AS_OF,
         )
-        assert seeded.committed_forward[0].remaining_balance == Decimal(
+        assert seeded.original_forward[0].remaining_balance == Decimal(
             "289651.35"
         )
-        assert unseeded.committed_forward[0].remaining_balance == Decimal(
+        assert unseeded.original_forward[0].remaining_balance == Decimal(
             "299701.35"
         )
-        assert (
-            seeded.total_interest_committed < unseeded.total_interest_committed
+        assert sum(
+            (row.interest for row in seeded.original_forward), Decimal("0.00"),
+        ) < sum(
+            (row.interest for row in unseeded.original_forward), Decimal("0.00"),
         )
 
     # ``test_target_date_outlook_uses_the_seed`` was deleted with
@@ -2288,11 +1833,14 @@ class TestConfirmedLedgerView:
 class TestTheReplayProjectionCutIsTheSettledDay:
     """Plan step **X-an** / finding **N-187**: one cut, on the day cash moved.
 
-    The resolver splits its payment feed on ONE predicate --
-    ``_replay_from_anchor`` takes what has happened, ``_build_monthly_override``
-    plans the rest -- so a payment is never in both halves.  (It CAN be in
-    neither; ``test_a_payment_an_anchor_subsumes_is_in_neither_half`` below is
-    the counter-example, and "exact complements" is what this deliberately is
+    The resolver's replay takes what has happened on ONE predicate --
+    ``_replay_from_anchor`` reads ``has_settled_by`` -- and what has not is the
+    balance seam's plan's (since plan step R7d-g-3, ruling **R-R88**; until
+    then the composer's own ``_build_monthly_override`` planned it, and both
+    halves of this class were the composer's).  (A settled payment CAN be in
+    neither the replay nor the plan;
+    ``test_a_payment_an_anchor_subsumes_is_in_neither_half`` below is the
+    counter-example, and "exact complements" is what this deliberately is
     not.)  Until X-an both sides asked whether the payment's PAY PERIOD had
     begun, while the posted ledger that seeds the projection counted the same
     payment from the day its cash moved (``loan_ledger.payment_visible_on``).
@@ -2311,14 +1859,12 @@ class TestTheReplayProjectionCutIsTheSettledDay:
     read on 2026-07-30 the projected balance was $310.81 low the following
     month, growing to $1,789.69 at the tail of the schedule.
 
-    **The two end-to-end tests do not grade the OVERRIDE half on their own, and
-    the two partition tests are not redundant with them.**  Under a half-fix
-    that moved ``replay_schedule`` onto the settle day and left
-    ``_build_monthly_override`` on the pay period, August is in BOTH halves --
-    but the stale ``(2026, 8)`` override key is never consumed, because the
-    forward slice starts in September, so both end-to-end tests stay green.
-    ``test_no_payment_is_replayed_and_planned_at_once`` is what fails there,
-    and it does so by calling ``_build_monthly_override`` directly.
+    **The end-to-end test does not grade the cut on its own, and the
+    partition test is not redundant with it.**  A replay a day off the
+    predicate still opens its forward slice in September on this fixture, so
+    the end-to-end test stays green;
+    ``test_the_replay_takes_exactly_the_settled_by_set`` is what fails there,
+    and it does so by reading the predicate directly.
     """
 
     PI = Decimal("1798.65")
@@ -2390,11 +1936,10 @@ class TestTheReplayProjectionCutIsTheSettledDay:
                 params, [_origination_anchor(params)],
                 self._payments(), _rate_feed(params),
             ),
-            extra_monthly=Decimal("0.00"),
             as_of=self.AS_OF,
             confirmed_view=self._ledger_view(7),
         )
-        assert scenarios.committed_forward[0].payment_date == date(2026, 9, 1)
+        assert scenarios.original_forward[0].payment_date == date(2026, 9, 1)
 
     def test_the_projected_balance_is_not_one_installment_low(self):
         """The figure the double count moved, pinned by hand.
@@ -2416,75 +1961,29 @@ class TestTheReplayProjectionCutIsTheSettledDay:
                 params, [_origination_anchor(params)],
                 self._payments(), _rate_feed(params),
             ),
-            extra_monthly=Decimal("0.00"),
             as_of=self.AS_OF,
             confirmed_view=view,
         )
         by_month = {
             (row.payment_date.year, row.payment_date.month):
                 row.remaining_balance
-            for row in scenarios.committed_forward
+            for row in scenarios.original_forward
         }
         assert (2026, 8) not in by_month
         assert by_month[(2026, 9)] == Decimal("297568.58")
         assert by_month[(2026, 10)] == Decimal("297257.77")
 
-    def test_a_payment_settled_after_as_of_is_still_planned(self):
-        """The LATE half: a past read must not spend money that had not left.
-
-        The same feed read as of 2026-07-29, one day BEFORE the August
-        installment's cash moved.  The ledger counts six payments there, and the
-        resolver must agree: the August installment is still a plan, so the
-        forward slice opens at 2026-08-01 **carrying that payment's own
-        amount**.
-
-        The August payment is given ``$2,200.00`` rather than the contractual
-        ``$1,798.65`` precisely so the assertion can SEE the override.  At the
-        contractual amount an overridden August row and a plain contractual one
-        are byte-identical, so asserting only the row's DATE would pass with an
-        empty override map and grade nothing but ``replay.next_pay_date``.
-
-        Six installments have settled by 2026-07-29, leaving ``$298,185.56``
-        (the ``_ledger_view(6)`` walk).  The August row is then:
-
-            interest  = 298185.56 * 0.005 = 1490.93  (HALF_UP from 1490.9278)
-            principal = 2200.00 - 1490.93 =  709.07
-            balance   = 298185.56 - 709.07 = 297,476.49
-
-        Without the override it would pay the contractual 1798.65, leaving
-        307.72 of principal and 297,877.84 -- which is what a regression here
-        would show.
-        """
-        params = self._params()
-        payments = [
-            dataclasses.replace(payment, amount=Decimal("2200.00"))
-            if payment.dates.due_date == date(2026, 8, 1) else payment
-            for payment in self._payments()
-        ]
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                params, [_origination_anchor(params)],
-                payments, _rate_feed(params),
-            ),
-            extra_monthly=Decimal("0.00"),
-            as_of=date(2026, 7, 29),
-            confirmed_view=self._ledger_view(6),
-        )
-        august = scenarios.committed_forward[0]
-        assert august.payment_date == date(2026, 8, 1)
-        # The PLANNED outlay, not the contractual P&I: the override is what
-        # this row is made of, and an empty map would give 1798.65 / 307.72.
-        assert august.payment == Decimal("2200.00")
-        assert august.principal == Decimal("709.07")
-        assert august.remaining_balance == Decimal("297476.49")
-
     def _partition(self, as_of: date, anchors: list | None = None):
-        """Return ``(replayed_months, planned_months, settled_by_months)``.
+        """Return ``(replayed_months, settled_by_months)``.
 
-        The three sets the partition claim is about, read off the two call
-        sites and off the predicate itself, so the assertions below compare
-        what the code does against what the rule says rather than against a
-        second hand-maintained expectation.
+        The replay's half of the cut, read off the call site, and the
+        predicate's own answer, so the assertions below compare what the code
+        does against what the rule says rather than against a second
+        hand-maintained expectation.  Until plan step R7d-g-3 this returned
+        the composer's PLANNED half too (``_build_monthly_override``, the
+        complement); that half is the balance seam's plan now (ruling
+        **R-R88**), and its clamp is graded where it lives
+        (``test_loan_plan_assembly``).
         """
         params = self._params()
         payments = self._payments()
@@ -2499,7 +1998,6 @@ class TestTheReplayProjectionCutIsTheSettledDay:
             payment_day=params.payment_day,
             as_of=as_of,
         ).rows
-        planned = _build_monthly_override(payments, as_of)
         replayed_months = {
             (row.payment_date.year, row.payment_date.month)
             for row in replayed
@@ -2513,43 +2011,26 @@ class TestTheReplayProjectionCutIsTheSettledDay:
             "the replay produced two rows in one month, which the "
             "biweekly redistribution exists to prevent"
         )
-        return replayed_months, set(planned), settled_by_months
+        return replayed_months, settled_by_months
 
     @pytest.mark.parametrize("as_of_day", list(range(25, 32)))
-    def test_no_payment_is_replayed_and_planned_at_once(self, as_of_day):
-        """The half that is a HARD invariant: never both, on every day.
+    def test_the_replay_takes_exactly_the_settled_by_set(self, as_of_day):
+        """The replay's half IS the predicate's answer, on every day.
 
-        A payment in both halves has its installment paid twice -- once inside
-        the ledger balance seeding the projection, once by the plan on top.
-        Swept across 2026-07-25..07-31, which brackets both the August
-        installment's settle day (07-30) and the pay period that used to decide
-        it (07-31), so the sweep crosses the seam whichever rule is in force.
+        ``has_settled_by`` is the WHOLE split: what it answers ``True`` for
+        is a replay candidate, and what it answers ``False`` for is the
+        balance seam's plan's (ruling R-R88).  Graded against the predicate
+        directly, so the call site cannot drift from the rule without this
+        failing.  Swept across 2026-07-25..07-31, which brackets both the
+        August installment's settle day (07-30) and the pay period that used
+        to decide it (07-31), so the sweep crosses the seam whichever rule is
+        in force.  On this fixture (one origination anchor, no payoff) every
+        candidate does replay;
+        :meth:`test_a_payment_an_anchor_subsumes_is_in_neither_half` is the
+        case where it does NOT.
         """
-        replayed, planned, _ = self._partition(date(2026, 7, as_of_day))
-        assert replayed.isdisjoint(planned)
-
-    @pytest.mark.parametrize("as_of_day", list(range(25, 32)))
-    def test_the_two_halves_partition_the_SETTLED_BY_set(self, as_of_day):
-        """And the union is that set, not the whole feed -- the honest claim.
-
-        ``has_settled_by`` is the WHOLE split: what it answers ``False`` for is
-        planned, what it answers ``True`` for is a replay candidate.  Graded
-        against the predicate directly, so the two call sites cannot drift from
-        the rule without this failing.
-
-        On this fixture (one origination anchor, no payoff) every candidate does
-        replay, so the union is also the whole feed --
-        :meth:`test_a_payment_an_anchor_subsumes_is_in_neither_half` is the case
-        where it is NOT, and the two together are why the claim is stated as the
-        settled-by set rather than as a two-way complement.
-        """
-        replayed, planned, settled_by = self._partition(
-            date(2026, 7, as_of_day)
-        )
+        replayed, settled_by = self._partition(date(2026, 7, as_of_day))
         assert replayed == settled_by
-        assert replayed | planned == {
-            (2026, month) for month in range(2, 9)
-        }
 
     def test_a_payment_an_anchor_subsumes_is_in_neither_half(self):
         """The case the single-anchor fixture cannot ask about, stated as a rule.
@@ -2562,9 +2043,9 @@ class TestTheReplayProjectionCutIsTheSettledDay:
 
         So "exact complements" is false as an unqualified claim, and this is the
         counter-example: with a true-up dated 2026-06-15, the February..June
-        installments are in neither half.  What IS invariant is the pair the two
-        tests above grade -- never both, and the union is the settled-by set
-        minus what the anchor (or a payoff) already accounts for.
+        installments are in neither the replay nor the plan.  What IS invariant
+        is what the test above grades -- the replay is the settled-by set minus
+        what the anchor (or a payoff) already accounts for.
         """
         params = self._params()
         trueup = FakeAnchorEvent(
@@ -2572,16 +2053,14 @@ class TestTheReplayProjectionCutIsTheSettledDay:
             anchor_balance=Decimal("297900.00"),
             created_at=datetime(2026, 6, 15, tzinfo=timezone.utc),
         )
-        replayed, planned, settled_by = self._partition(
+        replayed, settled_by = self._partition(
             self.AS_OF, anchors=[_origination_anchor(params), trueup],
         )
         subsumed = {(2026, month) for month in range(2, 7)}
 
-        assert replayed.isdisjoint(planned), "never both, anchor or not"
         assert subsumed & settled_by == subsumed, (
             "pre-condition: all five installments HAD settled by the read"
         )
         assert subsumed.isdisjoint(replayed)
-        assert subsumed.isdisjoint(planned)
         # Only the July and August installments survive the anchor bound.
         assert replayed == {(2026, 7), (2026, 8)}

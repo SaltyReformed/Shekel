@@ -35,7 +35,6 @@ from app.enums import RecurrenceUnitEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
-from app.models.transfer_template import TransferTemplate
 from app.routes._recurrence_form_refusals import RecurrenceFormContext
 from app.routes._recurrence_form_helpers import (
     resolve_recurrence_rule_for_update,
@@ -46,13 +45,11 @@ from app.schemas.validation import end_bound_before_start_message
 from app.services import balance_at, recurring_transfer_query
 from app.services.balance_at import BalanceContext, is_standing_loan_payment
 from app.services.loan_recurrence_sync import (
-    bind_rule_to_loan,
     loan_payment_window,
 )
 from app.services.recurrence import (
     EMPTY,
     INDEFINITE,
-    ClosesOn,
     EmptyAuthoredWindowError,
     EndsOnDate,
     reauthor_rule,
@@ -61,7 +58,7 @@ from app.services.recurrence import (
 )
 from app.services.recurring_definition import resolved_definition
 from tests._test_helpers import (
-    cadence_payload,
+    bind_rule_to_loan,
     create_account_of_type,
     create_loan_account,
     freeze_today,

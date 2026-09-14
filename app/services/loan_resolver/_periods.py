@@ -271,20 +271,19 @@ class LoanInputs:
     :func:`app.services.loan_payment_service.load_loan_context`), so naming
     the clump lets the two entry points share one cohesive parameter instead
     of threading the same four values by hand.  The evaluation date
-    (``as_of``) and the accelerated-scenario ``extra_monthly`` are
-    deliberately NOT bundled here -- they are the per-call question asked of
-    a given loan, not part of the loan's data.
+    (``as_of``) is deliberately NOT bundled here -- it is the per-call
+    question asked of a given loan, not part of the loan's data.
 
     Frozen so a caller cannot mutate a bundle another consumer is holding.
 
     *The parenthetical here read "the resolver passes a confirmed-only*
     ``payments`` *view to the composer this way", and no caller has done that
-    for some time: the composer takes the WHOLE feed and separates it itself
-    (:func:`._payoff._build_forward_inputs` hands the replay the dates and
-    :func:`._payoff._build_monthly_override` takes the complement).  A grep for
-    a* ``dataclasses.replace`` *over this class finds none in* ``app/`` *or*
-    ``tests/`` *(2026-09-09).  Corrected rather than left, because a stale
-    example is read as a live contract.*
+    for some time: the composer takes the WHOLE feed and hands the replay the
+    dates settled by* ``as_of`` *(:func:`._payoff._build_forward_inputs`); the
+    projected remainder is the balance seam's plan since plan step R7d-g-3.  A
+    grep for a* ``dataclasses.replace`` *over this class finds none in*
+    ``app/`` *or* ``tests/`` *(2026-09-09).  Corrected rather than left,
+    because a stale example is read as a live contract.*
 
     Attributes:
         loan_params: A :class:`LoanParams`-shaped object exposing the

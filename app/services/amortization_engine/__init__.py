@@ -7,12 +7,18 @@ No database access -- operates only on values passed in.
 
 Supports payment-aware projections: when a list of PaymentRecord
 instances is provided, the schedule replays actual/committed payments
-month-by-month instead of assuming the contractual amount.  This
-enables three projection scenarios from the same engine:
+month-by-month instead of assuming the contractual amount.  Two
+projections come from the same engine:
 
-  1. Original schedule -- payments=None, extra_monthly=0
-  2. Committed schedule -- payments=confirmed+projected transfers
-  3. What-if schedule -- payments=confirmed, extra_monthly=user input
+  1. Original schedule -- the contract, extra_monthly=0
+  2. What-if schedule -- the contract plus extra_monthly=user input, the
+     target-date search's contract-only answer
+
+A COMMITTED schedule -- the contract with the owner's projected transfers
+routed through a ``monthly_override`` map -- was the third until plan step
+R7d-g-3 (ruling **R-R88**); the balance seam's plan fold
+(``balance_at._plan_fold``) is the one walk of what a loan is projected to
+PAY, and every loan surface reads it there.
 
 Split along the primitives/question seam (the C0302 root fix, same
 shape as the ``loan_resolver`` package) so existing imports from

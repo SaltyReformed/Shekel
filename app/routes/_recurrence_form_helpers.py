@@ -788,12 +788,16 @@ def resolve_recurrence_rule_for_update(
     amortizes, so a payment that does not repeat leaves the loan with no
     cadence to project against.  It is not a cosmetic refusal -- measured, the
     clear silently re-dated a loan's payoff, because
-    ``recurring_transfer_query.active_recurring_transfer_template`` finds a
-    loan's payment by whether a rule names it, and deleting that rule
-    drops the standing overpayment the balance seam threads::
+    ``recurring_transfer_query.active_recurring_transfer_templates`` finds a
+    loan's payments by whether a rule names them, and deleting that rule
+    drops the definition -- its occurrences and the standing overpayment they
+    carry -- out of the seam's forward plan while its settings row still
+    asserts the extra (measured when a loan-level ``loan_standing_extra``
+    read that row through the same query; the read went at plan step
+    R7d-g-3, the mechanism stands)::
 
-        loan standing extra before: 250.00
-        loan standing extra after:    0.00
+        definition in the loan's plan before: yes, extra 250.00
+        definition in the loan's plan after:  no
         loan_payment_settings row still asserts: 250.00
 
     The template's own ``LoanPaymentSettings`` row would go on claiming an

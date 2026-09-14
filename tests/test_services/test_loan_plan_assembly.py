@@ -566,7 +566,7 @@ def test_the_cache_stores_on_membership_not_truthiness():
     the docstring said otherwise until an adversarial merge review found it one
     site over from where it had already been corrected
     (``_memoize._memoize_once``).  ``loan_plan`` answered ``[]``; it now answers
-    a ``LoanForwardPlan(payments=[], charges=[])``, which is unconditionally
+    a ``LoanForwardPlan(payments=[], charges=[], periods=[])``, which is unconditionally
     TRUTHY.  This test is unaffected -- the primitive is generic and its
     ``_build_empty`` below returns a real ``[]`` -- but the CLAIM about the plan
     was false, and a falsy-answer example that is no longer falsy is how the

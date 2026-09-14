@@ -38,6 +38,7 @@ from __future__ import annotations
 import _plan_gate
 import _registry as registry
 from _classes import decomposition_leaf_keys, identity_class
+from _tables import UNESCAPED_PIPE_RX
 
 
 def row_of(which: str, prefix: str) -> str:
@@ -75,10 +76,18 @@ def with_cell(line: str, index: int, value: str) -> str:
         index: The cell to replace, negative indices allowed.
         value: The new cell content, unpadded.
 
+    Split on UNESCAPED pipes only (2026-09-14): a naive ``split("|")`` turned
+    a live row's ``\\|`` into a cell boundary, so a control staging a row
+    that carries one (``balance:D34`` does) rebuilt it one cell WIDER with no
+    defect injected -- red on a correct edit, and since the reader refuses a
+    mis-width row, red before the arm under test ever ran.
+
     Returns:
         The rewritten row.
     """
-    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    cells = [
+        c.strip() for c in UNESCAPED_PIPE_RX.split(line.strip().strip("|"))
+    ]
     cells[index] = value
     return "| " + " | ".join(cells) + " |"
 

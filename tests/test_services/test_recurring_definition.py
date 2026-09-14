@@ -45,13 +45,13 @@ from app.services.recurrence import _reading
 # patches ``_context.occurrence_placements``.
 from app.services.balance_at import _context
 from app.services.balance_at import is_standing_loan_payment
-from app.services.loan_recurrence_sync import bind_rule_to_loan
 from app.services.recurring_definition import (
     read_definition,
     resolved_definition,
 )
 from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY
 from tests._test_helpers import (
+    bind_rule_to_loan,
     create_account_of_type,
     create_loan_account,
     freeze_today,

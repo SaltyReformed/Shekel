@@ -960,18 +960,20 @@ _FENCED_MODULE_RULINGS = {
         # furthest thing here from a balance-at-T.  It moved from
         # ``loan_payment_service`` at plan step R7d-a and keeps its ruling.
         "loan_payment_config",
-        # The standing monthly overpayment, in its two scopings.  A single
-        # stored parameter of the definition; the payoff projection THREADS it,
-        # which is a different thing from this answering one.
-        "loan_standing_extra",
-        "loan_standing_extra_for_account",
-        # What the definition says one installment costs -- the whole value.
-        # A PAYMENT amount, ruled on exactly the ground
-        # ``compute_contractual_pi`` is above: what one payment moves, never
-        # what an account owes.  The RULE that read it,
-        # ``standing_installment_cash``, was deleted at plan step R16-b-2
-        # (ruling R-R67): the amount model's own arm prices an estimate now.
-        "standing_payment",
+        # WHICH of a loan's definitions tracks it -- the oldest whose settings
+        # row says derive (plan step R7d-g-3): the track door and the payment
+        # card's one-tracker rule.  A row off the list the caller holds; it
+        # loads no loan and answers no figure.
+        "tracking_definition",
+        # ``loan_standing_extra``, ``loan_standing_extra_for_account`` and
+        # ``standing_payment`` were ruled here until plan step R7d-g-3 deleted
+        # them (ruling R-R83 as re-ruled there; plan ledger row D49): each
+        # answered a LOAN-level question off ONE picked definition, and the
+        # payoff composer that threaded the extra takes none now.  Dropped
+        # rather than left, for the reason ``cash_ledger``'s entry states:
+        # a ruling for a name the module no longer defines would un-fence
+        # whatever the name was reused for.  ``standing_installment_cash``
+        # went the same way at R16-b-2 (ruling R-R67).
     })),
     # The PURE loan-resolver tier (:data:`_LOAN_RESOLVER_ENGINE_MODULES`,
     # closing finding B-12).  Package-scoped, so a new submodule is covered the

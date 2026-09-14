@@ -133,6 +133,45 @@
 }
 
 /* =============================================
+   RECURRING PAYMENTS (loan detail payment card)
+   ============================================= */
+/* One strip per recurring transfer INTO the loan (plan step R7d-g-3): its
+   name and cadence on the left, its per-payment figure on the right, its
+   controls beneath.  The escrow card's row idiom, so the two stacked cards
+   read as one component; tokens only. */
+.loan-payment {
+  padding: 0.75rem;
+}
+
+.loan-payment + .loan-payment {
+  border-top: 1px solid var(--shekel-border-subtle);
+}
+
+.loan-payment__name {
+  font-weight: 600;
+}
+
+.loan-payment__figure {
+  font-weight: 700;
+  font-size: 1.25rem;
+}
+
+/* A fixed payment SHORT of the contract: the warning tint under the strip and
+   the warning token on its sentence, matching the ARM tag and the scheduled
+   escrow badge (color is paired with the icon and the sentence, never alone). */
+.loan-payment--short {
+  background: color-mix(in srgb, var(--shekel-warning) 8%, transparent);
+}
+
+.loan-payment__drift {
+  color: var(--shekel-warning);
+}
+
+.loan-payment__extra {
+  max-width: 8rem;
+}
+
+/* =============================================
    ESCROW VERSION DRAWER (loan detail escrow card)
    ============================================= */
 /* Each escrow line is a summary row (its amount in effect TODAY) over a
