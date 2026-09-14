@@ -49,6 +49,8 @@ from app.services.statement_match import (
     RowKind,
     as_reviewed,
 )
+from app.services.one_off import OneOffToPlace, place_one_off
+from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     generate_row_of,
     last_covered_day,
@@ -561,6 +563,45 @@ def a_rule(
     )
     db.session.add(row)
     db.session.flush()
+    return row
+
+
+def a_one_off_envelope(seed_user, name="Home Improvement", category=None):
+    """Return a Projected envelope the owner made AT THE GRID, through the producer.
+
+    The shape plan step ``balance:X-bi-7b`` introduced: a RULE-LESS definition
+    plus its placed row (``one_off.place_one_off``, the door the grid's two
+    create routes call), so the row carries a ``template_id`` and its
+    ``recurs`` is ``False``.  Built through the producer rather than by hand
+    so a case that grades how bank import reads such a row grades the row the
+    app actually writes.  Committed, so a scope derived afterwards sees it.
+
+    Args:
+        seed_user: The seeded user bundle.
+        name: The envelope's name -- the definition's, which the row reads.
+        category: The category it files under; Groceries by default.
+
+    Returns:
+        The placed :class:`~app.models.transaction.Transaction`.
+    """
+    category = category or seed_user["categories"]["Groceries"]
+    period = calendar_for(seed_user["user"].id).period_by_id(
+        seed_user["bootstrap_period"].id,
+    )
+    row = place_one_off(
+        OneOffToPlace(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            name=name,
+            amount=Decimal("0.00"),
+            category_id=category.id,
+            is_envelope=True,
+        ),
+        period,
+        scenario_id=seed_user["scenario"].id,
+    )
+    db.session.commit()
     return row
 
 

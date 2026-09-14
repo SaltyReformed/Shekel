@@ -15,7 +15,7 @@ about editing, and the row's own period is the caller's fact rather than the
 schedule's.
 
 **It TAKES the calendar rather than an owner id** (plan step `C4-a-5`), which
-is what ``statement_match._candidates.destinations_for`` did one leaf earlier
+is what ``statement_match._destinations.destinations_for`` did one leaf earlier
 under ruling **R-PC36**.  It derived its own until then, and that was fine
 while a caller wanted nothing but the ``<option>`` list.
 

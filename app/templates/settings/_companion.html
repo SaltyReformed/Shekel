@@ -26,22 +26,22 @@
                        value=form_values.get("email", ""),
                        required=true, errors=errors,
                        help_text="Must be unique across all accounts.",
-                       input_attrs='maxlength="255" autocomplete="off"') }}
+                       input_attrs={"maxlength": 255, "autocomplete": "off"}) }}
 
       {{ render_field("display_name", "Display Name",
                        value=form_values.get("display_name", ""),
                        required=true, errors=errors,
                        help_text="Shown in the companion view header.",
-                       input_attrs='maxlength="100" autocomplete="off"') }}
+                       input_attrs={"maxlength": 100, "autocomplete": "off"}) }}
 
       {{ render_field("password", "Password", type="password",
                        required=true, errors=errors,
                        help_text="At least 12 characters.",
-                       input_attrs='minlength="12" maxlength="72" autocomplete="new-password"') }}
+                       input_attrs={"minlength": 12, "maxlength": 72, "autocomplete": "new-password"}) }}
 
       {{ render_field("password_confirm", "Confirm Password", type="password",
                        required=true, errors=errors,
-                       input_attrs='minlength="12" maxlength="72" autocomplete="new-password"') }}
+                       input_attrs={"minlength": 12, "maxlength": 72, "autocomplete": "new-password"}) }}
 
       <button type="submit" class="btn btn-primary">
         <i class="bi bi-person-plus"></i> Create Companion
@@ -70,22 +70,22 @@
         {{ render_field("email", "Email", type="email",
                          value=form_values.get("email", comp.email),
                          required=true, errors=errors,
-                         input_attrs='maxlength="255" autocomplete="off"') }}
+                         input_attrs={"maxlength": 255, "autocomplete": "off"}) }}
 
         {{ render_field("display_name", "Display Name",
                          value=form_values.get("display_name", comp.display_name or ""),
                          required=true, errors=errors,
-                         input_attrs='maxlength="100" autocomplete="off"') }}
+                         input_attrs={"maxlength": 100, "autocomplete": "off"}) }}
 
         {{ render_field("password", "New Password", type="password",
                          errors=errors,
                          help_text="Leave blank to keep the current password. Changing the password logs the companion out of all sessions.",
-                         input_attrs='maxlength="72" autocomplete="new-password"') }}
+                         input_attrs={"maxlength": 72, "autocomplete": "new-password"}) }}
 
         {{ render_field("password_confirm", "Confirm New Password",
                          type="password", errors=errors,
                          help_text="Required only when setting a new password.",
-                         input_attrs='maxlength="72" autocomplete="new-password"') }}
+                         input_attrs={"maxlength": 72, "autocomplete": "new-password"}) }}
 
         <div class="d-flex gap-2">
           <button type="submit" class="btn btn-primary">

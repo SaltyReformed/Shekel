@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
+from tests._test_helpers import cadence_payload
 from app.models.user import User, UserSettings
 from app.models.account import Account
 from app.models.scenario import Scenario
@@ -461,7 +462,10 @@ class TestTemplateOwnership:
             "account_id": str(other["account"].id),
             "category_id": str(seed_user["categories"]["Rent"].id),
             "transaction_type_id": str(expense_type.id),
-            "recurrence_pattern": "",
+            # A transaction template REQUIRES a cadence since plan step
+            # balance:X-bi-7b (R-BAL23); the ownership refusal is what this
+            # case grades.  (``recurrence_pattern`` was the retired key.)
+            **cadence_payload(),
         }, follow_redirects=True)
 
         assert b"Invalid account" in resp.data
@@ -479,7 +483,10 @@ class TestTemplateOwnership:
             "account_id": str(seed_user["account"].id),
             "category_id": str(other["category"].id),
             "transaction_type_id": str(expense_type.id),
-            "recurrence_pattern": "",
+            # A transaction template REQUIRES a cadence since plan step
+            # balance:X-bi-7b (R-BAL23); the ownership refusal is what this
+            # case grades.  (``recurrence_pattern`` was the retired key.)
+            **cadence_payload(),
         }, follow_redirects=True)
 
         assert b"Invalid category" in resp.data

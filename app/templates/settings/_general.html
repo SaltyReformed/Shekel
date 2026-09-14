@@ -9,7 +9,7 @@
   {{ render_field("grid_default_periods", "Default Grid Periods",
                    type="number", value=settings.grid_default_periods,
                    help_text="Number of pay period columns shown by default.",
-                   input_attrs='min="1" max="52"', errors=errors) }}
+                   input_attrs={"min": 1, "max": 52}, errors=errors) }}
 
   {{ render_input_group("default_inflation_rate", "Default Inflation Rate",
                          value=(settings.default_inflation_rate|to_percent)|round(2) if settings.default_inflation_rate is not none else '', suffix="%",
@@ -19,7 +19,7 @@
 
   {{ render_input_group("low_balance_threshold", "Low Balance Threshold",
                          value=settings.low_balance_threshold, prefix="$", required=true,
-                         input_attrs='min="0"',
+                         input_attrs={"min": 0},
                          help_text="Balance cells turn yellow when projected balance falls below this amount.",
                          errors=errors) }}
 
@@ -40,14 +40,14 @@
 
     {{ render_input_group("large_transaction_threshold", "Large Transaction Threshold",
                            value=settings.large_transaction_threshold if settings.large_transaction_threshold is not none else 500, prefix="$",
-                           input_attrs='min="0"',
+                           input_attrs={"min": 0},
                            help_text="Transactions above this amount are flagged on the dashboard calendar.",
                            errors=errors) }}
 
     {{ render_field("anchor_staleness_days", "Anchor Staleness Warning",
                      type="number", value=settings.anchor_staleness_days if settings.anchor_staleness_days is not none else 14,
                      help_text="Show a warning when the anchor balance has not been updated in this many days.",
-                     input_attrs='min="1"', errors=errors) }}
+                     input_attrs={"min": 1}, errors=errors) }}
   </div>
 
   <button type="submit" class="btn btn-primary">

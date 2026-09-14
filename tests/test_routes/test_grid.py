@@ -45,8 +45,6 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
-    record_paydays_across_a_hole,
-    rhythm_of,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -64,6 +62,9 @@ from tests._test_helpers import (
     mark_purchase_settled,
     net_posted_by_day,
     posted_loan_balance_at,
+    record_paydays_across_a_hole,
+    resolved_amount,
+    rhythm_of,
     settle_day_columns,
     settle_instant_on,
     settlement_basis_id,
@@ -910,7 +911,7 @@ class TestTransactionCRUD:
                 name="New Expense",
                 scenario_id=seed_user["scenario"].id,
             ).one()
-            assert txn.estimated_amount == Decimal("99.99")
+            assert resolved_amount(txn) == Decimal("99.99")
             assert txn.pay_period_id == seed_periods_today[0].id
             assert txn.category_id == seed_user["categories"]["Groceries"].id
             assert txn.status.name == "Projected"
@@ -1391,20 +1392,21 @@ class TestTransactionCRUD:
             txn = db.session.query(Transaction).filter_by(
                 name="Full Form Expense"
             ).one()
-            assert txn.estimated_amount == Decimal("250.00")
+            assert resolved_amount(txn) == Decimal("250.00")
             assert txn.pay_period_id == seed_periods_today[2].id
             assert txn.category_id == seed_user["categories"]["Car Payment"].id
 
-    def test_full_edit_due_date_input_renders_and_persists_when_unset(
+    def test_full_edit_due_date_input_renders_and_a_move_persists(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """A transaction with no due date renders an editable due_date input,
-        and saving a date through the full-edit form persists it.
+        """A one-off the modal made is DATED at birth, offers the input, and a move sticks.
 
-        Guards the un-gated due_date field in grid/_transaction_full_edit.html:
-        before, the input was hidden whenever due_date was NULL, so a user
-        could never add one.  The non-transfer update path applies due_date via
-        its generic setattr loop, so the saved value sticks.
+        **It was "renders and persists when UNSET" until plan step
+        balance:X-bi-7b**: a one-off is due on its paycheck's start unless the
+        owner states a day (ruling R-BAL22), so a row the door creates with no
+        date is no longer undated -- it carries the start.  What survives of
+        the case is the property: the popover offers the input on a row no
+        cadence generates, and a date saved through it persists.
         """
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
@@ -1424,9 +1426,9 @@ class TestTransactionCRUD:
             txn = db.session.query(Transaction).filter_by(
                 name="No Due Date Yet"
             ).one()
-            assert txn.due_date is None
+            assert txn.due_date == seed_periods_today[0].start_date
 
-            # The input renders even though due_date is NULL.
+            # The input renders: no cadence generates this row.
             edit_resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
             assert edit_resp.status_code == 200
             assert b'name="due_date"' in edit_resp.data
@@ -1452,11 +1454,12 @@ class TestTransactionCRUD:
         production before the fix: 926 rows priced before the cutover and
         raised after it.
 
-        **The last assertion is the one that matters** and the case above is
-        why: the sibling test clears the date on an AD-HOC row and asserts
-        200, which is still correct. Asserting only the refusal here would
-        grade the door and not the thing that breaks, so this re-renders the
-        grid afterwards.
+        **The last assertion is the one that matters**: asserting only the
+        refusal here would grade the door and not the thing that breaks, so
+        this re-renders the grid afterwards.  (The sibling case used to clear
+        the date on an ad-hoc row and assert 200; since plan step
+        balance:X-bi-7b a one-off's date is priced on too and the clear is
+        refused there as well, with its own sentence.)
         """
         with app.app_context():
             template = make_expense_template(db.session, seed_user)
@@ -1614,17 +1617,23 @@ class TestTransactionCRUD:
             assert row.amount_source_id is None, "and the row now OWNS it"
             assert row.is_override is True, "so the row is the owner's"
 
-    def test_full_edit_clears_due_date(
+    def test_full_edit_cannot_clear_a_one_offs_due_date(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """Emptying the pre-filled due_date input clears the stored date.
+        """Emptying the pre-filled due_date input is REFUSED, with the reason.
 
-        The nullable-field clear rule: the schema pre_load maps the
-        empty submit on the allow_none ``due_date`` to an explicit
-        None (it used to DROP the key, making the date unclearable
-        from the UI); the non-transfer update path's setattr loop then
-        nulls the column.  The popover pre-fills the current value, so
-        an empty submit is always the user's deliberate clear.
+        **It asserted the clear LANDED until plan step balance:X-bi-7b.**  A
+        one-off is a rule-less definition's row since that step and its
+        definition prices it AS OF its due date (amount rule 3), so the date
+        may move but never be cleared (ruling R-BAL22; the storage-tier
+        sentence is ``ck_transactions_template_row_needs_due_date``).  The
+        route gate ``_reject_generated_due_date_edit`` answers the empty
+        submit with the reason rather than the generic invalid-reference
+        sentence, and the date stands.  The popover stops OFFERING the clear
+        at the family's second leaf (7b-2); until then this is what the box
+        meets.  The schema still maps the empty submit to an explicit
+        ``None`` -- the nullable-field rule the case used to grade -- which
+        is exactly what reaches the gate.
         """
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(
@@ -1651,9 +1660,10 @@ class TestTransactionCRUD:
                 "due_date": "",
                 "version_id": txn.version_id,
             })
-            assert save_resp.status_code == 200
+            assert save_resp.status_code == 400
+            assert b"can be moved but not cleared" in save_resp.data
             db.session.refresh(txn)
-            assert txn.due_date is None
+            assert txn.due_date == date(2026, 2, 20)
 
     def test_full_edit_period_selector_renders_and_moves_transaction(
         self, app, auth_client, seed_user, seed_periods_today
@@ -1742,7 +1752,9 @@ class TestTransactionCRUD:
             # balanceChanged trigger (no full reload).
             inplace_resp = auth_client.patch(f"/transactions/{txn.id}", data={
                 "estimated_amount": "130.00",
-                "estimated_amount_as_rendered": str(txn.estimated_amount),
+                # What the popover RENDERS is the resolved figure (the row
+                # states none since plan step balance:X-bi-7b).
+                "estimated_amount_as_rendered": str(resolved_amount(txn)),
                 "pay_period_id": target_period.id,
                 "version_id": txn.version_id,
             })
@@ -1934,7 +1946,7 @@ class TestTransactionNegativePaths:
             assert resp.status_code == 201
 
             txn = db.session.query(Transaction).filter_by(name="Zero Amount").one()
-            assert txn.estimated_amount == Decimal("0.00")
+            assert resolved_amount(txn) == Decimal("0.00")
 
     def test_create_transaction_missing_pay_period_id(
         self, app, auth_client, seed_user, seed_periods_today
@@ -2545,7 +2557,7 @@ class TestAccountIdColumn:
 
         txn = Transaction.query.filter_by(name="Farmers market").first()
         assert txn is not None
-        assert txn.estimated_amount == Decimal("12.50")
+        assert resolved_amount(txn) == Decimal("12.50")
 
     def test_inline_create_blank_name_falls_back_to_category(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -2577,7 +2589,7 @@ class TestAccountIdColumn:
 
         txn = Transaction.query.filter_by(name=category.display_name).first()
         assert txn is not None
-        assert txn.estimated_amount == Decimal("20.00")
+        assert resolved_amount(txn) == Decimal("20.00")
 
     def test_inline_create_rejects_missing_account_id(
         self, app, auth_client, seed_user, seed_periods_today
@@ -3023,11 +3035,14 @@ class TestAccountScopedGrid:
         })
         assert resp.status_code == 201
 
+        # The row states no figure since plan step balance:X-bi-7b (its
+        # definition prices it, R-BAL21), so it is found by the account it
+        # landed on and priced through the one resolver.
         txn = Transaction.query.filter_by(
-            estimated_amount=Decimal("250.00"),
             account_id=savings.id,
-        ).first()
+        ).order_by(Transaction.id.desc()).first()
         assert txn is not None
+        assert resolved_amount(txn) == Decimal("250.00")
         assert txn.account_id == savings.id
 
     # --- Multi-period balance roll-forward correctness ---
@@ -6677,11 +6692,11 @@ class TestBornProjected:
 
             txn = (
                 db.session.query(Transaction)
-                .filter_by(estimated_amount=Decimal("33.33"))
                 .order_by(Transaction.id.desc())
                 .first()
             )
             assert txn is not None
+            assert resolved_amount(txn) == Decimal("33.33")
             assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
 
     def test_full_create_form_has_no_status_control(
@@ -6838,11 +6853,11 @@ class TestCreateFragmentsCarryThePeriodId:
 
             txn = (
                 db.session.query(Transaction)
-                .filter_by(estimated_amount=Decimal("42.00"))
                 .order_by(Transaction.id.desc())
                 .first()
             )
             assert txn is not None
+            assert resolved_amount(txn) == Decimal("42.00")
             assert txn.pay_period_id == period_id
 
 

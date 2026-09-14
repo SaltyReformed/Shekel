@@ -17,7 +17,7 @@ Nothing changed on the way across.
 
 **The offer set is the SCREEN's, and that is the property everything here
 rests on.**  A destination this module will accept is one
-:func:`~._candidates.destinations_for` returns, narrowed by what the acting
+:func:`~._destinations.destinations_for` returns, narrowed by what the acting
 pass has already claimed -- so a row the screen may not offer cannot be reached
 by crafting a request, and a row it does offer cannot be refused a tier deeper.
 

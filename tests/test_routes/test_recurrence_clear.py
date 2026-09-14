@@ -1,10 +1,20 @@
 """
 Shekel Budget App -- Clearing a recurring definition (plan step R2e-1)
 
-Both edit forms offer "Does not repeat" as a recurrence pattern.
+The TRANSFER edit form offers "Does not repeat" as a recurrence pattern.
 Choosing it must mean what it says: the template stops naming a rule, the rule
 row ceases to exist, and the instances that rule already generated stop
 occupying future pay periods.
+
+**The TRANSACTION form no longer offers it, and its schema REFUSES the empty
+unit** (plan step ``balance:X-bi-7b``, ruling **R-BAL23**, developer
+2026-09-13 for the edit form too): a transaction definition with no rule is a
+ONE-OFF, made at the Budget grid through the one-off producer, so clearing a
+cadence from the form would manufacture rule-less definitions holding
+scattered rows listed nowhere.  The transaction class below grades the
+REFUSAL -- the rule and every row stand -- and the sweep's own semantics
+(what a cleared cadence retires and retains) stay graded on the transfer
+twin here and on the engine in ``test_recurrence_engine``.
 
 **It meant none of those things.**  Measured on a real edit of an
 every-paycheck template before this step::
@@ -43,7 +53,7 @@ retires the ``Once`` pattern.
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AmountSourceEnum, StatusEnum, TxnTypeEnum
+from app.enums import AmountSourceEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
@@ -182,21 +192,24 @@ def _period_indices(rows, periods):
 
 
 class TestClearingATransactionTemplatesRecurrence:
-    """POST /templates/<id> with an empty recurrence pattern."""
+    """POST /templates/<id> with an empty recurrence pattern is REFUSED."""
 
-    def test_the_rule_is_deleted_and_the_future_rows_are_swept(
+    def test_an_empty_cadence_is_refused_and_the_rule_and_every_row_stand(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """The rule row is gone and only rows before the cut survive.
+        """R-BAL23: nothing is deleted, nothing is swept, the sentence names why.
 
-        Ten every-paycheck rows occupy period indices 0-9.  The edit states
-        ``effective_from`` as period 4's start date, and regeneration collects
-        rows whose period ENDS on or after that date -- so periods 4-9 are
-        swept and 0-3 survive.  Nothing is regenerated, because the rule the
-        rows came from no longer exists.
+        Ten every-paycheck rows occupy period indices 0-9.  The edit posts
+        the placeholder's empty unit with an ``effective_from`` that would
+        have swept periods 4-9 under the retired clear; the update schema
+        refuses it (``TemplateUpdateSchema.validate_a_cadence_is_chosen``)
+        before the route reads a field, so the rule row, all ten rows and the
+        amount are exactly as they were, and the flash says a recurring
+        transaction needs a cadence.
         """
         template = _recurring_txn_template(seed_user)
         rule_id = template.recurrence_rule.id
+        version_before = template.version_id
         rows = db.session.query(Transaction).filter_by(
             template_id=template.id,
         ).all()
@@ -204,148 +217,24 @@ class TestClearingATransactionTemplatesRecurrence:
 
         resp = auth_client.post(f"/templates/{template.id}", data={
             "recurrence_unit": "",
+            "default_amount": "19.99",
             "effective_from": seed_periods[4].start_date.isoformat(),
             "version_id": str(template.version_id),
         }, follow_redirects=True)
         assert resp.status_code == 200
+        assert b"needs a cadence" in resp.data
 
         db.session.expire_all()
         template = db.session.get(TransactionTemplate, template.id)
-        assert template.recurrence_rule is None
-        # Detached is not enough -- the row itself must be gone, or the edit
-        # form becomes a second producer of finding F-6's orphaned rules.
-        assert db.session.get(RecurrenceRule, rule_id) is None
-
+        assert template.recurrence_rule is not None
+        assert template.recurrence_rule.id == rule_id
+        assert db.session.get(RecurrenceRule, rule_id) is not None
+        assert template.default_amount == Decimal("15.99")
+        assert template.version_id == version_before
         survivors = db.session.query(Transaction).filter_by(
             template_id=template.id,
         ).all()
-        assert _period_indices(survivors, seed_periods) == [0, 1, 2, 3]
-
-    def test_a_hand_edited_future_row_survives_the_sweep(
-        self, app, auth_client, seed_user, seed_periods,
-    ):
-        """An override inside the swept window is preserved, not deleted.
-
-        Clearing a recurrence is an ordinary regeneration, so it runs the same
-        override protection every other edit runs: the row the user changed by
-        hand stays at its own amount while the untouched auto-generated rows
-        around it are removed.
-        """
-        template = _recurring_txn_template(seed_user)
-        overridden = (
-            db.session.query(Transaction)
-            .filter_by(template_id=template.id, pay_period_id=seed_periods[6].id)
-            .one()
-        )
-        repriced_by_the_owner(overridden, "17.99")
-        overridden_id = overridden.id
-        db.session.commit()
-
-        resp = auth_client.post(f"/templates/{template.id}", data={
-            "recurrence_unit": "",
-            "effective_from": seed_periods[4].start_date.isoformat(),
-            "version_id": str(template.version_id),
-        }, follow_redirects=True)
-        assert resp.status_code == 200
-
-        db.session.expire_all()
-        kept = db.session.get(Transaction, overridden_id)
-        assert kept is not None
-        assert kept.estimated_amount == Decimal("17.99")
-
-        survivors = db.session.query(Transaction).filter_by(
-            template_id=template.id,
-        ).all()
-        assert _period_indices(survivors, seed_periods) == [0, 1, 2, 3, 6]
-
-    def test_settled_and_soft_deleted_rows_inside_the_window_survive(
-        self, app, auth_client, seed_user, seed_periods,
-    ):
-        """The two irrecoverable cases, both inside the swept window.
-
-        A settled row is immutable and carries ledger postings; a soft-deleted
-        one records a removal the user made on purpose.  Neither may be
-        destroyed by an edit that only says "stop repeating".  Both sit in
-        periods 5 and 7 -- past ``effective_from`` -- so the sweep has to
-        decline them rather than merely not reach them.
-        """
-        template = _recurring_txn_template(seed_user)
-        settled = (
-            db.session.query(Transaction)
-            .filter_by(template_id=template.id, pay_period_id=seed_periods[5].id)
-            .one()
-        )
-        settled.status_id = ref_cache.status_id(StatusEnum.DONE)
-        removed = (
-            db.session.query(Transaction)
-            .filter_by(template_id=template.id, pay_period_id=seed_periods[7].id)
-            .one()
-        )
-        removed.is_deleted = True
-        settled_id, removed_id = settled.id, removed.id
-        db.session.commit()
-
-        resp = auth_client.post(f"/templates/{template.id}", data={
-            "recurrence_unit": "",
-            "effective_from": seed_periods[4].start_date.isoformat(),
-            "version_id": str(template.version_id),
-        }, follow_redirects=True)
-        assert resp.status_code == 200
-
-        db.session.expire_all()
-        kept_settled = db.session.get(Transaction, settled_id)
-        assert kept_settled is not None
-        assert kept_settled.status_id == ref_cache.status_id(StatusEnum.DONE)
-        kept_removed = db.session.get(Transaction, removed_id)
-        assert kept_removed is not None
-        assert kept_removed.is_deleted is True
-
-        survivors = db.session.query(Transaction).filter_by(
-            template_id=template.id,
-        ).all()
-        assert _period_indices(survivors, seed_periods) == [0, 1, 2, 3, 5, 7]
-
-    def test_clearing_and_changing_the_amount_does_not_offer_the_chooser(
-        self, app, auth_client, seed_user, seed_periods,
-    ):
-        """The amount chooser must not front a delete.
-
-        The chooser asks "should your hand-edited instances move to the new
-        amount?", which presumes future instances will be regenerated at that
-        amount.  On a cleared recurrence none will be, so before the guard a
-        clear-plus-amount edit rendered "Your other upcoming instances move to
-        $99.99" over rows the same request was deleting.  The edit must instead
-        complete, sweeping the untouched rows and leaving the override alone.
-        """
-        template = _recurring_txn_template(seed_user)
-        overridden = (
-            db.session.query(Transaction)
-            .filter_by(template_id=template.id, pay_period_id=seed_periods[6].id)
-            .one()
-        )
-        repriced_by_the_owner(overridden, "17.99")
-        overridden_id = overridden.id
-        db.session.commit()
-
-        resp = auth_client.post(f"/templates/{template.id}", data={
-            "recurrence_unit": "",
-            "default_amount": "99.99",
-            "effective_from": seed_periods[4].start_date.isoformat(),
-            "version_id": str(template.version_id),
-        })
-        assert resp.status_code == 302
-        assert b"conflict_apply" not in resp.data
-
-        db.session.expire_all()
-        template = db.session.get(TransactionTemplate, template.id)
-        assert template.recurrence_rule is None
-        kept = db.session.get(Transaction, overridden_id)
-        assert kept.estimated_amount == Decimal("17.99")
-        assert kept.is_override is True
-        survivors = db.session.query(Transaction).filter_by(
-            template_id=template.id,
-        ).all()
-        assert _period_indices(survivors, seed_periods) == [0, 1, 2, 3, 6]
+        assert _period_indices(survivors, seed_periods) == list(range(10))
 
     def test_another_users_template_is_not_reachable(
         self, app, second_auth_client, seed_user, seed_periods,
@@ -373,13 +262,13 @@ class TestClearingATransactionTemplatesRecurrence:
     def test_an_edit_that_submits_no_pattern_at_all_leaves_the_rule(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """An absent recurrence key is "unchanged", not "cleared".
+        """An absent recurrence key is "unchanged", and is NOT refused.
 
         The update schemas are partial: a caller that submits only an amount
-        is asking for an amount change.  Only the form's explicit
-        "Does not repeat" -- which posts an EMPTY value, surviving as
-        a present ``None`` -- means "stop recurring".  Collapsing the two would
-        make every partial update silently delete the template's cadence.
+        is asking for an amount change.  The refusal above fires on a
+        PRESENT empty unit; an absent one states nothing about the cadence,
+        and collapsing the two would make every partial update either
+        delete the cadence (the retired reading) or be refused (this one).
         """
         template = _recurring_txn_template(seed_user)
         rule_id = template.recurrence_rule.id

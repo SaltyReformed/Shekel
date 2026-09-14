@@ -91,7 +91,11 @@
       {# --- Recurrence (accent emphasis section) --- #}
       <div class="form-section--accent">
         <h6 class="form-section__title">Recurrence</h6>
-        {{ recurrence_cadence_controls(recurrence.picker, recurrence.selected_cadence) }}
+        {# No "Does not repeat" on THIS kind (ruling R-BAL23, plan step
+           balance:X-bi-7b): a transaction that does not repeat is a one-off,
+           made at the Budget grid; this form is for a definition with a
+           cadence.  The transfer form keeps the option. #}
+        {{ recurrence_cadence_controls(recurrence.picker, recurrence.selected_cadence, offers_no_cadence=false) }}
         <div id="recurrence-fields" class="d-none">
           {# Both validity bounds, on BOTH create and edit (plan step R7b-4).
              The pay-period <select> that used to sit here is gone: it was the

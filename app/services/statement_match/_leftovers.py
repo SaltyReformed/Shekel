@@ -364,7 +364,7 @@ def _creatable_lines(
             (:func:`review_set`).
         unmatched: The bank lines inside the calendar no proposal explains.
         destinations: Every offerable budget line
-            (:func:`~._candidates.destinations_for`, narrowed by
+            (:func:`~._destinations.destinations_for`, narrowed by
             :func:`~._candidates.unmatched_destinations`), read ONCE for the
             whole pass and grouped here rather than
             re-queried per line -- a redundant producer call inside one request

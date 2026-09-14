@@ -142,6 +142,13 @@ def _apply_field_updates(txn, data, *, amount_authored, period_changed):
     """
     # Read BEFORE the loop: ``recurs`` may lazy-load the template, and a load
     # after it autoflushes the moved period with the flag still False (act 3).
+    #
+    # **INTERIM, stated** (plan step balance:X-bi-7b, leaf 7b-1): a one-off's
+    # ``name`` and ``category_id`` are its DEFINITION's (ruling R-BAL23), and
+    # this loop still lands them on the ROW alone for such a row, so a crafted
+    # PATCH (no form posts either field) renames the row and not its
+    # definition until leaf 7b-2 routes them there -- the popover shows the
+    # row, the merchant-rule picker (``offerable_templates``) the definition.
     recurs = txn.recurs
     for field, value in data.items():
         if field in _SEAM_OWNED_FIELDS:
@@ -177,9 +184,11 @@ def _apply_field_updates(txn, data, *, amount_authored, period_changed):
     # developer 2026-09-13): a rule-less definition runs no pass to keep off
     # the row; the flag would hide it from ``propagate_to_unruled_definition``
     # (the twin's defect **BAL-493**) and from a rule added later (R-BAL25).
-    # A TYPED FIGURE flips on every linked row until ``X-bi-7b`` builds
-    # R-BAL21's restate: it lands OWN today, and the flag is what keeps a
-    # definition edit from silently discarding it.
+    # A TYPED FIGURE flips on every linked row until ``X-bi-7b``'s second
+    # leaf (7b-2) builds R-BAL21's restate: it lands OWN today, and the flag
+    # is what keeps a definition edit from silently discarding it.  The first
+    # leaf mints one-offs as rule-less definitions, so this interim now
+    # reaches a row the grid itself created.
     if txn.template_id and (amount_authored or (period_changed and recurs)):
         txn.is_override = True
 

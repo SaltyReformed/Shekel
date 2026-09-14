@@ -2,12 +2,12 @@
 
 ## Where this stands
 
-**JUST LANDED: `C17-d-3` (`4420df87`)**, the cadence KIND offered on the four doors and registration
-as radio arms with no script (**R-PC84**); `C17-d` ships with it -- the day-of-month cadence is
-whole: `C17-d-1` the value, `C17-d-2` the kinds with their migration (MOVED MONEY for a month-kind
-owner, `$0.00` on production; `recurrence:R13` ticked with it), `C17-d-3` the doors.
-**NEXT: `C17-e`** (**R-PC77**), now NOW; `steps.md` carries the order. `C20` (the shared form
-macros, **PC-515**; the month clamp's one producer, **PC-516**) is minted beside it.
+**JUST LANDED: `C20-a` (`51a905b6`)**, the shared form macros taking their attributes as a mapping
+so every browser-side hint and the ARIA state reach the page (**PC-515** closed), cut the same
+morning `C17-d-3` (`4420df87`) shipped `C17-d` whole (the day-of-month cadence: the value, the kinds
+with their migration, the doors as radio arms; archived in
+`historical/pay_calendar_c17d_as_built_2026-09-14.md`). **NEXT: `C17-e`** (**R-PC77**) and `C20-b`
+(the clamp's one producer, the manage card's residue), both NOW; `steps.md` carries the order.
 
 **BUILT AND TICKED**: `C1`; `C2` whole, which is one step under three names (`balance:X-l`,
 `recurrence:R-F12`), ticked at `C2-f3e`; `C3`; `C4` whole; `C13-a`, `C13-b`; `C14` whole, archived
@@ -312,38 +312,33 @@ record.
 - [x] **C17-c-2 -- the doors.** `36c6b6af`; the parent (**R-PC78**), ticked with `C17-c-2b`.
 - [x] **C17-c-2a -- a hole is REFUSED; the doors ask for the scheduled day.** `3d635e4a`, R-PC76.
 - [x] **C17-c-2b -- extend materialises the plan.** `36c6b6af`; MOVED MONEY, `$0.00` on prod.
-- [x] **C17-d -- the day-of-month cadence KIND.** `4420df87` (**R-PC68**; one commit with
-      `recurrence:R13` at `C17-d-2`). The DECOMPOSED parent, split 2026-09-13 (**R-PC81**) into the
-      value's shape, the kinds with their migration, and the forms; ticked with `C17-d-3`. MOVED
-      MONEY at `C17-d-2` for a month-kind owner; `$0.00` on production.
-- [x] **C17-d-1 -- the cadence is a value of its own kind.** `7a6bbaf5`. `pay_rhythm.FixedDays`;
-      `Rhythm.cadence`; `Era` without `kind` (the type is the kind, **R-PC80**); `_grid` dispatches
-      on the value's type through one table; `PayCadence` takes the value; `era_to_mint` asks the
-      grid's round trip. `$0.00`, a pure refactor.
-- [x] **C17-d-2 -- the `Monthly` and `SemiMonthly` kinds.** `d79986c7`. Month arithmetic in `_grid`
-      (a day 29..31 clamps to the month's end); migration `3ec5291ca4e2`: `cadence_days` nullable,
-      `nominal_day` and the other day with CHECKs, `kind_id` and `ref.pay_cadence_kinds` DROPPED
-      (**R-PC80**); `PayCadence` 12 / 24 without dividing; the event's phrase (**R-PC82**),
-      registration's day (**R-PC83**); P78's eight fixtures through the door. MOVED MONEY for such
-      an owner, `$0.00` on production. Closed **P78**; N-399 re-measured, re-homed as **SAL-556**.
-- [x] **C17-d-3 -- the doors offer the kind.** `4420df87`. Three RADIO ARMS, no script, distinct
-      wire keys per arm; the schema's `@post_load` hands back the `Rhythm`; `rhythm_to_wire` the one
-      inverse; one macro on all four doors (**R-PC84**). The rhythm's form moved to
-      `schemas/validation/_pay_rhythm.py` (the doors' module crossed 1,000 lines). `add_months`
-      folded onto the clamp; the event's description and the last dropped-column lines put right.
-      Closed **PC-508**, **PC-513**, **PC-514**.
+- [x] **C17-d -- the day-of-month cadence KIND.** `4420df87` (**R-PC68**, **R-PC79**-**R-PC84**);
+      three leaves, ticked with `C17-d-3`; MOVED MONEY at `C17-d-2` for a month-kind owner, `$0.00`
+      on production. The span as it stood: `historical/pay_calendar_c17d_as_built_2026-09-14.md`.
+- [x] **C17-d-1** `7a6bbaf5` -- the cadence is a value of its own kind; `$0.00`. Archived with
+      `C17-d`.
+- [x] **C17-d-2** `d79986c7` -- the `Monthly` and `SemiMonthly` kinds, migration `3ec5291ca4e2`; one
+      commit with `recurrence:R13`. Closed **P78**. Archived with `C17-d`.
+- [x] **C17-d-3** `4420df87` -- the doors offer the kind as radio arms (**R-PC84**). Closed
+      **PC-508**, **PC-513**, **PC-514**. Archived with `C17-d`.
 - [ ] **C17-e -- coalesced nominal paydays are ONE paycheck** (**R-PC77**; closes **N-493**). Two
       nominal paydays a closed run displaces onto one cash day derive one paycheck wherever an era's
       grid is read; `reject_shift_on_short_cadence` is then a fence. `$0.00`, after `C17-d`.
 - [ ] **C19 -- the `PayCalendar` door splits by SHAPE** (**PC-512**, re-homed from salary:P77
       2026-09-13): `searches` / `views` / `walks` as a PURE move graded by AST (**R-PC74**'s shape);
       `_calendar.py` sits at 20 of 20 methods and 981 of 1000 lines. ~100 call sites; `$0.00`.
-- [ ] **C20 -- the shared form macros say what their callers pass** (findings **PC-515**,
-      **PC-516**, filed 2026-09-14). `_form_macros.html` autoescapes its quoted attributes, so every
-      browser-side hint and the ARIA state on 16 caller sites is dead; the attribute string becomes
-      a mapping rendered `k="v"` (developer: fix it now, its own commit). Its second half gives the
-      month-day clamp ONE producer where `rate_period_engine`, `salary_cockpit_service` and
-      `recurrence/_row_date.py` still spell it. `$0.00`.
+- [ ] **C20 -- the shared form macros say what their callers pass** (findings **PC-516**,
+      **PC-517**, **PC-518**). The DECOMPOSED parent, split 2026-09-14 when the developer had the
+      macros fixed at once in their own commit; ships with `C20-b`.
+- [x] **C20-a** `51a905b6` -- `_form_macros.html` takes its attributes as a MAPPING rendered
+      `k="v"`, values still autoescaped (the `|safe` remedy is refused by the template hook), and
+      its 16 callers in four templates pass dicts; `min` / `max` / `step` / `maxlength` /
+      `autocomplete` and the ARIA pair reach the browser; a hostile value stays escaped inside the
+      quotes. Closed **PC-515**.
+- [ ] **C20-b** -- the month-day clamp's ONE producer where `rate_period_engine`,
+      `salary_cockpit_service` and `recurrence/_row_date.py` still spell it (**PC-516**); the manage
+      card's hand-written `min` / `max` through the macro (**PC-517**) and its macro-rendered inputs
+      given distinct ids per form (**PC-518**). `$0.00`.
 - [ ] **C15 -- the retire-later solve runs only when an assumption moved** (ruling **R-PC52**;
       closes **P60**). The readiness card re-solves the retire-later binary search -- about nine
       projection walks of pure compute no query cost covers -- on every refresh, so a slider-only

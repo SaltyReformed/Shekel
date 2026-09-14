@@ -36,6 +36,7 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
+    AmountSourceEnum,
     LedgerAccountClassEnum,
     SettledDayBasisEnum,
     SettlementBasisEnum,
@@ -48,6 +49,7 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.statement_match import StatementMatchMember
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
 from app.services import statement_match
 from app.services.statement_match import RowKind
 from app.services.statement_match._candidates import purchase_candidate
@@ -69,6 +71,7 @@ from ._builders import (
 )
 from tests._test_helpers import (
     last_covered_day,
+    resolved_amount,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -323,7 +326,7 @@ class TestTheDifferenceBecomesARowTheOwnerAccepts:
         assert allowance.settled_on == line.posted_on
         rows = _minted(seed_user)
         assert len(rows) == 1
-        assert rows[0].estimated_amount == Decimal("0.05")
+        assert resolved_amount(rows[0]) == Decimal("0.05")
 
     def test_the_minted_row_is_income_settled_on_the_banks_day(
         self, app, db, seed_user,
@@ -348,10 +351,18 @@ class TestTheDifferenceBecomesARowTheOwnerAccepts:
         )
         assert row.settled_amount == Decimal("0.05")
         assert row.is_envelope is False
-        # It OWNS its figure: no template, no transfer, no card spend, so
-        # ``ck_transactions_amount_ownership`` requires the stored pair.
-        assert row.amount_source_id is None
-        assert row.template_id is None
+        # It is a ONE-OFF since plan step balance:X-bi-7b (R-BAL20 / R-BAL24):
+        # a rule-less DEFINITION carrying the name, type and figure plus this
+        # placed row, priced by it -- where it used to OWN its figure as a
+        # link-less row.  Still no transfer and no card spend.
+        assert row.template_id is not None
+        assert row.recurs is False
+        assert row.amount_source_id == ref_cache.amount_source_id(
+            AmountSourceEnum.TEMPLATE,
+        )
+        assert row.template.category_id is None
+        assert row.transfer_id is None
+        assert row.credit_payback_for_id is None
         assert row.account_id == seed_user["account"].id
 
     def test_a_shortfall_the_bank_TOOK_is_an_expense(
@@ -380,7 +391,7 @@ class TestTheDifferenceBecomesARowTheOwnerAccepts:
         assert row.transaction_type_id == ref_cache.txn_type_id(
             TxnTypeEnum.EXPENSE,
         )
-        assert row.estimated_amount == Decimal("0.06")
+        assert resolved_amount(row) == Decimal("0.06")
         assert row.status_id == ref_cache.status_id(StatusEnum.DONE)
 
     def test_it_is_named_for_the_banks_own_merchant(
@@ -657,7 +668,9 @@ class TestTheMintedRowIsAMemberOfTheMatch:
             seed_user, lines=[line], transactions=[salary, allowance],
             residual="0.05",
         )
-        row_id = _minted(seed_user)[0].id
+        minted_row = _minted(seed_user)[0]
+        row_id, definition_id = minted_row.id, minted_row.template_id
+        assert definition_id is not None
         assert _uncategorized_net(
             seed_user, LedgerAccountClassEnum.INCOME,
         ) == Decimal("-0.05")
@@ -669,6 +682,9 @@ class TestTheMintedRowIsAMemberOfTheMatch:
 
         assert db.session.get(Transaction, row_id) is None
         assert not _minted(seed_user)
+        # The rule-less definition the door minted goes with its only row
+        # (plan step balance:X-bi-7b, R-BAL27).
+        assert db.session.get(TransactionTemplate, definition_id) is None
         assert _uncategorized_net(
             seed_user, LedgerAccountClassEnum.INCOME,
         ) == Decimal("0.00")
@@ -1207,7 +1223,7 @@ class TestThePairMustBeTheSameDirection:
         )
 
         assert accepted.residual == Decimal("-500.00")
-        assert _minted(seed_user)[0].estimated_amount == Decimal("500.00")
+        assert resolved_amount(_minted(seed_user)[0]) == Decimal("500.00")
 
     def test_MIXED_signs_inside_a_group_stay_legal(self, app, db, seed_user):
         """A net deposit really is a gross income row less a deduction, so
@@ -1351,7 +1367,7 @@ class TestTheSHAPESAGroupCanTake:
         )
 
         assert accepted.residual == Decimal("-0.06")
-        assert _minted(seed_user)[0].estimated_amount == Decimal("0.06")
+        assert resolved_amount(_minted(seed_user)[0]) == Decimal("0.06")
         assert purchase.settled_on == bank_day
 
     def test_the_name_is_CUT_to_what_the_column_holds(
@@ -2070,7 +2086,7 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
         assert allowance.settled_amount == Decimal("100.00")
         minted = _minted(seed_user)
         assert len(minted) == 1
-        assert minted[0].estimated_amount == Decimal("0.05")
+        assert resolved_amount(minted[0]) == Decimal("0.05")
 
     def test_the_two_remedies_are_EXCLUSIVE(self, app, db, seed_user):
         """Correcting a member and minting one for the same gap cannot both.
@@ -2094,7 +2110,7 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
             salary.settled_amount
             + allowance.settled_amount
             + sum(
-                (row.estimated_amount for row in _minted(seed_user)),
+                (resolved_amount(row) for row in _minted(seed_user)),
                 Decimal("0.00"),
             )
         )

@@ -39,24 +39,39 @@ _UNIT_MONTHLY = "monthly"
 _UNIT_PER_PAYCHECK = "per_paycheck"
 
 def _load_active_transaction_templates(user_id):
-    """Load the user's active income and expense templates, partitioned.
+    """Load the user's active RECURRING income and expense templates, partitioned.
 
     One query (relationships are ``lazy="joined"`` on the model, so no
     N+1), split by transaction type so the producer receives the income
     and expense sections separately.  ``sort_order, name`` fixes the
     tie-break order the producer then re-sorts by monthly cost.
+
+    **Definitions WITH a rule only, since plan step ``balance:X-bi-7b``**
+    (ruling **R-BAL23**: *the Recurring list shows definitions with a rule*).
+    A rule-less transaction definition is a ONE-OFF's -- the grid popover is
+    its whole lifecycle -- and listing it here would give every one-off a
+    second door and, once bank import mints one per envelope, fill this page
+    with lines that repeat nothing.  Asked of each loaded definition through
+    the one accessor (``recurs``) rather than restated in the ``WHERE``: the
+    rule rides on the template's joined load, so the filter costs no query.
+    The Archived drawer is NOT filtered (:func:`_load_archived_rows`): an
+    archived one-off's row is soft-deleted, so that drawer's Unarchive is the
+    only door left to it.
     """
     income_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     expense_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    templates = (
-        db.session.query(TransactionTemplate)
-        .filter(
-            TransactionTemplate.user_id == user_id,
-            TransactionTemplate.is_active.is_(True),
+    templates = [
+        template for template in (
+            db.session.query(TransactionTemplate)
+            .filter(
+                TransactionTemplate.user_id == user_id,
+                TransactionTemplate.is_active.is_(True),
+            )
+            .order_by(TransactionTemplate.sort_order, TransactionTemplate.name)
+            .all()
         )
-        .order_by(TransactionTemplate.sort_order, TransactionTemplate.name)
-        .all()
-    )
+        if template.recurs
+    ]
     income = [t for t in templates if t.transaction_type_id == income_id]
     expense = [t for t in templates if t.transaction_type_id == expense_id]
     return income, expense
