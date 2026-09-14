@@ -18,6 +18,12 @@ script's lock ran; refusing on presence would make the script the control,
 which ruling **R-R60** demotes to an affordance.  Two cases here pin that
 reading, and their docstrings say what a presence rule would do to them.
 
+**Re-cut at plan step R7d-g-2 under ruling R-R81**: the door derives the
+start ONLY where the loan holds no active payment; a SECOND transfer's start
+is its owner's -- required, and refused at or before the loan's origination
+-- and its stop its owner's.  The second-transfer case and the affordance's
+cases moved with that ruling and say so.
+
 Every refusal case asserts that NOTHING was persisted, and every acceptance
 case reads the stored bound back: a door that flashed the right sentence and
 saved anyway, or saved a bound other than the one posted, would pass a
@@ -36,7 +42,11 @@ from app.models.category import Category
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.routes._recurrence_form_refusals import LOAN_PAYMENT_BOUND_IS_DERIVED
-from app.routes._loan_destination import loan_destination_locks
+from app.routes._loan_destination import (
+    SECOND_TRANSFER_STARTS_AFTER_ORIGINATION,
+    loan_destination_locks,
+)
+from app.schemas.validation import RECURRENCE_NEEDS_A_START
 from app.schemas.validation import end_bound_before_start_message
 from tests._test_helpers import (
     cadence_payload,
@@ -87,31 +97,48 @@ def _mortgage(seed_user, name="Mortgage"):
     )
 
 
-def _post_monthly_transfer(auth_client, seed_user, to_account, **bound):
-    """POST /transfers: a MONTHLY cadence, no ``starts_on``, and *bound*.
+def _post_monthly_transfer(
+    auth_client, seed_user, to_account, *, starts_on=None, **bound,
+):
+    """POST /transfers: a MONTHLY cadence, *starts_on* or none, and *bound*.
 
-    What the create form posts for a loan destination: the "Starts on" control
-    is locked and sends no key.  *bound* is the "Ends" control's three keys as
-    the browser posts them -- nothing at all for a locked row, ``never`` for
-    the untouched default, a mode and its one value for a real stop.
+    What the create form posts for a payment-less loan destination: the
+    "Starts on" control is locked and sends no key.  A SECOND transfer's
+    row is open (ruling **R-R81**) and posts *starts_on*.  *bound* is the
+    "Ends" control's three keys as the browser posts them -- nothing at all
+    for a locked row, ``never`` for the untouched default, a mode and its one
+    value for a real stop.
 
     Args:
         auth_client: The signed-in test client.
         seed_user: The owner fixture.
         to_account: The destination :class:`Account`.
+        starts_on: The owner's typed start, or ``None`` for a locked row.
         **bound: ``recurrence_end_mode`` and its value input, if any.
 
     Returns:
         The Flask response, redirect unfollowed so the flash stays readable.
     """
-    category = Category(
-        user_id=seed_user["user"].id, group_name="Debt", item_name="Loan",
+    # One category per owner for every POST here: a case that posts more than
+    # once (the origination sweep) must not trip
+    # ``uq_categories_user_group_item`` on its second request.
+    category = (
+        db.session.query(Category)
+        .filter_by(
+            user_id=seed_user["user"].id, group_name="Debt", item_name="Loan",
+        )
+        .one_or_none()
     )
-    db.session.add(category)
-    db.session.commit()
+    if category is None:
+        category = Category(
+            user_id=seed_user["user"].id, group_name="Debt", item_name="Loan",
+        )
+        db.session.add(category)
+        db.session.commit()
     with auth_client.application.app_context():
         monthly = cadence_payload(
-            unit=RecurrenceUnitEnum.MONTH, states_a_start=False,
+            unit=RecurrenceUnitEnum.MONTH,
+            starts_on=starts_on, states_a_start=starts_on is not None,
         )
     return auth_client.post("/transfers", data={
         "name": _NAME,
@@ -239,27 +266,32 @@ class TestAStopStatedForANewLoanPayment:
         rule = template.recurrence_rule
         assert rule.end_date is None and rule.max_occurrences is None
 
-    def test_a_second_transfer_into_a_paid_loan_keeps_its_stop(
+    def test_a_second_transfer_into_a_paid_loan_keeps_its_stop_and_its_start(
         self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """A loan that already holds a payment makes this the owner's stop.
+        """A loan that already holds a payment makes both bounds the owner's.
 
         The standing payment is the loan's OLDEST active recurring transfer,
-        so a second one is not the payment and its authored stop binds beside
-        the derived one (ruling **R-R60**'s second-transfer clause).  The
-        posted date is read back off the stored rule, not inferred from the
-        redirect.
+        so a second one is not the payment: its authored stop binds (ruling
+        **R-R60**'s second-transfer clause) and, since plan step R7d-g-2, so
+        does its authored START (ruling **R-R81**) -- the typed date is
+        stored and the rows generate from it, not from the loan's first
+        installment.  MOVED BY RULING: this case posted no start (the locked
+        row's shape) and asserted the stop alone, while the door wrote the
+        contract's start underneath.  Both are read back off the stored rule
+        and the generated rows, not inferred from the redirect.
 
-        NEGATIVE CONTROL: delete the ``_loan_holds_no_active_payment`` test
-        from ``_refuse_stop_on_a_new_loan_payment`` and this is refused --
-        the rule would fire for every loan destination.
+        NEGATIVE CONTROL: delete the ``loan_holds_no_active_payment`` gate
+        from ``settle_first_occurrence``'s loan branch and this is refused
+        (the stop) and, with the stop dropped, stored with the derived start.
         """
         loan = _mortgage(seed_user)
         make_loan_payment_template(db.session, seed_user, loan)
         db.session.commit()
+        typed_start = date(2026, 5, 15)
 
         resp = _post_monthly_transfer(
-            auth_client, seed_user, loan,
+            auth_client, seed_user, loan, starts_on=typed_start,
             recurrence_end_mode="on_date", end_date=_LATER_STOP.isoformat(),
         )
 
@@ -268,6 +300,77 @@ class TestAStopStatedForANewLoanPayment:
         template = _persisted(loan)
         assert template is not None, _flashes(auth_client)
         assert template.recurrence_rule.end_date == _LATER_STOP
+        assert template.recurrence_rule.starts_on == typed_start
+        generated = (
+            db.session.query(Transfer)
+            .filter(Transfer.transfer_template_id == template.id)
+            .order_by(Transfer.occurs_on)
+            .all()
+        )
+        assert generated, "the second transfer generated nothing"
+        assert generated[0].occurs_on == typed_start, (
+            "a second transfer must generate from its owner's start"
+        )
+
+    def test_a_second_transfer_must_state_its_start(
+        self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """A second transfer's start is required, like a savings transfer's.
+
+        Ruling **R-R81**: nothing derives it, so a submission naming a
+        cadence and no first occurrence is refused with the schema's own
+        sentence -- the one a savings destination meets -- rather than
+        silently given the loan's.
+        """
+        loan = _mortgage(seed_user)
+        make_loan_payment_template(db.session, seed_user, loan)
+        db.session.commit()
+
+        resp = _post_monthly_transfer(auth_client, seed_user, loan)
+
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/transfers/new")
+        flashed = _flashes(auth_client)
+        for message in RECURRENCE_NEEDS_A_START["starts_on"]:
+            assert message in flashed, flashed
+        assert _persisted(loan) is None
+
+    def test_a_second_transfers_start_at_or_before_origination_is_refused(
+        self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """The one thing the loan still says about a second transfer's start.
+
+        Ruling **R-R81**: refused at or before the loan's origination with
+        the door's own sentence.  The transfer service's R-C floor is the
+        same fact, but it refuses the first generated ROW after the template
+        and its rule are flushed; the door refuses the DATE.  Both the
+        boundary day and one before it, because the service's boundary is
+        ``<=`` and this must match it; the day after is the control.
+        """
+        loan = _mortgage(seed_user)
+        make_loan_payment_template(db.session, seed_user, loan)
+        db.session.commit()
+        refusal = SECOND_TRANSFER_STARTS_AFTER_ORIGINATION.format(
+            loan="Mortgage", origination="Apr 15, 2026",
+        )
+
+        for typed in (_ORIGINATION, date(2026, 4, 14)):
+            resp = _post_monthly_transfer(
+                auth_client, seed_user, loan, starts_on=typed,
+            )
+            assert resp.status_code == 302
+            assert resp.headers["Location"].endswith("/transfers/new")
+            assert refusal in _flashes(auth_client)
+            assert _persisted(loan) is None
+
+        resp = _post_monthly_transfer(
+            auth_client, seed_user, loan, starts_on=date(2026, 4, 16),
+        )
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/transfers"), (
+            _flashes(auth_client)
+        )
+        assert _persisted(loan).recurrence_rule.starts_on == date(2026, 4, 16)
 
     def test_an_archived_payment_does_not_count(
         self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
@@ -291,19 +394,19 @@ class TestAStopStatedForANewLoanPayment:
 
         _assert_refused_and_nothing_persisted(auth_client, resp, loan)
 
-    def test_the_derived_rule_speaks_before_the_inverted_window(
+    def test_a_stop_before_the_derived_start_is_refused_as_a_stop_not_as_a_window(
         self, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
         """A stop both before the start and not the owner's to state: one message.
 
-        Both refusals apply to a date before the derived first installment on
-        a payment-less loan.  The one that speaks is the more fundamental --
-        the owner cannot state a stop here at all -- because "this ends before
-        it starts" would send them to move a date they cannot state, which is
-        the order the edit door asks the same two rules in.
-
-        NEGATIVE CONTROL: swap the two calls in ``settle_first_occurrence``'s
-        loan branch and the inverted-window sentence is flashed instead.
+        On a payment-less loan the owner cannot state a stop at all, whatever
+        its date, so the derived-stop sentence speaks and the window sentence
+        never does.  Until plan step R7d-g-2 the door also graded the stop
+        against the derived start (for a SECOND transfer, whose start was
+        derived then too) and this case pinned which of the two refusals
+        spoke first; the window comparison went with the derivation of a
+        second transfer's start (ruling **R-R81**), so what it pins now is
+        that no window sentence is minted here at all.
         """
         loan = _mortgage(seed_user)
         db.session.commit()
@@ -323,9 +426,9 @@ class TestAStopStatedForANewLoanPayment:
     ):
         """The rule is scoped to loans; a savings transfer's stop is its owner's.
 
-        CONTROL for the refusal's reach: ``_loan_holds_no_active_payment``
-        answers ``True`` of a savings account too, and only the loan branch
-        of ``settle_first_occurrence`` asks it.  A savings destination states
+        CONTROL for the refusal's reach: ``loan_holds_no_active_payment``
+        answers ``True`` of a savings account too, and ``settle_first_occurrence``
+        asks it only of a configured loan.  A savings destination states
         its own start (nothing derives one), so the payload carries one.
         """
         savings = create_account_of_type(
@@ -361,22 +464,25 @@ class TestAStopStatedForANewLoanPayment:
         assert template.recurrence_rule.end_date == _LATER_STOP
 
 
-class TestTheCreateFormNamesTheDestinationsThatDeriveAStop:
-    """The affordance's data: which loans lock the "Ends" row, from the server."""
+class TestTheCreateFormNamesTheDestinationsThatDeriveTheBounds:
+    """The affordance's data: which loans lock both bound rows, from the server."""
 
-    def test_the_two_sets_the_form_emits(
+    def test_the_one_set_the_form_emits(
         self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """Every loan derives the start; only a payment-less loan the stop too.
+        """Only a payment-less loan derives the bounds, and it is ONE set.
 
-        Two loans: one already holding a payment, one not.  Both are in
-        ``data-loan-account-ids`` (a second transfer into a paid loan still
-        has its start derived, plan ledger row **D50**) and only the
-        payment-less one is in ``data-loan-account-ids-without-payment``.
+        Two loans: one already holding a payment, one not.  Only the
+        payment-less one is in ``data-loan-account-ids-without-payment``,
+        and the wider ``data-loan-account-ids`` the form carried for the
+        "Starts on" row alone is gone.  MOVED BY RULING at plan step R7d-g-2
+        (**R-R81**): the paid loan was in that wider set because the door
+        derived a second transfer's start (plan ledger row **D50**); a
+        second transfer's start is its owner's now, so no row locks for it.
 
-        NEGATIVE CONTROL: drop the ``_loan_holds_no_active_payment`` filter
-        from ``loan_destination_locks`` and the paid loan appears in the
-        second set, so the script would lock a stop the door honours.
+        NEGATIVE CONTROL: drop the ``loan_holds_no_active_payment`` filter
+        from ``_loan_destination_lock_set`` and the paid loan appears, so the
+        script would lock two rows the door leaves the owner's.
         """
         with app.app_context():
             paid = _mortgage(seed_user, name="Paid")
@@ -386,25 +492,24 @@ class TestTheCreateFormNamesTheDestinationsThatDeriveAStop:
 
             html = auth_client.get("/transfers/new").data.decode()
 
-            start_set = html.split('data-loan-account-ids="')[1].split('"')[0]
-            stop_set = html.split(
+            container = html.split('id="recurrence-fields"')[1].split(">")[0]
+            assert 'data-loan-account-ids="' not in container
+            derived_set = container.split(
                 'data-loan-account-ids-without-payment="',
             )[1].split('"')[0]
-            assert start_set == f"{paid.id},{unpaid.id}"
-            assert stop_set == str(unpaid.id)
+            assert derived_set == str(unpaid.id)
 
     def test_the_locks_producer(self, app, seed_user, seed_periods):  # pylint: disable=unused-argument
-        """The value the route emits, read directly: ascending, and a subset.
+        """The value the route emits, read directly: ascending, payment-less only.
 
-        An owner with no loan gets two empty sets, so the script listens for
-        nothing.  An archived payment does not keep a loan out of the second
-        set, for the reason the door gives.
+        An owner with no loan gets an empty set, so the script listens for
+        nothing.  An archived payment does not keep a loan out of the set,
+        for the reason the door gives.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             empty = loan_destination_locks(user_id)
-            assert empty.start_derived_for == ()
-            assert empty.stop_derived_for == ()
+            assert empty.derived_for == ()
 
             paid = _mortgage(seed_user, name="Paid")
             make_loan_payment_template(db.session, seed_user, paid)
@@ -415,8 +520,8 @@ class TestTheCreateFormNamesTheDestinationsThatDeriveAStop:
             db.session.commit()
 
             locks = loan_destination_locks(user_id)
-            assert locks.start_derived_for == (paid.id, unpaid.id, was_paid.id)
-            assert locks.stop_derived_for == (unpaid.id, was_paid.id)
+            assert locks.derived_for == (unpaid.id, was_paid.id)
+            assert locks.pinned_reason is None
 
     def test_the_ends_help_carries_both_sentences_on_the_transfer_forms_alone(
         self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument

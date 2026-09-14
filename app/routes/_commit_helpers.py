@@ -23,10 +23,15 @@ optimistic locking rather than recurrence, and the savings-goal and
 amount-version routes were importing them across a module boundary that had
 nothing to say about them.
 
-Three wrappers cover the structural variants:
+Four wrappers cover the structural variants:
 
 * :func:`commit_or_handle_stale` -- the plain case (the body's writes are
   already staged; only the ``commit`` can raise the stale race).
+* :func:`flush_or_handle_stale` -- the case where the version-pinned write
+  must land BEFORE the body goes on to read the row's own table or to call a
+  service that flushes (the transfer lifecycle doors since plan step
+  R7d-g-2): the stale race is caught at that first flush, where it actually
+  fires, rather than assumed to wait for the commit.
 * :func:`regenerate_and_commit_or_stale` -- the case where an
   in-transaction regeneration step must run inside the SAME ``try`` as
   the commit because the regeneration itself flushes and can raise the
@@ -233,6 +238,36 @@ def commit_or_handle_stale(ctx: StaleConflictContext) -> Response | None:
     """
     try:
         db.session.commit()
+        return None
+    except StaleDataError:
+        return handle_stale_conflict(ctx)
+
+
+def flush_or_handle_stale(ctx: StaleConflictContext) -> Response | None:
+    """Flush the session, converting a stale-data race into flash+redirect.
+
+    The FIRST-flush twin of :func:`commit_or_handle_stale`.  SQLAlchemy emits
+    a version-pinned ``UPDATE`` (or ``DELETE``) at the first flush after the
+    row is dirtied, and a route whose body reads the row's own table, or
+    calls a service that flushes, after dirtying it reaches that flush long
+    before its commit -- the transfer lifecycle doors soft-delete through
+    ``transfer_service`` (which flushes) and then ask which transfer is the
+    loan's standing payment (which autoflushes).  A guard on the commit
+    alone catches the race only when nothing flushed earlier, which is the
+    shape those doors carried until plan step R7d-g-2.  Flushing HERE, under
+    the guard, lands the pinned statement where the race can be reported;
+    every later flush writes other rows.
+
+    Args:
+        ctx: The :class:`StaleConflictContext` forwarded to
+            :func:`handle_stale_conflict` on a conflict.
+
+    Returns:
+        ``None`` on a clean flush; the conflict redirect :class:`Response`
+        otherwise, the session rolled back.
+    """
+    try:
+        db.session.flush()
         return None
     except StaleDataError:
         return handle_stale_conflict(ctx)
@@ -490,6 +525,7 @@ __all__ = [
     "handle_db_error",
     "handle_unique_violation",
     "commit_or_handle_stale",
+    "flush_or_handle_stale",
     "regenerate_and_commit_or_stale",
     "regenerate_commit_or_report",
 ]

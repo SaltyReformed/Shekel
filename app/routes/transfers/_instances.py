@@ -45,9 +45,7 @@ from app.exceptions import (
 from app.extensions import db
 from app.models.transfer import Transfer
 from app.services.amount_ownership import derived_ownership
-from app.services import (
-    loan_recurrence_sync, transfer_recurrence, transfer_service,
-)
+from app.services import transfer_recurrence, transfer_service
 from app.services.scenario_resolver import require_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._recurrence_conflict_chooser import flash_retained_notice
@@ -213,23 +211,22 @@ def materialize_initial_transfers(template, rule, start_period):
     if rule is None:
         return _materialize_one_time_transfer(template, start_period)
 
-    # Bound the rule to the destination loan's life BEFORE anything generates
-    # (plan step C9a).  The transfer form offers every active account as a
-    # destination, so a loan payment can be set up here as readily as on the
-    # loan page -- but this path builds its rule from the FORM, so nothing has
-    # ever given it the loan's ``start_date``.  Unbounded, it generated an
-    # installment into every materialized pay period, including those preceding
-    # origination: measured 3 pre-origination payments on a mortgage closing
-    # 2026-04-15, each a phantom cash debit and an erased payment once settled.
-    # A no-op for every non-loan destination, so no kind check is needed here.
+    # **Nothing binds the rule to the destination loan here any more** (plan
+    # step R7d-g-2, ruling **R-R85**).  From plan step C9a to R7d-g-1 this
+    # called ``loan_recurrence_sync.bind_rule_to_loan`` before generating --
+    # the transfer form offers every active account as a destination, so a
+    # loan payment can be set up here as readily as on the loan page, and
+    # unbounded it generated an installment into every materialized pay
+    # period, including those preceding origination (3 pre-origination
+    # payments on a mortgage closing 2026-04-15, each a phantom cash debit
+    # and an erased payment once settled).  The create door derives that
+    # start BEFORE the rule is built now (``_loan_destination
+    # .settle_first_occurrence``, ruling 2026-08-15), so for the loan's
+    # standing payment the bind found the date already right; and for a
+    # SECOND transfer into a paid loan, whose start is its OWNER's (ruling
+    # **R-R81**), it silently overwrote the date the owner typed with the
+    # contract's -- the one thing it still did.
     #
-    # Below the rule-less return rather than above it, and that is a FIX: a
-    # loan's recurring payment is found by whether a rule names it
-    # (``recurring_transfer_query``), so a ``Once`` transfer into a loan used
-    # to be bound here and could then be returned as that loan's standing
-    # payment.  A one-time transfer is not a cadence and no longer binds one.
-    loan_recurrence_sync.bind_rule_to_loan(rule, template.to_account_id)
-
     # Recurring transfer: delegate to the recurrence engine.  Wrap in the
     # SAME guard the one-time branch uses: the recurrence engine fans out
     # through ``create_transfer``, which rejects a loan as the source account

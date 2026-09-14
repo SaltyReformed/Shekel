@@ -9,9 +9,10 @@ TransferTemplate and seed its Transfer instances:
   account.
 * :func:`app.routes.loan.payment_transfer.create_payment_transfer` -- a monthly P&I +
   escrow payment transfer into a debt account.
-* :func:`app.routes.transfers.templates.create_transfer_template` /
-  :func:`app.routes.transfers.templates.unarchive_transfer_template` -- the
-  generic transfer-template create / restore paths.
+* :func:`app.routes.transfers.templates.create_transfer_template` -- the
+  generic transfer-template create path (the restore path,
+  ``lifecycle.unarchive_transfer_template``, ran it to fill forward until
+  plan step R7d-g-2 and runs the MAINTAIN pass since).
 
 Those routes were near-forks: the investment and loan creators ran a
 byte-identical validate -> verify-source-account -> build-rule ->
@@ -47,9 +48,12 @@ from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.account import Account
+from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
+from app.routes._recurrence_conflict_chooser import RecurrenceConflictKind
 from app.routes._redirect_target import RedirectTarget
 from app.services import transfer_recurrence
+from app.services.cash_ledger import derived_amount_basis, resolve_transfer_amount
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.utils.auth_helpers import get_or_404
@@ -226,18 +230,41 @@ def flush_template_or_namedup_redirect(
         return redirect.to_response()
 
 
-def generate_transfers_for_all_periods(
-    template: TransferTemplate,
-    *,
-    effective_from=None,
-) -> None:
+#: The transfer-template kind for the shared regenerate-or-chooser flow.
+#: Mutations route through transfer_recurrence (shadow-safe resolve).  It
+#: lived in ``transfers/templates.py`` beside the update door until plan step
+#: R7d-g-2, when the entry helper that brings a moved standing payment's rows
+#: along (``_standing_payment.sync_loan_payment_start_or_refuse``, ruling
+#: **R-R85**) needed the same pass from a module the update door imports; the
+#: kind sits here beside :func:`generate_transfers_for_all_periods` -- the
+#: leaf both readers reach without a cycle, and the module whose subject is
+#: how a transfer template's rows come to exist.
+TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
+    model=Transfer,
+    # A transfer's amount rule, as a one-argument callable and the exact twin of
+    # the transaction kind's.  It passed the resolver BARE until plan step
+    # X-au-f-2, under a comment claiming a parent transfer needs no basis --
+    # made false by R-BAL10; pinned off the row, one row at a time -- so N
+    # conflicted loan payments resolve their loan N times, bounded by the
+    # conflicted set and free for every other kind (the basis is lazy).
+    resolve_amount=lambda row: resolve_transfer_amount(
+        row, derived_amount_basis(row.user_id, row.scenario_id),
+    ),
+    regenerate_fn=transfer_recurrence.regenerate_for_template,
+    resolve_fn=transfer_recurrence.resolve_conflicts,
+    update_endpoint="transfers.update_transfer_template",
+)
+
+
+def generate_transfers_for_all_periods(template: TransferTemplate) -> None:
     """Seed a template's Transfer instances across the user's pay periods.
 
     The shared ``resolve baseline scenario -> load the owner's schedule ->
     transfer_recurrence.generate_for_template`` idiom used by the
-    investment / loan / transfers create paths (and the unarchive
-    restore path).  Shadow-transaction atomicity is owned by
-    ``generate_for_template``; this helper only orchestrates its inputs.
+    investment / loan / transfers create paths.  Shadow-transaction
+    atomicity is owned by ``generate_for_template``; this helper only
+    orchestrates its inputs.  Its ``effective_from`` went at plan step
+    R7d-g-2 with its one caller, the unarchive door's fill-forward.
 
     **It REQUIRES the baseline scenario (ruling R-BW), and the silent no-op it
     replaces was ledger row F-9.**  Every caller is a CREATE that reports
@@ -256,10 +283,6 @@ def generate_transfers_for_all_periods(
     Args:
         template: The flushed :class:`TransferTemplate` whose recurrence
             rule drives generation.
-        effective_from: Optional lower bound passed through to
-            ``generate_for_template``; ``None`` (the default) generates
-            across every period, matching the create paths, while the
-            unarchive path passes ``date.today()`` to fill only forward.
 
     Raises:
         BaselineMissingError: When the owner has no baseline scenario, so
@@ -276,12 +299,12 @@ def generate_transfers_for_all_periods(
         template,
         GenerationSchedule.for_pass(ctx),
         scenario_id,
-        effective_from=effective_from,
     )
 
 
 __all__ = [
     "TRANSFER_NAME_DUP_MESSAGE",
+    "TRANSFER_TEMPLATE_KIND",
     "validate_and_resolve_source_account",
     "build_recurring_transfer_template",
     "flush_template_or_namedup_redirect",
