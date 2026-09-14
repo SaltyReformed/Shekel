@@ -72,7 +72,7 @@ Graded byte-identical over the developer's saved paychecks by the leaf's
 harness: every deduction line on every priced payday equal before and after.
 
 Revision ID: 542c61e48ee8
-Revises: ef32dfe4cd8e
+Revises: 3ec5291ca4e2
 Create Date: 2026-09-13 21:40:00.000000
 """
 import sqlalchemy as sa
@@ -80,7 +80,11 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "542c61e48ee8"
-down_revision = "ef32dfe4cd8e"
+# Re-pointed from ef32dfe4cd8e (R15-a's) at 3ec5291ca4e2 (pay_calendar
+# C17-d-2's, merged as #366) the day this leaf's PR opened: whoever lands
+# later re-points, so the tree holds ONE head.  Neither touches the other's
+# tables.
+down_revision = "3ec5291ca4e2"
 branch_labels = None
 depends_on = None
 
