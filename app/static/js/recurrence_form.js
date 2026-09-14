@@ -32,8 +32,21 @@
  * every offered (unit, placement) pair now: one number box, and a funding row
  * that is always rendered and explains itself when there is nothing to choose
  * (plan ledger row D32).
+ *
+ * **Plan step salary:R15-c gave the controls a THIRD form, and made this file
+ * re-runnable for it.**  The paycheck-deduction form on the salary edit page
+ * places recurrence_cadence_controls alone -- no #recurrence-fields (a payroll
+ * line's first occurrence is derived, ruling R-SAL30), no due day, no end
+ * bound, no preview -- so every element beyond the four cadence controls is
+ * optional here, the container included.  And that form lives INSIDE the
+ * #deductions-section fragment that htmx swaps wholesale after every add, edit
+ * and delete: the elements this closure bound at load are replaced, and a
+ * script that ran once would leave the new form's interval box hidden and
+ * disabled -- the next add would post no interval and be refused.  So the
+ * body is a function, run once at load and again after any swap that carries
+ * a fresh unit select; the old closure's listeners die with the old nodes.
  */
-(function() {
+function initRecurrenceForm() {
   var unitSelect = document.getElementById('recurrence_unit');
   if (!unitSelect) return;
 
@@ -504,7 +517,9 @@
       // the no-cadence branch, so the stray key was absorbed one layer down by
       // a guard written for something else.  Closed at plan step R7c-c.
       placementSelect.disabled = true;
-      container.classList.add('d-none');
+      // Absent on the deduction form, which places no calendar detail row
+      // for the container to wrap (plan step salary:R15-c).
+      if (container) container.classList.add('d-none');
       syncEndBound(false);
       syncStartPeriod(false);
       syncStartsOn(false);
@@ -524,7 +539,7 @@
     placementSelect.disabled = false;
     syncPlacements(id);
 
-    container.classList.remove('d-none');
+    if (container) container.classList.remove('d-none');
 
     // Whether this cadence lands on a DAY of the month is a fact the SERVER
     // stated about the chosen pair, never inferred here.  Inferring it is what
@@ -736,4 +751,18 @@
   // The pay-period <select> no longer drives the preview: it is shown only
   // when the definition does NOT repeat, and a non-repeating definition has
   // no occurrences to list.
-})();
+}
+
+initRecurrenceForm();
+
+// Re-link after an htmx swap that brought a fresh set of controls (plan step
+// salary:R15-c: the deductions section is re-rendered whole after every
+// add / edit / delete, form included).  event.target is the settled NEW node
+// -- app.js records why detail.target is the wrong one to read after an
+// outerHTML swap -- and a swap carrying no unit select (a grid cell, a
+// raises section) re-links nothing.
+document.body.addEventListener('htmx:afterSwap', function(event) {
+  var settled = event.target;
+  if (!settled || typeof settled.querySelector !== 'function') return;
+  if (settled.querySelector('#recurrence_unit')) initRecurrenceForm();
+});

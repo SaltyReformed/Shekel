@@ -548,8 +548,30 @@ function _populateDeductionForm(editBtn) {
     var amount = form.querySelector('[name=amount]');
     if (amount) amount.value = editBtn.dataset.dedAmount || '';
 
-    var perYear = form.querySelector('[name=deductions_per_year]');
-    if (perYear) perYear.value = editBtn.dataset.dedPerYear || '26';
+    // The line's CADENCE, on the shared recurrence controls (plan step
+    // salary:R15-c): the unit, the interval, the funding placement and the
+    // per-month ceiling the route resolved for this row, or empty
+    // attributes for a line with no rule ("Does not repeat" = every
+    // paycheck).  The three dependent values are set BEFORE the unit's
+    // change event fires, because recurrence_form.js's toggleFields reads
+    // them as it re-links: it keeps a placement that is admissible for the
+    // chosen unit and resets one that is not, and shows or disables the
+    // ceiling box off the chosen offer -- so setting them afterwards would
+    // either be overwritten or land on a control the script just disabled.
+    // Setting a <select>'s value from script fires no change event, so the
+    // one dispatch below is what re-links everything, exactly as the
+    // calc-method prefill above does for its label.
+    var unit = form.querySelector('[name=recurrence_unit]');
+    var interval = form.querySelector('[name=interval_n]');
+    var placement = form.querySelector('[name=recurrence_placement]');
+    var ceiling = form.querySelector('[name=max_per_month]');
+    if (unit) {
+        if (interval) interval.value = editBtn.dataset.dedInterval || '1';
+        if (placement) placement.value = editBtn.dataset.dedPlacementId || '';
+        if (ceiling) ceiling.value = editBtn.dataset.dedMaxPerMonth || '';
+        unit.value = editBtn.dataset.dedUnitId || '';
+        unit.dispatchEvent(new Event('change', { bubbles: true }));
+    }
 
     var cap = form.querySelector('[name=annual_cap]');
     if (cap) cap.value = editBtn.dataset.dedCap || '';
@@ -585,8 +607,18 @@ function _populateDeductionForm(editBtn) {
 }
 
 // Reset the deduction form to add mode.
+//
+// form.reset() puts the cadence controls back on their rendered state --
+// "Does not repeat", an interval of 1, an empty ceiling -- but the rows
+// recurrence_form.js showed for an edited line stay shown and its inputs
+// stay enabled until that script re-links off a change event, so one is
+// dispatched here: a reset form must post what a fresh one posts (plan step
+// salary:R15-c).
 function _resetDeductionForm() {
     _resetForm('deduction-form', 'ded-submit-btn', '<i class="bi bi-plus"></i> Add');
+    var form = document.getElementById('deduction-form');
+    var unit = form && form.querySelector('[name=recurrence_unit]');
+    if (unit) unit.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
 // Update deduction form labels when calc method changes.

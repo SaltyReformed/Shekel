@@ -423,7 +423,7 @@ class TestTheOwnerIsTheOneStatementOfWhoOwnsARule:
             app: The application fixture.
         """
         with app.app_context():
-            with pytest.raises(ValueError, match="no owning template"):
+            with pytest.raises(ValueError, match="no owning definition"):
                 _ = RecurrenceRule().user_id
 
 
@@ -508,8 +508,13 @@ class TestTheStorageTierIsWhatHoldsTheArc:
     the model, so the two cannot agree with each other and be wrong together.
     """
 
-    def test_the_arc_check_and_both_cascades_are_on_the_table(self, app, db):
-        """The CHECK is present and both FKs cascade.
+    def test_the_arc_check_and_every_cascade_is_on_the_table(self, app, db):
+        """The CHECK is present and all three FKs cascade.
+
+        Three arms since plan step salary:R15-b (ruling R-SAL32): the two
+        template kinds and the payroll deduction.  Exactly one of three is the
+        sum of the three set-flags equalling 1, which is what the two-arm
+        ``<>`` XOR said for two.
 
         Args:
             app: The application fixture.
@@ -523,23 +528,32 @@ class TestTheStorageTierIsWhatHoldsTheArc:
                    AND conname IN (
                        'ck_recurrence_rules_one_owner',
                        'fk_recurrence_rules_transaction_template_id',
-                       'fk_recurrence_rules_transfer_template_id')
+                       'fk_recurrence_rules_transfer_template_id',
+                       'fk_recurrence_rules_paycheck_deduction_id')
             """)).all())
 
             assert set(rows) == {
                 "ck_recurrence_rules_one_owner",
                 "fk_recurrence_rules_transaction_template_id",
                 "fk_recurrence_rules_transfer_template_id",
+                "fk_recurrence_rules_paycheck_deduction_id",
             }
-            assert "<>" in rows["ck_recurrence_rules_one_owner"], (
-                "the arc must be EXCLUSIVE-or: both-set and neither-set are "
-                "equally refused"
+            check = rows["ck_recurrence_rules_one_owner"]
+            for arm in (
+                "transaction_template_id", "transfer_template_id", "paycheck_deduction_id",
+            ):
+                assert f"({arm} IS NOT NULL)" in check, f"the arc does not count {arm}"
+            assert "= 1" in check, (
+                "the arc must be EXACTLY-one-of-three: both-set, all-set and "
+                "none-set are equally refused"
             )
-            for arm in ("transaction", "transfer"):
-                definition = rows[f"fk_recurrence_rules_{arm}_template_id"]
+            for arm in (
+                "transaction_template_id", "transfer_template_id", "paycheck_deduction_id",
+            ):
+                definition = rows[f"fk_recurrence_rules_{arm}"]
                 assert "ON DELETE CASCADE" in definition, (
                     f"the {arm} arm does not cascade, so finding F-6 is open "
-                    f"again on that half"
+                    f"again on that arm"
                 )
 
     def test_both_arms_carry_a_partial_unique_index(self, app, db):
@@ -560,6 +574,7 @@ class TestTheStorageTierIsWhatHoldsTheArc:
             assert set(indexes) == {
                 "uq_recurrence_rules_transaction_template_id",
                 "uq_recurrence_rules_transfer_template_id",
+                "uq_recurrence_rules_paycheck_deduction_id",
             }
             for name, definition in indexes.items():
                 assert "UNIQUE" in definition, f"{name} does not constrain"

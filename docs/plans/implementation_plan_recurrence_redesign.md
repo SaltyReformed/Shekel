@@ -783,6 +783,13 @@ route's tests (a past origination writes ONE `tracking_start` at the stated date
 writes none; the stray-field case), the migration up and down on a clone, and
 `tests/manual/verify_loan_plan_sum.py`'s baseline byte-identical.
 
+- [ ] **R21 -- the walk's placement runs backward for a stated owner** (**R-R87**; finding
+      **REC-527**, born at `salary:R15-b`'s review): `paychecks_from` and `_first_occurrence` read
+      the calendar as `balance:X-bh-2` made it run below the record when `history_opens_on` is
+      stated; generation still needs a saved period. `$0.00` today; graded by re-pricing a stated
+      owner's backdated paydays against the ordinal rule R15-b retired. Revisits the 2026-08-10
+      forward-only boundary (**R-R64**) for stated owners only.
+
 - [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**
 
 `loan_ledger._walk._replay_events` and `balance_at._plan_fold._split_plan` were two running-balance

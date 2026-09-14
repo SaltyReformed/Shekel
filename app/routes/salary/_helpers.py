@@ -26,8 +26,11 @@ from app.models.ref import (
     RaiseType,
 )
 from app.routes._recurrence_conflict_chooser import flash_retained_notice
-from app.services import account_service, salary_regeneration
+from app.routes._recurrence_form_render import edit_form_cadence
+from app.services import account_service, deduction_cadence, salary_regeneration
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import picker_model
 from app.schemas.validation import (
     CalibrationConfirmSchema,
     CalibrationSchema,
@@ -56,9 +59,12 @@ _RAISE_UPDATE_FIELDS = {
     "raise_type_id", "effective_month", "effective_year",
     "percentage", "flat_amount", "is_recurring", "terminal_year", "notes",
 }
+# ``deductions_per_year`` left this set at plan step salary:R15-b: a
+# deduction's cadence is a recurrence rule on the row, authored through the
+# recurrence seam (R15-c's form), never a column written by name.
 _DEDUCTION_UPDATE_FIELDS = {
     "name", "deduction_timing_id", "calc_method_id", "amount",
-    "deductions_per_year", "annual_cap", "inflation_enabled",
+    "annual_cap", "inflation_enabled",
     "inflation_rate", "inflation_effective_month", "target_account_id",
 }
 
@@ -286,6 +292,72 @@ def _respond_after_raise_change(profile):
     return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
 
+def _deduction_cadence_phrases(profile) -> dict[int, str]:
+    """How often each of *profile*'s deductions is taken, worded for the page.
+
+    The Frequency cell's one source since plan step salary:R15-b: each
+    line's recurrence rule described through the recurrence package, or
+    *every paycheck* for a line with none (R-SAL3).  A rule is resolved
+    against the owner's calendar, which this page otherwise never derives
+    (``_paychecks_per_year`` explains why: two pages load a calendar for
+    nothing else, and ``calendar_for`` refuses an owner with no schedule,
+    whom the form must still serve) -- so it is derived exactly when a line
+    carries a rule, which is exactly when the owner has one, a rule being
+    authored against it.
+
+    Args:
+        profile: The salary profile whose deductions the section lists.
+
+    Returns:
+        ``{deduction id: phrase}``.
+    """
+    calendar = (
+        calendar_for(profile.user_id)
+        if any(d.recurrence_rule is not None for d in profile.deductions)
+        else None
+    )
+    return deduction_cadence.cadence_phrases(profile.deductions, calendar)
+
+
+def _deduction_cadence_context(profile) -> dict:
+    """The context the deductions section renders each line's cadence from.
+
+    ONE producer for the two renders of ``salary/_deductions_section.html``
+    -- the edit page and the HTMX fragment -- so the section cannot read a
+    line's cadence one way on a full load and another after a swap (plan
+    step salary:R15-c, ruling **R-SAL31**):
+
+    * ``cadence_phrases`` -- the Frequency cell's words, R15-b's;
+    * ``recurrence_picker`` -- the offer set the shared cadence controls
+      render from, :func:`~app.services.recurrence.picker_model`, the same
+      value every recurrence form takes (ruling **R-SAL37**: the whole set,
+      unfiltered);
+    * ``selected_cadences`` -- ``{deduction id: SelectedCadence | None}``,
+      what an EDIT of each line starts its controls on, through the one
+      render-side reader the template forms use
+      (:func:`~app.routes._recurrence_form_render.edit_form_cadence`:
+      ``None`` for a line with no rule, and ``None`` with a flashed
+      explanation for a stored cadence the application no longer models).
+      The section emits each as ``data-ded-*`` attributes on the row's edit
+      button, and ``app.js`` fills the one inline form from them the way it
+      fills every other field of that form.
+
+    Args:
+        profile: The salary profile whose deductions the section lists.
+
+    Returns:
+        The three context keys.
+    """
+    return {
+        "cadence_phrases": _deduction_cadence_phrases(profile),
+        "recurrence_picker": picker_model(),
+        "selected_cadences": {
+            deduction.id: edit_form_cadence(deduction)
+            for deduction in profile.deductions
+        },
+    }
+
+
 def _render_deductions_partial(profile):
     """Return the deductions table partial for HTMX updates."""
     db.session.refresh(profile)
@@ -298,6 +370,7 @@ def _render_deductions_partial(profile):
         deduction_timings=deduction_timings,
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
+        **_deduction_cadence_context(profile),
     )
 
 
