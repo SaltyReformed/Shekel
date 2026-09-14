@@ -26,9 +26,11 @@ from app.models.ref import (
     RaiseType,
 )
 from app.routes._recurrence_conflict_chooser import flash_retained_notice
+from app.routes._recurrence_form_render import edit_form_cadence
 from app.services import account_service, deduction_cadence, salary_regeneration
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
+from app.services.recurrence import picker_model
 from app.schemas.validation import (
     CalibrationConfirmSchema,
     CalibrationSchema,
@@ -317,6 +319,45 @@ def _deduction_cadence_phrases(profile) -> dict[int, str]:
     return deduction_cadence.cadence_phrases(profile.deductions, calendar)
 
 
+def _deduction_cadence_context(profile) -> dict:
+    """The context the deductions section renders each line's cadence from.
+
+    ONE producer for the two renders of ``salary/_deductions_section.html``
+    -- the edit page and the HTMX fragment -- so the section cannot read a
+    line's cadence one way on a full load and another after a swap (plan
+    step salary:R15-c, ruling **R-SAL31**):
+
+    * ``cadence_phrases`` -- the Frequency cell's words, R15-b's;
+    * ``recurrence_picker`` -- the offer set the shared cadence controls
+      render from, :func:`~app.services.recurrence.picker_model`, the same
+      value every recurrence form takes (ruling **R-SAL37**: the whole set,
+      unfiltered);
+    * ``selected_cadences`` -- ``{deduction id: SelectedCadence | None}``,
+      what an EDIT of each line starts its controls on, through the one
+      render-side reader the template forms use
+      (:func:`~app.routes._recurrence_form_render.edit_form_cadence`:
+      ``None`` for a line with no rule, and ``None`` with a flashed
+      explanation for a stored cadence the application no longer models).
+      The section emits each as ``data-ded-*`` attributes on the row's edit
+      button, and ``app.js`` fills the one inline form from them the way it
+      fills every other field of that form.
+
+    Args:
+        profile: The salary profile whose deductions the section lists.
+
+    Returns:
+        The three context keys.
+    """
+    return {
+        "cadence_phrases": _deduction_cadence_phrases(profile),
+        "recurrence_picker": picker_model(),
+        "selected_cadences": {
+            deduction.id: edit_form_cadence(deduction)
+            for deduction in profile.deductions
+        },
+    }
+
+
 def _render_deductions_partial(profile):
     """Return the deductions table partial for HTMX updates."""
     db.session.refresh(profile)
@@ -329,7 +370,7 @@ def _render_deductions_partial(profile):
         deduction_timings=deduction_timings,
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
-        cadence_phrases=_deduction_cadence_phrases(profile),
+        **_deduction_cadence_context(profile),
     )
 
 

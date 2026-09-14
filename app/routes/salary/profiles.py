@@ -50,7 +50,7 @@ from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import (
     _PROFILE_UPDATE_FIELDS,
     _create_schema,
-    _deduction_cadence_phrases,
+    _deduction_cadence_context,
     _get_investment_accounts,
     _regenerate_salary_transactions,
     _update_schema,
@@ -399,7 +399,7 @@ def edit_profile(profile_id):
         inactive_profiles=inactive_profiles,
         paychecks_per_year=_paychecks_per_year(),
         now_year=date.today().year,
-        cadence_phrases=_deduction_cadence_phrases(profile),
+        **_deduction_cadence_context(profile),
     )
 
 

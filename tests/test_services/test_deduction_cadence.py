@@ -112,3 +112,155 @@ class TestThePhrase:
             empty = derived_calendar([], user_id=seed_user["user"].id)
             with pytest.raises(RecurrenceResolutionError, match="holds no pay periods"):
                 deduction_cadence.cadence_phrase(line, empty)
+
+
+@pytest.mark.usefixtures("seed_periods")
+class TestTheFirstOccurrence:
+    """Where a deduction rule starts: the unit's zero at the opening (R-SAL36).
+
+    Plan step **salary:R15-c**.  The form never asks (ruling R-SAL30); the
+    route derives it per unit, and the derivation is pinned here against the
+    seeded schedule, whose opening payday is 2026-01-02 -- a day that is not
+    a 1st, so the three answers are three different dates.
+    """
+
+    def test_each_authorable_unit_starts_on_its_own_zero(self, app, db, seed_user):
+        """PERIOD: the opening payday; MONTH: its 1st; YEAR: its January 1st."""
+        # pylint: disable=import-outside-toplevel
+        from app.enums import RecurrenceUnitEnum
+
+        with app.app_context():
+            calendar = calendar_for(seed_user["user"].id)
+            assert calendar.opening_bound() == date(2026, 1, 2), (
+                "the premise: the seeded opening payday is not a 1st"
+            )
+            assert deduction_cadence.first_occurrence(
+                RecurrenceUnitEnum.PERIOD, 1, calendar,
+            ) == date(2026, 1, 2)
+            assert deduction_cadence.first_occurrence(
+                RecurrenceUnitEnum.MONTH, 1, calendar,
+            ) == date(2026, 1, 1)
+            assert deduction_cadence.first_occurrence(
+                RecurrenceUnitEnum.YEAR, 1, calendar,
+            ) == date(2026, 1, 1)
+
+    def test_the_month_zero_is_the_migrated_twelve_shapes_start(self, app, db, seed_user):
+        """The MONTH answer IS what migration 542c61e48ee8 wrote for a 12 line.
+
+        The downgrade reads a monthly deduction rule back as a 12 only when
+        its ``starts_on`` is a 1st; a form-authored monthly line must be
+        that same shape or the downgrade refuses it.  Compared against the
+        shared builder the migration's SQL mirrors rather than a literal.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import RecurrenceUnitEnum
+
+        with app.app_context():
+            line = _line(seed_user, "Transit")
+            migrated = make_deduction_cadence_rule(db.session, line, 12)
+            calendar = calendar_for(seed_user["user"].id)
+            assert deduction_cadence.first_occurrence(
+                RecurrenceUnitEnum.MONTH, 1, calendar,
+            ) == migrated.starts_on
+
+    def test_a_month_zero_on_a_mid_month_opening_is_the_first_not_the_opening(
+        self, app, db, seed_user,
+    ):
+        """The rejected reading -- 'monthly on the opening payday's day' -- is not what is derived.
+
+        On a schedule opening 2026-01-15 a monthly line starts 2026-01-01,
+        never 2026-01-15: the 15th would make the rule 'the first paycheck
+        on or after the 15th', the month's second paycheck most months.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import RecurrenceUnitEnum
+
+        with app.app_context():
+            calendar = derived_calendar(
+                [date(2026, 1, 15), date(2026, 1, 29), date(2026, 2, 12)],
+                user_id=seed_user["user"].id,
+            )
+            assert deduction_cadence.first_occurrence(
+                RecurrenceUnitEnum.MONTH, 1, calendar,
+            ) == date(2026, 1, 1)
+            assert deduction_cadence.first_occurrence(
+                RecurrenceUnitEnum.YEAR, 1, calendar,
+            ) == date(2026, 1, 1)
+            assert deduction_cadence.first_occurrence(
+                RecurrenceUnitEnum.PERIOD, 1, calendar,
+            ) == date(2026, 1, 15)
+
+    def test_a_whole_number_of_years_spelled_in_months_takes_the_year_zero(
+        self, app, db, seed_user,
+    ):
+        """'Every 12 months' is stored as (1, YEAR) (R-R17), so its zero is January 1st.
+
+        The adversarial review of this step traced the defect the stated
+        unit would cause: on a March opening, 'months, every 12' derived
+        March 1st on the create, the edit form read the stored YEAR back,
+        and the next amount-only save derived January 1st -- an unrelated
+        edit re-phasing the rule (D1's class).  The zero is read off the
+        unit the door STORES, so the create and every re-save agree; a
+        6-month interval is not a whole year and keeps the month's zero.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import RecurrenceUnitEnum
+
+        with app.app_context():
+            march = derived_calendar(
+                [date(2026, 3, 13), date(2026, 3, 27), date(2026, 4, 10)],
+                user_id=seed_user["user"].id,
+            )
+            assert deduction_cadence.first_occurrence(
+                RecurrenceUnitEnum.MONTH, 12, march,
+            ) == date(2026, 1, 1)
+            assert deduction_cadence.first_occurrence(
+                RecurrenceUnitEnum.MONTH, 24, march,
+            ) == date(2026, 1, 1)
+            assert deduction_cadence.first_occurrence(
+                RecurrenceUnitEnum.MONTH, 6, march,
+            ) == date(2026, 3, 1)
+            assert deduction_cadence.first_occurrence(
+                RecurrenceUnitEnum.YEAR, 1, march,
+            ) == date(2026, 1, 1)
+
+    def test_an_empty_schedule_is_refused_by_name(self, app, db, seed_user):
+        """No opening payday, no rule to derive -- the same refusal ``resolve`` makes."""
+        # pylint: disable=import-outside-toplevel
+        from app.enums import RecurrenceUnitEnum
+
+        with app.app_context():
+            empty = derived_calendar([], user_id=seed_user["user"].id)
+            with pytest.raises(RecurrenceResolutionError, match="has no pay periods"):
+                deduction_cadence.first_occurrence(RecurrenceUnitEnum.MONTH, 1, empty)
+
+    def test_a_unit_the_table_states_no_zero_for_raises_at_the_lookup(
+        self, app, db, seed_user,
+    ):
+        """WEEK is not offered (R8-b); reaching here with it is a new unit owing an entry."""
+        # pylint: disable=import-outside-toplevel
+        from app.enums import RecurrenceUnitEnum
+
+        with app.app_context():
+            calendar = calendar_for(seed_user["user"].id)
+            with pytest.raises(KeyError):
+                deduction_cadence.first_occurrence(RecurrenceUnitEnum.WEEK, 1, calendar)
+
+
+class TestTheEveryPaycheckSpelling:
+    """The one cadence that is NO rule (R-SAL29), and nothing near it."""
+
+    def test_only_every_one_paycheck_with_no_ceiling_is_no_rule(self):
+        """The truth table: unit, interval and ceiling each break the identity."""
+        # pylint: disable=import-outside-toplevel
+        from app.enums import RecurrenceUnitEnum
+
+        assert deduction_cadence.is_every_paycheck(RecurrenceUnitEnum.PERIOD, 1, None)
+        # A ceiling is a statement, even one that does not bind today.
+        assert not deduction_cadence.is_every_paycheck(RecurrenceUnitEnum.PERIOD, 1, 2)
+        assert not deduction_cadence.is_every_paycheck(RecurrenceUnitEnum.PERIOD, 1, 3)
+        # Every OTHER paycheck is a cadence of its own.
+        assert not deduction_cadence.is_every_paycheck(RecurrenceUnitEnum.PERIOD, 2, None)
+        # A calendar unit at interval 1 is monthly or yearly, never every paycheck.
+        assert not deduction_cadence.is_every_paycheck(RecurrenceUnitEnum.MONTH, 1, None)
+        assert not deduction_cadence.is_every_paycheck(RecurrenceUnitEnum.YEAR, 1, None)

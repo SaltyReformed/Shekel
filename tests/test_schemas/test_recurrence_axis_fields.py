@@ -40,6 +40,10 @@ from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.extensions import db
 from app.models.ref import PeriodPlacement, RecurrenceUnit
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
+from app.schemas.validation.salary import (
+    DeductionCreateSchema,
+    DeductionUpdateSchema,
+)
 from app.schemas.validation.transfers import (
     TransferTemplateCreateSchema,
     TransferTemplateUpdateSchema,
@@ -59,14 +63,26 @@ _PLACEMENT_REFUSAL = "Invalid funding choice."
 #: ``app.utils.dates.CALENDAR_DATE_MIN``..``_MAX``, which the field range-checks.
 _A_FIRST_OCCURRENCE = date(2026, 3, 1)
 
-#: The four schemas that accept a cadence.  Swept rather than sampled: the
-#: fields are inherited by the update schemas, and an override that dropped one
-#: on a single schema would otherwise pass unnoticed.
+#: The four schemas that accept a cadence AND its calendar coordinates -- the
+#: two template kinds' forms.  Swept rather than sampled: the fields are
+#: inherited by the update schemas, and an override that dropped one on a
+#: single schema would otherwise pass unnoticed.
 _SCHEMAS = (
     ("TemplateCreateSchema", TemplateCreateSchema),
     ("TemplateUpdateSchema", TemplateUpdateSchema),
     ("TransferTemplateCreateSchema", TransferTemplateCreateSchema),
     ("TransferTemplateUpdateSchema", TransferTemplateUpdateSchema),
+)
+
+#: Every schema that accepts a CADENCE: the four above plus the two
+#: paycheck-deduction schemas, which take the cadence alone through
+#: ``RecurrenceCadenceFieldsMixin`` (plan step salary:R15-c, ruling R-SAL31)
+#: -- a payroll line's first occurrence is derived, so those two declare no
+#: ``starts_on`` and no ``nominal_day``, and the one sweep that states the
+#: pair stays on :data:`_SCHEMAS`.
+_CADENCE_SCHEMAS = _SCHEMAS + (
+    ("DeductionCreateSchema", DeductionCreateSchema),
+    ("DeductionUpdateSchema", DeductionUpdateSchema),
 )
 
 #: The two axes, each with the field name it posts under, the enum whose members
@@ -86,7 +102,7 @@ _AXES = (
 class TestAnUnmodelledIdIsRefused:
     """An id naming no member of the axis's enum never reaches a route."""
 
-    @pytest.mark.parametrize("label,schema_cls", _SCHEMAS)
+    @pytest.mark.parametrize("label,schema_cls", _CADENCE_SCHEMAS)
     @pytest.mark.parametrize("field,_enum,_accessor,refusal", _AXES)
     def test_every_schema_refuses_it_on_every_axis(
         self, app, label, schema_cls, field, _enum, _accessor, refusal,
@@ -194,7 +210,7 @@ class TestAnUnmodelledIdIsRefused:
 class TestTheModelledCasesStillPass:
     """Negative controls -- a validator that refused everything would fail here."""
 
-    @pytest.mark.parametrize("label,schema_cls", _SCHEMAS)
+    @pytest.mark.parametrize("label,schema_cls", _CADENCE_SCHEMAS)
     @pytest.mark.parametrize("field,enum_cls,accessor,_refusal", _AXES)
     def test_every_modelled_member_deserializes_to_its_member(
         self, app, label, schema_cls, field, enum_cls, accessor, _refusal,
@@ -223,7 +239,7 @@ class TestTheModelledCasesStillPass:
                     f"{label} / {member.name}"
                 )
 
-    @pytest.mark.parametrize("label,schema_cls", _SCHEMAS)
+    @pytest.mark.parametrize("label,schema_cls", _CADENCE_SCHEMAS)
     @pytest.mark.parametrize("field,_enum,_accessor,_refusal", _AXES)
     def test_an_explicit_none_still_passes(
         self, app, label, schema_cls, field, _enum, _accessor, _refusal,
@@ -294,7 +310,7 @@ class TestTheTripleMustBeStorable:
             payload["interval_n"] = str(interval_n)
         return payload
 
-    @pytest.mark.parametrize("label,schema_cls", _SCHEMAS)
+    @pytest.mark.parametrize("label,schema_cls", _CADENCE_SCHEMAS)
     @pytest.mark.parametrize(
         "placement", list(PeriodPlacementEnum),
     )
@@ -401,6 +417,8 @@ class TestTheTripleMustBeStorable:
         [
             ("create", TemplateCreateSchema),
             ("update", TemplateUpdateSchema),
+            ("deduction create", DeductionCreateSchema),
+            ("deduction update", DeductionUpdateSchema),
         ],
     )
     def test_a_unit_with_no_interval_is_refused(self, app, label, schema_cls):
@@ -430,7 +448,9 @@ class TestTheTripleMustBeStorable:
         than as a fourth presence read in a route.
 
         On BOTH schemas, because the harm is on both: an update re-cadences a
-        bill that exists, a create authors the wrong one.
+        bill that exists, a create authors the wrong one.  And on the two
+        deduction schemas since plan step salary:R15-c, where the default
+        would have re-cadenced a payroll line.
         """
         with app.app_context():
             with pytest.raises(ValidationError) as exc:
@@ -737,7 +757,7 @@ class TestThePerMonthCeilingFitsTheUnit:
             "starts_on": _A_FIRST_OCCURRENCE.isoformat(),
         }
 
-    @pytest.mark.parametrize("schema_label,schema_cls", _SCHEMAS)
+    @pytest.mark.parametrize("schema_label,schema_cls", _CADENCE_SCHEMAS)
     def test_a_ceiling_on_a_paycheck_cadence_loads_as_an_integer(
         self, app, schema_label, schema_cls,
     ):
@@ -750,7 +770,7 @@ class TestThePerMonthCeilingFitsTheUnit:
 
         assert loaded["max_per_month"] == 2, schema_label
 
-    @pytest.mark.parametrize("schema_label,schema_cls", _SCHEMAS)
+    @pytest.mark.parametrize("schema_label,schema_cls", _CADENCE_SCHEMAS)
     @pytest.mark.parametrize(
         "unit", [RecurrenceUnitEnum.MONTH, RecurrenceUnitEnum.YEAR],
         ids=lambda unit: unit.value,
@@ -808,3 +828,125 @@ class TestThePerMonthCeilingFitsTheUnit:
             )
 
         assert "max_per_month" not in loaded
+
+
+class TestTheDeductionSchemasTakeTheCadenceAlone:
+    """The third recurrence form declares four of the mixin's nine (R15-c).
+
+    A payroll deduction's rule has a DERIVED first occurrence (rulings
+    R-SAL30, R-SAL36), no due day and no closing bound, so
+    :class:`~app.schemas.validation.salary.DeductionCreateSchema` inherits
+    ``RecurrenceCadenceFieldsMixin`` and not the fuller mixin.  What that
+    buys is asserted here: a crafted POST stating any of the five undeclared
+    controls meets ``BaseSchema``'s ``unknown = EXCLUDE`` and never reaches
+    the route, so the route's derived ``starts_on`` cannot be overridden from
+    the wire.
+    """
+
+    _THE_FOUR = frozenset({
+        "recurrence_unit", "recurrence_placement", "interval_n", "max_per_month",
+    })
+    _THE_UNDECLARED_FIVE = frozenset({
+        "starts_on", "nominal_day", "recurrence_end_mode", "end_date",
+        "max_occurrences",
+    })
+
+    @pytest.mark.parametrize(
+        ("label", "schema_cls"),
+        [("create", DeductionCreateSchema), ("update", DeductionUpdateSchema)],
+    )
+    def test_the_four_are_declared_and_the_five_are_not(self, app, label, schema_cls):
+        """Exactly the cadence, on both deduction schemas."""
+        with app.app_context():
+            declared = set(schema_cls().fields)
+        assert self._THE_FOUR <= declared, label
+        assert not (self._THE_UNDECLARED_FIVE & declared), label
+        # The premise of the split: the fuller mixin declares all nine.
+        with app.app_context():
+            template_declared = set(TemplateCreateSchema().fields)
+        assert (self._THE_FOUR | self._THE_UNDECLARED_FIVE) <= template_declared
+
+    @pytest.mark.parametrize(
+        ("label", "schema_cls"),
+        [("create", DeductionCreateSchema), ("update", DeductionUpdateSchema)],
+    )
+    def test_a_crafted_calendar_coordinate_is_dropped_not_loaded(
+        self, app, label, schema_cls,
+    ):
+        """``starts_on`` and the closing bound stated on the wire never reach the route."""
+        with app.app_context():
+            loaded = schema_cls().load(
+                {
+                    "recurrence_unit": str(
+                        ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH),
+                    ),
+                    "recurrence_placement": str(
+                        ref_cache.period_placement_id(
+                            PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                        ),
+                    ),
+                    "interval_n": "1",
+                    "starts_on": "2026-04-15",
+                    "nominal_day": "30",
+                    "recurrence_end_mode": "on_date",
+                    "end_date": "2027-01-01",
+                    "max_occurrences": "3",
+                },
+                partial=True,
+            )
+        assert loaded["recurrence_unit"] is RecurrenceUnitEnum.MONTH, label
+        assert loaded["interval_n"] == 1, label
+        assert not (self._THE_UNDECLARED_FIVE & set(loaded)), label
+
+    def test_the_deduction_schema_hears_its_cadence_refusals(self, app):
+        """The two refusals the four controls can raise reach the deduction form verbatim.
+
+        The deduction routes flash through ``flash_message_for_errors`` since
+        plan step salary:R15-c; without this arm a refusal keyed on a field
+        the allowlist carries could still be worded generically on THIS form
+        if the schema attached it to a different key than the template
+        schema does.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.routes._form_errors import flash_message_for_errors
+
+        with app.app_context():
+            cases = (
+                (
+                    "Say how often this repeats.  Enter a number beside the "
+                    "unit, like 3 for every 3 months.",
+                    {
+                        "recurrence_unit": str(
+                            ref_cache.recurrence_unit_id(RecurrenceUnitEnum.PERIOD),
+                        ),
+                        "recurrence_placement": str(
+                            ref_cache.period_placement_id(
+                                PeriodPlacementEnum.CONTAINING_DATE,
+                            ),
+                        ),
+                    },
+                ),
+                (
+                    "A monthly or yearly schedule already happens at most once "
+                    "a month, so a per-month limit has nothing to limit. Clear "
+                    "it, or choose a paycheck schedule.",
+                    {
+                        "recurrence_unit": str(
+                            ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH),
+                        ),
+                        "recurrence_placement": str(
+                            ref_cache.period_placement_id(
+                                PeriodPlacementEnum.CONTAINING_DATE,
+                            ),
+                        ),
+                        "interval_n": "1",
+                        "max_per_month": "2",
+                    },
+                ),
+            )
+            for expected, payload in cases:
+                with pytest.raises(ValidationError) as exc_info:
+                    DeductionCreateSchema().load(payload, partial=True)
+                assert flash_message_for_errors(
+                    exc_info.value.normalized_messages(),
+                ) == expected

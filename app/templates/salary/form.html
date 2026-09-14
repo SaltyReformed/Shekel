@@ -292,3 +292,9 @@
   </div>
 </div>
 {% endblock content %}
+
+{% block scripts %}
+{# The deduction form's cadence controls are the shared recurrence partial's
+   (plan step salary:R15-c), and this is the script that links them. #}
+<script src="{{ url_for('static', filename='js/recurrence_form.js') }}"></script>
+{% endblock scripts %}

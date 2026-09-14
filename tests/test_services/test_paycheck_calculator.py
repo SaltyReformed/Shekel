@@ -4990,8 +4990,12 @@ class TestTheBasisReadsEachLinesCadence:
         and an ask for 2028-01-14 that jumped past the reach walked through
         2028-01-14, missed the 15th, and CACHED the wrong ``False``.  Neither
         migrated shape can meet it (a paycheck occurrence IS its payday, and
-        a monthly-first occurrence precedes its paycheck), but R15-c's shared
-        control offers this shape.
+        a monthly-first occurrence precedes its paycheck), and neither does a
+        form-authored line: R15-c derives a monthly line's first occurrence
+        as the 1st (ruling R-SAL36), so the 15th here is the engine's own
+        contract, graded on a shape a hand-authored rule can still state --
+        a CONTAINING_DATE monthly line from the 1st meets the same reach
+        concern whenever the 1st falls the day after a payday.
         """
         # pylint: disable=import-outside-toplevel
         from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
