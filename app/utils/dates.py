@@ -354,6 +354,16 @@ def days_in_range(first_day: date, last_day: date) -> "list[date]":
 #: because every consumer of that one divides money by it.
 MONTHS_PER_YEAR = 12
 
+#: The fewest days any calendar month holds -- February's, outside a leap
+#: year -- and so the floor every day-of-month gap is measured against and
+#: the length a meant day of 29..31 can be lost past.  The ONE spelling
+#: (plan step ``pay_calendar:C17-d-2``): the cadence kinds' shortest gaps
+#: read it, the era table's bounds derive from it (a semi-monthly pair's
+#: lower day is at most one less, so the pair cannot collapse onto one day
+#: in February; ``nominal_day``'s domain starts one above it), and
+#: :func:`clamped_day` is where the clamp bottoms out at it.
+SHORTEST_MONTH_DAYS = 28
+
 
 def month_ordinal(day: date) -> int:
     """Return *day*'s absolute month ordinal.
