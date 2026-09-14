@@ -1,9 +1,11 @@
-"""The recurrence controls both template forms submit, and the rules on them.
+"""The recurrence controls the recurrence forms submit, and the rules on them.
 
 Everything a form states about HOW OFTEN a definition repeats: the two cadence
 axis fields, the cross-field rules over them, the closing bound's
-three-controls-into-one-value composition, and the
-:class:`RecurrenceFormFieldsMixin` the two template create schemas inherit.
+three-controls-into-one-value composition, and the two mixins the create
+schemas inherit -- :class:`RecurrenceCadenceFieldsMixin`, the cadence alone,
+for the three forms that author one, and :class:`RecurrenceFormFieldsMixin`,
+the cadence plus the calendar coordinates, for the two template forms.
 
 Split out of :mod:`._helpers` at plan step R7c-b, when that module met the
 1,000-line cap.  The seam is the one the module list already implied: `_helpers`
@@ -11,7 +13,9 @@ holds the primitives EVERY domain schema in this package needs -- the base
 schema, the shared range validators, the percent-to-fraction hook, the
 :class:`~app.schemas.validation._helpers.RowId` field and the
 :class:`~app.schemas.validation._helpers._RefEnumField` base -- while this holds
-one DOMAIN's shared form.  Nothing outside the two template schemas imports it.
+one DOMAIN's shared form.  Its importers are the two template schemas and,
+since plan step salary:R15-c, the paycheck-deduction schema
+(:mod:`.salary`), whose form authors a cadence and nothing else about a rule.
 
 **Two of the rules here are one half of a pair**, and each says so in its own
 docstring, because the layer that holds the other half cannot be reached from a
@@ -453,32 +457,33 @@ def require_end_bound_after_start(data):
     )
 
 
-class RecurrenceFormFieldsMixin:
-    """The recurrence controls both template forms submit, declared once.
+class RecurrenceCadenceFieldsMixin:
+    """The CADENCE controls every recurrence form submits, declared once.
 
-    A form authors a recurrence the same way whichever kind of definition it
-    belongs to -- the cadence's two axes, the calendar coordinates, the opening
-    bound and the closing one -- so the two template schemas
-    (``TemplateCreateSchema``, ``TransferTemplateCreateSchema``) carried SEVEN
-    identical field declarations and an identical cross-field cadence rule.
-    Plan step R7b-3 would have made it nine and added an identical
-    ``@post_load`` to each, which is when ``duplicate-code`` said so and the
-    copy stopped being worth keeping.  They differ in exactly ONE field:
-    ``due_day_of_month``, which only a transaction template carries, and which
-    that schema declares for itself.
+    The three cadence axes -- unit, interval, placement -- and the per-month
+    ceiling, with the two cross-field rules that grade them as a set.  What a
+    form says about HOW OFTEN a definition repeats, and nothing about WHEN it
+    starts, stops, or which day a bill is due: those are the calendar
+    coordinates :class:`RecurrenceFormFieldsMixin` adds below for the two
+    template forms.
 
-    **Declared here rather than copied because a copy is what a THIRD form
-    would have neither of**, which is the same reasoning
-    :class:`_RefEnumField` records for putting the modelled-value check in the
-    field type: a rule that travels with the declaration cannot be forgotten.
-    Plan step R7b-3 is what made the duplication worth removing -- it added the
-    closing bound's three controls and its hook to both, and ``duplicate-code``
-    caught the pair.
+    **Split out of that mixin at plan step salary:R15-c** (ruling
+    **R-SAL31**), when the third recurrence form arrived: a payroll deduction's
+    cadence is a rule on the row (R15-b), authored on the deduction form
+    through the same four controls -- and no others, because a payroll line's
+    first occurrence is DERIVED from the owner's schedule (ruling **R-SAL30**,
+    no "Starts on" box), it carries no closing bound and no due day.  The
+    fuller mixin's own docstring promised that a third form would get the
+    declaration rather than a copy; a third form needing FOUR of its nine
+    fields is what made the two-level split the way to keep that promise
+    without handing the deduction schema five fields its form never renders
+    (a hidden ``starts_on`` a crafted POST could state, against a rule the
+    door derives).
 
     Marshmallow collects fields and hooks across the whole MRO, so a plain
-    mixin beside :class:`BaseSchema` is all this needs; it deliberately does
-    NOT subclass ``Schema``, which would make it a schema in its own right and
-    invite it to be loaded.
+    mixin beside :class:`~app.schemas.validation._helpers.BaseSchema` is all
+    this needs; it deliberately does NOT subclass ``Schema``, which would
+    make it a schema in its own right and invite it to be loaded.
     """
 
     # The two AUTHORED cadence axes since plan step R7b-2.  Each value is the
@@ -523,6 +528,129 @@ class RecurrenceFormFieldsMixin:
     interval_n = fields.Integer(
         validate=validate.Range(min=1, max=_MAX_INTEGER_COLUMN),
     )
+
+    # The most occurrences any one calendar month admits -- a month's first N
+    # paydays for a paycheck cadence -- and ``None``, which is every ordinary
+    # rule, for no ceiling (plan step
+    # salary:R15-a, ruling **R-SAL29**).  "Every paycheck, at most 2 a month"
+    # is a payroll benefit taken on a month's first two paychecks, which the
+    # two axes could not say (ledger row **D59**).  The form renders the
+    # control ONLY beside a unit whose occurrences can repeat within a month
+    # (paychecks; weeks once plan step R8-b opens them); a calendar-month
+    # cadence fires at most once a month by construction, and
+    # :meth:`validate_ceiling_fits_the_unit` refuses the pair a hand-assembled
+    # POST could state.
+    #
+    # ``min=1`` mirrors ``ck_recurrence_rules_positive_max_per_month`` -- a
+    # zero would be a rule that never fires spelled as a cadence -- and ``max``
+    # is the column's own type; see :data:`_MAX_SMALLINT_COLUMN`.
+    # ``allow_none`` so a cleared box reaches the update door as a stated
+    # clear rather than a dropped key, exactly as ``nominal_day`` does.
+    max_per_month = fields.Integer(
+        allow_none=True,
+        validate=validate.Range(min=1, max=_MAX_SMALLINT_COLUMN),
+    )
+
+    @validates_schema
+    def validate_cadence_is_storable(self, data, **kwargs):
+        """Reject a submitted cadence the closed pattern set cannot store.
+
+        See :func:`validate_authorable_cadence` for the reasoning: the
+        storable set is a property of the whole ``(interval, unit,
+        placement)`` triple, and the form already makes an unstorable one
+        unofferable, so this is what a hand-assembled POST meets.
+
+        The update schemas inherit it; a partial update that omits the
+        recurrence keys returns early there for the same reason the envelope
+        rule does.
+
+        Args:
+            data: The deserialized payload.
+            **kwargs: Marshmallow's hook contract.
+
+        Raises:
+            ValidationError: The triple has no closed-set pattern to be stored
+                as.
+        """
+        validate_authorable_cadence(data)
+
+    @validates_schema
+    def validate_ceiling_fits_the_unit(self, data, **kwargs):
+        """Reject a per-month ceiling on a unit that cannot repeat within a month.
+
+        **The submission's half of the ``(unit, max_per_month)`` pair** that
+        :class:`~app.services.recurrence.RecurrenceSpec` refuses at
+        construction (plan step salary:R15-a): a cadence measured in whole
+        months fires at most once a month by construction, so a ceiling
+        beside it is a value the walk applies and never reads -- and the pair
+        reaching the write door would be a ``RecurrenceResolutionError``
+        turned into a flash rather than a field error naming the control.
+        Asked through :func:`~app.services.recurrence.can_repeat_within_month`,
+        the same predicate the picker offers the control on, so the form, this
+        door and the write door cannot disagree about which units admit one.
+
+        Skipped unless the submission states both: a form that names no
+        cadence authors no rule, and a submission with no ceiling states no
+        pair to refuse.
+
+        Args:
+            data: The deserialized payload.
+            **kwargs: Marshmallow's hook contract.
+
+        Raises:
+            ValidationError: The pair contradicts itself.
+        """
+        # Pylint: ``import-outside-toplevel`` -- see
+        # :meth:`RecurrenceUnitField._member_for`.
+        from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
+            can_repeat_within_month,
+        )
+
+        unit = data.get("recurrence_unit")
+        max_per_month = data.get("max_per_month")
+        if unit is None or max_per_month is None:
+            return
+        if can_repeat_within_month(unit):
+            return
+        raise ValidationError(
+            "A monthly or yearly schedule already happens at most once a "
+            "month, so a per-month limit has nothing to limit. Clear it, or "
+            "choose a paycheck schedule.",
+            field_name="max_per_month",
+        )
+
+
+class RecurrenceFormFieldsMixin(RecurrenceCadenceFieldsMixin):
+    """The recurrence controls both template forms submit, declared once.
+
+    A form authors a recurrence the same way whichever kind of definition it
+    belongs to -- the cadence's two axes, the calendar coordinates, the opening
+    bound and the closing one -- so the two template schemas
+    (``TemplateCreateSchema``, ``TransferTemplateCreateSchema``) carried SEVEN
+    identical field declarations and an identical cross-field cadence rule.
+    Plan step R7b-3 would have made it nine and added an identical
+    ``@post_load`` to each, which is when ``duplicate-code`` said so and the
+    copy stopped being worth keeping.  They differ in exactly ONE field:
+    ``due_day_of_month``, which only a transaction template carries, and which
+    that schema declares for itself.
+
+    **Declared here rather than copied because a copy is what a THIRD form
+    would have neither of**, which is the same reasoning
+    :class:`_RefEnumField` records for putting the modelled-value check in the
+    field type: a rule that travels with the declaration cannot be forgotten.
+    Plan step R7b-3 is what made the duplication worth removing -- it added the
+    closing bound's three controls and its hook to both, and ``duplicate-code``
+    caught the pair.  **The third form came at plan step salary:R15-c and
+    took FOUR of the nine**, so the cadence's own declarations live on
+    :class:`RecurrenceCadenceFieldsMixin`, which this extends with the
+    calendar coordinates a template's form collects and a payroll line's
+    does not.
+
+    Marshmallow collects fields and hooks across the whole MRO, so a plain
+    mixin beside :class:`BaseSchema` is all this needs; it deliberately does
+    NOT subclass ``Schema``, which would make it a schema in its own right and
+    invite it to be loaded.
+    """
 
     # The rule's FIRST OCCURRENCE (plan step R7c-b, ruling **R-R16**).  It
     # replaced THREE fields: ``day_of_month`` (the cycle's day),
@@ -573,28 +701,6 @@ class RecurrenceFormFieldsMixin:
         allow_none=True, validate=validate.Range(min=29, max=31),
     )
 
-    # The most occurrences any one calendar month admits -- a month's first N
-    # paydays for a paycheck cadence -- and ``None``, which is every ordinary
-    # rule, for no ceiling (plan step
-    # salary:R15-a, ruling **R-SAL29**).  "Every paycheck, at most 2 a month"
-    # is a payroll benefit taken on a month's first two paychecks, which the
-    # two axes could not say (ledger row **D59**).  The form renders the
-    # control ONLY beside a unit whose occurrences can repeat within a month
-    # (paychecks; weeks once plan step R8-b opens them); a calendar-month
-    # cadence fires at most once a month by construction, and
-    # :meth:`validate_ceiling_fits_the_unit` refuses the pair a hand-assembled
-    # POST could state.
-    #
-    # ``min=1`` mirrors ``ck_recurrence_rules_positive_max_per_month`` -- a
-    # zero would be a rule that never fires spelled as a cadence -- and ``max``
-    # is the column's own type; see :data:`_MAX_SMALLINT_COLUMN`.
-    # ``allow_none`` so a cleared box reaches the update door as a stated
-    # clear rather than a dropped key, exactly as ``nominal_day`` does.
-    max_per_month = fields.Integer(
-        allow_none=True,
-        validate=validate.Range(min=1, max=_MAX_SMALLINT_COLUMN),
-    )
-
     # The CLOSING BOUND, as three controls that compose into ONE value (plan
     # step R7b-3).  ``recurrence_end_mode`` names which of the bound's three
     # shapes the user chose and :meth:`build_end_bound` replaces it with the
@@ -625,29 +731,6 @@ class RecurrenceFormFieldsMixin:
     max_occurrences = fields.Integer(
         validate=validate.Range(max=_MAX_INTEGER_COLUMN),
     )
-
-    @validates_schema
-    def validate_cadence_is_storable(self, data, **kwargs):
-        """Reject a submitted cadence the closed pattern set cannot store.
-
-        See :func:`validate_authorable_cadence` for the reasoning: the
-        storable set is a property of the whole ``(interval, unit,
-        placement)`` triple, and the form already makes an unstorable one
-        unofferable, so this is what a hand-assembled POST meets.
-
-        The update schemas inherit it; a partial update that omits the
-        recurrence keys returns early there for the same reason the envelope
-        rule does.
-
-        Args:
-            data: The deserialized payload.
-            **kwargs: Marshmallow's hook contract.
-
-        Raises:
-            ValidationError: The triple has no closed-set pattern to be stored
-                as.
-        """
-        validate_authorable_cadence(data)
 
     #: Whether a chosen cadence on THIS schema must come with a first
     #: occurrence.
@@ -717,51 +800,6 @@ class RecurrenceFormFieldsMixin:
                 "is nothing else for it to mean."
             ),
             field_name="nominal_day",
-        )
-
-    @validates_schema
-    def validate_ceiling_fits_the_unit(self, data, **kwargs):
-        """Reject a per-month ceiling on a unit that cannot repeat within a month.
-
-        **The submission's half of the ``(unit, max_per_month)`` pair** that
-        :class:`~app.services.recurrence.RecurrenceSpec` refuses at
-        construction (plan step salary:R15-a): a cadence measured in whole
-        months fires at most once a month by construction, so a ceiling
-        beside it is a value the walk applies and never reads -- and the pair
-        reaching the write door would be a ``RecurrenceResolutionError``
-        turned into a flash rather than a field error naming the control.
-        Asked through :func:`~app.services.recurrence.can_repeat_within_month`,
-        the same predicate the picker offers the control on, so the form, this
-        door and the write door cannot disagree about which units admit one.
-
-        Skipped unless the submission states both: a form that names no
-        cadence authors no rule, and a submission with no ceiling states no
-        pair to refuse.
-
-        Args:
-            data: The deserialized payload.
-            **kwargs: Marshmallow's hook contract.
-
-        Raises:
-            ValidationError: The pair contradicts itself.
-        """
-        # Pylint: ``import-outside-toplevel`` -- see
-        # :meth:`RecurrenceUnitField._member_for`.
-        from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
-            can_repeat_within_month,
-        )
-
-        unit = data.get("recurrence_unit")
-        max_per_month = data.get("max_per_month")
-        if unit is None or max_per_month is None:
-            return
-        if can_repeat_within_month(unit):
-            return
-        raise ValidationError(
-            "A monthly or yearly schedule already happens at most once a "
-            "month, so a per-month limit has nothing to limit. Clear it, or "
-            "choose a paycheck schedule.",
-            field_name="max_per_month",
         )
 
     @validates_schema

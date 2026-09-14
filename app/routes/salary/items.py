@@ -17,8 +17,9 @@ collision, and other DB errors) -- IS factored out, through
 
 import logging
 from decimal import Decimal
+from typing import Any
 
-from flask import abort, flash, redirect, request, url_for
+from flask import Response, abort, flash, redirect, request, url_for
 from flask_login import current_user
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -29,6 +30,7 @@ from app.utils.auth_helpers import (
     require_owner,
 )
 from app.extensions import db
+from app.models.recurrence_rule import RecurrenceRule
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
@@ -43,7 +45,20 @@ from app.routes._commit_helpers import (
     handle_db_error,
     regenerate_commit_or_report,
 )
+from app.routes._form_errors import load_form_or_redirect
+from app.routes._recurrence_form_helpers import (
+    recurrence_spec_for_create,
+    resolve_recurrence_rule_for_update,
+)
+from app.routes._recurrence_form_refusals import RecurrenceFormContext
 from app.routes._redirect_target import RedirectTarget
+from app.schemas.validation import (
+    RECURRENCE_MAX_PER_MONTH_KEY,
+    RECURRENCE_STARTS_ON_KEY,
+)
+from app.services import deduction_cadence
+from app.services.balance_at import BalanceContext
+from app.services.recurrence import author_rule
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import (
     _DEDUCTION_UPDATE_FIELDS,
@@ -60,6 +75,15 @@ from app.routes.salary._helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _edit_page(profile_id: int) -> RedirectTarget:
+    """Where every refused or failed line-item submission sends the user: the profile's edit page.
+
+    Twelve literal spellings of one target until plan step salary:R15-c
+    added four more; one function is the answer to a review that counted them.
+    """
+    return RedirectTarget("salary.edit_profile", {"profile_id": profile_id})
 
 
 # ── Raises ─────────────────────────────────────────────────────────
@@ -136,7 +160,7 @@ def add_raise(profile_id):
             log_message="user_id=%d failed to add raise to profile %d",
             log_args=(user_id, profile_id),
             flash_message="Failed to add raise. Please try again.",
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile_id}),
+            redirect=_edit_page(profile_id),
         ))
 
     logger.info("user_id=%d added raise to profile %d", current_user.id, profile_id)
@@ -178,14 +202,14 @@ def delete_raise(raise_id):
                 "This raise was changed by another action.  "
                 "Please reload and try again."
             ),
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+            redirect=_edit_page(profile.id),
         ),
         error_ctx=DbErrorContext(
             logger=logger,
             log_message="user_id=%d failed to delete raise %d from profile %d",
             log_args=(current_user.id, raise_id, profile.id),
             flash_message="Failed to remove raise. Please try again.",
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+            redirect=_edit_page(profile.id),
         ),
     )
     if response is not None:
@@ -268,14 +292,14 @@ def update_raise(raise_id):
                 "This raise was changed by another action while you were "
                 "editing.  Please reload and try again."
             ),
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+            redirect=_edit_page(profile.id),
         ),
         error_ctx=DbErrorContext(
             logger=logger,
             log_message="user_id=%d failed to update raise %d on profile %d",
             log_args=(current_user.id, raise_id, profile.id),
             flash_message="Failed to update raise. Please try again.",
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+            redirect=_edit_page(profile.id),
         ),
         # Duplicate-key collision on update (F-051 / C-23): the user edited
         # this raise's (type, year, month) tuple onto one another active
@@ -294,7 +318,7 @@ def update_raise(raise_id):
                 "type and effective date.  Edit or remove it before "
                 "applying these changes."
             ),
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+            redirect=_edit_page(profile.id),
         ),
     )
     if response is not None:
@@ -309,20 +333,101 @@ def update_raise(raise_id):
 # ── Deductions ─────────────────────────────────────────────────────
 
 
+
+
+def _settle_deduction_cadence(
+    data: dict[str, Any], ctx: BalanceContext, *, stored: RecurrenceRule | None,
+) -> None:
+    """Write into the payload what the deduction form does not collect about its rule.
+
+    The deduction form authors a cadence through the shared recurrence
+    controls (plan step salary:R15-c, ruling **R-SAL31**) and NOTHING else
+    about the rule -- so before the recurrence seam reads the payload the way
+    it reads a template form's, the two facts a payroll line's rule derives
+    are written in, exactly as ``_loan_destination.settle_first_occurrence``
+    writes a loan payment's derived start into a transfer form's payload:
+
+    * ``starts_on`` -- the STORED unit's zero at the owner's opening payday
+      (rulings **R-SAL30**, **R-SAL36**;
+      :func:`~app.services.deduction_cadence.first_occurrence`, which reads
+      the unit the door canonicalises to, so "every 12 months" and the
+      ``YEAR`` its edit form reads back derive one day), so the seam's own
+      start handling applies unchanged: a create authors it, an update
+      re-points the rule onto it (PRESENT replaces), and a rule's first
+      occurrence is always the derived one -- the same one, on every
+      re-save of the same cadence.
+    * the every-paycheck spelling -- ``every 1 paycheck, no ceiling`` -- is
+      rewritten as NO cadence (ruling **R-SAL29**;
+      :func:`~app.services.deduction_cadence.is_every_paycheck`), which the
+      seam reads as *author nothing* on a create and *delete the rule this
+      line had* on an update.  The ceiling is read the way the seam's update
+      door reads it: a PRESENT key (an enabled control, possibly cleared) is
+      what the form said, an ABSENT one (a control the form disabled, or a
+      crafted POST) leaves the STORED ceiling standing -- so a 24 line
+      re-saved with the key missing is still the 24 shape and not silently
+      an every-paycheck line.
+
+    A submission that names no cadence is left alone: ``None`` is the form's
+    "Does not repeat", and an ABSENT unit is a form that said nothing about
+    the cadence (a page cached from before this deploy, a crafted POST),
+    which the update route reads as "leave the stored rule alone".  Nothing
+    is derived for either, and the calendar is not loaded for either -- the
+    pass memoises it, so the one call below is the only derivation the
+    pre-write side makes.
+
+    Args:
+        data: The schema-loaded payload, mutated in place.
+        ctx: The read pass the route built before any write; its
+            ``calendar()`` is what the first occurrence is derived from.
+        stored: The rule the line carries today, or ``None`` on a create or
+            for a line with none -- read only for its ceiling, and only when
+            the payload states none.
+    """
+    unit = data.get("recurrence_unit")
+    if unit is None:
+        return
+    ceiling = (
+        data[RECURRENCE_MAX_PER_MONTH_KEY]
+        if RECURRENCE_MAX_PER_MONTH_KEY in data
+        else (stored.max_per_month if stored is not None else None)
+    )
+    if deduction_cadence.is_every_paycheck(unit, data["interval_n"], ceiling):
+        data["recurrence_unit"] = None
+        return
+    data[RECURRENCE_STARTS_ON_KEY] = deduction_cadence.first_occurrence(
+        unit, data["interval_n"], ctx.calendar(),
+    )
+
+
 @salary_bp.route("/salary/<int:profile_id>/deductions", methods=["POST"])
 @require_owner
 def add_deduction(profile_id):
-    """Add a deduction to a salary profile."""
+    """Add a deduction to a salary profile.
+
+    **The line's cadence is a recurrence rule authored onto it** (plan step
+    salary:R15-c, rulings **R-SAL31**, **R-SAL35**): the payload is loaded
+    through the one door the template forms use
+    (:func:`~app.routes._form_errors.load_form_or_redirect`, so a refused
+    cadence is heard in its own words rather than as the generic prompt),
+    the derived facts are settled into it
+    (:func:`_settle_deduction_cadence`), the create preamble every recurrence
+    form runs reads the spec out
+    (:func:`~app.routes._recurrence_form_helpers.recurrence_spec_for_create`),
+    and the rule is written onto the flushed line through the write door
+    itself -- inside the ``try`` below, because the line's flush precedes it
+    there and the name-collision ``IntegrityError`` that flush can surface is
+    the one this route already absorbs.
+    """
     profile = get_or_404(SalaryProfile, profile_id)
     if profile is None:
         abort(404)
 
-    errors = _deduction_schema.validate(request.form)
-    if errors:
-        flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("salary.edit_profile", profile_id=profile_id))
-
-    data = _deduction_schema.load(request.form)
+    payload = load_form_or_redirect(
+        _deduction_schema, _edit_page(profile_id),
+    )
+    if isinstance(payload, Response):
+        return payload
+    data = payload
     # N-534 (salary:R14-a): a deduction's ``target_account_id`` is what makes
     # it a CONTRIBUTION FEED into an investment account, and the schema checks
     # only that the value is a positive integer -- so ownership is answered
@@ -330,13 +435,35 @@ def add_deduction(profile_id):
     require_owned_fk(Account, data, "target_account_id")
     data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
 
+    # ONE read pass for the pre-write side (the 2026-08-16 ruling: a route
+    # builds it, producers below take it): the calendar the line's rule is
+    # derived from and authored against.  Regeneration afterwards builds its
+    # own, as a writer must.
+    ctx = BalanceContext.build(current_user.id)
+    _settle_deduction_cadence(data, ctx, stored=None)
+    spec = recurrence_spec_for_create(
+        data,
+        user_id=current_user.id,
+        redirect=_edit_page(profile_id),
+        include_due_day_of_month=False,
+    )
+
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
         data["amount"] = Decimal(str(data["amount"])) / Decimal("100")
     if data.get("inflation_rate") is not None:
         data["inflation_rate"] = Decimal(str(data["inflation_rate"])) / Decimal("100")
 
-    deduction = PaycheckDeduction(salary_profile_id=profile.id, **data)
+    # Through the RELATIONSHIP, not the FK column (plan step salary:R15-c):
+    # the regeneration below prices ``profile.deductions``, and a line added
+    # by id joins that collection only if nothing has loaded it yet in this
+    # session, while a line added through the relationship joins it either
+    # way.  The write door's owner check reads ``deduction.user_id`` through
+    # the same relationship, so it answers before any flush.  Measured by
+    # this leaf's regeneration test, which prices the paycheck BEFORE the
+    # add in the session the request shares: by id, the regeneration
+    # re-stated the net WITHOUT the line.
+    deduction = PaycheckDeduction(salary_profile=profile, **data)
     db.session.add(deduction)
 
     # Capture the requester id on the clean session up front; the failure
@@ -345,6 +472,13 @@ def add_deduction(profile_id):
     user_id = current_user.id
 
     try:
+        # The line first, then its rule ONTO it (plan step R-F6's order: the
+        # rule carries the owner's FK).  The flush is the statement the
+        # name-collision ``IntegrityError`` below surfaces from, as it was
+        # when the regeneration's own flush was the first.
+        db.session.flush()
+        if spec is not None:
+            author_rule(spec, ctx.calendar(), deduction)
         _regenerate_salary_transactions(profile)
         db.session.commit()
     except IntegrityError as exc:
@@ -391,7 +525,7 @@ def add_deduction(profile_id):
             log_message="user_id=%d failed to add deduction to profile %d",
             log_args=(user_id, profile_id),
             flash_message="Failed to add deduction. Please try again.",
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile_id}),
+            redirect=_edit_page(profile_id),
         ))
 
     logger.info("user_id=%d added deduction to profile %d", current_user.id, profile_id)
@@ -433,14 +567,14 @@ def delete_deduction(ded_id):
                 "This deduction was changed by another action.  "
                 "Please reload and try again."
             ),
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+            redirect=_edit_page(profile.id),
         ),
         error_ctx=DbErrorContext(
             logger=logger,
             log_message="user_id=%d failed to delete deduction %d from profile %d",
             log_args=(current_user.id, ded_id, profile.id),
             flash_message="Failed to remove deduction. Please try again.",
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+            redirect=_edit_page(profile.id),
         ),
     )
     if response is not None:
@@ -473,7 +607,10 @@ def update_deduction(ded_id):
     :class:`~sqlalchemy.exc.IntegrityError` (F-052/C-23, surfaced as a
     warning), and any other DB error (C-46/F-145, a danger flash).  The
     route keeps only the input-validation and stale-form pre-check guard
-    clauses.
+    clauses -- and, since plan step salary:R15-c, the cadence dispatch: the
+    line's rule is re-pointed, authored or cleared from the shared recurrence
+    controls before the field loop, the way every recurrence form's update
+    does it (see :func:`add_deduction` for the create half).
     """
     deduction = get_owned_via_parent(
         PaycheckDeduction, ded_id, "salary_profile",
@@ -483,12 +620,12 @@ def update_deduction(ded_id):
 
     profile = deduction.salary_profile
 
-    errors = _deduction_update_schema.validate(request.form)
-    if errors:
-        flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("salary.edit_profile", profile_id=profile.id))
-
-    data = _deduction_update_schema.load(request.form)
+    payload = load_form_or_redirect(
+        _deduction_update_schema, _edit_page(profile.id),
+    )
+    if isinstance(payload, Response):
+        return payload
+    data = payload
     # N-534: a re-point must land on the requester's own account too.
     # N-534 (salary:R14-a): a deduction's ``target_account_id`` is what makes
     # it a CONTRIBUTION FEED into an investment account, and the schema checks
@@ -498,6 +635,16 @@ def update_deduction(ded_id):
     data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
 
     # Stale-form check (commit C-18 / F-010).
+    #
+    # **Blind to a cadence-only change**, and this is stated rather than
+    # closed (plan step salary:R15-c): the pin is the DEDUCTION row's
+    # version, and the rule is its own row, so an edit that re-authored the
+    # cadence and touched no column of the line bumped nothing -- a second
+    # tab holding the older cadence then saves its whole record over it
+    # unchallenged.  The two template kinds' forms share the blind spot
+    # (a cadence-only template edit issues no UPDATE on the template either);
+    # it is one family and one remedy, reported to the developer at this
+    # leaf's cut for a ledger row rather than patched on one owner.
     submitted_version = data.pop("version_id", None)
     if submitted_version is not None and submitted_version != deduction.version_id:
         logger.info(
@@ -511,6 +658,30 @@ def update_deduction(ded_id):
             "warning",
         )
         return redirect(url_for("salary.edit_profile", profile_id=profile.id))
+
+    # Re-point, author, or clear the line's cadence rule from the payload
+    # (plan step salary:R15-c), through the dispatcher every recurrence
+    # form's update runs
+    # (:func:`~app.routes._recurrence_form_helpers.resolve_recurrence_rule_for_update`)
+    # once the derived facts are settled in (:func:`_settle_deduction_cadence`).
+    # The pass is the PRE-WRITE one its refusals read (plan step R7d-f) and
+    # the calendar the re-author resolves against; regeneration below builds
+    # its own after the write.  The dispatcher pops every recurrence key, so
+    # the field loop below sees none.
+    ctx = BalanceContext.build(current_user.id)
+    _settle_deduction_cadence(data, ctx, stored=deduction.recurrence_rule)
+    refusal = resolve_recurrence_rule_for_update(
+        deduction,
+        data,
+        ctx=RecurrenceFormContext(
+            end_bound=None,
+            redirect=_edit_page(profile.id),
+            include_due_day_of_month=False,
+        ),
+        pass_ctx=ctx,
+    )
+    if refusal is not None:
+        return refusal
 
     # Convert percentage inputs (e.g. 6 → 0.06) for storage.
     if data["calc_method_id"] == ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE):
@@ -532,14 +703,14 @@ def update_deduction(ded_id):
                 "This deduction was changed by another action while you "
                 "were editing.  Please reload and try again."
             ),
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+            redirect=_edit_page(profile.id),
         ),
         error_ctx=DbErrorContext(
             logger=logger,
             log_message="user_id=%d failed to update deduction %d on profile %d",
             log_args=(current_user.id, ded_id, profile.id),
             flash_message="Failed to update deduction. Please try again.",
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+            redirect=_edit_page(profile.id),
         ),
         # Name-collision rename (F-052 / C-23): the user renamed this
         # deduction onto a name another active or inactive deduction on the
@@ -558,7 +729,7 @@ def update_deduction(ded_id):
                 "name.  Choose a different name or remove the existing "
                 "deduction first."
             ),
-            redirect=RedirectTarget("salary.edit_profile", {"profile_id": profile.id}),
+            redirect=_edit_page(profile.id),
         ),
     )
     if response is not None:

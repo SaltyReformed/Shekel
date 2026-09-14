@@ -880,7 +880,7 @@ and @validates_schema cross-field rules.
 | `SavingsGoalUpdateSchema` (2)   | @pre_load strips; Boolean coercion                       |
 | `SalaryProfileCreateSchema` (4) | Required fields; OneOf pay_periods; state_code length    |
 | `RaiseCreateSchema` (5)         | percentage/flat_amount XOR; month range; both/neither    |
-| `DeductionCreateSchema` (3)     | Required fields; OneOf deductions_per_year               |
+| `DeductionCreateSchema` (3)     | Required fields; the frequency count left with its column (salary:R15-b) |
 | `FicaConfigSchema` (2)          | All required; Decimal coercion                           |
 | `AccountCreateSchema` (3)       | Required fields; @pre_load strips empty optional         |
 | `PayPeriodGenerateSchema` (4)   | Defaults; Range num_periods/cadence; missing start_date  |

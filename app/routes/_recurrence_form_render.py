@@ -420,7 +420,9 @@ def edit_form_cadence(template: Any) -> SelectedCadence | None:
 
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate`` being
-            edited.  Read for ``recurrence_rule`` only; not mutated.
+            edited -- or, since plan step salary:R15-c, a ``PaycheckDeduction``,
+            whose row's edit prefill the salary page reads through this same
+            function.  Read for ``recurrence_rule`` only; not mutated.
 
     Returns:
         The :class:`~app.services.recurrence.SelectedCadence` to preselect, or

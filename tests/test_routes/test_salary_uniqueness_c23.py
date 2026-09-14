@@ -467,7 +467,6 @@ class TestAddDeductionRoute:
                 "deduction_timing_id": timing.id,
                 "calc_method_id": method.id,
                 "amount": "250.00",
-                "deductions_per_year": "26",
             }
             r1 = auth_client.post(
                 f"/salary/{profile.id}/deductions", data=data,
@@ -506,7 +505,6 @@ class TestAddDeductionRoute:
                 "deduction_timing_id": timing.id,
                 "calc_method_id": method.id,
                 "amount": "200.00",
-                "deductions_per_year": "26",
             }
             r1 = auth_client.post(
                 f"/salary/{profile.id}/deductions",
@@ -554,7 +552,6 @@ class TestUpdateDeductionRoute:
                     "deduction_timing_id": str(timing.id),
                     "calc_method_id": str(method.id),
                     "amount": "200.00",
-                    "deductions_per_year": "26",
                     "version_id": str(target_version),
                 },
                 follow_redirects=True,
