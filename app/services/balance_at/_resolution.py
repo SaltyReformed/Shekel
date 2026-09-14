@@ -45,7 +45,6 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 """
 
 from dataclasses import dataclass
-from decimal import Decimal
 
 from app.models.account import Account
 from app.models.loan_params import LoanParams
@@ -523,7 +522,6 @@ def contractual_schedule_from_origination(
             None,
             rate_changes,
         ),
-        extra_monthly=Decimal("0.00"),
         as_of=loan_params.origination_date,
         confirmed_view=None,
     )

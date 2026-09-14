@@ -4,7 +4,7 @@ Tests for the amortization engine service.
 
 import dataclasses
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -224,14 +224,15 @@ class TestPayoffByDate:
 
 
 class TestRequiredExtraForProjection:
-    """The override-aware payoff search (F-27, "fix + reframe").
+    """The contract-only payoff search (F-27's raw answer).
 
     ``required_extra_for_projection`` is the factored-out core of
-    ``calculate_payoff_by_date`` plus an optional planned-outlay
-    ``monthly_override``: the baseline run and every binary-search
-    iteration honor the user's committed plan, so the returned extra is
-    the amount needed ON TOP of that plan (override months suppress the
-    searched extra, the composer's regression-prevention property).
+    ``calculate_payoff_by_date``: one starting state drives the baseline
+    run and every binary-search iteration.  It took an optional
+    planned-outlay ``monthly_override`` until plan step R7d-g-3 (ruling
+    **R-R88**); the plan-aware answer is the balance seam's
+    ``loan_required_extra``, graded in ``test_loan_resolver`` and the seam's
+    own tests, and nothing passed an override here any more.
     """
 
     TARGET = date(2041, 1, 1)
@@ -271,54 +272,6 @@ class TestRequiredExtraForProjection:
         """
         result = required_extra_for_projection(self._inputs(), self.TARGET)
         assert result == Decimal("478.08")
-
-    def test_committed_plan_reduces_required_extra(self):
-        """A $500/mo plan lowers the extra needed to hit the target.
-
-        24 override months at contractual + $500 model a recurring
-        transfer template over its ~2-year projection horizon.  The
-        F-27 acceptance scenario: a user already paying extra must NOT
-        be told they need the full $478.08 again.  Correctness is
-        pinned by projecting the plan + found extra (payoff at or
-        before target) and minimality by two cents less failing (the
-        search converges to a one-cent bracket).
-        """
-        inputs = self._inputs()
-        override = self._plan_override(inputs, 24, Decimal("500"))
-
-        plan_extra = required_extra_for_projection(
-            inputs, self.TARGET, monthly_override=override,
-        )
-        raw_extra = required_extra_for_projection(inputs, self.TARGET)
-        assert plan_extra < raw_extra
-
-        achieved = project_forward(
-            inputs, monthly_override=override, extra_monthly=plan_extra,
-        )
-        assert achieved[-1].payment_date <= self.TARGET
-
-        under = project_forward(
-            inputs,
-            monthly_override=override,
-            extra_monthly=plan_extra - Decimal("0.02"),
-        )
-        assert under[-1].payment_date > self.TARGET
-
-    def test_plan_already_hits_target_returns_zero(self):
-        """A plan that retires the loan by the target needs no extra.
-
-        Overriding every month at contractual + $2000 pays the loan off
-        well before 2041, so the override-aware BASELINE run (not the
-        search) returns the 0.00 "already achieved" answer -- the
-        committed-plan analogue of ``test_target_after_standard_payoff``.
-        """
-        inputs = self._inputs()
-        override = self._plan_override(inputs, 360, Decimal("2000"))
-        result = required_extra_for_projection(
-            inputs, self.TARGET, monthly_override=override,
-        )
-        assert result == Decimal("0.00")
-
 
 class TestPayoffByDateProjectForward:
     """C7-1..C7-4, C7-6: lock ``calculate_payoff_by_date`` behaviour
@@ -1162,16 +1115,13 @@ class TestProjectForward:
     Verifies that projection is a pure forward-only function of a
     known starting state:
 
-      - ``extra_monthly`` lives only on this surface;
-      - ``monthly_override`` routes the user's planned payments
-        through a forward-only channel;
-      - ``extra_monthly`` applies to EVERY forward month, override and
-        contractual alike (C2-4 -- step 5: the payoff lever's what-if extra
-        must accelerate the whole loan, and a recurring plan makes every
-        near month an override month.  A STANDING extra is inside the
-        override amount itself -- amount rule 4 prices it into the row --
-        and the composer stopped passing it here at plan step R7d-g-3,
-        where it had been paying it twice);
+      - ``extra_monthly`` lives only on this surface, and applies to
+        EVERY forward month (C2-4 -- the target-date search's contract-only
+        what-if);
+      - a ``monthly_override`` channel routed the user's planned payments
+        through this projection until plan step R7d-g-3 (ruling **R-R88**):
+        the balance seam's plan fold is the one walk of what a loan is
+        projected to pay, and the channel went with its last caller;
       - negative amortization, overpayment cap, and ARM rate-change
         re-amortization all mirror ``generate_schedule``'s existing
         behavior on the projection side;
@@ -1239,47 +1189,6 @@ class TestProjectForward:
         assert rows[-1].remaining_balance == Decimal("0.00")
         assert rows[-1].extra_payment == Decimal("0.00")
 
-    # ── C2-2: monthly_override only (no extra) ────────────────────
-
-    def test_monthly_override_only(self):
-        """C2-2: an override entry replaces the contractual payment
-        for that month, with ``extra_payment == 0`` on the row.
-
-        Hand arithmetic at the start of month 5 (June 2026):
-          balance before June = $298,796.42 (after four contractual
-          payments at $1,798.65).
-          June interest = 298796.42 * 0.005 = 1493.98210 -> $1,493.98
-          override = $2,000.00 -> principal = 2000.00 - 1493.98
-                                            = $506.02
-          balance after June = 298796.42 - 506.02 = $298,290.40
-        Non-override months use the contractual payment.
-        """
-        rows = project_forward(
-            ProjectionInputs(
-                starting_balance=self.PRINCIPAL,
-                starting_date=self.STARTING_DATE,
-                remaining_months=self.TERM_MONTHS,
-                payment_day=self.PAYMENT_DAY,
-                terms_schedule=_terms(
-                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
-                ),
-            ),
-            monthly_override={(2026, 6): Decimal("2000.00")},
-        )
-        june = next(r for r in rows if r.payment_date == date(2026, 6, 1))
-        assert june.payment == Decimal("2000.00")
-        assert june.interest == Decimal("1493.98")
-        assert june.principal == Decimal("506.02")
-        assert june.extra_payment == Decimal("0.00")
-        assert june.remaining_balance == Decimal("298290.40")
-        # Adjacent non-override months keep the contractual payment.
-        may = next(r for r in rows if r.payment_date == date(2026, 5, 1))
-        assert may.payment == self.CONTRACTUAL_PAYMENT
-        assert may.extra_payment == Decimal("0.00")
-        july = next(r for r in rows if r.payment_date == date(2026, 7, 1))
-        assert july.payment == self.CONTRACTUAL_PAYMENT
-        assert july.extra_payment == Decimal("0.00")
-
     # ── C2-3: extra_monthly only, no override ─────────────────────
 
     def test_extra_monthly_only_no_override(self):
@@ -1325,97 +1234,7 @@ class TestProjectForward:
 
     # ── C2-4: override + extra -- the standing extra rides override months ──
 
-    def test_override_plus_extra_applies_extra_to_override_months(self):
-        """C2-4: ``extra_monthly`` is applied to an override month too (step 5).
-
-        Behavior change ratified by the operator (Q3, 2026-07-07): the extra a
-        caller passes must accelerate every forward month.  A recurring payment
-        plan makes every near month an OVERRIDE month, so the pre-step-5 rule
-        "override months ignore extra" made the extra a no-op for exactly the
-        loans that have a plan.  The override amount is the month's planned
-        payment; ``extra_monthly`` is applied on top.  What a caller may pass
-        is the payoff lever's what-if extra and nothing else: a STANDING extra
-        is already inside the planned amount (amount rule 4 prices it into the
-        row), and the composer passed it here as well until plan step R7d-g-3,
-        paying it twice on every override month.
-
-        Hand arithmetic for June 2026 (override $2,000 + $500 extra), balance
-        entering June $296,781.36 (after four contractual+$500-extra rows):
-          interest   = 296,781.36 * 0.005 = 1,483.91
-          principal  = 2,000.00 - 1,483.91 = 516.09  (the BASE split)
-          extra      = 500.00
-          balance    = 296,781.36 - 516.09 - 500.00 = 295,765.27
-        The row reports ``payment`` = the $2,000 base and ``extra_payment`` =
-        $500 separately.  July 2026 (no override): $1,798.65 contractual +
-        $500 extra, exactly as before.
-        """
-        rows = project_forward(
-            ProjectionInputs(
-                starting_balance=self.PRINCIPAL,
-                starting_date=self.STARTING_DATE,
-                remaining_months=self.TERM_MONTHS,
-                payment_day=self.PAYMENT_DAY,
-                terms_schedule=_terms(
-                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
-                ),
-            ),
-            monthly_override={(2026, 6): Decimal("2000.00")},
-            extra_monthly=Decimal("500.00"),
-        )
-        june = next(r for r in rows if r.payment_date == date(2026, 6, 1))
-        # The load-bearing assertion: the extra IS applied to the override
-        # month now (reported separately from the base payment).
-        assert june.payment == Decimal("2000.00")
-        assert june.interest == Decimal("1483.91")
-        assert june.principal == Decimal("516.09")
-        assert june.extra_payment == Decimal("500.00")
-        assert june.remaining_balance == Decimal("295765.27")
-        july = next(r for r in rows if r.payment_date == date(2026, 7, 1))
-        assert july.payment == self.CONTRACTUAL_PAYMENT
-        assert july.extra_payment == Decimal("500.00")
-        # Every month past the override still carries extra.
-        post_override = [
-            r for r in rows
-            if r.payment_date > date(2026, 6, 1) and r != rows[-1]
-        ]
-        for row in post_override:
-            assert row.extra_payment == Decimal("500.00")
-
     # ── C2-5: override below interest -> negative amortization ────
-
-    def test_override_below_interest_negative_amortization(self):
-        """C2-5: an override below the period's interest produces
-        negative ``principal_portion`` and the balance grows.
-
-        Hand arithmetic at row 1 with override $50 and $1500 interest:
-          interest = 300000.00 * 0.005 = $1,500.00
-          principal = 50.00 - 1500.00 = -$1,450.00 (negative am)
-          balance = 300000.00 - (-1450.00) = $301,450.00
-        Existing engine behavior on ``generate_schedule``'s
-        payment-record branch is preserved.
-        """
-        rows = project_forward(
-            ProjectionInputs(
-                starting_balance=self.PRINCIPAL,
-                starting_date=self.STARTING_DATE,
-                remaining_months=self.TERM_MONTHS,
-                payment_day=self.PAYMENT_DAY,
-                terms_schedule=_terms(
-                    self.STARTING_DATE, self.RATE, self.CONTRACTUAL_PAYMENT,
-                ),
-            ),
-            monthly_override={(2026, 2): Decimal("50.00")},
-        )
-        feb = rows[0]
-        assert feb.payment_date == date(2026, 2, 1)
-        assert feb.payment == Decimal("50.00")
-        assert feb.interest == Decimal("1500.00")
-        # Negative principal portion is valid -- it represents
-        # unpaid interest capitalized into the balance.
-        assert feb.principal == Decimal("-1450.00")
-        assert feb.extra_payment == Decimal("0.00")
-        # 300000.00 - (-1450.00) = 301450.00.
-        assert feb.remaining_balance == Decimal("301450.00")
 
     # ── C2-6: ARM rate change during projection ───────────────────
 

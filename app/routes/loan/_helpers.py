@@ -34,7 +34,9 @@ from app.schemas.validation import (
     RefinanceSchema,
 )
 from app.services import balance_at, escrow_calculator, loan_resolver
+from app.services.amortization_engine import AmortizationRow
 from app.services.balance_at import LoanFigures, LoanTerms
+from app.services.loan_ledger import installment_slot
 from app.services.loan_loaders import (
     latest_settled_payment_due_date,
     load_loan_anchor_facts,
@@ -43,6 +45,7 @@ from app.services.loan_payment_service import LoanContext, load_loan_context
 from app.services.rate_period_engine import payment_number
 from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import get_or_404
+from app.utils.dates import add_months
 from app.utils.money import round_money
 
 
@@ -401,169 +404,145 @@ def _forward_boundary(account_id, scenario_id):
     return latest_settled_payment_due_date(account_id, scenario_id)
 
 
-def _balances_for_chart(rows, target_len):
-    """Build a chart balance list, padded to ``target_len`` with $0.00.
+def band_chart_dates(scenarios, payoff, installments) -> list[date]:
+    """Return the band chart's x-axis: the contractual monthly grid, run to the payoff.
 
-    When a payoff scenario reaches zero before the longest baseline,
-    its trailing months are padded with 0.0 so Chart.js plots all
-    datasets against the same x-axis.  The post-payoff balance IS
-    zero (the loan is gone), so the padding is the literal financial
-    truth, not a visual placeholder.
+    One installment date per month from the loan's confirmed history through
+    the CONTRACT's last installment (the composer's ``history_rows`` and
+    ``original_forward``, one date each), extended month by month whenever the
+    seam's DERIVED payoff falls later -- an underpaying plan clears the loan
+    in the post-contractual extension, and the line must run to where the
+    balance actually reaches zero rather than stop at the last labelled tick.
+    A plan that never clears it runs to the plan's last installment instead;
+    a retired loan (no payoff, no plan) ends with its history.  The same grid
+    serves the lever's preview (:func:`accelerated_overlay`), which is what
+    keeps the overlay aligned to the band one point to one.
 
-    Args:
-        rows: Iterable of :class:`AmortizationRow`.  May be shorter
-            than ``target_len``.
-        target_len: Total number of data points the chart expects --
-            the length of the longest series (:func:`_build_chart_series`).
-
-    Returns:
-        List of floats, length exactly ``target_len``.  Presentation
-        boundary: float() for Chart.js JSON serialization.
-    """
-    balances = [float(row.remaining_balance) for row in rows]
-    if len(balances) < target_len:
-        balances.extend([0.0] * (target_len - len(balances)))
-    return balances
-
-
-def _build_chart_series(series_rows):
-    """Build aligned Chart.js label + balance arrays for loan scenarios.
-
-    Every series shares one x-axis: labels come from the LONGEST series,
-    and every series' balances are padded to that length with $0.00 via
-    :func:`_balances_for_chart` so Chart.js plots equal-length arrays
-    against the shared labels.  The longest series is the correct label
-    baseline because a payment plan slower than the contractual P&I (a
-    sub-P&I recurring transfer against a balance the contractual payment
-    would clear early) makes ``committed`` -- or the lever's
-    ``accelerated`` -- run more months than the contractual ``original``;
-    keying the labels off ``original`` alone would leave those extra (and
-    correct) tail points plotting past the last labelled tick.  A series
-    shorter than the longest pads with $0.00, the literal post-payoff
-    balance, so the padding never invents a value.  Shared by the band
-    chart (:func:`build_band_chart`) and the payoff lever's overlay
-    (:func:`accelerated_overlay`).
+    Pure over values the caller already holds -- the pass's payoff figure
+    and the plan's installments -- so the grid costs the page no fold of its
+    own (the payoff is folded once per pass, ``balance_at.memoized_payoff``).
 
     Args:
-        series_rows: Mapping of series name -> the full
-            :class:`AmortizationRow` list (history + forward, already
-            concatenated by the caller).  Every series shares the same
-            monthly payment-date sequence from the same starting month, so
-            the longest series' dates label every shorter (padded) one; on
-            a length tie the first-inserted series wins (Python ``max``),
-            which keeps ``original`` the label baseline in the common case.
+        scenarios: The baseline :class:`~app.services.loan_resolver.PayoffScenarios`
+            (the confirmed history and the contractual forward).
+        payoff: The seam's derived payoff
+            (:attr:`~app.routes.loan._helpers._RouteLoanContext.payoff_date`),
+            ``None`` for a retired loan or a plan that never clears.
+        installments: The plan as it stands
+            (:func:`~app.services.balance_at.loan_installments`), for the
+            never-clears case's last date.
 
     Returns:
-        Tuple of (chart_labels, balances) where ``balances`` is a dict
-        mapping each series name to its padded float list.
+        Ascending installment dates; empty for a loan whose history and
+        contract both hold no row (a retired loan the composer drops).
     """
-    baseline_rows = max(series_rows.values(), key=len)
-    target_len = len(baseline_rows)
-    chart_labels = [
-        row.payment_date.strftime("%b %Y") for row in baseline_rows
+    dates = [row.payment_date for row in scenarios.history_rows] + [
+        row.payment_date for row in scenarios.original_forward
     ]
-    balances = {
-        name: _balances_for_chart(rows, target_len)
-        for name, rows in series_rows.items()
-    }
-    return chart_labels, balances
+    if not dates:
+        return dates
+    if payoff is None:
+        payoff = installments[-1].due_date if installments else dates[-1]
+    # Each extension date steps from the contract's LAST installment by a
+    # month count, as the plan's own extension does (``_plan._charge_dates``),
+    # so a loan due on the 31st keeps the month's end rather than decaying to
+    # the 28th one step at a time -- and the grid's dates are the fold's.
+    contract_end = dates[-1]
+    months_out = 1
+    while dates[-1] < payoff:
+        dates.append(add_months(contract_end, months_out))
+        months_out += 1
+    return dates
 
 
-def build_band_chart(scenarios, has_payments):
-    """Serialize the loan-detail band chart: one balance line on the contractual axis.
+def build_band_chart(account, balance_ctx, dates):
+    """Serialize the loan-detail band chart: the seam's balance on the contractual axis.
 
     The Fable 5 loan-detail band chart (docs/design/loan_audit.md, locked
-    anatomy) draws a SINGLE balance trajectory -- the committed plan (confirmed
-    history solid, projected forward dashed) when the loan has a recurring
-    payment plan, otherwise the pure contractual schedule -- which the client
-    splits at the confirmed / projected boundary via
-    :func:`ShekelChart.splitSegment` (``current_index``).  The line is padded to
-    the LONGEST-series x-axis by :func:`_build_chart_series` (``original`` vs
-    ``committed``), the same baseline :func:`accelerated_overlay` reproduces, so
-    a shorter (paid-sooner) trajectory and the lever's preview align to identical
-    labels and cannot drift -- and a slower-than-contractual ``committed`` line
-    never runs past the last labelled tick.
+    anatomy) draws a SINGLE balance trajectory which the client splits at the
+    confirmed / projected boundary via :func:`ShekelChart.splitSegment`
+    (``current_index``).  **The line is the balance seam's own balance at
+    every grid date since plan step R7d-g-3** (ruling **R-R88**):
+    :func:`~app.services.balance_at.positions` reads a past date off the
+    ledger and a future one off the forward plan fold -- the same producer the
+    balance hero, the "Projected payoff" chip and the /savings debt card read
+    -- so the band cannot disagree with any of them.  Until that step it drew
+    ``loan_resolver.compute_payoff_scenarios``' committed slice, a second
+    forward walk that priced the months no generated row covered from the
+    contract plus one picked definition's extra, and lagged the chip beside it
+    by years on a loan paying extra.  A loan with no recurring payment folds
+    the contract's own installments, so there is no contractual-versus-committed
+    switch any more: one line, whatever the plan is.
 
     Args:
-        scenarios: The baseline :class:`PayoffScenarios` (``extra_monthly`` 0).
-        has_payments: ``True`` when the loan has a recurring payment plan;
-            selects the committed line, else the contractual original.
+        account: The loan account (the caller owns the ownership check).
+        balance_ctx: The read pass.
+        dates: The band's grid (:func:`band_chart_dates`).
 
     Returns:
-        dict with ``labels`` (list[str]), ``balance`` (list[float] padded to the
-        contractual length), and ``current_index`` (int -- the count of
-        confirmed history rows, i.e. the solid / dashed boundary).
+        dict with ``labels`` (list[str]), ``balance`` (list[float], the seam's
+        owed balance at each label -- ``float()`` only here, the Chart.js
+        serialization boundary), and ``current_index`` (int -- the count of
+        grid dates at or before the pass's as-of, i.e. the solid / dashed
+        boundary: the ledger's points, whether or not anything was paid).
     """
-    chart_labels, balances = _build_chart_series({
-        "original": scenarios.history_rows + scenarios.original_forward,
-        "committed": scenarios.history_rows + scenarios.committed_forward,
-    })
+    owed = balance_at.positions(account, balance_ctx, dates) if dates else {}
     return {
-        "labels": chart_labels,
-        "balance": (
-            balances["committed"] if has_payments else balances["original"]
+        "labels": [on_date.strftime("%b %Y") for on_date in dates],
+        "balance": [float(owed[on_date]) for on_date in dates],
+        "current_index": sum(
+            1 for on_date in dates if on_date <= balance_ctx.as_of
         ),
-        "current_index": len(scenarios.history_rows),
     }
 
 
-def accelerated_overlay(scenarios):
-    """Forward-only accelerated balances for the band chart's payoff-lever preview.
+def accelerated_overlay(account, balance_ctx, dates, extra_monthly):
+    """Forward-only what-if balances for the band chart's payoff-lever preview.
 
     The green dashed "pay off sooner" preview (docs/design/loan_audit.md, locked
     anatomy) the band chart overlays when the extra-payment lever runs: the
-    accelerated trajectory's FORWARD slice only, with the confirmed-history
-    positions left ``None`` so the green line begins at Today and diverges from
-    the committed dashed line rather than redrawing the shared solid history.
-    Padded to the SAME x-axis as :func:`build_band_chart` by passing the same
-    ``original`` and ``committed`` series into :func:`_build_chart_series`: the
-    band's labels span ``max(len(original), len(committed))``, and since
-    ``accelerated`` (committed plus extra) can never run longer than
-    ``committed``, including ``committed`` here makes the overlay's padded length
-    equal the band's label count exactly, so the overlay aligns to the band
-    chart's labels one-to-one even when a slower-than-contractual committed line
-    is the longest series.
+    seam's forward fold with *extra_monthly* added once per accrual period
+    (:func:`~app.services.balance_at.loan_what_if_owed_at_dates`), on the
+    band's own grid (:func:`band_chart_dates`), with the confirmed-history
+    positions left ``None`` so the green line begins at Today and diverges
+    from the projected line rather than redrawing the shared solid history.
+    With ``0.00`` it IS the band's projected line, which is what makes the
+    preview and the plan one walk apart by exactly the extra.
 
     Args:
-        scenarios: The lever's :class:`PayoffScenarios` (``extra_monthly`` the
-            requested extra).
+        account: The loan account (the caller owns the ownership check).
+        balance_ctx: The read pass.
+        dates: The band's grid (:func:`band_chart_dates`).
+        extra_monthly: The lever's hypothetical extra per accrual period.
 
     Returns:
         list of ``float | None`` whose length equals the band chart's balance
-        array: the first ``len(history_rows)`` entries are ``None`` (no overlay
-        over confirmed history), the rest are the accelerated forward balances
-        padded with post-payoff zeros.
+        array: ``None`` at every grid date at or before the pass's as-of, the
+        what-if balance at every date after it.
     """
-    _chart_labels, balances = _build_chart_series({
-        "original": scenarios.history_rows + scenarios.original_forward,
-        "committed": scenarios.history_rows + scenarios.committed_forward,
-        "accelerated": scenarios.history_rows + scenarios.accelerated_forward,
-    })
-    n_history = len(scenarios.history_rows)
-    return [None] * n_history + balances["accelerated"][n_history:]
+    future = [on_date for on_date in dates if on_date > balance_ctx.as_of]
+    owed = (
+        balance_at.loan_what_if_owed_at_dates(
+            account, balance_ctx, future, extra_monthly,
+        ) if future else {}
+    )
+    return [None] * (len(dates) - len(future)) + [
+        float(owed[on_date]) for on_date in future
+    ]
 
 
 def build_baseline_scenarios(loan_inputs, account, balance_ctx):
-    """Run the baseline payoff-scenario composer call for the loan detail page.
+    """Run the baseline composer call for the loan detail page: history + contract.
 
-    One ``compute_payoff_scenarios`` call (no what-if lever, ``extra_monthly=0``)
-    whose band chart, payment breakdown, and life-of-loan summary all derive
-    from the same return value so they cannot diverge (the structural fix
-    documented at
-    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
-    The returned scenario consumes ALL payments (confirmed + projected): its
-    ``history_rows + committed_forward`` slice IS the planned trajectory the band
-    chart, payment breakdown, and summary read, while ``original_forward``
-    supplies the contractual x-axis baseline.  **No standing extra is threaded
-    since plan step R7d-g-3** (ruling **R-R88**, which re-ruled R-R83's seam clause there): every
-    projected row's cash already carries its own definition's extra (amount
-    rule 4), so the composer taking one as well paid it twice on every
-    row-covered month -- and the one it took was the OLDEST definition's
-    alone (plan ledger row **D49**).  Past the last generated row the
-    committed slice is the CONTRACT's installment; the definitions' own
-    occurrences there are the seam's forward plan's (``balance_at._plan``),
-    which the "Projected payoff" chip reads and this slice does not until
-    plan step R16-f re-expresses the composer as that fold.
+    One ``compute_payoff_scenarios`` call whose ``history_rows`` (the
+    confirmed actuals, ledger-derived) and ``original_forward`` (the CONTRACT's
+    remaining installments) the band chart's x-axis, the amortization table's
+    confirmed half and the lever's contract-versus-plan comparison read.
+    **It composes no planned trajectory since plan step R7d-g-3** (ruling
+    **R-R88**): what the loan is projected to PAY is the balance seam's forward
+    plan, read through :func:`~app.services.balance_at.loan_installments` and
+    :func:`~app.services.balance_at.positions`, so the page's projected
+    figures and its balance hero come from one fold.
 
     Read switch: reads the genesis-ledger confirmed view ONCE via the seam's
     :func:`app.services.balance_at.confirmed_view` -- the FOLD of the loan's
@@ -575,10 +554,9 @@ def build_baseline_scenarios(loan_inputs, account, balance_ctx):
     off-schedule, and a loan whose posting cache is cold no longer drops to the
     money-blind anchor replay here (finding B-12).
 
-    Shared by the dashboard GET (which also reads the full scenario for the
-    summary / breakdown) and the ARM rate-change band producer
-    (:func:`build_loan_band_chart`), so the single composer call lives in exactly
-    one place.
+    Shared by the dashboard GET, the ARM rate-change band producer
+    (:func:`build_loan_band_chart`) and the standalone schedule route, so the
+    single composer call lives in exactly one place.
 
     Args:
         loan_inputs: The loan's :class:`loan_resolver.LoanInputs` bundle with
@@ -595,7 +573,6 @@ def build_baseline_scenarios(loan_inputs, account, balance_ctx):
     """
     return loan_resolver.compute_payoff_scenarios(
         loan_inputs=loan_inputs,
-        extra_monthly=Decimal("0.00"),
         as_of=balance_ctx.as_of,
         confirmed_view=balance_at.confirmed_view(account, balance_ctx),
     )
@@ -626,62 +603,19 @@ def _loan_inputs(params, loan_context: LoanContext) -> loan_resolver.LoanInputs:
     )
 
 
-def load_baseline_scenarios(account, params):
-    """Load a loan's context and compose its baseline payoff scenarios.
-
-    The shared load-and-compose the two SCHEDULE-projection surfaces run -- the
-    band-chart producer (:func:`build_loan_band_chart`) and the standalone
-    schedule route (:mod:`app.routes.loan.schedule`).  It loads the service
-    :class:`LoanContext` and composes the baseline
-    :class:`~app.services.loan_resolver.PayoffScenarios` (no what-if lever) --
-    the committed trajectory the loan card carries.  Returns both so the
-    caller can read the ``LoanContext`` (escrow / rate feeds) alongside the
-    composed scenarios.
-
-    It builds a :class:`BalanceContext` for the pass (plan step E1d-b) where it
-    previously resolved a bare scenario id: the confirmed slice these schedules
-    open with is now the seam's FOLD of the loan's recorded events, so the read
-    pass that memoizes the loan's walk is the input, not a scenario id.  That is
-    a strictly cheaper read too -- the context's construction IS the baseline
-    lookup this used to make on its own.
-
-    Ownership is verified by the caller (both call sites are ``require_owner`` /
-    ``_require_configured_loan``-gated), satisfying the composer's
-    trust-the-caller contract.
-
-    Args:
-        account: ORM :class:`Account` instance for the loan.
-        params: ORM :class:`LoanParams` instance.
-
-    Returns:
-        ``(LoanContext, PayoffScenarios)`` for this read.
-    """
-    balance_ctx = BalanceContext.build(current_user.id)
-    loan = load_loan_context(account.id, balance_ctx.amounts(), params)
-    scenarios = build_baseline_scenarios(
-        _loan_inputs(params, loan), account, balance_ctx,
-    )
-    return loan, scenarios
-
-
 def build_loan_band_chart(account, params):
     """Recompute the loan-detail band chart dict from the current loan state.
 
-    The band's balance-over-time chart is a function of the loan's committed
-    trajectory, so a mutation that RE-AMORTIZES the loan (an ARM rate change --
+    The band's balance-over-time chart is a function of the loan's plan and
+    ledger, so a mutation that RE-AMORTIZES the loan (an ARM rate change --
     :func:`app.routes.loan.escrow_rates.add_rate_change`) leaves the band stale
     until the chart is rebuilt.  This is the single producer both the dashboard
-    GET path and that HTMX rate route share (via :func:`build_baseline_scenarios`
-    + :func:`build_band_chart`), so the refreshed chart cannot diverge from the
-    initially-rendered one.  Ownership is verified by the caller before this runs
-    (``add_rate_change`` is ``require_owner``-gated), satisfying the resolver's
-    trust-the-caller contract.
-
-    The band is a schedule PROJECTION, not a balance-at-T, but its confirmed
-    slice is one: it runs the composer via :func:`load_baseline_scenarios`, whose
-    confirmed seed is the seam's fold since plan step E1d-b (the schedule the
-    client splits at the confirmed / projected boundary therefore carries the same
-    history the loan card does).
+    GET path and that HTMX rate route share (:func:`_load_route_context` +
+    :func:`build_baseline_scenarios` + :func:`band_chart_dates` +
+    :func:`build_band_chart`), so the refreshed chart cannot diverge from the
+    initially-rendered one.  Ownership
+    is verified by the caller before this runs (``add_rate_change`` is
+    ``require_owner``-gated), satisfying the seam's trust-the-caller contract.
 
     Args:
         account: ORM :class:`Account` instance for the loan.
@@ -692,8 +626,17 @@ def build_loan_band_chart(account, params):
         ``current_index``) -- identical in shape to the dashboard's initial
         ``band_chart`` -- for the rate route to hand to ``loan_detail.js``.
     """
-    loan, scenarios = load_baseline_scenarios(account, params)
-    return build_band_chart(scenarios, len(loan.payments) > 0)
+    ctx = _load_route_context(account, params)
+    scenarios = build_baseline_scenarios(
+        _loan_inputs(params, ctx.loan), account, ctx.balance_ctx,
+    )
+    return build_band_chart(
+        account, ctx.balance_ctx,
+        band_chart_dates(
+            scenarios, ctx.payoff_date,
+            balance_at.loan_installments(account, ctx.balance_ctx),
+        ),
+    )
 
 
 def _compute_schedule_totals(schedule, row_escrow):
@@ -734,55 +677,154 @@ def _compute_schedule_totals(schedule, row_escrow):
     }
 
 
-def build_schedule_context(planned_schedule, escrow_lines, params):
+def _period_slot(installment) -> tuple[int, int]:
+    """Return the ``(year, month)`` of the accrual period *installment* pays into.
+
+    The standing charge's month (:attr:`~app.services.balance_at.PlannedInstallment.charge_date`,
+    the contract's installment date of that period), or for a payment no
+    charge stands over -- one before the plan's first charge, paying what
+    stands -- the month it is paid in.
+    """
+    return installment_slot(
+        installment.charge_date or installment.effective_date,
+    )
+
+
+def planned_periods(installments) -> list[list]:
+    """Group the plan's installments by accrual period, through the payoff.
+
+    The ONE grouping the loan page reads the plan by: the schedule's
+    month-by-month rows and the allocation bar's "this month" both take a
+    group from here, so a month is spelled once (:func:`_period_slot`, the
+    standing charge's period).  A tracking payment and a fixed sweep due the
+    same month are one period's payments; a catch-up -- an occurrence due
+    before the read that no row answers, which the plan pays the day after
+    it (ruling **R-R64**, the D1 clamp) -- belongs to the period whose
+    charge it meets, which for an overdue installment is that installment's
+    own month.  The plan runs past the payoff into the post-contractual
+    extension (installments there carry a zero balance and pay nothing
+    down), so the groups stop with the one whose balance reaches zero; a
+    plan that never clears the loan yields every period of the extension,
+    which is the honest length of what it would pay.
+
+    Args:
+        installments: :func:`~app.services.balance_at.loan_installments`'s
+            answer, in the fold's DUE order.
+
+    Returns:
+        The period groups, each a non-empty list in the fold's DUE order.
+    """
+    periods: list[list] = []
+    for installment in installments:
+        slot = _period_slot(installment)
+        if periods and _period_slot(periods[-1][0]) == slot:
+            periods[-1].append(installment)
+        else:
+            periods.append([installment])
+        if installment.split.balance_after <= Decimal("0.00"):
+            break
+    return periods
+
+
+def planned_schedule_rows(installments, params) -> tuple[list, list[Decimal]]:
+    """Render the seam's forward plan as the schedule's month-by-month display rows.
+
+    One :class:`~app.services.amortization_engine.AmortizationRow` per
+    accrual period the plan pays into (:func:`planned_periods`) -- the
+    sanctioned display class the confirmed history already comes in, so the
+    table reads one shape from origination to payoff -- with, beside it, the
+    escrow that period's payments impounded (the fold's own
+    :attr:`~app.utils.money.PaymentCashSplit.escrow`, summed).  The row
+    holds the period's principal and interest summed and its last
+    installment's balance, and splits the P&I it paid the way a confirmed
+    row does (``rate_period_engine.confirmed_amortization_row``): what the
+    period paid above its contractual P&I is ``extra_payment``, the rest
+    ``payment``, under the schedule-row invariant ``principal + interest ==
+    payment + extra_payment`` -- so a refund past the payoff (the
+    allocation's ``excess``) is in neither, as the ledger's row keeps it
+    out.  The row is dated by the period's first payment and numbered by the
+    period's own installment (``0`` for a payment before the loan's first
+    installment, ruling R-C's early extra).
+
+    Args:
+        installments: :func:`~app.services.balance_at.loan_installments`'s
+            answer, in the fold's DUE order.
+        params: The loan's :class:`~app.models.loan_params.LoanParams`, for
+            the payment number from origination.
+
+    Returns:
+        ``(rows, row_escrow)``: the projected rows, ``is_confirmed=False``,
+        and the index-parallel escrow each row impounded.
+    """
+    rows = []
+    row_escrow = []
+    for period in planned_periods(installments):
+        first, last = period[0], period[-1]
+        principal = sum((i.split.principal for i in period), Decimal("0.00"))
+        interest = sum((i.split.interest for i in period), Decimal("0.00"))
+        extra = max(principal + interest - first.period.period_pi, Decimal("0.00"))
+        rows.append(AmortizationRow(
+            month=payment_number(
+                params.origination_date,
+                first.charge_date or first.effective_date,
+            ),
+            payment_date=first.effective_date,
+            payment=round_money(principal + interest - extra),
+            principal=principal,
+            interest=interest,
+            extra_payment=round_money(extra),
+            remaining_balance=last.split.balance_after,
+            is_confirmed=False,
+            interest_rate=first.period.annual_rate,
+        ))
+        row_escrow.append(
+            sum((i.split.escrow for i in period), Decimal("0.00")),
+        )
+    return rows, row_escrow
+
+
+def build_schedule_context(history_rows, installments, escrow_lines, params):
     """Build the amortization-schedule template context.
 
     The standalone schedule route's (:mod:`app.routes.loan.schedule`) template
-    context.  The planned schedule shows the user's trajectory with confirmed
-    actuals + projected payments.  Four index-parallel lists are computed
-    server-side (consumed via ``loop.index0``) so the schedule template renders
-    without inline Jinja arithmetic (MED-04 / E-16): the row's own monthly
-    escrow, its total monthly outflow (P&I + that escrow + extra), the ARM
-    display rate (storage-domain fraction times 100), and a continuous payment
-    number from origination so a mid-life loan's "#" column keeps counting up
-    instead of restarting at 1.
+    context: the confirmed actuals (the composer's ledger-derived
+    ``history_rows``) followed by the seam's forward plan
+    (:func:`planned_schedule_rows` over
+    :func:`~app.services.balance_at.loan_installments`, plan step R7d-g-3,
+    ruling **R-R88**).  Four index-parallel lists are computed server-side
+    (consumed via ``loop.index0``) so the schedule template renders without
+    inline Jinja arithmetic (MED-04 / E-16): the row's own monthly escrow, its
+    total outflow (P&I + that escrow + extra), the ARM display rate
+    (storage-domain fraction times 100), and a continuous payment number from
+    origination so a mid-life loan's "#" column keeps counting up instead of
+    restarting at 1.
 
-    **Every row resolves its OWN escrow, on its own installment date** (ruling
-    **R-IJ**, plan step X-au-g-2b, finding **N-410**).  It took one
-    ``monthly_escrow`` resolved at ``date.today()`` and added it to all 360
-    rows alike, so a future-dated escrow version never reached the rows it
-    governs while every other tier -- the genesis split, the forward plan, the
-    live cash of a materialised payment -- already keyed on the installment.
-    :func:`~app.services.escrow_calculator.escrow_monthly_as_of` on
-    ``row.payment_date`` is that same derivation on that same date.
+    **Every row's escrow is the one its installment was charged** (ruling
+    **R-IJ**, plan step X-au-g-2b, finding **N-410**): a confirmed row's on
+    its own installment date (:func:`~app.services.escrow_calculator.escrow_monthly_as_of`),
+    a planned row's the accrual period's charge the fold impounded
+    (:attr:`~app.utils.money.PaymentCashSplit.escrow`, summed over the
+    month's payments) -- the same derivation on the same date family, and
+    for a second payment inside one period the ``0.00`` the fold charged
+    rather than a month's escrow resolved twice.
 
-    **The ARM rate column reads the row's own rate and has no fallback**, which
-    is the same step's deletion of a guard nothing could reach.  It was
-    ``row.interest_rate if row.interest_rate is not None else current_rate``,
-    where ``current_rate`` came from a ``date.today()`` rate lookup in the
-    route.  All THREE constructions of an
-    :class:`~app.services.amortization_engine.AmortizationRow`
-    (``rate_period_engine.confirmed_amortization_row`` / ``._replay_payment_row``,
-    ``amortization_engine._projection.project_forward``) set ``interest_rate``
-    from a rate period's ``annual_rate``; ``ProjectionInputs`` refuses an empty
-    terms schedule at construction; and the one place a row is DERIVED from
-    another rather than built -- ``loan_resolver._payoff``'s
-    ``dataclasses.replace(row, extra_payment=...)`` -- names only that field, so
-    the rate is carried through.  *That fourth site was missing from this
-    census when an adversarial review checked it; the conclusion held and the
-    enumeration did not, which is the half worth recording.*  No rendered row
-    can carry ``None``.  A control asserts it:
+    **The ARM rate column reads the row's own rate and has no fallback**: a
+    confirmed row carries its rate period's ``annual_rate``
+    (``rate_period_engine.confirmed_amortization_row``), a planned row its
+    governing period's (:attr:`~app.services.balance_at.PlannedInstallment.period`
+    -- the standing charge's, or the calendar's for a payment no charge
+    stands over), which the plan cannot leave empty.  A control asserts it:
     ``test_loan.TestScheduleRowsResolveTheirOwnTerms``'s
     ``test_every_rendered_row_carries_its_own_rate``.
 
     Args:
-        planned_schedule: The rows to render -- confirmed history plus the
-            committed forward projection.
+        history_rows: The confirmed history
+            (:attr:`~app.services.loan_resolver.PayoffScenarios.history_rows`).
+        installments: The forward plan
+            (:func:`~app.services.balance_at.loan_installments`).
         escrow_lines: The loan's escrow lines with their full version history
             (:attr:`~app.services.loan_payment_service.LoanContext.escrow_lines`);
-            each row resolves its own monthly escrow from them.  Empty for a
-            loan with no escrow, which makes every row's escrow ``0.00`` and
-            hides the column.
+            each CONFIRMED row resolves its own monthly escrow from them.
         params: The loan's :class:`~app.models.loan_params.LoanParams` -- its
             ``is_arm`` decides the rate column and its ``origination_date``
             numbers the rows.
@@ -793,10 +835,12 @@ def build_schedule_context(planned_schedule, escrow_lines, params):
         schedule_row_totals, schedule_row_rates_pct, schedule_row_numbers.
     """
     show_rate_column = bool(params.is_arm)
+    planned_rows, planned_escrow = planned_schedule_rows(installments, params)
+    planned_schedule = list(history_rows) + planned_rows
     schedule_row_escrow = [
         escrow_calculator.escrow_monthly_as_of(escrow_lines, row.payment_date)
-        for row in planned_schedule
-    ]
+        for row in history_rows
+    ] + planned_escrow
     schedule_row_totals = [
         round_money(row.payment + escrow + row.extra_payment)
         for row, escrow in zip(planned_schedule, schedule_row_escrow)

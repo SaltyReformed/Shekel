@@ -280,9 +280,12 @@ from ._outstanding import (
     CashOutstandingDifference,
     cash_outstanding_difference,
 )
+from ._plan_fold import PlannedInstallment, installments_payoff
 from ._positions import (
+    loan_installments,
     loan_payoff_date,
     loan_required_extra,
+    loan_what_if_owed_at_dates,
     positions,
     positions_period_map,
 )
@@ -340,6 +343,8 @@ __all__ = [
     "GridRowFlags",
     "LoanFigures",
     "LoanTerms",
+    "PlannedInstallment",
+    "installments_payoff",
     "SecuredLoanSeries",
     "TIER_CONFIRMED",
     "TIER_ESTIMATED",
@@ -368,8 +373,10 @@ __all__ = [
     "loan_terms",
     "loan_interest_in_year",
     "loan_interest_paid_in_year",
+    "loan_installments",
     "loan_payoff_date",
     "loan_required_extra",
+    "loan_what_if_owed_at_dates",
     "loan_principal_paid_in_year",
     "positions",
     "records_balance_at",

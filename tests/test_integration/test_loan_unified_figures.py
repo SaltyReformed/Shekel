@@ -10,7 +10,7 @@ schedule, payoff date and life-of-loan interest"; Commit 15 routed
 every display surface through it; Commit 17 closes the remaining
 divergences by collapsing residual computations onto the resolver
 output and replacing the bare ``.quantize(Decimal("0.01"))`` site at
-``committed_interest_saved`` (now ``app/routes/loan/calculators.py``)
+the plan-vs-contract interest saved (now ``app/routes/loan/calculators.py``)
 with ``round_money`` (the E-26 / HIGH-04 boundary).
 
 Test IDs C17-1..C17-6 trace to ``remediation_plan.md`` Section 9
@@ -39,19 +39,18 @@ from app.services import (
     loan_resolver,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
-from app.utils.dates import add_months
+from app.utils.dates import add_months, months_between
 from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
     bind_rule_to_loan,
-    amount_basis_for_scenario,
+    contract_forward_references,
     create_loan_account,
     freeze_today,
     last_covered_day,
     loan_params_for,
     make_cadence_rule,
-    seam_confirmed_view,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 
@@ -303,10 +302,11 @@ def test_total_interest_one_definition(
 
 
 def test_interest_saved_uses_round_money_half_up():
-    """C17-3 / HIGH-08 / F-020: ``committed_interest_saved`` on the
-    payoff calculator uses ``round_money`` (ROUND_HALF_UP), not a
-    bare ``.quantize`` that silently fell back to Python's
-    ROUND_HALF_EVEN (banker's).
+    """C17-3 / HIGH-08 / F-020: the plan-vs-contract interest saved on the
+    payoff calculator (``routes/loan/calculators._plan_vs_contract``; it was
+    ``committed_interest_saved`` until plan step R7d-g-3) uses
+    ``round_money`` (ROUND_HALF_UP), not a bare ``.quantize`` that silently
+    fell back to Python's ROUND_HALF_EVEN (banker's).
 
     Pre-Commit-17 ``app/routes/loan.py`` computed::
 
@@ -368,125 +368,100 @@ def test_interest_saved_uses_round_money_half_up():
 
 
 def test_months_saved_single_quantity(
-    app, seed_user, seed_periods,
+    app, seed_user, seed_periods_today,
 ):
     """C17-4 / HIGH-08 / F-022: ``months_saved`` is one quantity
-    derived from the scenario composer, not multiple divergent paths.
+    derived from the balance seam's fold, not multiple divergent paths.
 
     F-022 / F-023 documented that pre-remediation, four different
     "months saved" values could appear depending on how the surface
     computed it (resolver schedule length, summary metric, route-side
-    subtraction, engine summary helper).  After Commit 13 introduced
-    the resolver, Commit 17 collapsed every display surface onto its
-    schedule, and the amortization-engine split (Phase 6 / Commit 6
-    of ``docs/plans/2026-05-21-amortization-engine-split-implementation.md``)
-    rewired the resolver's schedule generation through
-    :func:`loan_resolver.compute_payoff_scenarios`.  After that
-    rewire ``months_saved`` has one definition: the composer's
-    ``len(committed_forward) - len(accelerated_forward)``.  Every
-    display surface that needs the figure reads it off the composer
-    via the resolver chokepoint, so there is no "engine summary
-    path" left to diverge from.
-
-    Pre-C6 this test compared ``calculate_summary``'s
-    ``months_saved`` against ``len(state.schedule) - len(accelerated)``
-    where ``accelerated`` was a separate ``generate_schedule`` call.
-    Both surfaces used the same engine, so they agreed.  Post-C6 the
-    resolver routes through ``project_forward`` (which absorbs
-    rounding residue cleanly in the contractual final row, no
-    phantom $0.04 trailing row) while ``calculate_summary`` still
-    uses ``generate_schedule`` (which emits the phantom row).  The
-    two paths diverge by one row per fixed-rate loan that has
-    rounded-payment residue at month ``term_months``.  That
-    divergence is real and unavoidable until Commit 9 deletes
-    ``generate_schedule`` and ``calculate_summary`` entirely; this
-    test re-anchors at the post-C6 canonical surface
-    (``compute_payoff_scenarios``) so the F-022 SSOT lock survives
-    the engine deletion intact.
+    subtraction, engine summary helper).  Commit 13 introduced the
+    resolver, Commit 17 collapsed every display surface onto its
+    schedule, and the amortization-engine split rewired the resolver's
+    schedule generation through ``compute_payoff_scenarios``, whose
+    ``len(committed_forward) - len(accelerated_forward)`` was the one
+    definition until plan step R7d-g-3.  That step deleted the composer's
+    planned slices (ruling **R-R88**: they were a second forward walk
+    beside the seam's plan fold, and paid a standing extra twice), so the
+    one definition is the loan page's lever now
+    (``routes/loan/calculators._build_payoff_summary``): the seam's fold
+    read twice -- as it stands and with the lever's extra on top
+    (``balance_at.loan_installments`` -> ``_plan_trajectory`` ->
+    ``balance_at.installments_payoff``) -- and the figure is the calendar
+    months between the two payoff dates.  The
+    "Projected payoff" chip reads the same fold
+    (:attr:`LoanFigures.payoff_date`), so the lever's "current plan"
+    payoff and the chip cannot part, and the lever's accelerated payoff IS
+    ``loan_payoff_date`` with the extra -- both pinned below so a parallel
+    computation reappearing on either side surfaces here.
 
     Hand-computed expectation for the $300k / 6% / 360 mo fixture
     with ``extra_monthly = $200`` (closed-form payoff with extra):
     contractual payment $1798.65, total monthly $1998.65,
     ``n_extra = -log(1 - P*i/M_total) / log(1+i)
     = -log(1 - 300000*0.005/1998.65) / log(1.005)
-    = -log(0.249493) / log(1.005) ~= 278.31 -> 279 rows at HALF_UP``.
-    Standard payoff is the contractual 360 months (clean residue
-    absorption; no phantom row).  Therefore
-    ``months_saved == 360 - 279 == 81``.  Pinning the composer's
-    output to 81 catches both directions of regression: a return to
-    phantom-row semantics (would inflate to 82) and any future
-    parallel-path bug (would put the composer's months_saved out of
-    sync with its own forward slices).
+    = -log(0.249493) / log(1.005) ~= 278.31 -> 279 installments``.
+    The plan as it stands is the contractual 360 installments, so
+    ``months_saved == 360 - 279 == 81``.  The loan originates at the
+    current period's start with a derived payment day and is read AT its
+    origination (the clean-past shape ``test_standing_extra_folds_past_the_shadow_horizon``
+    explains), so every one of the 360 installments is in the fold's
+    future and the closed form applies to the whole plan.
     """
-    # pylint: disable=import-outside-toplevel
-    from app.services.loan_resolver import (
-        LoanInputs,
-        compute_payoff_scenarios,
+    from app.routes.loan.calculators import (  # pylint: disable=import-outside-toplevel
+        _build_payoff_summary, _plan_trajectory,
     )
 
     with app.app_context():
-        account, loan_params = _create_fixed_loan(
-            seed_user, seed_periods[0],
+        current_period = next(
+            period for period in seed_periods_today
+            if period.start_date <= date.today() <= last_covered_day(period)
         )
-
-        ctx = loan_payment_service.load_loan_context(
-            account.id, None, loan_params,
+        as_of = current_period.start_date
+        payment_day = (as_of.day % 28) + 1
+        account = create_loan_account(
+            seed_user, db.session, name="C17-4 Mortgage",
+            principal=FIXED_PRINCIPAL, rate=FIXED_RATE, term=FIXED_TERM,
+            origination_date=as_of, payment_day=payment_day,
+            account_type=AcctTypeEnum.MORTGAGE,
         )
-        anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
+        ctx = BalanceContext.build(seed_user["user"].id, as_of=as_of)
+        figures = balance_at.loan_figures(account, ctx)
+        assert figures is not None
 
         extra = Decimal("200.00")
-        scenarios = compute_payoff_scenarios(
-            loan_inputs=LoanInputs(
-                loan_params=loan_params,
-                anchor_events=anchor_events,
-                payments=ctx.payments,
-                rate_changes=ctx.rate_changes,
-            ),
-            extra_monthly=extra,
-            as_of=date.today(),
+        committed = _plan_trajectory(balance_at.loan_installments(account, ctx))
+        accelerated = _plan_trajectory(
+            balance_at.loan_installments(account, ctx, extra),
+        )
+        summary = _build_payoff_summary(
+            figures.terms.monthly_payment, committed, accelerated,
         )
 
-        # The composer's months_saved must equal its own forward
-        # length diff.  Tautological by construction in today's
-        # implementation -- which is the point of the lock: a future
-        # refactor that adds a parallel months_saved computation
-        # would break the equality and surface here.  Post-Commit-9
-        # this is the only surviving path; the lock is structural.
-        composer_diff = (
-            len(scenarios.committed_forward)
-            - len(scenarios.accelerated_forward)
-        )
-        assert scenarios.months_saved == composer_diff, (
-            f"composer months_saved={scenarios.months_saved} "
-            f"differs from len(committed_forward) - "
-            f"len(accelerated_forward) = {composer_diff} -- a "
-            "parallel computation path has reappeared inside the "
-            "composer."
+        # One definition: the months between the two payoff dates the fold
+        # derived.  Tautological by construction today -- which is the point
+        # of the lock: a parallel months_saved computation would break the
+        # equality and surface here.
+        assert summary.months_saved == months_between(
+            summary.payoff_date_with_extra, summary.payoff_date,
         )
 
-        # Hand-computed lock: 360 - 279 = 81 months saved.  A
-        # regression that reintroduced the pre-C6 phantom residue
-        # row would inflate committed_forward by 1 and surface here
-        # as 82, not 81.
-        assert scenarios.months_saved == 81, (
+        # Hand-computed lock: 360 - 279 = 81 months saved.
+        assert summary.months_saved == 81, (
             "Hand-computed months_saved for $300k / 6% / 360 mo "
-            f"with $200 extra is 81 (got {scenarios.months_saved})."
+            f"with $200 extra is 81 (got {summary.months_saved})."
         )
 
-        # And the resolver schedule that downstream surfaces read
-        # uses the same committed_forward slice that the composer
-        # used to derive months_saved -- locks the chokepoint that
-        # makes the SSOT cross-surface.
-        state = _resolver_state(account, loan_params, date.today())
-        assert (
-            len(state.schedule)
-            == len(scenarios.history_rows) + len(scenarios.committed_forward)
-        ), (
-            "resolver.state.schedule must equal "
-            "history_rows + committed_forward (the composer's "
-            "Committed-no-extra composition); a different "
-            "assembly here would re-introduce the parallel-path "
-            "divergence F-022 locks against."
+        # Cross-surface: the lever's "current plan" payoff is the chip's, and
+        # its accelerated payoff is the seam's fold with the extra -- the
+        # chokepoint that makes the SSOT cross-surface.
+        assert summary.payoff_date == figures.payoff_date, (
+            "the lever's current-plan payoff parted from the Projected "
+            "payoff chip's: the two read different producers"
+        )
+        assert summary.payoff_date_with_extra == balance_at.loan_payoff_date(
+            account, ctx, extra,
         )
 
 
@@ -664,29 +639,29 @@ def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
 def test_standing_extra_lives_in_the_fold_not_the_resolver_schedule(
     app, seed_user, seed_periods,
 ):
-    """R7d-g-3: the resolver's schedule is extra-free; the FOLD carries the extra.
+    """R7d-g-3: the resolver's schedule is the CONTRACT; the FOLD carries the extra.
 
     Until plan step R7d-g-3 this test pinned step 8's seam fix the other way
     round: ``resolve_loan_bundle`` threaded the loan's standing
     ``extra_principal`` into ``resolve_loan``, so ``state.schedule`` was the
     committed trajectory WITH the extra, and the summary surfaces and the
     year-end aggregation had to report the same payoff as the loan page.
-    Ruling **R-R88**, which re-ruled R-R83's seam clause at R7d-g-3, deleted that parameter: a
-    projected row carries its own definition's extra through amount rule 4,
-    so the composer adding one again paid it TWICE on every row-covered month
+    Ruling **R-R88**, which re-ruled R-R83's seam clause at R7d-g-3, deleted
+    that parameter and the composer's planned slices with it: a projected
+    row carries its own definition's extra through amount rule 4, so the
+    composer adding one again paid it TWICE on every row-covered month
     (measured 2026-09-14), and the one it added was the OLDEST definition's
-    alone (plan ledger row **D49**).  What no row covers is priced from every
-    definition's own occurrences by the seam's forward plan, and the payoff
-    every surface shows is the FOLD's (plan step C8d: ``LoanState`` carries no
-    payoff, and :attr:`LoanFigures.payoff_date` is the date the balance folds
-    to zero).
+    alone (plan ledger row **D49**).  What the loan is projected to PAY is
+    the seam's forward plan, priced from every definition's own occurrences,
+    and the payoff every surface shows is the FOLD's (plan step C8d:
+    ``LoanState`` carries no payoff, and :attr:`LoanFigures.payoff_date` is
+    the date the balance folds to zero).
 
     So the invariant is now three-sided, and none of its sides is vacuous:
 
-    * the resolver's ``state.schedule`` IS the composer's committed slice for
-      the same inputs, to the row -- and with a standing extra and NO
-      generated row that slice is the pure CONTRACT (its payoff equals the
-      extra-free original's);
+    * the resolver's ``state.schedule`` IS the composer's confirmed history
+      plus the CONTRACT's forward for the same inputs, to the row -- no
+      extra, no plan (its readers take a date off it, never a balance);
     * the year-end aggregation reads that same schedule;
     * the seam's DERIVED payoff sits STRICTLY EARLIER than the contractual
       one, because the fold prices the definition's occurrences with the
@@ -703,40 +678,21 @@ def test_standing_extra_lives_in_the_fold_not_the_resolver_schedule(
         scenario_id = seed_user["scenario"].id
         today = date.today()
 
-        ctx = loan_payment_service.load_loan_context(
-            account.id, amount_basis_for_scenario(scenario_id), loan_params,
-        )
-        anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
-        # The composer's committed slice for the same inputs: no loan-level
-        # extra exists to pass.  ``resolve_loan`` composes ``state.schedule =
-        # history_rows + committed_forward`` (``loan_resolver/_state.py``), so
-        # the reference is built the same way, to the cent.
-        committed = loan_resolver.compute_payoff_scenarios(
-            loan_inputs=loan_resolver.LoanInputs(
-                loan_params, anchor_events, ctx.payments, ctx.rate_changes,
-            ),
-            extra_monthly=Decimal("0.00"),
-            as_of=today,
-            confirmed_view=seam_confirmed_view(
-                loan_params.account_id, scenario_id, today,
-            ),
+        # The composer for the same inputs: no loan-level extra exists to
+        # pass.  ``resolve_loan`` composes ``state.schedule = history_rows +
+        # original_forward`` (``loan_resolver/_state.py``), so the reference
+        # is built the same way, to the cent.
+        scenarios, _ = contract_forward_references(
+            loan_params, scenario_id, today, Decimal("0.00"),
         )
         ref_schedule = (
-            list(committed.history_rows) + list(committed.committed_forward)
+            list(scenarios.history_rows) + list(scenarios.original_forward)
         )
         ref_payoff = ref_schedule[-1].payment_date
         ref_total_interest = round_money(
             sum((row.interest for row in ref_schedule), Decimal("0.00")),
         )
-        # With no generated row the committed slice has no override month and
-        # no extra: it IS the contract, and the composer's extra-free original
-        # ends on the same date.  Pinned so a re-threaded extra shows up here
-        # as the two parting, not as a silent acceleration.
-        contractual_payoff = committed.original_forward[-1].payment_date
-        assert ref_payoff == contractual_payoff, (
-            "the composer's committed slice parted from the contract with no "
-            "generated row: something re-threaded a loan-level extra into it"
-        )
+        contractual_payoff = scenarios.original_forward[-1].payment_date
 
         # Summary seam: every summary surface resolves a debt account through
         # the seam's ONE memoized whole-loan read (``balance_at._resolution.resolved_loan``).
@@ -749,7 +705,7 @@ def test_standing_extra_lives_in_the_fold_not_the_resolver_schedule(
         )
         assert summary_payoff == ref_payoff, (
             f"Summary-surface schedule ends {summary_payoff} != the composer's "
-            f"committed slice {ref_payoff}: the resolver seam threads something "
+            f"contractual slice {ref_payoff}: the resolver seam threads something "
             "the composer does not."
         )
         assert state.total_interest == ref_total_interest, (
@@ -780,24 +736,27 @@ def test_standing_extra_lives_in_the_fold_not_the_resolver_schedule(
         )
 
 
-def test_a_generated_rows_extra_is_paid_once_in_the_committed_slice(
+def test_a_generated_rows_extra_is_paid_once_in_the_plan(
     app, seed_user, seed_periods_today,
 ):
-    """R-R88, end to end: an override month pays its row's cash exactly once.
+    """R-R88, end to end: a generated row's month pays the row's cash exactly once.
 
     The double count ruling **R-R88** deleted, measured on the real feed rather
-    than on hand-built records (the composer's unit tests hold the
-    arithmetic; this holds the WIRING above it): a derive-mode payment with a
-    ``$100`` extra generates a row whose cash amount rule 4 prices at P&I +
-    escrow + extra; that row reaches ``compute_payoff_scenarios`` through
-    ``load_loan_context`` -> ``monthly_override``; and the committed slice's
-    row for that month must pay THAT cash and nothing on top.  Until plan step
-    R7d-g-3 the seam and the loan page threaded the extra in again as
-    ``extra_principal``, and the month paid P&I + 2 x extra (measured
-    2026-09-14: ``$676.46`` of principal + interest against the row's
-    ``$626.46``).  A re-threading anywhere above the composer -- into
-    ``resolve_loan_bundle`` or ``build_baseline_scenarios`` -- fails this
-    where the composer's own tests would not see it.
+    than on hand-built records (the fold's unit tests hold the arithmetic;
+    this holds the WIRING above it): a derive-mode payment with a ``$100``
+    extra generates a row whose cash amount rule 4 prices at P&I + escrow +
+    extra; the seam's forward plan takes that row as the month's occurrence
+    (ruling **R-R66**: the row's identity, the amount model's price); and the
+    loan page's installment for that month
+    (:func:`balance_at.loan_installments`, the producer the schedule page and
+    the allocation bar read) must pay THAT cash and nothing on top.  Until
+    plan step R7d-g-3 the page read the composer's committed slice, which
+    threaded the extra in again as ``extra_principal``, and the month paid
+    P&I + 2 x extra (measured 2026-09-14: ``$676.46`` of principal + interest
+    against the row's ``$626.46``).  A second walk reappearing anywhere above
+    the fold -- a route helper adding the definition's extra to the
+    installment it reads -- fails this where the fold's own tests would not
+    see it.
 
     Escrow-free loan, so the row's cash IS P&I + extra to the cent.  The loan
     originates at the current period's start with a derived payment day, the
@@ -844,28 +803,23 @@ def test_a_generated_rows_extra_is_paid_once_in_the_committed_slice(
         for payment in projected:
             assert payment.amount == contractual_pi + extra
 
-        scenarios = _loan_page_baseline_scenarios(account, loan_params, loan, ctx)
-        by_month = {
-            (row.payment_date.year, row.payment_date.month): row
-            for row in scenarios.committed_forward
+        by_due = {
+            installment.due_date: installment
+            for installment in balance_at.loan_installments(account, ctx)
         }
         first = projected[0]
-        row = by_month[(first.dates.due_date.year, first.dates.due_date.month)]
-        # Paid ONCE: the row's cash is the payment, nothing rides on top, and
-        # the principal is that cash less the month's interest.
-        assert row.payment == contractual_pi + extra
-        assert row.extra_payment == Decimal("0.00")
-        assert row.principal == row.payment - row.interest
+        installment = by_due[first.dates.due_date]
+        # Paid ONCE: the installment's cash is the row's, nothing rides on
+        # top, and the principal is that cash less the month's interest.
+        assert installment.cash == contractual_pi + extra
+        assert installment.split.escrow == Decimal("0.00")
+        assert installment.split.principal == (
+            installment.cash - installment.split.interest
+        )
         # And the double count's own figure is not what the month paid.
-        assert row.principal + row.interest != contractual_pi + extra + extra
-
-
-def _loan_page_baseline_scenarios(account, loan_params, loan, ctx):
-    """The loan page's own composer call, the way ``load_baseline_scenarios`` makes it."""
-    from app.routes.loan._helpers import (  # pylint: disable=import-outside-toplevel
-        _loan_inputs, build_baseline_scenarios,
-    )
-    return build_baseline_scenarios(_loan_inputs(loan_params, loan), account, ctx)
+        assert installment.split.principal + installment.split.interest != (
+            contractual_pi + extra + extra
+        )
 
 
 def test_standing_extra_folds_past_the_shadow_horizon(
@@ -873,22 +827,24 @@ def test_standing_extra_folds_past_the_shadow_horizon(
 ):
     """C8a (N-15): the forward FOLD keeps a standing extra past the record horizon.
 
-    The sibling above proves the RESOLVER surfaces honor the standing extra; this
-    proves the FOLD (:func:`balance_at.balance_at` -> ``positions()``) does too.
-    Before C8a they disagreed: ``loan_plan``'s PLANNED tier folds the extra only
-    for the materialized ~24-month pay-period window (its live D3 cash), and its
-    ESTIMATED tail reverted to bare contractual P&I -- so the fold-derived balance
-    and payoff dropped the extra past the horizon while the resolver's committed
-    schedule applied it for the whole term (finding N-15).
+    The sibling above proves the standing extra reaches the FOLD's payoff; this
+    proves the FOLD (:func:`balance_at.balance_at` -> ``positions()``) carries
+    it on every month.  Before C8a it did not: ``loan_plan``'s PLANNED tier
+    folded the extra only for the materialized ~24-month pay-period window (its
+    live D3 cash), and its ESTIMATED tail reverted to bare contractual P&I -- so
+    the fold-derived balance and payoff dropped the extra past the horizon while
+    the resolver's committed schedule of the day applied it for the whole term
+    (finding N-15).
 
     The loan ORIGINATES at the current period (clean past: no overdue installment,
-    so the fold and the committed schedule agree on the whole timeline rather than
-    diverging on unpaid history via B-9), and has a recurring template but NO
-    generated projected shadows, so its ENTIRE forward is the ESTIMATED tier -- the
-    pure N-15 path.  The fold is parallel-run against the committed forward (the
-    same reference the sibling trusts, built from an INDEPENDENT producer,
-    ``project_forward``) on EVERY month: equal on all of them means the ESTIMATED
-    tier now applies the extra across the whole horizon.  The teeth: at a
+    so the fold and the contractual schedule agree on the whole timeline rather
+    than diverging on unpaid history via B-9), and has a recurring template but
+    NO generated projected shadows, so its ENTIRE forward is the ESTIMATED tier
+    -- the pure N-15 path.  The fold is parallel-run against the engine's
+    contract-plus-extra forward (an INDEPENDENT producer, ``project_forward``
+    with the extra as its what-if) on EVERY month: equal on all of them means
+    the ESTIMATED tier now applies the extra across the whole horizon.  The
+    teeth: at a
     post-horizon date the fold must sit STRICTLY BELOW the pure-contractual
     (extra-free) balance -- a THIRD independent reference that fails the day the
     extra stops being applied to the tail (the pre-C8a state, where fold ==
@@ -910,12 +866,12 @@ def test_standing_extra_folds_past_the_shadow_horizon(
         # the suite happened to run:
         #
         #   * on the 1st it lands on today, and ``balance_at(today)`` reads the
-        #     LEDGER while the committed row for that day is the post-payment
+        #     LEDGER while the engine's row for that day is the post-payment
         #     projection (``balance_at/_positions.py:207-218``) -- the CI failure
         #     of 2026-08-01;
         #   * on the days between the 1st and the month's first Monday it is
         #     OVERDUE and unpaid, so the fold pays nothing for it (D1 / B-9,
-        #     ``balance_at/_plan.py:288``) while the committed schedule still
+        #     ``balance_at/_plan.py:288``) while the engine's schedule still
         #     lists it -- and EVERY later row then diverges by that installment,
         #     which no per-row filter can rescue.
         #
@@ -937,32 +893,19 @@ def test_standing_extra_folds_past_the_shadow_horizon(
         _add_recurring_payment_with_extra(seed_user, account, extra)
         scenario_id = seed_user["scenario"].id
 
-        ctx_loan = loan_payment_service.load_loan_context(
-            account.id, amount_basis_for_scenario(scenario_id), loan_params,
-        )
-        anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
-        # One composer call yields BOTH references: the ACCELERATED forward
-        # (the extra applied every month, the fold's target) and the
-        # pure-contractual original (extra-free, the teeth's third reference).
-        # The reference was the COMMITTED slice with the extra passed as the
-        # composer's loan-level ``extra_principal`` until plan step R7d-g-3
-        # deleted that parameter (ruling **R-R88**, which re-ruled R-R83's seam clause there); with NO
-        # generated row -- this fixture's whole point -- that slice and the
-        # accelerated one with the same figure as ``extra_monthly`` are the
+        # One reference call yields BOTH references: the engine's
+        # contract-plus-extra forward (the extra applied every month, the
+        # fold's target) and the composer's pure-contractual original
+        # (extra-free, the teeth's third reference).  The reference was the
+        # composer's COMMITTED slice with the extra passed as the loan-level
+        # ``extra_principal``, then its ACCELERATED slice, until plan step
+        # R7d-g-3 deleted the composer's planned slices (ruling **R-R88**);
+        # ``project_forward`` with the same figure as ``extra_monthly`` is the
         # same walk, so the reference is byte-identical and still comes from
-        # an INDEPENDENT producer (``project_forward``).
-        scenarios = loan_resolver.compute_payoff_scenarios(
-            loan_inputs=loan_resolver.LoanInputs(
-                loan_params, anchor_events, ctx_loan.payments,
-                ctx_loan.rate_changes,
-            ),
-            extra_monthly=extra,
-            as_of=as_of,
-            confirmed_view=seam_confirmed_view(
-                loan_params.account_id, scenario_id, as_of,
-            ),
+        # an INDEPENDENT producer.
+        scenarios, accelerated_forward = contract_forward_references(
+            loan_params, scenario_id, as_of, extra,
         )
-        committed_forward = list(scenarios.accelerated_forward)
         contractual_by_date = {
             row.payment_date: row.remaining_balance
             for row in scenarios.original_forward
@@ -970,17 +913,17 @@ def test_standing_extra_folds_past_the_shadow_horizon(
 
         # Not vacuous: the schedule runs years out (so the tail is genuinely past
         # the ~24-month horizon), and the extra genuinely accelerates payoff.
-        assert committed_forward, "no committed forward to parallel-run against"
-        assert committed_forward[-1].payment_date < (
+        assert accelerated_forward, "no accelerated forward to parallel-run against"
+        assert accelerated_forward[-1].payment_date < (
             scenarios.original_forward[-1].payment_date
         ), "standing extra did not accelerate payoff; test would be vacuous"
 
         ctx = BalanceContext.build(seed_user["user"].id, as_of=as_of)
 
-        # The fold reproduces the committed forward on EVERY month the forward
-        # projection OWNS, including the ESTIMATED tail -- an independent producer
-        # (project_forward) agreeing with the fold that the extra is applied for
-        # the whole term.
+        # The fold reproduces the engine's contract-plus-extra forward on EVERY
+        # month the forward projection OWNS, including the ESTIMATED tail -- an
+        # independent producer (project_forward) agreeing with the fold that the
+        # extra is applied for the whole term.
         #
         # Rows dated at or before the resolver's NOW are excluded, and the
         # exclusion is the seam's own rule rather than a convenience: a date at or
@@ -990,14 +933,14 @@ def test_standing_extra_folds_past_the_shadow_horizon(
         # ``as_of + 1 day`` (``balance_at._plan`` for loans, ``_cash_fold`` for
         # cash, ruling D1 / R-G: "a plan cannot have already happened").  So on a
         # day that IS an installment due date, ``balance_at(today)`` is the
-        # still-owed balance while the committed row for that same day is the
+        # still-owed balance while the engine's row for that same day is the
         # post-payment projection.  Both are right and they answer different
         # questions; comparing them is a category error, and it fired as a real
         # CI failure on 2026-08-01 because this fixture originates at the current
         # period with ``payment_day=1``.  On every other day of the month the
         # filter removes nothing.
         comparable = [
-            row for row in committed_forward if row.payment_date > ctx.as_of
+            row for row in accelerated_forward if row.payment_date > ctx.as_of
         ]
         assert len(comparable) > 1, (
             "the forward projection owns no comparable rows; the parallel-run "
@@ -1006,7 +949,7 @@ def test_standing_extra_folds_past_the_shadow_horizon(
         for row in comparable:
             folded = balance_at.balance_at(account, ctx, row.payment_date)
             assert folded == row.remaining_balance, (
-                f"Fold {folded} != committed {row.remaining_balance} at "
+                f"Fold {folded} != the engine's {row.remaining_balance} at "
                 f"{row.payment_date}: the ESTIMATED tail dropped the standing "
                 "extra (N-15)."
             )

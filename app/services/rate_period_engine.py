@@ -849,12 +849,14 @@ def replay_schedule(
       the correct following month (a pay-period-start dating would print
       the biweekly date and land the projection one month early).
     * The as_of cap uses the SETTLED day (the replay-vs-projection split),
-      through the one :func:`app.utils.dates.has_settled_by` predicate
-      ``loan_resolver._payoff._build_monthly_override`` also calls, so a payment
-      is never in both halves and never dropped by disagreement -- and it is the
+      through the one :func:`app.utils.dates.has_settled_by` predicate the
+      balance seam's plan reads the same boundary through, so a payment is
+      never in both halves and never dropped by disagreement -- and it is the
       same day the fold counts the payment's principal from, so the resolver and
       the ledger cannot disagree about which payments have happened (plan step
-      **X-an**).  The anchor bound below, and the payoff break in the loop, then
+      **X-an**; the composer's own planning half, ``_build_monthly_override``,
+      went at plan step R7d-g-3 when the seam's fold became the one planned
+      walk).  The anchor bound below, and the payoff break in the loop, then
       drop candidates the plan does NOT take back: both are cases where the
       payment is already accounted for (subsumed by the anchor's verified
       balance, or made against a loan that owes nothing).
@@ -909,9 +911,9 @@ def replay_schedule(
     #   * as_of (upper) cap -- the SETTLED day.  This is the
     #     replay-vs-projection split, and it is the day the fold counts the
     #     payment's principal from, so replay and ledger agree on what has
-    #     happened.  ``_build_monthly_override`` calls the same
-    #     ``has_settled_by`` predicate, so a payment is never in both halves
-    #     (plan step X-an, finding N-187).  It CAN be in neither -- the anchor
+    #     happened.  The seam's plan reads the same ``has_settled_by``
+    #     predicate, so a payment is never in both halves (plan step X-an,
+    #     finding N-187).  It CAN be in neither -- the anchor
     #     bound above and the payoff break below drop candidates the plan does
     #     not take back, because both are already accounted for.  See the
     #     docstring; "exact complements" is the thing this is NOT.

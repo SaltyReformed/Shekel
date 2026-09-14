@@ -78,6 +78,9 @@ def _plan(
             accrual_charge(on_date, rate, Decimal(escrow))
             for on_date in sorted(opens.values())
         ],
+        # Every payment here has a charge standing over it (one per slot,
+        # dated at its earliest due), so the fold never asks the periods.
+        periods=[],
     )
 
 

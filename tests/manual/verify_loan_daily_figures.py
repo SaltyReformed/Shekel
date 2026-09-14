@@ -17,9 +17,11 @@ the two producers answer:
   AND at three horizons past it, so the FOLD (the past branch) and the PLAN (the
   forward branch) are both sampled -- the plan is fed by the resolver and would
   otherwise be measured only at today;
-* the resolver-derived schedule: its length, the first forward row's date (the
-  "next payment due" a page shows), the payoff date, and life-of-remaining
-  interest.
+* the seam's forward plan (``loan_installments`` / ``loan_payoff_date``): its
+  length, the first installment's date (the "next payment due" a page shows),
+  the payoff date, and the interest still to come -- and beside it the
+  resolver-derived schedule (the confirmed history plus the contract's
+  forward): its length and its life-of-loan interest.
 
 **It answers "did anything move", never "is the answer right"** -- the same
 contract the baseline states.  A step's PROOF is its firing controls and its
@@ -95,7 +97,7 @@ def _figures(account: Account, day: date) -> dict:
 
     Returns:
         A JSON-safe dict of the seam's balances (at *day* and each horizon past
-        it) and the resolver-derived schedule figures.
+        it), its plan figures and the resolver-derived schedule figures.
     """
     ctx = balance_at.BalanceContext.build(account.user_id, as_of=day)
     horizon = [day + timedelta(days=offset) for offset in _HORIZON_OFFSETS]
@@ -116,21 +118,29 @@ def _figures(account: Account, day: date) -> dict:
             context.payments,
             context.rate_changes,
         ),
-        extra_monthly=_ZERO,
         as_of=day,
         confirmed_view=balance_at.confirmed_view(account, ctx),
     )
+    # The loan's PLAN is the seam's forward fold since plan step R7d-g-3
+    # (ruling R-R88): the composer keeps the confirmed history and the
+    # contract's forward, and what the loan is projected to pay -- the first
+    # installment ahead, the payoff, the interest still to come -- is read off
+    # ``loan_installments`` / ``loan_payoff_date``, the way the loan page does.
+    installments = balance_at.loan_installments(account, ctx)
+    payoff = balance_at.loan_payoff_date(account, ctx)
     schedule = balance_at.debt_schedule_rows([account], ctx)[account.id]
     return {
         "seam": {d.isoformat(): str(sampled[d]) for d in horizon},
         "history_rows": len(scenarios.history_rows),
-        "committed_first": (
-            scenarios.committed_forward[0].payment_date.isoformat()
-            if scenarios.committed_forward else None
+        "contract_len": len(scenarios.original_forward),
+        "plan_first": (
+            installments[0].due_date.isoformat() if installments else None
         ),
-        "committed_len": len(scenarios.committed_forward),
-        "payoff_committed": scenarios.payoff_date_committed.isoformat(),
-        "interest_committed": str(scenarios.total_interest_committed),
+        "plan_len": len(installments),
+        "payoff": payoff.isoformat() if payoff is not None else None,
+        "plan_interest": str(sum(
+            (installment.split.interest for installment in installments), _ZERO,
+        )),
         "schedule_len": len(schedule),
         "total_interest": str(
             sum((row.interest for row in schedule), _ZERO),

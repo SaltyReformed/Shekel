@@ -208,14 +208,22 @@ class AmortizationRow:  # pylint: disable=too-many-instance-attributes
 
 @dataclass
 class AmortizationSummary:
-    """High-level metrics for a loan."""
+    """The pay-off-sooner lever's metrics: the plan as it stands vs with an extra.
+
+    Filled from the balance seam's fold since plan step R7d-g-3 (ruling
+    **R-R88**; ``routes/loan/calculators._build_payoff_summary``).  A fold
+    that never reaches zero has no payoff date, so both dates are optional,
+    and so are the two savings -- a difference against a trajectory summed
+    to the plan's horizon rather than to a payoff is not a saving -- and
+    the partial says so.
+    """
     monthly_payment: Decimal
     total_interest: Decimal
-    payoff_date: date
+    payoff_date: date | None
     total_interest_with_extra: Decimal
-    payoff_date_with_extra: date
-    months_saved: int
-    interest_saved: Decimal
+    payoff_date_with_extra: date | None
+    months_saved: int | None
+    interest_saved: Decimal | None
 
 
 def calculate_monthly_payment(
@@ -509,12 +517,12 @@ class ProjectionInputs:
 
     Bundles the inputs that describe a loan's state at
     ``starting_date`` together with the parameters that stay constant
-    across a related set of projections.  The Payoff Calculator builds
-    one ``ProjectionInputs`` and runs three projections from it
-    (Original / Committed / Accelerated) varying only ``monthly_override``
-    and ``extra_monthly``, so the three slices cannot diverge in their
-    shared starting state -- the load-bearing single-source-of-truth
-    invariant in ``loan_resolver.compute_payoff_scenarios``.
+    across a related set of projections.  The target-date search builds
+    one ``ProjectionInputs`` and runs its baseline and every bisection
+    step from it varying only ``extra_monthly``, so the runs cannot
+    diverge in their shared starting state -- the load-bearing
+    single-source-of-truth invariant in
+    :func:`~._payoff.required_extra_for_projection`.
 
     Attributes:
         starting_balance: Outstanding balance at ``starting_date``.
@@ -560,67 +568,6 @@ class ProjectionInputs:
             )
 
 
-def _apply_override_payment(
-    balance: Decimal,
-    interest: Decimal,
-    override_amount: Decimal,
-    extra_monthly: Decimal,
-) -> tuple[Decimal, Decimal, Decimal, Decimal]:
-    """Apply one override-month payment plus the what-if extra; return its split.
-
-    The override amount is the month's planned payment (the user's recurring
-    outlay at the cash its row resolves to, a standing extra inside it);
-    ``extra_monthly`` -- the payoff lever's hypothetical extra -- is applied
-    ON TOP, exactly as a contractual month (:func:`_apply_contractual_payment`).
-    This is the step-5 correction: a what-if extra must accelerate every
-    forward month, and a recurring payment plan makes every near month an
-    override month, so an override month can no longer swallow it.  The
-    standing extra is NOT passed here (plan step R7d-g-3): amount rule 4
-    already put it in the override amount, and passing it as well paid it
-    twice on every override month.
-
-    Negative amortization (override below the period interest) is preserved as a
-    negative principal portion.  The base principal absorbing the whole balance,
-    OR the extra doing so, is capped at the remaining balance so the schedule
-    closes without a sub-penny residue.
-
-    **The split itself is :func:`~app.utils.money.apply_payment_cash`, the ONE
-    allocation, since plan step X-au-g-2c-3a.**  This restated it inline, and
-    the restatement was forced rather than chosen: the rule lived in
-    ``loan_ledger._split``, which this package sits BELOW in the import graph,
-    so calling it was a cycle.  What remains here is what the ALLOCATION does
-    not decide -- how a what-if extra is reported beside the planned payment
-    in a schedule row.  Byte-identical, measured over 200,000 randomised trials
-    before the swap.
-
-    Args:
-        balance: Outstanding balance before this month's payment.
-        interest: Period interest already computed for this month.
-        override_amount: The planned BASE payment scheduled for the month.
-        extra_monthly: Additional principal applied on top of the base.
-
-    Returns:
-        ``(principal_portion, actual_payment, extra, new_balance)`` -- Decimals;
-        ``actual_payment`` is the base payment (extra reported separately);
-        ``new_balance`` is quantized to cents and never negative.
-    """
-    parts = apply_payment_cash(override_amount, balance, interest, Decimal("0.00"))
-    if parts.excess > 0 or parts.balance_after <= 0:
-        # The base payment alone absorbs the balance; no extra is applied.
-        return (
-            parts.principal, parts.principal + interest,
-            Decimal("0.00"), Decimal("0.00"),
-        )
-    # Cap the extra so acceleration alone cannot drive the balance below zero;
-    # ``balance_after`` is what the base payment left, so it IS the ceiling.
-    extra = min(extra_monthly, parts.balance_after)
-    extra = max(extra, Decimal("0.00"))
-    # Both terms are clamped so ``balance_after - extra`` is non-negative and
-    # round_money (ROUND_HALF_UP) cannot yield a negative.
-    new_balance = round_money(parts.balance_after - extra)
-    return parts.principal, parts.principal + interest, extra, new_balance
-
-
 def _apply_contractual_payment(
     balance: Decimal,
     interest: Decimal,
@@ -647,11 +594,12 @@ def _apply_contractual_payment(
             forces the remaining balance to be absorbed.
 
     **The split is :func:`~app.utils.money.apply_payment_cash`, the ONE
-    allocation, since plan step X-au-g-2c-3a** -- see
-    :func:`_apply_override_payment` for why this package could not call it
-    before.  ``is_last_month`` is not part of the allocation and stays here: it
-    is a SCHEDULE-closing rule (the final row absorbs the residue), not a
-    statement about how cash divides.
+    allocation, since plan step X-au-g-2c-3a.**  This restated it inline
+    before, and the restatement was forced rather than chosen: the rule lived
+    in ``loan_ledger._split``, which this package sits BELOW in the import
+    graph, so calling it was a cycle.  ``is_last_month`` is not part of the
+    allocation and stays here: it is a SCHEDULE-closing rule (the final row
+    absorbs the residue), not a statement about how cash divides.
 
     Returns:
         ``(principal_portion, actual_payment, extra, new_balance)`` --
@@ -682,10 +630,9 @@ def _apply_contractual_payment(
 def project_forward(
     inputs: ProjectionInputs,
     *,
-    monthly_override: dict[tuple[int, int], Decimal] | None = None,
     extra_monthly: Decimal = Decimal("0.00"),
 ) -> list[AmortizationRow]:
-    """Pure forward projection from a known starting state.
+    """Pure forward projection of the CONTRACT from a known starting state.
 
     The forward half of the amortization-engine split (architectural
     plan: ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``);
@@ -694,36 +641,24 @@ def project_forward(
     module's original ``replay_confirmed_history`` primitive).
     ``project_forward`` has no concept of history and cannot rewrite
     it -- its inputs describe a state at ``starting_date`` and a set of
-    forward-only parameters (override, extra, the rate/P&I terms
-    schedule).
+    forward-only parameters (the rate/P&I terms schedule, a what-if
+    extra).
 
-    Two payment paths run per month, and ``extra_monthly`` applies to BOTH:
+    One payment path per month: the governing terms entry's ``monthly_pi``
+    plus ``extra_monthly``.  Extra is clamped so it cannot push the balance
+    below zero.  The final scheduled month absorbs whatever residue remains
+    after the contractual P&I split, regardless of extra.
 
-      - **Override.**  When ``(year, month)`` is in ``monthly_override``,
-        that value is the month's planned payment (the user's planned
-        outlay, e.g. from a projected transfer template, at the cash the
-        row resolves to), and ``extra_monthly`` is applied on top
-        (:func:`_apply_override_payment`) -- so a what-if extra accelerates
-        every forward month even when a recurring plan overrides it (step
-        5).  ``payment`` on the row is the planned (override) amount; the
-        extra is reported in ``extra_payment``.
-        Negative amortization (override below the period's interest) is
-        preserved by leaving ``principal_portion`` negative.  The base or
-        the extra driving the balance below zero is capped at the remaining
-        balance (the row absorbs the residue and the balance closes at zero).
-      - **Contractual + extra.**  When no override exists for the
-        month, the payment is the governing terms entry's
-        ``monthly_pi`` plus ``extra_monthly``.  Extra is clamped so it
-        cannot push the balance below zero.  The final scheduled month
-        absorbs whatever residue remains after the contractual P&I
-        split, regardless of extra.
-
-    ``extra_monthly`` is the caller's HYPOTHETICAL extra and nothing else.
-    A recurring payment's STANDING extra is inside its projected row's own
-    cash (amount rule 4 prices it from the row's definition), so it arrives
-    through ``monthly_override`` and is never passed here: the composer
-    passed it as well until plan step R7d-g-3, and every override month paid
-    it twice.
+    **It walked the owner's PLAN too until plan step R7d-g-3** (ruling
+    **R-R88**): a ``monthly_override`` map replaced the contractual payment
+    on the months a projected transfer row covered, so the loan resolver's
+    composer could draw a "committed" line.  That was a second forward walk
+    beside the balance seam's plan fold (``balance_at._plan_fold``), which
+    prices every definition's own occurrences and folds them with the
+    period's charges; the seam's fold is the one planned walk now and this
+    projection is the contract's alone.  ``extra_monthly`` stays for the
+    contract-only what-if the target-date search asks
+    (:func:`~._payoff.required_extra_for_projection`).
 
     ARM behavior: each month's rate and contractual P&I come from the
     governing ``terms_schedule`` entry (:func:`_governing_terms`), so
@@ -749,17 +684,9 @@ def project_forward(
             months, payment day, the rate/P&I terms schedule) that stay
             constant across a related set of projections.  See
             :class:`ProjectionInputs` for per-field semantics.
-        monthly_override: Optional ``(year, month) -> Decimal`` map.
-            Each entry replaces the contractual BASE payment for that
-            month; ``extra_monthly`` is still applied on top.  ``None``
-            and an empty dict are equivalent -- no months are
-            overridden.
         extra_monthly: Additional principal payment applied to EVERY
-            forward month (override and contractual alike).  Clamped per
-            month so the balance cannot drop below zero from extra alone.
-            The payoff lever's what-if extra is what flows through it; a
-            recurring plan's override months take it on top of their own
-            cash rather than swallowing it.
+            forward month.  Clamped per month so the balance cannot drop
+            below zero from extra alone.
 
     Returns:
         A list of ``AmortizationRow`` instances in payment-date order,
@@ -777,7 +704,6 @@ def project_forward(
     if inputs.starting_balance <= 0 or inputs.remaining_months <= 0:
         return []
 
-    overrides = {} if monthly_override is None else monthly_override
     # One sort up front; _governing_terms scans in start-date order.
     terms_schedule = sorted(
         inputs.terms_schedule, key=lambda terms: terms.start_date,
@@ -810,28 +736,14 @@ def project_forward(
         # projection's own balance (DH-#1 / E-02).
         terms = _governing_terms(terms_schedule, pay_date)
         interest = accrue_monthly_interest(balance, terms.annual_rate)
-        month_key = (pay_date.year, pay_date.month)
-
-        if month_key in overrides:
-            # Override path: the override amount is the month's planned
-            # payment at its rows' own cash (a standing extra inside it);
-            # extra_monthly -- the what-if extra -- is applied on top (step 5:
-            # a recurring plan makes every near month an override month, and
-            # the lever must still accelerate them).
-            principal_portion, actual_payment, extra, balance = (
-                _apply_override_payment(
-                    balance, interest, overrides[month_key], extra_monthly,
-                )
+        # Contractual + extra.  The final scheduled month absorbs the residue
+        # regardless of extra.
+        principal_portion, actual_payment, extra, balance = (
+            _apply_contractual_payment(
+                balance, interest, terms.monthly_pi,
+                extra_monthly, month_num == inputs.remaining_months,
             )
-        else:
-            # No override: contractual + extra path.  The final scheduled month
-            # absorbs the residue regardless of extra.
-            principal_portion, actual_payment, extra, balance = (
-                _apply_contractual_payment(
-                    balance, interest, terms.monthly_pi,
-                    extra_monthly, month_num == inputs.remaining_months,
-                )
-            )
+        )
 
         rows.append(AmortizationRow(
             month=month_num,

@@ -3198,6 +3198,74 @@ def seam_confirmed_view(loan_account_id, scenario_id, as_of):
     ))
 
 
+def contract_forward_references(loan_params, scenario_id, as_of, extra):
+    """Return ``(scenarios, with_extra)``: the contract, and the contract plus *extra*.
+
+    The INDEPENDENT reference the loan-page and payoff-oracle suites grade the
+    balance seam's forward fold against.  ``scenarios`` is the composer's
+    :class:`~app.services.loan_resolver.PayoffScenarios` -- the ledger-derived
+    confirmed history and ``project_forward`` over the CONTRACT from the
+    replayed starting state, a walk that amortizes month by month and reads no
+    payment record.  ``with_extra`` is that same engine walk with *extra* a
+    month on top (``project_forward``'s own what-if ``extra_monthly``), over
+    the same starting state: the seam's confirmed view for the balance and the
+    contractual slice for the starting date and the remaining month count, so
+    the reference reads nothing off the fold it grades.
+
+    *The composer produced this reference itself -- its ACCELERATED slice,
+    ``compute_payoff_scenarios(extra_monthly=...)`` -- until plan step R7d-g-3
+    deleted the composer's planned slices (ruling **R-R88**); the engine's
+    contract-plus-extra projection is the same arithmetic, called directly.*
+
+    Args:
+        loan_params: The loan's :class:`LoanParams`.
+        scenario_id: The scenario to scope the feed and the confirmed view to.
+        as_of: The evaluation date (the replay / projection boundary).
+        extra: The what-if extra per month; ``0.00`` makes ``with_extra`` the
+            contract's own rows.
+
+    Returns:
+        ``(scenarios, with_extra)``: the composer's result and the engine's
+        contract-plus-extra rows (``AmortizationRow``, in date order).
+    """
+    # Pylint: import-outside-toplevel -- helper-local, matching this module's
+    # convention of importing app symbols inside the helper that needs them.
+    from app.services import (  # pylint: disable=import-outside-toplevel
+        loan_loaders, loan_payment_service, loan_resolver,
+    )
+    from app.services.amortization_engine import (  # pylint: disable=import-outside-toplevel
+        ProjectionInputs, project_forward,
+    )
+
+    ctx_loan = loan_payment_service.load_loan_context(
+        loan_params.account_id, amount_basis_for_scenario(scenario_id),
+        loan_params,
+    )
+    confirmed = seam_confirmed_view(loan_params.account_id, scenario_id, as_of)
+    scenarios = loan_resolver.compute_payoff_scenarios(
+        loan_inputs=loan_resolver.LoanInputs(
+            loan_params, loan_loaders.load_loan_anchor_facts(loan_params),
+            ctx_loan.payments, ctx_loan.rate_changes,
+        ),
+        as_of=as_of,
+        confirmed_view=confirmed,
+    )
+    contract = scenarios.original_forward
+    with_extra = project_forward(
+        ProjectionInputs(
+            starting_balance=confirmed.balance,
+            starting_date=contract[0].payment_date,
+            remaining_months=len(contract),
+            payment_day=loan_params.payment_day,
+            terms_schedule=loan_resolver.engine_terms(
+                loan_params, ctx_loan.rate_changes,
+            ),
+        ),
+        extra_monthly=extra,
+    )
+    return scenarios, with_extra
+
+
 def seam_cash_balance_at(account, scenario_id, as_of):
     """Return what the SEAM says an account's cash balance is on a date.
 

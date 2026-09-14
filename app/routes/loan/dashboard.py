@@ -41,8 +41,10 @@ from app.routes.loan._helpers import (
     _load_loan_account,
     _load_route_context,
     _loan_inputs,
+    band_chart_dates,
     build_band_chart,
     build_baseline_scenarios,
+    planned_periods,
 )
 from app.services import (
     balance_at,
@@ -58,33 +60,6 @@ from app.services.loan_posting_service import (
 from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
-
-
-def _find_current_period_row(schedule):
-    """Find the schedule row for the current or next upcoming payment.
-
-    Returns the first projected (non-confirmed) row if one exists,
-    otherwise the last confirmed row.  Returns None for an empty
-    schedule.
-
-    This approach is more robust than date-based lookup because
-    shadow transaction dates (biweekly) and schedule payment dates
-    (monthly) use different calendars.  The confirmed/projected
-    boundary is the cleanest split.
-
-    Args:
-        schedule: List of AmortizationRow objects.
-
-    Returns:
-        AmortizationRow or None.
-    """
-    if not schedule:
-        return None
-    for row in schedule:
-        if not row.is_confirmed:
-            return row
-    # All rows confirmed -- use the last one.
-    return schedule[-1]
 
 
 def _distribute_payment_percentages(parts, total_payment):
@@ -154,33 +129,99 @@ def _project_next_year_escrow(escrow_components, escrow_portion):
     return next_year_escrow
 
 
-def _compute_payment_breakdown(schedule, escrow_components):
-    """Build payment allocation breakdown for the current period.
+def _next_period_payments(installments):
+    """Return the plan's payments in the next accrual period that meets a charge.
 
-    Combines the amortization engine's per-period principal/interest
-    split with the escrow calculator's monthly total to show the user
-    exactly how their payment is allocated.
+    The period the allocation bar reads: the first group of
+    :func:`~app.routes.loan._helpers.planned_periods` (the schedule page's own
+    grouping, so "this month" is spelled once) whose payments cleared any
+    interest or escrow -- the first period whose charge the plan pays.  A
+    payment that clears no charge precedes it: a catch-up the plan pays the
+    day after the read for an occurrence due before it (ruling **R-R64**, the
+    D1 clamp) against a charge the ledger's own payment already met, or an
+    extra before the loan's first installment (ruling R-C); both are pure
+    principal and neither is the coming month's payment.  A plan that meets no
+    charge at all (a loan charging nothing) reads its first period.
+
+    Args:
+        installments: The seam's forward plan
+            (:func:`~app.services.balance_at.loan_installments`), in the
+            fold's DUE order.
+
+    Returns:
+        The period's installments in the fold's DUE order; empty for an empty plan.
+    """
+    periods = planned_periods(installments)
+    for period in periods:
+        if any(
+            installment.split.interest > Decimal("0.00")
+            or installment.split.escrow > Decimal("0.00")
+            for installment in period
+        ):
+            return period
+    return periods[0] if periods else []
+
+
+def _compute_payment_breakdown(installments, escrow_components):
+    """Build the payment allocation breakdown for the next accrual period's payments.
+
+    The seam's fold has already split every installment the plan will pay
+    (:func:`~app.services.balance_at.loan_installments`, plan step R7d-g-3,
+    ruling **R-R88**): what a payment's cash does -- the interest it pays,
+    the escrow it impounds, the principal it retires (any standing extra
+    inside it) -- is read off those allocations, summed over the next
+    accrual period the plan pays a charge in (:func:`_next_period_payments`),
+    so the bar shows what the owner's own payments do that month rather than
+    what the contract's would, and agrees with the band chart, the payoff
+    chip and the schedule page, which fold and group the same plan.
+
+    **A period that does not cover what has accrued is said, not drawn
+    wrong.**  The fold charges every accrual period since the loan's last
+    assertion, so a loan behind on its payments meets several periods'
+    interest at its next installment, and the allocation's principal is
+    NEGATIVE (the balance grows).  A composition bar cannot draw a negative
+    segment: the principal segment is floored at zero, the interest segment
+    is the cash that actually went to interest (the cash less the escrow),
+    and ``shortfall`` carries how far short of the accrued charges the
+    period's payments fell, for the card to say.
 
     Percentages are computed with a truncate-then-distribute algorithm
     to guarantee they sum to exactly 100.0%.
 
     Args:
-        schedule: List of AmortizationRow objects (committed schedule).
+        installments: The seam's forward plan, in the fold's DUE order.
         escrow_components: Today's active escrow lines, resolved
-            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
+            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`),
+            for the next-year escrow projection beside the bar.
 
     Returns:
-        dict with breakdown data, or None if no schedule data.
+        dict with breakdown data, or None when the plan holds no payment or
+        the period's payments move nothing.
     """
-    current_row = _find_current_period_row(schedule)
-    if current_row is None:
+    period = _next_period_payments(installments)
+    if not period:
         return None
-
-    principal_portion = current_row.principal + current_row.extra_payment
-    interest_portion = current_row.interest
-    escrow_portion = escrow_calculator.calculate_monthly_escrow(
-        escrow_components,
+    cash = sum((installment.cash for installment in period), Decimal("0.00"))
+    principal = sum(
+        (installment.split.principal for installment in period),
+        Decimal("0.00"),
     )
+    interest = sum(
+        (installment.split.interest for installment in period),
+        Decimal("0.00"),
+    )
+    escrow_portion = sum(
+        (installment.split.escrow for installment in period), Decimal("0.00"),
+    )
+
+    if principal < Decimal("0.00"):
+        shortfall = -principal
+        principal_portion = Decimal("0.00")
+        interest_portion = cash - escrow_portion
+    else:
+        shortfall = Decimal("0.00")
+        principal_portion = principal
+        interest_portion = interest
     total_payment = principal_portion + interest_portion + escrow_portion
 
     if total_payment <= Decimal("0.00"):
@@ -206,29 +247,32 @@ def _compute_payment_breakdown(schedule, escrow_components):
         "principal_pct": truncated["principal"],
         "interest_pct": truncated["interest"],
         "escrow_pct": truncated["escrow"],
-        "is_confirmed": current_row.is_confirmed,
-        "payment_date": current_row.payment_date,
+        # The period's own installment date: the charge's, or the payment's
+        # for one before the plan's first charge.
+        "payment_date": period[0].charge_date or period[0].effective_date,
+        "shortfall": shortfall,
         "next_year_escrow": next_year_escrow,
     }
 
 
 def _build_payment_summary(
-    current_balance, monthly_payment, planned_schedule, escrow_components,
+    current_balance, monthly_payment, installments, escrow_components,
 ):
     """Build the loan-card payment-summary template context.
 
     Bundles the seam's current balance, the total monthly
-    payment (P&I + escrow), the current-period payment breakdown, and
-    the escrow display list.  The payment breakdown uses
-    the planned schedule so it reflects the next planned payment, not
-    the contractual one when the user is under-/over-paying.
+    payment (P&I + escrow), the next period's allocation, and
+    the escrow display list.  The allocation reads the seam's forward plan
+    so it reflects the next planned payments, not the contractual one when
+    the user is under-/over-paying.
 
     Args:
         current_balance: The loan's balance-at-today (``ctx.current_balance`` --
             the seam's fold, plan C4).
         monthly_payment: The loan's P&I payment (``ctx.monthly_payment`` -- the
             seam figure), the base the total payment adds escrow to.
-        planned_schedule: history + committed-forward AmortizationRows.
+        installments: The seam's forward plan
+            (:func:`~app.services.balance_at.loan_installments`).
         escrow_components: Today's active escrow lines.
 
     Returns:
@@ -246,31 +290,38 @@ def _build_payment_summary(
             monthly_payment, escrow_components,
         ),
         "payment_breakdown": _compute_payment_breakdown(
-            planned_schedule, escrow_components,
+            installments, escrow_components,
         ),
     }
 
 
-def _build_band_context(scenarios, has_payments):
+def _build_band_context(ctx, scenarios, installments):
     """Build the dashboard's band-chart template context.
 
-    Wraps :func:`._helpers.build_band_chart` (one committed-or-contractual
-    balance line on the contractual x-axis, which the client splits at the
-    confirmed / projected boundary) and derives ``has_chart`` -- the band renders
-    the chart when the line has points, otherwise a "paid off" note.  The client
-    (``loan_detail.js``) reads the serialized ``band_chart`` dict from
-    ``data-chart`` and overlays the payoff lever's accelerated preview onto it.
+    Wraps :func:`._helpers.build_band_chart` (the seam's balance at every
+    date of the contractual x-axis, :func:`._helpers.band_chart_dates`,
+    which the client splits at the confirmed / projected boundary) and
+    derives ``has_chart`` -- the band renders the chart when the line has
+    points, otherwise a "paid off" note.  The client (``loan_detail.js``)
+    reads the serialized ``band_chart`` dict from ``data-chart`` and
+    overlays the payoff lever's accelerated preview onto it.
 
     Args:
+        ctx: The route context (:func:`._helpers._load_route_context`) --
+            its pass and its derived payoff bound the grid.
         scenarios: The baseline :class:`PayoffScenarios` from
-            :func:`._helpers.build_baseline_scenarios`.
-        has_payments: ``True`` when the loan has a recurring payment plan
-            (selects the committed line over the contractual original).
+            :func:`._helpers.build_baseline_scenarios`, for the grid.
+        installments: The plan as it stands
+            (:func:`~app.services.balance_at.loan_installments`), read once
+            by the route and shared with the allocation bar.
 
     Returns:
         dict of template vars: band_chart (the serializable dict), has_chart.
     """
-    band_chart = build_band_chart(scenarios, has_payments)
+    band_chart = build_band_chart(
+        ctx.account, ctx.balance_ctx,
+        band_chart_dates(scenarios, ctx.payoff_date, installments),
+    )
     return {
         "band_chart": band_chart,
         "has_chart": bool(band_chart["balance"]),
@@ -685,12 +736,12 @@ def dashboard(account_id):
     scenarios = build_baseline_scenarios(
         _loan_inputs(params, ctx.loan), account, ctx.balance_ctx,
     )
-    # PLANNED-trajectory schedule: real confirmed history + projected /
-    # contractual forward.  The loan card's current_balance (the seam's fold)
-    # and the forward projection here both derive from the SAME genesis-ledger
-    # balance (plan Section 8), so the card / debt card / net-worth
-    # liability and the chart cannot diverge (the E-18 invariant).
-    planned_schedule = scenarios.history_rows + scenarios.committed_forward
+    # The seam's forward plan, split ONCE for the page (plan step R7d-g-3,
+    # ruling R-R88): the allocation bar's next period and the band's grid
+    # read these installments, and the band's line and the payoff chip fold
+    # the same memoized plan, so the card, the chart and the chip cannot
+    # diverge.
+    installments = balance_at.loan_installments(account, ctx.balance_ctx)
 
     context = {
         "account": account,
@@ -732,7 +783,7 @@ def dashboard(account_id):
         "collateral_candidates": _load_collateral_candidates(current_user.id),
     }
     context.update(_build_payment_summary(
-        ctx.current_balance, ctx.monthly_payment, planned_schedule,
+        ctx.current_balance, ctx.monthly_payment, installments,
         ctx.loan.escrow_components,
     ))
     # The payment card: one strip per definition, each with its figure, its
@@ -756,7 +807,7 @@ def dashboard(account_id):
     context["merge_candidates"] = escrow_calculator.build_merge_candidates(
         ctx.loan.escrow_lines,
     )
-    context.update(_build_band_context(scenarios, len(ctx.loan.payments) > 0))
+    context.update(_build_band_context(ctx, scenarios, installments))
     # YTD chips sum by the user's display-tz civil year (matching the Taxes tab
     # + the L9 attribution rule), not the backend-UTC ``today.year``.  The chips
     # fold the read pass's memoized walk (ctx.balance_ctx), so the page walks the

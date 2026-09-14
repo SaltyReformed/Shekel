@@ -191,11 +191,14 @@ def resolve_loan(
 
     Single-source-of-truth producer for every loan-touching surface.
     Computes the monthly payment per the ARM-window-aware rules documented at
-    package scope; generates the full schedule via
-    :func:`._payoff.compute_payoff_scenarios` (the COMMITTED, plan-aware
-    composition ``history_rows + committed_forward``, honoring the projected
-    recurring payments at the cash each row resolves to); derives the
-    total interest from the same schedule.  The loan's BALANCE is not here
+    package scope; generates the schedule via
+    :func:`._payoff.compute_payoff_scenarios` (the confirmed history plus the
+    CONTRACT's forward, ``history_rows + original_forward``); derives the
+    total interest from the same schedule.  **The schedule is the contract's
+    since plan step R7d-g-3** (ruling **R-R88**): what the loan is projected
+    to PAY is the balance seam's plan fold, and every reader of this
+    schedule takes a DATE off it (the net-worth trend's first-payment gate,
+    the equity chart's tracking start), never a balance.  The loan's BALANCE is not here
     (plan step D2a): the ``balance_at`` seam folds it from the loan's recorded
     events (see the :class:`LoanState` docstring).
 
@@ -211,22 +214,17 @@ def resolve_loan(
        :func:`app.utils.dates.anchor_chronology_key`, i.e. ``(anchor_date,
        created_at, event_id)`` DESC (:func:`._periods.select_latest_anchor`).
     2. Generate the schedule via :func:`._payoff.compute_payoff_scenarios`
-       with the FULL payment list (``extra_monthly=0``: the payoff lever's
-       what-if extra is not part of the committed plan).  The composer
-       replays the payments SETTLED by ``as_of`` and routes everything else
-       (projected recurring payments, and any payment settled after
-       ``as_of``) forward through ``monthly_override``.  A standing extra
-       is INSIDE each projected row's cash (amount rule 4 prices it from the
-       row's own definition), so the composer takes none: it took a loan-level
-       ``extra_principal`` until plan step R7d-g-3 and applied it a second
-       time on every month a row covered.  ARM vs. fixed-rate anchor
-       handling lives inside the composer (Phase 6 of the
+       with the FULL payment list: the composer replays the payments SETTLED
+       by ``as_of`` and projects the CONTRACT forward from the resulting
+       state.  It routed the projected rows through ``monthly_override`` and
+       a loan-level ``extra_principal`` too until plan step R7d-g-3 -- a
+       second forward walk beside the seam's plan fold, which paid a
+       standing extra twice on every row-covered month.  ARM vs. fixed-rate
+       anchor handling lives inside the composer (Phase 6 of the
        amortization-engine split); the resolver no longer reaches the engine
        directly.
-    3. ``LoanState.schedule = history_rows + committed_forward`` -- the
-       COMMITTED, plan-aware trajectory (step 8).  Projected (unconfirmed)
-       payments surface only in this forward schedule, as planned
-       commitments, not historical fact.
+    3. ``LoanState.schedule = history_rows + original_forward`` -- the
+       confirmed past and the contract's forward.
     4. Compute the monthly payment per ARM-in-window vs.
        ARM-out-of-window vs. fixed-rate rules.
     5. Return the LoanState; consumers read its fields without
@@ -238,7 +236,7 @@ def resolve_loan(
             ``rate_changes``).  ``anchor_events`` must be non-empty
             (the Commit-12 invariant); an empty list raises a
             ValueError.  Only payments settled by ``as_of`` are replayed into
-            the balance; the rest feed the committed forward schedule.
+            the balance; the rest are the balance seam's plan to price.
         as_of: The evaluation date.  Drives the current-balance walk
             and the out-of-window monthly-payment computation.
         confirmed_view: The loan's genesis-ledger confirmed view (the read
@@ -267,31 +265,21 @@ def resolve_loan(
     # (Phase 6 of the amortization-engine split -- architectural plan:
     # ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``).
     # ``compute_payoff_scenarios`` calls ``replay_schedule`` once (confirmed
-    # history, balance, remaining term) and ``project_forward`` once to build
-    # the COMMITTED trajectory: it partitions the FULL ``payments`` view into
-    # settled-by-``as_of`` (replayed) and everything else (projected
-    # recurring payments + any payment settled after ``as_of``, routed forward
-    # through ``monthly_override``).  ``extra_monthly=0`` because the payoff
-    # lever's what-if extra is NOT part of the committed plan; a standing
-    # extra rides inside each projected row's own cash and is never applied
-    # here (plan step R7d-g-3).  ``LoanState.schedule`` is
-    # the confirmed-history rows plus that committed forward slice -- the loan's
-    # real plan, not the lender minimum (the step-8 seam fix,
-    # ``docs/design/escrow_line_identity_refactor.md`` Sec. 16).  ARM vs.
-    # fixed-rate anchor handling is owned by the composer.  An unconfirmed
-    # payment surfaces ONLY in this forward schedule: the loan's BALANCE folds
-    # from recorded events in the balance seam, so routing projected payments
-    # forward here cannot move any displayed balance.
+    # history, balance, remaining term) and ``project_forward`` once for the
+    # CONTRACT's forward.  ``LoanState.schedule`` is the confirmed-history
+    # rows plus that contractual slice; what the loan is projected to PAY is
+    # the balance seam's plan fold (plan step R7d-g-3, ruling R-R88), and no
+    # reader of this schedule takes a balance off it.  ARM vs. fixed-rate
+    # anchor handling is owned by the composer.
     # Fixed-rate trueups remain a follow-up: see F-8 in
     # ``docs/audits/financial_calculations/remediation_follow_up.md``.
     scenarios = compute_payoff_scenarios(
         loan_inputs=loan_inputs,
-        extra_monthly=ZERO_MONEY,
         as_of=as_of,
         confirmed_view=confirmed_view,
     )
     schedule = list(scenarios.history_rows) + list(
-        scenarios.committed_forward
+        scenarios.original_forward
     )
 
     # Monthly P&I is the current rate period's level payment, held

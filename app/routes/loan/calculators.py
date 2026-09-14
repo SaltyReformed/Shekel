@@ -4,15 +4,17 @@ Shekel Budget App -- Loan route package: payoff + refinance calculators.
 The HTMX what-if calculators: the payoff calculator (extra-payment and
 target-date modes) and the refinance comparison.  Both load the shared loan
 context so their "current" baseline matches the dashboard's loan card, and
-both render result partials.  The payoff chart series reuses the shared
-:func:`~app.routes.loan._helpers._build_chart_series` so it cannot diverge
-from the dashboard's chart.
+both render result partials.  The payoff lever's preview line and its
+savings read the balance seam's plan fold through the same helpers the
+dashboard's band chart reads (plan step R7d-g-3, ruling **R-R88**), so the
+preview cannot diverge from the chart it overlays.
 """
 
 from datetime import date
 from decimal import Decimal, ROUND_CEILING
 
 from flask import render_template, request
+from flask_login import current_user
 
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
@@ -22,118 +24,177 @@ from app.routes.loan._helpers import (
     _payoff_schema,
     _refinance_schema,
     accelerated_overlay,
+    band_chart_dates,
+    build_baseline_scenarios,
 )
 from app.services import amortization_engine, balance_at, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
+from app.services.recurring_transfer_query import (
+    active_recurring_transfer_templates,
+)
 from app.utils.auth_helpers import require_owner
+from app.utils.dates import months_between
 from app.utils.money import round_money
 
 
-def _payoff_committed_savings(scenarios):
-    """Months and interest the committed plan saves vs pure contractual.
+def _plan_trajectory(installments):
+    """Return ``(payoff date | None, remaining interest)`` of a folded plan.
 
-    Committed-forward vs original-forward: both slices share the same
-    replay starting state, so the difference quantifies what the user's
-    planned outlays save vs paying pure contractual from today onward.
-    This is the load-bearing single-source-of-truth invariant -- the
-    chart's months_saved and the displayed label derive from the same
-    forward-row lists.
-
-    Returns:
-        Tuple of (committed_months_saved int, committed_interest_saved
-        Decimal; the latter routed through ``round_money`` so the
-        half-cent boundary follows the project default ROUND_HALF_UP,
-        E-26).
-    """
-    committed_months_saved = (
-        len(scenarios.original_forward) - len(scenarios.committed_forward)
-    )
-    original_forward_interest = sum(
-        (r.interest for r in scenarios.original_forward), Decimal("0.00"),
-    )
-    committed_forward_interest = sum(
-        (r.interest for r in scenarios.committed_forward), Decimal("0.00"),
-    )
-    committed_interest_saved = round_money(
-        original_forward_interest - committed_forward_interest,
-    )
-    return committed_months_saved, committed_interest_saved
-
-
-def _build_payoff_summary(scenarios, monthly_payment):
-    """Assemble the AmortizationSummary for the extra-payment partial.
-
-    monthly_payment from the seam figures (single source of truth);
-    committed/accelerated totals and payoff dates from the composer.
-    """
-    return AmortizationSummary(
-        monthly_payment=monthly_payment,
-        total_interest=scenarios.total_interest_committed,
-        payoff_date=scenarios.payoff_date_committed,
-        total_interest_with_extra=scenarios.total_interest_accelerated,
-        payoff_date_with_extra=scenarios.payoff_date_accelerated,
-        months_saved=scenarios.months_saved,
-        interest_saved=scenarios.interest_saved,
-    )
-
-
-def _payoff_extra_payment_result(params, ctx, data, confirmed_view):
-    """Render the extra-payment payoff scenario partial.
-
-    One ``compute_payoff_scenarios`` call drives both the band-chart
-    overlay and the summary metrics so they cannot diverge (the
-    structural fix for the "extra applied to ghost historical months"
-    defect): replay routes confirmed payments through history, projection
-    routes projected payments through ``monthly_override`` at each row's own
-    resolved cash (a standing extra inside it, amount rule 4), and the
-    lever's ``extra_monthly`` previews additional acceleration on top in the
-    accelerated slice, applied to every forward month (step 5).  The
-    accelerated forward slice becomes the band chart's green dashed preview via
-    :func:`._helpers.accelerated_overlay` -- forward-only, aligned to the
-    band's contractual x-axis, so the client overlays it on the same
-    chart the dashboard drew.
+    Read off the seam's own split (:func:`~app.services.balance_at.loan_installments`,
+    plan step R7d-g-3, ruling **R-R88**): the payoff is the ONE rule
+    :func:`~app.services.balance_at.installments_payoff` states -- the same
+    the "Projected payoff" chip's fold applies -- and the interest is summed
+    over the whole plan (a split past the payoff accrues on a zero balance
+    and adds nothing) and rounded once at this boundary (ROUND_HALF_UP,
+    E-26).  Pure over the installments the caller already holds, so the
+    lever folds the plan once per trajectory, not once per figure.
 
     Args:
-        params: ORM :class:`LoanParams` instance (also the anchor-fact
-            synthesis source).
+        installments: A folded plan -- as it stands, or with the lever's
+            extra on top.
+
+    Returns:
+        The DUE date the balance first folds to zero (``None`` when the plan
+        never clears the loan, or the loan is already retired) and the
+        interest the plan pays from the pass's now.
+    """
+    interest = round_money(sum(
+        (installment.split.interest for installment in installments),
+        Decimal("0.00"),
+    ))
+    return balance_at.installments_payoff(installments), interest
+
+
+def _plan_vs_contract(scenarios, committed):
+    """Months and interest the owner's plan saves vs the pure contract, or ``None``.
+
+    The plan's payoff and remaining interest (:func:`_plan_trajectory`,
+    the seam's fold) against the contractual reference the composer
+    projects from the same confirmed starting state
+    (:attr:`~app.services.loan_resolver.PayoffScenarios.original_forward`),
+    so the comparison quantifies what the owner's planned outlays save vs
+    paying pure contractual from today onward.
+
+    Args:
+        scenarios: The baseline :class:`~app.services.loan_resolver.PayoffScenarios`.
+        committed: ``(payoff, interest)`` of the plan as it stands.
+
+    Returns:
+        ``None`` when the contract has no forward row to compare with (a
+        loan past its term still owing, which its plan is clearing);
+        otherwise ``{"months": int | None, "interest": Decimal}`` -- the
+        months the plan finishes AHEAD of the contract (negative when
+        behind; ``None`` when the plan never clears the loan), and the
+        interest saved (negative when the plan costs more), the latter
+        routed through ``round_money`` (ROUND_HALF_UP, E-26).
+    """
+    if not scenarios.original_forward:
+        return None
+    committed_payoff, committed_interest = committed
+    contract_interest = sum(
+        (row.interest for row in scenarios.original_forward), Decimal("0.00"),
+    )
+    return {
+        "months": (
+            None if committed_payoff is None
+            else months_between(
+                committed_payoff, scenarios.original_forward[-1].payment_date,
+            )
+        ),
+        "interest": round_money(contract_interest - committed_interest),
+    }
+
+
+def _build_payoff_summary(monthly_payment, committed, accelerated):
+    """Assemble the AmortizationSummary for the extra-payment partial.
+
+    monthly_payment from the seam figures (single source of truth); the
+    committed and accelerated payoff dates and interest from the seam's
+    fold (:func:`_plan_trajectory`), the same walk apart by exactly the
+    lever's extra.  ``months_saved`` and ``interest_saved`` are the calendar
+    months and the interest between the two trajectories, ``None`` when
+    either never clears the loan.
+
+    Args:
+        monthly_payment: The loan's P&I (``ctx.monthly_payment``).
+        committed: ``(payoff, interest)`` of the plan as it stands.
+        accelerated: ``(payoff, interest)`` with the lever's extra on top.
+    """
+    committed_payoff, committed_interest = committed
+    accelerated_payoff, accelerated_interest = accelerated
+    clears = committed_payoff is not None and accelerated_payoff is not None
+    return AmortizationSummary(
+        monthly_payment=monthly_payment,
+        total_interest=committed_interest,
+        payoff_date=committed_payoff,
+        total_interest_with_extra=accelerated_interest,
+        payoff_date_with_extra=accelerated_payoff,
+        months_saved=(
+            months_between(accelerated_payoff, committed_payoff)
+            if clears else None
+        ),
+        # A trajectory that never clears the loan is summed to the plan's
+        # horizon, not to a payoff, so a difference against it is not a
+        # saving: ``None``, said as "--" beside "Never".
+        interest_saved=(
+            round_money(committed_interest - accelerated_interest)
+            if clears else None
+        ),
+    )
+
+
+def _payoff_extra_payment_result(account, params, ctx, data, has_plan):
+    """Render the extra-payment payoff scenario partial.
+
+    The seam's plan fold, twice: as it stands and with the lever's extra on
+    top (:func:`~app.services.balance_at.loan_installments`, then
+    :func:`_plan_trajectory` over each), so the "months saved" and "interest
+    saved" chips, the "current plan vs. original" line and the band chart's
+    green dashed preview (:func:`._helpers.accelerated_overlay`, the same
+    fold on the band's own grid) derive from ONE walk and cannot diverge from
+    the chart the dashboard drew.  Until plan step R7d-g-3 this composed
+    ``loan_resolver.compute_payoff_scenarios``' committed and accelerated
+    slices -- a second forward walk that priced the months no generated row
+    covered from the contract plus one picked definition's extra (ruling
+    **R-R88**).
+
+    Args:
+        account: The loan account (ownership verified by the route).
+        params: ORM :class:`LoanParams` instance.
         ctx: The route context from :func:`_load_route_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
-        confirmed_view: The genesis-ledger confirmed view, read once by the
-            caller; threaded into the composer so the projected payoff
-            amortizes the real owed balance -- and charts the ledger-derived
-            confirmed history -- the loan card shows.  ``None`` falls back to
-            the anchor replay.
+        has_plan: Whether the loan has a plan of its own to compare with the
+            contract (:func:`payoff_calculate`).
 
     Returns:
         Rendered ``loan/_payoff_results.html`` response.
     """
     extra = Decimal(str(data.get("extra_monthly", "0")))
-    scenarios = loan_resolver.compute_payoff_scenarios(
-        loan_inputs=_loan_inputs(params, ctx.loan),
-        extra_monthly=extra,
-        # The read pass's pinned as-of, NOT a second ``date.today()``: the
-        # confirmed view threaded in below was built at ``ctx.balance_ctx.as_of``,
-        # and a midnight rollover between the two reads would splice a seed from
-        # one day onto a projection from the next (plan step E1d-b).
-        as_of=ctx.balance_ctx.as_of,
-        confirmed_view=confirmed_view,
+    scenarios = build_baseline_scenarios(
+        _loan_inputs(params, ctx.loan), account, ctx.balance_ctx,
     )
-
-    committed_months_saved, committed_interest_saved = (
-        _payoff_committed_savings(scenarios)
+    plan = balance_at.loan_installments(account, ctx.balance_ctx)
+    committed = _plan_trajectory(plan)
+    accelerated = _plan_trajectory(
+        balance_at.loan_installments(account, ctx.balance_ctx, extra),
     )
     return render_template(
         "loan/_payoff_results.html",
         mode="extra_payment",
-        payoff_summary=_build_payoff_summary(scenarios, ctx.monthly_payment),
-        overlay=accelerated_overlay(scenarios),
-        has_payments=len(ctx.loan.payments) > 0,
-        committed_months_saved=committed_months_saved,
-        committed_interest_saved=committed_interest_saved,
+        payoff_summary=_build_payoff_summary(
+            ctx.monthly_payment, committed, accelerated,
+        ),
+        overlay=accelerated_overlay(
+            account, ctx.balance_ctx,
+            band_chart_dates(scenarios, committed[0], plan),
+            extra,
+        ),
+        has_plan=has_plan,
+        plan_vs_contract=_plan_vs_contract(scenarios, committed),
     )
 
 
-def _payoff_target_date_result(params, ctx, data):
+def _payoff_target_date_result(params, ctx, data, has_plan):
     """Render the target-date payoff scenario partial.
 
     Computes two answers (F-27, developer-selected "fix + reframe,
@@ -147,7 +208,7 @@ def _payoff_target_date_result(params, ctx, data):
       monthly_payment + required_extra`` is internally consistent (D-2
       closure, now structural).  For a user with no recurring payment
       plan this is the only number.
-    * The PLAN-AWARE answer -- when the loan has payments,
+    * The PLAN-AWARE answer -- when the loan has a plan of its own,
       :func:`app.services.balance_at.loan_required_extra` folds the loan's
       forward PLAN (plan step C8f): what extra is needed ON TOP of the
       payments the user is already making.  Without it, a user
@@ -170,6 +231,8 @@ def _payoff_target_date_result(params, ctx, data):
             origination / term source).
         ctx: The route context from :func:`_load_route_context`.
         data: Validated :class:`PayoffCalculatorSchema` form data.
+        has_plan: Whether the loan has a plan of its own
+            (:func:`payoff_calculate`) -- the plan-aware answer's gate.
 
     Returns:
         Rendered ``loan/_payoff_results.html`` response.
@@ -198,9 +261,8 @@ def _payoff_target_date_result(params, ctx, data):
         )
     )
 
-    has_payments = len(ctx.loan.payments) > 0
     plan_extra = None
-    if has_payments:
+    if has_plan:
         # The plan-aware answer folds the loan's forward PLAN through the seam,
         # off the SAME BalanceContext the page's payoff chip reads (step C8f), so
         # the two cannot rest on different forward models.
@@ -219,7 +281,7 @@ def _payoff_target_date_result(params, ctx, data):
         required_extra=required_extra,
         monthly_payment=monthly_payment,
         total_monthly=total_monthly,
-        has_payments=has_payments,
+        has_plan=has_plan,
         plan_extra=plan_extra,
     )
 
@@ -248,23 +310,29 @@ def payoff_calculate(account_id):
     # rendered on the loan card (the seam's fold, plan C4).
     ctx = _load_route_context(account, params)
 
+    # A retired loan has no plan to accelerate: the seam's plan is empty for
+    # it and its payoff ``None``, and a "Never" beside a "Paid off" chip
+    # would be the fold's answer to a question the page should not ask.
+    if ctx.is_retired:
+        return render_template(
+            "loan/_payoff_results.html",
+            error="This loan is paid off. No payoff scenario available.",
+        )
+
+    # Whether the loan has a plan of ITS OWN to compare with the contract: a
+    # recurring definition into it (the plan prices every occurrence, rows
+    # or not -- ruling R-R64) or a payment row.  A loan with neither folds
+    # the contract's own installments, and a comparison would read "on
+    # track, $0.00 saved" of a plan that is the contract.
+    has_plan = bool(ctx.loan.payments) or bool(
+        active_recurring_transfer_templates(account.id, current_user.id),
+    )
     if mode == "extra_payment":
-        # Resolved INSIDE the branch that uses it (step C8f): the target-date
-        # mode takes no confirmed view, since its plan-aware answer folds the
-        # seam's own memoized walk and plan.  Hoisting it would make every
-        # target-date request pay for a genesis-ledger walk it discards.
-        #
-        # Read switch: read the genesis-ledger confirmed view ONCE and thread it
-        # into the forward projection, so the payoff results project from the
-        # same real owed balance -- and chart the same confirmed history -- the
-        # loan card shows.  Since plan step E1d-b that view is the seam's FOLD of
-        # the loan's recorded events, read off the pass's already-memoized walk,
-        # which is also what the loan card's own resolution was seeded with.
-        # ``require_owner`` already gated ownership above.
-        view = balance_at.confirmed_view(account, ctx.balance_ctx)
-        return _payoff_extra_payment_result(params, ctx, data, view)
+        return _payoff_extra_payment_result(
+            account, params, ctx, data, has_plan,
+        )
     if mode == "target_date":
-        return _payoff_target_date_result(params, ctx, data)
+        return _payoff_target_date_result(params, ctx, data, has_plan)
     return render_template(
         "loan/_payoff_results.html",
         error="Invalid mode.",
@@ -277,9 +345,8 @@ def _project_refinance(refi_principal, refi_rate, refi_term, payment_day):
     Commit 7 of the amortization-engine split: a pure forward projection
     from a known starting state (``refi_principal`` at next month's pay
     date) that maps directly onto
-    :func:`amortization_engine.project_forward` -- no replay, no
-    projections-as-overrides, no extra; the contractual P&I drives every
-    row.
+    :func:`amortization_engine.project_forward` -- no replay, no extra;
+    the contractual P&I drives every row.
 
     Args:
         refi_principal: Decimal starting balance for the refinance.
@@ -312,7 +379,6 @@ def _project_refinance(refi_principal, refi_rate, refi_term, payment_day):
                 monthly_pi=refi_monthly,
             )],
         ),
-        monthly_override=None,
         extra_monthly=Decimal("0.00"),
     )
     refi_total_interest = sum(
@@ -352,16 +418,17 @@ def _build_refinance_comparison(current_balance, ctx, scenarios, data, params):
     """Build the refinance side-by-side comparison from validated form data.
 
     Compares the current loan's CONTRACTUAL forward trajectory against a
-    hypothetical refinance.  Since the resolver seam went plan-aware (step 8,
-    ``docs/design/escrow_line_identity_refactor.md`` Sec. 16), the loan's
-    committed schedule reflects its standing extra; a refinance comparison must
-    instead be like-for-like -- minimum-payment current vs minimum-payment refi
-    -- because a borrower could pay the same extra on either loan.  So the
-    current side reads the pure-contractual ``scenarios.original_forward`` slice
-    (override- and extra-free), while ``ctx`` supplies the current monthly P&I
-    (the seam figure) and real balance (the seam's fold, both independent of
-    committed-vs-contractual).  The refinance principal defaults to the current
-    real balance + closing costs; the user may override for cash-out refinances.
+    hypothetical refinance.  The loan's PLAN (the balance seam's fold, which
+    the band chart and the payoff lever read) carries its standing extra; a
+    refinance comparison must instead be like-for-like -- minimum-payment
+    current vs minimum-payment refi -- because a borrower could pay the same
+    extra on either loan (step 8, ``docs/design/escrow_line_identity_refactor.md``
+    Sec. 16).  So the current side reads the pure-contractual
+    ``scenarios.original_forward`` slice (extra-free; this builder is handed
+    no fold at all), while ``ctx`` supplies the current monthly P&I (the seam
+    figure) and real balance (the seam's fold, both independent of
+    plan-vs-contract).  The refinance principal defaults to the current real
+    balance + closing costs; the user may override for cash-out refinances.
     The principal delta and its absolute magnitude are pre-computed server-side
     (MED-04 / E-16).
 
@@ -380,7 +447,7 @@ def _build_refinance_comparison(current_balance, ctx, scenarios, data, params):
             current loan (its ``monthly_payment``, and its DERIVED
             ``payoff_date`` as the empty-slice fallback -- which may be ``None``
             for a retired loan or one that never clears, so the template renders
-            the absence; the plan-aware schedule is NOT read).
+            the absence; the plan is NOT read).
         scenarios: The loan's :class:`loan_resolver.PayoffScenarios`; its
             ``original_forward`` slice is the contractual current-side baseline.
         data: Validated :class:`RefinanceSchema` form data.  ``new_rate``
@@ -498,15 +565,11 @@ def refinance_calculate(account_id):
     # Contractual current-side baseline (step 8 / Sec. 16): a like-for-like
     # comparison holds any standing extra constant on both sides, so the current
     # side reads the pure-contractual ``original_forward`` slice -- NOT the
-    # committed schedule (plan-aware since the resolver seam) -- against a
-    # from-today minimum-payment refi.  ``original_forward`` is override- and
-    # extra-free regardless of inputs; the seam's confirmed view (the fold, plan
-    # step E1d-b) seeds it from the real owed balance the loan card shows.
-    scenarios = loan_resolver.compute_payoff_scenarios(
-        loan_inputs=_loan_inputs(params, ctx.loan),
-        extra_monthly=Decimal("0.00"),
-        as_of=ctx.balance_ctx.as_of,
-        confirmed_view=balance_at.confirmed_view(account, ctx.balance_ctx),
+    # owner's plan -- against a from-today minimum-payment refi.  The seam's
+    # confirmed view (the fold, plan step E1d-b) seeds it from the real owed
+    # balance the loan card shows.
+    scenarios = build_baseline_scenarios(
+        _loan_inputs(params, ctx.loan), account, ctx.balance_ctx,
     )
 
     comparison = _build_refinance_comparison(

@@ -10,11 +10,12 @@ ways:
 * :class:`TestPlanPayoffDate` -- the pure fold (``_plan_fold.plan_payoff_date``) on
   hand-built plans, so the reaches-zero / retired-seed / negative-amortization /
   due-order rules are pinned to arithmetic anyone can check.
-* :class:`TestLoanPayoffDateSeam` -- the seam entry against the resolver's OWN
-  committed payoff (``compute_payoff_scenarios``, an independent producer) on real
-  loans, so a HEALTHY or OVERPAYING loan's derived payoff EQUALS the one shown
-  today (those cutovers at C8c move no baseline) and a standing extra beats the
-  contractual date (the fold-to-zero, not ``plan[-1].date``).
+* :class:`TestLoanPayoffDateSeam` -- the seam entry against the engine's OWN
+  contractual projection (``compute_payoff_scenarios``' contractual slice and
+  ``project_forward`` with the extra, an independent producer) on real loans,
+  so a HEALTHY or OVERPAYING loan's derived payoff EQUALS the contract's (those
+  cutovers at C8c move no baseline) and a standing extra beats the contractual
+  date (the fold-to-zero, not ``plan[-1].date``).
 
 **Baseline parity is a healthy/overpaying claim, NOT universal.** An UNDERPAYING
 loan (a balance behind the contractual schedule) clears a few months PAST the
@@ -39,12 +40,7 @@ from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transfer_template import TransferTemplate
-from app.services import (
-    balance_at,
-    loan_loaders,
-    loan_payment_service,
-    loan_resolver,
-)
+from app.services import balance_at, loan_loaders
 from app.services.balance_at._positions import memoized_payoff
 from app.services.balance_at._plan import (
     LoanForwardPlan,
@@ -63,13 +59,12 @@ from app.services.balance_at import BalanceContext
 from app.utils.dates import add_months
 from tests._test_helpers import (
     bind_rule_to_loan,
-    amount_basis_for_scenario,
+    contract_forward_references,
     create_loan_account,
     insert_trueup_event,
     last_covered_day,
     loan_params_for,
     make_cadence_rule,
-    seam_confirmed_view,
 )
 from tests.oracles.loan_monthly_composition import (
     accrual_charge,
@@ -112,6 +107,9 @@ def _plan(payments, *, rate="0.00", escrow="0.00"):
             accrual_charge(on_date, Decimal(rate), Decimal(escrow))
             for on_date in sorted(opens.values())
         ],
+        # Every payment here has a charge standing over it (one per slot,
+        # dated at its earliest due), so the fold never asks the periods.
+        periods=[],
     )
 
 
@@ -286,43 +284,20 @@ def _attach_derive_extra(seed_user, loan_account, extra):
     db.session.commit()
 
 
-def _committed_payoff(loan_params, scenario_id, as_of, extra):
-    """Return (committed payoff, pure-contractual payoff) from the resolver.
+def _reference_payoffs(loan_params, scenario_id, as_of, extra):
+    """Return (payoff with *extra* a month, pure-contractual payoff) -- the reference.
 
-    The independent reference: ``compute_payoff_scenarios`` computes the payoff via
-    ``project_forward``, which amortizes the CONTRACTUAL schedule month by month
-    and consumes no payment records at all -- a different code path from the
-    seam's fold, so agreement is meaningful, not tautological.  *This sentence
-    named ``split_payment_cash`` as the contrast until plan step X-au-g-2c-3b-2,
-    which was doubly wrong: the fold stopped calling it at R16-a, and it no
-    longer exists.  The independence was never that function's; it is
-    ``project_forward`` being a wholly separate walk.*
+    The independent reference (:func:`tests._test_helpers.contract_forward_references`):
+    ``project_forward`` over the CONTRACT from the replayed starting state, a
+    walk that amortizes month by month and consumes no payment records at all
+    -- a different code path from the seam's fold, so agreement is meaningful,
+    not tautological.  *It was the composer's ACCELERATED slice until plan
+    step R7d-g-3 deleted the composer's planned slices (ruling **R-R88**).*
     """
-    ctx_loan = loan_payment_service.load_loan_context(
-        loan_params.account_id, amount_basis_for_scenario(scenario_id),
-        loan_params,
+    scenarios, with_extra = contract_forward_references(
+        loan_params, scenario_id, as_of, extra,
     )
-    anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
-    # The extra rides as the composer's what-if ``extra_monthly`` and the
-    # reference is the ACCELERATED slice.  It was the COMMITTED slice with the
-    # extra passed as the loan-level ``extra_principal`` until plan step
-    # R7d-g-3 deleted that parameter (ruling **R-R88**, which re-ruled R-R83's seam clause there);
-    # no oracle fixture generates a row, so there is no override month and
-    # the two slices are the same walk -- the reference is byte-identical.
-    scenarios = loan_resolver.compute_payoff_scenarios(
-        loan_inputs=loan_resolver.LoanInputs(
-            loan_params, anchor_events, ctx_loan.payments, ctx_loan.rate_changes,
-        ),
-        extra_monthly=extra,
-        as_of=as_of,
-        confirmed_view=seam_confirmed_view(
-            loan_params.account_id, scenario_id, as_of,
-        ),
-    )
-    return (
-        scenarios.payoff_date_accelerated,
-        scenarios.original_forward[-1].payment_date,
-    )
+    return with_extra[-1].payment_date, scenarios.original_forward[-1].payment_date
 
 
 def _current_period(periods, today):
@@ -334,17 +309,17 @@ def _current_period(periods, today):
 
 
 class TestLoanPayoffDateSeam:
-    """The seam entry on real loans, against the resolver's own committed payoff."""
+    """The seam entry on real loans, against the engine's own contractual projection."""
 
-    def test_healthy_loan_matches_resolver_committed_payoff(
+    def test_healthy_loan_matches_the_contracts_payoff(
         self, app, seed_user, seed_periods_today,
     ):
-        """A healthy loan's derived payoff EQUALS the resolver's -- baseline unmoved.
+        """A healthy loan's derived payoff EQUALS the contract's -- baseline unmoved.
 
         The loan originates at the current period (clean past), so the fold and
-        the committed schedule agree on the timeline.  ``loan_payoff_date`` (fold
-        to zero) must equal ``payoff_date_committed`` (the value the loan card
-        shows today), so the C8c cutover moves nothing.
+        the contractual schedule agree on the timeline.  ``loan_payoff_date``
+        (fold to zero) must equal the contract's last installment (the
+        composer's ``original_forward``), so the C8c cutover moves nothing.
         """
         with app.app_context():
             today = date.today()
@@ -353,17 +328,17 @@ class TestLoanPayoffDateSeam:
                 seed_user, current, current.start_date, name="Payoff Healthy",
             )
             scenario_id = seed_user["scenario"].id
-            committed_payoff, _ = _committed_payoff(
+            _, contractual_payoff = _reference_payoffs(
                 loan_params, scenario_id, today, Decimal("0.00"),
             )
 
             ctx = BalanceContext.build(seed_user["user"].id)
-            assert balance_at.loan_payoff_date(account, ctx) == committed_payoff
+            assert balance_at.loan_payoff_date(account, ctx) == contractual_payoff
 
-    def test_standing_extra_matches_resolver_and_beats_contractual(
+    def test_standing_extra_matches_the_engine_and_beats_contractual(
         self, app, seed_user, seed_periods_today,
     ):
-        """With a standing extra the payoff is the resolver's committed date --
+        """With a standing extra the payoff is the engine's contract-plus-extra date --
 
         and STRICTLY BEFORE the pure-contractual date, proving the fold-to-zero
         reaches the accelerated payoff rather than returning ``plan[-1].date`` (the
@@ -378,16 +353,16 @@ class TestLoanPayoffDateSeam:
             )
             _attach_derive_extra(seed_user, account, Decimal("500.00"))
             scenario_id = seed_user["scenario"].id
-            committed_payoff, contractual_payoff = _committed_payoff(
+            accelerated_payoff, contractual_payoff = _reference_payoffs(
                 loan_params, scenario_id, today, Decimal("500.00"),
             )
-            assert committed_payoff < contractual_payoff, (
+            assert accelerated_payoff < contractual_payoff, (
                 "extra did not accelerate payoff; the test would be vacuous"
             )
 
             ctx = BalanceContext.build(seed_user["user"].id)
             derived = balance_at.loan_payoff_date(account, ctx)
-            assert derived == committed_payoff
+            assert derived == accelerated_payoff
             assert derived < contractual_payoff
 
     def test_retired_loan_returns_none(
@@ -472,7 +447,7 @@ class TestPayoffTailExtension:
             insert_trueup_event(loan_params, _PRINCIPAL + Decimal("500.00"))
             db.session.commit()
             scenario_id = seed_user["scenario"].id
-            committed_payoff, _ = _committed_payoff(
+            _, contractual_payoff = _reference_payoffs(
                 loan_params, scenario_id, today, Decimal("0.00"),
             )
 
@@ -486,10 +461,10 @@ class TestPayoffTailExtension:
             # residue of ~$500 * 1.005**360 ~= $3,010 at the contractual payoff,
             # which two level-payment (~$1,798 P&I) extension installments clear
             # (~$1,783 principal each), so payoff lands two months past the
-            # resolver's forced contractual date.
-            assert derived == add_months(committed_payoff, 2), (
+            # engine's forced contractual date.
+            assert derived == add_months(contractual_payoff, 2), (
                 f"underpaid payoff {derived} should be two extension installments "
-                f"past the resolver's forced contractual {committed_payoff}"
+                f"past the engine's forced contractual {contractual_payoff}"
             )
 
     def test_severe_underpayment_never_amortizes_returns_none(
@@ -534,7 +509,7 @@ class TestPayoffTailExtension:
                 seed_user, current, current.start_date, name="Payoff Healthy2",
             )
             scenario_id = seed_user["scenario"].id
-            _, contractual_payoff = _committed_payoff(
+            _, contractual_payoff = _reference_payoffs(
                 loan_params, scenario_id, today, Decimal("0.00"),
             )
 
@@ -594,17 +569,17 @@ class TestPayoffCutover:
             insert_trueup_event(loan_params, _PRINCIPAL + Decimal("500.00"))
             db.session.commit()
             scenario_id = seed_user["scenario"].id
-            committed_payoff, _ = _committed_payoff(
+            _, contractual_payoff = _reference_payoffs(
                 loan_params, scenario_id, today, Decimal("0.00"),
             )
 
             ctx = BalanceContext.build(seed_user["user"].id)
             figures = balance_at.loan_figures(account, ctx)
             assert figures is not None
-            assert figures.payoff_date == add_months(committed_payoff, 2)
-            assert figures.payoff_date != committed_payoff, (
-                "the figure still reports the resolver's committed schedule "
-                "endpoint, so the cutover is not wired"
+            assert figures.payoff_date == add_months(contractual_payoff, 2)
+            assert figures.payoff_date != contractual_payoff, (
+                "the figure still reports the contract's schedule endpoint, so "
+                "the cutover is not wired"
             )
 
     def test_a_retired_loan_reports_no_payoff_but_is_retired(

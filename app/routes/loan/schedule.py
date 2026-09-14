@@ -16,10 +16,13 @@ from flask import render_template
 
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
+    _load_route_context,
+    _loan_inputs,
     _require_configured_loan,
+    build_baseline_scenarios,
     build_schedule_context,
-    load_baseline_scenarios,
 )
+from app.services import balance_at
 from app.utils.auth_helpers import require_owner
 
 
@@ -28,11 +31,12 @@ from app.utils.auth_helpers import require_owner
 def schedule(account_id):
     """Standalone month-by-month amortization schedule for a loan.
 
-    A schedule TABLE, not a balance surface, so it does not read the balance
-    seam: it composes its planned trajectory ONCE off the same load-and-compose
-    the detail page's band chart shares (:func:`._helpers.load_baseline_scenarios`,
-    ``history_rows + committed_forward``) -- the identical committed trajectory
-    the card carries -- so the schedule is derived exactly once.  Guards via
+    A schedule TABLE: the confirmed actuals off the same composer call the
+    detail page's band chart shares (:func:`._helpers.build_baseline_scenarios`,
+    ``history_rows``) followed by the balance seam's forward plan
+    (:func:`~app.services.balance_at.loan_installments`, plan step R7d-g-3,
+    ruling **R-R88**) -- the identical fold the card's chip and band read -- so
+    the table cannot diverge from the page it is linked from.  Guards via
     :func:`._require_configured_loan`: a cross-owner / non-loan account 404s,
     an un-configured loan redirects to its detail page (the setup surface).
 
@@ -47,15 +51,17 @@ def schedule(account_id):
     renders: the loan's escrow LINES go in, not one figure off them.
     """
     account, params, account_type = _require_configured_loan(account_id)
-    loan, scenarios = load_baseline_scenarios(account, params)
-    planned_schedule = (
-        list(scenarios.history_rows) + list(scenarios.committed_forward)
+    ctx = _load_route_context(account, params)
+    scenarios = build_baseline_scenarios(
+        _loan_inputs(params, ctx.loan), account, ctx.balance_ctx,
     )
     context = {
         "account": account,
         "account_type": account_type,
     }
     context.update(build_schedule_context(
-        planned_schedule, loan.escrow_lines, params,
+        scenarios.history_rows,
+        balance_at.loan_installments(account, ctx.balance_ctx),
+        ctx.loan.escrow_lines, params,
     ))
     return render_template("loan/schedule.html", **context)

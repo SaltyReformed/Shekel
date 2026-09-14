@@ -160,8 +160,9 @@ def has_settled_by(settled_on: date | None, as_of: date) -> bool:
     **Written once, and the reason is the LEDGER, not a measured drift between
     its two callers** (plan step **X-an**, finding **N-187**).  The loan resolver
     splits its payment feed on this ONE predicate: the HISTORY side goes to
-    :func:`app.services.rate_period_engine.replay_schedule` and the rest to
-    ``loan_resolver._payoff._build_monthly_override``, which plans it.  They had
+    :func:`app.services.rate_period_engine.replay_schedule` and the rest was
+    the composer's plan (``_build_monthly_override``, until plan step R7d-g-3
+    made the balance seam's fold the one planned walk).  They had
     two inline comparisons and those AGREED -- both read the payment's
     PAY-PERIOD start -- so the split stayed clean while the rule itself was
     wrong.  What they disagreed with was the posted ledger, which counts the same

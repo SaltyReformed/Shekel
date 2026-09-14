@@ -1,9 +1,20 @@
-"""Loan-resolver payoff composer: the three-scenario "what-if" producer.
+"""Loan-resolver payoff composer: the confirmed history and the CONTRACT's forward.
 
-Single source of truth for the Payoff Calculator's Original / Committed /
-Accelerated scenarios.  Replays the past once and projects three ways from
-one shared starting state so the chart series and the summary metrics derive
-from the same return value and cannot diverge.
+Replays the past once and projects the contract's remaining installments from
+the resulting starting state, so a loan page's x-axis, its confirmed half and
+its contract-versus-plan comparison derive from one return value.
+
+**It composed three scenarios -- Original / Committed / Accelerated -- until
+plan step R7d-g-3** (ruling **R-R88**): the committed slice routed the loan's
+projected transfer rows through ``project_forward``'s ``monthly_override`` and
+priced the months no row covered from the contract plus ONE picked definition's
+extra, and the accelerated slice added the pay-off-sooner lever's what-if on
+top.  Both were a SECOND forward walk beside the balance seam's plan fold
+(``balance_at._plan`` / ``_plan_fold``), which prices every definition's own
+occurrences; the seam's fold is the one forward walk now, read by the loan
+page through ``balance_at.loan_installments`` / ``positions`` /
+``loan_what_if_owed_at_dates``.  What stays here is what the fold does not
+produce: the ledger-derived confirmed rows and the pure contractual reference.
 
 Pure: no Flask, no ``db.session``; the caller loads the data and passes it in.
 """
@@ -11,16 +22,13 @@ Pure: no Flask, no ``db.session``; the caller loads the data and passes it in.
 import dataclasses
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 
 from app.services.amortization_engine import (
     AmortizationRow,
-    PaymentRecord,
     ProjectionInputs,
     project_forward,
 )
 from app.services.rate_period_engine import period_for_date
-from app.utils.dates import has_settled_by
 from app.utils.money import round_money
 
 from ._periods import (
@@ -34,33 +42,14 @@ from ._periods import (
 
 
 @dataclass(frozen=True)
-class PayoffScenarios:  # pylint: disable=too-many-instance-attributes
-    """Single-return-value bundle for the Payoff Calculator's three scenarios.
-
-    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
-    because this is a deliberate single-return result aggregate -- the
-    chart series (``history_rows`` plus the three forward slices) and
-    the four summary metrics are the one cohesive contract the Payoff
-    Calculator's chart and summary card both read, flat.  Splitting it
-    would fragment that contract for no design gain (same rationale as
-    :class:`~app.services.amortization_engine.AmortizationRow`).
+class PayoffScenarios:
+    """The confirmed history and the contract's forward, from ONE replay.
 
     Frozen because the composer returns a snapshot the caller renders;
-    every consumer (chart series + summary card) reads from one
-    instance, so chart and summary cannot diverge by construction.
-    The architectural fix this snapshot implements is documented at
-    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``;
-    chart-summary divergence was the failure mode that motivated the
-    split.
-
-    All three forward slices start from the same
-    ``(starting_balance, starting_date, remaining_months,
-    terms_schedule)`` state produced by a single
-    :func:`rate_period_engine.replay_schedule` call plus the loan's
-    rate-period terms feed; they differ only in
-    ``monthly_override`` and ``extra_monthly``.  Chart rendering is
-    ``history_rows + <slice>_forward``; the prefix is byte-identical
-    across slices because replay returns the same row list.
+    every consumer reads from one instance, so the confirmed half and the
+    contractual reference cannot diverge by construction.  Two of what were
+    ten fields until plan step R7d-g-3 -- see the module docstring for the
+    slices and metrics that moved to the balance seam's fold.
 
     Attributes:
         history_rows: Confirmed-payment rows from origination (or the
@@ -68,126 +57,15 @@ class PayoffScenarios:  # pylint: disable=too-many-instance-attributes
             ``is_confirmed=True``.  Empty when no confirmed payments
             exist at or before ``as_of``.
         original_forward: Pure contractual amortization from
-            ``replay.balance_as_of`` forward -- no override, no
-            extra.  Models "what the lender would amortize the
-            remaining balance to" if the user paid exactly the
-            contractual P&I every month.
-        committed_forward: Contractual amortization with projected
-            transfers routed through ``monthly_override`` -- the
-            user's planned outlay, no acceleration.
-        accelerated_forward: ``committed_forward`` plus
-            ``extra_monthly`` applied to every forward month, override
-            and contractual alike.  No row of any forward slice has a
-            payment_date at or before the last replay row, which is what
-            makes the "extra applied to ghost historical months" bug
-            structurally impossible.
-        months_saved: ``len(committed_forward) - len(accelerated_forward)``.
-            Number of payments avoided by paying ``extra_monthly`` per
-            forward month.  Zero when ``extra_monthly == 0`` or
-            when the schedules pay off at the same month boundary.
-        interest_saved: ``round_money(sum(committed.interest) -
-            sum(accelerated.interest))``.  Total interest avoided by
-            the acceleration.  Zero or negative is meaningful (a
-            negative value would indicate a corner case where extra
-            slightly increases total interest -- not expected under
-            normal inputs).
-        payoff_date_committed: ``committed_forward[-1].payment_date``
-            or ``as_of`` when the slice is empty.  The date the loan
-            reaches zero under the planned-payment scenario.
-        payoff_date_accelerated: ``accelerated_forward[-1].payment_date``
-            or ``as_of`` when the slice is empty.
-        total_interest_committed: Life-of-remaining-loan interest under
-            the committed scenario, rounded via ``round_money``.
-            Excludes ``history_rows`` (already paid).
-        total_interest_accelerated: Same for the accelerated scenario.
+            ``replay.balance_as_of`` forward -- no plan, no extra.  Models
+            "what the lender would amortize the remaining balance to" if the
+            user paid exactly the contractual P&I every month: the band
+            chart's x-axis and the lever's "current plan vs. original"
+            reference.
     """
 
     history_rows: list[AmortizationRow]
     original_forward: list[AmortizationRow]
-    committed_forward: list[AmortizationRow]
-    accelerated_forward: list[AmortizationRow]
-    months_saved: int
-    interest_saved: Decimal
-    payoff_date_committed: date
-    payoff_date_accelerated: date
-    total_interest_committed: Decimal
-    total_interest_accelerated: Decimal
-
-
-def _build_monthly_override(
-    payments: list[PaymentRecord],
-    as_of: date,
-) -> dict[tuple[int, int], Decimal]:
-    """Group projection-eligible payments into a (year, month) sum.
-
-    The composer routes two payment classes through
-    ``project_forward``'s ``monthly_override``:
-
-    * Every payment whose cash has NOT moved (``settled_on is None``),
-      regardless of date.  These are the user's planned future outlays from
-      recurring transfer templates; they belong on the forward side
-      because they have not actually happened yet.
-    * Payments settled AFTER ``as_of``.  The case this is FOR is a read of a
-      PAST date, where a payment settled since is correctly still a projection
-      at that date.  It is not claimed empty for a today-read: the write door
-      does refuse a future settle day, but against a different clock and it is
-      not the only writer -- see :func:`compute_payoff_scenarios`, which states
-      that in full rather than leaving a guarantee here it cannot keep.
-
-    Two dates with distinct jobs (the same split ``replay_schedule`` makes):
-
-    * The replay/projection CUT keys on the SETTLED day, through the same
-      :func:`~app.utils.dates.has_settled_by` predicate
-      ``replay_schedule`` caps on, so a payment is never in BOTH halves and
-      never dropped because the two spellings disagreed.  (It can still be in
-      neither: ``replay_schedule`` further drops a candidate an anchor subsumes
-      or that falls past a payoff, and this function correctly does not take
-      those back -- see that function.)  The cut keyed on the pay-period start
-      until plan step **X-an** -- the FUNDING basis, which the ledger does not
-      use -- and finding **N-187** is what that cost: a payment settled before
-      its funding period began was already paid down in the ledger balance
-      seeding this projection AND planned here, so its installment was paid
-      twice.
-    * The override MONTH is the payment's own due month
-      (:attr:`PaymentDates.due_date`), matching the due-date dating
-      ``replay_schedule`` gives its rows and ``project_forward`` its forward
-      rows.  Keying on the pay-period-start month instead would land each
-      planned amount one month early -- a latent error whenever planned
-      amounts vary month to month.
-
-    Payments with multiple entries in the same calendar month are
-    summed so the override map is a "total planned outlay for this
-    month" view -- matching how ``project_forward`` consumes it.
-
-    Args:
-        payments: The full prepared payment list, typically from
-            :func:`app.services.loan_payment_service.prepare_payments_for_engine`.
-            Mixed settled/projected; the function filters
-            internally.
-        as_of: Cutoff date used to separate replay history from
-            forward projection.  Payments settled at or before ``as_of``
-            are consumed by replay and excluded here.
-
-    Returns:
-        A dict mapping ``(year, month) -> Decimal`` total payment.
-        Empty dict when no projection-eligible payment exists.
-    """
-    override: dict[tuple[int, int], Decimal] = {}
-    for payment in payments:
-        # A payment whose cash has already moved by as_of belongs to replay,
-        # not projection -- exclude it.  Everything else (payments not yet
-        # settled + payments settled after as_of) is a forward-only concept.
-        # ONE predicate, shared with replay_schedule's as_of cap, so the split
-        # is a property of one rule rather than of two comparisons that happen
-        # to agree (plan step X-an).
-        if has_settled_by(payment.dates.settled_on, as_of):
-            continue
-        # Key on the payment's own due month so the planned amount lands on
-        # the same forward row project_forward generates (it advances from
-        # replay's due-date-derived next_pay_date).
-        key = (payment.dates.due_date.year, payment.dates.due_date.month)
-        override[key] = override.get(key, ZERO_MONEY) + payment.amount
-    return override
 
 
 @dataclass(frozen=True)
@@ -195,28 +73,23 @@ class _ProjectionPrep:
     """The replay-derived inputs the payoff composer builds its result from.
 
     Produced once by :func:`_build_forward_inputs` so
-    :func:`compute_payoff_scenarios` reads three values from one local
-    instead of threading the replay, override map, contractual P&I, and
-    rate-period set through its body (which pushed it over the
-    local-variable limit), leaving the composer a thin
-    "project three ways, then summarize" orchestrator.
+    :func:`compute_payoff_scenarios` reads two values from one local
+    instead of threading the replay, contractual P&I, and rate-period set
+    through its body, leaving the composer a thin "project, then bundle"
+    orchestrator.
 
     Attributes:
-        projection_inputs: The shared :class:`ProjectionInputs` all three
-            forward slices project from -- same starting balance, date,
-            remaining months, and rate-period terms feed (each month's
-            SSOT rate and contractual P&I).
+        projection_inputs: The :class:`ProjectionInputs` the contractual
+            forward projects from -- starting balance, date, remaining
+            months, and the rate-period terms feed (each month's SSOT rate
+            and contractual P&I).
         history_rows: The confirmed-payment history slice (origination or
             latest anchor through ``as_of``), each row's ``extra_payment``
             surfaced against the SSOT contractual payment.
-        monthly_override: The ``(year, month) -> Decimal`` planned-outlay
-            map for the committed / accelerated slices, or ``None`` when
-            no projection-eligible payment exists.
     """
 
     projection_inputs: ProjectionInputs
     history_rows: list[AmortizationRow]
-    monthly_override: dict[tuple[int, int], Decimal] | None
 
 
 def _build_forward_inputs(
@@ -224,13 +97,15 @@ def _build_forward_inputs(
     as_of: date,
     confirmed_view: ConfirmedLedgerView | None = None,
 ) -> _ProjectionPrep:
-    """Replay the past and assemble the shared inputs for the three forward slices.
+    """Replay the past and assemble the contractual forward's inputs.
 
     The single setup phase of :func:`compute_payoff_scenarios`: replay
     confirmed payments from the latest anchor, derive the SSOT
-    contractual P&I and the planned-outlay override map, surface
-    historical overpayments on the history rows, and build the one
-    :class:`ProjectionInputs` all three slices share.
+    contractual P&I, surface historical overpayments on the history rows,
+    and build the :class:`ProjectionInputs` the contract's forward projects
+    from.  (It built a planned-outlay override map for two further slices
+    too, until plan step R7d-g-3 made the balance seam's fold the one
+    planned walk.)
 
     Args:
         loan_inputs: The loan's loaded input bundle.
@@ -258,8 +133,8 @@ def _build_forward_inputs(
             month count derived beside it.
 
     Returns:
-        A :class:`_ProjectionPrep` with the shared projection inputs, the
-        confirmed-payment history slice, and the forward override map.
+        A :class:`_ProjectionPrep` with the projection inputs and the
+        confirmed-payment history slice.
 
     Raises:
         ValueError: When ``loan_inputs.anchor_events`` is empty (via
@@ -293,11 +168,6 @@ def _build_forward_inputs(
     # the loan card, so the card and the schedule's projected rows agree
     # by construction (both read the rate-period engine via ``as_of``).
     contractual = period_for_date(periods, as_of).period_pi
-
-    monthly_override = _build_monthly_override(
-        loan_inputs.payments or [],
-        as_of,
-    )
 
     if confirmed_view is not None:
         # The ledger rows carry their ACTUAL economics -- principal,
@@ -353,77 +223,36 @@ def _build_forward_inputs(
     return _ProjectionPrep(
         projection_inputs=projection_inputs,
         history_rows=history_rows,
-        monthly_override=(monthly_override or None),
     )
 
 
 def compute_payoff_scenarios(
     *,
     loan_inputs: LoanInputs,
-    extra_monthly: Decimal,
     as_of: date,
     confirmed_view: ConfirmedLedgerView | None = None,
 ) -> PayoffScenarios:
-    """Single source of truth for the Payoff Calculator's three scenarios.
+    """Replay the confirmed past once and project the CONTRACT forward from it.
 
     Calls :func:`rate_period_engine.replay_schedule` ONCE to derive a
-    deterministic-past slice plus the starting state, then calls
-    :func:`project_forward` THREE times from the same starting
-    ``(balance, date, remaining_months, rate)`` tuple, differing only
-    in ``monthly_override`` and the extra applied.  The chart series
-    (Original / Committed / Accelerated) and the summary metrics
-    (months_saved, interest_saved, payoff dates, life-of-remaining-
-    loan interest) all derive from the single return value, so chart
-    and summary cannot diverge.
+    deterministic-past slice plus the starting state, then
+    :func:`project_forward` once for the pure contractual reference.
 
-    ONE extra, the payoff lever's.  ``extra_monthly`` is the lever's what-if
-    extra, previewed on top in the ACCELERATED slice only (every forward
-    month, override and contractual alike).  ``original_forward`` stays the
-    pure contractual reference (no override, no extra), so committed-vs-
-    original quantifies the owner's plan and accelerated-vs-committed
-    quantifies just the lever.  **A loan-level ``extra_principal`` -- the
-    standing overpayment off ONE picked definition's ``loan_payment_settings``
-    row -- was the second extra until plan step R7d-g-3**, applied to every
-    forward month of the committed slice.  It is gone, and for two reasons.
-    It DOUBLE-COUNTED: since plan step ``balance:X-au-g-2c-1`` the payment
-    feed is priced by the amount model, and rule 4 puts a definition's extra
-    INSIDE its projected row's cash, so an override month carried the extra
-    in ``monthly_override`` and again through this parameter (measured
-    2026-09-14: P&I ``$526.46`` + a ``$100`` extra arrived as ``$626.46`` and
-    the month then paid ``$676.46`` of principal + interest).  And it PICKED:
-    a loan with two recurring transfers paying in has two settings rows, and
-    the parameter carried the oldest's alone (ruling **R-R83**; plan ledger
-    row **D49**).  What no row covers is the CONTRACT's installment here, and
-    is priced from every definition's own occurrences by the balance seam's
-    forward plan (``balance_at._plan``), which is the producer the loan
-    page's tail reads once plan step R16-f re-expresses this walk as that
-    fold.
-
-    Routes projected payments forward through ``monthly_override``
-    instead of relying on the engine's "apply extra when no payment
-    record exists" convention -- the architectural fix for the
-    "extra applied to ghost historical months" bug documented at
-    ``docs/plans/2026-05-21-amortization-engine-split-replay-projection.md``.
-    The forward slices are all after the replay boundary, so no extra ever
-    lands on a historical month.  A projected row's cash carries its own
-    definition's standing extra (amount rule 4), and a SETTLED payment
-    routed to the override because its settle day is after ``as_of``
-    (:func:`_build_monthly_override`) carries its FROZEN actual; each lands
-    in ``monthly_override`` exactly once and nothing here adds to it.  Plan
-    step **X-an** narrowed WHEN the settled case can arise: the edge used to
-    be any payment settled before its pay period began, which is an ordinary
-    early payment rather than a data-hygiene case (finding **N-187**).  What
-    is left is a read of a PAST date whose loan has been paid since -- where
-    treating the payment as a projection is the correct answer for that date.
-
-    **It is not claimed unreachable for a today-read, deliberately.**  The
-    write door refuses a future settle day
-    (:func:`app.services.status_seam.reject_future_settle_day`) against
-    ``display_today()`` while ``BalanceContext``'s default ``as_of`` is
-    ``date.today()``, and finding **N-191** records that those are two clocks
-    with no rule tying them; and the door is not the only writer -- a bulk
-    ``query.update`` reaches ``settled_on`` without passing it.  "Unreachable
-    through the seam" is what can be said, and that is weaker than unreachable.
+    **It projected the owner's PLAN too until plan step R7d-g-3** (ruling
+    **R-R88**): the committed and accelerated slices routed the projected
+    transfer rows through ``monthly_override`` and applied a loan-level
+    ``extra_principal`` and the lever's ``extra_monthly`` on top.  The
+    override amounts were priced by amount rule 4 with each definition's
+    extra INSIDE them (since ``balance:X-au-g-2c-1``), so the loan-level
+    extra paid twice on every row-covered month (measured 2026-09-14: P&I
+    ``$526.46`` + a ``$100`` extra arrived as ``$626.46`` and the month then
+    paid ``$676.46``), and the months no row covered were priced from the
+    contract plus ONE picked definition's extra (plan ledger row **D49**).
+    The balance seam's plan fold already priced every definition's own
+    occurrences; it is the one forward walk now
+    (:func:`app.services.balance_at.loan_installments`,
+    :func:`app.services.balance_at.loan_what_if_owed_at_dates`), and this
+    composer keeps what the fold does not produce.
 
     Algorithm:
 
@@ -433,22 +262,15 @@ def compute_payoff_scenarios(
     2. Replay starts at the verified anchor balance (ARM and fixed-rate
        alike).  Pre-anchor confirmed payments are filtered inside
        replay; their effect is already baked into the anchor balance.
-    3. Group the payments whose cash has not moved by ``as_of`` by
-       ``(year, month)`` for the forward overrides
-       (see :func:`_build_monthly_override`).
-    4. Replay produces ``history_rows``, ``balance_as_of``,
+    3. Replay produces ``history_rows``, ``balance_as_of``,
        ``next_pay_date``, ``remaining_months_as_of``, and the
        ``current_period`` (its rate and level P&I).
-    5. Three forward projections share that starting state.  Each
+    4. The contractual forward projects from that starting state.  Each
        month's contractual P&I and rate come from the loan's full
        rate-period terms feed -- the same figures the loan card reads
-       via :func:`period_for_date` -- so the schedule's projected P&I
-       matches ``LoanState.monthly_payment`` by construction in every
-       period, recorded recasts included (DH-#1), and ARM behavior is
-       identical across the trio.
-    6. Summary metrics derive from the same forward slices --
-       ``months_saved`` is a length diff, ``interest_saved`` is a
-       row-sum diff.
+       via :func:`period_for_date` -- so the projected P&I matches
+       ``LoanState.monthly_payment`` by construction in every period,
+       recorded recasts included (DH-#1).
 
     Args:
         loan_inputs: The loan's loaded :class:`LoanInputs` bundle
@@ -456,87 +278,29 @@ def compute_payoff_scenarios(
             ``rate_changes``).  ``anchor_events`` must be non-empty
             (the Commit-12 invariant); an empty list raises a
             ValueError via ``._periods.select_latest_anchor``.  The
-            composer separates payments SETTLED by ``as_of`` (replay)
-            from everything else (override) internally; the full
-            rate-period terms feed governs the forward slices month by
-            month.
-        extra_monthly: The payoff lever's what-if extra, applied to every
-            month of the ACCELERATED scenario.  ``0`` collapses accelerated
-            to committed (``months_saved == 0``, ``interest_saved == 0``).
+            replay reads the payments' DATES alone -- which are settled by
+            ``as_of`` -- and no amount.
         as_of: Evaluation date.  The replay/projection boundary.
             Typically ``date.today()`` from the route.
         confirmed_view: The loan's genesis-ledger confirmed view (the read
-            switch) -- its balance seeds the forward slices and its
+            switch) -- its balance seeds the forward slice and its
             ledger-derived rows become ``history_rows`` -- or ``None`` to keep
             the anchor replay for both.  Threaded to
             :func:`_build_forward_inputs`; see its arg doc.  The caller reads
-            it once (via ``balance_at.confirmed_view``) so the
-            chart / summary / table all derive from the same real owed
-            balance and actual history the loan card shows.
+            it once (via ``balance_at.confirmed_view``) so the history and
+            the contractual reference derive from the same real owed
+            balance the loan card shows.
 
     Returns:
-        A :class:`PayoffScenarios` with the three forward slices and
-        the four summary metrics.
+        A :class:`PayoffScenarios` with the confirmed history and the
+        contractual forward.
 
     Raises:
         ValueError: When ``loan_inputs.anchor_events`` is empty (via
             ``._periods.select_latest_anchor``).
     """
     prep = _build_forward_inputs(loan_inputs, as_of, confirmed_view)
-
-    # All three forward slices share starting state; only override presence and
-    # the extra applied vary.  Original is the pure contractual reference (no
-    # override, no extra); committed is the owner's plan (each override month
-    # at its rows' own resolved cash, standing extras inside); accelerated
-    # adds the lever's extra_monthly on top.  Funnelling all three through
-    # one primitive call shape keeps chart and summary in lockstep.
-    original_forward = project_forward(
-        prep.projection_inputs,
-        monthly_override=None,
-        extra_monthly=ZERO_MONEY,
-    )
-    committed_forward = project_forward(
-        prep.projection_inputs,
-        monthly_override=prep.monthly_override,
-        extra_monthly=ZERO_MONEY,
-    )
-    accelerated_forward = project_forward(
-        prep.projection_inputs,
-        monthly_override=prep.monthly_override,
-        extra_monthly=extra_monthly,
-    )
-
-    # Summary metrics derive from the same forward slices the chart
-    # plots -- the load-bearing single-source-of-truth guarantee.
-    months_saved = len(committed_forward) - len(accelerated_forward)
-    total_interest_committed_full = sum(
-        (row.interest for row in committed_forward), ZERO_MONEY,
-    )
-    total_interest_accelerated_full = sum(
-        (row.interest for row in accelerated_forward), ZERO_MONEY,
-    )
-    interest_saved_full = (
-        total_interest_committed_full - total_interest_accelerated_full
-    )
-    payoff_date_committed = (
-        committed_forward[-1].payment_date if committed_forward else as_of
-    )
-    payoff_date_accelerated = (
-        accelerated_forward[-1].payment_date
-        if accelerated_forward else as_of
-    )
-
     return PayoffScenarios(
         history_rows=prep.history_rows,
-        original_forward=original_forward,
-        committed_forward=committed_forward,
-        accelerated_forward=accelerated_forward,
-        months_saved=months_saved,
-        interest_saved=round_money(interest_saved_full),
-        payoff_date_committed=payoff_date_committed,
-        payoff_date_accelerated=payoff_date_accelerated,
-        total_interest_committed=round_money(total_interest_committed_full),
-        total_interest_accelerated=round_money(
-            total_interest_accelerated_full
-        ),
+        original_forward=project_forward(prep.projection_inputs),
     )

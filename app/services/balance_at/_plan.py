@@ -735,7 +735,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
     require_scenario(ctx)
     resolved = resolved_loan(account, ctx)
     if resolved is None:
-        return LoanForwardPlan(payments=[], charges=[])
+        return LoanForwardPlan(payments=[], charges=[], periods=[])
     params = resolved.params
     rate_changes = resolved.context.rate_changes
     fwd = _ForwardInputs(
@@ -801,6 +801,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
         charges=_charges_for(
             contractual, payments, seed_slots, last_anchor, fwd,
         ),
+        periods=fwd.periods,
     )
 
 
