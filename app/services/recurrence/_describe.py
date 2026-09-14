@@ -390,6 +390,29 @@ def _parenthetical(resolved: ResolvedRecurrence) -> str | None:
     return f"{coordinate}, {note}"
 
 
+def _ceiling_note(resolved: ResolvedRecurrence) -> str | None:
+    """Return ``"at most 2 a month"`` for a ceilinged rule, or ``None``.
+
+    The per-month ceiling's words (plan step salary:R15-a, ruling
+    **R-SAL29**), composed AFTER the coordinate and the placement note because
+    it qualifies the whole cadence rather than either axis: "Every paycheck
+    (at most 2 a month)" is a payroll benefit taken on a month's first two
+    paychecks, which is what the developer's deduction rows used to spell
+    "24x/yr (skip 3rd paycheck)" -- a biweekly count that lies at any other
+    pay cadence, which is finding **F-21**.  The ceiling reads the same at
+    every cadence.
+
+    Args:
+        resolved: The recurrence's two-axis meaning.
+
+    Returns:
+        The note, or ``None`` when the rule states no ceiling.
+    """
+    if resolved.max_per_month is None:
+        return None
+    return f"at most {resolved.max_per_month} a month"
+
+
 def _never_stops(_bound: NeverEnds) -> None:
     """Return no phrase: an indefinite recurrence shows no second line.
 
@@ -658,9 +681,11 @@ def describe(resolved: ResolvedRecurrence) -> RecurrenceDescription:
     """Describe a resolved recurrence in the words a surface shows.
 
     The single producer of a recurrence's display phrase, and total over
-    ``(interval_n, unit, placement)`` rather than over the closed pattern set
-    it replaced -- so ``(2, MONTH)`` and ``(1, WEEK)`` already read correctly
-    though nothing authors them until plan step R8.
+    ``(interval_n, unit, placement, max_per_month)`` rather than over the
+    closed pattern set it replaced -- so ``(2, MONTH)`` and ``(1, WEEK)``
+    already read correctly though nothing authors them until plan step R8,
+    and a ceilinged rule reads ``"Every paycheck (at most 2 a month)"``
+    (plan step salary:R15-a).
 
     Args:
         resolved: The recurrence's two-axis meaning, from
@@ -679,8 +704,14 @@ def describe(resolved: ResolvedRecurrence) -> RecurrenceDescription:
     # the other order the broader case never reaches its own message, and one
     # of the two raises would be unreachable rather than merely rare.
     stem = _stem(resolved.unit, resolved.interval_n)
-    parenthetical = _parenthetical(resolved)
-    cadence = stem if parenthetical is None else f"{stem} ({parenthetical})"
+    # The axes' parenthetical first, the ceiling's note after it: the ceiling
+    # qualifies the whole cadence, so it closes the bracket (plan step
+    # salary:R15-a).  Either may be absent; both absent is the bare stem.
+    notes = [
+        note for note in (_parenthetical(resolved), _ceiling_note(resolved))
+        if note is not None
+    ]
+    cadence = stem if not notes else f"{stem} ({', '.join(notes)})"
     return RecurrenceDescription(
         cadence=cadence, stops=_stops_phrase(resolved.closing),
     )

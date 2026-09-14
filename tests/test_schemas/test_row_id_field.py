@@ -428,6 +428,10 @@ _NON_ROW_ID_INTEGERS = frozenset({
     "grid_default_periods",
     "inflation_effective_month",
     "interval_n",
+    # ``max_per_month`` is a COUNT -- the most of a rule's own occurrences a
+    # calendar month admits (plan step salary:R15-a) -- bounded by its column's
+    # own domain, exactly as ``interval_n`` is.
+    "max_per_month",
     # ``keep_through_index`` LEFT this set at plan step C3-a rather than being
     # relaxed out of it: the truncate form now posts ``keep_through_period_id``,
     # a ``RowId``, because the value selects which pay periods a CASCADE

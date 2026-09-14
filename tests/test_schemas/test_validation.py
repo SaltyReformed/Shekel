@@ -35,6 +35,7 @@ from app.schemas.validation import (
     TransferTemplateCreateSchema,
     TransferUpdateSchema,
 )
+from app.schemas.validation.retirement import errors_by_rail_control
 
 
 # ── TransactionCreateSchema ──────────────────────────────────────────
@@ -1768,3 +1769,77 @@ class TestReadinessQueryGathersTheRaiseProbes:
                     f"raise_end_mode_{raw}": "none",
                 })
             assert "raise_probes" in exc.value.messages
+
+
+class TestErrorsByRailControl:
+    """A schema's refusals, re-keyed onto the assumptions rail's controls.
+
+    The ONE error shape the rail renders, ``{control name: [messages]}``
+    (plan step salary:S3-f-3 for the Save; salary:S3-f-4, ruling **R-SAL33**,
+    for the readiness GET's refusals).  ``raise_probes`` is marshmallow's
+    ``Dict`` report and is the only field whose name is not its control's.
+    """
+
+    def test_a_refused_half_lands_on_its_own_control(self):
+        """A mode refusal keys ``raise_end_mode_<id>``; a year refusal the year's."""
+        assert errors_by_rail_control({
+            "raise_probes": {
+                "5": {"value": {"mode": ["Must be one of: year, none."]}},
+                "7": {"value": {"year": ["Must be greater than or equal to 2000."]}},
+            },
+        }) == {
+            "raise_end_mode_5": ["Must be one of: year, none."],
+            "raise_end_year_7": ["Must be greater than or equal to 2000."],
+        }
+
+    def test_a_refused_id_lands_on_the_mode_control_of_the_id_as_submitted(self):
+        """``RowId``'s refusal names no rendered row; it keys the first control."""
+        assert errors_by_rail_control({
+            "raise_probes": {"007": {"key": ["Not a valid row id."]}},
+        }) == {"raise_end_mode_007": ["Not a valid row id."]}
+
+    def test_every_other_field_passes_through_under_its_own_name(self):
+        """``swr``, ``months`` and the rest are already keyed by their controls."""
+        errors = {
+            "swr": ["Must be greater than or equal to 0 and less than or equal to 1."],
+            "months": ["Must be greater than or equal to 0 and less than or equal to 180."],
+            "raise_probes": {"5": {"value": {"year": ["Not a valid integer."]}}},
+        }
+        by_control = errors_by_rail_control(errors)
+        assert by_control == {
+            "swr": ["Must be greater than or equal to 0 and less than or equal to 1."],
+            "months": ["Must be greater than or equal to 0 and less than or equal to 180."],
+            "raise_end_year_5": ["Not a valid integer."],
+        }
+        # A copy, not the caller's lists: the route echoes the schema's dict
+        # nowhere else, but a helper that aliased it would let a later
+        # ``extend`` on one key leak into the other.
+        by_control["swr"].append("x")
+        assert errors["swr"] == [
+            "Must be greater than or equal to 0 and less than or equal to 1.",
+        ]
+
+    def test_no_probe_field_is_the_identity(self):
+        """A settings-only refusal has nothing to re-key."""
+        assert errors_by_rail_control({"planned_retirement_date": ["Must be in the future."]}) == {
+            "planned_retirement_date": ["Must be in the future."],
+        }
+
+    def test_raise_probes_is_the_only_field_whose_report_is_not_a_list(self):
+        """The pass-through copies a LIST; a second nested field would need its own re-keying.
+
+        marshmallow reports a ``Dict`` or ``Nested`` field as a dict, which
+        ``list(messages)`` would silently reduce to its keys (an adversarial
+        review of plan step salary:S3-f-4).  So the census: of both schemas
+        that read the rail's pair, ``raise_probes`` is the one such field.
+        """
+        # pylint: disable=import-outside-toplevel
+        from marshmallow import fields
+        from app.schemas.validation import RetirementSettingsSchema
+
+        for schema in (RetirementReadinessQuerySchema(), RetirementSettingsSchema()):
+            nested = {
+                name for name, field in schema.fields.items()
+                if isinstance(field, (fields.Dict, fields.Nested, fields.List, fields.Mapping))
+            }
+            assert nested == {"raise_probes"}, (type(schema).__name__, nested)
