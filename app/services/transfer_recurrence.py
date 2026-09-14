@@ -682,17 +682,17 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
     nothing.  On a production clone every one of the 99 sweepable rows across
     the four live templates came back with zero fields differing.
 
-    **A loan-payment update can move the rule's own closing bound mid-pass, and
-    that is a NOTE rather than a defect** (adversarial review of R10-b).
-    ``update_transfer`` on a loan payment reaches
-    ``loan_recurrence_sync.sync_recurring_payment_bounds``, which re-authors
-    ``rule.end_date`` from the newly derived payoff -- while *work* and *derived*
-    were frozen before the first write.  So raising a loan payment's amount
-    (payoff moves earlier) lets this pass finish against the bound it started
-    with.  It self-heals on the next regeneration, and it is strictly better
-    than what it replaces: the old sweep DELETED every payment first, derived a
-    payoff from zero payments, and left the rule unbounded.  Plan step **R7d**
-    turns that window into a resolver and should know this.
+    **A loan-payment update could move the rule's own closing bound mid-pass
+    until plan step R7d-g, and that was a NOTE rather than a defect**
+    (adversarial review of R10-b).  ``update_transfer`` on a loan payment
+    reached ``loan_recurrence_sync.sync_recurring_payment_bounds``, which
+    re-authored ``rule.end_date`` from the newly derived payoff -- while
+    *work* and *derived* were frozen before the first write -- so raising a
+    loan payment's amount (payoff moves earlier) let this pass finish against
+    the bound it started with, self-healing on the next regeneration.  R7d-g
+    deleted that writer: the closing bound is derived on every read and no
+    row write moves a stored one, so *derived* is frozen against nothing that
+    a pass can change.
 
     Args:
         work: The :class:`~app.services._recurrence_common.MaintainWork` from

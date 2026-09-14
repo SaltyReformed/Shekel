@@ -68,6 +68,48 @@ from app.services.pay_calendar import PayCalendar
 from app.services.recurrence._frequency import RecurrenceResolutionError
 from app.services.recurrence._resolution import RecurrenceSpec, resolve
 
+class EmptyAuthoredWindowError(RecurrenceResolutionError):
+    """The spec's date stop precedes the first occurrence the write door would store.
+
+    **The one refusal that lives at the WRITE door rather than in ``resolve``**
+    (plan step R7d-g), and where it lives is the point.  ``_author`` stores
+    ``resolve(spec).starts_on`` -- the NORMALISED first occurrence, which for a
+    paycheck-space cadence is the payday of the paycheck that hosts the
+    authored date, lifted to the owner's FIRST payday when the authored date
+    precedes every paycheck -- beside the RAW closing bound the spec states.
+    Both authoring doors grade the stop against the AUTHORED start, so an
+    every-paycheck rule authored entirely before the schedule opens passes
+    them (``2025-06-01`` to ``2025-12-01`` on a schedule opening ``2026-01-02``)
+    and would reach the table as ``[2026-01-02, 2025-12-01]``: the inverted
+    pair ``ck_recurrence_rules_valid_window`` refuses, as an unhandled
+    ``IntegrityError``.  Refusing HERE, off the value that would be stored, is
+    what makes the constraint true by construction: one writer, one comparison
+    over the stored pair, and the doors translate this into their own sentence
+    (``end_bound_before_start_message``, worded off the same two dates).
+
+    NOT in ``resolve``, deliberately: readers resolve stored rules on every
+    pass, and a stored pair the constraint admits can re-normalise past its
+    stop after a pay-schedule rebuild moves the opening payday (plan ledger
+    row **D39**'s shape) -- an EMPTY window the walk answers with zero
+    occurrences, which a refusal on read would turn into a 500 on every
+    surface.  A write is where a user can be told; a read is not.
+
+    Attributes:
+        starts_on: The first occurrence the row would have stored.
+        end_date: The stop the spec states, which precedes it.
+    """
+
+    def __init__(self, *, starts_on, end_date):
+        self.starts_on = starts_on
+        self.end_date = end_date
+        super().__init__(
+            f"recurrence stops on {end_date} before its first occurrence "
+            f"{starts_on}: the pair would violate "
+            f"ck_recurrence_rules_valid_window, so it is refused before the "
+            f"write rather than by the flush"
+        )
+
+
 #: What a recurrence rule may belong to: the two recurring-definition kinds,
 #: which are the two arms of ``budget.recurrence_rules``' owning arc.  Named
 #: rather than spelled inline because :func:`author_rule` is the one door that
@@ -159,8 +201,18 @@ def _author(
             is refused in the resolution hierarchy rather than in the
             generation one -- one door, one error class for a caller to catch
             around.
+        EmptyAuthoredWindowError: The stop *spec* states precedes the first
+            occurrence this call would store (a subclass of the above, so a
+            caller catching the base catches it too).  Nothing is written.
     """
     resolved = resolve(spec, calendar)
+    # The pair this call would STORE, graded before the first assignment
+    # below so a refusal leaves the row exactly as it was: see
+    # :class:`EmptyAuthoredWindowError` for why this is the one comparison and
+    # why it is here and not in ``resolve``.
+    stop = spec.end_bound.columns().end_date
+    if stop is not None and stop < resolved.starts_on:
+        raise EmptyAuthoredWindowError(starts_on=resolved.starts_on, end_date=stop)
 
     # **The owner is NOT written here, since plan step R-F6**, and it is the
     # one authored-looking value this function does not touch: a rule's owner

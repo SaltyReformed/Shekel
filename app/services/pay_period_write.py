@@ -149,7 +149,7 @@ def record_paydays(
     """Record a batch of paydays.
 
     **The one door that adds to ``budget.pay_periods``.**  It records the days
-    the owner's grid names -- ``first_payday``, then every ``cadence_days``
+    the owner's grid names -- ``first_payday``, then each grid step
     after it, ``num_periods`` times -- each DISPLACED onto a business day under
     the stored convention since plan step ``pay_calendar:C14-e-3``
     (:func:`~app.services.pay_period_batch.requested_paydays`), and persists
@@ -268,13 +268,13 @@ def record_paydays(
             nothing and leaves the stored rhythm alone.
     """
     # The door's preconditions, ahead of every statement -- and the first
-    # three ahead of the arithmetic below, which turns *cadence_days* into
+    # three ahead of the arithmetic below, which turns the cadence into
     # dates.  The cadence bound is asked through the column's own owner rather
     # than restated here: two copies of a rule are two chances for the schema
     # tier, the service tier and the database to disagree.
     pay_period_batch.reject_undatable_payday(first_payday)
     pay_period_batch.reject_out_of_range_batch_size(num_periods)
-    pay_schedule_service.reject_out_of_range_cadence(rhythm.cadence_days)
+    pay_schedule_service.reject_out_of_range_cadence(rhythm.cadence)
 
     current = _owner_paydays(user_id)
     retiring = [i for i, _payday in current if i in retiring_ids]
@@ -364,7 +364,7 @@ def record_paydays(
         era_minted_from=(
             None if era is None else era.effective_from.isoformat()
         ),
-        cadence_days=rhythm.cadence_days,
+        cadence_days=rhythm.cadence.days,
         shift=rhythm.shift.value,
     )
     return created
@@ -487,7 +487,7 @@ def continue_paydays(user_id: int, num_periods: int) -> "list[PayPeriod]":
         retired=0,
         start_date=created[0].start_date.isoformat(),
         era_minted_from=None,
-        cadence_days=covering.rhythm.cadence_days,
+        cadence_days=covering.rhythm.cadence.days,
         shift=covering.rhythm.shift.value,
     )
     return created

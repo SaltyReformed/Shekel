@@ -10,7 +10,11 @@ Where it is NOT empty, the moved rows must be loan payments whose stored bound
 differs from the loan's derived closing date -- the only rows the composed
 value changes, since the door reads the app-written column as the cache it is
 (ruling R-R56) and the derived stop alone binds -- and each such row is the
-step working; a moved row of any other kind is a regression.
+step working; a moved row of any other kind is a regression.  (That reading
+held from R7d-d to plan step R7d-g, which deleted the writers and NULLed the
+cache; on a tree at or past R7d-g a stored bound is the owner's word, ruling
+R-R82, and the "stored column" this prints is empty for every live loan
+payment.)
 
 Usage (from a checkout, against a production clone)::
 

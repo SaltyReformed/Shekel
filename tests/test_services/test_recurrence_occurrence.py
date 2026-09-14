@@ -542,7 +542,7 @@ class TestTheParallelRun:
     """The shipped engine against the snapshot and an independent oracle."""
 
     def test_the_snapshot_records_exactly_what_the_engine_answers(self):
-        """All 430 shapes: the committed blob IS the forward engine's answer.
+        """Every shape: the committed blob IS the forward engine's answer.
 
         **This assertion changed meaning at plan step R4a, and the change is
         the step.**  It used to compare the new engine against a snapshot
@@ -568,7 +568,9 @@ class TestTheParallelRun:
         assert set(new) == set(committed), (
             "the shape set moved between the snapshot and this run"
         )
-        assert len(committed) == 434, f"{len(committed)} shapes captured"
+        # 434 until plan step R7d-g retired ``bounds.window.inverted`` (the
+        # comment on the oracle's bound shapes says why).
+        assert len(committed) == 433, f"{len(committed)} shapes captured"
         for label in sorted(committed):
             assert new[label] == committed[label], (
                 f"{label}: forward engine answers {new[label]}, the committed "
@@ -609,7 +611,7 @@ class TestTheParallelRun:
             label for label in shapes if label.startswith("bounds.")
         )
 
-        assert len(bounded) == 8, f"{len(bounded)} bounds shapes"
+        assert len(bounded) == 7, f"{len(bounded)} bounds shapes"
         for label in bounded:
             shape = shapes[label]
             for occurrence, _index in placements[label]:
@@ -626,7 +628,25 @@ class TestTheParallelRun:
         # An inverted window names no day at all, so it must fire nowhere --
         # stated because "every occurrence is inside the window" is vacuously
         # true of a shape that stopped emitting for an unrelated reason.
-        assert placements["bounds.window.inverted"] == []
+        # Built through the PURE resolver since plan step R7d-g, not through
+        # the oracle's shape set: the write door refuses to build the pair
+        # (``EmptyAuthoredWindowError``) and the table refuses to hold it
+        # (``ck_recurrence_rules_valid_window``), but a stored pair can still
+        # READ as inverted after a pay-schedule rebuild lifts its normalised
+        # start past its stop, and the walk's answer for that -- zero
+        # occurrences, never an error -- is what keeps that refusal out of
+        # ``resolve`` (the error's own docstring).
+        biweekly, _long_cadence = _baseline_schedules()
+        inverted = resolve(
+            recurrence_baseline.build_shape_spec(recurrence_baseline.RuleShape(
+                "bounds.window.inverted", recurrence_baseline.MONTHLY,
+                starts_on=date(2025, 6, 15), end_date=date(2024, 6, 5),
+            )),
+            _baseline_calendars(biweekly, _long_cadence)[False],
+        )
+        assert not occurrence_placements(inverted, _baseline_calendars(
+            biweekly, _long_cadence,
+        )[False]), "an inverted window fired"
 
     def test_each_declared_bound_row_is_gone_and_was_period_bounded(self):
         """The four rows ruling R-R6 named are absent, and each was real.
@@ -818,25 +838,23 @@ class TestTheParallelRun:
                 continue
             emitted = occurrence_placements(resolved, calendar)
             if not emitted:
-                # Two shapes, both deliberate.  ``bounds.window.inverted``'s
-                # end date precedes its anchor, so the rule fires nowhere;
-                # ``horizon_bound.monthly_first`` is bounded past the biweekly
-                # schedule's last payday, so the fallback anchor (2027-02-01)
-                # lands past the horizon and the walk emits nothing at all --
-                # plan ledger row D10's shape on the SHORT cadence, where its
-                # long-cadence twin instead emits two occurrences that fail to
-                # place (:data:`_EXPECTED_UNPLACED`).  Counted, not skipped
-                # silently -- a threshold plus a silent skip lets a shape that
-                # quietly stops emitting hide.
+                # One shape, deliberate (two until plan step R7d-g retired
+                # ``bounds.window.inverted``, whose end date preceded its
+                # anchor).  ``horizon_bound.monthly_first`` is bounded past
+                # the biweekly schedule's last payday, so the fallback anchor
+                # (2027-02-01) lands past the horizon and the walk emits
+                # nothing at all -- plan ledger row D10's shape on the SHORT
+                # cadence, where its long-cadence twin instead emits two
+                # occurrences that fail to place (:data:`_EXPECTED_UNPLACED`).
+                # Counted, not skipped silently -- a threshold plus a silent
+                # skip lets a shape that quietly stops emitting hide.
                 skipped.append(shape.label)
                 continue
             assert emitted[0].occurrence == resolved.starts_on, shape.label
             checked += 1
-        assert skipped == [
-            "bounds.window.inverted", "horizon_bound.monthly_first",
-        ], skipped
-        # 434 captured shapes less the 41 pay-period-space ones, less the two
-        # above that fire nowhere.  Plan step R7c-b's four new
+        assert skipped == ["horizon_bound.monthly_first"], skipped
+        # 433 captured shapes less the 41 pay-period-space ones, less the one
+        # above that fires nowhere.  Plan step R7c-b's four new
         # ``anchor.*`` shapes split 3 period-space to 1 calendar.
         assert checked == 391, f"{checked} calendar-unit shapes checked"
 
@@ -1608,7 +1626,7 @@ class TestProjectedPlacement:
                     # ...and it is the FIRST such paycheck: the one before it
                     # opened earlier.
                     assert (
-                        item.period.start_date - timedelta(days=calendar.cadence.cadence_days)
+                        item.period.start_date - timedelta(days=calendar.cadence.cadence.days)
                         < item.occurrence
                     ), item
 

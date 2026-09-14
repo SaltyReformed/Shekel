@@ -328,10 +328,11 @@ def create_transfer_template():
     # ``allow_none``, so any POST omitting or emptying it reached
     # ``AttributeError: 'NoneType' object has no attribute 'id'`` -- a 500
     # (defect **D13**), measured on both the absent and the empty spelling.
+    new_form = RedirectTarget("transfers.new_transfer_template")
     spec = recurrence_spec_for_create(
         data,
         user_id=current_user.id,
-        redirect=RedirectTarget("transfers.new_transfer_template"),
+        redirect=new_form,
         include_due_day_of_month=False,
     )
 
@@ -355,7 +356,9 @@ def create_transfer_template():
     # ``flush_template_or_namedup_redirect``'s ``try`` would surface
     # ``uq_transfer_templates_user_name`` as an unhandled ``IntegrityError``
     # where the user gets a "name already exists" redirect today.
-    rule = author_recurrence_for_create(spec, template)
+    rule = author_recurrence_for_create(spec, template, redirect=new_form)
+    if isinstance(rule, Response):
+        return rule
 
     # Open the amount's dated series at today (plan step X-au-a).  The
     # constructor above also carries the figure because the column is NOT NULL;

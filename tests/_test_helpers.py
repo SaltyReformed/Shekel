@@ -2837,6 +2837,16 @@ def rhythm_of(cadence_days, shift=BusinessDayShiftEnum.NONE):
     stated ONCE, so the day a test needs a real convention it passes one and
     every other case keeps reading as a cadence.
 
+    **It builds a FIXED-DAYS rhythm**, which since plan step
+    ``pay_calendar:C17-d-1`` is one kind of cadence value
+    (:class:`~app.services.pay_rhythm.FixedDays`) rather than a bare day
+    count; a test about a day-of-month kind (``C17-d-2``) states its
+    :class:`~app.services.pay_rhythm.Rhythm` outright.  ``None`` builds
+    ``FixedDays(None)`` -- a fixed-days cadence with NO day count, which is
+    what the "absent cadence" refusal cases mean by absence; a bare ``None``
+    where the VALUE should be is a different state with its own test
+    (``test_pay_calendar_derivation.TestTheCadenceIsAValueOfAKnownKind``).
+
     Args:
         cadence_days: Days between the paydays.
         shift: The convention, defaulting to
@@ -2849,7 +2859,7 @@ def rhythm_of(cadence_days, shift=BusinessDayShiftEnum.NONE):
         The rhythm.
     """
     return pay_rhythm.Rhythm(
-        cadence_days=cadence_days, shift=shift,
+        cadence=pay_rhythm.FixedDays(cadence_days), shift=shift,
     )
 
 
@@ -2858,8 +2868,8 @@ def era_of(effective_from, cadence_days, shift=BusinessDayShiftEnum.NONE):
 
     :func:`rhythm_of`'s sibling for the era relation (plan step
     ``pay_calendar:C17-a``): the rhythm plus the day it took effect, which is
-    also the grid's phase.  The kind is the one member that exists,
-    ``FIXED_DAYS``, stated here once rather than at every call site.
+    also the grid's phase.  The kind is the cadence value's type since plan
+    step ``C17-d-1``, so :func:`rhythm_of` states it.
 
     Args:
         effective_from: The era's first nominal payday.
@@ -2871,12 +2881,8 @@ def era_of(effective_from, cadence_days, shift=BusinessDayShiftEnum.NONE):
     Returns:
         The era.
     """
-    # pylint: disable=import-outside-toplevel
-    from app.enums import PayCadenceKindEnum
-
     return pay_rhythm.Era(
         effective_from=effective_from,
-        kind=PayCadenceKindEnum.FIXED_DAYS,
         rhythm=rhythm_of(cadence_days, shift),
     )
 
@@ -8398,7 +8404,7 @@ def record_paydays_across_a_hole(user_id, first_payday, num_periods, rhythm):
     else:
         raise AssertionError(
             f"record_paydays would accept a batch from {first_payday} x "
-            f"{num_periods} at {rhythm.cadence_days} days for user {user_id}; "
+            f"{num_periods} at {rhythm.cadence.days} days for user {user_id}; "
             f"this helper is only for a batch that skips a paycheck of the "
             f"plan.  Call pay_period_write.record_paydays instead."
         )

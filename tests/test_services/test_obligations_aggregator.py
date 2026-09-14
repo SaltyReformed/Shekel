@@ -54,6 +54,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator, recurring_view
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCadence, calendar_for
+from app.services.pay_rhythm import FixedDays
 from app.services.recurrence import RecurrenceResolutionError
 from app.utils.money import MONTHS_PER_YEAR
 from tests._test_helpers import make_cadence_rule, read_pass_over_paydays
@@ -65,7 +66,7 @@ from tests.oracles.recurrence_baseline import (
 #: 14 days between paydays, 26 a year -- the cadence every hand-computed
 #: figure in this file assumes, and the one the retired
 #: ``PAY_PERIODS_PER_YEAR`` constant assumed for every owner (R7a-2a).
-_BIWEEKLY = PayCadence(cadence_days=14)
+_BIWEEKLY = PayCadence(FixedDays(14))
 
 #: A schedule at that cadence, carried by the READ PASS the aggregator takes
 #: since plan step R7d-e (the calendar itself since R7b-3) -- the CADENCE for
@@ -478,9 +479,9 @@ class TestObligationsAggregator:
 
         # 3. The one derivation, at the three cadences a real schedule uses.
         #    round(365.2425 / days): 14 -> 26, 7 -> 52, 30 -> 12.
-        assert _Cadence(cadence_days=14).periods_per_year == Decimal("26")
-        assert _Cadence(cadence_days=7).periods_per_year == Decimal("52")
-        assert _Cadence(cadence_days=30).periods_per_year == Decimal("12")
+        assert _Cadence(FixedDays(14)).periods_per_year == Decimal("26")
+        assert _Cadence(FixedDays(7)).periods_per_year == Decimal("52")
+        assert _Cadence(FixedDays(30)).periods_per_year == Decimal("12")
 
         # 4. The aggregator reads THAT value and nothing else: a cadence the
         #    old constant would have called 26 answers 52 here.  A duck-typed
@@ -494,7 +495,7 @@ class TestObligationsAggregator:
             Decimal("100.00"),
         )
         weekly = _pass(date(2026, 5, 20), cadence_days=7)
-        assert weekly.calendar().cadence == _Cadence(cadence_days=7)
+        assert weekly.calendar().cadence == _Cadence(FixedDays(7))
         assert obligations_aggregator.committed_monthly(
             [weekly_template], weekly,
         ) == Decimal("433.33")

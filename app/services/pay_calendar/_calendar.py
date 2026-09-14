@@ -359,7 +359,7 @@ class PayCalendar:
         calendar in hand -- the Recurring surface, the recurrence write paths --
         while :func:`~._loader.cadence_for` serves the ones that need the
         cadence and nothing else.  Both answer from the LATEST era's stored
-        ``cadence_days`` -- this one through :attr:`eras` -- so there is one
+        cadence -- this one through :attr:`eras` -- so there is one
         fact and one derivation however it is reached.  The latest era's,
         because the question is how often the owner IS paid: a year holds the
         paychecks of the rhythm that continues past the record.
@@ -383,7 +383,7 @@ class PayCalendar:
         Returns:
             The owner's :class:`~._cadence.PayCadence`.
         """
-        return PayCadence(cadence_days=self.eras[-1].rhythm.cadence_days)
+        return PayCadence(self.eras[-1].rhythm.cadence)
 
     # ---- the schedule's own bounds -----------------------------------
 

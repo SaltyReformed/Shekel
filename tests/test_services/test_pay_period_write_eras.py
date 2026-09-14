@@ -27,6 +27,7 @@ from app.services import (
     pay_schedule_service,
 )
 from app.services.pay_calendar import calendar_for
+from app.services.pay_rhythm import FixedDays
 from app.utils.business_days import shortest_collision_free_cadence
 from tests._test_helpers import (
     all_periods,
@@ -107,7 +108,7 @@ class TestABatchMintsAnEraWhenItStatesOne:
             assert _eras(db.session, user_id) == [
                 (date(2026, 1, 2), 14), (date(2026, 1, 30), 7),
             ]
-            assert pay_schedule_service.resolve_cadence(user_id) == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(7)
 
     def test_a_phase_corrected_going_forward_mints_an_era_at_the_new_day(
         self, app, db, bare_user,
@@ -185,7 +186,7 @@ class TestABatchMintsAnEraWhenItStatesOne:
             again = pay_schedule_service.get_schedule(user_id)
             assert again is held, "the identity map hands back the same row"
             assert [e.cadence_days for e in again.eras] == [14, 7]
-            assert pay_schedule_service.resolve_cadence(user_id) == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(7)
 
 
 class TestAContinuingBatchMintsNothing:
@@ -382,7 +383,7 @@ class TestAMintRetiresWhatItSupersedes:
                 date(2026, 2, 13), date(2026, 2, 27),
             ]
             assert _eras(db.session, user_id) == [(date(2026, 1, 2), 14)]
-            assert pay_schedule_service.resolve_cadence(user_id) == 14
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(14)
 
     def test_a_whole_schedule_replacement_leaves_ONE_era(
         self, app, db, bare_user,
@@ -450,7 +451,7 @@ class TestAMintRetiresWhatItSupersedes:
             assert _eras(db.session, user_id) == [
                 (date(2026, 1, 2), 14), (date(2026, 2, 20), 7),
             ]
-            assert pay_schedule_service.resolve_cadence(user_id) == 7
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(7)
 
 
 class TestTheEraRuleIsKeyedOnTheErasFirstPayday:

@@ -22,7 +22,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from flask import Response
+from flask import Response, get_flashed_messages
 
 from app import ref_cache
 from app.enums import (
@@ -45,9 +45,11 @@ from app.routes._recurrence_form_helpers import (
 )
 from app.routes._recurrence_form_refusals import RecurrenceFormContext
 from app.routes._redirect_target import RedirectTarget
+from app.schemas.validation import end_bound_before_start_message
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
+    EMPTY,
     NEVER_ENDS,
     EndsOnDate,
     RecurrenceResolutionError,
@@ -56,6 +58,7 @@ from app.services.recurrence import (
     recurrence_spec,
     resolve,
 )
+from app.services.recurring_definition import resolved_definition
 from app.routes._recurrence_form_render import (
     create_form_default_starts_on,
 )
@@ -945,13 +948,15 @@ class TestAnUpdateMayNotInvertTheWindow:
     """``refuse_inverted_window``: the UPDATE door's half of one rule (R7c-b).
 
     ``ck_recurrence_rules_valid_window`` was drafted for this step and held
-    back on a developer ruling -- the column carries DERIVED loan-payment
+    back on a developer ruling -- the column carried DERIVED loan-payment
     windows as well as authored ones, and an empty derived window is a correct
-    answer a constraint cannot tell from a user's mistake (see
-    ``tests/test_models/test_recurrence_rule_constraints.py``).  So the rule
-    lives at the two AUTHORING doors, and this class is the one the schema
-    could not hold: on an update either half of the pair may be the STORED
-    value, which no schema sees.
+    answer a constraint cannot tell from a user's mistake -- until plan step
+    R7d-g deleted the derived writer and landed it (see
+    ``tests/test_models/test_recurrence_window_check.py``).  The rule still
+    lives at the two AUTHORING doors, because a CHECK answers with an
+    ``IntegrityError`` and a door with a sentence; this class is the one the
+    schema could not hold: on an update either half of the pair may be the
+    STORED value, which no schema sees.
 
     Both directions are cases the review found only one of.  Each was an
     unhandled ``CheckViolation`` out of ``update_template``'s autoflush while
@@ -1025,30 +1030,25 @@ class TestAnUpdateMayNotInvertTheWindow:
             calendar_for(seed_user["user"].id),
         )
 
-    def test_a_definition_whose_window_the_APP_derives_is_NOT_refused(
+    def test_a_loan_cleared_before_its_first_installment_stores_no_inverted_pair(
         self, app, auth_client, seed_user, db, seed_periods, monkeypatch,  # pylint: disable=unused-argument
     ):
-        """A DERIVED inverted window is the app's answer, not the owner's mistake.
+        """The EMPTY derived window is a VALUE the door composes, never a stored pair (plan step R7d-g).
 
-        The same ruling that held ``ck_recurrence_rules_valid_window`` back,
-        applied to the door that reads the identical stored pair: refusing on
-        it would make this door the constraint the ruling declined to add.
+        The same ruling that held ``ck_recurrence_rules_valid_window`` back
+        (developer, 2026-08-15) named this loan: it originates 2026-06-20 with
+        a ``payment_day`` of 15 -- first installment 2026-07-15 -- and is
+        cleared the day after origination, so its window is
+        ``[2026-07-15, 2026-06-21]``, correct at nought occurrences.  Until
+        R7d-g the sync WROTE that pair into the columns and this case held
+        that the update door's refusal carried a skip for it, because the
+        owner had no control that could repair the app's own inverted pair.
 
-        **It became reachable at plan step ``recurrence:R7d-h``.**  A retired
-        loan's closing bound used to be the read pass's own now, which drifted
-        past ``starts_on`` and healed itself; it is now the day the loan
-        actually closed.  This loan originates 2026-06-20 with a
-        ``payment_day`` of 15 -- first installment 2026-07-15 -- and is cleared
-        the day after origination, so the sync writes the permanently inverted
-        pair ``[2026-07-15, 2026-06-21]`` through its own production door.
-
-        Without the skip the owner cannot re-save the cadence of their own
-        loan payment: the refusal fires on any submission that states a
-        ``recurrence_unit`` and leaves both bound keys to the stored pair,
-        which is every edit the "Repeats" controls make.  The form locks
-        "Starts on" and the "Ends" control for a loan payment but NOT that
-        select, so the edit is offered, refused with "ends before it starts",
-        and there is no control that could correct it.
+        Nothing writes it now.  The column stays NULL after the loan clears,
+        the composed door answers ``EMPTY`` for the definition, and an
+        ordinary cadence edit -- which states neither bound -- is not
+        refused, with no skip to pass on: the stored pair is not inverted
+        because there is no stored pair.
         """
         with app.app_context():
             freeze_today(monkeypatch, date(2026, 7, 1))
@@ -1066,18 +1066,21 @@ class TestAnUpdateMayNotInvertTheWindow:
             loan_recurrence_sync.bind_rule_to_loan(tpl.recurrence_rule, loan.id)
             db.session.commit()
 
-            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            loan_recurrence_sync.sync_loan_payment_start(loan.id)
             db.session.commit()
 
             rule = tpl.recurrence_rule
             db.session.refresh(rule)
-            assert rule.end_date is not None and rule.end_date < rule.starts_on, (
-                "precondition: the sync must have written an INVERTED pair, "
-                f"got starts_on={rule.starts_on} end_date={rule.end_date}"
+            assert rule.starts_on == date(2026, 7, 15)
+            assert rule.end_date is None and rule.max_occurrences is None, (
+                "a writer stored the derived window: "
+                f"starts_on={rule.starts_on} end_date={rule.end_date}"
             )
-            assert balance_at.is_standing_loan_payment(
-                tpl, BalanceContext.build(seed_user["user"].id),
-            ), "precondition: the app must own this definition's window"
+            pass_ctx = BalanceContext.build(seed_user["user"].id)
+            assert balance_at.is_standing_loan_payment(tpl, pass_ctx), (
+                "precondition: this is the loan's standing payment"
+            )
+            assert resolved_definition(tpl, pass_ctx).closing.derived == EMPTY
 
             with app.test_request_context():
                 refusal = resolve_recurrence_rule_for_update(
@@ -1090,13 +1093,12 @@ class TestAnUpdateMayNotInvertTheWindow:
                         "due_day_of_month": None,
                     },
                     ctx=self._ctx(None),
-                    pass_ctx=BalanceContext.build(seed_user["user"].id),
+                    pass_ctx=pass_ctx,
                 )
 
             assert refusal is None, (
-                "an ordinary cadence edit was refused because the APP's own "
-                "derived window is inverted -- the owner has no control that "
-                "could fix it"
+                "an ordinary cadence edit of a loan payment whose loan cleared "
+                "early was refused: something stored an inverted pair"
             )
 
     def test_clearing_the_start_while_setting_an_earlier_end_is_refused(
@@ -1126,6 +1128,49 @@ class TestAnUpdateMayNotInvertTheWindow:
 
             assert isinstance(refusal, Response)
             assert rule.end_date is None, "the rule must be left untouched"
+
+    def test_a_cadence_switch_that_lifts_the_stored_start_past_the_stop_is_refused(
+        self, app, auth_client, seed_user, db, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """The pair the DOOR would store inverts though the authored pair does not (plan step R7d-g).
+
+        A MONTH rule ``[2025-06-01, 2025-12-01]`` is ordered and stored.  The
+        owner switches "Repeats" to every paycheck and restates neither bound:
+        ``refuse_inverted_window`` grades the stored pair, still ordered, and
+        passes; the re-author then normalises the start onto the owner's
+        FIRST payday, 2026-01-02, past the stop.  The write door refuses off
+        the pair it would have stored, this dispatcher words it with the
+        inverted-window sentence naming that payday, and the rule reads as it
+        did.  Until R7d-g-1's review this was ``ck_recurrence_rules_valid_window``
+        answering the flush with a 500.
+        """
+        with app.test_request_context():
+            rule = self._monthly_rule(
+                seed_user, date(2025, 6, 1), EndsOnDate(on=date(2025, 12, 1)),
+            )
+            calendar = calendar_for(seed_user["user"].id)
+            assert calendar.opening_bound() == date(2026, 1, 2)
+
+            refusal = resolve_recurrence_rule_for_update(
+                self._template_with(rule, seed_user["user"].id),
+                {
+                    **validated_cadence(
+                        unit=RecurrenceUnitEnum.PERIOD, states_a_start=False,
+                    ),
+                    "due_day_of_month": None,
+                },
+                ctx=self._ctx(None),
+                pass_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            flashed = get_flashed_messages()
+
+            assert isinstance(refusal, Response)
+            assert end_bound_before_start_message(
+                date(2025, 12, 1), date(2026, 1, 2),
+            ) in flashed, flashed
+            assert rule.starts_on == date(2025, 6, 1)
+            assert rule.end_date == date(2025, 12, 1)
+            assert ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH) == rule.unit_id
 
     def test_moving_the_start_PAST_a_stored_end_is_refused(
         self, app, auth_client, seed_user, db, seed_periods,  # pylint: disable=unused-argument

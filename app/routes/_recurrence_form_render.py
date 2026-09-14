@@ -142,12 +142,13 @@ class RecurrenceEnd:
             unbounded shape for a definition with no rule and for a create
             form.  What the OPEN control preselects: its shape picks the mode
             ``<option>``, its value fills the matching input.  ``None`` on a
-            LOCKED row, and not merely unrendered: the loan's standing payment
-            has no authored stop, its column is the chokepoints' cache of the
-            payoff until plan step R7d-g NULLs it (ruling **R-R56**), and the
-            first cut of R7d-f carried that cache here and leaked it into a
-            hidden input.  A value the row does not hold cannot reach the page
-            by any template's mistake, which is the invariant
+            LOCKED row, and not merely unrendered: a locked row displays the
+            composed door's phrase and offers no control, so the stored
+            bound has no input to fill -- until plan step R7d-g that column
+            was the chokepoints' cache of the payoff (ruling **R-R56**), and
+            the first cut of R7d-f carried the cache here and leaked it into
+            a hidden input.  A value the row does not hold cannot reach the
+            page by any template's mistake, which is the invariant
             :meth:`__post_init__` refuses to let the two fields violate.
         locked: Whether the row renders READ-ONLY, because the app DERIVES
             this bound: the definition is the standing payment of the loan it
@@ -170,11 +171,23 @@ class RecurrenceEnd:
             the cadence controls render unset above the warning).  The row
             then shows an empty box under its help text rather than a value
             nothing derived.
+        owner_stop: Whether a LOCKED row's phrase names a stop the OWNER
+            authored rather than the loan's payoff (plan step R7d-g, ruling
+            **R-R82**): a definition that became the loan's standing payment
+            with no submission -- promoted by the archiving of an older
+            payment, unarchived, or already paying into an account that was
+            then set up as a loan -- keeps the stop its owner typed, the door
+            composes it, and the locked row displays it.  The help text
+            beside the row says which of the two it is showing: the payoff
+            moves when the loan does, an owner's stop does not, and the only
+            door to an owner's stop on a locked row is the archive.  Always
+            ``False`` on an open row, which :meth:`__post_init__` enforces.
     """
 
     selected: EndBound | None
     locked: bool = False
     stop_phrase: str | None = None
+    owner_stop: bool = False
 
     def __post_init__(self) -> None:
         """Refuse a row whose two halves disagree.
@@ -196,6 +209,12 @@ class RecurrenceEnd:
                 f"selected={self.selected!r}: a locked row carries no owner's "
                 f"bound and an open row always carries one, so the pair "
                 f"disagrees with itself."
+            )
+        if self.owner_stop and not self.locked:
+            raise ValueError(
+                "an OPEN Ends row claims to display an owner's stop: the "
+                "owner's stop on an open row is the control itself, and the "
+                "flag exists only to word a LOCKED row's help text."
             )
 
 
@@ -438,9 +457,10 @@ def edit_form_starts_on(template: Any, *, locked: bool) -> RecurrenceStart:
     **The stored date is what a LOCKED row shows too**, and that is the
     asymmetry with the "Ends" row stated rather than hidden: the opening bound
     stays STORED under ruling **R-R29** -- it is the cadence anchor a
-    month-unit rule cannot fire without -- and the sync keeps it current, so
-    the column is the value (plan ledger row **D35** measures it behind on two
-    live loans, phase-preservingly; R7d-g's opening-bound repair owns that).
+    month-unit rule cannot fire without -- and the sync keeps it current
+    where the loan's contract moves, so the column is the value (plan ledger
+    row **D35** measured it behind on two live loans, phase-preservingly, and
+    both read current on a production clone of 2026-09-13).
 
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate`` being
@@ -547,6 +567,14 @@ def edit_form_end(
             selected=None,
             locked=True,
             stop_phrase=_locked_stop_phrase(resolved, picker),
+            # The authored half the door composed, read off the same value
+            # the phrase is worded from: a real stop here is the owner's
+            # (ruling **R-R82**), and the help text must not call it the
+            # payoff.  ``None`` resolved means nothing to display either way.
+            owner_stop=(
+                resolved is not None
+                and resolved.closing.authored != NEVER_ENDS
+            ),
         )
     rule = template.recurrence_rule
     return RecurrenceEnd(
@@ -563,10 +591,13 @@ def _locked_stop_phrase(
     """Return the words a LOCKED "Ends" row displays for *resolved*.
 
     :func:`~app.services.recurrence.describe`'s stop phrase, which words the
-    WHOLE closing -- and for the loan's standing payment the authored half is
-    ``NEVER_ENDS`` (ruling **R-R56**), so the phrase is the derived stop's:
-    ``"until Feb 22, 2029"`` for a loan that pays off, ``"never runs"`` for
-    one that closed before the payment's first installment.  A loan that never
+    WHOLE closing -- for the loan's standing payment ordinarily the derived
+    stop alone, its authored half being ``NEVER_ENDS`` (the doors refuse a
+    stated one, rulings **R-R60** and **R-R77**): ``"until Feb 22, 2029"``
+    for a loan that pays off, ``"never runs"`` for one that closed before the
+    payment's first installment; and the EARLIER of the two where the
+    standing payment carries a stop its owner authored before it became one
+    (ruling **R-R82**, plan step R7d-g).  A loan that never
     pays off at this payment derives no stop and the describer answers
     ``None``, which on the Recurring row means "no second line"; a form
     control has to SAY something there, and what it says is the same "Never"

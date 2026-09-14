@@ -402,13 +402,14 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         every dereference, seam read or query scope, fail the same named way at
         its first use.
 
-        **The nullable itself is still :attr:`scenario`, and after plan step
-        X-v2 exactly TWO callers read it** -- the two ruling R-BY carves out,
-        each documenting why at its own guard:
+        **The nullable itself is still :attr:`scenario`, read by the callers
+        ruling R-BY carves out**, each documenting why at its own guard:
         :func:`app.services.balance_at.liability_owed_at_dates` (a missing
-        baseline is the degenerate case of its own rule) and
-        :func:`app.services.loan_recurrence_sync.sync_recurring_payment_bounds`
-        (a writer, where raising would roll back the user's edit).  An earlier
+        baseline is the degenerate case of its own rule).  The second carve-out
+        -- the closing-bound writer ``sync_recurring_payment_bounds``, where
+        raising would have rolled back the user's edit -- ended at plan step
+        R7d-g: the bound it wrote is derived on every read now, and the
+        opening-bound sync that survives builds no pass at all.  An earlier
         draft of this paragraph said ONE, and X-v2's adversarial design review
         counted four -- the writer named in :func:`~._memoize.require_scenario`'s docstring, an
         emergency-fund reducer that fabricated ``$0.00``, and a template

@@ -796,7 +796,8 @@ Both bounds are UNBYPASSABLE by a caller's ``effective_from`` -- the property
     against a period's END and ``end_date`` against its START, which is what
     let it generate a row dated outside the window (defect D5).  Plan step R4a
     moved both onto the occurrence and four of these eight shapes dropped a row
-    each -- exactly the rows ruling R-R6 predicted.
+    each -- exactly the rows ruling R-R6 predicted.  Seven since plan step
+    R7d-g; the comment on the tuple says which left and why.
     """
     # **Each ``starts_on`` is the date the OLD derivation answered for that
     # shape's opening bound**, computed on the pre-cutover tree over all 434
@@ -805,6 +806,17 @@ Both bounds are UNBYPASSABLE by a caller's ``effective_from`` -- the property
     # 2024-06-16 first occurred 2024-07-15, and an unbounded one first occurred
     # 2024-01-15.  The blob is what proves the pinning: a wrong date here moves
     # that shape's own lines and no others.
+    #
+    # **``window.inverted`` LEFT this set at plan step R7d-g** (re-frozen: one
+    # ``(none)`` line fewer, nothing else moved).  A stop before the first
+    # occurrence is a pair the table refuses since that step
+    # (``ck_recurrence_rules_valid_window``) and the write door refuses before
+    # it -- ``build_transient_rule`` IS that door, and a shape it refuses to
+    # build is not an engine behaviour production can reach.  The walk's
+    # answer for an empty window is still graded, from the direction that
+    # exists: ``recurrence.Empty`` (a loan cleared before its payment's first
+    # installment) in ``test_recurrence_closing`` and
+    # ``test_loan_bound_at_generation``.
     bounds = (
         ("start.midperiod", date(2024, 6, 15), None),
         ("start.on_period_start", date(2024, 6, 15), None),
@@ -813,7 +825,6 @@ Both bounds are UNBYPASSABLE by a caller's ``effective_from`` -- the property
         ("end.on_period_start", date(2024, 1, 15), date(2025, 6, 2)),
         ("end.on_period_end", date(2024, 1, 15), date(2025, 6, 15)),
         ("window.both", date(2024, 6, 15), date(2025, 6, 5)),
-        ("window.inverted", date(2025, 6, 15), date(2024, 6, 5)),
     )
     for name, starts_on, end in bounds:
         acc.add(RuleShape(

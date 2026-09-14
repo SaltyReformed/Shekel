@@ -426,7 +426,7 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
             facts = pay_schedule_service.resolve_schedule(user_id)
 
             assert facts.latest_era.effective_from == _ON_GRID_PAYDAY
-            assert facts.rhythm.cadence_days == 14
+            assert facts.rhythm.cadence.days == 14
 
     def test_a_DISPLACED_recorded_payday_does_not_move_the_grid(
         self, app, db, bare_user,
@@ -587,7 +587,7 @@ class TestTheGridIsSteppedFromTheSTOREDPHASE:
 
             assert [p.start_date for p in new_periods] == [date(2030, 1, 31)]
             assert [
-                (era.effective_from, era.rhythm.cadence_days)
+                (era.effective_from, era.rhythm.cadence.days)
                 for era in schedule_for(user_id).eras
             ] == [(date(2030, 1, 3), 14), (date(2030, 2, 22), 7)]
 
@@ -669,7 +669,7 @@ class TestExtendMaterialisesThePlan:
     def _eras_of(user_id):
         """Return ``[(effective_from, cadence_days)]`` for *user_id*, ascending."""
         return [
-            (era.effective_from, era.rhythm.cadence_days)
+            (era.effective_from, era.rhythm.cadence.days)
             for era in schedule_for(user_id).eras
         ]
 
@@ -742,7 +742,7 @@ class TestExtendMaterialisesThePlan:
                 period.start_date for period in calendar_for(user_id).saved()
             }
             standing = pay_era_write.eras_describing(facts, record)
-            assert [era.rhythm.cadence_days for era in standing] == [14]
+            assert [era.rhythm.cadence.days for era in standing] == [14]
             expected = list(islice(
                 planned_paydays_after(facts.eras, max(record)), 3,
             ))

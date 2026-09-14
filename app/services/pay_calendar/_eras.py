@@ -39,7 +39,7 @@ from app.exceptions import ShekelError
 from app.services.pay_rhythm import Era, Rhythm
 from app.utils.business_days import shift_to_business_day
 
-from ._grid import cadence_steps_to, nominal_payday
+from ._grid import KINDS, cadence_steps_to, nominal_payday
 
 #: The cadence bounds, mirroring ``ck_pay_eras_cadence_range`` on
 #: ``budget.pay_eras.cadence_days`` (on ``budget.pay_schedule`` until plan step
@@ -198,9 +198,10 @@ def projected_payday(anchor: date, rhythm: Rhythm, steps: int) -> date:
             of the batch at the writer.
         rhythm: The owner's cadence and payday convention
             (:class:`~app.services.pay_rhythm.Rhythm`).  The cadence is a
-            positive ``int`` already validated by :func:`validate_cadence` at
-            the caller; re-validating per call would put the bound in a second
-            place.  **The convention is read here and nowhere else in this
+            value of one of the kinds ``pay_rhythm`` declares, already
+            validated by :func:`validate_cadence` at the caller;
+            re-validating per call would put the bound in a second place.
+            **The convention is read here and nowhere else in this
             package**, which is what makes the money-moving diff one
             expression.
         steps: How many whole cadences after *anchor*.  ``1`` is the next
@@ -220,7 +221,7 @@ def projected_payday(anchor: date, rhythm: Rhythm, steps: int) -> date:
         answered the question.
     """
     return shift_to_business_day(
-        nominal_payday(anchor, rhythm.cadence_days, steps), rhythm.shift,
+        nominal_payday(anchor, rhythm.cadence, steps), rhythm.shift,
     )
 
 
@@ -320,13 +321,13 @@ def step_after(anchor: date, rhythm: Rhythm, day: date) -> int:
             write-time refusal cannot see a stored row a later holiday-set
             change made illegal.
     """
-    estimate = cadence_steps_to(anchor, rhythm.cadence_days, day)
+    estimate = cadence_steps_to(anchor, rhythm.cadence, day)
     for steps in range(estimate, estimate + 3):
         if projected_payday(anchor, rhythm, steps) > day:
             return steps
     raise PayCalendarError(
         f"no payday on the grid anchored {anchor.isoformat()} at a "
-        f"{rhythm.cadence_days}-day cadence falls after {day.isoformat()} "
+        f"{rhythm.cadence.days}-day cadence falls after {day.isoformat()} "
         f"within two cadences.  That needs a displacement at least a cadence "
         f"long, which pay_schedule_service.reject_shift_on_short_cadence "
         f"refuses at the write door -- ledger row N-493 is that a write-time "
@@ -379,7 +380,7 @@ def matched_step(anchor: date, rhythm: Rhythm, payday: date) -> int:
     Returns:
         The step count from *anchor* of the planned payday nearest *payday*.
     """
-    steps = cadence_steps_to(anchor, rhythm.cadence_days, payday) - 1
+    steps = cadence_steps_to(anchor, rhythm.cadence, payday) - 1
     nearest, distance = steps, abs(
         (projected_payday(anchor, rhythm, steps) - payday).days,
     )
@@ -611,8 +612,16 @@ def payday_after(eras: "tuple[Era, ...]", last_payday: date) -> date:
     return next(planned_paydays_after(eras, last_payday))
 
 
-def validate_cadence(cadence_days: int) -> None:
-    """Refuse a cadence that is not an in-range plain integer.
+def validate_cadence(cadence) -> None:
+    """Refuse a cadence that is not a known kind carrying in-range parameters.
+
+    **Dispatched on the cadence's KIND since plan step ``C17-d-1``**, which
+    is the value's type (:class:`~app.services.pay_rhythm.FixedDays` at this
+    leaf; the day-of-month kinds join at ``C17-d-2`` with bounds of their
+    own).  A value of no known kind is refused here, with the package's
+    error, before :mod:`._grid` would refuse it with a ``TypeError``: a
+    calendar built by hand from something that is not a cadence value fails
+    where the sequence is validated rather than at its first projection.
 
     Held to the same standard as :func:`~._derive._validated` holds a payday, and for the
     same reason -- the review of C1 measured what the looser check let through.
@@ -635,9 +644,15 @@ def validate_cadence(cadence_days: int) -> None:
     answer, so it guarded this call and owned a refusal of its own.  A calendar
     now requires a cadence outright: an owner with no ``budget.pay_schedule``
     row has no calendar rather than a cadence-less one, so the pair that needed
-    a second opinion cannot be built.  The refusal below is the whole of it, and
-    it is the check already written for ``bool`` and ``float`` doing one more
-    type's work rather than a new fence.
+    a second opinion cannot be built.  **Since ``C17-d-1`` absence has two
+    shapes and each meets its own branch**: a bare ``None`` where the cadence
+    VALUE should be is refused by the kind gate (it is of no kind the grid
+    has arithmetic for, :data:`~._grid.KINDS`), and a fixed-days value whose
+    day count is ``None`` is refused by the plain-int check, exactly as
+    ``bool`` and ``float`` are.  Neither is a fence over a state a door can
+    produce: ``pay_schedule_service._era_of`` builds every stored era's
+    cadence as a value, so both shapes reach here only from a sequence
+    assembled by hand.
 
     The upper bound is the stored column's own
     (``ck_pay_eras_cadence_range``, 1..365).  Enforcing only the lower half
@@ -646,22 +661,34 @@ def validate_cadence(cadence_days: int) -> None:
     off a value no write door could have produced.
 
     Args:
-        cadence_days: The candidate cadence.
+        cadence: The candidate cadence value.
 
     Raises:
-        PayCalendarError: The value is not an ``int`` (a ``bool`` and ``None``
-            included), or falls outside 1..365.
+        PayCalendarError: The value is of no known kind (``None`` included),
+            or a fixed-days cadence's day count is not an ``int`` (a ``bool``
+            included) or falls outside 1..365.
     """
+    # The kind set is the GRID's table, read rather than restated: a value the
+    # grid could not project is refused here, where a calendar is built.
+    if type(cadence) not in KINDS:
+        raise PayCalendarError(
+            f"a cadence must be a value of one of the kinds pay_rhythm "
+            f"declares, got {type(cadence).__name__} {cadence!r}.  None "
+            f"reaches here as a caller that built a calendar without a "
+            f"cadence: since plan step C4-d there is no such calendar, because "
+            f"an owner with no budget.pay_schedule row has no calendar at all "
+            f"(pay_calendar._loader.calendar_for refuses them)."
+        )
+    # The messages name the COLUMN the bound belongs to,
+    # ``budget.pay_eras.cadence_days``, which is what a fixed-days cadence's
+    # ``days`` is read from and written to.
+    cadence_days = cadence.days
     if not isinstance(cadence_days, int) or isinstance(cadence_days, bool):
         raise PayCalendarError(
             f"cadence_days must be a plain int, got "
             f"{type(cadence_days).__name__} {cadence_days!r}.  A bool is an "
             f"int subclass and would pass as a one-day cadence, and a float is "
-            f"truncated by date arithmetic, which moves a horizon silently.  "
-            f"None reaches here as a caller that built a calendar without a "
-            f"cadence: since plan step C4-d there is no such calendar, because "
-            f"an owner with no budget.pay_schedule row has no calendar at all "
-            f"(pay_calendar._loader.calendar_for refuses them)."
+            f"truncated by date arithmetic, which moves a horizon silently."
         )
     if not MIN_CADENCE_DAYS <= cadence_days <= MAX_CADENCE_DAYS:
         raise PayCalendarError(

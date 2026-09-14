@@ -25,7 +25,6 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.  Seam-PRIVATE.
 """
 
-from dataclasses import replace
 from datetime import date
 
 from app.models.account import Account
@@ -37,14 +36,13 @@ from app.services._recurrence_common import (
 )
 from app.services.cash_ledger import DefinitionRow, definition_cash
 from app.services.recurrence import (
-    Closing,
     compute_due_date,
     projected_occurrence_placements,
 )
 
 from ._context import BalanceContext
 from ._plan_records import _ONE_DAY, PlannedPayment
-from ._resolution import ResolvedLoan, authored_closing
+from ._resolution import ResolvedLoan
 
 
 def _answered_by_rows(
@@ -136,15 +134,12 @@ def _unanswered_placements(
         # cannot reach here with one (the calendar seeds the pass), and the
         # pure resolver's answer is honoured rather than second-guessed.
         return []
-    resolved = replace(
-        resolved,
-        closing=Closing(
-            authored=authored_closing(
-                template, resolved.closing.authored, ctx,
-            ),
-            derived=None,
-        ),
-    )
+    # The pure resolver's value carries the AUTHORED half alone (``derived``
+    # is ``None`` by construction), which since plan step R7d-g is exactly
+    # what the rule's two bound columns hold: every stored closing bound is
+    # its owner's word, so there is no cache to read around (ruling
+    # **R-R56**'s arm went with the column's last writer) and nothing to
+    # rebuild.  The derived stop is THIS fold's output.
     rule = template.recurrence_rule
     dated = [
         (placement, compute_due_date(rule, placement.period))
@@ -183,11 +178,11 @@ def estimated_from_definitions(
        composed door: that door's derived stop is a loan's closing date,
        which is THIS fold's output, and a fold reading its own answer is the
        fixed point ruling **R-R65** refused to scaffold.  The authored half is
-       read through :func:`~app.services.balance_at._resolution.authored_closing`
-       (ruling **R-R56**: the standing payment's stored column is the
-       chokepoints' cache, so it binds by nothing and the fold's own zero
-       crossing is its stop), so a second definition's authored end date is
-       honoured (ruling **R-R37**) and the loan's own payment runs to payoff;
+       the rule's own two columns, which hold nothing but an owner's word
+       since plan step R7d-g (the chokepoints' cache of the payoff, which
+       ruling **R-R56**'s arm read around, is NULLed and never written), so
+       every definition's authored end date is honoured (ruling **R-R37**)
+       and a payment with none runs to the fold's own zero crossing;
     2. place each occurrence on the paycheck its row would live in, saved or
        projected (:func:`~app.services.recurrence.projected_occurrence_placements`);
        an occurrence the schedule cannot place is dropped, which is ruling

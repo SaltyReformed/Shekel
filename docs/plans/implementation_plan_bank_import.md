@@ -76,7 +76,9 @@ nothing and says so on its own first line. The code as committed is what those s
         **It waits on `balance:X-au-e`** and the reason is a constraint rather than a preference: a
         row that HAS a template has a derivation to read (`ck_transactions_amount_ownership`), and
         X-au-e is the step that rebuilds what a templated row's amount is. Building against today's
-        shape would mean building it twice.
+        shape would mean building it twice. **One step with `balance:X-bi-7b` since 2026-09-13**
+        (balance **R-BAL24**): that leaf's one-off producer is what mints the template, so this
+        entry is the bank_import half of one specification.
   - [ ] **X-f6g** `refactor(reconcile): a statement-covered account reconciles from statements` --
         the reconcile panel stops offering an account whose statements the owner imports
         (**R-GD(d)**). **Its specification pass FOLDED into `balance:X-bj-1` on 2026-09-03**

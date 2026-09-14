@@ -26,6 +26,7 @@ from app.services import account_service, retirement_levers, retirement_readines
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCadence, PeriodWindow
 from app.services.growth_engine import project_balance
+from app.services.pay_rhythm import FixedDays
 from app.services.retirement_gap_calculator import RetirementGapAnalysis
 from app.services.retirement_levers import (
     _annuity_factor,
@@ -40,7 +41,7 @@ from tests._test_helpers import biweekly_window
 
 #: 14 days between paydays, 26 a year -- the cadence the seeded scenarios
 #: build and every hand-computed figure here assumes.
-_BIWEEKLY = PayCadence(cadence_days=14)
+_BIWEEKLY = PayCadence(FixedDays(14))
 
 
 def _delayed(inputs, months):
@@ -235,7 +236,7 @@ class TestHeadroomPerPeriod:
             projections, _BIWEEKLY,
         ) == Decimal("200.00")
         assert _headroom_per_period(
-            projections, PayCadence(cadence_days=7),
+            projections, PayCadence(FixedDays(7)),
         ) == Decimal("100.00")
 
     def test_hand_computed_aggregate(self):
