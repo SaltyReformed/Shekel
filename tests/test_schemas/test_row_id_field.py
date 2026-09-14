@@ -247,7 +247,13 @@ _LAX_INTEGER_SPELLINGS = frozenset({"Integer", "Int"})
 #: ``test_every_lax_factory_really_returns_a_lax_field`` resolves each name and
 #: proves what it builds.  Add a name here when you add a builder; the
 #: stale-entry arm below then holds it to being real.
-_LAX_INTEGER_FACTORIES = frozenset({"cadence_days_field", "num_periods_field"})
+_LAX_INTEGER_FACTORIES = frozenset({
+    "cadence_days_field",
+    # A day of the month a monthly or semi-monthly rhythm pays on (plan step
+    # pay_calendar:C17-d-3), 1..31 -- a calendar day, never a row.
+    "day_of_month_field",
+    "num_periods_field",
+})
 
 #: Field builders in the package that return a STRICT row-id field -- the
 #: fourth category, added at plan step ``pay_calendar:C14-b`` because that step
@@ -287,6 +293,11 @@ _LAX_DECLARATIONS = _LAX_INTEGER_SPELLINGS | _LAX_INTEGER_FACTORIES
 #: fact about the helper that should be asserted rather than assumed.
 _NON_INTEGER_FIELD_FACTORIES = frozenset({
     "_auth_email_field",
+    # The cadence KIND control (plan step pay_calendar:C17-d-3, ruling
+    # R-PC84): a String subclass mapping a plain wire token to the cadence
+    # class it names (R-PC80).  Not an id -- the kind has no ref table, by
+    # that ruling -- so it holds a token, never a row.
+    "cadence_kind_field",
     # An optional DATE -- how far back an owner's paychecks reach (plan step
     # balance:X-bh-2).  Shared by the two doors that ask, so the schema tier
     # and ``ck_pay_schedule_history_opens_range`` bound one window; it holds a
@@ -414,6 +425,14 @@ _NON_ROW_ID_INTEGERS = frozenset({
     "arm_first_adjustment_months",
     "cadence_days",
     "consecutive_high_years",
+    # ``day_of_month``, ``first_day_of_month`` and ``second_day_of_month``
+    # are the day-of-month cadence arms' inputs (plan step
+    # pay_calendar:C17-d-3, ruling R-PC84): the day a monthly rhythm pays
+    # on, and the two a semi-monthly one does.  1..31 here, refused again by
+    # ``pay_schedule_service.reject_out_of_range_cadence`` and by the era
+    # table's CHECKs.  Distinct names because all three arms are rendered
+    # and submitted at once, and a duplicate form key loads its FIRST value.
+    "day_of_month",
     "contribution_limit_year",
     # ``day_of_month`` and ``month_of_year`` LEFT this set at plan step R7c-b
     # with the schema fields themselves: a rule's first occurrence is AUTHORED
@@ -425,6 +444,7 @@ _NON_ROW_ID_INTEGERS = frozenset({
     "due_day_of_month",
     "effective_month",
     "effective_year",
+    "first_day_of_month",
     "grid_default_periods",
     "inflation_effective_month",
     "interval_n",
@@ -466,6 +486,7 @@ _NON_ROW_ID_INTEGERS = frozenset({
     "payment_day",
     "qualifying_children",
     "rolling_target_periods",
+    "second_day_of_month",
     "sort_order",
     "tax_year",
     "term_months",
@@ -555,15 +576,26 @@ class TestNoIdFieldWasMissed:
         the strict side, and one that returned something else entirely would
         mean the scan is grading a token that names nothing.
         """
-        from app.schemas.validation import (  # pylint: disable=import-outside-toplevel
-            pay_periods,
-        )
+        # pylint: disable=import-outside-toplevel -- resolved here so the
+        # registry above stays a plain frozenset of names.  The rhythm's
+        # factories moved to ``_pay_rhythm`` at plan step pay_calendar:C17-d-3.
+        from app.schemas.validation import _pay_rhythm, pay_periods
 
+        modules = {
+            "cadence_days_field": _pay_rhythm,
+            "day_of_month_field": _pay_rhythm,
+            "num_periods_field": pay_periods,
+        }
         for factory_name in _LAX_INTEGER_FACTORIES:
-            factory = getattr(pay_periods, factory_name, None)
+            module = modules.get(factory_name)
+            assert module is not None, (
+                f"{factory_name} is registered as a lax field factory but this "
+                "test does not know which module to resolve it from"
+            )
+            factory = getattr(module, factory_name, None)
             assert factory is not None, (
                 f"{factory_name} is registered as a lax field factory but does "
-                "not exist in app.schemas.validation.pay_periods"
+                f"not exist in {module.__name__}"
             )
             built = factory(required=True)
             assert isinstance(built, fields.Integer), (
@@ -911,10 +943,11 @@ class TestNoIdFieldWasMissed:
         """
         # pylint: disable=import-outside-toplevel -- resolved here so the
         # registry above stays a plain frozenset of names.
-        from app.schemas.validation import auth, pay_periods
+        from app.schemas.validation import _pay_rhythm, auth, pay_periods
 
         modules = {
             "_auth_email_field": auth,
+            "cadence_kind_field": _pay_rhythm,
             "history_opens_on_field": pay_periods,
             "payday_field": pay_periods,
         }
@@ -951,15 +984,17 @@ class TestNoIdFieldWasMissed:
         required, and defaulted -- because a factory could in principle branch
         on its keywords and return a lax field for one of them.
         """
+        # ``shift_field`` moved with the rest of the rhythm's form to
+        # ``_pay_rhythm`` at plan step pay_calendar:C17-d-3.
         from app.schemas.validation import (  # pylint: disable=import-outside-toplevel
-            pay_periods,
+            _pay_rhythm,
         )
 
         for factory_name in _STRICT_ROW_ID_FACTORIES:
-            factory = getattr(pay_periods, factory_name, None)
+            factory = getattr(_pay_rhythm, factory_name, None)
             assert factory is not None, (
                 f"{factory_name} is registered as a strict row-id factory but "
-                "does not exist in app.schemas.validation.pay_periods"
+                "does not exist in app.schemas.validation._pay_rhythm"
             )
             for built in (
                 factory(required=True),

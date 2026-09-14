@@ -428,7 +428,15 @@ def add_months(start: date, months: int) -> date:
 
     The result's day is clamped to the target month's last day, so
     ``add_months(date(2026, 1, 31), 1)`` yields ``date(2026, 2, 28)``
-    rather than raising for the nonexistent February 31st.
+    rather than raising for the nonexistent February 31st.  **The clamp is
+    :func:`clamped_day`'s and the step is :func:`month_ordinal`'s** (plan
+    step ``pay_calendar:C17-d-3``, closing ledger row **PC-513**): this
+    function spelled both again, one function below them, from before
+    ``C17-d-2`` moved the two primitives into this module.  It clamps to
+    *start*'s own day, so stepping AGAIN from the result decays a 31st to
+    the 28th for good -- the caller's spelling, kept as it was; a rule or a
+    payday that means the 31st carries the meant day itself
+    (``recurrence:R-R3``, **R-PC79**) and does not step through here.
 
     Overflow guard: returns :attr:`datetime.date.max` when the result
     would exceed year 9999 (Python's maximum representable year) instead
@@ -443,15 +451,10 @@ def add_months(start: date, months: int) -> date:
         A new :class:`datetime.date` ``months`` months after ``start``,
         or :attr:`datetime.date.max` on year-9999 overflow.
     """
-    total_months = start.month - 1 + months
-    year = start.year + total_months // MONTHS_PER_YEAR
-    month = total_months % MONTHS_PER_YEAR + 1
-
-    if year > 9999:
+    ordinal = month_ordinal(start) + months
+    if ordinal >= (date.max.year + 1) * MONTHS_PER_YEAR:
         return date.max
-
-    day = min(start.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
+    return clamped_day(ordinal, start.day)
 
 
 def months_between(start: date, end: date) -> int:

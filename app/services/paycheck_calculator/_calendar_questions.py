@@ -39,8 +39,9 @@ def _month_ordinal(calendar, payday):
     The ONE calendar read behind both month-position judgements.  With biweekly
     pay most months hold two paydays and twice a year one holds three, so the
     ordinal is 1, 2 or 3 -- but it is derived rather than assumed, because
-    ``budget.pay_schedule.cadence_days`` is user-selectable 1..365 and a
-    daily-paid owner's month holds about thirty.
+    the owner's cadence (a ``budget.pay_eras`` row's since plan step
+    ``pay_calendar:C17-a``) is user-stated, a day count 1..365 or a day of
+    the month, and a daily-paid owner's month holds about thirty.
 
     It reads the CALENDAR, so the answer is a property of the owner's whole
     schedule rather than of whichever periods a caller was holding: see the

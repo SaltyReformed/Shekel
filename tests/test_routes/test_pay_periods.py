@@ -57,6 +57,7 @@ class TestPayPeriodGenerate:
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-03-01",
                 "num_periods": "10",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
             }, follow_redirects=True)
@@ -85,6 +86,7 @@ class TestPayPeriodGenerate:
         with app.app_context():
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-03-01",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "0",
                 "shift": shift_form_value(),
             })
@@ -99,6 +101,7 @@ class TestPayPeriodGenerate:
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-04-01",
                 "num_periods": "1",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
             }, follow_redirects=True)
@@ -139,6 +142,7 @@ class TestPayPeriodGenerate:
             data = {
                 "start_date": "2026-05-01",
                 "num_periods": "5",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
             }
@@ -210,6 +214,7 @@ class TestPayPeriodGenerate:
             # P80's opening payday, at P80's cadence.
             bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-01-02", "num_periods": "2",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
             }, follow_redirects=True)
@@ -221,6 +226,7 @@ class TestPayPeriodGenerate:
             # door accepted because it sat above the floor.
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-07-31", "num_periods": "1",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
             }, follow_redirects=True)
@@ -263,6 +269,7 @@ class TestPayPeriodGenerate:
             user_id = bare_user["user"].id
             bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-05-01", "num_periods": "3",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
             }, follow_redirects=True)
@@ -278,6 +285,7 @@ class TestPayPeriodGenerate:
             # ESTABLISH again, at a wholly new phase.
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2027-03-04", "num_periods": "2",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "7",
                 "shift": shift_form_value(),
             }, follow_redirects=True)
@@ -300,6 +308,7 @@ class TestPayPeriodNegativePaths:
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "not-a-date",
                 "num_periods": "10",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
             })
@@ -317,6 +326,7 @@ class TestPayPeriodNegativePaths:
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-01-02",
                 "num_periods": "-5",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
             })
@@ -333,6 +343,7 @@ class TestPayPeriodNegativePaths:
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-01-02",
                 "num_periods": "0",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
             })
@@ -349,6 +360,7 @@ class TestPayPeriodNegativePaths:
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-01-02",
                 "num_periods": "999999",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "14",
                 "shift": shift_form_value(),
             })
@@ -366,6 +378,7 @@ class TestPayPeriodNegativePaths:
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-01-02",
                 "num_periods": "10",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "-1",
                 "shift": shift_form_value(),
             })
@@ -395,6 +408,7 @@ class TestPayPeriodNegativePaths:
         with app.app_context():
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-03-01",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "0",
                 "shift": shift_form_value(),
             })
@@ -534,6 +548,7 @@ class TestShorteningTheSchedulePastASettledDayGoesThrough:
             # against what the form now offers.
             resp = auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-12-28", "num_periods": "1",
+                "cadence_kind": "fixed_days",
                 "cadence_days": "1",
                 "shift": shift_form_value(),
             })

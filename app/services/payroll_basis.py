@@ -295,7 +295,8 @@ def gross_per_paycheck(
             imprecision that refusal exists to keep out.
         periods_per_year: How many paychecks the owner receives in a year,
             off :attr:`PayrollBasis.periods_per_year` -- which derives it from
-            ``budget.pay_schedule.cadence_days`` and from nothing else.
+            the owner's pay era's cadence (``budget.pay_eras`` since plan
+            step ``pay_calendar:C17-a``) and from nothing else.
 
     Returns:
         The gross for one paycheck, quantized to the cent.

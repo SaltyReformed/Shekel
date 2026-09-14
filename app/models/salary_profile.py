@@ -25,8 +25,10 @@ class SalaryProfile(
     R-F16.**  ``pay_periods_per_year`` was an ``Integer`` column here, offered
     as a 12 / 24 / 26 / 52 dropdown, and it was the DIVISOR the paycheck
     engine turned an annual salary into one paycheck with.
-    ``budget.pay_schedule.cadence_days`` is the same fact -- the rhythm the
-    owner's paydays arrive on -- and nothing validated one against the other,
+    The owner's pay cadence (``budget.pay_schedule.cadence_days`` then; a
+    ``budget.pay_eras`` row's since plan step ``pay_calendar:C17-a``) is
+    the same fact -- the rhythm the owner's paydays arrive on -- and nothing
+    validated one against the other,
     so a profile saying 26 beside a 7-day cadence modelled DOUBLE the owner's
     income (finding **F-16**).  The count is now derived from the cadence
     alone, by :attr:`app.services.pay_calendar.PayCadence.periods_per_year`,
