@@ -29,18 +29,30 @@ reproduces the reverse matcher plan step R4a replaced (it clamped with
 ``min(day, monthrange(...))`` per period) and the only one that does not decay
 (ruling R-R3).
 
+**The two ordinal primitives are DECLARED in** :mod:`app.utils.dates`
+**and re-exported here** (plan step ``pay_calendar:C17-d-2``).
+:func:`month_ordinal` and :func:`clamped_day` were born in this module for
+the walk below; the pay calendar's day-of-month kinds
+(:mod:`app.services.pay_calendar._grid`) step the same ordinals and clamp
+the same meant day, and that package can import neither a private module of
+this one nor this package (which imports ``pay_calendar`` itself).  Rule 14
+says move the shared leaf rather than spell it twice, so the pair lives in
+the date-utility leaf below both, and every reader of this module's names
+-- ``_occurrence``, ``_frequency``, ``_resolution`` -- is unchanged.
+
 Pure: no Flask, no ORM, no clock, no database.
 """
-import calendar as calendar_module
 from collections.abc import Iterator
 from datetime import date
 
 from app.enums import RecurrenceUnitEnum
 from app.exceptions import ShekelError
-from app.utils.dates import CALENDAR_DATE_MAX
-
-#: Months in a year.  The one spelling, for both callers.
-MONTHS_PER_YEAR = 12
+from app.utils.dates import (
+    CALENDAR_DATE_MAX,
+    MONTHS_PER_YEAR,
+    clamped_day,
+    month_ordinal,
+)
 
 #: How many MONTHS one of each calendar unit spans.
 #:
@@ -125,43 +137,6 @@ def months_per_step(unit: RecurrenceUnitEnum, interval_n: int) -> int:
             f"calendar units."
         )
     return months * interval_n
-
-
-def month_ordinal(day: date) -> int:
-    """Return *day*'s absolute month ordinal.
-
-    Months numbered continuously from year 0, so "three months later" is
-    ``+ 3`` with no year-boundary special case and a residue class over
-    ordinals is the same set as a residue class over month NUMBERS whenever
-    the step divides 12 -- which it does for every calendar pattern
-    (1, 3, 6, 12).
-
-    Args:
-        day: Any date.
-
-    Returns:
-        ``year * 12 + (month - 1)``.
-    """
-    return day.year * MONTHS_PER_YEAR + (day.month - 1)
-
-
-def clamped_day(ordinal: int, nominal_day: int) -> date:
-    """Return the date *nominal_day* names in the month *ordinal* numbers.
-
-    Args:
-        ordinal: An absolute month ordinal, from :func:`month_ordinal`.
-        nominal_day: The day of the month the rule MEANS, 1-31, before
-            clamping.
-
-    Returns:
-        That month's *nominal_day*, or its last day when the month is shorter
-        -- so a day-31 rule is the 31st in January and the 30th in April,
-        rather than decaying to the 30th forever.
-    """
-    year, month_index = divmod(ordinal, MONTHS_PER_YEAR)
-    month = month_index + 1
-    last_day = calendar_module.monthrange(year, month)[1]
-    return date(year, month, min(nominal_day, last_day))
 
 
 #: The last month this walk can name: the one holding

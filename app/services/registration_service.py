@@ -58,6 +58,7 @@ from app.services import (
     account_service,
     auth_service,
     pay_calendar,
+    pay_era_write,
     pay_period_batch,
     pay_period_write,
     pay_rhythm,
@@ -172,7 +173,21 @@ def _reject_impossible_first_payday(
 
     Each end refuses for its own reason.  A payday whose money has not landed
     is not one that has happened; a paycheck that has already ENDED means a
-    later payday arrived that the owner did not name.
+    later payday arrived that the owner did not name -- and the message
+    names it (ruling **R-PC83**, plan step ``pay_calendar:C17-d-2``): the
+    payday on the owner's STATED rhythm whose paycheck covers today, which
+    is the grid's own spelling ``nominal_payday(first_payday, cadence,
+    cadence_steps_to(first_payday, cadence, E - 1))`` -- the last grid day
+    strictly before ``E``, the earliest nominal day paid after today.  For a
+    day-of-month rhythm that day is the ONE legal answer, the grid being
+    fixed by the stated day; for a fixed-days rhythm it is one legal answer
+    among several (every first payday from ``E - days`` up to the last one
+    paid on or before today), and the message that used to name that set's
+    lower bound (``E - cadence_days``, a spelling no month grid has) was
+    ruled replaced by the one every kind shares rather than kept beside a
+    second for the month kinds.  **The refusal SET is unchanged**: on a
+    fixed-days grid ``first_payday + days >= E`` exactly when the last grid
+    day before ``E`` is *first_payday* itself.
 
     **It asks the DERIVATION where that paycheck runs, and that is plan step
     ``pay_calendar:C14-e-3``.**  The rule was arithmetic here --
@@ -198,9 +213,10 @@ def _reject_impossible_first_payday(
             ``effective_from`` (plan step ``pay_calendar:C17-a``).
         rhythm: The stated cadence and payday convention
             (:class:`~app.services.pay_rhythm.Rhythm`).  ``register_user`` asks
-            ``reject_out_of_range_cadence`` and ``reject_shift_on_short_cadence``
-            of it BEFORE this, so neither producer call below can be handed an
-            out-of-range question.
+            ``reject_out_of_range_cadence``, ``reject_phase_off_grid`` and
+            ``reject_shift_on_short_cadence`` of the pair BEFORE this, so no
+            producer call below can be handed an out-of-range question or a
+            first payday off the stated grid.
         today: The owner's civil today, read once by the caller so this bound
             and the opening assertion's day cannot straddle midnight.
 
@@ -223,22 +239,29 @@ def _reject_impossible_first_payday(
             f"of the paycheck you have already been paid."
         )
     # **The boundary is ONE value.**  ``projected_payday(fp, rhythm, 1) <=
-    # today`` says the same thing, but the message must NAME the earliest
-    # payday that works -- two expressions held equal by a monotonicity
-    # argument, rule 14's tell.  They ARE equal (both conventions are monotone,
-    # so ``shift(fp + cadence) > today`` exactly when ``fp >= covering``), and
-    # under ``none`` this is ``today - cadence + 1``.
-    covering = business_days.earliest_nominal_paid_after(
-        today, rhythm.shift,
-    ) - timedelta(days=rhythm.cadence.days)
+    # today`` says the same thing, but the message must NAME the payday that
+    # works -- two expressions held equal by a monotonicity argument, rule
+    # 14's tell.  They ARE equal (both conventions are monotone, so
+    # ``shift(next grid day after fp) > today`` exactly when the last grid
+    # day before E is fp itself), and the named day is the grid's own:
+    # the last day on the owner's stated grid strictly before E, whose
+    # paycheck is the one covering today (R-PC83).
+    horizon = business_days.earliest_nominal_paid_after(today, rhythm.shift)
+    cadence = rhythm.cadence
+    covering = pay_calendar.nominal_payday(
+        first_payday, cadence,
+        pay_calendar.cadence_steps_to(
+            first_payday, cadence, horizon - timedelta(days=1),
+        ),
+    )
     if first_payday < covering:
         closes = pay_calendar.projected_payday(first_payday, rhythm, 1)
         raise ValidationError(
             f"The paycheck starting {opens.isoformat()} has already "
-            f"ended: paid every {rhythm.cadence.days} days, it covered "
-            f"through {(closes - timedelta(days=1)).isoformat()}."
-            f"  Enter the payday whose paycheck covers today -- "
-            f"{covering.isoformat()} or later."
+            f"ended: paid {cadence.phrase}, it covered through "
+            f"{(closes - timedelta(days=1)).isoformat()}.  On that rhythm "
+            f"the paycheck covering today opened on {covering.isoformat()}; "
+            f"enter that payday."
         )
     return opens
 
@@ -406,6 +429,13 @@ def register_user(spec: RegistrationSpec):
     # cadence or a zero horizon refuse several statements after the ``User``
     # row exists, under a message about accounts rather than about the input.
     pay_schedule_service.reject_out_of_range_cadence(spec.rhythm.cadence)
+    # The stated payday must be a day the stated rhythm pays on (plan step
+    # ``pay_calendar:C17-d-2``), asked after the bound admitted the cadence
+    # and BEFORE the refusal below runs the grid from that day: a
+    # day-of-month rhythm stated from a day it does not pay would otherwise
+    # be judged on a grid the owner never stated.  ``record_paydays`` re-asks
+    # it in its own precondition block, as it re-asks the two beside it.
+    pay_era_write.reject_phase_off_grid(spec.first_payday, spec.rhythm.cadence)
     # The rhythm is refused as a PAIR before the ``User`` row exists.
     # ``record_paydays`` re-asks it as the writer's own rule; asking here is
     # what keeps this block the whole of registration's refusals, exactly as

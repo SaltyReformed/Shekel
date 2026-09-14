@@ -22,12 +22,13 @@ from app import ref_cache
 from app.enums import BusinessDayShiftEnum
 from app.exceptions import ValidationError
 from app.services import (
+    pay_era_write,
     pay_period_admin,
     pay_period_write,
     pay_schedule_service,
 )
 from app.services.pay_calendar import calendar_for
-from app.services.pay_rhythm import FixedDays
+from app.services.pay_rhythm import Era, FixedDays, Monthly, Rhythm, SemiMonthly
 from app.utils.business_days import shortest_collision_free_cadence
 from tests._test_helpers import (
     all_periods,
@@ -698,4 +699,308 @@ class TestTheEarliestEraStandsWheneverAnyPaydayDoes:
             assert [p.start_date for p in created] == [date(2026, 1, 30)]
             assert _eras(db.session, user_id) == [
                 (date(2026, 1, 3), 14), (date(2026, 1, 30), 7),
+            ]
+
+
+def _era_shapes(session, user_id):
+    """Return ``[(effective_from, cadence_days, nominal_day, other_day)]``, ascending."""
+    return [
+        tuple(row) for row in session.execute(text(
+            "SELECT effective_from, cadence_days, nominal_day, other_day "
+            "  FROM budget.pay_eras WHERE user_id = :uid "
+            " ORDER BY effective_from"
+        ), {"uid": user_id})
+    ]
+
+
+class TestADayOfMonthEraRoundTrips:
+    """Plan step ``pay_calendar:C17-d-2`` (rulings R-PC79, R-PC80): the kind is the row's shape.
+
+    Each case states a month-kind rhythm through the writer, reads the
+    columns back by SQL -- the kind is which of them are present -- and reads
+    the VALUE back through the schedule reader, so the writer's
+    ``_COLUMNS_OF`` and the reader's ``_cadence_of`` are graded as the
+    inverse pair they claim to be.  The paydays the batch records are the
+    grid's, so a wrong column that read back as the right value would still
+    fail on the days.
+    """
+
+    def test_a_monthly_era_stores_no_parameter_and_reads_back_its_day(
+        self, app, db, bare_user,
+    ):
+        """Monthly on the 15th from the 15th: every column NULL; the day is the anchor's."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 15), num_periods=3,
+                rhythm=Rhythm(Monthly(15), BusinessDayShiftEnum.NONE),
+            )
+            db.session.commit()
+            assert _era_shapes(db.session, user_id) == [
+                (date(2026, 1, 15), None, None, None),
+            ]
+            assert pay_schedule_service.resolve_cadence(user_id) == Monthly(15)
+            assert _paydays(db.session, user_id) == [
+                date(2026, 1, 15), date(2026, 2, 15), date(2026, 3, 15),
+            ]
+
+    def test_a_day_31_era_opening_in_february_stores_its_nominal_day(
+        self, app, db, bare_user,
+    ):
+        """R-PC79's worked example: 02-28 meaning the 31st records 31 and pays 03-31, 04-30."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 2, 28), num_periods=3,
+                rhythm=Rhythm(Monthly(31), BusinessDayShiftEnum.NONE),
+            )
+            db.session.commit()
+            assert _era_shapes(db.session, user_id) == [
+                (date(2026, 2, 28), None, 31, None),
+            ]
+            assert pay_schedule_service.resolve_cadence(user_id) == Monthly(31)
+            assert _paydays(db.session, user_id) == [
+                date(2026, 2, 28), date(2026, 3, 31), date(2026, 4, 30),
+            ]
+            # The last saved paycheck closes the day before the NEXT month's
+            # last day, not 28 days on: the meant day did not decay.
+            assert calendar_for(user_id).periods[-1].end_date == date(2026, 5, 30)
+
+    def test_a_semi_monthly_era_from_its_upper_day_stores_the_lower_as_other(
+        self, app, db, bare_user,
+    ):
+        """1st/15th from the 15th: ``other_day`` is 1, ``nominal_day`` NULL; sorted on read."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 15), num_periods=3,
+                rhythm=Rhythm(SemiMonthly((15, 1)), BusinessDayShiftEnum.NONE),
+            )
+            db.session.commit()
+            assert _era_shapes(db.session, user_id) == [
+                (date(2026, 1, 15), None, None, 1),
+            ]
+            assert pay_schedule_service.resolve_cadence(user_id) == SemiMonthly((1, 15))
+            assert _paydays(db.session, user_id) == [
+                date(2026, 1, 15), date(2026, 2, 1), date(2026, 2, 15),
+            ]
+
+    def test_a_semi_monthly_era_from_a_clamped_upper_day_stores_both_columns(
+        self, app, db, bare_user,
+    ):
+        """15th/last from 02-28 meaning the 31st: ``nominal_day`` 31, ``other_day`` 15."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 2, 28), num_periods=5,
+                rhythm=Rhythm(SemiMonthly((15, 31)), BusinessDayShiftEnum.NONE),
+            )
+            db.session.commit()
+            assert _era_shapes(db.session, user_id) == [
+                (date(2026, 2, 28), None, 31, 15),
+            ]
+            assert pay_schedule_service.resolve_cadence(user_id) == SemiMonthly((15, 31))
+            assert _paydays(db.session, user_id) == [
+                date(2026, 2, 28), date(2026, 3, 15), date(2026, 3, 31),
+                date(2026, 4, 15), date(2026, 4, 30),
+            ]
+
+    def test_a_semi_monthly_era_from_its_lower_day_stores_the_upper_as_other(
+        self, app, db, bare_user,
+    ):
+        """5th/20th from the 5th: ``other_day`` is 20 and the anchor is the lower member."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 5), num_periods=3,
+                rhythm=Rhythm(SemiMonthly((5, 20)), BusinessDayShiftEnum.NONE),
+            )
+            db.session.commit()
+            assert _era_shapes(db.session, user_id) == [
+                (date(2026, 1, 5), None, None, 20),
+            ]
+            assert _paydays(db.session, user_id) == [
+                date(2026, 1, 5), date(2026, 1, 20), date(2026, 2, 5),
+            ]
+
+    def test_a_fixed_days_era_is_stored_exactly_as_before(self, app, db, bare_user):
+        """The control: a day count and nothing else, read back as ``FixedDays``."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 2), num_periods=2,
+                rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+            assert _era_shapes(db.session, user_id) == [
+                (date(2026, 1, 2), 14, None, None),
+            ]
+            assert pay_schedule_service.resolve_cadence(user_id) == FixedDays(14)
+
+    def test_the_generated_event_names_the_rhythm_by_its_phrase(
+        self, app, db, bare_user, caplog,
+    ):
+        """Ruling R-PC82: ``cadence=`` carries the phrase for a month kind too."""
+        user_id = bare_user["user"].id
+        with app.app_context(), caplog.at_level("INFO", logger="app.services.pay_period_write"):
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 1), num_periods=2,
+                rhythm=Rhythm(SemiMonthly((1, 15)), BusinessDayShiftEnum.NONE),
+            )
+        record = next(r for r in caplog.records if r.getMessage() == "Pay periods generated")
+        assert record.cadence == "twice a month on days 1 and 15"
+        assert not hasattr(record, "cadence_days")
+
+
+class TestAPhaseOffItsGridIsRefusedAtBothDoors:
+    """``reject_phase_off_grid`` (plan step C17-d-2): the batch door and the era writer.
+
+    ``Monthly(5)`` stated from the 10th is the case the CHECKs cannot see --
+    ``nominal_day`` would be NULL and the row storable as "monthly on the
+    10th" -- so each door is driven with it and the table read back empty.
+    """
+
+    @pytest.mark.parametrize("first_payday, cadence, held", [
+        (date(2026, 1, 10), Monthly(5), "2026-01-05"),
+        (date(2026, 1, 10), Monthly(15), "2026-01-15"),
+        (date(2026, 1, 3), SemiMonthly((1, 15)), "2026-01-15"),
+        (date(2026, 2, 27), Monthly(31), "2026-02-28"),
+    ])
+    def test_the_batch_door_refuses_before_spacing_the_batch(
+        self, app, db, bare_user, first_payday, cadence, held,
+    ):
+        """The message names the grid day that month does hold; nothing is written."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            with pytest.raises(ValidationError, match=held):
+                pay_period_write.record_paydays(
+                    user_id=user_id, first_payday=first_payday, num_periods=2,
+                    rhythm=Rhythm(cadence, BusinessDayShiftEnum.NONE),
+                )
+            assert _paydays(db.session, user_id) == []
+            assert pay_schedule_service.get_schedule(user_id) is None
+
+    def test_the_era_writer_refuses_the_same_state(self, app, db, bare_user):
+        """``mint_era`` asks it immediately before the write, as it asks the other two."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_schedule_service.ensure_schedule_row(user_id)
+            with pytest.raises(ValidationError, match="2026-01-05"):
+                pay_era_write.mint_era(
+                    user_id,
+                    Era(date(2026, 1, 10), Rhythm(Monthly(5), BusinessDayShiftEnum.NONE)),
+                )
+            db.session.rollback()
+            assert _era_shapes(db.session, user_id) == []
+
+    def test_a_fixed_days_first_payday_is_on_its_grid_from_any_day(
+        self, app, db, bare_user,
+    ):
+        """The control: the refusal cannot fire on the kind every owner held."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 10), num_periods=1,
+                rhythm=rhythm_of(14),
+            )
+            db.session.commit()
+            assert _paydays(db.session, user_id) == [date(2026, 1, 10)]
+
+
+class TestTheFloorIsAskedOfTheShortestGap:
+    """Ruling R-PC79: a displacing convention is judged against the era's shortest gap."""
+
+    def test_a_pair_whose_gap_is_under_the_floor_is_refused(self, app, bare_user):
+        """1st/2nd under ``prior`` displaces two paydays onto one day: refused."""
+        floor = shortest_collision_free_cadence()
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc:
+                pay_era_write.mint_era(
+                    bare_user["user"].id,
+                    Era(date(2026, 1, 1), Rhythm(SemiMonthly((1, 2)), BusinessDayShiftEnum.PRIOR)),
+                )
+            message = str(exc.value)
+            assert f"at least {floor}" in message
+            assert "got 1" in message
+            assert "twice a month on days 1 and 2" in message
+
+    def test_a_monthly_era_carries_any_convention(self, app, db, bare_user):
+        """28 days between paydays clears every floor the holiday set can produce."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 31), num_periods=2,
+                rhythm=Rhythm(Monthly(31), BusinessDayShiftEnum.PRIOR),
+            )
+            db.session.commit()
+            # 2026-01-31 is a Saturday, paid Friday the 30th; 02-28 too.
+            assert _paydays(db.session, user_id) == [date(2026, 1, 30), date(2026, 2, 27)]
+            assert _era_shapes(db.session, user_id) == [
+                (date(2026, 1, 31), None, None, None),
+            ]
+
+    def test_a_first_and_fifteenth_era_carries_a_convention(self, app, db, bare_user):
+        """13 or 14 days between paydays clears the floor; the record is displaced."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 2, 1), num_periods=2,
+                rhythm=Rhythm(SemiMonthly((1, 15)), BusinessDayShiftEnum.NEXT),
+            )
+            db.session.commit()
+            # 2026-02-01 is a Sunday, paid Monday the 2nd; 02-15 a Sunday
+            # before Presidents' Day, paid Tuesday the 17th.
+            assert _paydays(db.session, user_id) == [date(2026, 2, 2), date(2026, 2, 17)]
+
+
+class TestTheEraRuleOnAMonthKind:
+    """``era_to_mint`` reads a month grid through the grid's own round trip."""
+
+    def test_a_batch_stating_the_same_pair_in_the_other_order_continues_the_era(
+        self, app, db, bare_user,
+    ):
+        """15th/1st and 1st/15th are one rhythm: a rebuild on either mints nothing."""
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 1), num_periods=2,
+                rhythm=Rhythm(SemiMonthly((1, 15)), BusinessDayShiftEnum.NONE),
+            )
+            db.session.commit()
+            eras = pay_schedule_service.resolve_schedule(user_id).eras
+            assert pay_era_write.era_to_mint(
+                eras, date(2026, 2, 1), Rhythm(SemiMonthly((15, 1)), BusinessDayShiftEnum.NONE),
+            ) is None
+            assert pay_era_write.era_to_mint(
+                eras, date(2026, 2, 15), Rhythm(SemiMonthly((15, 1)), BusinessDayShiftEnum.NONE),
+            ) is None
+
+    def test_a_different_day_of_the_month_mints_an_era(self, app, db, bare_user):
+        """Monthly on the 15th after monthly on the 1st is a new era, kept beside the old.
+
+        The record ends 02-01; the plan's next payday is 03-01 (the floor)
+        and the one after 04-01 (the ceiling), so a first payday of 03-15
+        on the new rhythm is admitted and mints.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 1), num_periods=2,
+                rhythm=Rhythm(Monthly(1), BusinessDayShiftEnum.NONE),
+            )
+            db.session.commit()
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 3, 15), num_periods=1,
+                rhythm=Rhythm(Monthly(15), BusinessDayShiftEnum.NONE),
+            )
+            db.session.commit()
+            assert _era_shapes(db.session, user_id) == [
+                (date(2026, 1, 1), None, None, None),
+                (date(2026, 3, 15), None, None, None),
+            ]
+            assert _paydays(db.session, user_id) == [
+                date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 15),
+            ]
+            assert [e.rhythm.cadence for e in pay_schedule_service.resolve_schedule(user_id).eras] == [
+                Monthly(1), Monthly(15),
             ]

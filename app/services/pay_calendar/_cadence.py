@@ -2,8 +2,9 @@
 
 Plan step **R7a-2a** (``docs/plans/implementation_plan_recurrence_redesign.md``
 section 4a).  ``app.utils.money.PAY_PERIODS_PER_YEAR = Decimal("26")`` was a
-module constant while ``budget.pay_schedule.cadence_days`` is user-selectable
-1..365, so every monthly-equivalent figure on ``/savings``, the Recurring
+module constant while the owner's cadence (``budget.pay_schedule.cadence_days``
+then; an era's on ``budget.pay_eras`` since ``pay_calendar:C17-a``) is
+user-selectable, so every monthly-equivalent figure on ``/savings``, the Recurring
 surface and ``/retirement`` was wrong for any owner who is not paid biweekly --
 a weekly-paid owner's ``$100`` per-paycheck bill reported ``$216.67`` a month
 against a true ``$433.33``.
@@ -16,9 +17,13 @@ day count -- and the count is derived from it in this module and nowhere else
 -- it is not a column, because a derivation stored beside its own input is a
 cache and a cache drifts the moment one writer moves one side alone (the
 argument :mod:`app.services.recurrence._resolution` makes for the two-axis
-recurrence values, applied to this one).  The day-of-month kinds ``C17-d-2``
-adds answer 12 and 24 here without dividing; the fixed-days derivation below
-is the one this leaf holds.
+recurrence values, applied to this one).  **Dispatched on the cadence's
+KIND since plan step ``C17-d-2``** (ruling **R-PC79**): a fixed-days cadence
+derives its count by the division argued below, a monthly cadence answers 12
+and a semi-monthly one 24 EXACTLY, with no division to round -- an owner
+paid on the 1st and the 15th is paid twenty-four times every year with zero
+variance, which is the count the 15-day walk (``recurrence:R-R28``) could
+only approximate as ``24.35`` and the whole reason the kinds exist.
 
 **It became the only one at plan step R-F16, and until then it was not.**
 ``salary.salary_profiles.pay_periods_per_year`` was a SECOND, stored,
@@ -133,7 +138,7 @@ owner's cadence out of the table is :func:`~._loader.cadence_for`.
 from dataclasses import dataclass
 from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
-from app.services.pay_rhythm import FixedDays
+from app.services.pay_rhythm import FixedDays, Monthly, SemiMonthly
 from app.utils.money import MONTHS_PER_YEAR
 
 from ._eras import validate_cadence
@@ -157,6 +162,99 @@ DAYS_PER_YEAR = Decimal("365.2425")
 #: the answer does not depend on the ambient decimal context.
 _WHOLE_PAYCHECKS = Decimal("1")
 
+#: Paydays a month for each day-of-month kind, as the integral ``Decimal``
+#: every consumer divides money by -- one for :class:`~app.services.pay_rhythm.Monthly`,
+#: two for :class:`~app.services.pay_rhythm.SemiMonthly`.  The one fact both
+#: month-kind answers below are derived from: a year holds twelve of each
+#: month, so the yearly count is this times :data:`~app.utils.money.MONTHS_PER_YEAR`,
+#: and a span of *n* months holds exactly *n* of each, every one of them
+#: arriving within the span.
+_PAYDAYS_PER_MONTH = {Monthly: Decimal("1"), SemiMonthly: Decimal("2")}
+
+
+def _fixed_days_periods_per_year(cadence: FixedDays) -> Decimal:
+    """Return ``round(365.2425 / days)``: the derivation the module docstring argues for.
+
+    Args:
+        cadence: The fixed-days value.
+
+    Returns:
+        The rounded yearly count.
+    """
+    return (DAYS_PER_YEAR / cadence.days).quantize(
+        _WHOLE_PAYCHECKS, rounding=ROUND_HALF_UP,
+    )
+
+
+def _month_kind_periods_per_year(cadence) -> Decimal:
+    """Return the exact yearly count of a day-of-month kind: 12 or 24.
+
+    Args:
+        cadence: A :class:`~app.services.pay_rhythm.Monthly` or
+            :class:`~app.services.pay_rhythm.SemiMonthly` value.
+
+    Returns:
+        Paydays a month times the months in a year, with nothing rounded.
+    """
+    return _PAYDAYS_PER_MONTH[type(cadence)] * MONTHS_PER_YEAR
+
+
+def _fixed_days_paychecks_within(cadence: FixedDays, months: int) -> int:
+    """Return ruling **R-R31**'s floor for a fixed-days cadence.
+
+    ``floor(months x DAYS_PER_YEAR / (MONTHS_PER_YEAR x days))``, the
+    division against the cadence ITSELF that :meth:`PayCadence.paychecks_within`
+    argues for.
+
+    Args:
+        cadence: The fixed-days value.
+        months: The span in whole months.
+
+    Returns:
+        The count.
+    """
+    return int(
+        (
+            Decimal(months) * DAYS_PER_YEAR
+            / (MONTHS_PER_YEAR * cadence.days)
+        ).to_integral_value(rounding=ROUND_FLOOR)
+    )
+
+
+def _month_kind_paychecks_within(cadence, months: int) -> int:
+    """Return the exact count of a day-of-month kind's paychecks in *months* months.
+
+    Every month holds the kind's one or two paydays, and the last of them
+    in a span of *n* months arrives ON the span's closing day at the latest
+    -- a monthly owner's third paycheck lands on the three-month day --
+    which ruling **R-R31**'s "arrives within the span" counts.
+
+    Args:
+        cadence: A :class:`~app.services.pay_rhythm.Monthly` or
+            :class:`~app.services.pay_rhythm.SemiMonthly` value.
+        months: The span in whole months.
+
+    Returns:
+        *months* times the paydays a month, as an ``int``.
+    """
+    return int(_PAYDAYS_PER_MONTH[type(cadence)] * months)
+
+
+#: The two counts per cadence KIND, keyed by the value's class as
+#: :data:`app.services.pay_calendar._grid._ARITHMETIC` keys its bodies: a
+#: kind absent here has no yearly count, and the lookup refuses it rather
+#: than dividing by a parameter it does not have.
+_PERIODS_PER_YEAR = {
+    FixedDays: _fixed_days_periods_per_year,
+    Monthly: _month_kind_periods_per_year,
+    SemiMonthly: _month_kind_periods_per_year,
+}
+_PAYCHECKS_WITHIN = {
+    FixedDays: _fixed_days_paychecks_within,
+    Monthly: _month_kind_paychecks_within,
+    SemiMonthly: _month_kind_paychecks_within,
+}
+
 
 @dataclass(frozen=True)
 class PayCadence:
@@ -173,15 +271,14 @@ class PayCadence:
     Attributes:
         cadence: How often the owner is paid, as a value of one of the kinds
             :mod:`app.services.pay_rhythm` declares -- the latest era's
-            ``rhythm.cadence`` (:class:`~app.services.pay_rhythm.FixedDays`
-            at this leaf).  The ONLY fact here; everything else is derived
-            from it.  Validated at construction against the same bounds
-            :func:`~._derive.derive_periods` holds a calendar's cadence to --
-            through :func:`~._eras.validate_cadence` itself, so the two
-            cannot part company.
+            ``rhythm.cadence``.  The ONLY fact here; everything else is
+            derived from it.  Validated at construction against the same
+            bounds :func:`~._derive.derive_periods` holds a calendar's
+            cadence to -- through :func:`~._eras.validate_cadence` itself,
+            so the two cannot part company.
     """
 
-    cadence: FixedDays
+    cadence: "FixedDays | Monthly | SemiMonthly"
 
     def __post_init__(self) -> None:
         """Refuse a cadence ``ck_pay_eras_cadence_range`` would refuse.
@@ -218,14 +315,17 @@ class PayCadence:
         nothing bounded above -- ledger rows **P8** and **P35**.  (That CHECK
         went with its column at plan step C4-c.)  That producer
         is gone: ``fk_pay_periods_schedule`` makes the owner unstorable and the
-        only source now is the column, bounded to 1..365 by
-        ``ck_pay_schedule_cadence_range``.  The check stays because the
-        argument for it never needed that producer.*
+        only source now is the era's own columns, bounded by their CHECKs
+        (``ck_pay_schedule_cadence_range`` then; ``ck_pay_eras_cadence_range``
+        and the two month-kind CHECKs since ``C17-a`` and ``C17-d-2``).  The
+        check stays because the argument for it never needed that producer.*
 
         Raises:
-            PayCalendarError: The cadence is of no known kind, or its day
-                count is not a plain ``int`` (a ``bool`` included) or falls
-                outside 1..365.
+            PayCalendarError: The cadence is of no known kind, or its
+                parameters fall outside its kind's bounds (a fixed-days
+                count that is not a plain ``int`` in 1..365; a day of the
+                month outside 1..31; a semi-monthly pair that is not two
+                distinct days with the lower at most 27).
         """
         validate_cadence(self.cadence)
 
@@ -233,9 +333,13 @@ class PayCadence:
     def periods_per_year(self) -> Decimal:
         """Return how many paychecks a year this cadence produces.
 
-        ``round(365.2425 / cadence_days)``, the derivation this module's
-        docstring argues for: biweekly -> 26, weekly -> 52, a monthly cadence
-        -> 12, and plan step R8's WEEK unit for free.
+        For a fixed-days cadence ``round(365.2425 / cadence_days)``, the
+        derivation this module's docstring argues for: biweekly -> 26,
+        weekly -> 52, a 30-day cadence -> 12, and plan step R8's WEEK unit
+        for free.  For a day-of-month kind the EXACT count -- 12 monthly, 24
+        semi-monthly -- with no division to round (plan step ``C17-d-2``,
+        ruling **R-PC79**); each kind's body is one entry of
+        :data:`_PERIODS_PER_YEAR`.
 
         Recomputed per call rather than pinned at construction.  It is one
         division and one quantize over a value that cannot change (the
@@ -252,9 +356,7 @@ class PayCadence:
             downstream.  At least 1 for every cadence in the domain
             (``365.2425 / 365`` rounds to 1).
         """
-        return (DAYS_PER_YEAR / self.cadence.days).quantize(
-            _WHOLE_PAYCHECKS, rounding=ROUND_HALF_UP,
-        )
+        return _PERIODS_PER_YEAR[type(self.cadence)](self.cadence)
 
     def per_paycheck_to_monthly(self, per_paycheck: Decimal) -> Decimal:
         """Re-express a per-PAYCHECK rate as a per-MONTH rate.
@@ -351,11 +453,16 @@ class PayCadence:
         two, not one.
 
         **Ruling R-R31 (developer, 2026-08-19): the horizon is the LAST WHOLE
-        PAYCHECK that ARRIVES within the span.**  Paydays are exactly
-        ``cadence_days`` apart, so that count is
+        PAYCHECK that ARRIVES within the span.**  On a fixed-days cadence
+        paydays are exactly ``cadence_days`` apart, so that count is
         ``floor(months x DAYS_PER_YEAR / (MONTHS_PER_YEAR x cadence_days))`` --
         a division against the CADENCE ITSELF, not against
-        :attr:`periods_per_year`.
+        :attr:`periods_per_year`.  **On a day-of-month kind it is exact**
+        (plan step ``C17-d-2``): a span of *n* months holds *n* monthly
+        paydays or *2n* semi-monthly ones, the last arriving on the span's
+        closing day at the latest, so a monthly owner's "3 months" resolves
+        to the third paycheck out where a 31-day owner's resolves to the
+        second -- each kind's body is one entry of :data:`_PAYCHECKS_WITHIN`.
 
         **Deriving it through the rounded annual count instead was the first
         implementation, and an adversarial review measured it wrong.**
@@ -413,12 +520,7 @@ class PayCadence:
             readings differ by one pay period and each call site says which it
             takes.
         """
-        return int(
-            (
-                Decimal(months) * DAYS_PER_YEAR
-                / (MONTHS_PER_YEAR * self.cadence.days)
-            ).to_integral_value(rounding=ROUND_FLOOR)
-        )
+        return _PAYCHECKS_WITHIN[type(self.cadence)](self.cadence, months)
 
     def _times_paychecks_per_month(self, value: Decimal) -> Decimal:
         """Multiply *value* by paychecks-per-month, in the sequential order.

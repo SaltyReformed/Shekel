@@ -36,8 +36,9 @@ from collections.abc import Iterator
 from datetime import date
 
 from app.exceptions import ShekelError
-from app.services.pay_rhythm import Era, Rhythm
+from app.services.pay_rhythm import Era, FixedDays, Monthly, Rhythm, SemiMonthly
 from app.utils.business_days import shift_to_business_day
+from app.utils.dates import SHORTEST_MONTH_DAYS
 
 from ._grid import KINDS, cadence_steps_to, nominal_payday
 
@@ -60,6 +61,19 @@ from ._grid import KINDS, cadence_steps_to, nominal_payday
 #: rather than by whoever edits one remembering the other.
 MIN_CADENCE_DAYS: int = 1
 MAX_CADENCE_DAYS: int = 365
+
+#: The day-of-month bounds (plan step ``C17-d-2``, ruling **R-PC79**), the
+#: same mirror of the model's :data:`~app.models.pay_era.DAY_OF_MONTH_MIN` /
+#: :data:`~app.models.pay_era.DAY_OF_MONTH_MAX` for the same purity reason,
+#: held equal by the same test.  A day is 1..31 (29..31 meaning "or the last
+#: day of a shorter month"); a semi-monthly pair's LOWER day is at most one
+#: less than February's length, because at that length or more both days
+#: clamp onto one day in February and the owner is paid once that month --
+#: derived from the one spelling of that length, as the model derives its
+#: :data:`~app.models.pay_era.SEMI_MONTHLY_LOWER_DAY_MAX`.
+MIN_DAY_OF_MONTH: int = 1
+MAX_DAY_OF_MONTH: int = 31
+MAX_SEMI_MONTHLY_LOWER_DAY: int = SHORTEST_MONTH_DAYS - 1
 
 
 class PayCalendarError(ShekelError, ValueError):
@@ -297,13 +311,16 @@ def step_after(anchor: date, rhythm: Rhythm, day: date) -> int:
 
     **Three candidates are enough, and it is a theorem rather than a
     margin.**  The estimate satisfies ``nominal(estimate) <= day <
-    nominal(estimate + 1)`` by :func:`~._grid.cadence_steps_to`'s floor
-    division, and a displacement is strictly shorter than a cadence --
+    nominal(estimate + 1)`` by :func:`~._grid.cadence_steps_to`'s contract,
+    and a displacement is strictly shorter than the era's SHORTEST GAP
+    between two grid days --
     :func:`~app.utils.business_days.shortest_collision_free_cadence` is the
     longest run of closed days PLUS ONE and
     ``pay_schedule_service.reject_shift_on_short_cadence`` holds a displacing
-    convention above it -- so ``nominal(estimate + 2)``'s payday clears *day*
-    under either convention.
+    convention above it, asked of ``cadence.shortest_gap`` (ruling
+    **R-PC79**: the theorem rests on the gap being longer than a
+    displacement, never on its being constant) -- so ``nominal(estimate +
+    2)``'s payday clears *day* under either convention.
 
     Args:
         anchor: A day the owner's NOMINAL grid passes through.
@@ -326,13 +343,13 @@ def step_after(anchor: date, rhythm: Rhythm, day: date) -> int:
         if projected_payday(anchor, rhythm, steps) > day:
             return steps
     raise PayCalendarError(
-        f"no payday on the grid anchored {anchor.isoformat()} at a "
-        f"{rhythm.cadence.days}-day cadence falls after {day.isoformat()} "
-        f"within two cadences.  That needs a displacement at least a cadence "
-        f"long, which pay_schedule_service.reject_shift_on_short_cadence "
-        f"refuses at the write door -- ledger row N-493 is that a write-time "
-        f"refusal cannot see a stored row a later holiday-set change made "
-        f"illegal."
+        f"no payday on the grid anchored {anchor.isoformat()}, paid "
+        f"{rhythm.cadence.phrase}, falls after {day.isoformat()} within two "
+        f"cadences.  That needs a displacement at least as long as the gap "
+        f"between two grid days, which "
+        f"pay_schedule_service.reject_shift_on_short_cadence refuses at the "
+        f"write door -- ledger row N-493 is that a write-time refusal cannot "
+        f"see a stored row a later holiday-set change made illegal."
     )
 
 
@@ -616,19 +633,23 @@ def validate_cadence(cadence) -> None:
     """Refuse a cadence that is not a known kind carrying in-range parameters.
 
     **Dispatched on the cadence's KIND since plan step ``C17-d-1``**, which
-    is the value's type (:class:`~app.services.pay_rhythm.FixedDays` at this
-    leaf; the day-of-month kinds join at ``C17-d-2`` with bounds of their
-    own).  A value of no known kind is refused here, with the package's
-    error, before :mod:`._grid` would refuse it with a ``TypeError``: a
-    calendar built by hand from something that is not a cadence value fails
-    where the sequence is validated rather than at its first projection.
+    is the value's type (:class:`~app.services.pay_rhythm.FixedDays`,
+    :class:`~app.services.pay_rhythm.Monthly` or
+    :class:`~app.services.pay_rhythm.SemiMonthly`, each with bounds of its
+    own in :data:`_PARAMETER_CHECKS`).  A value of no known kind is refused
+    here, with the package's error, before :mod:`._grid` would refuse it
+    with a ``TypeError``: a calendar built by hand from something that is
+    not a cadence value fails where the sequence is validated rather than
+    at its first projection.
 
     Held to the same standard as :func:`~._derive._validated` holds a payday, and for the
     same reason -- the review of C1 measured what the looser check let through.
     ``bool`` is an ``int`` subclass, so ``True`` was accepted as a one-day
     cadence; and a ``float`` was accepted and silently TRUNCATED, because
     ``date.__add__`` reads only ``timedelta.days``, so ``14.9`` produced the
-    same calendar as ``14``.
+    same calendar as ``14``.  A day of the month is held to the same
+    plain-``int`` rule, since :func:`app.utils.dates.clamped_day` would
+    truncate a float the same way.
 
     **Package-internal rather than underscore-private, and plan step R7a-2a is
     why**: :class:`~._cadence.PayCadence` validates through this same function,
@@ -658,15 +679,21 @@ def validate_cadence(cadence) -> None:
     (``ck_pay_eras_cadence_range``, 1..365).  Enforcing only the lower half
     while the error message quoted both was the gap; a cadence above 365 cannot
     come from an era row, so accepting one would mean projecting a horizon
-    off a value no write door could have produced.
+    off a value no write door could have produced.  The day-of-month bounds
+    are the columns' CHECKs the same way (``ck_pay_eras_nominal_day``,
+    ``ck_pay_eras_other_day``): a day outside 1..31, a pair that is not two
+    distinct days, or a pair whose lower day exceeds 27 is unstorable.
 
     Args:
         cadence: The candidate cadence value.
 
     Raises:
-        PayCalendarError: The value is of no known kind (``None`` included),
-            or a fixed-days cadence's day count is not an ``int`` (a ``bool``
-            included) or falls outside 1..365.
+        PayCalendarError: The value is of no known kind (``None`` included);
+            a fixed-days cadence's day count is not an ``int`` (a ``bool``
+            included) or falls outside 1..365; a monthly cadence's day is
+            not a plain ``int`` in 1..31; or a semi-monthly cadence's pair
+            is not two distinct plain ``int`` days in 1..31 with the lower
+            at most 27.
     """
     # The kind set is the GRID's table, read rather than restated: a value the
     # grid could not project is refused here, where a calendar is built.
@@ -679,17 +706,49 @@ def validate_cadence(cadence) -> None:
             f"an owner with no budget.pay_schedule row has no calendar at all "
             f"(pay_calendar._loader.calendar_for refuses them)."
         )
+    _PARAMETER_CHECKS[type(cadence)](cadence)
+
+
+def _require_plain_int(value, subject: str) -> None:
+    """Refuse *value* unless it is an ``int`` and not a ``bool``.
+
+    The one statement of the plain-int rule every kind's parameters are held
+    to; *subject* is what the message calls the value -- the column for a
+    fixed-days count (``cadence_days``, which is the fact and what twelve
+    tests match on), the cadence's own day for a month kind, whose day is
+    stored as ``effective_from``'s day or ``nominal_day`` or ``other_day``
+    depending on which member and whether the first month clamped it.
+
+    Args:
+        value: The parameter.
+        subject: What the message names the value.
+
+    Raises:
+        PayCalendarError: *value* is not a plain ``int``.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise PayCalendarError(
+            f"{subject} must be a plain int, got {type(value).__name__} "
+            f"{value!r}.  A bool is an int subclass and would pass as a "
+            f"day, and a float is truncated by date arithmetic, which moves "
+            f"a horizon silently."
+        )
+
+
+def _validate_fixed_days(cadence: FixedDays) -> None:
+    """Refuse a fixed-days cadence outside the stored column's range.
+
+    Args:
+        cadence: The value.
+
+    Raises:
+        PayCalendarError: The day count is not a plain ``int`` in 1..365.
+    """
     # The messages name the COLUMN the bound belongs to,
     # ``budget.pay_eras.cadence_days``, which is what a fixed-days cadence's
     # ``days`` is read from and written to.
     cadence_days = cadence.days
-    if not isinstance(cadence_days, int) or isinstance(cadence_days, bool):
-        raise PayCalendarError(
-            f"cadence_days must be a plain int, got "
-            f"{type(cadence_days).__name__} {cadence_days!r}.  A bool is an "
-            f"int subclass and would pass as a one-day cadence, and a float is "
-            f"truncated by date arithmetic, which moves a horizon silently."
-        )
+    _require_plain_int(cadence_days, "cadence_days")
     if not MIN_CADENCE_DAYS <= cadence_days <= MAX_CADENCE_DAYS:
         raise PayCalendarError(
             f"cadence_days must be at least {MIN_CADENCE_DAYS} day and at "
@@ -700,3 +759,83 @@ def validate_cadence(cadence) -> None:
             f"{MIN_CADENCE_DAYS}..{MAX_CADENCE_DAYS} by "
             f"ck_pay_eras_cadence_range."
         )
+
+
+def _require_day_of_month(day, subject: str) -> None:
+    """Refuse *day* unless it is a plain ``int`` in 1..31.
+
+    Args:
+        day: The parameter.
+        subject: What the message names the value.
+
+    Raises:
+        PayCalendarError: *day* is not a plain ``int``, or is out of range.
+    """
+    _require_plain_int(day, subject)
+    if not MIN_DAY_OF_MONTH <= day <= MAX_DAY_OF_MONTH:
+        raise PayCalendarError(
+            f"{subject} must be a day of the month, {MIN_DAY_OF_MONTH}.."
+            f"{MAX_DAY_OF_MONTH}, got {day}.  No month has a day outside "
+            f"that range, and budget.pay_eras holds none (ck_pay_eras_"
+            f"nominal_day, ck_pay_eras_other_day)."
+        )
+
+
+def _validate_monthly(cadence: Monthly) -> None:
+    """Refuse a monthly cadence whose day is not a day of the month.
+
+    Args:
+        cadence: The value.
+
+    Raises:
+        PayCalendarError: The day is not a plain ``int`` in 1..31.
+    """
+    _require_day_of_month(cadence.day, "a monthly cadence's day")
+
+
+def _validate_semi_monthly(cadence: SemiMonthly) -> None:
+    """Refuse a semi-monthly cadence that is not two distinct storable days.
+
+    Args:
+        cadence: The value.
+
+    Raises:
+        PayCalendarError: The pair is not a two-tuple; a day is not a plain
+            ``int`` in 1..31; the days are equal; or the lower exceeds 27.
+    """
+    days = cadence.days
+    if not isinstance(days, tuple) or len(days) != 2:
+        raise PayCalendarError(
+            f"a semi-monthly cadence is exactly two days of the month, got "
+            f"{days!r}.  The value's pair is what budget.pay_eras stores as "
+            f"effective_from's day and other_day."
+        )
+    lower, upper = days
+    _require_day_of_month(lower, "a semi-monthly cadence's day")
+    _require_day_of_month(upper, "a semi-monthly cadence's day")
+    if lower == upper:
+        raise PayCalendarError(
+            f"a semi-monthly cadence needs two DIFFERENT days of the month, "
+            f"got {lower} twice.  One day twice is a monthly cadence, and "
+            f"ck_pay_eras_other_day refuses the pair."
+        )
+    if lower > MAX_SEMI_MONTHLY_LOWER_DAY:
+        raise PayCalendarError(
+            f"a semi-monthly cadence's lower day must be at most "
+            f"{MAX_SEMI_MONTHLY_LOWER_DAY}, got {lower} beside {upper}: both "
+            f"days clamp onto {MAX_SEMI_MONTHLY_LOWER_DAY + 1} February and "
+            f"the owner would be paid once that month.  ck_pay_eras_other_day "
+            f"refuses the pair."
+        )
+
+
+#: Each kind's parameter check, keyed by the value's class -- the bounds a
+#: calendar holds a cadence to, beside the grid's arithmetic table they
+#: mirror.  ``tests/test_services/test_pay_calendar_derivation.py`` holds
+#: the two key sets equal, so a kind the grid can project is never one
+#: this function forgets to bound.
+_PARAMETER_CHECKS = {
+    FixedDays: _validate_fixed_days,
+    Monthly: _validate_monthly,
+    SemiMonthly: _validate_semi_monthly,
+}

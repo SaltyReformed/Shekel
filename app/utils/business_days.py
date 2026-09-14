@@ -308,15 +308,18 @@ def earliest_nominal_paid_after(day: date, shift: BusinessDayShiftEnum) -> date:
     holiday set: computed anywhere else it would be a second reader of the
     calendar this module exists to own.
 
-    **Its caller is a refusal that has to name a bound**
+    **Its caller is a refusal that has to name a payday**
     (``registration_service._reject_impossible_first_payday``, plan step
     ``pay_calendar:C14-e-3``).  Registration accepts a stated payday whose
     paycheck still covers today, which is
     ``projected_payday(first_payday, rhythm, 1) > today`` -- and a form must
-    say what WOULD be accepted, not only that this was not.  The earliest such
-    day is ``earliest_nominal_paid_after(today, shift) - cadence_days``, and
-    under :attr:`~app.enums.BusinessDayShiftEnum.NONE` that collapses to the
-    ``today - cadence_days + 1`` the rule used to state outright.
+    say what WOULD be accepted, not only that this was not.  The day it
+    names is the last grid day on the owner's stated rhythm strictly before
+    this answer (ruling **R-PC83**, plan step ``pay_calendar:C17-d-2``);
+    until that step it named this answer less ``cadence_days``, the earliest
+    such day on a fixed-days grid, which under
+    :attr:`~app.enums.BusinessDayShiftEnum.NONE` collapsed to the
+    ``today - cadence_days + 1`` the rule once stated outright.
 
     **A SCAN rather than a formula, because the closed form is three formulas.**
     Under ``NONE`` the answer is ``day + 1``; under ``NEXT`` it is one past the

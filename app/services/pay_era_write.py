@@ -36,7 +36,7 @@ route layer owns the transaction.
 from datetime import date
 
 from app import ref_cache
-from app.enums import PayCadenceKindEnum
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.pay_era import PayEra
 from app.services import pay_schedule_service
@@ -45,16 +45,153 @@ from app.services.pay_calendar import (
     first_payday_of,
     nominal_payday,
 )
-from app.services.pay_rhythm import Era, FixedDays, Rhythm, era_covering
+from app.services.pay_rhythm import (
+    Era,
+    FixedDays,
+    Monthly,
+    Rhythm,
+    SemiMonthly,
+    era_covering,
+)
 
-#: The ``ref.pay_cadence_kinds`` member each cadence KIND is stored as.
-#:
-#: The kind is the cadence value's type since plan step ``C17-d-1``; the
-#: column still names it until ``C17-d-2`` drops it (ruling **R-PC80**), so
-#: this is the one place a type becomes a stored kind, keyed by class so a
-#: kind this leaf does not store is refused by the lookup rather than written
-#: as the wrong one.
-_KIND_OF = {FixedDays: PayCadenceKindEnum.FIXED_DAYS}
+
+def _fixed_days_columns(_effective_from: date, cadence: FixedDays) -> dict:
+    """Return the parameter columns a fixed-days era stores: its day count.
+
+    The phase is taken for the table's one signature and read for nothing:
+    a fixed-days grid stores no fact beyond the day count.
+
+    Args:
+        cadence: The value.
+
+    Returns:
+        ``{"cadence_days": days}``.
+    """
+    return {"cadence_days": cadence.days}
+
+
+def _nominal_day_of(effective_from: date, day: int) -> "int | None":
+    """Return what ``nominal_day`` records for a meant *day* on *effective_from*.
+
+    The day the era MEANS when the anchor's month could not hold it, else
+    ``None`` -- ``recurrence:R-R3``'s rule, on this table's anchor: the
+    column is present exactly when the date lost the intent, so absence has
+    one meaning and ``ck_pay_eras_nominal_day`` can tie presence to the
+    clamp.  A meant day BELOW the anchor's own day is not a clamp but an
+    anchor off its grid, which :func:`reject_phase_off_grid` refuses before
+    this is asked.
+
+    Args:
+        effective_from: The era's phase, a day on its grid.
+        day: The day of the month the era means at that anchor.
+
+    Returns:
+        *day* when it exceeds the anchor's day, else ``None``.
+    """
+    return day if day > effective_from.day else None
+
+
+def _monthly_columns(effective_from: date, cadence: Monthly) -> dict:
+    """Return the parameter columns a monthly era stores: ``nominal_day`` alone.
+
+    Args:
+        effective_from: The era's phase.
+        cadence: The value.
+
+    Returns:
+        ``{"nominal_day": ...}``, ``None`` when the phase carries the day.
+    """
+    return {"nominal_day": _nominal_day_of(effective_from, cadence.day)}
+
+
+def _semi_monthly_columns(effective_from: date, cadence: SemiMonthly) -> dict:
+    """Return the parameter columns a semi-monthly era stores.
+
+    The anchor stands for ONE member of the pair
+    (:meth:`~app.services.pay_rhythm.SemiMonthly.member_of`, the value's one
+    reading of its position, which the grid numbers half-months from too)
+    and ``other_day`` is the member it does not stand for, with
+    ``nominal_day`` recording the meant member only when the anchor's month
+    clamped it.
+
+    Args:
+        effective_from: The era's phase.
+        cadence: The value.
+
+    Returns:
+        ``{"nominal_day": ..., "other_day": ...}``.
+    """
+    meant_member = cadence.member_of(effective_from)
+    meant, other = cadence.days[meant_member], cadence.days[1 - meant_member]
+    return {
+        "nominal_day": _nominal_day_of(effective_from, meant),
+        "other_day": other,
+    }
+
+
+#: The parameter columns each cadence KIND stores, keyed by the value's class
+#: (plan step ``C17-d-2``, ruling **R-PC80**): the ONE place a value becomes
+#: its columns, as :func:`~app.services.pay_schedule_service._era_of` is the
+#: one place the columns become a value.  A kind absent here is refused by
+#: the lookup rather than written as the wrong one.
+_COLUMNS_OF = {
+    FixedDays: _fixed_days_columns,
+    Monthly: _monthly_columns,
+    SemiMonthly: _semi_monthly_columns,
+}
+
+
+def reject_phase_off_grid(effective_from: date, cadence) -> None:
+    """Refuse an era whose first payday is not on its own cadence's grid.
+
+    **The one refusal a day-of-month kind adds to the write door** (plan
+    step ``C17-d-2``).  An era's ``effective_from`` is its first NOMINAL
+    payday, so its grid passes through it by definition -- which a
+    fixed-days grid does for any day, and a monthly or semi-monthly grid
+    does only for its stated day(s): ``Monthly(15)`` from the 10th, or a
+    1st/15th era from the 3rd, names a rhythm and a first payday that
+    contradict each other.  The predicate is the grid's own round trip at
+    step zero, dispatched on the kind, so nothing here restates what a
+    month grid passes through.
+
+    **Asked twice, and the storage cannot catch what the second ask
+    refuses.**  ``pay_period_write.record_paydays`` asks it in its
+    precondition block, before ``pay_period_batch.requested_paydays`` spaces
+    the batch from the stated day -- on an off-grid anchor that batch's
+    first element would not be the day the owner stated.  :func:`mint_era`
+    asks it again immediately before the write, as it asks the cadence
+    bound and the pairing, so no door can persist the state.  The CHECKs
+    see only half of it: a meant day ABOVE the anchor's would be written
+    as ``nominal_day`` and refused as not a clamp, but ``Monthly(5)`` from
+    the 10th writes ``nominal_day = NULL`` and is storable as "monthly on
+    the 10th" -- a wrong rhythm rather than an error, which is why the
+    refusal is the writer's and not the schema's.
+
+    Args:
+        effective_from: The stated first nominal payday.
+        cadence: The stated cadence, already bounded by
+            :func:`~app.services.pay_schedule_service.reject_out_of_range_cadence`.
+
+    Raises:
+        ValidationError: The grid does not pass through *effective_from*.
+            The message names the grid's paydays either side of the typed
+            day -- the grid's own contract, ``payday(steps_to(d)) <= d <
+            payday(steps_to(d) + 1)``, so a 1st/15th owner who typed the
+            3rd is told the 1st AND the 15th -- so a form can render it
+            against the payday control.
+    """
+    if nominal_payday(effective_from, cadence, 0) != effective_from:
+        before = cadence_steps_to(effective_from, cadence, effective_from)
+        raise ValidationError(
+            f"A first payday of {effective_from.isoformat()} is not a day "
+            f"you are paid on when paid {cadence.phrase}; on that rhythm the "
+            f"paydays either side of it are "
+            f"{nominal_payday(effective_from, cadence, before).isoformat()} "
+            f"and "
+            f"{nominal_payday(effective_from, cadence, before + 1).isoformat()}."
+            f"  Enter one of those, or state the rhythm that pays on "
+            f"{effective_from.isoformat()}."
+        )
 
 
 def mint_era(user_id: int, era: Era) -> PayEra:
@@ -69,11 +206,13 @@ def mint_era(user_id: int, era: Era) -> PayEra:
     ledger row **N-494** recorded.
 
     **The refusals live HERE, at the column's writer** (plan step X-ad-a's
-    placement, carried over).  The cadence bound and the cadence-convention
-    pairing are asked immediately before the write, so no door can persist
-    what ``ck_pay_eras_cadence_range`` or the collision floor refuses; every
-    caller that takes the values from a form asks the same functions earlier
-    so the refusal lands on the control the owner chose.
+    placement, carried over).  The cadence bound, the cadence-convention
+    pairing and -- since plan step ``C17-d-2`` -- the phase's place on its
+    own grid (:func:`reject_phase_off_grid`) are asked immediately before
+    the write, so no door can persist what ``ck_pay_eras_cadence_range``,
+    the collision floor or the month kinds' CHECKs refuse; every caller that
+    takes the values from a form asks the same functions earlier so the
+    refusal lands on the control the owner chose.
 
     **It writes the era as ONE row, and the pairing is why rather than
     tidiness.**  ``shift_id`` is legal only on a cadence longer than the
@@ -110,25 +249,28 @@ def mint_era(user_id: int, era: Era) -> PayEra:
         The new :class:`~app.models.pay_era.PayEra` row, flushed.
 
     Raises:
-        ValidationError: The cadence falls outside
-            :data:`~app.models.pay_era.CADENCE_DAYS_MIN` ..
-            :data:`~app.models.pay_era.CADENCE_DAYS_MAX`, or the pair is one
-            no calendar can derive
-            (:func:`~app.services.pay_schedule_service.reject_shift_on_short_cadence`).
-            A 400 rather than a 500: every door in front of this one takes
-            the values from a form.
+        ValidationError: The cadence's parameters fall outside its kind's
+            bounds
+            (:func:`~app.services.pay_schedule_service.reject_out_of_range_cadence`),
+            the pair is one no calendar can derive
+            (:func:`~app.services.pay_schedule_service.reject_shift_on_short_cadence`),
+            or the era's first payday is off its own grid
+            (:func:`reject_phase_off_grid`).  A 400 rather than a 500:
+            every door in front of this one takes the values from a form.
     """
-    pay_schedule_service.reject_out_of_range_cadence(era.rhythm.cadence)
+    cadence = era.rhythm.cadence
+    pay_schedule_service.reject_out_of_range_cadence(cadence)
     pay_schedule_service.reject_shift_on_short_cadence(era.rhythm)
-    # The one place a rhythm's convention and kind become ids, which is the
-    # storage boundary and nowhere else -- ``recurrence._authoring`` resolves
-    # the same vocabulary at the same moment for the same reason.
+    reject_phase_off_grid(era.effective_from, cadence)
+    # The one place a rhythm's convention becomes an id and its cadence
+    # becomes its parameter columns, which is the storage boundary and
+    # nowhere else -- ``recurrence._authoring`` resolves the same vocabulary
+    # at the same moment for the same reason.
     row = PayEra(
         user_id=user_id,
         effective_from=era.effective_from,
-        kind_id=ref_cache.pay_cadence_kind_id(_KIND_OF[type(era.rhythm.cadence)]),
-        cadence_days=era.rhythm.cadence.days,
         shift_id=ref_cache.business_day_shift_id(era.rhythm.shift),
+        **_COLUMNS_OF[type(cadence)](era.effective_from, cadence),
     )
     db.session.add(row)
     db.session.flush()
@@ -235,7 +377,7 @@ def era_to_mint(
     on it.  Until plan step ``C17-d-1`` this was spelled here a second time
     as ``(first_payday - effective_from).days % cadence_days == 0`` -- the
     same arithmetic under another name, and one that only a fixed-days grid
-    can be asked in.  Asking the grid is what lets the day-of-month kinds
+    can be asked in.  Asking the grid is what let the day-of-month kinds
     inherit the test at ``C17-d-2`` with nothing written here.  The two
     spellings agree on every integer input (Python's ``//`` and ``%`` share
     one divmod identity, brute-forced over a million pairs at the review);
