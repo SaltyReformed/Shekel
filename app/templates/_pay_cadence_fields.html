@@ -30,11 +30,11 @@
 
    Every attribute is written LITERALLY, with Jinja only inside its quotes
    or as a whole-attribute {% if %}: the ``{{ 'attr="x"' if c }}`` shape the
-   shared render_field macro uses is autoescaped to ``attr=&#34;x&#34;``,
+   shared render_field macro USED is autoescaped to ``attr=&#34;x&#34;``,
    which the browser reads as a quoted-looking unquoted value and discards
-   (measured on this tree: render_field's ``min`` / ``max`` and its ARIA
-   attributes render escaped on every caller -- reported at C17-d-3, not
-   this file's to fix).
+   (measured at C17-d-3 on every render_field caller; fixed at plan step
+   pay_calendar:C20, ledger row PC-515, which rewrote _form_macros.html the
+   same way).
 
    Arguments:
      stored     -- the owner's current rhythm in WIRE spelling

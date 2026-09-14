@@ -41,7 +41,7 @@
      schema and the service refuse the same set independently. #}
   {{ render_field("num_periods", "Number of Periods", type="number",
                    value=config['DEFAULT_PAY_PERIOD_HORIZON'],
-                   input_attrs='min="%s" max="%s"'|format(PERIOD_BATCH_MIN, PERIOD_BATCH_MAX),
+                   input_attrs={"min": PERIOD_BATCH_MIN, "max": PERIOD_BATCH_MAX},
                    help_text="52 periods = 2 years of biweekly pay.",
                    errors=errors) }}
 
