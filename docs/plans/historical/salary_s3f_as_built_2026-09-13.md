@@ -10,9 +10,9 @@ per-raise probe and its Save, split 2026-09-11 into three leaves on **R-SAL23** 
 **R-SAL21** and **R-SAL22** ruled the design asked for from scratch; its middle leaf split again
 2026-09-12 at the money line (**R-SAL6**'s rule). A probed raise is a VALUE carrying the row's
 terms with the end year changed -- an INPUT for one request, the row the one home -- not the
-fabrication `S3-c` deleted. Five of its six leaves have shipped, the last of them `S3-f-3` at
-`a5ef1bdf`; the container and its parent `S3` ship with `S3-f-4` (the refused probe rendered,
-**SAL-548**, minted 2026-09-13), whose record will join this file. Condensed here from
+fabrication `S3-c` deleted. All six leaves have shipped, the last of them `S3-f-4` at
+`329b663d` (the refused probe rendered, **SAL-548**), with which the container and its parent
+`S3` shipped; every leaf's record is below. Condensed here from
 `implementation_plan_salary.md` under conventions rule 5 by `S3-f-3`'s tick (developer ruling
 2026-09-12: archive the shipped span rather than raise the cap).
 
@@ -53,10 +53,24 @@ fabrication `S3-c` deleted. Five of its six leaves have shipped, the last of the
   without it would have left stale is the template's `default_amount` -- read when the profile is
   archived -- and the row set, not every grid figure.
 
+- **`S3-f-4`** `329b663d` -- the refused what-if RENDERED (**R-SAL33**, **R-SAL34**). Every
+  refusal of `GET /retirement/readiness` is the assumptions rail re-rendered at 422 through the
+  ONE renderer the Save uses, `{control: [messages]}`, the query string echoed, delivered to
+  `#assumptions-region` by htmx's `HX-Retarget` because the trigger targets the readiness card,
+  which keeps the picture it last drew; the schema's nested JSON shape is gone and
+  `RaiseProbeError.errors` carries which half was refused. `retirement_controls.js` retires a
+  row's refusal on the first edit of either of its what-if controls, aborts the request in flight
+  on every keystroke (`abortInFlightRefresh`; the trigger also carries `hx-sync="this:replace"`
+  for the next request) and restores the caret after a swap (Chromium put it at the start).
+  Graded by `tests/manual/verify_retirement_rail_refusal.py`, 28 browser checks, green on a
+  clone 2026-09-13 (the lane reports three runs). NO STORED FIGURE MOVED. Closed **SAL-548**; opened **SAL-550**
+  (refusals outside the rail still render nowhere) and **SAL-551** (the SWR message is in the
+  fraction domain), both to `S5`. `app/routes/retirement.py` stands at 944 of 1000 lines.
+
 ## What the span left open
 
-- The readiness GET's refusal of a probe is still a JSON 422 the page never renders (both
-  `S3-f-2b` reviews); the Save's refusals render on the row, the what-if's do not.
+- ~~The readiness GET's refusal of a probe is still a JSON 422 the page never renders~~ -- closed
+  by `S3-f-4`; what it left is **SAL-550** and **SAL-551**.
 - The rail lists every ACTIVE profile's recurring raises, which is not exactly the set the page
   projects in the multi-profile case (the `S3-c` review's known weaker claim).
 - The rail's raise row carries no `version_id`, so a Save from a rail rendered before a
