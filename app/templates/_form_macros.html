@@ -6,12 +6,43 @@
    All macros accept an optional `errors` dict (field_name → [error_messages]).
    Pass it from the route when Marshmallow validation fails:
      return render_template("myform.html", errors=schema_errors)
+
+   **Every attribute is written LITERALLY, with Jinja only inside its quotes
+   or as a whole-attribute {% if %} block** (plan step pay_calendar:C20,
+   ledger row PC-515).  These macros emitted their optional attributes as
+   quoted STRINGS -- ``{{ ('placeholder="' ~ p ~ '"') if p else '' }}``,
+   ``{{ input_attrs }}`` -- and Flask autoescapes every ``{{ }}`` in an
+   .html template, so the browser received ``min=&#34;1&#34;
+   max=&#34;52&#34;``, ``step=&#34;0.01&#34;``, ``aria-invalid=&#34;true&#34;``:
+   an UNQUOTED attribute whose value carries literal quote marks, which the
+   browser discards.  Measured 2026-09-14 on every caller: no number box
+   rendered through here had a working ``min`` / ``max`` / ``step``, so a
+   rate of 3.25 or a YTD figure with cents failed the browser's own step
+   check, the companion password fields carried no
+   ``autocomplete="new-password"``, and no ARIA reached a screen reader.
+   Marking the string safe was not the remedy -- it is
+   the XSS hole the template hook refuses -- so ``input_attrs`` is a MAPPING
+   now (``{"min": 1, "max": 52}``), rendered ``name="{{ value }}"`` with the
+   VALUE escaped inside the quotes: attribute syntax from the template,
+   attribute values through autoescape, which is the one shape that is both
+   parsed and safe.
 #}
+
+
+{# --- Extra attributes, from a mapping ---
+   ``attrs`` is ``{attribute name: value}`` (``none`` for nothing).  Names are
+   template literals; values are escaped inside their quotes, so a caller may
+   pass a user-derived value without opening an injection.  A boolean
+   attribute is spelled ``{"disabled": "disabled"}``; none of the callers
+   needs one today. #}
+{% macro extra_attrs(attrs) -%}
+{%- for attr, value in (attrs or {}).items() %} {{ attr }}="{{ value }}"{% endfor -%}
+{%- endmacro %}
 
 
 {# --- Text / Number / Date Input --- #}
 {% macro render_field(name, label, type="text", value="", required=false, placeholder="",
-                      help_text="", errors=none, input_attrs="", classes="") %}
+                      help_text="", errors=none, input_attrs=none, classes="") %}
 {% set field_errors = errors.get(name, []) if errors else [] %}
 {% set err_id = name ~ "-error" if field_errors else "" %}
 {% set help_id = name ~ "-help" if help_text else "" %}
@@ -21,11 +52,11 @@
   <input type="{{ type }}" id="{{ name }}" name="{{ name }}"
          class="form-control {{ 'is-invalid' if field_errors else '' }}"
          value="{{ value }}"
-         {{ 'required' if required else '' }}
-         {{ ('placeholder="' ~ placeholder ~ '"') if placeholder else '' }}
-         {{ ('aria-describedby="' ~ described_by ~ '"') if described_by else '' }}
-         {{ ('aria-invalid="true"') if field_errors else '' }}
-         {{ input_attrs }}>
+         {% if required %}required{% endif %}
+         {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+         {% if described_by %}aria-describedby="{{ described_by }}"{% endif %}
+         {% if field_errors %}aria-invalid="true"{% endif %}
+         {{ extra_attrs(input_attrs) }}>
   {% if field_errors %}
   <div id="{{ err_id }}" class="invalid-feedback" role="alert">
     {{ field_errors|join('. ') }}
@@ -49,9 +80,9 @@
   <label for="{{ name }}" class="form-label">{{ label }}</label>
   <select id="{{ name }}" name="{{ name }}"
           class="form-select {{ 'is-invalid' if field_errors else '' }}"
-          {{ 'required' if required else '' }}
-          {{ ('aria-describedby="' ~ described_by ~ '"') if described_by else '' }}
-          {{ ('aria-invalid="true"') if field_errors else '' }}>
+          {% if required %}required{% endif %}
+          {% if described_by %}aria-describedby="{{ described_by }}"{% endif %}
+          {% if field_errors %}aria-invalid="true"{% endif %}>
     {% for opt_value, opt_label in options %}
     <option value="{{ opt_value }}"
             {{ 'selected' if opt_value|string == selected_value|string else '' }}>
@@ -74,7 +105,7 @@
 {# --- Input Group (with prefix/suffix like $ or %) --- #}
 {% macro render_input_group(name, label, type="number", value="", prefix="", suffix="",
                             required=false, placeholder="", help_text="", errors=none,
-                            step="", classes="", input_attrs="") %}
+                            step="", classes="", input_attrs=none) %}
 {% set field_errors = errors.get(name, []) if errors else [] %}
 {% set err_id = name ~ "-error" if field_errors else "" %}
 {% set help_id = name ~ "-help" if help_text else "" %}
@@ -88,12 +119,12 @@
     <input type="{{ type }}" id="{{ name }}" name="{{ name }}"
            class="form-control {{ 'is-invalid' if field_errors else '' }}"
            value="{{ value }}"
-           {{ 'required' if required else '' }}
-           {{ ('placeholder="' ~ placeholder ~ '"') if placeholder else '' }}
-           {{ ('step="' ~ step ~ '"') if step else '' }}
-           {{ ('aria-describedby="' ~ described_by ~ '"') if described_by else '' }}
-           {{ ('aria-invalid="true"') if field_errors else '' }}
-           {{ input_attrs }}>
+           {% if required %}required{% endif %}
+           {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+           {% if step %}step="{{ step }}"{% endif %}
+           {% if described_by %}aria-describedby="{{ described_by }}"{% endif %}
+           {% if field_errors %}aria-invalid="true"{% endif %}
+           {{ extra_attrs(input_attrs) }}>
     {% if suffix %}
     <span class="input-group-text">{{ suffix }}</span>
     {% endif %}

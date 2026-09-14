@@ -83,7 +83,7 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           {{ render_field("num_periods", "Periods to add", type="number",
                           value="13", required=true,
-                          input_attrs='min="1" max="260"') }}
+                          input_attrs={"min": PERIOD_BATCH_MIN, "max": PERIOD_BATCH_MAX}) }}
           <button type="submit" class="btn btn-primary btn-sm w-100">
             <i class="bi bi-plus-circle"></i> Extend
           </button>
@@ -150,7 +150,8 @@
                           help_text=PAYDAY_NOMINAL_HELP) }}
           {{ render_field("num_periods", "Number of periods", type="number",
                           value="52", required=true,
-                          input_attrs='min="1" max="260"', classes="rg") }}
+                          input_attrs={"min": PERIOD_BATCH_MIN, "max": PERIOD_BATCH_MAX},
+                          classes="rg") }}
           {# The rhythm's KIND and its inputs (plan step pay_calendar:C17-d-3,
              ruling R-PC84), PRESELECTED to the owner's stored rhythm for the
              reason the convention below is: this form posts the whole
@@ -321,7 +322,8 @@
       <div class="col-sm-3">
         {{ render_field("num_periods", "Number of periods", type="number",
                         value="52", required=true,
-                        input_attrs='min="1" max="260"', classes="rs") }}
+                        input_attrs={"min": PERIOD_BATCH_MIN, "max": PERIOD_BATCH_MAX},
+                        classes="rs") }}
       </div>
       <div class="col-12">
         {# Preselected to the stored rhythm, for the reason the regenerate
