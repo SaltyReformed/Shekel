@@ -4927,7 +4927,7 @@ class TestDueDateGeneration:
     def test_this_function_is_why_the_WEEK_unit_is_unofferable(self, app, db):
         """The tie between the offer set's rule and this function's two sources.
 
-        **``_frequency.has_row_date_coordinate`` exists for THIS function**, and
+        **``_offer.has_row_date_coordinate`` exists for THIS function**, and
         until this case nothing but a docstring said so -- which an adversarial
         review of plan step R8-a named as the coupling's weak point: if a later
         step gave ``compute_due_date`` a third date source, that predicate

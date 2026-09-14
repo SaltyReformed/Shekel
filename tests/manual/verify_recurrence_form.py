@@ -473,6 +473,118 @@ def _drive_nominal_day(page, kind: str, url: str) -> None:
            str(_posted_opening(page)["nominal_day"]))
 
 
+def _posted_ceiling(page) -> list[str]:
+    """Return the ``max_per_month`` values the form would actually submit.
+
+    From a real ``FormData``, for the reason every sibling reads one: the
+    ceiling's row is hidden by a class and its input DISABLED beside a unit
+    that cannot repeat within a month, and only the disabling stops it
+    posting -- a stale ceiling beside a monthly unit is the pair the write
+    door refuses.
+
+    Args:
+        page: The Playwright page.
+
+    Returns:
+        Every value the form would post under ``max_per_month``.
+    """
+    return page.evaluate(
+        """() => {
+            const form = document.getElementById('recurrence_unit').form;
+            return new FormData(form).getAll('max_per_month');
+        }"""
+    )
+
+
+def _drive_month_ceiling(page, kind: str, url: str) -> None:
+    """Check the "at most N a month" control appears and posts only where it means.
+
+    **Plan step salary:R15-a's control, and this file's whole defect class one
+    field over.**  The per-month ceiling is meaningful only on a unit whose
+    occurrences can repeat within a month (paychecks today), so
+    ``recurrence_form.js`` reveals the row for that unit and hides AND
+    DISABLES it for a monthly or yearly one; rendered HTML cannot tell a
+    hidden input from a disabled one, and only a real ``FormData`` says which
+    the browser would post.  The typed value must SURVIVE a round trip through
+    a monthly unit (the row hides, the value stays, the row returns), because
+    the update door reads an absent key as "leave the stored one alone" and
+    a control that cleared itself would silently drop a saved ceiling on an
+    unrelated edit.
+
+    The live preview's fetch must carry the ceiling exactly when an enabled
+    control holds a value, and the fragment it answers must omit the third
+    paycheck: "what saving would produce" is the preview's whole contract.
+
+    Args:
+        page: The Playwright page.
+        kind: "transaction" or "transfer", for the labels.
+        url: The create form's path.
+    """
+    print(f"\n=== {kind} month ceiling: {url} ===")
+    previews: list[str] = []
+    page.on("request",
+            lambda r: previews.append(r.url) if "preview-recurrence" in r.url
+            else None)
+    page.goto(f"{DEV_BASE_URL}{url}", wait_until="domcontentloaded")
+    page.wait_for_selector("#recurrence_unit")
+    units = _unit_ids(page)
+
+    # --- does not repeat: hidden, disabled, posts nothing -----------------
+    _check(f"{kind} C: the ceiling row is hidden while nothing repeats",
+           not _visible(page, "field-max-per-month"), "visible")
+    _check(f"{kind} C: the ceiling posts NOTHING while nothing repeats",
+           _posted_ceiling(page) == [], str(_posted_ceiling(page)))
+
+    # --- paychecks: shown, enabled, an empty box posts an empty string ---
+    page.locator("#recurrence_unit").select_option(units["paychecks"])
+    _settle(page)
+    _check(f"{kind} C: the ceiling row is SHOWN for paychecks",
+           _visible(page, "field-max-per-month"), "hidden")
+    _check(f"{kind} C: an untouched box posts an empty ceiling (no ceiling)",
+           _posted_ceiling(page) == [""], str(_posted_ceiling(page)))
+
+    page.fill("#max_per_month", "2")
+    previews.clear()
+    page.evaluate(
+        """() => document.getElementById('max_per_month')
+                 .dispatchEvent(new Event('change', {bubbles: true}))"""
+    )
+    _settle(page)
+    _check(f"{kind} C: a typed ceiling posts exactly once",
+           _posted_ceiling(page) == ["2"], str(_posted_ceiling(page)))
+    _check(f"{kind} C: typing a ceiling fetched a preview carrying it",
+           bool(previews) and "max_per_month=2" in previews[-1],
+           previews[-1] if previews else "no preview request was made")
+    _check(f"{kind} C: the preview survived the ceiling",
+           "Could not load preview" not in page.inner_text("#recurrence-preview"),
+           page.inner_text("#recurrence-preview"))
+
+    # --- months: hidden, disabled, the typed value is kept ---------------
+    # Cleared BEFORE the select, as ``_drive_preview_destination`` does: the
+    # fetch fires on the change event itself, so a clear after it discards
+    # the very request the next check reads.  The first run of this drive
+    # cleared after and reported "no preview request was made" on both
+    # forms -- an instrument fault, measured by the ordering alone.
+    previews.clear()
+    page.locator("#recurrence_unit").select_option(units["months"])
+    _settle(page)
+    _check(f"{kind} C: the ceiling row is hidden for months",
+           not _visible(page, "field-max-per-month"), "visible")
+    _check(f"{kind} C: the ceiling posts NOTHING for months (disabled, not merely hidden)",
+           _posted_ceiling(page) == [], str(_posted_ceiling(page)))
+    _check(f"{kind} C: the monthly preview does not carry a ceiling",
+           bool(previews) and "max_per_month" not in previews[-1],
+           previews[-1] if previews else "no preview request was made")
+
+    # --- back to paychecks: the value typed before the detour survives ---
+    page.locator("#recurrence_unit").select_option(units["paychecks"])
+    _settle(page)
+    _check(f"{kind} C: the ceiling row returns for paychecks",
+           _visible(page, "field-max-per-month"), "hidden")
+    _check(f"{kind} C: the typed ceiling survived the monthly detour",
+           _posted_ceiling(page) == ["2"], str(_posted_ceiling(page)))
+
+
 def _drive_loan_destination_lock(page) -> None:
     """Check a loan destination locks "Starts on" on the CREATE form.
 
@@ -1342,7 +1454,7 @@ def _drive_refusals(context, page) -> None:
         # pass, which is how a real regression comes to be read as "the known
         # year failure".  It is replaced by the WEEK unit's OTHER placement:
         # the withholding is a property of the unit
-        # (``_frequency.has_row_date_coordinate``), so both readings must be
+        # (``_offer.has_row_date_coordinate``), so both readings must be
         # refused and a list pinning one would pass against a rule that had
         # started admitting the other.
         ("the WEEK unit names no date a generated row can carry",
@@ -1441,6 +1553,7 @@ def main() -> int:
             _drive_visibility(page, kind, url)
             _drive_opening_bound(page, kind, url)
             _drive_nominal_day(page, kind, url)
+            _drive_month_ceiling(page, kind, url)
             _drive_end_bound(page, kind, url)
         # Transfer-only: the transaction form has no destination account, so
         # its definition can never be a loan payment.
