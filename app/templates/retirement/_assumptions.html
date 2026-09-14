@@ -23,7 +23,20 @@
    (their GET parameter names are their own, so nothing mirrors), and
    since plan step salary:S3-f-3 each row's Save posts the SAME two
    controls, so the what-if and the write cannot name the pair
-   differently. #}
+   differently.
+
+   The readiness what-if's REFUSALS render this fragment too, since plan
+   step salary:S3-f-4 (ruling R-SAL33): the GET answers a refused input --
+   a raise pair the ONE end-year rule refuses, a mode or year the schema
+   refuses, an SWR outside its range -- with this rail at 422, retargeted
+   at #assumptions-region, with the message on the control and the query
+   string echoed as form_data.  Every raise row's pair rides on every
+   refresh, so every row echoes; the SWR what-if arrives under the GET's
+   name ``swr`` (the mirror's), so the SWR row reads that name too -- into
+   the box AND the mirror, or the next refresh would carry the stored rate
+   under a box stating the what-if.  A refusal keyed under either of the
+   box's two names lands on the box.  The date and tax rows, which no
+   refresh carries, state their stored values as on any rail 422. #}
 {% set fd = form_data|default(none) %}
 <div id="assumptions-panel">
   {# Acceptance r2 item 2 (developer ruling): the date row is ALWAYS
@@ -52,20 +65,25 @@
     {% endif %}
   </form>
 
+  {# The SWR what-if as the refused refresh carried it (the mirror's value,
+     raw), or none when the mirror was empty -- no what-if was active. #}
+  {% set swr_whatif = fd['swr'] if fd and fd.get('swr') else none %}
+  {% set swr_refused = errors and ('safe_withdrawal_rate' in errors or 'swr' in errors) %}
   <form method="POST" action="{{ url_for('retirement.update_settings') }}"
         hx-post="{{ url_for('retirement.update_settings') }}"
         hx-target="#assumptions-region" hx-swap="innerHTML"
         class="retire-assump-row" data-assumption="safe_withdrawal_rate">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" id="swr-whatif-mirror" name="swr" class="whatif-param" value="">
+    <input type="hidden" id="swr-whatif-mirror" name="swr" class="whatif-param"
+           value="{{ swr_whatif if swr_whatif is not none else '' }}">
     <label class="form-label" for="assump-swr">Safe withdrawal rate (%)</label>
     <input type="number" step="0.1" min="0" max="100" id="assump-swr"
            name="safe_withdrawal_rate" data-mirror="swr-whatif-mirror"
-           class="form-control form-control-sm retire-assump-input js-whatif-input {% if errors and 'safe_withdrawal_rate' in errors %}is-invalid{% endif %}"
-           value="{{ fd['safe_withdrawal_rate'] if fd and 'safe_withdrawal_rate' in fd else ("%.2f"|format(settings.safe_withdrawal_rate|to_percent) if settings and settings.safe_withdrawal_rate is not none else '') }}">
+           class="form-control form-control-sm retire-assump-input js-whatif-input {% if swr_refused %}is-invalid{% endif %}"
+           value="{{ fd['safe_withdrawal_rate'] if fd and 'safe_withdrawal_rate' in fd else (swr_whatif if swr_whatif is not none else ("%.2f"|format(settings.safe_withdrawal_rate|to_percent) if settings and settings.safe_withdrawal_rate is not none else '')) }}">
     <button type="submit" class="btn btn-sm btn-outline-secondary">Save</button>
-    {% if errors and 'safe_withdrawal_rate' in errors %}
-    <div class="invalid-feedback">{{ errors['safe_withdrawal_rate']|join('. ') }}</div>
+    {% if swr_refused %}
+    <div class="invalid-feedback">{{ (errors.get('safe_withdrawal_rate', []) + errors.get('swr', []))|join('. ') }}</div>
     {% endif %}
   </form>
 
@@ -89,7 +107,12 @@
      profile's paychecks; a refusal comes back as this fragment at 422 with
      the message on the refused control, a stale race at 409 with it on the
      row, and the submitted pair echoed on the row it was submitted for --
-     every other row keeps stating its stored value.  The rail states the
+     every other row keeps stating its stored value.  The what-if's refusal
+     comes back the same way since plan step salary:S3-f-4 (R-SAL33), every
+     row echoed because every row's pair rode on the refresh; the message
+     retires the moment either control of its row is edited
+     (retirement_controls.js, R-SAL34), so a corrected year does not keep
+     the refusal of the year it replaced beside a card drawn at itself.  The rail states the
      end year the owner has RECORDED for each recurring raise on every active
      profile -- not, in the multi-profile case, exactly the set the page
      projects -- and the salary page still owns the raise's other fields. #}

@@ -95,7 +95,29 @@ class PensionSummary:
 
 
 @dataclass(frozen=True)
-class GapInputs:
+class RetirementRows:
+    """The owner's retirement rows: the settings row, the active pensions and
+    the active salary profiles.
+
+    What the ``/retirement`` page's assumptions rail renders from and what
+    the gap analysis loads first (:class:`GapInputs` extends this with the pay
+    cadence).  ONE loader, :func:`load_retirement_rows`, so the rail a refusal
+    re-renders and the picture the page derives read the same three rows the
+    same way (plan step salary:S3-f-4).
+
+    Attributes:
+        settings: The user's :class:`UserSettings`, or ``None``.
+        pensions: The user's active :class:`PensionProfile` rows.
+        salary_profiles: The user's active :class:`SalaryProfile` rows.
+    """
+
+    settings: UserSettings | None
+    pensions: list[PensionProfile]
+    salary_profiles: list[SalaryProfile]
+
+
+@dataclass(frozen=True)
+class GapInputs(RetirementRows):
     """The once-per-request loaded inputs the gap analysis reads.
 
     Returned by :func:`load_gap_inputs` and carried on
@@ -119,9 +141,12 @@ class GapInputs:
     :class:`~app.services.paycheck_calculator.PaycheckBreakdown` is the value.
 
     Attributes:
-        settings: The user's :class:`UserSettings`, or ``None``.
-        pensions: The user's active :class:`PensionProfile` rows.
-        salary_profiles: The user's active :class:`SalaryProfile` rows.
+        settings: The user's :class:`UserSettings`, or ``None``
+            (:class:`RetirementRows`).
+        pensions: The user's active :class:`PensionProfile` rows
+            (:class:`RetirementRows`).
+        salary_profiles: The user's active :class:`SalaryProfile` rows
+            (:class:`RetirementRows`).
         pay_cadence: How often the owner is paid
             (:class:`~app.services.pay_calendar.PayCadence`), loaded here at
             plan step R7a-2a so the gap analysis and every lever probe measure
@@ -130,9 +155,6 @@ class GapInputs:
             a probe at month offset ``m`` never reloads it.
     """
 
-    settings: UserSettings | None
-    pensions: list[PensionProfile]
-    salary_profiles: list[SalaryProfile]
     pay_cadence: PayCadence
 
 
@@ -176,6 +198,42 @@ class BelievedPayroll:
     current_paycheck: paycheck_calculator.PaycheckBreakdown | None
 
 
+def load_retirement_rows(balance_ctx) -> RetirementRows:
+    """Load the owner's retirement rows -- the settings, pensions and profiles.
+
+    The one spelling of the three queries.  :func:`load_gap_inputs` reads
+    them through here and adds the pay cadence; the ``/retirement`` routes
+    read them through here for the assumptions rail's own renders -- a Save's
+    answer and the readiness what-if's refusal -- which derive no picture and
+    so need no bundle (plan step salary:S3-f-4).  The owner comes off the READ
+    PASS the route built, as for every producer below a route.
+
+    Args:
+        balance_ctx: The request's
+            :class:`~app.services.balance_at.BalanceContext`.
+
+    Returns:
+        The :class:`RetirementRows`.
+    """
+    user_id = balance_ctx.user_id
+    settings = (
+        db.session.query(UserSettings).filter_by(user_id=user_id).first()
+    )
+    pensions = (
+        db.session.query(PensionProfile)
+        .filter_by(user_id=user_id, is_active=True)
+        .all()
+    )
+    salary_profiles = (
+        db.session.query(SalaryProfile)
+        .filter_by(user_id=user_id, is_active=True)
+        .all()
+    )
+    return RetirementRows(
+        settings=settings, pensions=pensions, salary_profiles=salary_profiles,
+    )
+
+
 def load_gap_inputs(balance_ctx):
     """Load the gap analysis's per-request inputs in one place.
 
@@ -211,24 +269,11 @@ def load_gap_inputs(balance_ctx):
             owner -- rather than where the cadence is read;
             :attr:`app.services.pay_calendar.PayCalendar.cadence` is total now.
     """
-    user_id = balance_ctx.user_id
-    settings = (
-        db.session.query(UserSettings).filter_by(user_id=user_id).first()
-    )
-    pensions = (
-        db.session.query(PensionProfile)
-        .filter_by(user_id=user_id, is_active=True)
-        .all()
-    )
-    salary_profiles = (
-        db.session.query(SalaryProfile)
-        .filter_by(user_id=user_id, is_active=True)
-        .all()
-    )
+    rows = load_retirement_rows(balance_ctx)
     return GapInputs(
-        settings=settings,
-        pensions=pensions,
-        salary_profiles=salary_profiles,
+        settings=rows.settings,
+        pensions=rows.pensions,
+        salary_profiles=rows.salary_profiles,
         # Resolved once here (plan step R7a-2a): the retire-later solver
         # probes this bundle dozens of times per request and the cadence does
         # not move with a candidate retirement date.
