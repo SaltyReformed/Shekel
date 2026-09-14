@@ -48,8 +48,10 @@ chosen, which is why the remedy is a move and not a convention.
 
 **Its partner ``PAY_PERIODS_PER_YEAR = Decimal("26")`` LEFT at the recurrence
 arc's plan step R7a-2a, and it was never a constant.** It stood for how often
-the owner is paid, which is ``budget.pay_schedule.cadence_days`` and is
-user-selectable 1..365 -- so every monthly-equivalent figure on
+the owner is paid, which is the owner's pay era's cadence
+(``budget.pay_eras`` since plan step ``pay_calendar:C17-a``;
+``budget.pay_schedule.cadence_days`` until then) and is user-stated, a day
+count 1..365 or a day of the month -- so every monthly-equivalent figure on
 ``/savings``, the Recurring surface and ``/retirement`` was wrong for anyone
 not paid biweekly: a weekly-paid owner's ``$100`` per-paycheck bill reported
 ``$216.67`` a month against a true ``$433.33``. It is now DERIVED per owner by

@@ -382,7 +382,12 @@ EVT_TRANSFERS_RECONCILED = _register(
 
 EVT_PAY_PERIODS_GENERATED = _register(
     "pay_periods_generated", BUSINESS,
-    "Pay-period service created one or more new biweekly periods.",
+    # The cadence rides on the event as its kind's phrase -- "every 14
+    # days", "monthly on day 15", "twice a month on days 1 and 15" -- since
+    # plan step pay_calendar:C17-d-2 (ruling R-PC82); it said "biweekly
+    # periods" until C17-d-3 (ledger row PC-514).
+    "Pay-period service created one or more new pay periods on the owner's "
+    "stated rhythm.",
 )
 
 

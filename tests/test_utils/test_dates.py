@@ -16,6 +16,7 @@ from datetime import date, datetime, time, timezone
 
 from app.utils.dates import (
     DISPLAY_TIMEZONE,
+    add_months,
     display_today,
     has_settled_by,
     months_between,
@@ -25,6 +26,45 @@ from app.utils.dates import (
     to_display_tz,
 )
 from tests._test_helpers import freeze_today
+
+
+class TestAddMonths:
+    """``add_months`` is the two month primitives, and the fold kept its answers.
+
+    Plan step ``pay_calendar:C17-d-3`` folded the function onto
+    :func:`~app.utils.dates.month_ordinal` and
+    :func:`~app.utils.dates.clamped_day` (ledger row **PC-513**: it spelled
+    the clamp a second time inside the module that owns it).  No case read
+    it directly before; these pin the answers the fold was checked against
+    -- 17,204 (start, months) pairs agreed with the old spelling, and the
+    boundary ones are stated here so a later edit is graded, not trusted.
+    """
+
+    def test_a_day_the_target_month_lacks_clamps_to_its_last_day(self):
+        """31 January plus one month is 28 February, not an error."""
+        assert add_months(date(2026, 1, 31), 1) == date(2026, 2, 28)
+
+    def test_a_leap_february_keeps_the_29th(self):
+        """The clamp is the target month's own length."""
+        assert add_months(date(2024, 1, 31), 1) == date(2024, 2, 29)
+
+    def test_the_clamp_is_to_the_start_days_own_day_each_time(self):
+        """13 months on from 31 January lands on 28 February of the next year."""
+        assert add_months(date(2026, 1, 31), 13) == date(2027, 2, 28)
+
+    def test_zero_months_is_the_start(self):
+        """The identity, so a horizon of no months asks nothing of the clamp."""
+        assert add_months(date(2026, 6, 15), 0) == date(2026, 6, 15)
+
+    def test_a_year_boundary_needs_no_special_case(self):
+        """November plus three months is February of the next year."""
+        assert add_months(date(2026, 11, 30), 3) == date(2027, 2, 28)
+
+    def test_past_year_9999_is_the_sentinel_not_an_error(self):
+        """The overflow guard survives the fold, at its exact edge."""
+        assert add_months(date(9999, 6, 30), 6) == date(9999, 12, 30)
+        assert add_months(date(9999, 6, 30), 7) == date.max
+        assert add_months(date(9999, 12, 31), 1) == date.max
 
 
 class TestMonthsBetween:

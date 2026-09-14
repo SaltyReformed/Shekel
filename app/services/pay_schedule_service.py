@@ -524,7 +524,7 @@ def reject_shift_on_short_cadence(rhythm: Rhythm) -> None:
     2. **A constraint cannot name a FIELD.**  It arrives as an
        ``IntegrityError`` carrying a constraint name, where a form needs the
        message on the control the owner chose -- which is what
-       :func:`~app.schemas.validation.pay_periods.validate_derivable_rhythm`
+       :func:`~app.schemas.validation._pay_rhythm.validate_derivable_rhythm`
        supplies, and the same reason plan step X-ad-a moved the cadence bound
        out from behind ``ck_pay_schedule_cadence_range``.
 

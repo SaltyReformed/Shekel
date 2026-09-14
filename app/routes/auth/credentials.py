@@ -31,7 +31,7 @@ from app.enums import RoleEnum
 from app.extensions import db, limiter
 from app.models.user import MfaConfig
 from app.schemas.validation import LoginSchema, RegisterSchema
-from app.services import auth_service, pay_rhythm, registration_service
+from app.services import auth_service, registration_service
 from app.exceptions import AuthError, ConflictError, ValidationError
 from app.routes.auth._bp import auth_bp
 from app.routes.auth._helpers import (
@@ -239,10 +239,9 @@ def register():
             password=register_data["password"],
             display_name=register_data["display_name"],
             first_payday=register_data["last_payday"],
-            rhythm=pay_rhythm.Rhythm(
-                cadence=pay_rhythm.FixedDays(register_data["cadence_days"]),
-                shift=register_data["shift"],
-            ),
+            # Built by the schema from the kind control and its arm's
+            # inputs (plan step pay_calendar:C17-d-3, ruling R-PC84).
+            rhythm=register_data["rhythm"],
             num_periods=register_data["num_periods"],
             history_opens_on=register_data["history_opens_on"],
         ))
