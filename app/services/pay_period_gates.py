@@ -45,6 +45,7 @@ import logging
 from datetime import date
 
 from sqlalchemy import or_
+from sqlalchemy.orm import selectinload
 
 from app.exceptions import (
     PayPeriodDiscardRequired,
@@ -57,7 +58,11 @@ from app.models.transfer import Transfer
 from app.services._recurrence_common import log_resource_access_denied
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.services.pay_period_locks import PeriodLockReason
-from app.utils.balance_predicates import is_projected_clause, settled_status_ids
+from app.utils.balance_predicates import (
+    is_projected,
+    is_projected_clause,
+    settled_status_ids,
+)
 from app.utils.log_events import ACCESS, EVT_RESOURCE_NOT_FOUND, log_event
 
 logger = logging.getLogger(__name__)
@@ -327,17 +332,33 @@ def count_discardable_items(period_ids):
     """Count rows in the periods that regeneration cannot reproduce.
 
     A row needs the user's confirmation before truncate / regenerate
-    wipes it when it is hand-entered (no template), a manual override, or
-    carries a deliberate non-Projected status (Credit / Cancelled --
-    settled rows are already hard-locked upstream, so they never reach
-    here).  Transfer shadows always carry ``template_id IS NULL``, so the
-    transaction scan excludes them (``transfer_id IS NULL``) and transfers
-    are counted once on their own table via the parallel predicate
-    (``transfer_template_id`` in place of ``template_id``).  That way a
-    recurring transfer (regenerable) does not falsely trip the gate while
-    an ad-hoc transfer does.  The not-Projected test routes through
-    ``balance_predicates.is_projected_clause`` (negated) so no inline
-    status-id comparison lives here (D6-09).
+    wipes it when no rule would write it back (``Transaction.recurs`` is
+    ``False``: a hand-entered row, or a row of a definition with no cadence),
+    when it is a manual override, or when it carries a deliberate
+    non-Projected status (Credit / Cancelled -- settled rows are already
+    hard-locked upstream, so they never reach here).  Transfer shadows
+    always carry ``template_id IS NULL``, so the transaction scan excludes
+    them (``transfer_id IS NULL``) and transfers are counted once on their
+    own table via the parallel predicate (``transfer_template_id`` in place
+    of ``template_id``).  That way a recurring transfer (regenerable) does
+    not falsely trip the gate while an ad-hoc transfer does.  The
+    not-Projected test routes through ``balance_predicates.is_projected``
+    (negated) so no inline status-id comparison lives here (D6-09).
+
+    **The transaction arm LOADS the rows and asks each one** (plan step
+    ``balance:X-bi-7a``), the shape ruling **R-BAL19** gave the companion
+    query for finding **BAL-482**: "no rule would write it back" is
+    ``recurs``'s rule, and a ``WHERE`` restating it -- the ``template_id IS
+    NULL`` this arm read until then -- was that rule spelled a second time in
+    another language, and wrong in it: a rule-less definition's row is
+    template-linked, so the SQL counted it REGENERABLE and truncate promised
+    a row back that no rule will write (the transaction half of the twin's
+    defect **BAL-492**).  The query keeps the period / live / not-a-shadow
+    scope; the three owner-held facts are asked in Python.  The definition is
+    loaded in one ``selectinload`` query rather than one per row, since this runs
+    over every period a truncate would drop.  **The transfer arm is
+    unchanged here and still carries the twin's half of that defect**,
+    owned by ``balance:X-ci``.
 
     Args:
         period_ids: The pay-period ids being deleted.
@@ -346,16 +367,20 @@ def count_discardable_items(period_ids):
         The number of unrecoverable rows (non-shadow transactions plus
         transfers; a transfer counts once, not its two shadows).
     """
-    txn_count = db.session.query(Transaction.id).filter(
-        Transaction.pay_period_id.in_(period_ids),
-        Transaction.is_deleted.is_(False),
-        Transaction.transfer_id.is_(None),
-        or_(
-            Transaction.template_id.is_(None),
-            Transaction.is_override.is_(True),
-            ~is_projected_clause(Transaction),
-        ),
-    ).count()
+    period_rows = (
+        db.session.query(Transaction)
+        .options(selectinload(Transaction.template))
+        .filter(
+            Transaction.pay_period_id.in_(period_ids),
+            Transaction.is_deleted.is_(False),
+            Transaction.transfer_id.is_(None),
+        )
+        .all()
+    )
+    txn_count = sum(
+        1 for txn in period_rows
+        if not txn.recurs or txn.is_override or not is_projected(txn)
+    )
     transfer_count = db.session.query(Transfer.id).filter(
         Transfer.pay_period_id.in_(period_ids),
         Transfer.is_deleted.is_(False),
